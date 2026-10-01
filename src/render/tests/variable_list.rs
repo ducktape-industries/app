@@ -94,13 +94,7 @@ fn missing_far_rows_emit_one_bounded_request_and_bottom_anchor_uses_tail_rows(
     let window = cx.open_window(size(px(240.), px(120.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let observed = events.clone();
-    let _subscription = native.update(|_, cx| {
-        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
-            observed.borrow_mut().push(event.clone())
-        })
-    });
+    let (events, _subscription) = emitted(&tree, &mut native);
     native.update(|window, cx| {
         window.render_frame(cx);
         window.render_frame(cx);

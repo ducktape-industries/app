@@ -85,7 +85,7 @@ impl LauncherLayer {
             (false, false) => None,
         }
         .map(|text| {
-            buttons([self.button(
+            buttons([ink::button(
                 "unlock",
                 text,
                 Kind::Primary,
@@ -106,7 +106,7 @@ impl LauncherLayer {
             .children(loose_error)
             .children(primary);
         let links = closing(
-            [self.link(
+            [link_running(
                 "browse",
                 "Read without a key",
                 self.on_account(Account::browse_without_key),

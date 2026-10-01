@@ -1,11 +1,11 @@
 use super::*;
 
-#[cfg(test)]
 fn editor_path() -> crate::render::AuthoredPath {
     vec![wire::ElementIdWire::Name("document".into())]
 }
 
-#[cfg(test)]
+/// A store holding one ready document with the given claims. The mount reads
+/// its projection exactly the way it reads a live guest's.
 fn store_with(
     name: &str,
     text: &str,
@@ -53,9 +53,64 @@ fn store_with(
     store
 }
 
+/// An editor over `store`'s field in a window of its own, drawn and holding
+/// the keys.
+fn focused_editor(
+    store: &EditorStore,
+    cx: &mut gpui_kit::TestAppContext,
+) -> (Entity<TextEditor>, gpui_kit::VisualTestContext) {
+    use gpui_kit::test::TestWindowExt as _;
+    let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
+        TextEditor::new(editor_path(), store.clone(), window, cx)
+    });
+    let editor = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        window.render_frame(cx);
+        editor.update(cx, |editor, cx| {
+            editor.input.read(cx).focus_handle(cx).focus(window, cx)
+        });
+        window.render_frame(cx);
+    });
+    (editor, native)
+}
+
+/// The editor with one Tab stop after it, under the kit's Root, whose Tab
+/// moves the focus on.
+struct Host {
+    editor: Entity<TextEditor>,
+    after: gpui_kit::FocusHandle,
+}
+
+impl Render for Host {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .child(self.editor.clone())
+            .child(div().id("after").track_focus(&self.after).size(px(20.)))
+    }
+}
+
+/// `store`'s editor in a [`Host`], in a window of its own.
+fn tab_host(
+    store: &EditorStore,
+    cx: &mut gpui_kit::TestAppContext,
+) -> (Entity<Host>, gpui_kit::VisualTestContext) {
+    let mut host = None;
+    let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
+        let made = cx.new(|cx| Host {
+            editor: cx.new(|cx| TextEditor::new(editor_path(), store.clone(), window, cx)),
+            after: cx.focus_handle().tab_stop(true),
+        });
+        host = Some(made.clone());
+        gpui_kit::component::Root::new(made, window, cx)
+    });
+    let native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    (host.unwrap(), native)
+}
+
 /// Settle every queued edit against the document, the way a guest that accepts
 /// what the field did would.
-#[cfg(test)]
 fn settle(store: &EditorStore, name: &str) {
     let mut locked = store.lock();
     while !locked.documents[name].queue.is_empty() {
@@ -69,7 +124,6 @@ fn settle(store: &EditorStore, name: &str) {
 
 /// The field carries the guest's placeholder, follows it when the guest
 /// changes it, and takes what is typed into it.
-#[cfg(test)]
 #[gpui_kit::test]
 fn an_empty_field_wears_the_guests_placeholder_and_takes_what_is_typed(
     cx: &mut gpui_kit::TestAppContext,
@@ -128,23 +182,13 @@ fn an_empty_field_wears_the_guests_placeholder_and_takes_what_is_typed(
 /// Shift and an arrow reach past the line they started on. This is the whole
 /// reason the document is one field: a selection that stops at the newline is
 /// a selection that cannot take a paragraph.
-#[cfg(test)]
 #[gpui_kit::test]
 fn shift_and_an_arrow_select_across_the_lines_of_one_document(cx: &mut gpui_kit::TestAppContext) {
     use gpui_kit::test::TestWindowExt as _;
     cx.update(gpui_kit::init);
     let store = store_with("lines", "one\ntwo\nthree", Vec::new(), "");
-    let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
-        TextEditor::new(editor_path(), store.clone(), window, cx)
-    });
-    let editor = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let (editor, mut native) = focused_editor(&store, cx);
     native.update(|window, cx| {
-        window.render_frame(cx);
-        editor.update(cx, |editor, cx| {
-            editor.input.read(cx).focus_handle(cx).focus(window, cx)
-        });
-        window.render_frame(cx);
         window.dispatch_keystroke(Keystroke::parse("shift-up").unwrap(), cx);
         window.dispatch_keystroke(Keystroke::parse("shift-up").unwrap(), cx);
     });
@@ -169,23 +213,13 @@ fn shift_and_an_arrow_select_across_the_lines_of_one_document(cx: &mut gpui_kit:
 
 /// Backspace at the head of a line takes the newline before it and joins the
 /// two lines — the ordinary way any text box works.
-#[cfg(test)]
 #[gpui_kit::test]
 fn backspace_at_the_head_of_a_line_joins_it_to_the_one_above(cx: &mut gpui_kit::TestAppContext) {
     use gpui_kit::test::TestWindowExt as _;
     cx.update(gpui_kit::init);
     let store = store_with("join", "one\ntwo", Vec::new(), "");
-    let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
-        TextEditor::new(editor_path(), store.clone(), window, cx)
-    });
-    let editor = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let (editor, mut native) = focused_editor(&store, cx);
     native.update(|window, cx| {
-        window.render_frame(cx);
-        editor.update(cx, |editor, cx| {
-            editor.input.read(cx).focus_handle(cx).focus(window, cx)
-        });
-        window.render_frame(cx);
         // The caret starts at the end of "two"; Home puts it at the head.
         window.dispatch_keystroke(Keystroke::parse("home").unwrap(), cx);
         window.dispatch_keystroke(Keystroke::parse("backspace").unwrap(), cx);
@@ -205,10 +239,8 @@ fn backspace_at_the_head_of_a_line_joins_it_to_the_one_above(cx: &mut gpui_kit::
 
 /// A claimed chord is the guest's and never the field's; everything else is
 /// the field's and never the guest's.
-#[cfg(test)]
 #[gpui_kit::test]
 fn the_guest_hears_the_chords_it_claimed_and_no_others(cx: &mut gpui_kit::TestAppContext) {
-    use gpui_kit::test::TestWindowExt as _;
     cx.update(gpui_kit::init);
     let store = store_with(
         "claims",
@@ -227,18 +259,7 @@ fn the_guest_hears_the_chords_it_claimed_and_no_others(cx: &mut gpui_kit::TestAp
         ],
         "",
     );
-    let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
-        TextEditor::new(editor_path(), store.clone(), window, cx)
-    });
-    let editor = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| {
-        window.render_frame(cx);
-        editor.update(cx, |editor, cx| {
-            editor.input.read(cx).focus_handle(cx).focus(window, cx)
-        });
-        window.render_frame(cx);
-    });
+    let (_, mut native) = focused_editor(&store, cx);
     store.drain();
     // A lone Shift tap reaches keystroke interceptors since gpui-pre 0.3.7
     // (zed ba42ab9d9). It is no key to claim: taking it would also keep its
@@ -279,7 +300,6 @@ fn the_guest_hears_the_chords_it_claimed_and_no_others(cx: &mut gpui_kit::TestAp
 
 /// A guest cursor whose caret is the earlier end still selects its words;
 /// gpui-base 0.7.0 read that backward range as empty and selected nothing.
-#[cfg(test)]
 #[gpui_kit::test]
 fn a_backward_guest_selection_stays_selected(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -314,7 +334,6 @@ fn a_backward_guest_selection_stays_selected(cx: &mut gpui_kit::TestAppContext) 
 
 /// A field the guest will not let anyone write in reports nothing, and keeps
 /// the text it was given.
-#[cfg(test)]
 #[gpui_kit::test]
 fn a_readonly_field_reports_no_edit(cx: &mut gpui_kit::TestAppContext) {
     use gpui_kit::test::TestWindowExt as _;
@@ -326,18 +345,7 @@ fn a_readonly_field_reports_no_edit(cx: &mut gpui_kit::TestAppContext) {
         .get_mut(&editor_path())
         .unwrap()
         .editable = false;
-    let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
-        TextEditor::new(editor_path(), store.clone(), window, cx)
-    });
-    let editor = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| {
-        window.render_frame(cx);
-        editor.update(cx, |editor, cx| {
-            editor.input.read(cx).focus_handle(cx).focus(window, cx)
-        });
-        window.render_frame(cx);
-    });
+    let (editor, mut native) = focused_editor(&store, cx);
     store.drain();
     native.update(|window, cx| {
         window.input("no", cx);
@@ -358,7 +366,6 @@ fn a_readonly_field_reports_no_edit(cx: &mut gpui_kit::TestAppContext) {
 /// drains one item per guest frame and faults the whole view when it fills.
 /// Two caret moves in a row compose, so the queue keeps the one in flight and
 /// one destination however far the pointer travels.
-#[cfg(test)]
 #[test]
 fn a_drag_through_a_paragraph_does_not_fill_the_queue() {
     let text = "one two three four five six seven eight nine ten";
@@ -398,7 +405,6 @@ fn a_drag_through_a_paragraph_does_not_fill_the_queue() {
 /// lines when a selection covers them. Shift+Tab takes one back, and takes
 /// nothing when there is nothing left to take — which is what leaves the key
 /// to the focus ring.
-#[cfg(test)]
 #[test]
 fn tab_indents_a_caret_a_block_and_gives_it_back() {
     let typed = indent("ab", 1..1, false).expect("an indent at the caret");
@@ -430,27 +436,11 @@ fn tab_indents_a_caret_a_block_and_gives_it_back() {
 /// of the editor; any other key after Esc takes it back (owner, 2026-09-28;
 /// AX-022, Help's keys). A guest that claimed Esc (to cancel an edit, say)
 /// still hears it.
-#[cfg(test)]
 #[gpui_kit::test]
 fn esc_then_tab_leaves_the_editor_and_any_other_key_takes_tab_back(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     use gpui_kit::test::TestWindowExt as _;
-
-    /// The editor with one Tab stop after it, under the kit's Root, whose
-    /// Tab moves the focus on.
-    struct Host {
-        editor: Entity<TextEditor>,
-        after: gpui_kit::FocusHandle,
-    }
-    impl Render for Host {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .size_full()
-                .child(self.editor.clone())
-                .child(div().id("after").track_focus(&self.after).size(px(20.)))
-        }
-    }
 
     cx.update(gpui_kit::init);
     // Esc the field's (and the view's) own, and Esc a guest claimed
@@ -464,17 +454,7 @@ fn esc_then_tab_leaves_the_editor_and_any_other_key_takes_tab_back(
             }],
         };
         let store = store_with("tabs", "one", claims, "");
-        let mut host = None;
-        let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
-            let made = cx.new(|cx| Host {
-                editor: cx.new(|cx| TextEditor::new(editor_path(), store.clone(), window, cx)),
-                after: cx.focus_handle().tab_stop(true),
-            });
-            host = Some(made.clone());
-            gpui_kit::component::Root::new(made, window, cx)
-        });
-        let host = host.unwrap();
-        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let (host, mut native) = tab_host(&store, cx);
         let press = |native: &mut gpui_kit::VisualTestContext, keys: &[&str]| {
             native.update(|window, cx| {
                 for key in keys {
@@ -664,7 +644,6 @@ fn door_walk(
 /// then the walk leaves by Esc, Tab, the way out Help gives, and reaches
 /// the stop painted after the editor instead of indenting until it gives
 /// up.
-#[cfg(test)]
 #[gpui_kit::test]
 fn the_door_walk_leaves_the_editor_by_esc_then_tab(cx: &mut gpui_kit::TestAppContext) {
     let (report, focus, text) = door_walk(cx, true, false);
@@ -689,7 +668,6 @@ fn the_door_walk_leaves_the_editor_by_esc_then_tab(cx: &mut gpui_kit::TestAppCon
 /// is not the walk coming back round, so once Esc, Tab has left the editor
 /// the walk goes on past the stops the first snapshot shows (the stop below
 /// the window's edge) until Tab brings it back to the editor.
-#[cfg(test)]
 #[gpui_kit::test]
 fn the_door_walk_goes_round_after_leaving_the_editor_it_first_reached(
     cx: &mut gpui_kit::TestAppContext,
@@ -708,22 +686,9 @@ fn the_door_walk_goes_round_after_leaving_the_editor_it_first_reached(
 /// A guest that claims plain Tab, as the SDK composer does, still lets go
 /// of the editor for Esc, then Tab (owner, 2026-09-28); a Tab with no Esc
 /// before it stays in the editor and is the guest's.
-#[cfg(test)]
 #[gpui_kit::test]
 fn esc_then_tab_leaves_an_editor_whose_guest_claims_tab(cx: &mut gpui_kit::TestAppContext) {
     use gpui_kit::test::TestWindowExt as _;
-    struct Host {
-        editor: Entity<TextEditor>,
-        after: gpui_kit::FocusHandle,
-    }
-    impl Render for Host {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .size_full()
-                .child(self.editor.clone())
-                .child(div().id("after").track_focus(&self.after).size(px(20.)))
-        }
-    }
     cx.update(gpui_kit::init);
     for (keys, leaves) in [(["escape", "tab"], true), (["a", "tab"], false)] {
         let claims = vec![wire::EditorKeyClaim {
@@ -732,17 +697,7 @@ fn esc_then_tab_leaves_an_editor_whose_guest_claims_tab(cx: &mut gpui_kit::TestA
             command: false,
         }];
         let store = store_with("tabs", "one", claims, "");
-        let mut host = None;
-        let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
-            let made = cx.new(|cx| Host {
-                editor: cx.new(|cx| TextEditor::new(editor_path(), store.clone(), window, cx)),
-                after: cx.focus_handle().tab_stop(true),
-            });
-            host = Some(made.clone());
-            gpui_kit::component::Root::new(made, window, cx)
-        });
-        let host = host.unwrap();
-        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let (host, mut native) = tab_host(&store, cx);
         native.update(|window, cx| {
             window.render_frame(cx);
             let editor = host.read(cx).editor.read(cx);

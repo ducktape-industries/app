@@ -402,7 +402,7 @@ fn install(
                 guest.reconnect(current_rev);
             }
         }
-        Loaded::Empty(_) => {
+        Loaded::Empty => {
             *slot = Slot::Empty;
         }
         // the same tab, the same surface handle, the same host-side
@@ -443,14 +443,7 @@ fn install(
             if let Some(root) = &mut fresh.frame.root {
                 fresh.pictures.hydrate(root);
                 old.pictures.adopt(root);
-                root.for_each_mut(&mut |node| match node {
-                    wire::Node::Svg {
-                        source: wire::SvgSource::Data { bytes, .. },
-                        ..
-                    } => *bytes = None,
-                    wire::Node::Image { data, .. } => *data = None,
-                    _ => {}
-                });
+                super::pictures::strip(root);
             }
             fresh.pictures = std::mem::take(&mut old.pictures);
             fresh.instance = *instance;
@@ -476,10 +469,8 @@ pub(super) enum Loaded {
         alive: Arc<()>,
         ticks: u64,
     },
-    /// The deployment ships no view. Nothing reads the hash any more; it
-    /// goes when `Guest::load` (guest/lifecycle.rs) stops handing it over.
-    #[allow(dead_code)]
-    Empty([u8; 32]),
+    /// The deployment ships no view.
+    Empty,
 }
 
 /// A load that came back with no view, and the view bytes it failed on —

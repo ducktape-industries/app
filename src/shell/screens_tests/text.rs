@@ -45,10 +45,6 @@ fn reads(nodes: &serde_json::Value, words: &[&str]) {
 
 #[gpui_kit::test]
 fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     // every launcher screen: one Heading, level 1
     for (screen, launcher, build) in gate::matrix() {
         if !launcher {

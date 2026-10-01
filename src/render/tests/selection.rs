@@ -163,13 +163,7 @@ fn enter_presses_the_picked_link_while_words_are_selected(cx: &mut gpui_kit::Tes
         .unwrap()
         .read_with(cx, |window, _| window.tree.clone());
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let observed = events.clone();
-    let _subscription = native.update(|_, cx| {
-        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
-            observed.borrow_mut().push(event.clone());
-        })
-    });
+    let (events, _subscription) = emitted(&tree, &mut native);
     native.update(|window, cx| window.render_frame(cx));
     let (from, to) = (point(px(1.), px(10.)), point(px(40.), px(10.)));
     native.simulate_mouse_move(from, None, Default::default());

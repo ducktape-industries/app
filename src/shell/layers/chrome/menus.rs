@@ -428,7 +428,7 @@ fn grouped(number: u64) -> String {
 
 /// The first and last few bytes of a hash, enough to tell two apart.
 fn short_hex(bytes: &[u8]) -> String {
-    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    let hex = crate::backend::hex_encode(bytes);
     match hex.len() > 14 {
         true => format!("{}…{}", &hex[..8], &hex[hex.len() - 4..]),
         false => hex,

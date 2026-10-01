@@ -63,7 +63,7 @@ impl LauncherLayer {
             ))
             .child(
                 buttons([
-                    self.button(
+                    ink::button(
                         "create-account",
                         match busy {
                             true => "Creating…",
@@ -74,7 +74,7 @@ impl LauncherLayer {
                         Press::busy(busy),
                         &ink,
                     ),
-                    self.button(
+                    ink::button(
                         "passkey-create",
                         "Create with a passkey",
                         Kind::Secondary,
@@ -82,7 +82,7 @@ impl LauncherLayer {
                         busy,
                         &ink,
                     ),
-                    self.link(
+                    link_running(
                         "create-account-later",
                         "Not now",
                         self.on_account(Account::create_later),
@@ -104,7 +104,7 @@ impl LauncherLayer {
                         ),
                     ))
                     .into_any_element(),
-                self.link(
+                link_running(
                     "link-device",
                     "Add this device from another device",
                     self.on_account(Account::link_start),
@@ -117,7 +117,7 @@ impl LauncherLayer {
                     .items_baseline()
                     .gap(px(5.))
                     .child(ink::note("join-or-use", "Or use", ink.muted))
-                    .child(self.link(
+                    .child(link_running(
                         "passkey-sign-in",
                         "a passkey",
                         self.on_account(Account::passkey_sign_in),
@@ -125,7 +125,7 @@ impl LauncherLayer {
                         &ink,
                     ))
                     .child(ink::note("join-or", "or", ink.muted))
-                    .child(self.link(
+                    .child(link_running(
                         "recover",
                         "a recovery key",
                         self.on_account(Account::recover_show),
@@ -243,7 +243,7 @@ impl LauncherLayer {
             [
                 match account.passkey_qr {
                     Some(_) => None,
-                    None => Some(self.link(
+                    None => Some(link_running(
                         "passkey-use-phone",
                         "Use a phone instead",
                         self.on_account(Account::passkey_use_phone),
@@ -251,7 +251,7 @@ impl LauncherLayer {
                         &ink,
                     )),
                 },
-                Some(self.link(
+                Some(link_running(
                     "passkey-cancel",
                     "Cancel",
                     self.on_account(Account::passkey_cancel),

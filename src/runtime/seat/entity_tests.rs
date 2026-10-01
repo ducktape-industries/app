@@ -457,11 +457,7 @@ fn a_load_that_lands_wakes_the_seat() {
 fn a_stage_change_and_a_retry_each_turn_the_seat_once(cx: &mut TestAppContext) {
     const MODULE: &str = "stage-retry-test";
     let (seat, _, mut native) = open(cx, MODULE, false);
-    let notifies = std::rc::Rc::new(std::cell::Cell::new(0));
-    let _watch = native.update(|_, cx| {
-        let notifies = notifies.clone();
-        cx.observe(&seat, move |_, _| notifies.set(notifies.get() + 1))
-    });
+    let (notifies, _watch) = crate::shell::entities::tests::notifies(&seat, &mut native);
     let mounted = mounted_of(&seat, &native);
     let turns = turns_of(&seat, &native);
     let words = |native: &TestAppContext| {
@@ -667,42 +663,17 @@ fn a_route_reaches_an_open_view(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_clipboard_answer_reaches_the_view(cx: &mut TestAppContext) {
     const MODULE: &str = "clipboard-test";
-    let encode = |requests: Vec<wire::Request>| {
-        let frame = wire::encode(&wire::Frame {
-            root: Some(wire::Node::empty()),
-            requests,
-            ..Default::default()
-        });
-        let bytes: String = frame.iter().map(|byte| format!("\\{byte:02x}")).collect();
-        (bytes, frame.len() as u32)
+    let frame = |requests| wire::Frame {
+        root: Some(wire::Node::empty()),
+        requests,
+        ..Default::default()
     };
-    let (ask, ask_len) = encode(vec![wire::Request {
+    let ask = frame(vec![wire::Request {
         id: 5,
         kind: "clipboard.read".into(),
         payload: Vec::new(),
     }]);
-    let (quiet, quiet_len) = encode(Vec::new());
-    let ask_tick = wire::abi::pack(65536, ask_len);
-    let quiet_tick = wire::abi::pack(69632, quiet_len);
-    let code = Module::new(
-        guest::engine(),
-        format!(
-            r#"(module
-            (memory (export "memory") 2)
-            (global $n (mut i32) (i32.const 0))
-            (data (i32.const 65536) "{ask}")
-            (data (i32.const 69632) "{quiet}")
-            (func (export "alloc") (param i32) (result i32) i32.const 64)
-            (func (export "init"))
-            (func (export "tick") (param i32 i32) (result i64)
-                global.get $n i32.const 1 i32.add global.set $n
-                global.get $n i32.const 1 i32.le_u
-                if (result i64) i64.const {ask_tick} else i64.const {quiet_tick} end)
-            (func (export "snapshot") (result i64) unreachable)
-            (func (export "restore") (param i32 i32) (result i64) unreachable))"#
-        ),
-    )
-    .unwrap();
+    let code = crate::runtime::frames_code(&ask, 1, &frame(Vec::new()));
     crate::runtime::seat_code_for_test(MODULE, 320, code);
     {
         let registry = registry().lock().unwrap();

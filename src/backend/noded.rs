@@ -231,8 +231,6 @@ impl std::fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
-
 impl From<reqwest::Error> for Error {
     fn from(error: reqwest::Error) -> Self {
         match error.is_connect() {

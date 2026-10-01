@@ -38,13 +38,7 @@ fn drag_from(x: f32, cx: &mut gpui_kit::TestAppContext) -> (f64, bool) {
     let window = cx.open_window(size(px(300.), px(80.)), |_, _| ViewTree::new(split()));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let observed = events.clone();
-    let _subscription = native.update(|_, cx| {
-        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
-            observed.borrow_mut().push(event.clone());
-        })
-    });
+    let (events, _subscription) = emitted(&tree, &mut native);
     native.update(|window, cx| window.render_frame(cx));
     let at = point(px(x), px(40.));
     native.simulate_mouse_move(at, None, Default::default());

@@ -80,13 +80,7 @@ fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestApp
         });
     });
 
-    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let observed = events.clone();
-    let _subscription = native.update(|_, cx| {
-        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
-            observed.borrow_mut().push(event.clone())
-        })
-    });
+    let (events, _subscription) = emitted(&tree, &mut native);
     native.update(|window, cx| left.update(cx, |state, cx| state.focus(window, cx)));
     native.simulate_input("hello");
     native.run_until_parked();
@@ -122,13 +116,7 @@ fn a_read_only_field_takes_no_typing_and_no_set_value(cx: &mut gpui_kit::TestApp
         let window = cx.open_window(size(px(400.), px(200.)), |_, _| ViewTree::new(root));
         let tree = window.root(cx).unwrap();
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let observed = events.clone();
-        let _subscription = native.update(|_, cx| {
-            cx.subscribe(&tree, move |_, event: &wire::Event, _| {
-                observed.borrow_mut().push(event.clone())
-            })
-        });
+        let (events, _subscription) = emitted(&tree, &mut native);
         let state = native.update(|window, cx| {
             window.activate_a11y();
             window.render_frame(cx);
@@ -178,6 +166,33 @@ fn a_read_only_field_takes_no_typing_and_no_set_value(cx: &mut gpui_kit::TestApp
     }
 }
 
+/// Forge's filter row, 600 px: a field `width` wide after a 16 px margin,
+/// its border `border`, then a spacer and a 100 px box.
+fn filter_row(width: impl Into<gpui_kit::Length> + Clone, border: gpui_kit::Hsla) -> wire::Node {
+    let mut field = input("Filter", false, false);
+    let wire::Node::Input { style, .. } = &mut field else {
+        unreachable!()
+    };
+    *style = div()
+        .ml(px(16.))
+        .w(width)
+        .h(px(32.))
+        .px_2()
+        .border_1()
+        .border_color(border)
+        .style()
+        .clone();
+    container_with_style(
+        "row",
+        div().flex().items_center().w(px(600.)).style().clone(),
+        [
+            field,
+            container_with_style("spacer", div().flex_1().style().clone(), []),
+            container_with_style("end", div().w(px(100.)).h(px(32.)).style().clone(), []),
+        ],
+    )
+}
+
 /// A focused field wears one mark, on its own box. A view's input placed by
 /// a margin and a width in a row a spacer fills (forge's filter) keeps that
 /// box, and its node is that box and no wider: a press in the spacer's room
@@ -189,28 +204,7 @@ fn a_read_only_field_takes_no_typing_and_no_set_value(cx: &mut gpui_kit::TestApp
 fn a_focused_field_wears_one_ring_on_its_own_box(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     let grey = gpui_kit::hsla(0., 0., 0.5, 1.);
-    let mut field = input("Filter", false, false);
-    let wire::Node::Input { style, .. } = &mut field else {
-        unreachable!()
-    };
-    *style = div()
-        .ml(px(16.))
-        .w(px(260.))
-        .h(px(32.))
-        .px_2()
-        .border_1()
-        .border_color(grey)
-        .style()
-        .clone();
-    let root = container_with_style(
-        "row",
-        div().flex().items_center().w(px(600.)).style().clone(),
-        [
-            field,
-            container_with_style("spacer", div().flex_1().style().clone(), []),
-            container_with_style("end", div().w(px(100.)).h(px(32.)).style().clone(), []),
-        ],
-    );
+    let root = filter_row(px(260.), grey);
     let window = cx.open_window(size(px(600.), px(200.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
@@ -282,28 +276,7 @@ fn a_focused_field_wears_one_ring_on_its_own_box(cx: &mut gpui_kit::TestAppConte
 fn a_fraction_wide_field_takes_its_fraction_once(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     let grey = gpui_kit::hsla(0., 0., 0.5, 1.);
-    let mut field = input("Filter", false, false);
-    let wire::Node::Input { style, .. } = &mut field else {
-        unreachable!()
-    };
-    *style = div()
-        .ml(px(16.))
-        .w(gpui_kit::relative(0.5))
-        .h(px(32.))
-        .px_2()
-        .border_1()
-        .border_color(grey)
-        .style()
-        .clone();
-    let root = container_with_style(
-        "row",
-        div().flex().items_center().w(px(600.)).style().clone(),
-        [
-            field,
-            container_with_style("spacer", div().flex_1().style().clone(), []),
-            container_with_style("end", div().w(px(100.)).h(px(32.)).style().clone(), []),
-        ],
-    );
+    let root = filter_row(gpui_kit::relative(0.5), grey);
     let window = cx.open_window(size(px(600.), px(200.)), |_, _| ViewTree::new(root));
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let width = native.update(|window, cx| {
@@ -392,15 +365,7 @@ fn a_focused_editor_wears_the_ring_on_the_views_box(cx: &mut gpui_kit::TestAppCo
         on_document: 0,
         editable: true,
     };
-    let store = crate::editor::wire::EditorStore::new(91);
-    store.replace(&root).unwrap();
-    let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
-        let mut tree = ViewTree::new(root);
-        tree.set_editor_store(store, cx);
-        tree
-    });
-    let tree = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let (tree, mut native) = with_editors(root, None, cx);
     let border = |native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, cx| {
             window.render_frame(cx);
@@ -465,15 +430,7 @@ fn editor_obeys_authored_size_and_height_limits(cx: &mut gpui_kit::TestAppContex
             on_document: 0,
             editable: false,
         };
-        let store = crate::editor::wire::EditorStore::new(91);
-        store.replace(&root).unwrap();
-        let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
-            let mut tree = ViewTree::new(root);
-            tree.set_editor_store(store, cx);
-            tree
-        });
-        let tree = window.root(cx).unwrap();
-        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let (tree, mut native) = with_editors(root, None, cx);
         native.update(|window, cx| window.render_frame(cx));
         let bounds = tree
             .read_with(&native, |tree, _| {
@@ -520,16 +477,7 @@ fn a_shrunk_editor_is_as_tall_as_all_of_its_lines(cx: &mut gpui_kit::TestAppCont
     // anything: the editor is the root of nothing in a real view, it sits
     // inside the card's own layout.
     let root = sized("card", root, Some(fill()), Some(fill()));
-    let store = crate::editor::wire::EditorStore::new(91);
-    store.replace(&root).unwrap();
-    seed_editor_text(&store, words);
-    let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
-        let mut tree = ViewTree::new(root);
-        tree.set_editor_store(store, cx);
-        tree
-    });
-    let tree = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let (tree, mut native) = with_editors(root, Some(words), cx);
     native.update(|window, cx| window.render_frame(cx));
     native.update(|window, cx| window.render_frame(cx));
     let bounds = tree

@@ -2,7 +2,7 @@
 //! reached before, and why the last try did not land.
 
 use super::super::super::entities::Session;
-use super::super::super::ink::*;
+use super::super::super::ink::{self, *};
 use super::super::super::theme;
 use super::super::fields::TextField;
 use super::{LauncherLayer, LauncherScreen};
@@ -69,7 +69,7 @@ impl LauncherLayer {
                 .child(div().flex_1().child(
                     field_box(input, focused, border, 44., &ink).font_family(theme::FAMILY_MONO),
                 ))
-                .child(self.button(
+                .child(ink::button(
                     "connect",
                     "Connect",
                     Kind::Primary,

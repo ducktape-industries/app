@@ -83,10 +83,7 @@ impl Element for SvgCanvas {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn named_id(key: &str) -> wire::ElementIdWire {
-        wire::ElementIdWire::Name(key.into())
-    }
+    use crate::render::tests::{Seat, named_id};
 
     fn boxed(id: Option<&str>, width: f32, height: f32, children: Vec<wire::Node>) -> wire::Node {
         wire::Node::Container(view_wire::ContainerNode {
@@ -104,16 +101,6 @@ mod tests {
         root: wire::Node,
         cx: &mut gpui_kit::TestAppContext,
     ) -> (u64, Entity<ViewTree>, gpui_kit::VisualTestContext) {
-        struct Seat(Entity<ViewTree>);
-        impl Render for Seat {
-            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                div().size_full().child(
-                    self.0
-                        .clone()
-                        .cached(gpui_kit::StyleRefinement::default().size_full()),
-                )
-            }
-        }
         cx.update(gpui_kit::init);
         let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
             Seat(cx.new(|_| ViewTree::new(root)))

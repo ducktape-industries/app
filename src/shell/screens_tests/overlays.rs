@@ -49,10 +49,6 @@ fn show(view: &Entity<WindowRoot>, native: &mut VisualTestContext, overlay: Opti
 
 #[gpui_kit::test]
 fn every_overlay_takes_the_keys_as_it_opens_and_gives_them_back(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let overlays = [
         (Overlay::Spotlight, Role::Dialog, "Search"),
         (Overlay::Approve, Role::Dialog, "Add a device"),
@@ -61,15 +57,9 @@ fn every_overlay_takes_the_keys_as_it_opens_and_gives_them_back(cx: &mut TestApp
             Role::Dialog,
             "Settings",
         ),
-        (Overlay::Network, Role::Menu, "Networks"),
-        (Overlay::Menu(Popover::Node), Role::Dialog, "Node status"),
-        (Overlay::Menu(Popover::Account), Role::Dialog, "Account"),
-        (
-            Overlay::Menu(Popover::Notifications),
-            Role::Dialog,
-            "Notifications",
-        ),
-    ];
+    ]
+    .into_iter()
+    .chain(MENUS);
     for (overlay, role, name) in overlays {
         let (view, mut native) = open(gate::desk(), cx);
         native.update(draw);
@@ -142,10 +132,6 @@ const MENUS: [(Overlay, Role, &str); 4] = [
 /// dialog on a scrim has been open in the window.
 #[gpui_kit::test]
 fn a_menu_closes_when_the_keys_leave_it(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     for (overlay, role, name) in MENUS {
         for (out, presses) in [("shift-tab", 1), ("tab", 30)] {
             let (view, mut native) = open(gate::desk(), cx);
@@ -186,10 +172,6 @@ fn a_menu_closes_when_the_keys_leave_it(cx: &mut TestAppContext) {
 /// the keys to the window, out of the menu.
 #[gpui_kit::test]
 fn a_click_outside_a_menu_closes_it(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     for (overlay, _, name) in MENUS {
         let (view, mut native) = open(gate::desk(), cx);
         // gpui reports focus moves only in the active window
@@ -227,10 +209,6 @@ fn a_click_outside_a_menu_closes_it(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_menu_keeps_the_keys_that_move_inside_it(cx: &mut TestAppContext) {
     use crate::runtime::notify::{CenterHandle, Permission, Settings};
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     // Account, then a click on the bell
     let (view, mut native) = open(gate::desk(), cx);
     native.update(draw);
@@ -310,10 +288,6 @@ fn a_menu_keeps_the_keys_that_move_inside_it(cx: &mut TestAppContext) {
 /// leaves the keys where they were.
 #[gpui_kit::test]
 fn tab_scrolls_a_settings_row_below_the_fold_into_view(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let notifications = || (gate::desk(), Overlay::Settings(SettingsPage::Notifications));
     let (_view, mut native) = open(notifications(), cx);
     native.simulate_resize(size(px(1280.), px(360.)));
@@ -362,10 +336,6 @@ fn bar_button(native: &mut VisualTestContext, id: &str) -> gpui_kit::Point<Pixel
 /// the menu opened (the window itself, here).
 #[gpui_kit::test]
 fn a_menu_left_by_tab_does_not_pull_the_keys_back(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     for (overlay, role, name) in MENUS {
         let (view, mut native) = open(gate::desk(), cx);
         let root = native.update(|window, cx| {
@@ -405,10 +375,6 @@ fn a_menu_left_by_tab_does_not_pull_the_keys_back(cx: &mut TestAppContext) {
 /// stays open with its first row focused.
 #[gpui_kit::test]
 fn opening_a_menu_does_not_close_it(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     for (overlay, role, name) in MENUS {
         let (view, mut native) = open(gate::desk(), cx);
         // gpui reports focus moves only in the active window
@@ -437,10 +403,6 @@ fn opening_a_menu_does_not_close_it(cx: &mut TestAppContext) {
 /// bar closes the menu first and swallows the press.
 #[gpui_kit::test]
 fn a_press_on_the_menus_own_button_toggles_it_once(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let (view, mut native) = open(gate::desk(), cx);
     super::activate(&mut native);
     let node = bar_button(&mut native, "rail-connection");
@@ -471,10 +433,6 @@ fn a_press_on_the_menus_own_button_toggles_it_once(cx: &mut TestAppContext) {
 /// Settings alone.
 #[gpui_kit::test]
 fn the_bells_settings_row_opens_the_notifications_page(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let (view, mut native) = open(gate::desk(), cx);
     super::activate(&mut native);
     native.update(draw);
@@ -517,10 +475,6 @@ fn the_bells_settings_row_opens_the_notifications_page(cx: &mut TestAppContext) 
 /// not a pixel lower from a card laid out on a half pixel.
 #[gpui_kit::test]
 fn a_menu_hangs_four_pixels_under_the_bar_at_every_scale(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     for (overlay, role, name) in [
         (Overlay::Network, Role::Menu, "Networks"),
         (Overlay::Menu(Popover::Node), Role::Dialog, "Node status"),

@@ -3,16 +3,10 @@
 //! The same stamp `ducktape --version` carries (`crates/noded/build.rs` in
 //! ducktape-industries/ducktape), so a walk report compares the app's build
 //! with the node's like for like: `<short sha>`, plus a working-tree digest
-//! when the tree is dirty. It has to be stamped HERE: the `node` crate this
-//! app links carries the core pin's build, not this checkout's.
+//! when the tree is dirty.
 //!
 //! Git absent (a source tarball, a vendored build) is not an error: the env
 //! var is left unset and the app reports its build as `unknown`.
-//!
-//! And record WHICH core checkout the linked `noded` is compiled from, so the
-//! sim tests boot the simulation set that checkout's build script staged
-//! (`backend::tests::sim_modules_dir`) and not whichever set the shared
-//! `.staged-modules` pointer names at the moment a test boots.
 
 use std::process::Command;
 

@@ -194,14 +194,8 @@ fn uniform_list_click_uses_native_identity_and_records_user_activation(
     interactivity.aria.label = Some("Rows".into());
     let window = cx.open_window(size(px(240.), px(96.)), |_, _| ViewTree::new(node));
     let tree = window.root(cx).unwrap();
-    let events = Rc::new(RefCell::new(Vec::new()));
-    let received = events.clone();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let _subscription = native.update(|_, cx| {
-        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
-            received.borrow_mut().push(event.clone());
-        })
-    });
+    let (events, _subscription) = emitted(&tree, &mut native);
     native.update(|window, cx| window.render_frame(cx));
     native.update(|window, cx| {
         window

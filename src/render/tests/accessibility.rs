@@ -101,15 +101,7 @@ fn a_read_only_editor_reads_its_text_and_is_offered_no_typing(cx: &mut gpui_kit:
             on_document: 0,
             editable,
         };
-        let store = crate::editor::wire::EditorStore::new(91);
-        store.replace(&root).unwrap();
-        seed_editor_text(&store, words);
-        let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
-            let mut tree = ViewTree::new(root);
-            tree.set_editor_store(store, cx);
-            tree
-        });
-        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let (_, mut native) = with_editors(root, Some(words), cx);
         let nodes = native.update(|window, cx| {
             window.activate_a11y();
             window.render_frame(cx);
@@ -190,18 +182,10 @@ fn a_named_overlay_is_a_dialog_and_an_unnamed_one_is_layout() {
 
 /// What the door reads of `root`, drawn in a window with the tree on.
 fn door(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> Vec<serde_json::Value> {
-    cx.update(gpui_kit::init);
-    let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| {
-        window.activate_a11y();
-        window.render_frame(cx);
-        window.render_frame(cx);
-        crate::ax::snapshot("t", window, false)
-            .iter()
-            .map(|node| serde_json::to_value(node).unwrap())
-            .collect()
-    })
+    draw(cx, root)
+        .iter()
+        .map(|node| serde_json::to_value(node).unwrap())
+        .collect()
 }
 
 /// A view's words are what its text is called, through the door as through
@@ -351,19 +335,8 @@ fn a_field_says_it_is_invalid_required_and_read_only(cx: &mut gpui_kit::TestAppC
 #[gpui_kit::test]
 fn a_rich_texts_links_are_clean_on_the_door(cx: &mut gpui_kit::TestAppContext) {
     use crate::ax::audit::{Reading, audit};
-    let rich = wire::Node::RichText {
-        id: Some(named_id("rich")),
-        style: Default::default(),
-        text: "Read the docs or the code".into(),
-        runs: wire::RichTextRuns::Highlights(Vec::new()),
-        font_family_overrides: Vec::new(),
-        clickable_ranges: vec![5..13, 17..25],
-        on_click: Some(72),
-        on_hover: None,
-        tooltip: None,
-    };
     cx.update(gpui_kit::init);
-    let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(rich));
+    let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(rich()));
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let away = native.update(|window, cx| {
         window.activate_a11y();
@@ -410,17 +383,6 @@ fn a_rich_texts_links_are_clean_on_the_door(cx: &mut gpui_kit::TestAppContext) {
 fn a_roled_box_keeps_its_aria_and_the_links_of_the_text_it_holds(
     cx: &mut gpui_kit::TestAppContext,
 ) {
-    let rich = wire::Node::RichText {
-        id: Some(named_id("rich")),
-        style: Default::default(),
-        text: "Read the docs or the code".into(),
-        runs: wire::RichTextRuns::Highlights(Vec::new()),
-        font_family_overrides: Vec::new(),
-        clickable_ranges: vec![5..13, 17..25],
-        on_click: Some(72),
-        on_hover: None,
-        tooltip: None,
-    };
     let note = wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id("note")),
         style: Default::default(),
@@ -434,7 +396,7 @@ fn a_roled_box_keeps_its_aria_and_the_links_of_the_text_it_holds(
             },
             ..Default::default()
         },
-        children: vec![rich],
+        children: vec![rich()],
     });
     let nodes = door(cx, note);
     let status = nodes
@@ -457,27 +419,10 @@ fn a_roled_box_keeps_its_aria_and_the_links_of_the_text_it_holds(
 fn a_rich_texts_ranges_are_links_a_press_reaches(cx: &mut gpui_kit::TestAppContext) {
     use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
     cx.update(gpui_kit::init);
-    let rich = wire::Node::RichText {
-        id: Some(named_id("rich")),
-        style: Default::default(),
-        text: "Read the docs or the code".into(),
-        runs: wire::RichTextRuns::Highlights(Vec::new()),
-        font_family_overrides: Vec::new(),
-        clickable_ranges: vec![5..13, 17..25],
-        on_click: Some(72),
-        on_hover: None,
-        tooltip: None,
-    };
-    let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(rich));
+    let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(rich()));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let observed = events.clone();
-    let _subscription = native.update(|_, cx| {
-        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
-            observed.borrow_mut().push(event.clone());
-        })
-    });
+    let (events, _subscription) = emitted(&tree, &mut native);
     let links: Vec<serde_json::Value> = native.update(|window, cx| {
         window.activate_a11y();
         window.render_frame(cx);

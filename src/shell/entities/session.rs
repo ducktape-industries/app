@@ -155,14 +155,7 @@ impl Session {
 
     /// A field-wise edit, compared as a whole; notifies when it moved.
     fn edit(&mut self, edit: impl FnOnce(&mut SessionState), cx: &mut Context<Self>) -> bool {
-        let mut next = self.state.clone();
-        edit(&mut next);
-        if next == self.state {
-            return false;
-        }
-        self.state = next;
-        cx.notify();
-        true
+        super::slice::edit_compared(&mut self.state, edit, cx)
     }
 
     /// The node's `/v1/status`, as the poll asks for it.

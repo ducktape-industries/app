@@ -117,7 +117,7 @@ impl Chrome {
             front: Observed::new(&own.front, cx),
             prefs: Observed::new(&prefs, cx),
             dot: Observed::new(&own.dot, cx),
-            windows: app.windows.clone(),
+            windows: app.windows,
             menu,
             stop,
             rail_cursor: None,
@@ -782,7 +782,6 @@ impl Render for Chrome {
                 canvas(
                     move |bounds, window, cx| {
                         if *dot.read(cx).get() != Some(bounds) {
-                            let dot = dot.clone();
                             window.on_next_frame(move |_, cx| {
                                 dot.update(cx, |slot, cx| {
                                     slot.set(Some(bounds), cx);

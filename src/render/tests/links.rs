@@ -2,32 +2,6 @@
 //! it as a pointer would, Tab moves on.
 use super::*;
 
-fn rich() -> wire::Node {
-    wire::Node::RichText {
-        id: Some(named_id("rich")),
-        style: Default::default(),
-        text: "Read the docs or the code".into(),
-        runs: wire::RichTextRuns::Highlights(Vec::new()),
-        font_family_overrides: Vec::new(),
-        clickable_ranges: vec![5..13, 17..25],
-        on_click: Some(72),
-        on_hover: None,
-        tooltip: None,
-    }
-}
-
-/// A Tab stop after the text, a button called `name`.
-fn button(name: &str) -> wire::Node {
-    let mut node = container_with_style("next", div().w(px(80.)).h(px(24.)).style().clone(), []);
-    if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut node {
-        interactivity.role = Some(gpui_kit::Role::Button);
-        interactivity.aria.label = Some(name.into());
-        interactivity.focusable = true;
-        interactivity.tab_stop = Some(true);
-    }
-    node
-}
-
 /// The name of the node assistive technology sees focused after `stroke`.
 /// Tab is the app's binding to `focus_next`; a bare window has none.
 fn press(native: &mut gpui_kit::VisualTestContext, stroke: &str) -> Option<String> {
@@ -56,17 +30,11 @@ fn tab_reaches_the_links_the_arrows_pick_one_and_enter_presses_it(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     cx.update(gpui_kit::init);
-    let root = axis_container("root", Axis::Column, [rich(), button("Next")]);
+    let root = axis_container("root", Axis::Column, [rich(), button("next", "Next")]);
     let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let observed = events.clone();
-    let _subscription = native.update(|_, cx| {
-        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
-            observed.borrow_mut().push(event.clone());
-        })
-    });
+    let (events, _subscription) = emitted(&tree, &mut native);
     native.update(|window, cx| {
         window.activate_a11y();
         window.render_frame(cx);
@@ -137,23 +105,13 @@ fn tab_reaches_the_links_the_arrows_pick_one_and_enter_presses_it(
 /// `ViewTree`, which tracks the links' handle.
 #[gpui_kit::test]
 fn the_keys_arriving_at_the_links_redraw_a_cached_view(cx: &mut gpui_kit::TestAppContext) {
-    struct Cached(Entity<ViewTree>);
-    impl Render for Cached {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div().size_full().child(
-                self.0
-                    .clone()
-                    .cached(gpui_kit::StyleRefinement::default().size_full()),
-            )
-        }
-    }
     cx.update(gpui_kit::init);
-    let root = axis_container("root", Axis::Column, [rich(), button("Next")]);
+    let root = axis_container("root", Axis::Column, [rich(), button("next", "Next")]);
     let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
-        Cached(cx.new(|_| ViewTree::new(root)))
+        Seat(cx.new(|_| ViewTree::new(root)))
     });
     let seat = window.root(cx).unwrap();
-    let tree = seat.read_with(cx, |cached, _| cached.0.clone());
+    let tree = seat.read_with(cx, |seat, _| seat.0.clone());
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     // the desk draws its seats again each frame; the view replays unless
     // something in it asked to be drawn

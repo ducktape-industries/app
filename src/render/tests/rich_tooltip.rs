@@ -4,7 +4,7 @@ use super::*;
 fn rich_text_tooltip_dispatches_character_index_and_stays_in_slot(
     cx: &mut gpui_kit::TestAppContext,
 ) {
-    use std::{cell::RefCell, rc::Rc, time::Duration};
+    use std::time::Duration;
 
     const TIP_COLOR: u32 = 0xff00ff;
 
@@ -54,15 +54,9 @@ fn rich_text_tooltip_dispatches_character_index_and_stays_in_slot(
     });
     let host = window.root(cx).unwrap();
     let tree = cx.update(|cx| host.read(cx).tree.clone());
-    let events = Rc::new(RefCell::new(Vec::new()));
-    let observed = events.clone();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|_, cx| {
-        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
-            observed.borrow_mut().push(event.clone());
-        })
-        .detach()
-    });
+    let (events, subscription) = emitted(&tree, &mut native);
+    subscription.detach();
     native.update(|window, cx| window.render_frame(cx));
     native.simulate_mouse_move(point(px(2.), px(8.)), None, Default::default());
     let character_index = events.borrow().iter().find_map(|event| match event {

@@ -1015,7 +1015,7 @@ impl Strip {
                 )),
         )
         .child(button("allow", "Allow", true, {
-            let (notifications, prefs) = (notifications.clone(), prefs.clone());
+            let notifications = notifications.clone();
             Box::new(move |cx| {
                 super::super::entities::permission(
                     &notifications,

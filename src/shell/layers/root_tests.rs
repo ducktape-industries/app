@@ -2,52 +2,15 @@
 //! nothing else (P1, P6 in the app), and the root lays them out as the
 //! window's kind and screen say (docs/perf.md).
 use super::BAR;
-use super::tests::{Seed, open_console, pane, polled, pop_out, set_motion, set_screen, toast};
+use super::tests::{
+    Seed, frame, line, open_console, pane, polled, pop_out, set_motion, set_screen, toast,
+    tree_renders,
+};
 use crate::shell::PaneMessage;
-use crate::shell::entities::tests::status;
+use crate::shell::entities::tests::{source, status};
 use crate::shell::entities::{Overlay, Popover, Screen};
-use crate::shell::panes_tests::{console, draw, settle, window_count};
-use gpui_kit::{Styled as _, TestAppContext, VisualTestContext, px};
-use view_wire as wire;
-
-/// A frame as the platform delivers one: what asked for it runs, then
-/// whatever that dirtied draws.
-fn frame(native: &mut VisualTestContext) {
-    native.update(|window, cx| {
-        window.simulate_next_frame(cx);
-    });
-    native.run_until_parked();
-}
-
-fn line(text: &str) -> wire::Node {
-    wire::Node::RichText {
-        id: Some(wire::ElementIdWire::Name("line".into())),
-        style: gpui_kit::div().h(px(20.)).style().clone(),
-        text: text.into(),
-        runs: wire::RichTextRuns::Highlights(Vec::new()),
-        font_family_overrides: Vec::new(),
-        clickable_ranges: Vec::new(),
-        on_click: None,
-        on_hover: None,
-        tooltip: None,
-    }
-}
-
-fn tree_renders(module: &str) -> u64 {
-    crate::perf::snapshot(false)["views"][module]["renders"]
-        .as_u64()
-        .unwrap_or_else(|| panic!("{module} counts its renders"))
-}
-
-/// The ids in a snapshot, in the tree's order.
-fn ids(nodes: &serde_json::Value) -> Vec<String> {
-    nodes
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|node| node["id"].as_str().map(str::to_owned))
-        .collect()
-}
+use crate::shell::panes_tests::{console, draw, ids, settle, window_count};
+use gpui_kit::{TestAppContext, VisualTestContext};
 
 /// The node's breath is a view of its own: with motion on, each of its
 /// pulses draws the dot and the window's root, and the bar (cached, with
@@ -119,9 +82,7 @@ fn render_counts(key: crate::runtime::WindowKey) -> Vec<(String, u64)> {
 /// timer with it.
 #[gpui_kit::test]
 fn a_still_chain_draws_no_frame(cx: &mut TestAppContext) {
-    use crate::shell::entities::{STATUS_EVERY, SessionState, StatusSource};
-    use futures::FutureExt as _;
-    use std::{cell::Cell, rc::Rc};
+    use crate::shell::entities::{STATUS_EVERY, SessionState};
     const MODULE: &str = "root-still-view";
     let _on = crate::perf::on_for_test();
     let (app, key, view, mut native) = console(cx);
@@ -129,19 +90,10 @@ fn a_still_chain_draws_no_frame(cx: &mut TestAppContext) {
     set_motion(&app, false, &mut native);
     pane(&view, PaneMessage::Select(MODULE), &mut native);
     // the node answers height 7 to every ask but the fourth
-    let asked = Rc::new(Cell::new(0));
-    let source: StatusSource = {
-        let asked = asked.clone();
-        Rc::new(move || {
-            let n = asked.get();
-            asked.set(n + 1);
-            let answer = match n {
-                3 => Err("no answer".to_owned()),
-                _ => Ok(status(7)),
-            };
-            std::future::ready(answer).boxed_local()
-        })
-    };
+    let (source, asked) = source(|n| match n {
+        3 => Err("no answer".to_owned()),
+        _ => Ok(status(7)),
+    });
     app.session.update(&mut native, |session, cx| {
         let on_node = SessionState {
             connected: true,

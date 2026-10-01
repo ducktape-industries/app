@@ -1,8 +1,9 @@
 use super::*;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{InputEvent as _, Keystroke};
+use std::{cell::RefCell, rc::Rc};
 
-fn named_id(key: &str) -> wire::ElementIdWire {
+pub(super) fn named_id(key: &str) -> wire::ElementIdWire {
     wire::ElementIdWire::Name(key.into())
 }
 
@@ -169,6 +170,100 @@ fn picture(label: Option<&str>) -> [wire::Node; 2] {
             interactivity: Default::default(),
         },
     ]
+}
+
+/// A focusable button Tab reaches.
+fn button(key: &str, name: &str) -> wire::Node {
+    let mut node = container_with_style(key, div().w(px(80.)).h(px(24.)).style().clone(), []);
+    if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut node {
+        interactivity.role = Some(gpui_kit::Role::Button);
+        interactivity.aria.label = Some(name.into());
+        interactivity.focusable = true;
+        interactivity.tab_stop = Some(true);
+    }
+    node
+}
+
+/// "Read the docs or the code", its two links ("the docs", "the code")
+/// pressing handler 72.
+fn rich() -> wire::Node {
+    wire::Node::RichText {
+        id: Some(named_id("rich")),
+        style: Default::default(),
+        text: "Read the docs or the code".into(),
+        runs: wire::RichTextRuns::Highlights(Vec::new()),
+        font_family_overrides: Vec::new(),
+        clickable_ranges: vec![5..13, 17..25],
+        on_click: Some(72),
+        on_hover: None,
+        tooltip: None,
+    }
+}
+
+/// Draws `root` with accessibility on and answers the door's nodes.
+fn draw(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> Vec<crate::ax::AxNode> {
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        window.render_frame(cx);
+        crate::ax::snapshot("t", window, false)
+    })
+}
+
+/// `root` in a window, its editors on a store of their own; with `text`,
+/// the document they ask for holds it.
+fn with_editors(
+    root: wire::Node,
+    text: Option<&str>,
+    cx: &mut gpui_kit::TestAppContext,
+) -> (Entity<ViewTree>, gpui_kit::VisualTestContext) {
+    let store = crate::editor::wire::EditorStore::new(91);
+    store.replace(&root).unwrap();
+    if let Some(text) = text {
+        seed_editor_text(&store, text);
+    }
+    let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
+        let mut tree = ViewTree::new(root);
+        tree.set_editor_store(store, cx);
+        tree
+    });
+    let tree = window.root(cx).unwrap();
+    (
+        tree,
+        gpui_kit::VisualTestContext::from_window(window.into(), cx),
+    )
+}
+
+/// A view mounted the way a module seat mounts a guest: a cached view under
+/// a full-size div, not as the window root (which gpui stretches).
+pub(super) struct Seat(pub(super) Entity<ViewTree>);
+
+impl Render for Seat {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().child(
+            self.0
+                .clone()
+                .cached(gpui_kit::StyleRefinement::default().size_full()),
+        )
+    }
+}
+
+/// Every event `tree` emits while the subscription lives.
+pub(super) fn emitted(
+    tree: &Entity<ViewTree>,
+    native: &mut gpui_kit::VisualTestContext,
+) -> (Rc<RefCell<Vec<wire::Event>>>, Subscription) {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let observed = events.clone();
+    let subscription = native.update(|_, cx| {
+        cx.subscribe(tree, move |_, event: &wire::Event, _| {
+            observed.borrow_mut().push(event.clone());
+        })
+    });
+    (events, subscription)
 }
 
 use crate::editor::wire::seed_editor_text;

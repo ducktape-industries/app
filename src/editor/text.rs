@@ -578,8 +578,6 @@ fn edit_kind(before: &str, after: &str) -> wire::EditorEditKind {
     }
 }
 
-/// A store holding one ready document with the given claims. The mount reads
-/// its projection exactly the way it reads a live guest's.
 #[cfg(test)]
 #[path = "text/tests.rs"]
 mod tests;

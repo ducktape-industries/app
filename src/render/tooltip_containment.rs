@@ -115,6 +115,7 @@ impl Element for Contained {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::tests::emitted;
     use gpui_kit::test::TestWindowExt as _;
     use std::{cell::RefCell, time::Duration};
 
@@ -205,14 +206,8 @@ mod tests {
         let parent = cx.update(|cx| fixture.read(cx).parent.clone());
         let any_window = window.into();
         let mut native = gpui_kit::VisualTestContext::from_window(any_window, cx);
-        let events = Rc::new(RefCell::new(Vec::new()));
-        let observed = events.clone();
-        native.update(|_, cx| {
-            cx.subscribe(&parent, move |_, event: &wire::Event, _| {
-                observed.borrow_mut().push(event.clone());
-            })
-            .detach()
-        });
+        let (events, subscription) = emitted(&parent, &mut native);
+        subscription.detach();
         native.update(|window, cx| window.render_frame(cx));
         native.simulate_mouse_move(point(px(10.), px(10.)), None, Default::default());
         native.executor().advance_clock(Duration::from_millis(11));

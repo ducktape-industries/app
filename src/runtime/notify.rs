@@ -145,7 +145,7 @@ fn seen(guest: &mut Guest, id: u64, payload: &[u8]) {
     let tag = match methods::decode::<String>(payload) {
         Ok(tag) => tag,
         Err(error) => {
-            guest.refuse(id, "malformed_request", error.to_string());
+            guest.refuse(id, "malformed_request", error);
             return;
         }
     };

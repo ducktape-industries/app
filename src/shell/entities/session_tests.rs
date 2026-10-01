@@ -7,11 +7,9 @@
 //! machine's, not a unit test's. The sessions here are seeded on a node
 //! already reached (`Session::seed_connected`); the take-up itself is
 //! `Account::take_up`'s row in account_tests.rs and the kit's.
-use super::tests::session;
-use super::{LOST_AFTER, STATUS_EVERY, Screen, Session, SessionEvent, SessionState, StatusSource};
+use super::tests::{notifies, session, source, status};
+use super::{LOST_AFTER, STATUS_EVERY, Screen, Session, SessionEvent, SessionState};
 use crate::backend::NodeStatus;
-use crate::shell::entities::tests::status;
-use futures::FutureExt as _;
 use gpui_kit::{Entity, Subscription, TestAppContext};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -27,31 +25,6 @@ fn testnet(height: u64) -> NodeStatus {
         network: "session-test".into(),
         ..status(height)
     }
-}
-
-/// A status source answering `answer(n)` to its `n`th ask, counting them.
-fn source(
-    answer: impl Fn(usize) -> Result<NodeStatus, String> + 'static,
-) -> (StatusSource, Rc<Cell<usize>>) {
-    let asked = Rc::new(Cell::new(0));
-    let count = asked.clone();
-    let source: StatusSource = Rc::new(move || {
-        let n = count.get();
-        count.set(n + 1);
-        std::future::ready(answer(n)).boxed_local()
-    });
-    (source, asked)
-}
-
-/// Counts `entity`'s notifies while the subscription lives.
-fn notifies<T: 'static>(
-    entity: &Entity<T>,
-    cx: &mut TestAppContext,
-) -> (Rc<Cell<usize>>, Subscription) {
-    let seen = Rc::new(Cell::new(0));
-    let count = seen.clone();
-    let observing = cx.update(|cx| cx.observe(entity, move |_, _| count.set(count.get() + 1)));
-    (seen, observing)
 }
 
 /// Every event `session` emits while the subscription lives.

@@ -4,7 +4,7 @@
 //! build theirs; and the calls the tests make on the entities, as the
 //! controls make them.
 use super::super::entities::{
-    self, AccountState, Chain, Desk, Entities, Overlay, Prefs, Screen, Secret, SessionState,
+    self, AccountState, Chain, Entities, Overlay, Prefs, Screen, Secret, SessionState,
 };
 use super::super::{PaneMessage, WindowKey, WindowKind, keys};
 use super::WindowRoot;
@@ -12,9 +12,10 @@ use crate::runtime::Roster;
 use crate::runtime::notify::CenterHandle;
 use crate::ui::layout::Layout;
 use gpui_kit::{
-    AnyWindowHandle, AppContext as _, Bounds, Entity, TestAppContext, VisualTestContext, point, px,
-    size,
+    AnyWindowHandle, AppContext as _, Bounds, Entity, Styled as _, TestAppContext,
+    VisualTestContext, point, px, size,
 };
+use view_wire as wire;
 
 /// A screen state to draw: the app's stores (roster, centre), what
 /// `Session`, `Chain`, `Account`, `Screen`, `Prefs` and `Toast` hold, the
@@ -93,14 +94,7 @@ pub(in crate::shell) fn open_console(
     let app = cx.update(|cx| {
         let app = entities::Entities::for_test(roster, center, cx);
         // a window that closes is forgotten, as `launch::run` wires it
-        let windows = app.windows.downgrade();
-        cx.on_window_closed(move |cx, id| {
-            let windows = windows.clone();
-            cx.defer(move |cx| {
-                let _ = windows.update(cx, |windows, cx| windows.closed_id(id, cx));
-            });
-        })
-        .detach();
+        entities::Windows::forget_closed(&app.windows, cx);
         app.session.update(cx, |it, cx| it.seed(session, cx));
         app.chain.update(cx, |it, cx| {
             it.set(chain, cx);
@@ -124,7 +118,7 @@ pub(in crate::shell) fn open_console(
         windows.open(WindowKind::Console, Some(at), cx)
     });
     if let Some(layout) = layout {
-        let desk = desk_of(&app, key, cx);
+        let desk = entities::tests::desk_of(&app, key, cx);
         desk.update(cx, |desk, cx| {
             desk.set(layout, cx);
         });
@@ -142,13 +136,6 @@ pub(in crate::shell) fn open_console(
     })
     .unwrap();
     (app, key, view, VisualTestContext::from_window(handle, cx))
-}
-
-/// Window `key`'s desk.
-fn desk_of(app: &Entities, key: WindowKey, cx: &TestAppContext) -> Entity<Desk> {
-    app.windows.read_with(cx, |windows, _| {
-        windows.own(key).expect("its window").desk.clone()
-    })
 }
 
 /// The node's status poll answered `status`, as `Session`'s poll lands it.
@@ -270,14 +257,6 @@ pub(in crate::shell) fn set_motion(app: &Entities, on: bool, native: &mut Visual
     native.run_until_parked();
 }
 
-/// The program in front (`Windows.active`).
-pub(in crate::shell) fn active(
-    app: &Entities,
-    native: &mut VisualTestContext,
-) -> Option<&'static str> {
-    app.windows.read_with(native, |windows, _| windows.active())
-}
-
 /// The console's front pane popped out to a window of its own, as its
 /// strip's button does it: the new window's key, handle and root.
 pub(in crate::shell) fn pop_out(
@@ -311,4 +290,35 @@ pub(in crate::shell) fn popped(
             .expect("the pop-out's root lives");
         (key, *handle, view)
     })
+}
+
+/// A frame as the platform delivers one: what asked for it runs, then
+/// whatever that dirtied draws.
+pub(in crate::shell) fn frame(native: &mut VisualTestContext) {
+    native.update(|window, cx| {
+        window.simulate_next_frame(cx);
+    });
+    native.run_until_parked();
+}
+
+/// A guest tree's one line of text, 20px tall.
+pub(in crate::shell) fn line(text: &str) -> wire::Node {
+    wire::Node::RichText {
+        id: Some(wire::ElementIdWire::Name("line".into())),
+        style: gpui_kit::div().h(px(20.)).style().clone(),
+        text: text.into(),
+        runs: wire::RichTextRuns::Highlights(Vec::new()),
+        font_family_overrides: Vec::new(),
+        clickable_ranges: Vec::new(),
+        on_click: None,
+        on_hover: None,
+        tooltip: None,
+    }
+}
+
+/// How often `module`'s view tree has rendered (`/perf`'s `views`).
+pub(in crate::shell) fn tree_renders(module: &str) -> u64 {
+    crate::perf::snapshot(false)["views"][module]["renders"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("{module} counts its renders"))
 }

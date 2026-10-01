@@ -335,31 +335,6 @@ impl LauncherLayer {
         self.account.read(cx).phrase().cloned()
     }
 
-    /// `<button>` ([`ink::button`]): pressed, it runs `run`.
-    fn button(
-        &self,
-        id: impl Into<ElementId>,
-        text: impl Into<SharedString>,
-        kind: Kind,
-        run: impl Fn(&mut App) + 'static,
-        press: impl Into<Press>,
-        ink: &Ink,
-    ) -> AnyElement {
-        ink::button(id, text, kind, run, press, ink)
-    }
-
-    /// `<a>` ([`ink::link_running`]): pressed, it runs `run`.
-    fn link(
-        &self,
-        id: &'static str,
-        text: impl Into<SharedString>,
-        run: impl Fn(&mut App) + 'static,
-        small: bool,
-        ink: &Ink,
-    ) -> AnyElement {
-        link_running(id, text, run, small, ink)
-    }
-
     /// One launcher screen in the canvas's frame: on the left a 380px panel,
     /// `padding: 20px; gap: 12px`, the drawing on `surface` and its mono
     /// caption; on the right the reading column, `padding: 32px 40px 0;
@@ -432,7 +407,7 @@ impl LauncherLayer {
             .flex_col()
             .gap(px(if tight { 16. } else { 22. }))
             .children(
-                back.map(|(key, text, run)| div().child(self.link(key, text, run, true, &ink))),
+                back.map(|(key, text, run)| div().child(link_running(key, text, run, true, &ink))),
             )
             .child(
                 div()

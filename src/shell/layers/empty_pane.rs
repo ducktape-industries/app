@@ -198,7 +198,7 @@ impl EmptyPane {
         cx: &mut Context<Self>,
     ) -> Self {
         let own = app.windows.read(cx).own(key).expect("its window").clone();
-        let (desk, overlays) = (own.desk.clone(), own.overlays.clone());
+        let (desk, overlays) = (own.desk.clone(), own.overlays);
         let (rail, prefs) = (app.rail.clone(), app.prefs.clone());
         let observing = [
             cx.observe_in(&desk, window, |this, _, window, cx| this.moved(window, cx)),

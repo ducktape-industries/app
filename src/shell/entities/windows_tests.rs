@@ -1,14 +1,12 @@
 //! The windows, moved by their methods (windows.rs), and what the app-wide
 //! entities around them do on their own: a toast's clock, a pref's write,
 //! the theme's sync, the network left.
-use super::tests::entities;
-use super::{Entities, Overlay, SessionState};
+use super::tests::{active, desk_of, entities, modules, notifies};
+use super::{Entities, Overlay, SessionState, Windows};
 use crate::runtime::WindowKey;
 use crate::shell::WindowKind;
 use crate::ui::layout::{EMPTY, Frame, MAX_PANES};
-use gpui_kit::{AppContext as _, Bounds, Entity, TestAppContext, point, px, size};
-use std::cell::Cell;
-use std::rc::Rc;
+use gpui_kit::{AppContext as _, Bounds, TestAppContext, point, px, size};
 
 const DESK: (f32, f32) = (1280., 764.);
 
@@ -19,14 +17,7 @@ fn console(cx: &mut TestAppContext) -> (Entities, WindowKey) {
     let app = cx.update(|cx| {
         gpui_kit::init(cx);
         let app = entities(cx);
-        let windows = app.windows.downgrade();
-        cx.on_window_closed(move |cx, id| {
-            let windows = windows.clone();
-            cx.defer(move |cx| {
-                let _ = windows.update(cx, |windows, cx| windows.closed_id(id, cx));
-            });
-        })
-        .detach();
+        Windows::forget_closed(&app.windows, cx);
         app
     });
     let at = Bounds::new(point(px(0.), px(0.)), size(px(1280.), px(800.)));
@@ -34,27 +25,11 @@ fn console(cx: &mut TestAppContext) -> (Entities, WindowKey) {
         windows.open(WindowKind::Console, Some(at), cx)
     });
     cx.run_until_parked();
-    desk(&app, key, cx).update(cx, |desk, cx| {
+    desk_of(&app, key, cx).update(cx, |desk, cx| {
         desk.resize(DESK, cx);
         desk.seed("chat", cx);
     });
     (app, key)
-}
-
-fn desk(app: &Entities, key: WindowKey, cx: &TestAppContext) -> Entity<super::Desk> {
-    app.windows.read_with(cx, |windows, _| {
-        windows.own(key).expect("its window").desk.clone()
-    })
-}
-
-fn modules(app: &Entities, key: WindowKey, cx: &TestAppContext) -> Vec<&'static str> {
-    desk(app, key, cx).read_with(cx, |desk, _| {
-        desk.get().panes.iter().map(|pane| pane.module).collect()
-    })
-}
-
-fn active(app: &Entities, cx: &TestAppContext) -> Option<&'static str> {
-    app.windows.read_with(cx, |windows, _| windows.active())
 }
 
 fn window_count(app: &Entities, cx: &TestAppContext) -> usize {
@@ -71,17 +46,6 @@ fn popped(app: &Entities, console: WindowKey, cx: &TestAppContext) -> WindowKey 
             .find(|key| **key != console)
             .expect("a window of its own")
     })
-}
-
-/// How many times `entity` notifies from here on.
-fn notifies<T: 'static>(
-    entity: &Entity<T>,
-    cx: &mut TestAppContext,
-) -> (Rc<Cell<u32>>, gpui_kit::Subscription) {
-    let seen = Rc::new(Cell::new(0));
-    let count = seen.clone();
-    let observing = cx.update(|cx| cx.observe(entity, move |_, _| count.set(count.get() + 1)));
-    (seen, observing)
 }
 
 fn listed(app: &Entities, modules: &[&str], cx: &mut TestAppContext) {
@@ -110,7 +74,7 @@ fn a_picked_view_opens_beside_the_focused_one(cx: &mut TestAppContext) {
     assert_eq!(active(&app, cx), Some("chat"));
     // a full desk has no room for one of its own: the focused window's
     // place, not nothing
-    let desk = desk(&app, key, cx);
+    let desk = desk_of(&app, key, cx);
     while desk.read_with(cx, |desk, _| desk.get().panes.len()) < MAX_PANES {
         desk.update(cx, |desk, cx| desk.split("files", cx));
     }
@@ -126,7 +90,7 @@ fn a_picked_view_opens_beside_the_focused_one(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn pop_out_and_back_in_keep_the_pane(cx: &mut TestAppContext) {
     let (app, console) = console(cx);
-    let desk = desk(&app, console, cx);
+    let desk = desk_of(&app, console, cx);
     desk.update(cx, |desk, cx| desk.split("files", cx));
     let files = desk.read_with(cx, |desk, _| desk.get().panes[1].instance);
     app.windows
@@ -140,7 +104,7 @@ fn pop_out_and_back_in_keep_the_pane(cx: &mut TestAppContext) {
         ["files"],
         "the pane is in its own window"
     );
-    let popped_desk = self::desk(&app, popped_key, cx);
+    let popped_desk = desk_of(&app, popped_key, cx);
     assert_eq!(
         popped_desk.read_with(cx, |desk, _| desk.get().panes[0].instance),
         files
@@ -234,7 +198,7 @@ fn spotlight_and_links_both_land_in_the_desk_and_leaving_clears_it(cx: &mut Test
     overlays.update(cx, |it, cx| it.open(Overlay::Spotlight, cx));
     app.session.update(cx, |session, cx| session.disconnect(cx));
     cx.run_until_parked();
-    let layout = desk(&app, key, cx).read_with(cx, |desk, _| desk.get().clone());
+    let layout = desk_of(&app, key, cx).read_with(cx, |desk, _| desk.get().clone());
     assert!(layout.panes.is_empty(), "leaving left panes");
     assert_eq!(layout.desk, Some(DESK));
     assert!(!layout.initialized);
@@ -391,7 +355,7 @@ fn an_appearance_change_syncs_the_theme(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn the_front_follows_focus_and_not_frames(cx: &mut TestAppContext) {
     let (app, key) = console(cx);
-    let desk = desk(&app, key, cx);
+    let desk = desk_of(&app, key, cx);
     desk.update(cx, |desk, cx| desk.open("front-test-view", cx));
     let front = app
         .windows

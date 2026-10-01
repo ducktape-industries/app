@@ -141,14 +141,7 @@ impl Account {
 
     /// A field-wise edit, compared as a whole; notifies when it moved.
     fn edit(&mut self, edit: impl FnOnce(&mut AccountState), cx: &mut Context<Self>) -> bool {
-        let mut next = self.state.clone();
-        edit(&mut next);
-        if next == self.state {
-            return false;
-        }
-        self.state = next;
-        cx.notify();
-        true
+        super::slice::edit_compared(&mut self.state, edit, cx)
     }
 
     fn screen(&self, cx: &Context<Self>) -> Screen {

@@ -1,21 +1,5 @@
 use super::*;
-
-fn guest() -> Guest {
-    let code = wasmtime::Module::new(
-        crate::runtime::guest::engine(),
-        r#"(module
-            (memory (export "memory") 1)
-            (func (export "alloc") (param i32) (result i32) i32.const 0)
-            (func (export "init"))
-            (func (export "tick") (param i32 i32) (result i64) i64.const 0)
-            (func (export "snapshot") (result i64) i64.const 0)
-            (func (export "restore") (param i32 i32) (result i64) i64.const 0))"#,
-    )
-    .unwrap();
-    let mut guest = Guest::instantiate("node-test", &code, "node test").unwrap();
-    guest.capabilities = Capability::ALL.to_vec();
-    guest
-}
+use crate::runtime::kernel::tests::{guest, read_request, respond};
 
 /// The one refusal `id` got, as (code, message).
 fn refused(guest: &mut Guest, id: u64) -> (String, String) {
@@ -63,7 +47,6 @@ fn too_many_changes_subscriptions_is_the_subscription_limit() {
 fn applying_node_with_a_lost_answer(
     lost: &'static str,
 ) -> (Node, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
-    use std::io::{BufRead as _, Read as _, Write as _};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let node = Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
@@ -75,25 +58,8 @@ fn applying_node_with_a_lost_answer(
         let mut seq = 0u64;
         let mut lose = true;
         for mut stream in listener.incoming().flatten() {
-            let mut reader = std::io::BufReader::new(&mut stream);
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
+            let (line, body) = read_request(&mut stream);
             let route = line.split(' ').nth(1).unwrap().to_owned();
-            let mut length = 0;
-            loop {
-                line.clear();
-                reader.read_line(&mut line).unwrap();
-                if line == "\r\n" {
-                    break;
-                }
-                if let Some((name, value)) = line.split_once(':')
-                    && name.eq_ignore_ascii_case("content-length")
-                {
-                    length = value.trim().parse::<usize>().unwrap();
-                }
-            }
-            let mut body = vec![0; length];
-            reader.read_exact(&mut body).unwrap();
             let answer = match route.as_str() {
                 noded::route::GET => abi::encode(&Some(abi::encode(&seq))),
                 noded::route::SUBMIT => {
@@ -114,13 +80,7 @@ fn applying_node_with_a_lost_answer(
                 true => ("502 Bad Gateway", b"upstream went away".to_vec()),
                 false => ("200 OK", answer),
             };
-            write!(
-                stream,
-                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            )
-            .unwrap();
-            stream.write_all(&body).unwrap();
+            respond(&mut stream, status, &body);
         }
     });
     (node, submits)

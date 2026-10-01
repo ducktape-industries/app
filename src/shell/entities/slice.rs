@@ -33,10 +33,26 @@ impl<T: PartialEq + 'static> Slice<T> {
     where
         T: Clone,
     {
-        let mut next = self.0.clone();
-        edit(&mut next);
-        self.set(next, cx)
+        edit_compared(&mut self.0, edit, cx)
     }
+}
+
+/// Runs `edit` on a copy of `value` and keeps the copy when it differs:
+/// `true`, and a notify of the entity, when it did. A `Slice`'s value and
+/// the state `Session` and `Account` hold are written through it.
+pub(super) fn edit_compared<T: Clone + PartialEq, E: 'static>(
+    value: &mut T,
+    edit: impl FnOnce(&mut T),
+    cx: &mut Context<E>,
+) -> bool {
+    let mut next = value.clone();
+    edit(&mut next);
+    if next == *value {
+        return false;
+    }
+    *value = next;
+    cx.notify();
+    true
 }
 
 /// A view's handle on an entity it reads. Making one subscribes the view,
@@ -97,20 +113,8 @@ pub(crate) fn spawn_on_runtime<E: 'static, R: 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::entities::tests::notifies;
     use gpui_kit::{AppContext as _, TestAppContext};
-    use std::cell::Cell;
-    use std::rc::Rc;
-
-    /// Counts `entity`'s notifies while the subscription lives.
-    fn notifies<T: 'static>(
-        entity: &Entity<T>,
-        cx: &mut TestAppContext,
-    ) -> (Rc<Cell<usize>>, Subscription) {
-        let seen = Rc::new(Cell::new(0));
-        let count = seen.clone();
-        let observing = cx.update(|cx| cx.observe(entity, move |_, _| count.set(count.get() + 1)));
-        (seen, observing)
-    }
 
     #[gpui_kit::test]
     fn an_equal_value_notifies_nothing_and_a_changed_one_once(cx: &mut TestAppContext) {

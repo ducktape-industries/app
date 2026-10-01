@@ -1,7 +1,9 @@
 //! Real pane controls exercised through the same AccessKit actions as the AX door.
+use super::entities::tests::active;
 use super::entities::{Entities, Overlay, Popover, SettingsPage, Spot};
 use super::layers::tests::{
-    active, open_help, open_now, pane, popped, run_spot, select_view, set_motion, show, toast,
+    frame, line, open_help, open_now, pane, popped, run_spot, select_view, set_motion, show, toast,
+    tree_renders,
 };
 use super::*;
 use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
@@ -16,6 +18,16 @@ pub(super) fn draw(window: &mut Window, cx: &mut gpui_kit::App) -> serde_json::V
     window.simulate_next_frame(cx);
     window.render_frame(cx);
     serde_json::to_value(crate::ax::snapshot("console", window, false)).unwrap()
+}
+
+/// The ids in a snapshot, in the tree's order.
+pub(super) fn ids(nodes: &serde_json::Value) -> Vec<String> {
+    nodes
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|node| node["id"].as_str().map(str::to_owned))
+        .collect()
 }
 
 fn press(id: &str, window: &mut Window, cx: &mut gpui_kit::App) {
@@ -365,22 +377,22 @@ fn the_focused_window_is_the_active_program(cx: &mut TestAppContext) {
             view.pane_message(PaneMessage::Split("pane-ax-other"), window, cx)
         })
     });
-    assert_eq!(active(&app, &mut native), Some("pane-ax-other"));
+    assert_eq!(active(&app, &native), Some("pane-ax-other"));
     native.update(|window, cx| {
         view.update(cx, |view, cx| {
             view.pane_message(PaneMessage::Focus(0), window, cx)
         })
     });
-    assert_eq!(active(&app, &mut native), Some("pane-ax-test"));
+    assert_eq!(active(&app, &native), Some("pane-ax-test"));
     key(&mut native, "secondary-2");
-    assert_eq!(active(&app, &mut native), Some("pane-ax-other"));
+    assert_eq!(active(&app, &native), Some("pane-ax-other"));
     // a pick (Spotlight's) lands on the console's desk
     select_view(&app, "pane-ax-test", &mut native);
     native.update(|window, cx| {
         draw(window, cx);
     });
     assert_eq!(panes(&mut native, &view), (2, 0));
-    assert_eq!(active(&app, &mut native), Some("pane-ax-test"));
+    assert_eq!(active(&app, &native), Some("pane-ax-test"));
 }
 
 /// A window that comes to the front (⌘N, ⌘W, ⌘1…9, ⌃Tab) has the keys:
@@ -684,42 +696,16 @@ fn a_view_that_draws_widens_the_window_it_came_to(cx: &mut TestAppContext) {
 /// the window: every cache misses once). Times are flaky under the test scheduler; counts are not.
 #[gpui_kit::test]
 fn a_desk_redraw_with_nothing_changed_renders_no_view_tree(cx: &mut TestAppContext) {
-    use gpui_kit::Styled as _;
-    use view_wire as wire;
     const MODULE: &str = "pane-desk-redraw-view";
     let _on = crate::perf::on_for_test();
     let (_, key, view, mut native) = console(cx);
-    // a frame as the platform delivers one: what asked for it runs, then
-    // whatever that dirtied draws
-    let frame = |native: &mut VisualTestContext| {
-        native.update(|window, cx| {
-            window.simulate_next_frame(cx);
-        });
-        native.run_until_parked();
-    };
     frame(&mut native);
     pane(&view, PaneMessage::Select(MODULE), &mut native);
-    let line = wire::Node::RichText {
-        id: Some(wire::ElementIdWire::Name("line".into())),
-        style: gpui_kit::div().h(px(20.)).style().clone(),
-        text: "a line".into(),
-        runs: wire::RichTextRuns::Highlights(Vec::new()),
-        font_family_overrides: Vec::new(),
-        clickable_ranges: Vec::new(),
-        on_click: None,
-        on_hover: None,
-        tooltip: None,
-    };
-    crate::runtime::seat_drawing_for_test(MODULE, 400, line);
+    crate::runtime::seat_drawing_for_test(MODULE, 400, line("a line"));
     for _ in 0..8 {
         frame(&mut native);
     }
-    let renders = || {
-        crate::perf::snapshot(false)["views"][MODULE]["renders"]
-            .as_u64()
-            .unwrap_or_else(|| panic!("the seated view counts its renders"))
-    };
-    let settled = renders();
+    let settled = tree_renders(MODULE);
     assert!(settled > 0, "the view drew its tree once");
     let desk = window_count(key, "renders");
     for _ in 0..3 {
@@ -733,7 +719,7 @@ fn a_desk_redraw_with_nothing_changed_renders_no_view_tree(cx: &mut TestAppConte
         "the desk drew again"
     );
     assert_eq!(
-        renders(),
+        tree_renders(MODULE),
         settled,
         "a redraw of the desk rendered the view's tree again"
     );
@@ -978,10 +964,7 @@ fn a_views_link_opens_its_seat_on_the_console(cx: &mut TestAppContext) {
     for _ in 0..2 {
         app.seats.update(&mut native, |seats, cx| seats.settle(cx));
         native.run_until_parked();
-        native.update(|window, cx| {
-            window.simulate_next_frame(cx);
-        });
-        native.run_until_parked();
+        frame(&mut native);
     }
     let modules: Vec<_> = native.update(|_, cx| {
         view.read(cx)
@@ -995,7 +978,7 @@ fn a_views_link_opens_its_seat_on_the_console(cx: &mut TestAppContext) {
         modules.contains(&LINKED),
         "the link opened nothing: {modules:?}"
     );
-    assert_eq!(active(&app, &mut native), Some(LINKED));
+    assert_eq!(active(&app, &native), Some(LINKED));
     assert_eq!(
         crate::runtime::take_route(LINKED).as_deref(),
         Some("room/7"),
@@ -1011,10 +994,7 @@ fn tick_frame(native: &mut VisualTestContext) {
         .executor()
         .advance_clock(std::time::Duration::from_millis(1000 / super::figure::FPS));
     native.run_until_parked();
-    native.update(|window, cx| {
-        window.simulate_next_frame(cx);
-    });
-    native.run_until_parked();
+    frame(native);
 }
 
 /// Motion switched off with the desk otherwise idle: the empty desk's
@@ -1248,14 +1228,6 @@ fn a_trapped_view_shows_its_standin(cx: &mut TestAppContext) {
     let (app, _, view, mut native) = console(cx);
     crate::runtime::seat_for_test(MODULE, 400);
     pane(&view, PaneMessage::Select(MODULE), &mut native);
-    let ids = |nodes: &serde_json::Value| -> Vec<String> {
-        nodes
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|node| node["id"].as_str().map(str::to_owned))
-            .collect()
-    };
     let (instance, before) = native.update(|window, cx| {
         let nodes = draw(window, cx);
         let layout = view.read(cx).layout(cx);
@@ -1380,29 +1352,10 @@ fn a_pane_picked_in_spotlight_hands_the_keys_by_its_first_frame(cx: &mut TestApp
 /// `renders.pane.1` is not asserted flat.
 #[gpui_kit::test]
 fn a_pane_wake_re_renders_its_tree_and_not_the_siblings(cx: &mut TestAppContext) {
-    use gpui_kit::Styled as _;
-    use view_wire as wire;
     const FIRST: &str = "pane-wake-first-view";
     const SECOND: &str = "pane-wake-second-view";
     let _on = crate::perf::on_for_test();
     let (_, key, view, mut native) = console(cx);
-    let frame = |native: &mut VisualTestContext| {
-        native.update(|window, cx| {
-            window.simulate_next_frame(cx);
-        });
-        native.run_until_parked();
-    };
-    let line = |text: &str| wire::Node::RichText {
-        id: Some(wire::ElementIdWire::Name("line".into())),
-        style: gpui_kit::div().h(px(20.)).style().clone(),
-        text: text.into(),
-        runs: wire::RichTextRuns::Highlights(Vec::new()),
-        font_family_overrides: Vec::new(),
-        clickable_ranges: Vec::new(),
-        on_click: None,
-        on_hover: None,
-        tooltip: None,
-    };
     crate::runtime::seat_drawing_for_test(FIRST, 400, line("first"));
     crate::runtime::seat_drawing_for_test(SECOND, 400, line("second"));
     pane(&view, PaneMessage::Select(FIRST), &mut native);
@@ -1410,12 +1363,7 @@ fn a_pane_wake_re_renders_its_tree_and_not_the_siblings(cx: &mut TestAppContext)
     for _ in 0..8 {
         frame(&mut native);
     }
-    let renders = |module: &str| {
-        crate::perf::snapshot(false)["views"][module]["renders"]
-            .as_u64()
-            .unwrap_or_else(|| panic!("{module} counts its renders"))
-    };
-    let (first, second) = (renders(FIRST), renders(SECOND));
+    let (first, second) = (tree_renders(FIRST), tree_renders(SECOND));
     assert!(first > 0 && second > 0, "both trees drew");
     let panes = window_count(key, "renders.panes");
     // the first seat wakes: its view lands again, a fresh tree
@@ -1423,8 +1371,16 @@ fn a_pane_wake_re_renders_its_tree_and_not_the_siblings(cx: &mut TestAppContext)
     for _ in 0..4 {
         frame(&mut native);
     }
-    assert_eq!(renders(FIRST), first + 1, "the woken pane's tree drew once");
-    assert_eq!(renders(SECOND), second, "the sibling's tree drew again");
+    assert_eq!(
+        tree_renders(FIRST),
+        first + 1,
+        "the woken pane's tree drew once"
+    );
+    assert_eq!(
+        tree_renders(SECOND),
+        second,
+        "the sibling's tree drew again"
+    );
     assert!(
         window_count(key, "renders.panes") > panes,
         "the layer drew with the window"

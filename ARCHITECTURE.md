@@ -102,7 +102,7 @@ quit) are `Windows`' methods.
 | Thread | What runs there | Where it is made |
 |---|---|---|
 | **window / main** (GPUI foreground) | every entity method and the timers the entities and layers own (`Session`'s status poll, `Toast`'s dismiss, an open menu's ages in `layers::Chrome`, a `Seat`'s clocks); every `WindowRoot` render and its layers'; `Seat::turn`, so every wasm **tick**; `ViewTree` layout and paint; AX door answers (`ax::serve`); the entities' own `Task` futures (connect, status poll, sign-in) — polled on the GPUI foreground inside `runtime.enter()` (`spawn_on_runtime`), so their HTTP bodies are decoded here | `shell/launch.rs` |
-| **`views-kernel`** (one tokio current-thread runtime) | the I/O driver for every `reqwest`/WebSocket; view-originated node calls (`kernel/node.rs` `spawn`, `live`, `heads`); the banner queue (`notify::in_order`); its blocking pool runs `module.describe`, OS banners and device-key opening | `kernel::handle` |
+| **`views-kernel`** (one tokio current-thread runtime) | the I/O driver for every `reqwest`/WebSocket; view-originated node calls (`kernel/node.rs` `spawn_retrying`/`spawn_retrying_unsent`/`spawn_no_retry`, `changes`, `heads`); the banner queue (`notify::in_order`); its blocking pool runs `module.describe`, OS banners and device-key opening | `kernel::handle` |
 | **one `std::thread` per view load** | fetch, verify, compile, instantiate, snapshot/restore (`Guest::load`) | `seat::spawn_load` |
 | **roster read thread** | `/v1/programs` and the seat reconciliation on connect and on each new block | `roster::spawn_roster_read` |
 | **`ax-door`** | TCP accept and HTTP parsing, one request per connection in turn (a long `/wait` holds the next caller); each request is forwarded to the window thread | `ax/http.rs` |
@@ -212,13 +212,13 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    paths it still mounts.
 7. **Input back.** Element listeners (`render/interactivity.rs`,
    `render/inputs.rs`, …) `cx.emit(wire::Event)` with the guest's handler
-   ids; `Seat` subscribes, drops focus-needing events when the
-   pane is unfocused, takes the one-shot **user activation**
-   (`ViewTree::take_user_activation`) onto `guest.user_activation` and calls
-   `runtime::input::deliver` into `guest.pending`. Raw window input (pointer, wheel, keys, IME, file
-   drops) arrives through `runtime/input.rs`'s `Observe` element after
-   GPUI's own controls have seen it, marked `captured` if a native control
-   consumed it. The multi-line editor is its own loop: `Node::Editor` mounts
+   ids; `Seat` subscribes (`runtime/seat/entity.rs`), drops an event
+   addressed to a generation or revision no longer seated, takes the
+   one-shot **user activation** (`ViewTree::take_user_activation`) onto
+   `guest.user_activation`, pushes the event onto `guest.pending` and
+   turns. A guest hears only what its elements' own listeners emit: no
+   window-wide input (pointer moves, keys, IME, file drops) reaches it.
+   The multi-line editor is its own loop: `Node::Editor` mounts
    a `TextEditor` (`editor/text.rs`) whose edits become `EditorStore`
    transactions (`editor/wire.rs`); claimed key chords go to the guest for
    a decision; the guest's next frame acknowledges the revision.
@@ -292,15 +292,19 @@ view ◄─ Event::Response{id, done} ◄── Replies (drained at next redraw)
    the kernel and are handled in `Guest::answer` after it returns `false`:
    `host.widget` (the one MessagePack method: a `WidgetCommand`),
    `host.session` (the props subscription) and `host.log`.
-3. **Relay.** `kernel/node.rs` `spawn` first checks the guest still belongs
-   to the current `roster::connection()` (else `stale_connection`, or
-   `not_connected` with no node), admits the call against `MAX_IN_FLIGHT`
-   (`in_flight_limit`) and runs the handler as a tokio task on
-   `views-kernel`, owned by `guest.tasks` as a `NodeTask` that aborts on
-   drop (cancel, swap, teardown). Transport refusals (`rpc_client`,
-   `node_failed`) retry with `backend::retry_delay` backoff for
-   `NODE_RETRY_BUDGET` (60 s), then answer `rpc_client` with the
-   `NODE_UNREACHABLE` sentence; a node's own refusal ends the call at once.
+3. **Relay.** `kernel/node.rs` `spawn_method`, behind `spawn_retrying`,
+   `spawn_retrying_unsent` and `spawn_no_retry`, first checks in `connected`
+   that the guest still belongs to the current `roster::connection()` (else
+   `stale_connection`, or `not_connected` with no node); then `start` admits
+   the call against `MAX_IN_FLIGHT` (`in_flight_limit`) and runs the handler
+   as a tokio task on `views-kernel`, owned by `guest.tasks` as a `NodeTask`
+   that aborts on drop (cancel, swap, teardown). A read (`spawn_retrying`)
+   retries transport refusals (`rpc_client`, `node_failed`) with
+   `backend::retry_delay` backoff for `NODE_RETRY_BUDGET` (60 s), then
+   answers `rpc_client` with the `NODE_UNREACHABLE` sentence; `op.submit`
+   (`spawn_retrying_unsent`) retries only `rpc_client`, which proves nothing
+   was sent, and `invite.create` (`spawn_no_retry`) asks once. A node's own
+   refusal ends the call at once.
 4. **Sign.** A read: `backend::query_frame` signs a `Frame` at seq 0 with
    the seated key, or with the process's throwaway `reader_key` while nobody
    is signed in; the program hears who asks, the node checks no sequence.
@@ -401,7 +405,7 @@ draws nothing.
   and which is in front, and the program in front (`active`: the focused
   pane's, wherever it is, from an observer of every desk, or the one a
   pick or a link just opened). Its methods are what crosses windows:
-  `open` (an OS window, deferred) / `raise` / `closed_id` / `quit`,
+  `open` (an OS window, deferred) / `raise` / `forget_closed` / `quit`,
   `close_pane`, `pop_out` and `pop_in` (a pane keeps its `instance` on
   the way out and back), `select_view`, `open_help` / `help_asked`,
   `open_link` (read against `Session`'s chain: this chain's link routes
@@ -441,7 +445,7 @@ draws nothing.
   `Prefs::set_appearance`) and the console (`Windows::open(Console)`), then
   wires what arrives from outside: open-URL requests and the links a
   banner posts (`Windows::open_link`, `Windows::posted`), a window closing
-  (`Windows::closed_id`), the AX door (`Windows::served`,
+  (`Windows::forget_closed`), the AX door (`Windows::served`,
   `Seats::settle`), the Quit action (`Windows::quit`). The entities and
   the tray live until the app quits.
 - **Layers.** `layers::WindowRoot` (`layers/root.rs`, one thin uncached
@@ -729,11 +733,10 @@ House words, and where one word means several things.
   the desks.
 - **props / session** — the session facts every view gets on
   `host.session` (`wire::methods::Session`, built by `runtime::props`).
-- **route** — three meanings. (1) the path part of a `duck://<view>/<route>`
+- **route** — two meanings. (1) the path part of a `duck://<view>/<route>`
   link, held in `runtime::route_to` until the view's first `host.route`
-  subscriber (`take_route`). (2) `runtime::input::Route`: the
-  (seat, generation, revision, alive) an input event is addressed to.
-  (3) a closure-local name for a cloned authored path in `render/`.
+  subscriber (`take_route`). (2) a closure-local name for a cloned
+  authored path in `render/`.
 - **link** — a `duck://` URL (`Roster::parse_link`, `Link`), or, in
   sign-in, "link from another device" (`join_from_device`). Unrelated.
 - **standin / stage words** — the native placeholder drawn where a view is
@@ -753,9 +756,8 @@ House words, and where one word means several things.
 - **pane / window** — `layout::Pane` is one floating frame on the desk
   holding a view, the program finder or Help. User copy, GPUI actions and
   `layout.rs` comments call it a **window**. **window** therefore means
-  three things: an OS window (`WindowRoot`, `WindowKey`,
-  `WindowKind`), a pane, and the view-wire `events::Window` events
-  (`Focused`, `CloseRequested`, `Closed`, …) a guest receives.
+  two things: an OS window (`WindowRoot`, `WindowKey`, `WindowKind`) and
+  a pane.
 - **instance** — a pane's unique u64 (`Pane.instance`), the key for
   `Seats`; `Seat.instance` is its own counter.
 - **split / cycle / fill / measure** — pane geometry operations in
@@ -832,10 +834,12 @@ House words, and where one word means several things.
   Then: a new operation under an existing capability gets an arm in
   `kernel::answer` (or in `clipboard`/`notify`/`store::answer` if it
   belongs there); a node-backed one gets a handler in `kernel/node.rs` and
-  is spawned with `spawn`/`spawn_once`, answering through `Replies`; a
-  subscription writes through `Items`. Add the method to the module doc in
-  `kernel.rs` and a case in `kernel/tests.rs`, which stands up a loopback
-  `TcpListener` as the node.
+  is spawned with `spawn_retrying`, `spawn_retrying_unsent` or
+  `spawn_no_retry` (by whether a lost answer may be asked again),
+  answering through `Replies`; a subscription writes through `Items`. Add
+  the method to the module doc in `kernel.rs` and a case in
+  `kernel/tests/node_methods.rs`, which stands up a fake node on a local
+  socket.
 - **Add a native screen or overlay.** A screen: a `Screen` variant
   (`shell/entities/screen.rs`), its state and the methods that move it on
   `Account` or `Session` (`shell/entities/`), a row in the transition table

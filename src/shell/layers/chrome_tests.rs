@@ -5,40 +5,10 @@
 //! dot slot is committed from the frame's callback (docs/perf.md).
 use crate::shell::PaneMessage;
 use crate::shell::entities::tests::status;
-use crate::shell::layers::tests::{pane, polled, set_motion};
+use crate::shell::layers::tests::{frame, line, pane, polled, set_motion, tree_renders};
 use crate::shell::panes_tests::{console, window_count};
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{Styled as _, TestAppContext, VisualTestContext, px, size};
-use view_wire as wire;
-
-/// A frame as the platform delivers one: what asked for it runs, then
-/// whatever that dirtied draws.
-fn frame(native: &mut VisualTestContext) {
-    native.update(|window, cx| {
-        window.simulate_next_frame(cx);
-    });
-    native.run_until_parked();
-}
-
-fn line(text: &str) -> wire::Node {
-    wire::Node::RichText {
-        id: Some(wire::ElementIdWire::Name("line".into())),
-        style: gpui_kit::div().h(px(20.)).style().clone(),
-        text: text.into(),
-        runs: wire::RichTextRuns::Highlights(Vec::new()),
-        font_family_overrides: Vec::new(),
-        clickable_ranges: Vec::new(),
-        on_click: None,
-        on_hover: None,
-        tooltip: None,
-    }
-}
-
-fn tree_renders(module: &str) -> u64 {
-    crate::perf::snapshot(false)["views"][module]["renders"]
-        .as_u64()
-        .unwrap_or_else(|| panic!("{module} counts its renders"))
-}
+use gpui_kit::{TestAppContext, VisualTestContext, px, size};
 
 /// A block landing moves the bar's height: the chrome draws once, and no
 /// pane's view tree draws with it (the root and the pane layer, uncached,
@@ -134,11 +104,7 @@ fn a_drag_frame_moves_the_desk_once_and_leaves_the_chrome_cached(cx: &mut TestAp
     native.run_until_parked();
     frame(&mut native);
     let chrome = window_count(key, "renders.chrome");
-    let told = std::rc::Rc::new(std::cell::Cell::new(0));
-    let _told = native.update(|_, cx| {
-        let told = told.clone();
-        cx.observe(&desk, move |_, _| told.set(told.get() + 1))
-    });
+    let (told, _told) = crate::shell::entities::tests::notifies(&desk, &mut native);
     // the pointer's move, as `pane_drag::follow` lands it
     native.update(|window, cx| {
         window.dispatch_event(

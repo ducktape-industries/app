@@ -203,15 +203,22 @@ pub(crate) fn seat_for_test(module: &'static str, min_width: u32) {
     seat_drawing_for_test(module, min_width, wire::Node::empty());
 }
 
+/// `frame` encoded as the string of a WAT `data` segment, and its length.
+#[cfg(test)]
+pub(crate) fn wat_frame(frame: &wire::Frame) -> (String, u32) {
+    let frame = wire::encode(frame);
+    let bytes = frame.iter().map(|byte| format!("\\{byte:02x}")).collect();
+    (bytes, frame.len() as u32)
+}
+
 /// [`seat_for_test`], its view drawing `root` on every tick.
 #[cfg(test)]
 pub(crate) fn seat_drawing_for_test(module: &'static str, min_width: u32, root: wire::Node) {
-    let frame = wire::encode(&wire::Frame {
+    let (bytes, len) = wat_frame(&wire::Frame {
         root: Some(root),
         ..Default::default()
     });
-    let bytes: String = frame.iter().map(|byte| format!("\\{byte:02x}")).collect();
-    let tick = wire::abi::pack(65536, frame.len() as u32);
+    let tick = wire::abi::pack(65536, len);
     let code = Module::new(
         guest::engine(),
         format!(
@@ -233,38 +240,12 @@ pub(crate) fn seat_drawing_for_test(module: &'static str, min_width: u32, root: 
 /// soon) on its first `busy_ticks` ticks and quiet from then on.
 #[cfg(test)]
 pub(crate) fn seat_busy_for_test(module: &'static str, min_width: u32, busy_ticks: u32) {
-    let encode = |busy| {
-        let frame = wire::encode(&wire::Frame {
-            root: Some(wire::Node::empty()),
-            busy,
-            ..Default::default()
-        });
-        let bytes: String = frame.iter().map(|byte| format!("\\{byte:02x}")).collect();
-        (bytes, frame.len() as u32)
+    let frame = |busy| wire::Frame {
+        root: Some(wire::Node::empty()),
+        busy,
+        ..Default::default()
     };
-    let (busy, busy_len) = encode(true);
-    let (quiet, quiet_len) = encode(false);
-    let busy_tick = wire::abi::pack(65536, busy_len);
-    let quiet_tick = wire::abi::pack(69632, quiet_len);
-    let code = Module::new(
-        guest::engine(),
-        format!(
-            r#"(module
-            (memory (export "memory") 2)
-            (global $n (mut i32) (i32.const 0))
-            (data (i32.const 65536) "{busy}")
-            (data (i32.const 69632) "{quiet}")
-            (func (export "alloc") (param i32) (result i32) i32.const 64)
-            (func (export "init"))
-            (func (export "tick") (param i32 i32) (result i64)
-                global.get $n i32.const 1 i32.add global.set $n
-                global.get $n i32.const {busy_ticks} i32.le_u
-                if (result i64) i64.const {busy_tick} else i64.const {quiet_tick} end)
-            (func (export "snapshot") (result i64) unreachable)
-            (func (export "restore") (param i32 i32) (result i64) unreachable))"#
-        ),
-    )
-    .unwrap();
+    let code = frames_code(&frame(true), busy_ticks, &frame(false));
     seat_code_for_test(module, min_width, code);
 }
 
@@ -278,24 +259,28 @@ pub(crate) fn seat_frames_for_test(
     first: wire::Node,
     then: wire::Node,
 ) {
-    let encode = |root, busy| {
-        let frame = wire::encode(&wire::Frame {
-            root: Some(root),
-            busy,
-            ..Default::default()
-        });
-        let bytes: String = frame.iter().map(|byte| format!("\\{byte:02x}")).collect();
-        (bytes, frame.len() as u32)
+    let frame = |root, busy| wire::Frame {
+        root: Some(root),
+        busy,
+        ..Default::default()
     };
-    let (first, first_len) = encode(first, true);
-    let (then, then_len) = encode(then, false);
+    let code = frames_code(&frame(first, true), 1, &frame(then, false));
+    seat_code_for_test(module, min_width, code);
+}
+
+/// A view's code answering its first `first_ticks` ticks with `first` and
+/// every later tick with `then`.
+#[cfg(test)]
+pub(crate) fn frames_code(first: &wire::Frame, first_ticks: u32, then: &wire::Frame) -> Module {
+    let (first, first_len) = wat_frame(first);
+    let (then, then_len) = wat_frame(then);
     assert!(
         first_len < 4096 && then_len < 4096,
         "test frames fit their pages"
     );
     let first_tick = wire::abi::pack(65536, first_len);
     let then_tick = wire::abi::pack(69632, then_len);
-    let code = Module::new(
+    Module::new(
         guest::engine(),
         format!(
             r#"(module
@@ -307,14 +292,13 @@ pub(crate) fn seat_frames_for_test(
             (func (export "init"))
             (func (export "tick") (param i32 i32) (result i64)
                 global.get $n i32.const 1 i32.add global.set $n
-                global.get $n i32.const 1 i32.le_u
+                global.get $n i32.const {first_ticks} i32.le_u
                 if (result i64) i64.const {first_tick} else i64.const {then_tick} end)
             (func (export "snapshot") (result i64) unreachable)
             (func (export "restore") (param i32 i32) (result i64) unreachable))"#
         ),
     )
-    .unwrap();
-    seat_code_for_test(module, min_width, code);
+    .unwrap()
 }
 
 /// An intent `module`'s seat `instance` will hand over on its next update,

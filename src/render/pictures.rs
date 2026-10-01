@@ -271,7 +271,7 @@ impl ViewTree {
             _ => {
                 if let Some(image) = self.image_frame(*hash, data.as_ref()) {
                     element = element.child(
-                        img(image.clone())
+                        img(image)
                             .size_full()
                             .grayscale(image_style.grayscale)
                             .object_fit(primitive_object_fit(image_style.object_fit)),

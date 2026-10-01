@@ -170,6 +170,59 @@ pub(crate) mod tests {
         entities
     }
 
+    /// Window `key`'s desk.
+    pub(crate) fn desk_of(
+        app: &Entities,
+        key: crate::runtime::WindowKey,
+        cx: &gpui_kit::TestAppContext,
+    ) -> Entity<Desk> {
+        app.windows.read_with(cx, |windows, _| {
+            windows.own(key).expect("its window").desk.clone()
+        })
+    }
+
+    /// The modules window `key`'s desk shows, pane by pane.
+    pub(crate) fn modules(
+        app: &Entities,
+        key: crate::runtime::WindowKey,
+        cx: &gpui_kit::TestAppContext,
+    ) -> Vec<&'static str> {
+        desk_of(app, key, cx).read_with(cx, |desk, _| {
+            desk.get().panes.iter().map(|pane| pane.module).collect()
+        })
+    }
+
+    /// The active program, if any.
+    pub(crate) fn active(app: &Entities, cx: &gpui_kit::TestAppContext) -> Option<&'static str> {
+        app.windows.read_with(cx, |windows, _| windows.active())
+    }
+
+    /// Counts `entity`'s notifies while the subscription lives.
+    pub(crate) fn notifies<T: 'static>(
+        entity: &Entity<T>,
+        cx: &mut gpui_kit::TestAppContext,
+    ) -> (std::rc::Rc<std::cell::Cell<usize>>, gpui_kit::Subscription) {
+        let seen = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count = seen.clone();
+        let observing = cx.update(|cx| cx.observe(entity, move |_, _| count.set(count.get() + 1)));
+        (seen, observing)
+    }
+
+    /// A status source answering `answer(n)` to its `n`th ask, counting them.
+    pub(crate) fn source(
+        answer: impl Fn(usize) -> Result<crate::backend::NodeStatus, String> + 'static,
+    ) -> (StatusSource, std::rc::Rc<std::cell::Cell<usize>>) {
+        use futures::FutureExt as _;
+        let asked = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count = asked.clone();
+        let source: StatusSource = std::rc::Rc::new(move || {
+            let n = count.get();
+            count.set(n + 1);
+            std::future::ready(answer(n)).boxed_local()
+        });
+        (source, asked)
+    }
+
     /// The node's answer at `height`, for the tests that feed the session
     /// one.
     pub(crate) fn status(height: u64) -> crate::backend::NodeStatus {
