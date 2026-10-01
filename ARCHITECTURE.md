@@ -727,8 +727,9 @@ House words, and where one word means several things.
   entity one pane's view lives in, made and dropped by `Seats`, stepping
   its guest from its wakes (`turn`).
 - **slot** — `seat::Slot`, what a seat holds (Loading … Ready … Failed).
-  Also the **slot mask** in `render/`: the pane box a view is clipped to,
-  applied to tooltips (`tooltip_containment::SlotMask`).
+  Also the **pane layer** in `render/`: the pane box a view's tree, its
+  tooltips and its deferred draws are clipped to (`deferred::Layer`, a gpui
+  `TooltipLayer` at `GUEST_CEILING`).
 - **generation** — the seat's load counter; a finished load installs only
   if it is still current, and `Seat.generation` names the
   guest instance it drew. Unrelated: the `generation` the identity program
