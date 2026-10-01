@@ -338,6 +338,12 @@ fn an_unopened_program_runs_no_init() {
         "the claiming pane's load ran init",
         || matches!(&lock(&seat).slot, Slot::Failed(failure) if failure.to_string().contains("init trapped")),
     );
+    // the fetch kept the blob in the developer's own cache: it goes
+    let kept = crate::backend::cache_dir()
+        .unwrap()
+        .join("programs")
+        .join(abi::hex(code.digest()));
+    std::fs::remove_file(&kept).unwrap();
 }
 
 /// A pane that claims a seat preloaded only as far as compiled starts its
@@ -385,4 +391,82 @@ fn a_seat_claimed_during_its_preload_is_started() {
     eventually("the claiming pane's own load ran", || {
         matches!(lock(&seat).slot, Slot::Failed(_))
     });
+}
+
+/// A seat preloaded as compiled and reloading (a new deployment, a
+/// reconnect) when a pane claims it: the pane's own load is the one the
+/// seat waits for, and the stale reload, landing compiled, starts nothing.
+/// Handing off on what the seat holds, it superseded the pane's load, and
+/// the two loads leapfrogged with the pane on "Loading" for good.
+#[test]
+fn a_stale_preload_does_not_supersede_the_panes_load() {
+    let seat = Mounted::seat();
+    lock(&seat).slot = Slot::Compiled {
+        name: "Stale".into(),
+        min_width: 320,
+    };
+    let reload = lock(&seat).start();
+    let pane = {
+        let mut locked = lock(&seat);
+        locked.instance = 7;
+        locked.start()
+    };
+    Load {
+        module: "stale-preload",
+        seat: seat.clone(),
+        generation: reload,
+        asked_of: Connection::default(),
+        code: None,
+    }
+    .land(|_, _| {
+        Ok(Loaded::Compiled {
+            name: "Stale".into(),
+            min_width: 320,
+        })
+    });
+    assert_eq!(
+        lock(&seat).generation,
+        pane,
+        "the stale reload superseded the pane's own load"
+    );
+}
+
+/// A claimed seat's load asked of a node the app has since left lands
+/// nowhere, and starts nothing: the new node's roster read asks the seat
+/// again. Handing off on what the seat holds, every follow-on load reused
+/// the left node and was refused in turn, without end.
+#[test]
+fn a_load_from_a_node_the_app_left_starts_no_other() {
+    let seat = Mounted::seat();
+    lock(&seat).slot = Slot::Compiled {
+        name: "Left".into(),
+        min_width: 320,
+    };
+    let generation = {
+        let mut locked = lock(&seat);
+        locked.instance = 7;
+        locked.start()
+    };
+    let left = Connection {
+        rev: connection().lock().unwrap().rev.wrapping_add(1),
+        ..Connection::default()
+    };
+    Load {
+        module: "left-node",
+        seat: seat.clone(),
+        generation,
+        asked_of: left,
+        code: None,
+    }
+    .land(|_, _| {
+        Ok(Loaded::Compiled {
+            name: "Left".into(),
+            min_width: 320,
+        })
+    });
+    assert_eq!(
+        lock(&seat).generation,
+        generation,
+        "a load from a left node started another"
+    );
 }

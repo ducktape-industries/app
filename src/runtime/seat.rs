@@ -469,11 +469,11 @@ impl Load {
                 loaded,
             )
         }));
-        if let Err(panic) = landed
+        if let Err(panic) = &landed
             && locked.generation == generation
         {
             let held_off = locked.retry.take();
-            let failure = panicked("installing", &*panic);
+            let failure = panicked("installing", &**panic);
             locked.load_failed(
                 module,
                 held_off,
@@ -484,8 +484,10 @@ impl Load {
                 },
             );
         }
-        // claimed while it preloaded: the pane's own load starts it
-        let claimed = locked.instance != 0 && matches!(locked.slot, Slot::Compiled { .. });
+        // claimed while this very load preloaded it: the pane's own load
+        // starts it. Only this load's own install decides: a stale or a
+        // left-node load lands nothing, and hands off nothing
+        let claimed = matches!(landed, Ok(true)) && locked.instance != 0;
         let start = claimed.then(|| locked.start());
         rail_moved();
         locked.wake.send_replace(());
@@ -520,7 +522,8 @@ fn panicked(doing: &str, panic: &(dyn std::any::Any + Send)) -> Failure {
 /// Puts what a load came back with into the seat, if the seat still waits
 /// for this very load and, for a network's view, the app is still on the
 /// node it was asked of. A swap also drops the old `Guest` here, its store
-/// and memory with it.
+/// and memory with it. `true` when what it put there is `Compiled`: a seat
+/// no pane held when the load began, which a pane may hold by now.
 fn install(
     module: &'static str,
     locked: &mut Mounted,
@@ -528,9 +531,9 @@ fn install(
     asked_of: &Connection,
     asked_for: Option<[u8; 32]>,
     loaded: Result<Loaded, Unloaded>,
-) {
+) -> bool {
     if locked.generation != generation {
-        return;
+        return false;
     }
     // the connection lock is a leaf: read under the seat's lock, never
     // across it. A connect bumps the revision before it reaches this
@@ -540,14 +543,17 @@ fn install(
     let from_the_node = view_override(module).is_none();
     let node_since_left = current_rev != asked_of.rev;
     if from_the_node && node_since_left {
-        return;
+        return false;
     }
     // a load that came back at all clears the hold-off; only a failure
     // puts one back, widened against the one taken here
     let held_off = locked.retry.take();
     let loaded = match loaded {
         Ok(loaded) => loaded,
-        Err(unloaded) => return locked.load_failed(module, held_off, asked_for, unloaded),
+        Err(unloaded) => {
+            locked.load_failed(module, held_off, asked_for, unloaded);
+            return false;
+        }
     };
     let Mounted { slot, instance, .. } = &mut *locked;
     match loaded {
@@ -567,6 +573,7 @@ fn install(
         }
         Loaded::Compiled { name, min_width } => {
             *slot = Slot::Compiled { name, min_width };
+            return true;
         }
         // the same tab, the same surface handle, the same host-side
         // input text and pictures: only the instance behind them moves
@@ -583,7 +590,7 @@ fn install(
                     generation,
                     "the view left while its replacement was prepared",
                 );
-                return;
+                return false;
             };
             let still_eligible = old.ticks == ticks && old.settled();
             if !Arc::ptr_eq(&old.alive, &alive) || !still_eligible {
@@ -594,14 +601,14 @@ fn install(
                     generation,
                     "the view moved while its replacement was prepared",
                 );
-                return;
+                return false;
             }
             fresh.frame_rev = old.frame_rev + 1;
             if let Some(root) = &fresh.frame.root
                 && let Err(reason) = fresh.inputs.retain_restored_projections(&old.inputs, root)
             {
                 log_source(module, fresh.hash.as_ref(), "Failed", generation, &reason);
-                return;
+                return false;
             }
             if let Some(root) = &mut fresh.frame.root {
                 fresh.pictures.hydrate(root);
@@ -616,6 +623,7 @@ fn install(
             *slot = Slot::Ready(fresh);
         }
     }
+    false
 }
 
 /// What a load came back with.
