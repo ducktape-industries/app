@@ -91,10 +91,9 @@ pub enum Intent {
 }
 
 /// Instruction budget for one call into a view: a ceiling that ends a
-/// runaway, not a cost. Measured 2026-09 (`RUST_LOG=ducktape::perf=debug`):
-/// chat's heaviest tick ~72M (#general, a menu or the emoji picker opening),
-/// forge with a large file ~45M, explorer ~26M; the ceiling keeps the
-/// heaviest under 30% of it.
+/// runaway, not a cost. `RUST_LOG=ducktape::perf=debug` logs each tick's
+/// fuel; docs/perf.md §4.2 has the heaviest ticks measured and each view's
+/// budget, at most half of this ceiling.
 const FUEL_PER_TICK: u64 = 250_000_000;
 const MEMORY_LIMIT: usize = 64 << 20;
 /// A frame the view sends past this ends it: nothing a screen needs is

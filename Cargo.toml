@@ -63,6 +63,10 @@ libc = "0.2"
 # histograms and its first present into `GET /perf` (docs/perf.md §3.5).
 # A default build compiles none of it: hdrhistogram is not in its graph.
 perf-deep = ["gpui-kit/profiler"]
+# kit and qa builds only (chief, 2026-10-01, hub audit Q7): the AX door
+# (src/ax). Declared ahead of the gate so the census rigs can pass it first;
+# the next change compiles the door out of a build without it.
+ax-door = []
 
 [dependencies]
 gpui-kit = "=0.7.0"
