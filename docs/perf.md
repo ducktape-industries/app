@@ -82,7 +82,7 @@ and is reported only under Xvfb.
 
 ### 2.1 One view's life
 
-Threads: a load runs on its own OS thread (`seat::spawn_load`); the tick
+Threads: a load runs on one of the loader threads (`seat::queue`); the tick
 loop runs on the window thread inside `Seat::turn`
 (`src/runtime/seat/entity.rs`), off the draw path, which holds the seat mutex while it runs.
 
@@ -96,7 +96,7 @@ loop runs on the window thread inside `Seat::turn`
 | Restore | lumped into `init_ms` | `Guest::restore` → `Exports::restore` | H `restore` (W), H `fuel.restore` (D) | a3 |
 | Init | `init_ms` = instantiate + snapshot + restore + init together | `Guest::init` → `Exports::init` | H `init` (W), H `fuel.init` (D) | a3 |
 | First frame of a swap | `first_frame_ms` | `Guest::first_frame` | H `first_frame` (W) | a3 |
-| Install | nothing: `LoadTiming::log` runs before the loader takes the seat lock in `spawn_load` | `seat::spawn_load`, the closure after `Guest::load` returns: lock wait, then the match on `Loaded` through `locked.wake.send_replace(())`; a swap also drops the old `Guest` (its `Store`, up to `MEMORY_LIMIT` of memory) under the lock | H `install.lock_wait`, H `install` (W) | free |
+| Install | nothing: `LoadTiming::log` runs before the loader takes the seat lock in `Load::land` | `seat::Load::land`, after `Guest::load` returns: lock wait, then the match on `Loaded` through `locked.wake.send_replace(())`; a swap also drops the old `Guest` (its `Store`, up to `MEMORY_LIMIT` of memory) under the lock | H `install.lock_wait`, H `install` (W) | free |
 | First tree of a fresh view | nothing. A fresh load only calls `init`; the first `tick` runs on the window thread at the first redraw, after `view_load` was logged. Seats are preloaded by `spawn_roster_read` before any tab shows them, so "from load start" is not what a user feels | end of the first `Guest::tick` (`Guest.ticks == 0` in `Guest::redraw`), measured from the start of the `Seat::turn` that ticks it | H `first_tree` (W, ms) | a3 / 70 |
 | Tick: fuel | `tracing::debug!(target: "ducktape::perf", used, limit)` in `Guest::tick` (`guest/requests.rs`) | same site | H `fuel.tick` (D) | a3 |
 | Tick: wall | nothing | `Guest::tick`: the `arm` → `Exports::tick` → `shape` chain is one expression today and has to be split to time the call and the decode apart | H `tick.call`, H `tick.decode` (W) | a3 |
@@ -115,7 +115,7 @@ loop runs on the window thread inside `Seat::turn`
 | Pictures | nothing | `Pictures::adopt` (`src/runtime/pictures.rs`) is insert-only, never evicts; sum `raster`/`vector` byte lengths when on | G `picture_bytes` (D) | free |
 | Linear memory | nothing (the `MEMORY_LIMIT` trap) | `Exports.memory.data_size(&store)` after `Guest::tick` | G `memory` max (D) | a3 |
 | Snapshot on the way out | nothing | `Guest::snapshot` (covered above) | | a3 |
-| Faults | warns `module_view_trapped` (`Guest::tick`), `module_view_unloadable` (`seat::spawn_load`) | same sites | C `faults` (D) | a3 / free |
+| Faults | warns `module_view_trapped` (`Guest::tick`), `module_view_unloadable` (`Mounted::load_failed`) | same sites | C `faults` (D) | a3 / free |
 
 Two findings the table depends on:
 

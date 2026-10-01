@@ -31,7 +31,7 @@ impl Guest {
         self.connection_rev = revision;
     }
 
-    /// A view comes from the roster's code for `module` on the connected
+    /// A view comes from the roster's `code` for `module` on the connected
     /// node — nothing else, so with no node there is nothing to load yet,
     /// and no file is ever opened for it unless the developer's override
     /// ([`override_views_from`]) supplies one. Over an empty seat the view
@@ -46,6 +46,7 @@ impl Guest {
     /// sample under the seat's perf key.
     pub(crate) fn load(
         module: &'static str,
+        code: Option<(::abi::BlobId, bool)>,
         asked_of: &Connection,
         generation: u64,
         mounted: &Arc<Mutex<Mounted>>,
@@ -72,7 +73,7 @@ impl Guest {
                 reason.to_owned(),
             )));
         };
-        let Some((code, bare)) = roster().code(module) else {
+        let Some((code, bare)) = code else {
             let reason = format!("this network's roster does not list {module}");
             logged(None, "Failed", &reason);
             return Err(before_any_candidate(Failure::NotListed(reason)));

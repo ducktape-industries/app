@@ -103,8 +103,8 @@ quit) are `Windows`' methods.
 |---|---|---|
 | **window / main** (GPUI foreground) | every entity method and the timers the entities and layers own (`Session`'s status poll, `Toast`'s dismiss, an open menu's ages in `layers::Chrome`, a `Seat`'s clocks); every `WindowRoot` render and its layers'; `Seat::turn`, so every wasm **tick**; `ViewTree` layout and paint; AX door answers (`ax::serve`); the entities' own `Task` futures (connect, status poll, sign-in) — polled on the GPUI foreground inside `runtime.enter()` (`spawn_on_runtime`), so their HTTP bodies are decoded here | `shell/launch.rs` |
 | **`views-kernel`** (one tokio current-thread runtime) | the I/O driver for every `reqwest`/WebSocket; view-originated node calls (`kernel/node.rs` `spawn_retrying`/`spawn_retrying_unsent`/`spawn_no_retry`, `changes`, `heads`); the banner queue (`notify::in_order`); its blocking pool runs `module.describe`, OS banners and device-key opening | `kernel::handle` |
-| **one `std::thread` per view load** | fetch, verify, compile, instantiate, snapshot/restore (`Guest::load`) | `seat::spawn_load` |
-| **roster read thread** | `/v1/programs` and the seat reconciliation on connect and on each new block | `roster::spawn_roster_read` |
+| **`view-loader` threads** (at most `LOADERS`, 4) | each takes the next queued load: fetch, verify, compile, instantiate, snapshot/restore (`Guest::load`), then the install; a pane's load goes ahead of the preloads | `seat::queue` |
+| **`roster` thread** | `/v1/programs` and the seat reconciliation on connect and on each new block; it queues the loads and returns, never waiting on one | `roster::spawn_roster_read` |
 | **`ax-door`** | TCP accept and HTTP parsing, one request per connection in turn (a long `/wait` holds the next caller); each request is forwarded to the window thread | `ax/http.rs` |
 | **freedesktop listener** (non-macOS) | banner clicks off the session bus | `runtime/notify/freedesktop.rs` |
 | GPUI background executor | timers only (clock wake-ups, sensor delays, spin, the door's settle polls) | — |
@@ -121,11 +121,12 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
 1. **Roster.** `Session::connect_answered` (`shell/entities/session.rs`) calls `runtime::connected`,
    which bumps `Connection.rev` and starts `roster::spawn_roster_read`.
    That thread calls `backend::views::programs` (the `module-registry`
-   query), stores the list in the app's `Roster` (`roster::roster`, the
+   query; the app takes at most `MAX_PROGRAMS`, 256, entries), stores the
+   list in the app's `Roster` (`roster::roster`, the
    one `launch::run` hands the `Rail`), retires seats of programs that left,
-   creates a preloaded seat `(module, 0)` for each program and starts a
+   creates a preloaded seat `(module, 0)` for each program and queues a
    load for every seat whose active code moved (or that was never
-   asked of this node). Each new block (`Session::status_answered` with a moved
+   asked of this node), then returns: nothing waits on a load. Each new block (`Session::status_answered` with a moved
    height → `runtime::deployments_checked`) repeats it, one read in flight
    at a time. A load that finds the drawn view already current
    (`Loaded::Unchanged`) only calls `Guest::reconnect`, which refuses the
@@ -240,7 +241,7 @@ ticked at all, else the fresh one is `init`ed), `restore` it into the fresh
 instance, verify its `first_frame`. An old view that is not `settled()`
 (pending events, unanswered requests, editor work) refuses the replacement
 ("its replacement waits") and the next block tries again. `Loaded::Swap`
-carries the old instance's `alive` token and tick count; `spawn_load`
+carries the old instance's `alive` token and tick count; `Load::land`
 installs it only if the seat's `generation` is still the one it was asked
 for, the app is still on the node it was asked of (`Connection.rev`), and
 the drawn instance is the one the snapshot came from, at the same tick
@@ -631,7 +632,8 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   `MAX_REQUESTS_PER_TICK` 256, `MAX_PAYLOAD_BYTES` 1 MiB, `MAX_OP_BYTES`
   16 MiB, `MAX_BLOB_BYTES` 16 MiB, `MAX_IN_FLIGHT` 256, `MAX_SUBSCRIPTIONS`
   256, `MAX_REPLY_EVENTS` 1024 / `MAX_REPLY_BYTES` 32 MiB and their
-  half-size stream backlog; `layout::MAX_PANES` 8; a per-window SVG raster
+  half-size stream backlog; `LOADERS` 4 loads at once and
+  `views::MAX_PROGRAMS` 256 roster entries; `layout::MAX_PANES` 8; a per-window SVG raster
   budget (`render/svg_limits.rs`); picture decode size limits
   (`render/picture_resources.rs`).
 - **Window-thread work.** Every wasm tick, frame decode (`shape`), `merge`

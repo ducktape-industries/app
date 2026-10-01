@@ -1,6 +1,7 @@
 //! The seat, turned off the draw path, under a bare root that draws it as
 //! `layers::PaneView` does: its tree, cached, or its standin.
 use super::entity::native_root;
+use super::tests::eventually;
 use super::*;
 use gpui_kit::{
     Entity, IntoElement, ParentElement as _, Render, Styled as _, Subscription, TestAppContext,
@@ -431,10 +432,10 @@ fn a_load_landing_replaces_the_standin_without_a_frame_loop(cx: &mut TestAppCont
     );
 }
 
-/// A load that lands wakes the seat: `spawn_load`'s install signals
+/// A load that lands wakes the seat: `Load::land`'s install signals
 /// `Mounted.wake`, which is what replaces the per-frame redraw loop in the
-/// running app. No gpui task is involved: the load thread's signal is read
-/// off the watch directly.
+/// running app. No gpui task is involved: the loader's signal is read off
+/// the watch directly.
 #[test]
 fn a_load_that_lands_wakes_the_seat() {
     const MODULE: &str = "install-wake-test";
@@ -442,13 +443,16 @@ fn a_load_that_lands_wakes_the_seat() {
     let woke = mounted.lock().unwrap().wake.subscribe();
     let generation = mounted.lock().unwrap().start();
     let snapshot = connection().lock().unwrap().clone();
-    spawn_load(MODULE, &mounted, generation, snapshot)
-        .join()
-        .unwrap();
-    assert!(
-        woke.has_changed().unwrap(),
-        "the install signalled the seat's wake"
-    );
+    queue(Load {
+        module: MODULE,
+        seat: mounted.clone(),
+        generation,
+        asked_of: snapshot,
+        code: None,
+    });
+    eventually("the install signalled the seat's wake", || {
+        woke.has_changed().unwrap()
+    });
 }
 
 /// A stage the loader shows and a Retry each turn the seat once: the
@@ -486,10 +490,10 @@ fn a_stage_change_and_a_retry_each_turn_the_seat_once(cx: &mut TestAppContext) {
     // Retry: the load it starts fails at once (no node), so its signal and
     // the install's coalesce into the one turn the retry is
     let instance = seat.read_with(&native, |seat, _| seat.instance());
-    let loads = retry(MODULE, instance);
-    for thread in loads._threads {
-        thread.join().unwrap();
-    }
+    retry(MODULE, instance);
+    eventually("the retried load failed without a node", || {
+        matches!(lock(&mounted).slot, Slot::Failed(_))
+    });
     native.run_until_parked();
     assert_eq!(
         turns_of(&seat, &native),
@@ -629,6 +633,40 @@ fn a_retired_program_shows_no_view(cx: &mut TestAppContext) {
     assert!(
         words.as_deref().is_some_and(|w| w.contains("has no")),
         "the retired seat still shows its tree: {words:?}"
+    );
+}
+
+/// A load that panics fails as any failed load does: the pane names the
+/// failure and offers Retry, where it showed "Loading" for good, and the
+/// panic stops at the loader, which goes on to the next load.
+#[gpui_kit::test]
+fn a_load_that_panics_shows_the_failure_with_retry(cx: &mut TestAppContext) {
+    const MODULE: &str = "panicking-load-test";
+    let (seat, _, native) = open(cx, MODULE, false);
+    let mounted = mounted_of(&seat, &native);
+    // asked as `retry` asks: the seat's wake is signalled here, on the
+    // test's thread, so the loader's signal finds no waker to run off-thread
+    let generation = {
+        let mut locked = lock(&mounted);
+        locked.wake.send_replace(());
+        locked.start()
+    };
+    let load = Load {
+        module: MODULE,
+        seat: mounted,
+        generation,
+        asked_of: connection().lock().unwrap().clone(),
+        code: None,
+    };
+    let landed = std::thread::spawn(move || load.land(|_, _| panic!("a loader bug"))).join();
+    assert!(landed.is_ok(), "the panic got past the loader");
+    native.run_until_parked();
+    let standin = seat.read_with(&native, |s, _| s.standin().cloned());
+    assert!(
+        standin
+            .as_ref()
+            .is_some_and(|s| s.retry && s.words.contains("a loader bug")),
+        "{standin:?}"
     );
 }
 
@@ -792,9 +830,11 @@ fn a_seat_claimed_or_dropped_wakes_the_rail(cx: &mut TestAppContext) {
     let key = seat.read_with(cx, |seat, _| (seat.module(), seat.instance()));
     // a retry (Loading again) and the load it starts (no node: a failure
     // installed) each tell the rail
-    for thread in retry(key.0, key.1)._threads {
-        thread.join().unwrap();
-    }
+    let mounted = registry().lock().unwrap()[&key].clone();
+    retry(key.0, key.1);
+    eventually("the retried load failed without a node", || {
+        matches!(lock(&mounted).slot, Slot::Failed(_))
+    });
     assert!(
         woken() >= 2,
         "a retry and its load did not both tell the rail"
