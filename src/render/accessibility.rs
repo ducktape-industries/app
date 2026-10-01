@@ -436,8 +436,8 @@ fn pressed_at(position: Point<Pixels>) -> wire::click::Click {
 impl ViewTree {
     /// The native state worth keeping when the view's guest is re-instantiated
     /// (a new generation): each field's text, selection and focus, the focused
-    /// container or editor, and the decoded image and SVG caches. Plain data
-    /// only: no native entity, callback, handler id or IME preedit crosses a
+    /// container or editor, and the decoded image cache itself (the seat's,
+    /// shared, not copied). Plain data otherwise: no native entity, callback, handler id or IME preedit crosses a
     /// generation, since the new guest's handler ids mean different things.
     /// Document selection remains guest-owned.
     pub(crate) fn presentation(&self, window: &Window, cx: &App) -> NativePresentation {
@@ -474,7 +474,7 @@ impl ViewTree {
             }
         });
         NativePresentation {
-            images: self.images.clone(),
+            images: Some(self.images.clone()),
             focused_container: self.focus_targets.iter().find_map(|(key, (kind, handle))| {
                 handle.is_focused(window).then(|| (key.clone(), *kind))
             }),
@@ -487,7 +487,9 @@ impl ViewTree {
     /// are taken now, the rest is claimed by each node's first render and
     /// dropped after it (`Render for ViewTree`).
     pub(crate) fn with_presentation(mut self, mut presentation: NativePresentation) -> Self {
-        self.images = std::mem::take(&mut presentation.images);
+        if let Some(images) = presentation.images.take() {
+            self.images = images;
+        }
         self.presentation = presentation;
         self
     }
