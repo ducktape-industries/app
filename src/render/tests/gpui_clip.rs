@@ -125,3 +125,135 @@ fn an_anchored_popup_fits_its_slot_not_the_window(cx: &mut gpui_kit::TestAppCont
     })
     .unwrap();
 }
+
+// A pane smaller than the window, a list scrolled in it: a tooltip and a
+// `Deferred` popup on the list's last visible row draw whole, inside the
+// pane. The pane is their mask, not the list's clip, and the tooltip fits
+// the pane, not the window.
+#[gpui_kit::test]
+fn a_tooltip_and_a_popup_on_a_scrolled_lists_last_row_draw_whole(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use gpui_kit::{ScrollDelta, ScrollWheelEvent};
+    use std::time::Duration;
+    const MAGENTA: u32 = 0xff00ff;
+    struct Pane {
+        tree: Entity<ViewTree>,
+    }
+    impl Render for Pane {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(div().size(px(200.)).child(self.tree.clone()))
+        }
+    }
+    fn container(
+        id: &str,
+        mut style: Div,
+        interactivity: wire::Interactivity,
+        children: Vec<wire::Node>,
+    ) -> wire::Node {
+        wire::Node::Container(view_wire::ContainerNode {
+            id: Some(named_id(id)),
+            style: style.style().clone(),
+            interactivity,
+            children,
+        })
+    }
+    let magenta = |id: &str, style: Div| {
+        container(id, style.bg(rgb(MAGENTA)), Default::default(), Vec::new())
+    };
+    // 100 by 120: below the pointer it runs past the pane's foot
+    let tooltip = |row: usize| wire::Interactivity {
+        tooltip: Some(wire::Tooltip {
+            request: row as u32,
+            content: Some(Box::new(magenta("tip", div().w(px(100.)).h(px(120.))))),
+            hoverable: false,
+            delay_ms: 10,
+        }),
+        ..Default::default()
+    };
+    // 100 by 60, under its row: past the list's foot, inside the pane
+    let popup = || wire::Node::Deferred {
+        priority: 16,
+        content: Box::new(magenta(
+            "popup",
+            div().absolute().top(px(40.)).w(px(100.)).h(px(60.)),
+        )),
+    };
+    // five rows of 40 in a list 100 high, scrolled by one row: the fourth
+    // row is the last in view, at 80..120, cut at 100
+    let list = |tooltips: bool| {
+        let rows = (0..5)
+            .map(|row| {
+                let interactivity = match tooltips {
+                    true => tooltip(row),
+                    false => Default::default(),
+                };
+                let children = match (tooltips, row) {
+                    (false, 3) => vec![popup()],
+                    _ => Vec::new(),
+                };
+                container(
+                    &format!("row-{row}"),
+                    div().relative().w_full().h(px(40.)).flex_none(),
+                    interactivity,
+                    children,
+                )
+            })
+            .collect();
+        let mut scrolling = div().w_full().h(px(100.)).flex().flex_col();
+        scrolling.style().overflow.y = Some(gpui_kit::Overflow::Scroll);
+        container(
+            "pane",
+            div().size_full(),
+            Default::default(),
+            vec![container("list", scrolling, Default::default(), rows)],
+        )
+    };
+    cx.update(gpui_kit::init);
+    for (variant, tooltips) in [("tooltip", true), ("popup", false)] {
+        let root = list(tooltips);
+        let window = cx.open_window(size(px(400.), px(400.)), move |_, cx| Pane {
+            tree: cx.new(|_| ViewTree::new(root)),
+        });
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| window.render_frame(cx));
+        native.simulate_event(ScrollWheelEvent {
+            position: point(px(20.), px(50.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(-40.))),
+            ..Default::default()
+        });
+        native.update(|window, cx| window.render_frame(cx));
+        native.simulate_mouse_move(point(px(20.), px(90.)), None, Default::default());
+        native.executor().advance_clock(Duration::from_millis(11));
+        native.run_until_parked();
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            let scale = window.scale_factor();
+            let quads: Vec<_> = window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| quad.background.as_solid() == Some(rgb(MAGENTA).into()))
+                .collect();
+            assert!(!quads.is_empty(), "{variant}: it paints");
+            let pane = gpui_kit::ScaledPixels(200. * scale);
+            for quad in quads {
+                let (bounds, mask) = (quad.bounds, quad.content_mask.bounds);
+                assert!(
+                    bounds.origin.y.0 + bounds.size.height.0 <= pane.0,
+                    "{variant}: past the pane's foot: {bounds:?}"
+                );
+                assert_eq!(
+                    mask.intersect(&bounds),
+                    bounds,
+                    "{variant}: cut by its mask {mask:?}"
+                );
+                assert!(
+                    mask.origin.y.0 + mask.size.height.0 <= pane.0,
+                    "{variant}: masked past the pane: {mask:?}"
+                );
+            }
+        });
+    }
+}

@@ -1,23 +1,29 @@
-//! A deferred guest draw retains its slot's content mask.
+//! A guest's layer: its deferred draws and its tooltips, drawn among the
+//! window's deferred draws at a guest priority and inside its pane.
 //! GPUI's generic Deferred intentionally passes no mask; that behavior would
 //! let guest overlays draw above host chrome after the slot has been painted.
 //!
-//! A guest draw defers in the first round and below the host's band. gpui
-//! paints deferred draws by priority alone, but hit-tests them by round
-//! first: each draw's hitboxes go in as it prepaints, round by round, and a
-//! draw deferred while another prepaints is in the next round, over every
-//! draw of the one before whatever its priority (gpui-pre `window.rs`,
-//! `prepaint_deferred_draws`, `Frame::hit_test`). So a guest `Deferred` met
-//! inside another draws in place, and the depth stays one whatever the
-//! guest nests (gpui also asserts it under ten).
+//! [`Layer`] sets the pane's [`TooltipLayer`] around a view's tree: gpui
+//! draws every tooltip registered inside it at [`GUEST_CEILING`], fitted
+//! and clipped to the pane, and a guest `Deferred` takes the same mask. A
+//! masked deferred draw paints and takes clicks only inside its mask
+//! (gpui-pre `window.rs`, `prepaint_deferred_draws`, `Frame::hit_test`).
+//!
+//! A guest `Deferred` met inside another draws in place, so the depth
+//! stays one whatever the guest nests (gpui asserts it under ten).
 use super::*;
+use gpui_kit::TooltipLayer;
 use std::cell::Cell;
 
-/// The host's band, over every priority a guest may ask for (at most 16,
-/// `deferred`): the host's layers over the desk (its dialogs, the bar's
-/// menus, the footer) defer at `HOST_BAND + n`, so no guest draw paints or
-/// takes a click above them.
+/// The host's band, over every priority a guest may ask for (at most
+/// [`GUEST_CEILING`]): the host's layers over the desk (its dialogs, the
+/// bar's menus, the footer) defer at `HOST_BAND + n`, so no guest draw
+/// paints or takes a click above them.
 pub(crate) const HOST_BAND: usize = 1000;
+
+/// The highest priority a guest draw takes: a `Deferred` asks for at most
+/// this, and a guest tooltip draws at it.
+pub(super) const GUEST_CEILING: usize = 16;
 
 thread_local! {
     /// A guest deferral is prepainting now: a `Deferred` met inside it
@@ -45,13 +51,13 @@ impl ViewTree {
 pub(super) fn deferred(child: AnyElement, priority: usize) -> SlotDeferred {
     SlotDeferred {
         child: Some(Inside(child).into_any_element()),
-        priority: priority.min(16),
+        priority: priority.min(GUEST_CEILING),
     }
 }
 
-/// A guest `Deferred`: its child drawn after the window's other draws and
-/// painted inside the slot's mask, or in place when met inside another
-/// deferral.
+/// A guest `Deferred`: its child drawn after the window's other draws,
+/// inside its pane (the [`Layer`]'s mask), or in place when met inside
+/// another deferral.
 pub(super) struct SlotDeferred {
     /// Held until prepaint, and on through paint when drawn in place.
     child: Option<AnyElement>,
@@ -109,12 +115,11 @@ impl Element for SlotDeferred {
             return;
         }
         let child = self.child.take().expect("deferred child is drawn once");
-        window.defer_draw(
-            child,
-            window.element_offset(),
-            self.priority,
-            Some(window.content_mask()),
-        );
+        let pane = window
+            .tooltip_layer()
+            .expect("a guest deferral draws inside its view's layer")
+            .mask;
+        window.defer_draw(child, window.element_offset(), self.priority, Some(pane));
     }
 
     fn paint(
@@ -130,6 +135,69 @@ impl Element for SlotDeferred {
         if let Some(child) = &mut self.child {
             child.paint(window, cx);
         }
+    }
+}
+
+/// A view's tree in its pane's layer: the tooltips registered and the
+/// `Deferred`s met inside it draw at [`GUEST_CEILING`] at most, fitted and
+/// clipped to the content mask the tree is drawn in (the pane's).
+pub(super) struct Layer(pub(super) AnyElement);
+
+impl IntoElement for Layer {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for Layer {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.0.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let layer = TooltipLayer {
+            priority: GUEST_CEILING,
+            mask: window.content_mask(),
+        };
+        window.with_tooltip_layer(Some(layer), |window| self.0.prepaint(window, cx));
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        _prepaint: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.0.paint(window, cx);
     }
 }
 
@@ -211,14 +279,17 @@ mod tests {
     struct Clipped;
     impl Render for Clipped {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-            div().size(px(40.)).overflow_hidden().child(deferred(
-                div()
-                    .absolute()
-                    .left(px(30.))
-                    .size(px(100.))
-                    .bg(rgb(0xff00ff))
-                    .into_any_element(),
-                usize::MAX,
+            div().size(px(40.)).overflow_hidden().child(Layer(
+                deferred(
+                    div()
+                        .absolute()
+                        .left(px(30.))
+                        .size(px(100.))
+                        .bg(rgb(0xff00ff))
+                        .into_any_element(),
+                    usize::MAX,
+                )
+                .into_any_element(),
             ))
         }
     }

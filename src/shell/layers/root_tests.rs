@@ -1083,3 +1083,262 @@ fn a_views_deferred_draw_stays_under_a_dialog(cx: &mut TestAppContext) {
         assert_eq!(open, None, "{module}: the view took the scrim's click");
     }
 }
+
+/// A view's tooltip, open when a host dialog comes over its pane (the
+/// pointer still), stays under the dialog: the scrim paints over it and
+/// takes the click meant for it (here closing the dialog), the tooltip
+/// hoverable or not.
+#[gpui_kit::test]
+fn a_views_tooltip_stays_under_a_dialog(cx: &mut TestAppContext) {
+    use gpui_kit::Styled as _;
+    use view_wire as wire;
+    const MAGENTA: u32 = 0xff00ff;
+    const CYAN: u32 = 0x00ffff;
+    for (module, hoverable) in [("root-tip-hoverable", true), ("root-tip-plain", false)] {
+        let (app, _, view, mut native) = console(cx);
+        let mut tip = gpui_kit::div()
+            .size(gpui_kit::px(3000.))
+            .bg(gpui_kit::rgb(MAGENTA));
+        let tip = wire::Node::Container(view_wire::ContainerNode {
+            id: Some(wire::ElementIdWire::Name("tip".into())),
+            style: tip.style().clone(),
+            interactivity: wire::Interactivity {
+                on_click: Some(1),
+                occlude: true,
+                ..Default::default()
+            },
+            children: Vec::new(),
+        });
+        let mut source = gpui_kit::div().size_full().bg(gpui_kit::rgb(CYAN));
+        let root = wire::Node::Container(view_wire::ContainerNode {
+            id: Some(wire::ElementIdWire::Name("source".into())),
+            style: source.style().clone(),
+            interactivity: wire::Interactivity {
+                tooltip: Some(wire::Tooltip {
+                    request: 7,
+                    content: Some(Box::new(tip)),
+                    hoverable,
+                    delay_ms: 10,
+                }),
+                ..Default::default()
+            },
+            children: Vec::new(),
+        });
+        crate::runtime::seat_drawing_for_test(module, 400, root);
+        set_motion(&app, false, &mut native);
+        pane(&view, PaneMessage::Select(module), &mut native);
+        for _ in 0..4 {
+            frame(&mut native);
+        }
+        let scale = native.update(|window, _| window.scale_factor());
+        let painted = |native: &mut VisualTestContext, color: u32| {
+            quads(native)
+                .into_iter()
+                .find(|quad| quad.background.as_solid() == Some(gpui_kit::rgb(color).into()))
+        };
+        let pane = painted(&mut native, CYAN)
+            .unwrap_or_else(|| panic!("{module}: the view paints"))
+            .bounds;
+        let middle = gpui_kit::point(
+            gpui_kit::px((pane.origin.x.0 + pane.size.width.0 / 2.) / scale),
+            gpui_kit::px((pane.origin.y.0 + pane.size.height.0 / 2.) / scale),
+        );
+        native.simulate_mouse_move(middle, None, Default::default());
+        native
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(11));
+        native.run_until_parked();
+        for _ in 0..3 {
+            frame(&mut native);
+        }
+        assert!(
+            painted(&mut native, MAGENTA).is_some(),
+            "{module}: the tooltip opened"
+        );
+        // the dialog comes with the pointer still (a request, a shortcut)
+        super::tests::show(&view, Some(Overlay::Approve), &mut native);
+        for _ in 0..3 {
+            frame(&mut native);
+        }
+        let quads = quads(&mut native);
+        let scrim = quads
+            .iter()
+            .find(|quad| {
+                quad.background
+                    .as_solid()
+                    .is_some_and(|color| (color.a - 0.6).abs() < 0.01)
+            })
+            .expect("the dialog's scrim paints");
+        // the pointer is still in the source's bounds: the tooltip stays up
+        let tip = quads
+            .iter()
+            .find(|quad| quad.background.as_solid() == Some(gpui_kit::rgb(MAGENTA).into()))
+            .unwrap_or_else(|| panic!("{module}: the tooltip still paints"));
+        assert!(
+            tip.order < scrim.order,
+            "{module}: the tooltip {} over the scrim {}",
+            tip.order,
+            scrim.order
+        );
+        // the pane's bottom-left corner: on the scrim, away from the card
+        let at = gpui_kit::point(
+            gpui_kit::px(pane.origin.x.0 / scale + 8.),
+            gpui_kit::px((pane.origin.y.0 + pane.size.height.0) / scale - 8.),
+        );
+        native.simulate_click(at, gpui_kit::Modifiers::none());
+        frame(&mut native);
+        let open = native.update(|_, cx| *view.read(cx).overlays().read(cx).get());
+        assert_eq!(open, None, "{module}: the tooltip took the scrim's click");
+    }
+}
+
+/// A view's layer reaches no further than its pane: its `Deferred` as big
+/// as the window and anchored at the window's corner, occluding and taking
+/// clicks, takes none on the bar or in the view's window beside it. The
+/// bar's account button opens its menu, a click in the neighbour reaches
+/// the neighbour, and the view's own handler never fires.
+#[gpui_kit::test]
+fn a_views_deferred_draw_takes_no_click_outside_its_pane(cx: &mut TestAppContext) {
+    use gpui_kit::Styled as _;
+    use std::{cell::RefCell, rc::Rc};
+    use view_wire as wire;
+    const HOSTILE: &str = "root-hostile-view";
+    const NEIGHBOUR: &str = "root-neighbour-view";
+    const CYAN: u32 = 0x00ffff;
+    let mut cover = gpui_kit::div()
+        .w(gpui_kit::px(1280.))
+        .h(gpui_kit::px(800.))
+        .bg(gpui_kit::rgb(0xff00ff));
+    let cover = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("cover".into())),
+        style: cover.style().clone(),
+        interactivity: wire::Interactivity {
+            on_click: Some(1),
+            occlude: true,
+            ..Default::default()
+        },
+        children: Vec::new(),
+    });
+    let hostile = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("slot".into())),
+        style: gpui_kit::div().size_full().relative().style().clone(),
+        interactivity: Default::default(),
+        children: vec![wire::Node::Deferred {
+            priority: 16,
+            content: Box::new(wire::Node::Anchored {
+                anchor: wire::Anchor::TopLeft,
+                fit: wire::AnchoredFitMode::SnapToWindow,
+                position: Some([0., 0.]),
+                position_mode: wire::AnchoredPositionMode::Window,
+                offset: None,
+                children: vec![cover],
+            }),
+        }],
+    });
+    let mut neighbour = gpui_kit::div().size_full().bg(gpui_kit::rgb(CYAN));
+    let neighbour = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("neighbour".into())),
+        style: neighbour.style().clone(),
+        interactivity: wire::Interactivity {
+            on_click: Some(2),
+            ..Default::default()
+        },
+        children: Vec::new(),
+    });
+    crate::runtime::seat_drawing_for_test(HOSTILE, 400, hostile);
+    crate::runtime::seat_drawing_for_test(NEIGHBOUR, 400, neighbour);
+    // a signed-in desk: the bar shows the account's button
+    let mut seed = Seed::boot();
+    seed.roster = Default::default();
+    seed.center = Default::default();
+    seed.screen = Screen::Desk;
+    seed.account.signer_key = "ab".into();
+    let (app, _, view, mut native) = open_console(seed, cx);
+    set_motion(&app, false, &mut native);
+    pane(&view, PaneMessage::Select(HOSTILE), &mut native);
+    pane(&view, PaneMessage::Split(NEIGHBOUR), &mut native);
+    // side by side: a split opens over the window before it
+    for (module, x) in [(HOSTILE, 12.), (NEIGHBOUR, 640.)] {
+        let index = native.update(|_, cx| {
+            let layout = view.read(cx).layout(cx);
+            layout.panes.iter().position(|pane| pane.module == module)
+        });
+        let frame = crate::ui::layout::Frame {
+            x,
+            y: 12.,
+            w: 600.,
+            h: 500.,
+        };
+        pane(
+            &view,
+            PaneMessage::Frame(index.expect("the pane opened"), frame),
+            &mut native,
+        );
+    }
+    for _ in 0..4 {
+        frame(&mut native);
+    }
+    // what each view's tree emits from here on
+    let clicks = |module: &str, native: &mut VisualTestContext| {
+        let clicks = Rc::new(RefCell::new(Vec::new()));
+        let seen = clicks.clone();
+        native.update(|_, cx| {
+            let layout = view.read(cx).layout(cx);
+            let pane = layout
+                .panes
+                .iter()
+                .find(|pane| pane.module == module)
+                .expect("the pane opened");
+            let tree = app.seats.read(cx).seat(pane.instance).expect("seated");
+            let tree = tree.read(cx).tree().expect("the view drew");
+            cx.subscribe(&tree, move |_, event: &wire::Event, _| {
+                if let wire::Event::Click { handler, .. } = event {
+                    seen.borrow_mut().push(*handler);
+                }
+            })
+            .detach();
+        });
+        clicks
+    };
+    let hostile = clicks(HOSTILE, &mut native);
+    let neighbour = clicks(NEIGHBOUR, &mut native);
+    let account = native.update(|window, cx| {
+        draw(window, cx);
+        let nodes = serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap();
+        let button = nodes
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["id"] == "shell:rail-account")
+            .cloned()
+            .unwrap_or_else(|| panic!("the bar's account button: {nodes}"));
+        let at = |n: usize| button["bounds"][n].as_f64().unwrap() as f32;
+        gpui_kit::point(
+            gpui_kit::px((at(0) + at(2)) / 2.),
+            gpui_kit::px((at(1) + at(3)) / 2.),
+        )
+    });
+    native.simulate_click(account, gpui_kit::Modifiers::none());
+    frame(&mut native);
+    let open = native.update(|_, cx| *view.read(cx).overlays().read(cx).get());
+    super::tests::show(&view, None, &mut native);
+    frame(&mut native);
+    let scale = native.update(|window, _| window.scale_factor());
+    let beside = quads(&mut native)
+        .into_iter()
+        .find(|quad| quad.background.as_solid() == Some(gpui_kit::rgb(CYAN).into()))
+        .expect("the neighbour paints")
+        .bounds;
+    let middle = gpui_kit::point(
+        gpui_kit::px((beside.origin.x.0 + beside.size.width.0 / 2.) / scale),
+        gpui_kit::px((beside.origin.y.0 + beside.size.height.0 / 2.) / scale),
+    );
+    native.simulate_click(middle, gpui_kit::Modifiers::none());
+    frame(&mut native);
+    // what the bar's click opened, the neighbour's clicks, the view's
+    assert_eq!(
+        (open, neighbour.take(), hostile.take()),
+        (Some(Overlay::Menu(Popover::Account)), vec![2], vec![]),
+        "a click outside the view's pane reached its layer"
+    );
+}

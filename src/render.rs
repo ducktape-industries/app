@@ -207,8 +207,6 @@ pub struct ViewTree {
     /// (`Seat::keys_free`, mirrored here): a dialog that opens in it takes
     /// the keyboard only then.
     keys_grant: bool,
-    /// The pane box this tree is clipped to, for its tooltip windows.
-    slot_mask: tooltip_containment::SlotMask,
     /// The seat this tree draws for, once a widget owns it: its renders and
     /// their time are counted there (docs/perf.md).
     perf_key: Option<crate::perf::Key>,
@@ -229,7 +227,6 @@ impl ViewTree {
         Self {
             activation: Default::default(),
             keys_grant: false,
-            slot_mask: Default::default(),
             root,
             focus_targets: HashMap::new(),
             guest_focus_targets: HashMap::new(),
@@ -358,25 +355,15 @@ impl Render for ViewTree {
         // Carried-over state is for the first render of a new tree only:
         // whatever it did not claim is dropped.
         self.presentation = NativePresentation::default();
-        let slot_mask = self.slot_mask.clone();
         // Host-owned clip box around the guest root (guest style never
-        // reaches it). The zero-size canvas records this box's content mask
-        // into `slot_mask`, which tooltip windows (`tooltip_containment::
-        // build`) use to stay inside this pane.
+        // reaches it): the pane's mask, which the guest's layer (its
+        // tooltips and deferred draws) is fitted and clipped to.
         div()
             .relative()
             .size_full()
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
-            .child(
-                canvas(
-                    move |_, window, _| slot_mask.set(window.content_mask()),
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .size_0(),
-            )
-            .child(node)
+            .child(deferred::Layer(node))
     }
 }
