@@ -21,8 +21,6 @@ pub(in crate::runtime) fn guest() -> Guest {
     guest
 }
 
-/// One request off `stream` to a fake node: its request line, and the
-/// body its Content-Length gives.
 /// The in-order queue `name` held by a job that waits for the returned
 /// sender to send or drop, so every job queued behind it waits too.
 pub(in crate::runtime) fn held(name: &str) -> std::sync::mpsc::Sender<()> {
@@ -39,6 +37,8 @@ pub(in crate::runtime) fn waiting<F: Future>(future: std::pin::Pin<&mut F>) -> b
     future.poll(&mut cx).is_pending()
 }
 
+/// One request off `stream` to a fake node: its request line, and the
+/// body its Content-Length gives.
 pub(in crate::runtime) fn read_request(stream: &mut std::net::TcpStream) -> (String, Vec<u8>) {
     use std::io::{BufRead as _, Read as _};
     let mut reader = std::io::BufReader::new(stream);
