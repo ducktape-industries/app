@@ -162,9 +162,6 @@ impl Drop for Guest {
     }
 }
 
-/// A tick may cancel up to twice what it may request.
-pub(super) const MAX_CANCELS_PER_TICK: usize = 2 * MAX_REQUESTS_PER_TICK;
-
 pub(super) const COMPILED_VIEW_LIMIT: usize = 16;
 pub(super) const COMPILED_VIEW_SOURCE_BYTES: usize = 32 * 1024 * 1024;
 
@@ -403,8 +400,8 @@ pub(super) fn shape(
     bytes: &[u8],
 ) -> Result<(wire::Frame, display_diagnostics::FrameReports), String> {
     let mut frame: wire::Frame = wire::decode(bytes)?;
-    let requests_exceed_budget = frame.requests.len() > MAX_REQUESTS_PER_TICK;
-    let cancels_exceed_budget = frame.cancels.len() > MAX_CANCELS_PER_TICK;
+    let requests_exceed_budget = frame.requests.len() > wire::MAX_REQUESTS;
+    let cancels_exceed_budget = frame.cancels.len() > wire::MAX_CANCELS;
     if requests_exceed_budget || cancels_exceed_budget {
         return Err("frame request or cancellation budget exceeded".into());
     }
