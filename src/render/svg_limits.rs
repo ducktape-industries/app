@@ -894,6 +894,42 @@ mod tests {
         );
     }
 
+    /// Icons whose guards are gone stay pinned through the next frame (gpui
+    /// keeps their element state until it finishes): a view that swaps
+    /// more than half the key cap of icons for new ones refuses the excess
+    /// on that frame, and draws them all on the next.
+    #[gpui_kit::test]
+    fn icons_swapped_wholesale_wait_one_frame_for_the_last_ones_to_go(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let count = MAX_WINDOW_SVG_RASTERS / 2 + 50;
+        let window = cx.open_window(size(px(1200.), px(1200.)), move |_, _| Churn {
+            side: 1.,
+            ..Churn::new(0, count)
+        });
+        window
+            .update(cx, |churn, _, cx| {
+                churn.first = count;
+                cx.notify();
+            })
+            .unwrap();
+        // the update drew the frame that swapped them
+        cx.update_window(window.into(), |_, window, cx| {
+            assert_eq!(
+                window.painted_quads().len(),
+                2 * count - MAX_WINDOW_SVG_RASTERS,
+                "the frame that swapped them refused what did not fit beside the last frame's"
+            );
+            window.draw(cx).clear(cx);
+            assert!(
+                window.painted_quads().is_empty(),
+                "the next frame drew them all"
+            );
+        })
+        .unwrap();
+    }
+
     /// A frame whose own icons pass the key cap evicts none of them: the
     /// one past the cap draws its refusal.
     #[gpui_kit::test]
