@@ -37,7 +37,7 @@ pub(crate) struct Told(tokio::sync::oneshot::Receiver<bool>);
 
 impl Told {
     /// The person's answer; `None` when nobody can answer any more.
-    pub(super) async fn answer(&mut self) -> Option<bool> {
+    pub(crate) async fn answer(&mut self) -> Option<bool> {
         (&mut self.0).await.ok()
     }
 }
@@ -84,9 +84,22 @@ pub(crate) struct Ask {
 }
 
 /// The asks waiting for the person, oldest first; the shell shows the front.
+/// One queue for the process, as there is one person. Under test, one per
+/// test thread: the tests share the process, and a card one test asks for
+/// would open in another test's window as its dialog closed.
 pub(crate) fn waiting() -> &'static Mutex<VecDeque<Ask>> {
-    static WAITING: OnceLock<Mutex<VecDeque<Ask>>> = OnceLock::new();
-    WAITING.get_or_init(Mutex::default)
+    #[cfg(not(test))]
+    {
+        static WAITING: OnceLock<Mutex<VecDeque<Ask>>> = OnceLock::new();
+        WAITING.get_or_init(Mutex::default)
+    }
+    #[cfg(test)]
+    {
+        thread_local! {
+            static WAITING: &'static Mutex<VecDeque<Ask>> = Box::leak(Box::default());
+        }
+        WAITING.with(|waiting| *waiting)
+    }
 }
 
 /// The queue, less every ask whose request let go of it (`Told`).
@@ -237,16 +250,6 @@ pub(crate) fn queue(module: &'static str, instance: u64, words: Words) -> Option
     Some(Told(told))
 }
 
-/// The queue is one for the process: a test that queues an ask holds this
-/// for its whole run, so no other test's ask lands in the middle of it.
-#[cfg(test)]
-pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
-    static SERIAL: Mutex<()> = Mutex::new(());
-    SERIAL
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,7 +358,6 @@ mod tests {
     /// longer blocks the view's next ask, and the shell is woken to sync.
     #[test]
     fn an_ask_lives_only_as_long_as_its_request() {
-        let _queue = serial();
         let mut woken = changes_channel();
         let words = Words {
             said: "x".into(),

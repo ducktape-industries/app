@@ -4,6 +4,7 @@
 //! the keys leave closes, and leaves them where they went.
 use super::super::layers::tests::open_now;
 use super::*;
+use crate::runtime::consent;
 use gpui_kit::{Pixels, Role};
 use std::collections::HashMap;
 
@@ -505,4 +506,147 @@ fn a_menu_hangs_four_pixels_under_the_bar_at_every_scale(cx: &mut TestAppContext
             }
         }
     }
+}
+
+/// An ask queued from the view `module`, saying `said`, and the console's
+/// card synced to the queue as the shell's wake syncs it.
+fn ask(
+    view: &Entity<WindowRoot>,
+    native: &mut VisualTestContext,
+    module: &'static str,
+    said: &str,
+) -> consent::Told {
+    let words = consent::Words {
+        said: said.into(),
+        shown: None,
+    };
+    let told = consent::queue(module, 0, words).expect("queued");
+    sync(view, native);
+    told
+}
+
+/// The console's card synced to the consent queue (`Windows::sync_consent`),
+/// then the draw that shows it and the one after the keys enter it.
+fn sync(view: &Entity<WindowRoot>, native: &mut VisualTestContext) {
+    let app = super::super::layers::tests::entities(view, native);
+    app.windows
+        .update(native, |windows, cx| windows.sync_consent(cx));
+    native.run_until_parked();
+    native.update(draw);
+    native.update(draw);
+}
+
+/// Whether a node on screen says `said`.
+fn shows(native: &mut VisualTestContext, said: &str) -> bool {
+    let nodes = native.update(|window, cx| {
+        draw(window, cx);
+        serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap()
+    });
+    nodes
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|node| node["name"] == said)
+}
+
+/// Whether the person's answer to `told`'s ask has come, and was Approve.
+/// Asked once the answer may have come: an answer is read once.
+fn approved(told: &mut consent::Told) -> bool {
+    futures::FutureExt::now_or_never(told.answer()) == Some(Some(true))
+}
+
+/// Enter's key-down (`is_held`: the platform's repeat) or key-up, then a
+/// draw.
+fn key(native: &mut VisualTestContext, down: bool, is_held: bool) {
+    let keystroke = gpui_kit::Keystroke::parse("enter").unwrap();
+    if down {
+        native.simulate_event(gpui_kit::KeyDownEvent {
+            keystroke,
+            is_held,
+            prefer_character_input: false,
+        });
+    } else {
+        native.simulate_event(gpui_kit::KeyUpEvent { keystroke });
+    }
+    native.update(draw);
+}
+
+/// A mouse press that began before the card opened (down on the desk where
+/// Approve then appears, up on Approve) does not approve it; a whole click
+/// on Approve after it opened does.
+#[gpui_kit::test]
+fn a_click_begun_before_the_card_opened_does_not_approve_it(cx: &mut TestAppContext) {
+    let (view, mut native) = open(gate::desk(), cx);
+    super::activate(&mut native);
+    // where Approve shows: a first card, withdrawn
+    let told = ask(&view, &mut native, "chat", "chat asks to suspend agent #3.");
+    let at = bar_button(&mut native, "consent-approve");
+    drop(told);
+    sync(&view, &mut native);
+    assert!(!shows(&mut native, "chat asks to suspend agent #3."));
+    let none = gpui_kit::Modifiers::none();
+    native.simulate_mouse_down(at, gpui_kit::MouseButton::Left, none);
+    native.update(draw);
+    let mut told = ask(&view, &mut native, "chat", "chat asks to revoke agent #4.");
+    native.simulate_mouse_up(at, gpui_kit::MouseButton::Left, none);
+    native.update(draw);
+    assert!(
+        consent::front().is_some(),
+        "a press from before answered it"
+    );
+    native.simulate_click(at, none);
+    assert!(approved(&mut told), "a click on the card approves it");
+}
+
+/// A card never takes another ask's words. The front ask withdrawn while
+/// another waits, its card closes and the next opens as a new card with
+/// its own words; a press that began on the old card (the mouse's, then
+/// Enter's) does not approve the new one. A whole click on it does.
+#[gpui_kit::test]
+fn a_withdrawn_asks_card_gives_way_to_a_new_card(cx: &mut TestAppContext) {
+    let (view, mut native) = open(gate::desk(), cx);
+    super::activate(&mut native);
+    let (first, second, third) = (
+        "chat asks to suspend agent #3.",
+        "forge asks to revoke agent #4.",
+        "members asks to suspend agent #5.",
+    );
+    let told = ask(&view, &mut native, "chat", first);
+    let second_told = ask(&view, &mut native, "forge", second);
+    let mut third_told = ask(&view, &mut native, "members", third);
+    assert!(shows(&mut native, first));
+    let at = bar_button(&mut native, "consent-approve");
+    let none = gpui_kit::Modifiers::none();
+
+    native.simulate_mouse_down(at, gpui_kit::MouseButton::Left, none);
+    native.update(draw);
+    drop(told);
+    sync(&view, &mut native);
+    assert!(shows(&mut native, second), "the next ask's card");
+    assert!(!shows(&mut native, first));
+    native.simulate_mouse_up(at, gpui_kit::MouseButton::Left, none);
+    native.update(draw);
+    assert!(
+        consent::front().is_some_and(|(_, words)| words.said == second),
+        "a click begun on the old card answered the new one"
+    );
+
+    native.update(|window, _| {
+        assert_eq!(
+            focused_node(window),
+            Some((Role::Button, "Approve".to_owned()))
+        );
+    });
+    key(&mut native, true, false);
+    drop(second_told);
+    sync(&view, &mut native);
+    assert!(shows(&mut native, third), "the next ask's card");
+    key(&mut native, false, false);
+    assert!(
+        consent::front().is_some_and(|(_, words)| words.said == third),
+        "an Enter begun on the old card answered the new one"
+    );
+
+    native.simulate_click(at, none);
+    assert!(approved(&mut third_told), "a click on the card approves it");
 }
