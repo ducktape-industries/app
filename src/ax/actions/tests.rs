@@ -230,7 +230,7 @@ fn pressable(
 /// shows it; a button of the view's lies right there. gpui's own Click was
 /// a pointer press at the row's middle with no hit test: it clicked the
 /// button. The click is a left press at the row's middle, as that one
-/// was, and grants no user activation.
+/// was, and grants user activation, as a pointer's press does.
 #[gpui_kit::test]
 fn a_press_on_a_view_row_scrolled_out_of_its_list_is_that_rows_click(
     cx: &mut gpui_kit::TestAppContext,
@@ -324,6 +324,9 @@ fn a_press_on_a_view_row_scrolled_out_of_its_list_is_that_rows_click(
         assert_eq!(press.position, gpui_kit::point(px(100.), px(220.)));
     }
     tree.read_with(&native, |tree, _| {
-        assert!(tree.take_user_activation(&events[0]).is_none());
+        assert!(
+            tree.take_activation().is_some(),
+            "the reader's press is a gesture, as a pointer's is"
+        );
     });
 }
