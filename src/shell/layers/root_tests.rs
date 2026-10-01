@@ -3,7 +3,7 @@
 //! window's kind and screen say (docs/perf.md).
 use super::BAR;
 use super::tests::{
-    Seed, frame, line, open_console, pane, polled, pop_out, set_motion, set_screen, toast,
+    Seed, WINDOW, frame, line, open_console, pane, polled, pop_out, set_motion, set_screen, toast,
     tree_renders,
 };
 use crate::shell::PaneMessage;
@@ -141,6 +141,47 @@ fn a_still_chain_draws_no_frame(cx: &mut TestAppContext) {
             .is_none(),
         "something still times a reducer dispatch"
     );
+}
+
+/// An untouched console desk with no program to open asks for no frame:
+/// the measuring frame's callback lands the desk's size, and the frames
+/// after it, with nothing to seed, queue no callback of their own. A
+/// next-frame callback is frame demand and a `Layout` clone when it runs:
+/// one queued from every draw of an empty desk (app#402) is a callback
+/// with nothing to do per frame, and with motion off nothing else on the
+/// empty desk asks for a frame.
+#[gpui_kit::test]
+fn an_empty_untouched_desk_asks_for_no_frame(cx: &mut TestAppContext) {
+    let mut seed = Seed::boot();
+    seed.roster = Default::default();
+    seed.center = Default::default();
+    seed.screen = Screen::Desk;
+    let (app, key, _, mut native) = open_console(seed, cx);
+    set_motion(&app, false, &mut native);
+    let desk = app
+        .windows
+        .read_with(&native, |windows, _| windows.own(key).unwrap().desk.clone());
+    let layout = desk.read_with(&native, |desk, _| desk.get().clone());
+    // the desk is the window under its bar
+    assert_eq!(
+        layout.desk,
+        Some((WINDOW.0, WINDOW.1 - BAR)),
+        "the measuring frame landed"
+    );
+    assert!(layout.panes.is_empty() && !layout.initialized);
+    // the frame after the measure: whatever the draws so far queued runs
+    native.update(|window, cx| window.simulate_next_frame(cx));
+    // a frame the empty desk draws with nothing to do asks for none
+    for n in 1..=3 {
+        let asked = native.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.simulate_next_frame(cx)
+        });
+        assert_eq!(
+            asked, 0,
+            "frame {n} of an untouched empty desk asked for another"
+        );
+    }
 }
 
 /// A seat that wakes (its view lands again) draws its own tree and leaves

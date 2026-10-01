@@ -295,13 +295,19 @@ impl PaneLayer {
     }
 
     /// The desk's size, from the frame just measured, when it moved or the
-    /// console's desk is still untouched: committed from the next frame's
-    /// callback (`shown`), never from the draw.
+    /// console's desk is still untouched and there is a program to open on
+    /// it: committed from the next frame's callback (`shown`), never from
+    /// the draw. A next-frame callback is frame demand (and `shown` clones
+    /// the layout to compare it), so the gate asks for one only when the
+    /// callback has something to do: an untouched desk with nothing to
+    /// seed would otherwise ask again from every frame it drew.
     fn measured(&self, bounds: Bounds<Pixels>, cx: &App) -> Option<(f32, f32)> {
         let desk = (f32::from(bounds.size.width), f32::from(bounds.size.height));
         let layout = self.desk.read(cx).get();
-        let console = self.kind == WindowKind::Console;
-        (layout.desk != Some(desk) || (console && !layout.initialized)).then_some(desk)
+        let seedable = self.kind == WindowKind::Console
+            && !layout.initialized
+            && self.app.windows.read(cx).active().is_some();
+        (layout.desk != Some(desk) || seedable).then_some(desk)
     }
 
     /// The desk measured `size` (the next frame's callback): the `Desk`
