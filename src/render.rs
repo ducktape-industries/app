@@ -54,7 +54,7 @@ use canvas::{canvas_svg, native_canvas_commands, paint_canvas_commands};
 pub(crate) use commands::dialog_entry;
 use editor_mount::EditorMount;
 use inputs::Field;
-pub(crate) use pictures::qr;
+pub(crate) use pictures::{PictureBytes, qr};
 use sensors::SensorState;
 use style::{has_named_overlay, named_overlay, native_cursor};
 use svg_limits::{SvgPaintSource, guarded_svg_paint, svg_data_allowed};
@@ -114,7 +114,6 @@ pub(crate) fn enter_scope(node: &wire::Node, path: &mut AuthoredPath) -> bool {
 #[derive(Default)]
 pub(crate) struct NativePresentation {
     images: HashMap<u64, Arc<RenderImage>>,
-    vectors: HashMap<u64, Arc<[u8]>>,
     focused_container: Option<(AuthoredPath, std::mem::Discriminant<wire::Node>)>,
     inputs: HashMap<AuthoredPath, InputPresentation>,
     /// The focused editors' documents; the field named takes the caret back.
@@ -190,10 +189,10 @@ pub struct ViewTree {
     // containers, editor mounts and canvases, and the sensor canvas for sensors.
     bounds: HashMap<AuthoredPath, Bounds<Pixels>>,
 
-    // Decoded pictures by content hash; a frame resends bytes only for a
-    // hash the host has not remembered.
+    // Pictures by the guest's content hash: the seat's bytes, which a node
+    // that names a hash alone draws from, and the rasters decoded from them.
+    pictures: Arc<PictureBytes>,
     images: HashMap<u64, Arc<RenderImage>>,
-    vectors: HashMap<u64, Arc<[u8]>>,
 
     // Plumbing.
     /// State carried over from the previous guest instance's tree; emptied by the first render.
@@ -238,8 +237,8 @@ impl ViewTree {
             opener: None,
             bounds: HashMap::new(),
             sensors: HashMap::new(),
+            pictures: Default::default(),
             images: HashMap::new(),
-            vectors: HashMap::new(),
             editor_store: None,
             editors: HashMap::new(),
             mounted: Default::default(),
@@ -337,7 +336,10 @@ impl Render for ViewTree {
         if let Some(opener) = self.opener.take() {
             commands::dialog_exit(opener, window, cx);
         }
-        let node = self.node(&self.root.clone(), window, cx);
+        // drawn in place: nothing in the walk reads `self.root`
+        let root = std::mem::replace(&mut self.root, wire::Node::empty());
+        let node = self.node(&root, window, cx);
+        self.root = root;
         // Carried-over state is for the first render of a new tree only:
         // whatever it did not claim is dropped.
         self.presentation = NativePresentation::default();

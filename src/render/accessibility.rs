@@ -473,7 +473,6 @@ impl ViewTree {
         });
         NativePresentation {
             images: self.images.clone(),
-            vectors: self.vectors.clone(),
             focused_container: self.focus_targets.iter().find_map(|(key, (kind, handle))| {
                 handle.is_focused(window).then(|| (key.clone(), *kind))
             }),
@@ -487,7 +486,6 @@ impl ViewTree {
     /// dropped after it (`Render for ViewTree`).
     pub(crate) fn with_presentation(mut self, mut presentation: NativePresentation) -> Self {
         self.images = std::mem::take(&mut presentation.images);
-        self.vectors = std::mem::take(&mut presentation.vectors);
         self.presentation = presentation;
         self
     }

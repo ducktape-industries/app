@@ -410,11 +410,12 @@ impl Guest {
                             if let Err(error) = self.inputs.replace(root) {
                                 self.fault = Some(error);
                             }
-                            self.pictures.adopt(root);
                             // The guest remembers its tree without the
                             // picture bytes; the tree its patches build on
                             // has to be that one.
-                            crate::runtime::pictures::strip(root);
+                            if self.pictures.adopt(root, self.module) {
+                                self.pending.push(wire::Event::Resync);
+                            }
                             // O(n) over the tree: only with perf on, and
                             // only on a tick that changed it
                             if perf::on() {

@@ -17,11 +17,20 @@ pub(super) fn build(
     content: wire::Node,
     cx: &mut App,
 ) -> gpui_kit::AnyView {
-    let mask = parent
+    // the source view's clip and its pictures: a tooltip names them as
+    // its source tree does
+    let (mask, pictures) = parent
         .upgrade()
-        .map(|parent| parent.read(cx).slot_mask.clone())
+        .map(|parent| {
+            let parent = parent.read(cx);
+            (parent.slot_mask.clone(), parent.pictures.clone())
+        })
         .unwrap_or_default();
-    let child = cx.new(|_| ViewTree::new(content));
+    let child = cx.new(|_| {
+        let mut child = ViewTree::new(content);
+        child.set_pictures(pictures);
+        child
+    });
     cx.new(|cx| {
         let subscription = cx.subscribe(&child, move |_, source, event: &wire::Event, cx| {
             let source = source.read(cx);

@@ -254,21 +254,6 @@ mod tests {
         assert!(svg_data_allowed(
             b"<svg xmlns='http://www.w3.org/2000/svg'/>"
         ));
-        let node = wire::Node::Svg {
-            id: None,
-            source: wire::SvgSource::None,
-            transformation: wire::SvgTransformation {
-                scale: [1.0, 1.0],
-                translate: [0.0, 0.0],
-                rotate: 0.0,
-            },
-            label: None,
-            style: Default::default(),
-            interactivity: Default::default(),
-        };
-        let mut tree = ViewTree::new(node);
-        tree.remember_vector(7, &[0x1f, 0x8b, 0x08, 0x00]);
-        assert!(!tree.vectors.contains_key(&7));
     }
 
     #[test]
