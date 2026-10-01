@@ -392,6 +392,188 @@ fn a_focused_editor_wears_the_ring_on_the_views_box(cx: &mut gpui_kit::TestAppCo
     assert_eq!(border(&mut native), ink);
 }
 
+/// A cursor command moves the caret where it is and takes no keys: only
+/// `Focus` does, and only through the seat's gate.
+#[gpui_kit::test]
+fn a_cursor_command_moves_the_caret_without_taking_the_keys(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let root = wire::Node::Editor {
+        id: named_id("document"),
+        style: div().w(px(240.)).h(px(80.)).style().clone(),
+        label: None,
+        binding: None,
+        placeholder: String::new(),
+        document: wire::editor_document::EditorDocumentRef {
+            document: "ring".into(),
+            reset: 1,
+            text_revision: 0,
+            revision: 0,
+            cursor: Default::default(),
+            byte_len: "some words".len() as u32,
+        },
+        on_document: 0,
+        editable: true,
+    };
+    let (tree, mut native) = with_editors(root, Some("some words"), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    let path = [named_id("document")];
+    let run = |native: &mut gpui_kit::VisualTestContext, command: wire::WidgetCommand| {
+        native.update(|window, cx| {
+            let editor_mount::EditorView::Text(editor) =
+                &tree.read(cx).editors[path.as_slice()].view;
+            let editor = editor.clone();
+            editor.update(cx, |editor, cx| editor.widget_command(&command, window, cx));
+            editor.read(cx).is_focused(window, cx)
+        })
+    };
+    assert!(
+        !run(
+            &mut native,
+            wire::WidgetCommand::CursorEnd {
+                target: path.to_vec()
+            }
+        ),
+        "CursorEnd took the keys"
+    );
+    assert!(
+        !run(
+            &mut native,
+            wire::WidgetCommand::SelectAll {
+                target: path.to_vec()
+            }
+        ),
+        "SelectAll took the keys"
+    );
+    assert!(run(
+        &mut native,
+        wire::WidgetCommand::Focus {
+            target: path.to_vec()
+        }
+    ));
+}
+
+/// A key typed into a native editor activates the view as the host
+/// receives it, claimed by the binding (chat's ⌘V, acted on a redraw
+/// later: the activation is already there) or not; a claimed Escape does
+/// not.
+#[gpui_kit::test]
+fn a_key_in_a_native_editor_activates_the_view_and_escape_does_not(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    let claims = vec![
+        view_wire::EditorKeyClaim {
+            key: view_wire::keyboard::Key::Named(view_wire::keyboard::Named::Escape),
+            modifiers: Default::default(),
+            command: false,
+        },
+        view_wire::EditorKeyClaim {
+            key: view_wire::keyboard::Key::Named(view_wire::keyboard::Named::Enter),
+            modifiers: Default::default(),
+            command: false,
+        },
+    ];
+    let root = wire::Node::Editor {
+        id: named_id("document"),
+        style: div().w(px(240.)).h(px(80.)).style().clone(),
+        label: None,
+        binding: Some(Box::new(view_wire::EditorBinding {
+            claims,
+            on_request: 1,
+            on_event: 2,
+        })),
+        placeholder: String::new(),
+        document: wire::editor_document::EditorDocumentRef {
+            document: "ring".into(),
+            reset: 1,
+            text_revision: 0,
+            revision: 0,
+            cursor: Default::default(),
+            byte_len: "some words".len() as u32,
+        },
+        on_document: 0,
+        editable: true,
+    };
+    let (tree, mut native) = with_editors(root, Some("some words"), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    let path = [named_id("document")];
+    native.update(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            tree.execute_widget_command(
+                wire::WidgetCommand::Focus {
+                    target: path.to_vec(),
+                },
+                window,
+                cx,
+            )
+            .unwrap();
+        });
+        window.render_frame(cx);
+    });
+    tree.read_with(&native, |tree, _| tree.take_activation());
+    let press = |native: &mut gpui_kit::VisualTestContext, key: &str| {
+        native.update(|window, cx| {
+            window.dispatch_keystroke(gpui_kit::Keystroke::parse(key).unwrap(), cx);
+            window.render_frame(cx);
+        });
+    };
+    press(&mut native, "escape");
+    tree.read_with(&native, |tree, _| {
+        assert!(
+            tree.take_activation().is_none(),
+            "Escape activated the view"
+        );
+    });
+    press(&mut native, "enter");
+    tree.read_with(&native, |tree, _| {
+        assert!(
+            tree.take_activation().is_some(),
+            "a claimed key did not activate the view"
+        );
+    });
+    press(&mut native, "a");
+    tree.read_with(&native, |tree, _| {
+        assert!(
+            tree.take_activation().is_some(),
+            "typing did not activate the view"
+        );
+    });
+    native.simulate_mouse_down(
+        gpui_kit::point(px(5.), px(5.)),
+        gpui_kit::MouseButton::Left,
+        Default::default(),
+    );
+    native.update(|window, cx| window.render_frame(cx));
+    tree.read_with(&native, |tree, _| {
+        assert!(
+            tree.take_activation().is_some(),
+            "a press on the field did not activate the view"
+        );
+    });
+    // the view's own cursor commands are no input: they stamp nothing
+    for command in [
+        wire::WidgetCommand::CursorFront {
+            target: path.to_vec(),
+        },
+        wire::WidgetCommand::SelectAll {
+            target: path.to_vec(),
+        },
+    ] {
+        native.update(|window, cx| {
+            tree.update(cx, |tree, cx| {
+                tree.execute_widget_command(command, window, cx).unwrap();
+            });
+            window.render_frame(cx);
+        });
+        tree.read_with(&native, |tree, _| {
+            assert!(
+                tree.take_activation().is_none(),
+                "the view's own cursor command activated it"
+            );
+        });
+    }
+}
+
 #[gpui_kit::test]
 fn editor_obeys_authored_size_and_height_limits(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);

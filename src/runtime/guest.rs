@@ -8,6 +8,10 @@ use abi::{Exports, HostState, first_line, panic_message};
 
 // ---------- the guest ----------
 
+/// How long a press or key stays a view's activation: the web's transient
+/// activation duration.
+pub(crate) const ACTIVATION_EXPIRY: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// What a fresh instance did with the state the drawn view left it. A trap
 /// is not one of these — it takes the instance with it and is the load's
 /// error. A refusal is the guest's own word, reported before it builds
@@ -28,7 +32,14 @@ pub(super) enum Restored {
 pub(super) struct Guest {
     /// Node requests belong to the network selected when this instance starts.
     pub(crate) connection_rev: u64,
-    pub(crate) user_activation: Option<()>,
+    /// Transient user activation, as the web has it: when the host last
+    /// received a real press or key aimed at this view's tree
+    /// (`ViewTree::activate`, carried here by the seat's turn). Fresh for
+    /// `ACTIVATION_EXPIRY`; a gated call (`link.open`, the clipboard) takes
+    /// it, so one input admits one call (`take_activation`).
+    pub(crate) activation: Option<std::time::Instant>,
+    /// When each recent `link.open` was admitted, for the per-minute budget.
+    pub(crate) links: Vec<std::time::Instant>,
     pub(crate) module: &'static str,
     /// The seat entity showing this seat (`Seat.instance`;
     /// 0 for a preloaded seat no tab has claimed): with `module`, the key
