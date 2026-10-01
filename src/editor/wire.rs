@@ -236,11 +236,6 @@ impl EditorStore {
         Ok(store.incoming.is_none() && store.documents.values().all(|d| d.text.is_some()))
     }
 
-    /// Milliseconds since the store was made, the clock `input_time_ms` is on.
-    pub fn now_ms(&self) -> u64 {
-        self.lock().epoch.elapsed().as_millis() as u64
-    }
-
     pub fn pending(&self) -> bool {
         let store = self.lock();
         store.incoming.is_some()

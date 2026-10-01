@@ -198,11 +198,13 @@ pub struct ViewTree {
     // Plumbing.
     /// State carried over from the previous guest instance's tree; emptied by the first render.
     presentation: NativePresentation,
-    /// The handler a real gesture last pressed; `take_user_activation` spends it once.
-    user_activation: std::cell::Cell<Option<u32>>,
-    /// Whether the guest whose frame this is may move the keys on its own
-    /// (`Seat::may_move_keys` for the redraw that made it): a dialog that
-    /// opens in it takes the keyboard only then.
+    /// When the host last received a real press or key aimed at this tree
+    /// (`activate`): the view's transient activation, which the seat takes
+    /// to its guest on the next turn.
+    activation: std::cell::Cell<Option<std::time::Instant>>,
+    /// Whether the guest whose tree this is may move the keys
+    /// (`Seat::keys_free`, mirrored here): a dialog that opens in it takes
+    /// the keyboard only then.
     keys_grant: bool,
     /// The pane box this tree is clipped to, for its tooltip windows.
     slot_mask: tooltip_containment::SlotMask,
@@ -224,7 +226,7 @@ impl EventEmitter<Drawn> for ViewTree {}
 impl ViewTree {
     pub fn new(root: wire::Node) -> Self {
         Self {
-            user_activation: Default::default(),
+            activation: Default::default(),
             keys_grant: false,
             slot_mask: Default::default(),
             root,

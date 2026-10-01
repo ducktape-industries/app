@@ -534,7 +534,6 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
             wire::WidgetCommand::Focus {
                 target: vec![wire::ElementIdWire::Name("filter".into())],
             },
-            true,
         ));
     };
     crate::runtime::seat_drawing_for_test(MODULE, 320, field);
@@ -559,6 +558,8 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
     let handle: gpui_kit::AnyWindowHandle = window.into();
     cx.update(|cx| {
         seat.update(cx, |seat, cx| {
+            // the pane in front, as the pane layer would say
+            seat.set_keys_free(true, cx);
             seat.place(handle, cx);
             seat.turn(cx);
         });
@@ -615,14 +616,13 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
     );
 }
 
-/// The gate on a guest moving the keys (`Seat::may_move_keys`), on the
-/// real command path: a view whose pane is not in front, or is in front
-/// under something open over the desk or a hold (`keys_free` false, as
-/// `PaneLayer` says it), takes no focus with no gesture, by `Focus` or
-/// `FocusHandle`; with its redraw's gesture it does; with its keys free
-/// it does without one.
+/// A guest moves the keys only while its keys are free (`Seat::keys_free`,
+/// as `PaneLayer` says it: its pane in front, nothing open over the desk,
+/// no hold), on the real command path, and is judged as the command RUNS:
+/// a `Focus` or `FocusHandle` asked while the keys were free and run once
+/// Spotlight or Approve opened over the desk takes nothing.
 #[gpui_kit::test]
-fn a_view_moves_the_keys_only_with_a_gesture_or_its_keys_free(cx: &mut TestAppContext) {
+fn a_view_moves_the_keys_only_while_its_keys_are_free(cx: &mut TestAppContext) {
     const MODULE: &str = "focus-gate-test";
     let field = wire::Node::Input {
         options: wire::InputOptions {
@@ -652,15 +652,15 @@ fn a_view_moves_the_keys_only_with_a_gesture_or_its_keys_free(cx: &mut TestAppCo
     });
     crate::runtime::seat_drawing_for_test(MODULE, 320, root);
     let (seat, _, mut native) = open(cx, MODULE, false);
-    let ask = |seat: &Entity<Seat>, native: &mut VisualTestContext, command, gestured| {
-        {
-            let mounted = mounted_of(seat, native);
-            let mut locked = mounted.lock().unwrap();
-            let Slot::Ready(guest) = &mut locked.slot else {
-                panic!("seated")
-            };
-            guest.widget_commands.push((7, command, gestured));
-        }
+    let queue = |seat: &Entity<Seat>, native: &mut VisualTestContext, command| {
+        let mounted = mounted_of(seat, native);
+        let mut locked = mounted.lock().unwrap();
+        let Slot::Ready(guest) = &mut locked.slot else {
+            panic!("seated")
+        };
+        guest.widget_commands.push((7, command));
+    };
+    let run = |seat: &Entity<Seat>, native: &mut VisualTestContext| {
         let woken = seat.clone();
         native.update(|window, _| {
             window.on_next_frame(move |_, cx| {
@@ -695,32 +695,45 @@ fn a_view_moves_the_keys_only_with_a_gesture_or_its_keys_free(cx: &mut TestAppCo
                 .is_focused(window)
         })
     };
+    let keys_free = |native: &mut VisualTestContext, free: bool| {
+        seat.update(native, |seat, cx| seat.set_keys_free(free, cx));
+    };
     // a fresh seat's keys are not free until the pane layer says so
     assert!(!seat.read_with(&native, |seat, _| seat.keys_free()));
-    ask(&seat, &mut native, focus.clone(), false);
+    queue(&seat, &mut native, focus.clone());
+    run(&seat, &mut native);
     assert!(
         !input_focused(&mut native),
-        "Focus took the keys with no gesture"
+        "Focus took the keys from a back pane"
     );
-    ask(&seat, &mut native, handle.clone(), false);
+    queue(&seat, &mut native, handle.clone());
+    run(&seat, &mut native);
     assert!(
         !button_focused(&mut native),
-        "FocusHandle took the keys with no gesture"
+        "FocusHandle took the keys from a back pane"
     );
-    ask(&seat, &mut native, handle, true);
+    keys_free(&mut native, true);
+    queue(&seat, &mut native, handle);
+    run(&seat, &mut native);
     assert!(
         button_focused(&mut native),
-        "a gestured FocusHandle was refused"
+        "a front pane's FocusHandle was refused"
     );
     native.update(|window, cx| window.blur(cx));
-    ask(&seat, &mut native, focus.clone(), true);
-    assert!(input_focused(&mut native), "a gestured Focus was refused");
-    native.update(|window, cx| window.blur(cx));
-    seat.update(&mut native, |seat, _| seat.set_keys_free(true));
-    ask(&seat, &mut native, focus, false);
+    queue(&seat, &mut native, focus.clone());
+    run(&seat, &mut native);
     assert!(
         input_focused(&mut native),
-        "a front pane with free keys was refused"
+        "a front pane's Focus was refused"
+    );
+    native.update(|window, cx| window.blur(cx));
+    // asked with the keys free, run after something opened over the desk
+    queue(&seat, &mut native, focus);
+    keys_free(&mut native, false);
+    run(&seat, &mut native);
+    assert!(
+        !input_focused(&mut native),
+        "a Focus asked before Spotlight opened took the keys from it"
     );
 }
 
@@ -791,8 +804,8 @@ fn a_clipboard_answer_reaches_the_view(cx: &mut TestAppContext) {
             panic!("seated")
         };
         guest.capabilities.push(Capability::Clipboard);
-        // the read is asked on the first redraw, which has the gesture
-        guest.user_activation = Some(());
+        // the read is asked on the first redraw, under a fresh activation
+        guest.activation = Some(std::time::Instant::now());
     }
     let (seat, _, native) = open(cx, MODULE, false);
     native.run_until_parked();

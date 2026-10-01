@@ -59,7 +59,10 @@ pub struct TextEditor {
     _keystrokes: Subscription,
 }
 
-impl EventEmitter<()> for TextEditor {}
+/// Emitted when the store has events for the guest: `true` when the input
+/// that made them is the person's and activates the view (a key but
+/// Escape, an edit), as `ViewTree` hears it.
+impl EventEmitter<bool> for TextEditor {}
 
 impl TextEditor {
     pub fn new(
@@ -276,7 +279,7 @@ impl TextEditor {
             .native(&self.key, &self.preview, self.cursor, &text, next, kind);
         self.preview = Arc::from(text);
         self.cursor = next;
-        cx.emit(());
+        cx.emit(true);
         cx.notify();
     }
 
@@ -298,7 +301,7 @@ impl TextEditor {
             wire::EditorEditKind::Cursor,
         );
         self.cursor = cursor;
-        cx.emit(());
+        cx.emit(true);
         cx.notify();
     }
 
@@ -352,7 +355,7 @@ impl TextEditor {
                 wire::EditorRequestInput::Key { key, repeat: false },
             );
             cx.stop_propagation();
-            cx.emit(());
+            cx.emit(keystroke.key != "escape");
             return;
         }
         if !released {

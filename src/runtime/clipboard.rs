@@ -35,17 +35,14 @@ pub(super) fn answer(
         _ => return false,
     };
     // what the person copied elsewhere is read, and replaced, only on
-    // their press or key in this view; a view on a clock never sees it
+    // their activation, which the ask takes; a view on a clock never sees it
     match request {
-        _ if guest.user_activation.is_none() => guest.refuse(
+        Ok(_) if !guest.take_activation() => guest.refuse(
             id,
             refusal::NEEDS_GESTURE,
             "the clipboard needs a press or key",
         ),
-        Ok(request) => {
-            guest.gesture_used = true;
-            queue(guest, id, request)
-        }
+        Ok(request) => queue(guest, id, request),
         Err(error) => guest.refuse(id, refusal::MALFORMED_REQUEST, error),
     }
     true

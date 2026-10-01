@@ -325,7 +325,7 @@ fn a_press_on_a_view_row_scrolled_out_of_its_list_is_that_rows_click(
     }
     tree.read_with(&native, |tree, _| {
         assert!(
-            tree.take_user_activation(&events[0]).is_some(),
+            tree.take_activation().is_some(),
             "the reader's press is a gesture, as a pointer's is"
         );
     });

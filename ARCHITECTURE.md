@@ -213,14 +213,15 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
 7. **Input back.** Element listeners (`render/interactivity.rs`,
    `render/inputs.rs`, …) `cx.emit(wire::Event)` with the guest's handler
    ids; `Seat` subscribes (`runtime/seat/entity.rs`), drops an event
-   addressed to a generation or revision no longer seated, takes the
-   one-shot **user activation** (`ViewTree::take_user_activation`) onto
-   `guest.user_activation`, pushes the event onto `guest.pending` and
-   turns. The mark is the view's **gesture** for that redraw: `link.open`
-   (one per gesture, four a minute), `clipboard.read`/`write` and every
-   focus-moving `host.widget` command need it, or (focus only) the pane's
-   keys to be free (`Seat::may_move_keys`); a key in a native editor marks
-   it too (`Guest::redraw`). A guest hears only what its elements' own
+   addressed to a generation or revision no longer seated, pushes the event
+   onto `guest.pending` and turns. The listeners also stamp the tree's
+   **transient activation** (`ViewTree::activate`: a press, a key but
+   Escape, typing, an AT press), which the turn carries to
+   `guest.activation`: `link.open` (four a minute) and
+   `clipboard.read`/`write` need it fresh (5 s) and take it, one input
+   admitting one call. Every focus-moving `host.widget` command and a
+   dialog's auto-focus need the pane's keys free instead (`Seat::keys_free`),
+   judged as the command runs. A guest hears only what its elements' own
    listeners emit: no window-wide input (pointer moves, keys, IME, file
    drops) reaches it.
    The multi-line editor is its own loop: `Node::Editor` mounts
@@ -726,13 +727,12 @@ House words, and where one word means several things.
   from a wire id.
 - **handler / message (wire)** — u32 ids the guest attaches to callbacks;
   the host echoes them in `wire::Event`. Fresh per guest instance.
-- **user activation** — a one-shot mark that an event came from a real
-  gesture: the renderer records the handler a pointer pressed
-  (`ViewTree.user_activation`), `take_user_activation` matches it against
-  the emitted event, tooltips forward it to their source tree. The widget
-  copies it onto `guest.user_activation`, which `redraw` spends: `link.open`,
-  the clipboard and the focus-moving widget commands are refused
-  `needs_gesture` without it.
+- **activation** — the view's transient user activation, as the web has
+  it: when the host last received a real press or key aimed at its tree
+  (`ViewTree::activate`; tooltips forward it to their source tree), carried
+  to `guest.activation` by the seat's turn, fresh for `ACTIVATION_EXPIRY`
+  (5 s) and taken by the first gated call (`Guest::take_activation`):
+  `link.open` and the clipboard are refused `needs_gesture` without it.
 - **widget command** — a `host.widget` request acting on a native control
   (focus, next/previous, scroll, cursor, editor action); its **target** is
   an id suffix matched against mounted authored paths.

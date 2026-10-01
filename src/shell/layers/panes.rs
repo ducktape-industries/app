@@ -139,8 +139,8 @@ impl PaneLayer {
 
     /// The desk, the seats or what is open over the desk moved: a view for
     /// every pane, none for a pane that left, and each seat told whether
-    /// its guest may move the keys with no gesture (a compare, never a
-    /// turn): its pane in front, nothing open over the desk, no hold. A
+    /// its guest may move the keys (a compare, never a turn): its pane in
+    /// front, nothing open over the desk, no hold. A
     /// view pane whose seat is not there yet gets its view when `Seats`
     /// says the seat came.
     fn reconcile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -153,7 +153,7 @@ impl PaneLayer {
             let seat = self.seats.read(cx).seat(pane.instance);
             if let Some(seat) = &seat {
                 let keys_free = desk_keys && index == layout.focused;
-                seat.update(cx, |seat, _| seat.set_keys_free(keys_free));
+                seat.update(cx, |seat, cx| seat.set_keys_free(keys_free, cx));
             }
             match self.views.get(&pane.instance) {
                 // the seat its view waited for came: the view is made again

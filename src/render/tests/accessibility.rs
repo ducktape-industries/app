@@ -478,7 +478,7 @@ fn a_rich_texts_ranges_are_links_a_press_reaches(cx: &mut gpui_kit::TestAppConte
         );
     });
     let events = events.borrow();
-    let event = events
+    let _event = events
         .iter()
         .find(|event| {
             matches!(
@@ -492,7 +492,7 @@ fn a_rich_texts_ranges_are_links_a_press_reaches(cx: &mut gpui_kit::TestAppConte
         .expect("the link's press is its range's click");
     tree.read_with(&native, |tree, _| {
         assert!(
-            tree.take_user_activation(event).is_some(),
+            tree.take_activation().is_some(),
             "the reader's press is a gesture, as a pointer's is"
         );
     });

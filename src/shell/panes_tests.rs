@@ -931,7 +931,7 @@ fn a_hidden_seats_intents_still_arrive(cx: &mut TestAppContext) {
     );
 }
 
-/// The shell half of `Seat::may_move_keys`, as `PaneLayer` pushes it: a
+/// `Seat::keys_free`, as `PaneLayer` pushes it: a
 /// seat's keys are free only while its pane is in front, nothing is open
 /// over the desk and no hold is on; the back pane's never are.
 #[gpui_kit::test]

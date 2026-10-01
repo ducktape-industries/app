@@ -33,40 +33,6 @@ pub(crate) fn target_names_mounted_node(root: &wire::Node, target: &[wire::Eleme
     contains(root, &mut Vec::new(), target)
 }
 
-/// How long after a native-editor key its gesture holds: long enough for
-/// the key's delivery, the binding's decision and the commit the guest acts
-/// on (two redraws), too short to bank.
-const KEY_GESTURE_FRESH_MS: u64 = 1_000;
-
-/// The `input_time_ms` of a key pressed in a native editor, on its way to
-/// the guest's binding (`EditorRequest`) or committed by its decision
-/// (`Commit` of `Key` origin); never a toolbar interaction, never Escape.
-fn key_stamp(event: &wire::Event) -> Option<u64> {
-    use view_wire::keyboard::{Key, Named};
-    let (key, stamp) = match event {
-        wire::Event::EditorRequest {
-            request:
-                view_wire::EditorRequest {
-                    input: view_wire::EditorRequestInput::Key { key, .. },
-                    input_time_ms,
-                    ..
-                },
-            ..
-        } => (key, *input_time_ms),
-        wire::Event::EditorTransaction {
-            event:
-                view_wire::EditorTransactionEvent::Commit {
-                    origin: Some(view_wire::EditorRequestInput::Key { key, .. }),
-                    input_time_ms,
-                    ..
-                },
-            ..
-        } => (key, *input_time_ms),
-        _ => return None,
-    };
-    (key.key != Key::Named(Named::Escape)).then_some(stamp)
-}
-
 impl Guest {
     pub(crate) fn sync_theme(&mut self, dark: bool) {
         if self.theme_dark != Some(dark) {
@@ -89,7 +55,6 @@ impl Guest {
         }
         self.sync_props(props);
         self.pending.extend(self.inputs.drain());
-        self.take_in_key_gesture();
         if let Err(error) = self.inputs.ready() {
             self.fault = Some(error);
             return false;
@@ -143,11 +108,9 @@ impl Guest {
                 ),
             }
         }
-        self.spend_gesture();
         for id in std::mem::take(&mut self.frame.cancels) {
             self.clipboard.cancel(id);
-            self.widget_commands
-                .retain(|(request, _, _)| *request != id);
+            self.widget_commands.retain(|(request, _)| *request != id);
             if self.props_subscription == Some(id) {
                 self.props_subscription = None;
             }
@@ -170,44 +133,12 @@ impl Guest {
                 || self.inputs.ready() == Ok(false))
     }
 
-    /// A key the writer pressed in a native editor is a gesture in this
-    /// view too. It reaches the guest here, not through the tree's events:
-    /// once as the `EditorRequest` the binding decides on, and once as the
-    /// `Commit` it acts on, a redraw later, both stamped with the key's
-    /// `input_time_ms`. The gesture is granted while the key is fresh
-    /// (`KEY_GESTURE_FRESH_MS`: a key the guest held back behind an
-    /// unacknowledged commit grants nothing), and the one key admits one
-    /// redraw's requests: once a redraw spent it (`spent_key`), the same
-    /// stamp grants nothing again. Escape is no gesture, as on the web.
-    pub(crate) fn take_in_key_gesture(&mut self) {
-        let now = self.inputs.now_ms();
-        let fresh = self
-            .pending
-            .iter()
-            .filter_map(key_stamp)
-            .filter(|stamp| now.saturating_sub(*stamp) <= KEY_GESTURE_FRESH_MS)
-            .max();
-        if let Some(stamp) = fresh
-            && self.spent_key != Some(stamp)
-        {
-            self.user_activation = Some(());
-            self.key_stamp = Some(stamp);
-        }
-    }
-
-    /// The end of a redraw: its gesture admitted its requests and no later
-    /// one's. What the tree drawn from it may do on its own is `gestured`;
-    /// a key whose redraw admitted something is spent.
-    pub(crate) fn spend_gesture(&mut self) {
-        self.gestured = self.user_activation.take().is_some();
-        if self.gesture_used
-            && let Some(stamp) = self.key_stamp
-        {
-            self.spent_key = Some(stamp);
-        }
-        self.key_stamp = None;
-        self.gesture_used = false;
-        self.link_opened = false;
+    /// Whether this view's activation is fresh, taking it: the gated call
+    /// that asks first is the one the person's input admits.
+    pub(crate) fn take_activation(&mut self) -> bool {
+        self.activation
+            .take()
+            .is_some_and(|at| at.elapsed() <= super::ACTIVATION_EXPIRY)
     }
 
     /// Routes one request: the size cap, the manifest's capability gate,
@@ -315,9 +246,9 @@ impl Guest {
         }
     }
 
-    /// Whether a command moves the keyboard: the ones the seat's
-    /// `may_move_keys` gates. Exhaustive for the same reason as
-    /// `command_target`.
+    /// Whether a command moves the keyboard: the ones the seat runs only
+    /// while its keys are free (`Seat::keys_free`). Exhaustive for the same
+    /// reason as `command_target`.
     pub(crate) fn moves_keys(command: &wire::WidgetCommand) -> bool {
         use wire::WidgetCommand as C;
         match command {
@@ -369,13 +300,7 @@ impl Guest {
             Ok(command)
         })();
         match admitted {
-            // judged when it runs, a frame later: it keeps this redraw's
-            // gesture, unless it is held past that (`execute_widget_commands`)
-            Ok(command) => {
-                let gestured = self.user_activation.is_some();
-                self.gesture_used |= gestured;
-                self.widget_commands.push((id, command, gestured));
-            }
+            Ok(command) => self.widget_commands.push((id, command)),
             Err(error) => self.refuse(id, refusal::INVALID_WIDGET_COMMAND, error),
         }
     }
@@ -391,30 +316,22 @@ impl Guest {
         }
         self.widget_commands
             .iter()
-            .take_while(|(_, command, _)| matches!(command, wire::WidgetCommand::Focus { .. }))
+            .take_while(|(_, command)| matches!(command, wire::WidgetCommand::Focus { .. }))
             .count()
     }
 
     /// Called on this guest's mounted tree with the commands that can run
-    /// now, each with whether its redraw had a gesture. A command whose
-    /// target left the tree in the meantime is answered with that, never
-    /// performed.
+    /// now. A command whose target left the tree in the meantime is answered
+    /// with that, never performed.
     pub(crate) fn execute_widget_commands(
         &mut self,
-        mut execute: impl FnMut(wire::WidgetCommand, bool) -> Result<Vec<u8>, String>,
+        mut execute: impl FnMut(wire::WidgetCommand) -> Result<Vec<u8>, String>,
     ) {
         let runnable = self.runnable_widget_commands();
         let commands: Vec<_> = self.widget_commands.drain(..runnable).collect();
-        // a command held back (its editor's document mid-flight, which the
-        // guest can keep so for as long as it likes) is no longer the
-        // press's: when it runs it is judged by the keys being free alone,
-        // never by a gesture banked from before
-        for held in &mut self.widget_commands {
-            held.2 = false;
-        }
-        for (id, command, gestured) in commands {
+        for (id, command) in commands {
             let result = match self.target_is_mounted(&command) {
-                true => execute(command, gestured)
+                true => execute(command)
                     .map_err(|error| wire::Error::new(refusal::WIDGET_COMMAND_FAILED, error)),
                 false => Err(wire::Error::new(
                     refusal::WIDGET_UNMOUNTED,

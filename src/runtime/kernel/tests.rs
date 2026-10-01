@@ -1,4 +1,5 @@
 use super::*;
+use std::time::{Duration, Instant};
 
 mod node_methods;
 
@@ -210,7 +211,7 @@ fn node_methods_answer_for_the_missing_node_first() {
 fn open_link_refuses_any_scheme_but_duck_and_https() {
     let open = |link: &str| {
         let mut guest = guest();
-        guest.user_activation = Some(());
+        guest.activation = Some(Instant::now());
         guest.answer(
             wire::Request {
                 id: 5,
@@ -248,80 +249,104 @@ fn link_request(id: u64, link: &str) -> wire::Request {
     }
 }
 
-/// `link.open` needs the redraw's gesture, and one gesture admits one
-/// link: a view on a clock, or one handed a route by an OS `duck://`
-/// link, opens nothing.
+fn clipboard_read(guest: &mut Guest, id: u64) -> Option<String> {
+    guest.answer(
+        wire::Request {
+            id,
+            kind: "clipboard.read".into(),
+            payload: Vec::new(),
+        },
+        &None,
+    );
+    refusal_code(guest)
+}
+
+/// `link.open` needs the view's activation and takes it: a view on a
+/// clock, or one handed a route by an OS `duck://` link, opens nothing;
+/// one press opens one link.
 #[test]
-fn link_open_needs_a_gesture_and_one_gesture_admits_one_link() {
+fn link_open_needs_an_activation_and_takes_it() {
     let mut guest = guest();
     guest.answer(link_request(1, "https://example.com/a"), &None);
     assert_eq!(refusal_code(&mut guest).as_deref(), Some("needs_gesture"));
-    // a route the OS handed the view (`Windows::open_seat`) is no gesture
+    // a route the OS handed the view (`Windows::open_seat`) activates nothing
     guest.route_subscriptions.push(2);
     crate::runtime::route_to("request-test", "tx/1".into());
     guest.sync_route();
     guest.answer(link_request(3, "duck://request-test/tx/1"), &None);
     assert_eq!(refusal_code(&mut guest).as_deref(), Some("needs_gesture"));
-    assert!(guest.intents.is_empty(), "a link opened with no gesture");
-    guest.user_activation = Some(());
+    assert!(guest.intents.is_empty(), "a link opened with no activation");
+    guest.activation = Some(Instant::now());
     guest.answer(link_request(4, "https://example.com/a"), &None);
     assert_eq!(refusal_code(&mut guest), None);
     guest.answer(link_request(5, "https://example.com/b"), &None);
     assert_eq!(
         refusal_code(&mut guest).as_deref(),
         Some("needs_gesture"),
-        "a second link on the same gesture"
+        "a second link on the same press"
     );
     assert_eq!(guest.intents.len(), 1);
 }
 
-/// Four links a minute per view, each on its own gesture; the fifth is
+/// Four links a minute per view, each on its own activation; the fifth is
 /// refused `link_limit` until the window moves on.
 #[test]
 fn link_open_refuses_the_fifth_link_in_a_minute() {
     let mut guest = guest();
     for id in 1..=4 {
-        guest.user_activation = Some(());
-        guest.link_opened = false;
+        guest.activation = Some(Instant::now());
         guest.answer(link_request(id, "https://example.com/"), &None);
         assert_eq!(refusal_code(&mut guest), None, "link {id}");
     }
-    guest.user_activation = Some(());
-    guest.link_opened = false;
+    guest.activation = Some(Instant::now());
     guest.answer(link_request(5, "https://example.com/"), &None);
     assert_eq!(refusal_code(&mut guest).as_deref(), Some("link_limit"));
     assert_eq!(guest.intents.len(), 4);
     // a minute on, the oldest is forgotten and one more goes through
-    guest.links[0] -= std::time::Duration::from_secs(61);
-    guest.user_activation = Some(());
-    guest.link_opened = false;
+    guest.links[0] -= Duration::from_secs(61);
+    guest.activation = Some(Instant::now());
     guest.answer(link_request(6, "https://example.com/"), &None);
     assert_eq!(refusal_code(&mut guest), None);
     assert_eq!(guest.intents.len(), 5);
 }
 
-/// The clipboard is read and written only on a gesture.
+/// One activation admits one gated call, whichever asks first; a stale
+/// one (older than `ACTIVATION_EXPIRY`: a press the view sat on) none.
 #[test]
-fn the_clipboard_needs_a_gesture() {
-    let request = |id: u64, kind: &str| wire::Request {
+fn one_activation_admits_one_gated_call_and_a_stale_one_none() {
+    let write = |id: u64| wire::Request {
         id,
-        kind: kind.into(),
+        kind: "clipboard.write".into(),
         payload: methods::encode(&"copied".to_owned()),
     };
     let mut guest = guest();
-    for (id, kind) in [(1, "clipboard.read"), (2, "clipboard.write")] {
-        guest.answer(request(id, kind), &None);
-        assert_eq!(
-            refusal_code(&mut guest).as_deref(),
-            Some("needs_gesture"),
-            "{kind}"
-        );
-    }
-    guest.user_activation = Some(());
-    for (id, kind) in [(3, "clipboard.read"), (4, "clipboard.write")] {
-        guest.answer(request(id, kind), &None);
-        assert_eq!(refusal_code(&mut guest), None, "{kind} with a gesture");
-    }
+    assert_eq!(
+        clipboard_read(&mut guest, 1).as_deref(),
+        Some("needs_gesture")
+    );
+    guest.answer(write(2), &None);
+    assert_eq!(refusal_code(&mut guest).as_deref(), Some("needs_gesture"));
+    guest.activation = Some(Instant::now());
+    assert_eq!(clipboard_read(&mut guest, 3), None, "the read is admitted");
+    guest.answer(write(4), &None);
+    assert_eq!(
+        refusal_code(&mut guest).as_deref(),
+        Some("needs_gesture"),
+        "the read took the activation"
+    );
+    guest.activation = Some(Instant::now());
+    guest.answer(write(5), &None);
+    assert_eq!(refusal_code(&mut guest), None, "the write is admitted");
+    guest.answer(link_request(6, "https://example.com/"), &None);
+    assert_eq!(refusal_code(&mut guest).as_deref(), Some("needs_gesture"));
+    guest.activation =
+        Some(Instant::now() - crate::runtime::guest::ACTIVATION_EXPIRY - Duration::from_secs(1));
+    assert_eq!(
+        clipboard_read(&mut guest, 7).as_deref(),
+        Some("needs_gesture"),
+        "a stale activation admitted a read"
+    );
+    assert!(guest.activation.is_none(), "a stale activation is gone");
 }
 
 fn container(id: &str, children: Vec<wire::Node>) -> wire::Node {
@@ -333,8 +358,7 @@ fn container(id: &str, children: Vec<wire::Node>) -> wire::Node {
     })
 }
 
-/// An editor whose document the guest has not sent yet (`inputs.pending()`
-/// until `seed_editor_text`), with a binding so a key reaches the guest.
+/// An editor with a binding, so a key reaches the guest.
 fn editor_root() -> wire::Node {
     container(
         "root",
@@ -370,106 +394,6 @@ fn composer() -> Vec<wire::ElementIdWire> {
     ]
 }
 
-/// A `host.widget` command runs a frame after it was asked: it carries
-/// its own redraw's gesture to the seat's gate, never a later one's.
-#[test]
-fn a_widget_command_carries_its_redraws_gesture() {
-    let mut guest = guest();
-    guest.frame.root = Some(container("box", Vec::new()));
-    let focus = wire::WidgetCommand::Focus {
-        target: vec![wire::ElementIdWire::Name("box".into())],
-    };
-    guest.widget_request(1, &wire::encode(&focus));
-    guest.user_activation = Some(());
-    guest.widget_request(2, &wire::encode(&focus));
-    assert!(
-        guest.gesture_used,
-        "a gestured command spends the redraw's gesture"
-    );
-    let gestured: Vec<_> = guest
-        .widget_commands
-        .iter()
-        .map(|(id, _, gestured)| (*id, *gestured))
-        .collect();
-    assert_eq!(gestured, [(1, false), (2, true)]);
-    let mut seen = Vec::new();
-    guest.execute_widget_commands(|_, gestured| {
-        seen.push(gestured);
-        Ok(Vec::new())
-    });
-    assert_eq!(seen, [false, true]);
-}
-
-/// A view keeps its editor's document mid-flight (never acknowledges the
-/// commit) so the commands queued on one press are held, and releases
-/// them once the person is typing elsewhere: a held command's gesture is
-/// gone, so it is judged by the keys being free when it finally runs.
-#[test]
-fn a_widget_command_held_past_its_frame_loses_its_gesture() {
-    let mut guest = guest();
-    let root = editor_root();
-    guest.inputs.replace(&root).unwrap();
-    guest.frame.root = Some(root);
-    crate::editor::wire::seed_editor_text(&guest.inputs, "words");
-    guest.pending.clear();
-    // a key the binding is deciding on: the document is mid-flight
-    guest.inputs.key_for_test(&composer(), command_v());
-    let id = deliver(&mut guest).expect("the key reached the binding");
-    assert!(guest.inputs.pending(), "the document is mid-flight");
-    guest.pending.clear();
-    guest.spend_gesture();
-    guest.user_activation = Some(());
-    for (id, command) in [
-        (1, wire::WidgetCommand::CursorEnd { target: composer() }),
-        (2, wire::WidgetCommand::FocusHandle { handle: 7 }),
-    ] {
-        guest.widget_request(id, &wire::encode(&command));
-    }
-    assert_eq!(
-        guest.runnable_widget_commands(),
-        0,
-        "held behind the document"
-    );
-    guest.execute_widget_commands(|_, _| panic!("nothing runs while held"));
-    assert!(
-        guest
-            .widget_commands
-            .iter()
-            .all(|(_, _, gestured)| !gestured),
-        "a held command kept its gesture"
-    );
-    // the view decides and acknowledges (a frame whose editor carries the
-    // committed reference): the commands run ungestured
-    decide_noop(&mut guest, id);
-    guest.pending.extend(guest.inputs.drain());
-    let after = guest
-        .pending
-        .iter()
-        .find_map(|event| match event {
-            wire::Event::EditorTransaction {
-                event: view_wire::EditorTransactionEvent::Commit { after, .. },
-                ..
-            } => Some(after.clone()),
-            _ => None,
-        })
-        .expect("the key committed");
-    let mut acknowledged = editor_root();
-    if let wire::Node::Container(view_wire::ContainerNode { children, .. }) = &mut acknowledged
-        && let Some(wire::Node::Editor { document, .. }) = children.first_mut()
-    {
-        *document = after;
-    }
-    guest.inputs.replace(&acknowledged).unwrap();
-    guest.inputs.frame(&wire::Frame::default()).unwrap();
-    assert!(!guest.inputs.pending(), "the document settled");
-    let mut seen = Vec::new();
-    guest.execute_widget_commands(|_, gestured| {
-        seen.push(gestured);
-        Ok(Vec::new())
-    });
-    assert_eq!(seen, [false, false]);
-}
-
 /// ⌘V as a `KeyState`.
 fn command_v() -> view_wire::keyboard::KeyState {
     use view_wire::keyboard::{Key, KeyState, Location, NativeCode, Physical};
@@ -485,20 +409,35 @@ fn command_v() -> view_wire::keyboard::KeyState {
     }
 }
 
-/// The key's delivery, as `redraw` takes it in: the store drained into
-/// `pending`, the gesture taken from it; answers the request's id.
-fn deliver(guest: &mut Guest) -> Option<view_wire::EditorTransactionId> {
+/// Chat's paste: ⌘V is a key the composer claims, so the host hands it to
+/// the binding (one redraw), which decides `Noop`, and the guest acts on
+/// the commit the host sends back (the next redraw) with `clipboard.read`.
+/// The activation the host stamped as it received the key is still fresh
+/// then: the read is admitted. Through the real `EditorStore` path.
+#[test]
+fn a_pasted_keys_activation_reaches_the_clipboard_on_its_commit() {
+    let mut guest = guest();
+    let root = editor_root();
+    guest.inputs.replace(&root).unwrap();
+    guest.frame.root = Some(root);
+    crate::editor::wire::seed_editor_text(&guest.inputs, "words");
+    guest.pending.clear();
+    // the key, as the host receives it: the tree is activated, the store
+    // queues it for the binding
+    guest.activation = Some(Instant::now());
+    guest.inputs.key_for_test(&composer(), command_v());
     guest.pending.extend(guest.inputs.drain());
-    guest.take_in_key_gesture();
-    guest.pending.iter().find_map(|event| match event {
-        wire::Event::EditorRequest { request, .. } => Some(request.id.clone()),
-        _ => None,
-    })
-}
-
-/// The binding's decision on the key (`Noop`: the composer acts on the
-/// commit, not the key), committed by the host with the key as origin.
-fn decide_noop(guest: &mut Guest, id: view_wire::EditorTransactionId) {
+    let id = guest
+        .pending
+        .iter()
+        .find_map(|event| match event {
+            wire::Event::EditorRequest { request, .. } => Some(request.id.clone()),
+            _ => None,
+        })
+        .expect("the key reached the binding");
+    guest.pending.clear();
+    // the binding decides, the host commits with the key as origin, a
+    // redraw later: the guest's composer reads the clipboard now
     guest
         .inputs
         .frame(&wire::Frame {
@@ -509,45 +448,7 @@ fn decide_noop(guest: &mut Guest, id: view_wire::EditorTransactionId) {
             ..Default::default()
         })
         .unwrap();
-}
-
-fn clipboard_read(guest: &mut Guest, id: u64) -> Option<String> {
-    guest.answer(
-        wire::Request {
-            id,
-            kind: "clipboard.read".into(),
-            payload: Vec::new(),
-        },
-        &None,
-    );
-    refusal_code(guest)
-}
-
-/// Chat's paste: ⌘V is a key the composer claims, so the host hands it to
-/// the binding (one redraw), which decides `Noop`, and the guest acts on
-/// the commit the host sends back (the next redraw) with `clipboard.read`.
-/// The key's gesture, taken in at its delivery and not spent there, is
-/// still the commit's: the read is admitted. Through the real
-/// `take_in_key_gesture`/`spend_gesture` path `redraw` runs.
-#[test]
-fn a_pasted_keys_gesture_reaches_the_clipboard_on_its_commit() {
-    let mut guest = guest();
-    let root = editor_root();
-    guest.inputs.replace(&root).unwrap();
-    guest.frame.root = Some(root);
-    crate::editor::wire::seed_editor_text(&guest.inputs, "words");
-    guest.pending.clear();
-    guest.inputs.key_for_test(&composer(), command_v());
-    let id = deliver(&mut guest).expect("the key reached the binding");
-    assert!(
-        guest.user_activation.is_some(),
-        "the key is a gesture at its delivery"
-    );
-    guest.pending.clear();
-    guest.spend_gesture();
-    assert!(guest.user_activation.is_none(), "the redraw spent the mark");
-    decide_noop(&mut guest, id);
-    assert!(deliver(&mut guest).is_none(), "no second request");
+    guest.pending.extend(guest.inputs.drain());
     assert!(
         guest.pending.iter().any(|event| matches!(
             event,
@@ -563,76 +464,6 @@ fn a_pasted_keys_gesture_reaches_the_clipboard_on_its_commit() {
         guest.pending
     );
     assert_eq!(clipboard_read(&mut guest, 9), None, "the paste was refused");
-    guest.spend_gesture();
-}
-
-/// One key admits one redraw's requests: a view that reads the clipboard
-/// as the key is delivered gets nothing more on its commit, and a key the
-/// view held back (its document mid-flight) past a second grants nothing.
-#[test]
-fn a_key_admits_one_redraw_and_a_stale_key_none() {
-    let mut guest = guest();
-    let root = editor_root();
-    guest.inputs.replace(&root).unwrap();
-    guest.frame.root = Some(root);
-    crate::editor::wire::seed_editor_text(&guest.inputs, "words");
-    guest.pending.clear();
-    guest.inputs.key_for_test(&composer(), command_v());
-    let id = deliver(&mut guest).expect("the key reached the binding");
-    assert_eq!(clipboard_read(&mut guest, 1), None, "read at delivery");
-    guest.pending.clear();
-    guest.spend_gesture();
-    decide_noop(&mut guest, id);
-    deliver(&mut guest);
-    assert_eq!(
-        clipboard_read(&mut guest, 2).as_deref(),
-        Some("needs_gesture"),
-        "the same key admitted a second redraw"
-    );
-    guest.pending.clear();
-    guest.spend_gesture();
-    // a key held for five seconds: stale
-    let stale = wire::Event::EditorRequest {
-        handler: 1,
-        request: view_wire::EditorRequest {
-            id: view_wire::EditorTransactionId {
-                instance: 1,
-                document: "draft".into(),
-                reset: 1,
-                sequence: 1,
-                attempt: 0,
-                text_revision: 0,
-                revision: 0,
-            },
-            state: wire::editor_document::EditorDocumentRef {
-                document: "draft".into(),
-                reset: 1,
-                text_revision: 0,
-                revision: 0,
-                cursor: wire::EditorCursor::default(),
-                byte_len: 5,
-            },
-            input: view_wire::EditorRequestInput::Key {
-                key: command_v(),
-                repeat: false,
-            },
-            input_time_ms: guest.inputs.now_ms().saturating_sub(5_000),
-        },
-    };
-    guest.pending.push(stale);
-    guest.take_in_key_gesture();
-    assert!(
-        guest.user_activation.is_none(),
-        "a stale key granted a gesture"
-    );
-    // Escape, fresh, is no gesture either
-    let mut escape = command_v();
-    escape.key = view_wire::keyboard::Key::Named(view_wire::keyboard::Named::Escape);
-    escape.modifiers = Default::default();
-    guest.pending.clear();
-    guest.inputs.key_for_test(&composer(), escape);
-    deliver(&mut guest);
-    assert!(guest.user_activation.is_none(), "Escape granted a gesture");
 }
 
 #[test]

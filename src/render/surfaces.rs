@@ -66,7 +66,7 @@ impl ViewTree {
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
                             // the press outside is a press: a gesture
-                            this.user_activation.set(Some(message));
+                            this.activate();
                             cx.emit(wire::Event::Message(message))
                         }),
                     )
@@ -79,7 +79,7 @@ impl ViewTree {
                     }));
             }
             // a dialog takes the keyboard when it opens, if its guest may
-            // move the keys (`Seat::may_move_keys`); a popup's view moves
+            // move the keys (`Seat::keys_free`); a popup's view moves
             // focus itself (widget commands)
             if let Some(entry) = entry.as_ref().filter(|_| opened && self.keys_grant) {
                 dialog_entry(entry, window, cx);

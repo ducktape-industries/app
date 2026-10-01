@@ -375,7 +375,7 @@ impl ViewTree {
         if let Some(handler) = interactivity.on_click {
             element = element.on_click(cx.listener(
                 move |this, event: &gpui_kit::ClickEvent, _, cx| {
-                    this.user_activation.set(Some(handler));
+                    this.activate();
                     cx.emit(wire::Event::Click {
                         handler,
                         event: event.into(),
@@ -394,7 +394,7 @@ impl ViewTree {
             element = element.on_a11y_action(gpui_kit::AccessibleAction::Click, move |_, _, cx| {
                 let _ = tree.update(cx, |this, cx| {
                     let event = pressed_at(this.nearest_bounds(&path).center());
-                    this.user_activation.set(Some(handler));
+                    this.activate();
                     cx.emit(wire::Event::Click { handler, event });
                 });
             });

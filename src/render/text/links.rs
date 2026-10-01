@@ -71,7 +71,7 @@ impl ViewTree {
             let view = view.clone();
             Rc::new(move |index, cx| {
                 let _ = view.update(cx, |this, cx| {
-                    this.user_activation.set(Some(handler));
+                    this.activate();
                     cx.emit(wire::Event::Select {
                         handler,
                         index: index as u32,
@@ -160,7 +160,7 @@ impl ViewTree {
                     // a press from assistive technology is the reader's: a gesture
                     .on_a11y_action(AccessibleAction::Click, move |_, _, cx| {
                         let _ = view.update(cx, |this, cx| {
-                            this.user_activation.set(Some(handler));
+                            this.activate();
                             cx.emit(wire::Event::Select {
                                 handler,
                                 index: picked as u32,
@@ -267,7 +267,7 @@ impl Element for Linked {
             let (view, handler) = (self.view.clone(), self.handler);
             window.on_a11y_action(node, Action::Click, move |_, _, cx| {
                 let _ = view.update(cx, |this, cx| {
-                    this.user_activation.set(Some(handler));
+                    this.activate();
                     cx.emit(wire::Event::Select { handler, index })
                 });
             });

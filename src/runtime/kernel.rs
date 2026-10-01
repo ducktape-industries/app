@@ -93,7 +93,7 @@ const MAX_REPLY_BYTES: usize = 32 << 20;
 const MAX_STREAM_BACKLOG_EVENTS: usize = MAX_REPLY_EVENTS / 2;
 const MAX_STREAM_BACKLOG_BYTES: usize = MAX_REPLY_BYTES / 2;
 /// `link.open`s one view may have admitted in the last `LINK_WINDOW`,
-/// each on its own gesture; past it a request is refused `link_limit`.
+/// each on its own activation; past it a request is refused `link_limit`.
 const MAX_LINKS_PER_WINDOW: usize = 4;
 const LINK_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -245,11 +245,11 @@ pub(super) fn answer(
         (Capability::Chain, "heads") => heads(guest, id, payload),
         // the one way out: a `duck://` link, or an `https://` one for the
         // system browser; any other scheme is refused here, at the method.
-        // Only a gesture opens one, one per gesture, inside the budget:
-        // a view on a clock never opens a tab or reseats the desk.
+        // Only the person's activation opens one, taken by the ask, inside
+        // the budget: a view on a clock never opens a tab or reseats the desk
         (Capability::Link, "open") => match methods::decode::<String>(payload) {
             Ok(link) if openable(&link) => {
-                if guest.user_activation.is_none() || guest.link_opened {
+                if !guest.take_activation() {
                     guest.refuse(
                         id,
                         refusal::NEEDS_GESTURE,
@@ -264,8 +264,6 @@ pub(super) fn answer(
                     return true;
                 }
                 guest.links.push(now);
-                guest.link_opened = true;
-                guest.gesture_used = true;
                 guest.intents.push(Intent::OpenLink(link));
                 guest.reply(id, Ok(Vec::new()));
             }

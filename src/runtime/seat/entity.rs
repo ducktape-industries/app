@@ -35,9 +35,11 @@ pub(crate) struct Seat {
     alive: Option<Arc<()>>,
     revision: u64,
     props: Option<Vec<u8>>,
-    /// Whether a guest here may move the keys with no gesture: its pane in
-    /// front, nothing open over the desk, no keyboard hold (`PaneLayer`
-    /// says; `false` until it has). Half of `may_move_keys`.
+    /// Whether a guest here may move the keys: its pane in front, nothing
+    /// open over the desk, no keyboard hold (`PaneLayer` says; `false`
+    /// until it has). The web's rule: a background document takes no focus.
+    /// Every focus-moving widget command is judged by it as it runs, and
+    /// the tree mirrors it for a dialog's auto-focus (`keys_grant`).
     keys_free: bool,
     /// `MIN_WINDOW_WIDTH` of the seated view; the pane lays out from it.
     min_width: f32,
@@ -177,22 +179,14 @@ impl Seat {
         }
     }
 
-    /// `PaneLayer` says whether a guest here may move the keys with no
-    /// gesture (see `keys_free`). Nothing draws from it, so no notify.
-    pub(crate) fn set_keys_free(&mut self, keys_free: bool) {
+    /// `PaneLayer` says whether a guest here may move the keys (see
+    /// `keys_free`); the tree hears it too. Nothing draws from it, so no
+    /// notify.
+    pub(crate) fn set_keys_free(&mut self, keys_free: bool, cx: &mut Context<Self>) {
         self.keys_free = keys_free;
-    }
-
-    /// THE gate on a guest moving the keyboard: every focus-moving widget
-    /// command and a view dialog's auto-focus pass here and nowhere else.
-    /// A guest may move the keys on a real press or key in its view
-    /// (`gestured`: that redraw's `user_activation`), or while its pane is
-    /// in front with nothing open over the desk and no hold (`keys_free`).
-    /// Never from a background pane or under Spotlight, Settings, Approve
-    /// or a menu without a gesture: the keys a person is typing into a
-    /// shell dialog are not a view's to take.
-    pub(crate) fn may_move_keys(&self, gestured: bool) -> bool {
-        gestured || self.keys_free
+        if let Some(tree) = &self.tree {
+            tree.update(cx, |tree, _| tree.set_keys_grant(keys_free));
+        }
     }
 
     #[cfg(test)]
@@ -284,6 +278,13 @@ impl Seat {
             }
         };
         guest.instance = self.instance;
+        // the press or key the host last received for this tree is the
+        // view's activation for the requests this redraw answers
+        if let Some(tree) = &self.tree
+            && let Some(at) = tree.read(cx).take_activation()
+        {
+            guest.activation = Some(at);
+        }
         *props = self.props.clone();
         let ticks = guest.ticks;
         guest.set_visible(true);
@@ -311,7 +312,6 @@ impl Seat {
             guest.pictures.hydrate(&mut root);
             (root, guest.frame_rev)
         });
-        let keys_grant = self.may_move_keys(guest.gestured);
         let adopt = (!same).then(|| {
             (
                 guest.alive.clone(),
@@ -342,12 +342,9 @@ impl Seat {
             match (&self.tree, adopt) {
                 // the tree's own notify dirties its window; nothing the
                 // pane reads off the seat moved
-                (Some(tree), None) => tree.update(cx, |tree, cx| {
-                    tree.set_keys_grant(keys_grant);
-                    tree.replace(root, cx)
-                }),
+                (Some(tree), None) => tree.update(cx, |tree, cx| tree.replace(root, cx)),
                 (_, adopt) => {
-                    self.mount(root, generation, key, adopt, keys_grant, cx);
+                    self.mount(root, generation, key, adopt, cx);
                     cx.notify();
                 }
             }
@@ -397,7 +394,6 @@ impl Seat {
         generation: u64,
         key: crate::perf::Key,
         adopt: Option<(Arc<()>, tokio::sync::watch::Receiver<()>, bool, EditorStore)>,
-        keys_grant: bool,
         cx: &mut Context<Self>,
     ) {
         let Some((alive, mut changes, owed, inputs)) = adopt else {
@@ -430,29 +426,25 @@ impl Seat {
             crate::render::ViewTree::new(root)
                 .with_presentation(presentation)
                 .with_perf_key(key)
-                .with_keys_grant(keys_grant)
+                .with_keys_grant(self.keys_free)
         });
         tree.update(cx, |tree, cx| tree.set_editor_store(inputs, cx));
         let seat = self.mounted.clone();
-        self._tree_events = Some(cx.subscribe(&tree, move |this, source, event, cx| {
-            let activation = source.read(cx).take_user_activation(event);
-            let mut locked = seat.lock().expect("module view lock");
-            let Slot::Ready(guest) = &mut locked.slot else {
-                return;
-            };
-            let current =
-                guest.seated_generation() == generation && Arc::ptr_eq(&alive, &guest.alive);
-            if current && guest.frame_rev == this.revision {
-                // set, never cleared: the hover after a press is no
-                // reason to forget the press before the redraw spends it
-                if activation.is_some() {
-                    guest.user_activation = activation;
+        self._tree_events = Some(
+            cx.subscribe(&tree, move |this, _, event: &wire::Event, cx| {
+                let mut locked = seat.lock().expect("module view lock");
+                let Slot::Ready(guest) = &mut locked.slot else {
+                    return;
+                };
+                let current =
+                    guest.seated_generation() == generation && Arc::ptr_eq(&alive, &guest.alive);
+                if current && guest.frame_rev == this.revision {
+                    guest.pending.push(event.clone());
                 }
-                guest.pending.push(event.clone());
-            }
-            drop(locked);
-            this.turn(cx);
-        }));
+                drop(locked);
+                this.turn(cx);
+            }),
+        );
         self._tree_drawn = Some(
             cx.subscribe(&tree, |this, _, _: &crate::render::Drawn, cx| {
                 this.holding = false;
@@ -519,8 +511,10 @@ impl Seat {
                         let Some(tree) = &this.tree else {
                             return;
                         };
-                        guest.execute_widget_commands(|command, gestured| {
-                            if Guest::moves_keys(&command) && !this.may_move_keys(gestured) {
+                        // judged as it runs, not as it was asked: a command
+                        // the view held back answers to the desk as it is now
+                        guest.execute_widget_commands(|command| {
+                            if Guest::moves_keys(&command) && !this.keys_free {
                                 return Err("view is not focused".into());
                             }
                             tree.update(cx, |tree, cx| {

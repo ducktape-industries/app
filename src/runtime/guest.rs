@@ -8,6 +8,10 @@ use abi::{Exports, HostState, first_line, panic_message};
 
 // ---------- the guest ----------
 
+/// How long a press or key stays a view's activation: the web's transient
+/// activation duration.
+pub(crate) const ACTIVATION_EXPIRY: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// What a fresh instance did with the state the drawn view left it. A trap
 /// is not one of these — it takes the instance with it and is the load's
 /// error. A refusal is the guest's own word, reported before it builds
@@ -28,23 +32,12 @@ pub(super) enum Restored {
 pub(super) struct Guest {
     /// Node requests belong to the network selected when this instance starts.
     pub(crate) connection_rev: u64,
-    /// A real press or key in this view since the last redraw: the gesture
-    /// `link.open`, the clipboard and a focus move need (`redraw` takes it).
-    pub(crate) user_activation: Option<()>,
-    /// Whether the last redraw had that gesture: what the tree drawn from
-    /// it may do on its own (a dialog's auto-focus).
-    pub(crate) gestured: bool,
-    /// One gesture admits one `link.open`: set by the one it admitted,
-    /// cleared with the gesture.
-    pub(crate) link_opened: bool,
-    /// The `input_time_ms` of the native-editor key this redraw's gesture
-    /// came from, if a key; `spent_key` is the last such key whose redraw
-    /// admitted a gated request (one person's key admits one redraw's
-    /// worth, at its delivery or at its commit, never both), and
-    /// `gesture_used` whether this redraw admitted one.
-    pub(crate) key_stamp: Option<u64>,
-    pub(crate) spent_key: Option<u64>,
-    pub(crate) gesture_used: bool,
+    /// Transient user activation, as the web has it: when the host last
+    /// received a real press or key aimed at this view's tree
+    /// (`ViewTree::activate`, carried here by the seat's turn). Fresh for
+    /// `ACTIVATION_EXPIRY`; a gated call (`link.open`, the clipboard) takes
+    /// it, so one input admits one call (`take_activation`).
+    pub(crate) activation: Option<std::time::Instant>,
     /// When each recent `link.open` was admitted, for the per-minute budget.
     pub(crate) links: Vec<std::time::Instant>,
     pub(crate) module: &'static str,
@@ -68,9 +61,8 @@ pub(super) struct Guest {
     pub(crate) pending: Vec<wire::Event>,
     pub(crate) theme_dark: Option<bool>,
     /// Requests wait for the native layout of a frame that still mounts
-    /// their target, inside this instance only; each carries whether the
-    /// redraw that asked it had a gesture.
-    pub(crate) widget_commands: Vec<(u64, wire::WidgetCommand, bool)>,
+    /// their target, inside this instance only.
+    pub(crate) widget_commands: Vec<(u64, wire::WidgetCommand)>,
     /// The last frame, its `root` kept across `unchanged` ticks and patched
     /// in place by a frame that carries patches instead of a tree.
     pub(crate) frame: wire::Frame,

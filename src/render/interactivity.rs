@@ -214,11 +214,11 @@ fn apply_mouse<E: StatefulInteractiveElement>(
     element
 }
 
-/// A key the person pressed in the view is a gesture, as a click is;
-/// Escape is not (the web's user-activation rule: a dismissal grants nothing).
-fn mark_key(tree: &ViewTree, handler: u32, event: &KeyDownEvent) {
+/// A key the person pressed in the view activates it, as a click does;
+/// Escape does not (the web's user-activation rule: a dismissal grants nothing).
+fn mark_key(tree: &ViewTree, event: &KeyDownEvent) {
     if event.keystroke.key != "escape" {
-        tree.user_activation.set(Some(handler));
+        tree.activate();
     }
 }
 
@@ -229,7 +229,7 @@ fn apply_keyboard<E: StatefulInteractiveElement>(
 ) -> E {
     if let Some(handler) = interactivity.on_key_down {
         element = element.on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
-            mark_key(this, handler, event);
+            mark_key(this, event);
             cx.emit(wire::Event::KeyDown {
                 handler,
                 phase: wire::DispatchPhase::Bubble,
@@ -240,7 +240,7 @@ fn apply_keyboard<E: StatefulInteractiveElement>(
     if let Some(handler) = interactivity.capture_key_down {
         element =
             element.capture_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
-                mark_key(this, handler, event);
+                mark_key(this, event);
                 cx.emit(wire::Event::KeyDown {
                     handler,
                     phase: wire::DispatchPhase::Capture,
@@ -321,7 +321,7 @@ fn apply_misc<E: StatefulInteractiveElement>(
     if let Some(handler) = interactivity.on_aux_click {
         element = element.on_aux_click(cx.listener(
             move |this, event: &gpui_kit::ClickEvent, _, cx| {
-                this.user_activation.set(Some(handler));
+                this.activate();
                 cx.emit(wire::Event::AuxClick {
                     handler,
                     event: event.into(),

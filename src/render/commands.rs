@@ -66,38 +66,20 @@ pub(crate) fn dialog_exit(opener: WeakFocusHandle, window: &mut Window, cx: &mut
 }
 
 impl ViewTree {
-    /// `Some` when `event` came from a real gesture on this tree — a click,
-    /// press, select, key or submit whose handler is the one the last
-    /// gesture recorded — spending the mark, so an activation is granted
-    /// once.
-    pub(crate) fn take_user_activation(&self, event: &wire::Event) -> Option<()> {
-        let message = match event {
-            wire::Event::Message(message)
-            | wire::Event::Click {
-                handler: message, ..
-            }
-            | wire::Event::AuxClick {
-                handler: message, ..
-            }
-            | wire::Event::Select {
-                handler: message, ..
-            }
-            | wire::Event::KeyDown {
-                handler: message, ..
-            }
-            | wire::Event::Input {
-                handler: message, ..
-            } => message,
-            _ => return None,
-        };
-        let actual_click = self.user_activation.get() == Some(*message);
-        if !actual_click {
-            return None;
-        }
-        self.user_activation.take().map(|_| ())
+    /// The host received a real press or key aimed at this tree: a click,
+    /// an auxiliary click, a link's press, a key down but Escape, typing in
+    /// a native field or editor, assistive technology's press. Nothing a
+    /// view sends, no timer, no answer, no hover or scroll comes here.
+    pub(crate) fn activate(&self) {
+        self.activation.set(Some(std::time::Instant::now()));
     }
 
-    /// See `keys_grant`: set by the seat for the frame it hands over.
+    /// The activation, taken: the seat moves it to the guest.
+    pub(crate) fn take_activation(&self) -> Option<std::time::Instant> {
+        self.activation.take()
+    }
+
+    /// See `keys_grant`: the seat mirrors its `keys_free` here.
     pub(crate) fn set_keys_grant(&mut self, keys_grant: bool) {
         self.keys_grant = keys_grant;
     }
