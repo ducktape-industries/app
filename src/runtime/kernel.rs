@@ -32,7 +32,7 @@
 //!   unlocked in this session at the signer's next sequence and submitted;
 //!   answered with the receipt's output, or the program's refusal. Retried
 //!   only while nothing reached the node: a lost answer is reported
-//!   (`node_failed`), never followed by a second submission.
+//!   ([`refusal::NODE_FAILED`]), never followed by a second submission.
 //! - `chain.status` — node status as `NodeStatus`.
 //! - `chain.blocks` `BlockPage` — finalized blocks, newest first, from the
 //!   node's block archive (`/v1/blocks`); `chain.block` `BlockRef` — one by
@@ -60,13 +60,16 @@
 //! - `host.widget` — a widget command; `host.session` — a subscription to
 //!   the session basics (`Session`: the account, theme, chain and read-only
 //!   endpoint); `host.log` — a line into app.log.
+//!
+//! A refusal's code is one of [`refusal`]'s, or the node's or the program's
+//! own, carried through.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use super::{Guest, Intent, wire};
 use crate::backend::{self, RpcClient, refused};
-use wire::methods::{self, Capability};
+use wire::methods::{self, Capability, refusal};
 
 /// The longest `host.id` prefix: a word naming the kind of record, not a
 /// payload of its own.
@@ -91,11 +94,11 @@ const MAX_STREAM_BACKLOG_EVENTS: usize = MAX_REPLY_EVENTS / 2;
 const MAX_STREAM_BACKLOG_BYTES: usize = MAX_REPLY_BYTES / 2;
 
 fn host_fault(error: impl std::fmt::Display) -> wire::Error {
-    wire::Error::new("host_fault", error.to_string())
+    wire::Error::new(refusal::HOST_FAULT, error.to_string())
 }
 
 fn malformed(error: impl std::fmt::Display) -> wire::Error {
-    wire::Error::new("malformed_request", error.to_string())
+    wire::Error::new(refusal::MALFORMED_REQUEST, error.to_string())
 }
 
 /// One answer to a guest: the bytes it asked for, or the refusal that names
@@ -159,7 +162,7 @@ pub(super) fn answer(
             if !payload.is_empty() {
                 guest.refuse(
                     id,
-                    "malformed_request",
+                    refusal::MALFORMED_REQUEST,
                     "visibility subscription takes no payload",
                 );
                 return true;
@@ -175,7 +178,7 @@ pub(super) fn answer(
             if !payload.is_empty() {
                 guest.refuse(
                     id,
-                    "malformed_request",
+                    refusal::MALFORMED_REQUEST,
                     "offset subscription takes no payload",
                 );
                 return true;
@@ -195,7 +198,7 @@ pub(super) fn answer(
             if !payload.is_empty() {
                 guest.refuse(
                     id,
-                    "malformed_request",
+                    refusal::MALFORMED_REQUEST,
                     "route subscription takes no payload",
                 );
                 return true;
@@ -245,22 +248,30 @@ pub(super) fn answer(
             }
             Ok(_) => guest.refuse(
                 id,
-                "malformed_request",
+                refusal::MALFORMED_REQUEST,
                 "`link.open` opens a duck:// or https:// link",
             ),
-            Err(error) => guest.refuse(id, "malformed_request", error),
+            Err(error) => guest.refuse(id, refusal::MALFORMED_REQUEST, error),
         },
         (Capability::Host, "badge") => match methods::decode::<i64>(payload).ok() {
             Some(count) => {
                 guest.intents.push(Intent::Badge(count));
                 guest.reply(id, Ok(Vec::new()));
             }
-            None => guest.refuse(id, "malformed_request", "`host.badge` carries no count"),
+            None => guest.refuse(
+                id,
+                refusal::MALFORMED_REQUEST,
+                "`host.badge` carries no count",
+            ),
         },
         (Capability::Clock, "ticks") => {
             let period = tick_period(payload);
             if guest.clocks.len() >= MAX_SUBSCRIPTIONS {
-                guest.refuse(id, "subscription_limit", "too many clock subscriptions");
+                guest.refuse(
+                    id,
+                    refusal::SUBSCRIPTION_LIMIT,
+                    "too many clock subscriptions",
+                );
                 return true;
             }
             match period {
@@ -269,7 +280,11 @@ pub(super) fn answer(
                     period,
                     due: std::time::Instant::now() + period,
                 }),
-                None => guest.refuse(id, "malformed_request", "`clock.ticks` names no period"),
+                None => guest.refuse(
+                    id,
+                    refusal::MALFORMED_REQUEST,
+                    "`clock.ticks` names no period",
+                ),
             }
         }
         (Capability::Host, "id") => {
@@ -280,7 +295,7 @@ pub(super) fn answer(
                 && prefix.bytes().all(|byte| byte.is_ascii_alphanumeric());
             match named {
                 true => guest.reply(id, Ok(methods::encode(&backend::fresh_id(prefix)))),
-                false => guest.refuse(id, "malformed_request", "`host.id` names no prefix"),
+                false => guest.refuse(id, refusal::MALFORMED_REQUEST, "`host.id` names no prefix"),
             }
         }
         _ => return false,
