@@ -1,12 +1,8 @@
 use super::*;
 
-/// The loads an event started; nobody waits on them, the seats swap in place.
-pub struct Loads {
-    pub(super) _threads: Vec<std::thread::JoinHandle<()>>,
-}
-
 /// One seat: the load state, props and retry hold-off of one view instance
-/// of one module (instance 0 is the preloaded seat no tab has claimed yet).
+/// of one module (instance 0 is the preloaded seat no tab has claimed yet:
+/// compiled, never started).
 /// Shared by the tab's widget on the window thread and the loader thread,
 /// which swaps a finished load in place; the tab polls it while loading.
 pub(super) struct Mounted {
@@ -22,9 +18,6 @@ pub(super) struct Mounted {
     /// again. Cleared by any load that comes back, so only a repeated
     /// failure on the same code widens the gap.
     pub(super) retry: Option<Retry>,
-    /// When a tab last drew this seat: a load for a seat on screen does not
-    /// queue for the link.
-    pub(super) shown: Option<Instant>,
     /// The seat's load wake: signalled by an install, a stage shown and a
     /// retry, so the `Seat` turns once for each instead of asking for a
     /// frame per frame while a load is on its way.
@@ -68,7 +61,6 @@ impl Mounted {
             props: None,
             generation: 0,
             retry: None,
-            shown: None,
             wake: tokio::sync::watch::Sender::new(()),
         }))
     }
@@ -169,6 +161,13 @@ pub(super) enum Slot {
     },
     /// Verified; its code compiles.
     Compiling,
+    /// Compiled, and not started: a seat no pane has claimed keeps only
+    /// what its view's manifest says, the name the rail lists it by and
+    /// the narrowest it is laid out. The pane that claims it starts it.
+    Compiled {
+        name: String,
+        min_width: u32,
+    },
     Ready(Box<Guest>),
     /// The active deployment verified, and it ships no view.
     Empty,
@@ -197,7 +196,8 @@ pub(crate) enum Failure {
     NotListed(String),
     /// The view ran out of fuel or trapped.
     Trapped(String),
-    /// Bytes this build does not run as a view, or a load overtaken.
+    /// Bytes this build does not run as a view, a load overtaken, or a
+    /// loader that stopped.
     Refused(String),
     /// The view was built against another wire than this app's.
     Wire(String),
@@ -254,24 +254,35 @@ pub(super) fn registry() -> &'static Registry {
 
 /// Claim a preloaded seat or create a distinct guest for this view instance.
 pub(super) fn mounted(module: &'static str, instance: u64) -> Arc<Mutex<Mounted>> {
-    let mut registry = registry().lock().expect("module views");
+    let code = roster().code(module);
+    let mut registry = lock(registry());
     let seat = registry.remove(&(module, 0)).unwrap_or_else(Mounted::seat);
     registry.insert((module, instance), seat.clone());
     let snapshot = connection().lock().expect("views rpc").clone();
-    let mut locked = seat.lock().expect("module view lock");
+    let mut locked = lock(&seat);
     locked.instance = instance;
     if let Slot::Ready(guest) = &mut locked.slot {
         guest.instance = instance;
     }
-    if locked.generation == 0 && (snapshot.client.is_some() || view_override(module).is_some()) {
+    let first = locked.generation == 0;
+    let asked = snapshot.client.is_some() || view_override(module).is_some();
+    // a seat preloaded only as far as compiled: this pane's load starts it
+    let compiled = matches!(locked.slot, Slot::Compiled { .. });
+    let load = (first && asked || compiled).then(|| {
         locked.rev = snapshot.rev;
-        let generation = locked.start();
-        drop(locked);
-        drop(spawn_load(module, &seat, generation, snapshot));
-    } else {
-        drop(locked);
-    }
+        Load {
+            module,
+            seat: seat.clone(),
+            generation: locked.start(),
+            asked_of: snapshot,
+            code,
+        }
+    });
+    drop(locked);
     drop(registry);
+    if let Some(load) = load {
+        queue(load);
+    }
     // the module's row may now be read off this seat
     rail_moved();
     seat
@@ -281,15 +292,14 @@ pub(super) fn mounted(module: &'static str, instance: u64) -> Arc<Mutex<Mounted>
 /// again now, under a new generation, past any hold-off a block's retries
 /// left. A failure goes back to loading, and a stopped view gives up its
 /// seat, so what lands is a fresh instance rather than a swap against it.
-pub(crate) fn retry(module: &'static str, instance: u64) -> Loads {
-    let registry = registry().lock().expect("module views");
-    let Some(seat) = registry.get(&(module, instance)) else {
-        return Loads {
-            _threads: Vec::new(),
-        };
+pub(crate) fn retry(module: &'static str, instance: u64) {
+    let code = roster().code(module);
+    let registry = lock(registry());
+    let Some(seat) = registry.get(&(module, instance)).cloned() else {
+        return;
     };
     let snapshot = connection().lock().expect("views rpc").clone();
-    let mut locked = seat.lock().expect("module view lock");
+    let mut locked = lock(&seat);
     let stopped = matches!(&locked.slot, Slot::Ready(guest) if guest.fault.is_some());
     if stopped || matches!(locked.slot, Slot::Failed(_)) {
         locked.slot = Slot::Loading;
@@ -298,50 +308,187 @@ pub(crate) fn retry(module: &'static str, instance: u64) -> Loads {
     let generation = locked.start();
     locked.wake.send_replace(());
     drop(locked);
+    drop(registry);
     // a failure's row says Loading again
     rail_moved();
-    Loads {
-        _threads: vec![spawn_load(module, seat, generation, snapshot)],
+    queue(Load {
+        module,
+        seat,
+        generation,
+        asked_of: snapshot,
+        code,
+    });
+}
+
+/// One load a seat waits for: `module`'s view out of `code` (the roster's
+/// blob id when the load was asked for, and whether that blob is the view
+/// itself), asked of the node in `asked_of`, under the seat's `generation`.
+pub(super) struct Load {
+    pub(super) module: &'static str,
+    pub(super) seat: Arc<Mutex<Mounted>>,
+    pub(super) generation: u64,
+    pub(super) asked_of: Connection,
+    pub(super) code: Option<(abi::BlobId, bool)>,
+}
+
+/// The loads waiting for a loader, and how many loaders run.
+struct Loaders {
+    waiting: VecDeque<Load>,
+    running: usize,
+}
+
+static LOADING: Mutex<Loaders> = Mutex::new(Loaders {
+    waiting: VecDeque::new(),
+    running: 0,
+});
+
+/// Hands `load` to a loader thread — a cold cranelift compile is a second
+/// or more; the window thread shows "Loading" instead of freezing for it.
+/// A loader starts while fewer than `LOADERS` run, and each takes the next
+/// waiting load until none is left, so a long roster queues rather than
+/// forking a thread per program. A load a pane waits for goes ahead of the
+/// preloads. With no thread to be had and no loader left to take it, what
+/// waits fails as any load does, with a Retry. Never called holding the
+/// registry or a seat's lock: that failure installs under the seat's.
+pub(super) fn queue(load: Load) {
+    let claimed = lock(&load.seat).instance != 0;
+    let mut loaders = lock(&LOADING);
+    match claimed {
+        true => loaders.waiting.push_front(load),
+        false => loaders.waiting.push_back(load),
+    }
+    if loaders.running == LOADERS {
+        return;
+    }
+    loaders.running += 1;
+    drop(loaders);
+    let spawned = std::thread::Builder::new()
+        .name("view-loader".into())
+        .spawn(|| {
+            while let Some(load) = next_load() {
+                load.run();
+            }
+        });
+    let Err(error) = spawned else {
+        return;
+    };
+    let mut loaders = lock(&LOADING);
+    loaders.running -= 1;
+    let stranded = match loaders.running {
+        0 => std::mem::take(&mut loaders.waiting),
+        _ => VecDeque::new(),
+    };
+    drop(loaders);
+    tracing::warn!(
+        target: "ducktape::app",
+        reason = "loader_unavailable",
+        error = %error,
+        "no thread to load a view on"
+    );
+    for load in stranded {
+        let failure = Failure::Refused(format!("no thread to load the view on: {error}"));
+        load.land(|_, _| {
+            Err(Unloaded {
+                hash: None,
+                failure,
+            })
+        });
     }
 }
 
-/// Loads the view on its own thread — a cold cranelift compile is a second
-/// or more; the window thread shows "Loading" instead of freezing for it —
-/// and installs it only if `mounted` still waits for this very load AND,
-/// for a network's view, the app is still on the node it was asked of. A
-/// view the developer's override supplies is the same on every node: its
-/// load lands wherever the app has moved to meanwhile.
-pub(super) fn spawn_load(
-    module: &'static str,
-    mounted: &Arc<Mutex<Mounted>>,
-    generation: u64,
-    asked_of: Connection,
-) -> std::thread::JoinHandle<()> {
-    let loading = mounted.clone();
-    std::thread::spawn(move || {
+/// The next waiting load, or none, and the loader asking stops.
+fn next_load() -> Option<Load> {
+    let mut loaders = lock(&LOADING);
+    let load = loaders.waiting.pop_front();
+    if load.is_none() {
+        loaders.running -= 1;
+    }
+    load
+}
+
+impl Load {
+    /// The load itself, on a loader: [`Guest::load`], landed.
+    fn run(self) {
+        self.land(|load, timing| {
+            Guest::load(
+                load.module,
+                load.code,
+                &load.asked_of,
+                load.generation,
+                &load.seat,
+                timing,
+            )
+        });
+    }
+
+    /// Installs what `loading` comes back with, only if the seat still
+    /// waits for this very load AND, for a network's view, the app is still
+    /// on the node it was asked of. A view the developer's override
+    /// supplies is the same on every node: its load lands wherever the app
+    /// has moved to meanwhile. A panic in `loading` or in the install is the
+    /// load's failure, held off and offered Retry like any other, and the
+    /// loader goes on to the next load.
+    pub(super) fn land(
+        self,
+        loading: impl FnOnce(&Load, &mut LoadTiming) -> Result<Loaded, Unloaded>,
+    ) {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        let Load {
+            module, generation, ..
+        } = self;
         // the blob this load is asked for, as the roster reads compare it:
         // a failure is held off under this, not under the view section's
         // own hash, which never equals a blob id
-        let asked_for = roster().code(module).map(|(code, _)| code_digest(&code));
+        let asked_for = self.code.map(|(code, _)| code_digest(&code));
         let mut timing = LoadTiming::default();
-        let loaded = Guest::load(module, &asked_of, generation, &loading, &mut timing);
+        let loaded = catch_unwind(AssertUnwindSafe(|| loading(&self, &mut timing))).unwrap_or_else(
+            |panic| {
+                Err(Unloaded {
+                    hash: asked_for,
+                    failure: panicked("loading", &*panic),
+                })
+            },
+        );
         // the window thread holds this lock while it ticks the seat
         let waited = Instant::now();
-        let mut locked = loading.lock().expect("module view lock");
+        let mut locked = lock(&self.seat);
         timing.lock_wait = waited.elapsed();
         let key = crate::perf::Key::View {
             module,
             instance: locked.instance,
         };
         let installed = Instant::now();
-        install(
-            module,
-            &mut locked,
-            generation,
-            &asked_of,
-            asked_for,
-            loaded,
-        );
+        // the guard outlives a panic in here, so the seat is not poisoned
+        let landed = catch_unwind(AssertUnwindSafe(|| {
+            install(
+                module,
+                &mut locked,
+                generation,
+                &self.asked_of,
+                asked_for,
+                loaded,
+            )
+        }));
+        if let Err(panic) = &landed
+            && locked.generation == generation
+        {
+            let held_off = locked.retry.take();
+            let failure = panicked("installing", &**panic);
+            locked.load_failed(
+                module,
+                held_off,
+                asked_for,
+                Unloaded {
+                    hash: asked_for,
+                    failure,
+                },
+            );
+        }
+        // claimed while this very load preloaded it: the pane's own load
+        // starts it. Only this load's own install decides: a stale or a
+        // left-node load lands nothing, and hands off nothing
+        let claimed = matches!(landed, Ok(true)) && locked.instance != 0;
+        let start = claimed.then(|| locked.start());
         rail_moved();
         locked.wake.send_replace(());
         timing.install = installed.elapsed();
@@ -354,13 +501,29 @@ pub(super) fn spawn_load(
             crate::perf::record(key, "install", timing.install.as_micros() as u64);
             timing.log(module);
         }
-    })
+        drop(locked);
+        if let Some(generation) = start {
+            queue(Load { generation, ..self });
+        }
+    }
+}
+
+/// A loader's panic as the failure its load came back with: what it was
+/// doing, in the panic's own words.
+fn panicked(doing: &str, panic: &(dyn std::any::Any + Send)) -> Failure {
+    let words = panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("no message");
+    Failure::Refused(format!("the loader stopped {doing} the view: {words}"))
 }
 
 /// Puts what a load came back with into the seat, if the seat still waits
 /// for this very load and, for a network's view, the app is still on the
 /// node it was asked of. A swap also drops the old `Guest` here, its store
-/// and memory with it.
+/// and memory with it. `true` when what it put there is `Compiled`: a seat
+/// no pane held when the load began, which a pane may hold by now.
 fn install(
     module: &'static str,
     locked: &mut Mounted,
@@ -368,9 +531,9 @@ fn install(
     asked_of: &Connection,
     asked_for: Option<[u8; 32]>,
     loaded: Result<Loaded, Unloaded>,
-) {
+) -> bool {
     if locked.generation != generation {
-        return;
+        return false;
     }
     // the connection lock is a leaf: read under the seat's lock, never
     // across it. A connect bumps the revision before it reaches this
@@ -380,14 +543,17 @@ fn install(
     let from_the_node = view_override(module).is_none();
     let node_since_left = current_rev != asked_of.rev;
     if from_the_node && node_since_left {
-        return;
+        return false;
     }
     // a load that came back at all clears the hold-off; only a failure
     // puts one back, widened against the one taken here
     let held_off = locked.retry.take();
     let loaded = match loaded {
         Ok(loaded) => loaded,
-        Err(unloaded) => return locked.load_failed(module, held_off, asked_for, unloaded),
+        Err(unloaded) => {
+            locked.load_failed(module, held_off, asked_for, unloaded);
+            return false;
+        }
     };
     let Mounted { slot, instance, .. } = &mut *locked;
     match loaded {
@@ -405,6 +571,10 @@ fn install(
         Loaded::Empty => {
             *slot = Slot::Empty;
         }
+        Loaded::Compiled { name, min_width } => {
+            *slot = Slot::Compiled { name, min_width };
+            return true;
+        }
         // the same tab, the same surface handle, the same host-side
         // input text and pictures: only the instance behind them moves
         Loaded::Swap {
@@ -420,7 +590,7 @@ fn install(
                     generation,
                     "the view left while its replacement was prepared",
                 );
-                return;
+                return false;
             };
             let still_eligible = old.ticks == ticks && old.settled();
             if !Arc::ptr_eq(&old.alive, &alive) || !still_eligible {
@@ -431,14 +601,14 @@ fn install(
                     generation,
                     "the view moved while its replacement was prepared",
                 );
-                return;
+                return false;
             }
             fresh.frame_rev = old.frame_rev + 1;
             if let Some(root) = &fresh.frame.root
                 && let Err(reason) = fresh.inputs.retain_restored_projections(&old.inputs, root)
             {
                 log_source(module, fresh.hash.as_ref(), "Failed", generation, &reason);
-                return;
+                return false;
             }
             let mut pictures = std::mem::take(&mut old.pictures);
             let own = std::mem::take(&mut fresh.pictures);
@@ -455,6 +625,7 @@ fn install(
             *slot = Slot::Ready(fresh);
         }
     }
+    false
 }
 
 /// What a load came back with.
@@ -473,6 +644,8 @@ pub(super) enum Loaded {
     },
     /// The deployment ships no view.
     Empty,
+    /// The view compiles, and was not started: no pane holds the seat.
+    Compiled { name: String, min_width: u32 },
 }
 
 /// A load that came back with no view, and the view bytes it failed on —
