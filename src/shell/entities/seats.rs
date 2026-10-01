@@ -244,6 +244,7 @@ impl Seats {
     /// it in before the seat left the draw path. The door's task yields to
     /// no other between a press and its read, so the seats' own reply wakes
     /// have not run yet.
+    #[cfg(any(test, feature = "ax-door"))]
     pub(crate) fn settle(&self, cx: &mut Context<Self>) {
         for placed in self.map.values() {
             placed.seat.update(cx, |seat, cx| seat.turn(cx));

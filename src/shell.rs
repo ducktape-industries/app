@@ -24,6 +24,7 @@ pub(crate) mod entities;
 mod figure;
 mod help;
 pub(crate) use help::chords;
+#[cfg(any(test, feature = "ax-door"))]
 pub(crate) use layers::Kept;
 mod ink;
 mod keys;
