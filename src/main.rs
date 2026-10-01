@@ -1,6 +1,9 @@
 mod a11y;
 mod ui;
 
+// the AX test door: in a build with the `ax-door` feature only (kit and qa),
+// and in the tests, which read the trees it reads
+#[cfg(any(test, feature = "ax-door"))]
 mod ax;
 mod backend;
 mod editor;
@@ -25,12 +28,21 @@ fn main() {
             return;
         }
         // the test door's client: talks to a running app, opens nothing
+        #[cfg(feature = "ax-door")]
         Some("ax") => {
             let args: Vec<String> = std::env::args().skip(2).collect();
             std::process::exit(ax::cli(&args));
         }
+        // a build without the door says so rather than launching the app
+        #[cfg(not(feature = "ax-door"))]
+        Some("ax") => {
+            eprintln!("ax: this build has no AX door (it is built with the `ax-door` feature)");
+            std::process::exit(2);
+        }
         Some("--help" | "-h") => {
-            println!("usage: ducktape-app [--version | --help | ax <command...>]");
+            println!("usage: ducktape-app [--version | --help]");
+            #[cfg(feature = "ax-door")]
+            println!("       ducktape-app ax <command...>  (the AX door's client)");
             #[cfg(debug_assertions)]
             println!("       ducktape-app --render-tree  (debug build: the render-tree fixture)");
             return;
