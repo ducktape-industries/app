@@ -28,13 +28,13 @@ version = "0.1.0"
 
 [workspace.dependencies]
 
-# --- sdk-line: modules dev @ 1c2d93a8 (modules#236 merged: the host's refusal codes are view_wire::methods::refusal; goldens WIRE_ID ee4ff454 unchanged), crates/sdk (abi, view-wire, ducklink, design, describe) ---
-abi = { git = "https://github.com/ducktape-industries/modules", rev = "1c2d93a860137d14ce36a3cdcd23cbfc0e788497", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "1c2d93a860137d14ce36a3cdcd23cbfc0e788497", package = "view-wire" }
-ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "1c2d93a860137d14ce36a3cdcd23cbfc0e788497", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/modules", rev = "1c2d93a860137d14ce36a3cdcd23cbfc0e788497", package = "design" }
+# --- sdk-line: modules fr/gpui-pin @ d574b880 (modules#234 on dev 8c84e9da: gpui-pre 0.3.7 at fork 348c9022, gpui-pre#11: the P11 usvg resolver; view_wire::MAX_REQUESTS / MAX_CANCELS; goldens WIRE_ID ee4ff454 unchanged), crates/sdk (abi, view-wire, ducklink, design, describe) ---
+abi = { git = "https://github.com/ducktape-industries/modules", rev = "d574b8805cb2568bb36683e13c4a81332474fbda", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "d574b8805cb2568bb36683e13c4a81332474fbda", package = "view-wire" }
+ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "d574b8805cb2568bb36683e13c4a81332474fbda", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/modules", rev = "d574b8805cb2568bb36683e13c4a81332474fbda", package = "design" }
 # `module.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/modules", rev = "1c2d93a860137d14ce36a3cdcd23cbfc0e788497", package = "describe", features = ["host"] }
+describe = { git = "https://github.com/ducktape-industries/modules", rev = "d574b8805cb2568bb36683e13c4a81332474fbda", package = "describe", features = ["host"] }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -87,9 +87,9 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # pick which passkey signed and to frame its assertion), and the identity
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "736865710dcfa7c56f9834747287881c1c25d45d", package = "keyscheme" }
-identity = { git = "https://github.com/ducktape-industries/modules", rev = "1c2d93a860137d14ce36a3cdcd23cbfc0e788497", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/modules", rev = "d574b8805cb2568bb36683e13c4a81332474fbda", package = "identity" }
 # The roster's full query surface: its programs and its view-only entries.
-module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "1c2d93a860137d14ce36a3cdcd23cbfc0e788497", package = "module-registry" }
+module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "d574b8805cb2568bb36683e13c4a81332474fbda", package = "module-registry" }
 base64 = "0.22"
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -137,14 +137,14 @@ p256 = "0.13"
 gpui-wgpu = { package = "gpui-pre-wgpu", version = "=0.3.7" }
 
 [patch.crates-io]
-gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "a08655ad4caa82469ea43245ccc468de93a8ac5c" }
-rmp-serde = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "a08655ad4caa82469ea43245ccc468de93a8ac5c" }
-gpui-pre-scheduler = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "a08655ad4caa82469ea43245ccc468de93a8ac5c" }
-gpui-pre-zlog = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "a08655ad4caa82469ea43245ccc468de93a8ac5c" }
-gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "a08655ad4caa82469ea43245ccc468de93a8ac5c" }
+gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "348c9022f6614ccd0e4fb83dbd628f4dc86c853c" }
+rmp-serde = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "348c9022f6614ccd0e4fb83dbd628f4dc86c853c" }
+gpui-pre-scheduler = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "348c9022f6614ccd0e4fb83dbd628f4dc86c853c" }
+gpui-pre-zlog = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "348c9022f6614ccd0e4fb83dbd628f4dc86c853c" }
+gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "348c9022f6614ccd0e4fb83dbd628f4dc86c853c" }
 # Window::set_bounds: the X11 and macOS backends, vendored in the fork
-gpui-pre-linux = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "a08655ad4caa82469ea43245ccc468de93a8ac5c" }
-gpui-pre-macos = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "a08655ad4caa82469ea43245ccc468de93a8ac5c" }
+gpui-pre-linux = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "348c9022f6614ccd0e4fb83dbd628f4dc86c853c" }
+gpui-pre-macos = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "348c9022f6614ccd0e4fb83dbd628f4dc86c853c" }
 
 # dev/test builds compile wasm guests through cranelift (module-owned view
 # fixtures); unoptimized cranelift is 10-30x slower, so the code generator
