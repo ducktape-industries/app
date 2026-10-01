@@ -126,10 +126,11 @@ impl Seat {
         self.instance
     }
 
-    /// The id around the view's tree: the AX test door (`ax::tree`) reads
-    /// the module off it.
+    /// The id around the view's tree, `view/<module>`: the AX test door
+    /// (`ax::tree`) reads the module off it. A host id, so no id a view
+    /// sends is one.
     pub(crate) fn ax_mark(&self) -> gpui_kit::ElementId {
-        gpui_kit::ElementId::Name(format!("{}{}", crate::ax::VIEW_MARK, self.module).into())
+        crate::render::host_id(format!("{}{}", crate::render::VIEW_MARK, self.module))
     }
 
     pub(crate) fn tree(&self) -> Option<Entity<crate::render::ViewTree>> {
@@ -142,11 +143,6 @@ impl Seat {
 
     pub(crate) fn standin(&self) -> Option<&Standin> {
         self.standin.as_ref()
-    }
-
-    #[cfg(test)]
-    pub(super) fn props(&self) -> Option<&[u8]> {
-        self.props.as_deref()
     }
 
     #[cfg(test)]

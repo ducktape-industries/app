@@ -173,8 +173,26 @@ fn same_module_instances_receive_independent_props(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let first = cx.new(|cx| Seat::new("independent-props-test", cx));
     let second = cx.new(|cx| Seat::new("independent-props-test", cx));
-    first.update(cx, |seat, cx| seat.set_props(b"channel-one".to_vec(), cx));
-    second.update(cx, |seat, cx| seat.set_props(b"channel-two".to_vec(), cx));
+    // after both: it readies every seat the module has
+    crate::runtime::seat_for_test("independent-props-test", 320);
+    for (seat, props) in [(&first, b"channel-one"), (&second, b"channel-two")] {
+        seat.update(cx, |seat, cx| {
+            seat.set_props(props.to_vec(), cx);
+            seat.turn(cx);
+        });
+    }
+    // what the guest is handed: `Mounted.props`, the slot `redraw` reads
+    let props = |seat: &Entity<Seat>, cx: &TestAppContext| {
+        mounted_of(seat, cx).lock().unwrap().props.clone()
+    };
+    assert_eq!(
+        props(&first, cx).as_deref(),
+        Some(b"channel-one".as_slice())
+    );
+    assert_eq!(
+        props(&second, cx).as_deref(),
+        Some(b"channel-two".as_slice())
+    );
     cx.update(|cx| {
         let (first, second) = (first.read(cx), second.read(cx));
         assert_ne!(first.instance(), second.instance());
@@ -183,14 +201,19 @@ fn same_module_instances_receive_independent_props(cx: &mut TestAppContext) {
             &registry[&(first.module(), first.instance())],
             &registry[&(second.module(), second.instance())]
         ));
-        drop(registry);
-        assert_eq!(first.props(), Some(b"channel-one".as_slice()));
-        assert_eq!(second.props(), Some(b"channel-two".as_slice()));
     });
-    first.update(cx, |seat, cx| seat.set_props(b"channel-three".to_vec(), cx));
-    cx.update(|cx| {
-        assert_eq!(second.read(cx).props(), Some(b"channel-two".as_slice()));
+    first.update(cx, |seat, cx| {
+        seat.set_props(b"channel-three".to_vec(), cx);
+        seat.turn(cx);
     });
+    assert_eq!(
+        props(&first, cx).as_deref(),
+        Some(b"channel-three".as_slice())
+    );
+    assert_eq!(
+        props(&second, cx).as_deref(),
+        Some(b"channel-two".as_slice())
+    );
 }
 
 /// The root a view is drawn in is laid out from the view's own minimum.
