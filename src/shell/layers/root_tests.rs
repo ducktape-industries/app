@@ -1169,17 +1169,17 @@ fn a_views_tooltip_stays_under_a_dialog(cx: &mut TestAppContext) {
                     .is_some_and(|color| (color.a - 0.6).abs() < 0.01)
             })
             .expect("the dialog's scrim paints");
-        if let Some(tip) = quads
+        // the pointer is still in the source's bounds: the tooltip stays up
+        let tip = quads
             .iter()
             .find(|quad| quad.background.as_solid() == Some(gpui_kit::rgb(MAGENTA).into()))
-        {
-            assert!(
-                tip.order < scrim.order,
-                "{module}: the tooltip {} over the scrim {}",
-                tip.order,
-                scrim.order
-            );
-        }
+            .unwrap_or_else(|| panic!("{module}: the tooltip still paints"));
+        assert!(
+            tip.order < scrim.order,
+            "{module}: the tooltip {} over the scrim {}",
+            tip.order,
+            scrim.order
+        );
         // the pane's bottom-left corner: on the scrim, away from the card
         let at = gpui_kit::point(
             gpui_kit::px(pane.origin.x.0 / scale + 8.),
