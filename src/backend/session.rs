@@ -6,6 +6,7 @@
 
 use commonware_cryptography::{Signer as _, ed25519};
 use view_wire::Error;
+use view_wire::methods::refusal;
 
 use super::noded::{Frame, Layer};
 use super::{RpcClient, hex_encode, refused};
@@ -52,7 +53,7 @@ pub(crate) fn seat_serial() -> SeatSerial {
 pub(crate) struct SeatSerial(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
 
 fn locked_seat() -> Error {
-    Error::new("session_locked", LOCKED)
+    Error::new(refusal::SESSION_LOCKED, LOCKED)
 }
 
 /// Seats `key` as the one that signs; answers its public key.
