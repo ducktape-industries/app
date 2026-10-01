@@ -239,16 +239,17 @@ where
 /// Runs `future` on the kernel runtime and delivers its result as the one
 /// reply to request `id`; counted in flight, aborted with the guest. For a
 /// host method that waits on something other than the node (`notify.post`
-/// waits on its banner).
+/// waits on its banner, `store.*` on its file). `false` when the request
+/// was refused `in_flight_limit` instead.
 pub(in crate::runtime) fn spawn_reply(
     guest: &mut Guest,
     id: u64,
     future: impl std::future::Future<Output = Answer> + Send + 'static,
-) {
+) -> bool {
     let replies = guest.replies.clone();
     start(guest, id, async move {
         replies.item(id, future.await, true);
-    });
+    })
 }
 
 /// The node to ask, or `None` with the request REFUSED: `stale_connection`
