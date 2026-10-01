@@ -60,6 +60,11 @@ fn seat() -> std::sync::MutexGuard<'static, Option<Signer>> {
 
 const LOCKED: &str = "this device's key is locked; unlock it first";
 
+/// Whether a key is seated: what a write would be signed with.
+pub(crate) fn seated() -> bool {
+    seat().is_some()
+}
+
 /// The seat is one for the process: a test that seats a key or locks it
 /// holds this for its whole run, so no other test's lock or seat lands in
 /// the middle of it.

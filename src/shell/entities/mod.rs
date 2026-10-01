@@ -105,7 +105,7 @@ impl Entities {
         let notifications = cx.new(|_| Notifications::new(center));
         let toast = cx.new(|cx| Toast::new(&session, &account, cx));
         let prefs = cx.new(|_| Slice::new(Prefs::load()));
-        let seats = cx.new(|cx| Seats::new(&session, &account, &prefs, &rail, &notifications, cx));
+        let seats = cx.new(|cx| Seats::new(&session, &account, &rail, &notifications, cx));
         let shared = Shared {
             session,
             chain,

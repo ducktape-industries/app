@@ -42,7 +42,7 @@ pub(crate) use prefs::{
 #[cfg(test)]
 pub(crate) use session::seat_serial;
 pub(crate) use session::{
-    lock_signer, next_seq, query_frame, seat_key, seated_frame, seated_key, seated_sign,
+    lock_signer, next_seq, query_frame, seat_key, seated, seated_frame, seated_key, seated_sign,
 };
 
 use std::path::Path;

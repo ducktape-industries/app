@@ -120,6 +120,7 @@ use node::{
     blob_get, block, blocks, changes, heads, invite, network, query, spawn_no_retry,
     spawn_retrying, spawn_retrying_unsent, status, submit,
 };
+use replies::InFlight;
 pub(super) use replies::Replies;
 
 /// The one current-thread tokio runtime every async I/O in the app runs
@@ -213,6 +214,7 @@ pub(super) fn answer(
     operation: &str,
     id: u64,
     payload: &[u8],
+    props: &Option<Vec<u8>>,
 ) -> bool {
     if super::clipboard::answer(guest, capability, operation, id, payload)
         || super::notify::answer(guest, capability, operation, id, payload)
@@ -270,7 +272,9 @@ pub(super) fn answer(
             guest.sync_route();
         }
         (Capability::Module, "query") => {
-            spawn_retrying(guest, id, payload, query, "host_call.module.query")
+            if node::targeted(guest, id, payload, "module.query").is_some() {
+                spawn_retrying(guest, id, payload, query, "host_call.module.query")
+            }
         }
         (Capability::Chain, "status") => {
             spawn_retrying(guest, id, payload, status, "host_call.chain.status")
@@ -287,8 +291,23 @@ pub(super) fn answer(
         (Capability::Invite, "create") => {
             spawn_no_retry(guest, id, payload, invite, "host_call.invite.create")
         }
+        // a write: to a declared target, and where the op removes or
+        // suspends a key or an agent, after the person's native yes
         (Capability::Op, "submit") => {
-            spawn_retrying_unsent(guest, id, payload, submit, "host_call.op.submit")
+            let Some(call) = node::targeted(guest, id, payload, "op.submit") else {
+                return true;
+            };
+            // the account the seated key holds, as the app resolved it
+            // (`roster::props`): the card tells the person's own account
+            // from an agent's by it
+            let own = props
+                .as_deref()
+                .and_then(|props| wire::methods::decode::<wire::methods::Session>(props).ok())
+                .and_then(|session| session.account);
+            match super::consent::needed(guest.module, &call.target, &call.body, own) {
+                None => spawn_retrying_unsent(guest, id, payload, submit, "host_call.op.submit"),
+                Some(words) => node::spawn_consented(guest, id, payload, words),
+            }
         }
         (Capability::Blob, "get") => {
             spawn_retrying(guest, id, payload, blob_get, "host_call.blob.get")

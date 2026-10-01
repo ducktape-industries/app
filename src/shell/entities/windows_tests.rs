@@ -460,6 +460,7 @@ fn the_front_follows_focus_and_not_frames(cx: &mut TestAppContext) {
 /// its closing forgets what it found.
 #[gpui_kit::test]
 fn the_windows_follow_what_opens_over_a_desk(cx: &mut TestAppContext) {
+    let _queue = crate::runtime::consent::serial();
     let (app, key) = console(cx);
     let (desk, overlays) = app.windows.read_with(cx, |windows, _| {
         let own = windows.own(key).unwrap();
@@ -492,4 +493,92 @@ fn the_windows_follow_what_opens_over_a_desk(cx: &mut TestAppContext) {
     assert_eq!(found, None, "Approve closed and kept what it found");
     let toast = app.toast.read_with(cx, |toast, _| toast.get().clone());
     assert!(toast.starts_with("Approved."), "{toast:?}");
+}
+
+/// A view's ask waits behind what the person has open: with "Add a
+/// device…" up, the ask leaves it there (its card is the same frame, Approve
+/// in the same spot: a view in a pop-out window could land it under a press
+/// meant for the device); the card shows once that closes, and a bare desk
+/// shows it at once.
+#[gpui_kit::test]
+fn a_views_ask_never_replaces_an_open_dialog(cx: &mut TestAppContext) {
+    use crate::runtime::consent;
+    let _queue = consent::serial();
+    let (app, key) = console(cx);
+    let overlays = app
+        .windows
+        .read_with(cx, |windows, _| windows.own(key).unwrap().overlays.clone());
+    let open = |cx: &TestAppContext| overlays.read_with(cx, |it, _| *it.get());
+    let words = consent::Words {
+        said: "chat asks to suspend agent #3.".into(),
+        shown: Some("#3".into()),
+    };
+    overlays.update(cx, |it, cx| it.open(Overlay::Approve, cx));
+    let _told = consent::queue("chat", 0, words.clone()).expect("queued");
+    app.windows
+        .update(cx, |windows, cx| windows.sync_consent(cx));
+    cx.run_until_parked();
+    assert_eq!(open(cx), Some(Overlay::Approve), "the ask waits its turn");
+    let (asked, _) = consent::front().expect("still waiting");
+    overlays.update(cx, |it, cx| it.close(Overlay::Approve, cx));
+    cx.run_until_parked();
+    assert_eq!(open(cx), Some(Overlay::Consent), "its turn came");
+    assert!(!consent::answer(asked, false));
+    cx.run_until_parked();
+    // the person's own close refuses it; nothing waits, nothing reopens
+    overlays.update(cx, |it, cx| it.close(Overlay::Consent, cx));
+    cx.run_until_parked();
+    assert_eq!(open(cx), None);
+    let _told = consent::queue("chat", 0, words).expect("queued");
+    app.windows
+        .update(cx, |windows, cx| windows.sync_consent(cx));
+    cx.run_until_parked();
+    assert_eq!(
+        open(cx),
+        Some(Overlay::Consent),
+        "a bare desk shows it at once"
+    );
+    let (asked, _) = consent::front().unwrap();
+    consent::answer(asked, false);
+    overlays.update(cx, |it, cx| it.close(Overlay::Consent, cx));
+    cx.run_until_parked();
+}
+
+/// A card whose request is gone (refused after it was queued, or its view
+/// torn down) follows it off: the shell's sync closes it, and nothing is
+/// left for Approve to tell.
+#[gpui_kit::test]
+fn a_card_follows_its_request_off(cx: &mut TestAppContext) {
+    use crate::runtime::consent;
+    let _queue = consent::serial();
+    let (app, key) = console(cx);
+    let overlays = app
+        .windows
+        .read_with(cx, |windows, _| windows.own(key).unwrap().overlays.clone());
+    let told = consent::queue(
+        "chat",
+        0,
+        consent::Words {
+            said: "chat asks to suspend agent #3.".into(),
+            shown: Some("#3".into()),
+        },
+    )
+    .expect("queued");
+    app.windows
+        .update(cx, |windows, cx| windows.sync_consent(cx));
+    cx.run_until_parked();
+    assert_eq!(
+        overlays.read_with(cx, |it, _| *it.get()),
+        Some(Overlay::Consent)
+    );
+    drop(told);
+    app.windows
+        .update(cx, |windows, cx| windows.sync_consent(cx));
+    cx.run_until_parked();
+    assert_eq!(
+        overlays.read_with(cx, |it, _| *it.get()),
+        None,
+        "the card went with its request"
+    );
+    assert_eq!(consent::front(), None);
 }

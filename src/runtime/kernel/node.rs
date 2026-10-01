@@ -100,7 +100,15 @@ pub(super) fn spawn_retrying(
     method: NodeMethod,
     stage: &'static str,
 ) {
-    spawn_method(guest, id, payload, method, Some(transport_failed), stage);
+    spawn_method(
+        guest,
+        id,
+        payload,
+        method,
+        Some(transport_failed),
+        stage,
+        None,
+    );
 }
 
 /// Runs `method` on the connected node as a task, retrying for
@@ -114,7 +122,59 @@ pub(super) fn spawn_retrying_unsent(
     method: NodeMethod,
     stage: &'static str,
 ) {
-    spawn_method(guest, id, payload, method, Some(unsent), stage);
+    spawn_method(guest, id, payload, method, Some(unsent), stage, None);
+}
+
+/// `op.submit` of an op the person confirms first (`consent::needed`):
+/// only the person's activation opens the dialog, taken by the ask as
+/// `link.open` takes it (a view resubmitting after Cancel, or asking on a
+/// clock, gets `needs_gesture` and no second card); refused
+/// `session_locked` at once with no key to sign it (no dialog that cannot
+/// lead to a signature); else queued for the person and run as
+/// [`spawn_retrying_unsent`] once they approve, refused `consent_refused`
+/// otherwise.
+pub(super) fn spawn_consented(
+    guest: &mut Guest,
+    id: u64,
+    payload: &[u8],
+    words: super::super::consent::Words,
+) {
+    if !guest.take_activation() {
+        guest.refuse(
+            id,
+            refusal::NEEDS_GESTURE,
+            "this op asks the person and needs a press or key",
+        );
+        return;
+    }
+    if !backend::seated() {
+        guest.refuse(
+            id,
+            refusal::SESSION_LOCKED,
+            "this device's key is locked; unlock it first",
+        );
+        return;
+    }
+    if connected(guest, id).is_none() {
+        return;
+    }
+    // the in-flight slot before the ask: a request refused
+    // `in_flight_limit` never puts a card up that leads nowhere
+    let Some(slot) = admit(guest, id) else {
+        return;
+    };
+    let Some(told) = super::super::consent::ask(guest, id, words) else {
+        return;
+    };
+    spawn_method(
+        guest,
+        id,
+        payload,
+        submit,
+        Some(unsent),
+        "host_call.op.submit",
+        Some((slot, told)),
+    );
 }
 
 /// Runs `method` on the connected node as a task, asking exactly once: a
@@ -126,11 +186,14 @@ pub(super) fn spawn_no_retry(
     method: NodeMethod,
     stage: &'static str,
 ) {
-    spawn_method(guest, id, payload, method, None, stage);
+    spawn_method(guest, id, payload, method, None, stage, None);
 }
 
 /// `stage` names the call in the perf registry (`host_call.<kind>`): its
-/// latency from here to the reply, and the attempts it took.
+/// latency from here to the reply, and the attempts it took. `consent`,
+/// when given, is the person's answer the task waits on before it asks
+/// the node at all: anything but `true` is `consent_refused`.
+#[allow(clippy::too_many_arguments, reason = "one spawn, every node method")]
 fn spawn_method(
     guest: &mut Guest,
     id: u64,
@@ -138,10 +201,18 @@ fn spawn_method(
     method: NodeMethod,
     retry_on: Option<fn(&wire::Error) -> bool>,
     stage: &'static str,
+    consent: Option<(InFlight, super::super::consent::Told)>,
 ) {
     let ask = payload.to_vec();
     let Some(node) = connected(guest, id) else {
         return;
+    };
+    let (slot, told) = match consent {
+        Some((slot, told)) => (slot, Some(told)),
+        None => match admit(guest, id) {
+            Some(slot) => (slot, None),
+            None => return,
+        },
     };
     let replies = guest.replies.clone();
     let key = guest.perf_key();
@@ -149,7 +220,20 @@ fn spawn_method(
     // `in_flight_limit` or cancelled by the view, which never got a reply
     let asked = crate::perf::on().then(std::time::Instant::now);
     let attempts_stage = crate::perf::suffixed(stage, ".attempts");
-    start(guest, id, async move {
+    run(guest, id, slot, async move {
+        if let Some(mut told) = told
+            && told.answer().await != Some(true)
+        {
+            replies.item(
+                id,
+                Err(wire::Error::new(
+                    refusal::CONSENT_REFUSED,
+                    "the person did not confirm",
+                )),
+                true,
+            );
+            return;
+        }
         let (result, attempts) = match retry_on {
             Some(retry_on) => {
                 until_answered(NODE_RETRY_BUDGET, noded::ANSWER_DEADLINE, retry_on, || {
@@ -169,32 +253,52 @@ fn spawn_method(
     });
 }
 
-/// Every task starts here: an in-flight slot from [`Replies::admit`] — or
-/// the request refused `in_flight_limit`, and `false` — then `task` on
-/// [`handle`] holding the slot, its [`NodeTask`] kept in `guest.tasks`
-/// (finished ones pruned) so it is aborted with the guest.
+/// Every task starts here: an in-flight slot ([`admit`]) — or the request
+/// refused `in_flight_limit`, and `false` — then [`run`].
 fn start(
     guest: &mut Guest,
     id: u64,
     task: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> bool {
-    let Some(counted) = guest.replies.admit() else {
+    match admit(guest, id) {
+        Some(slot) => {
+            run(guest, id, slot, task);
+            true
+        }
+        None => false,
+    }
+}
+
+/// An in-flight slot from [`Replies::admit`] for request `id`, or the
+/// request refused `in_flight_limit` and `None`.
+fn admit(guest: &mut Guest, id: u64) -> Option<InFlight> {
+    let slot = guest.replies.admit();
+    if slot.is_none() {
         guest.refuse(
             id,
             refusal::IN_FLIGHT_LIMIT,
             "too many in-flight view requests",
         );
-        return false;
-    };
+    }
+    slot
+}
+
+/// `task` on [`handle`] holding its `slot`, its [`NodeTask`] kept in
+/// `guest.tasks` (finished ones pruned) so it is aborted with the guest.
+fn run(
+    guest: &mut Guest,
+    id: u64,
+    slot: InFlight,
+    task: impl std::future::Future<Output = ()> + Send + 'static,
+) {
     let task = handle().spawn(async move {
-        let _counted = counted;
+        let _slot = slot;
         task.await;
     });
     guest
         .tasks
         .retain(|(_, pending)| !pending.task.is_finished());
     guest.tasks.push((id, NodeTask { task }));
-    true
 }
 
 /// One SUBSCRIPTION's writing end, handed to the loop that feeds it: every
@@ -290,6 +394,14 @@ pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
             id,
             refusal::MALFORMED_REQUEST,
             "`module.changes` names no program",
+        );
+        return;
+    }
+    if !guest.targets.contains(&program) {
+        guest.refuse(
+            id,
+            refusal::UNDECLARED_TARGET,
+            undeclared("module.changes", &program),
         );
         return;
     }
@@ -444,23 +556,52 @@ impl Drop for NodeTask {
     }
 }
 
-/// The envelope of a node method, its target checked: a program name, not a
+/// The envelope of a node method, its target checked: a program name
+/// (`manifest::program_name`, the rule a manifest's targets follow), not a
 /// path.
 fn call_of(ask: &[u8]) -> Result<methods::Call, wire::Error> {
     let call: methods::Call = methods::decode(ask).map_err(malformed)?;
     let target = call.target.trim();
-    let named = !target.is_empty()
-        && target.len() <= 64
-        && target
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
-    match named {
+    match wire::manifest::program_name(target) {
         true => Ok(methods::Call {
             target: target.to_owned(),
             body: call.body,
         }),
         false => Err(malformed("request names no target")),
     }
+}
+
+fn undeclared(kind: &str, target: &str) -> String {
+    format!("`{kind}` names `{target}`, which this view's manifest does not list among its targets")
+}
+
+/// The envelope of `module.query` or `op.submit` (`kind`) from `guest`, its
+/// target among the view's manifest targets; `None` with the request
+/// refused otherwise (`malformed_request`, `undeclared_target`). The task
+/// decodes the envelope again: a string and the bytes, cheaper than
+/// carrying it.
+pub(super) fn targeted(
+    guest: &mut Guest,
+    id: u64,
+    payload: &[u8],
+    kind: &str,
+) -> Option<methods::Call> {
+    let call = match call_of(payload) {
+        Ok(call) => call,
+        Err(refusal) => {
+            guest.reply(id, Err(refusal));
+            return None;
+        }
+    };
+    if !guest.targets.contains(&call.target) {
+        guest.refuse(
+            id,
+            refusal::UNDECLARED_TARGET,
+            undeclared(kind, &call.target),
+        );
+        return None;
+    }
+    Some(call)
 }
 
 pub(super) fn query(node: Node, ask: Vec<u8>) -> Answered {
