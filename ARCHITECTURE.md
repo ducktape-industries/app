@@ -212,13 +212,13 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    paths it still mounts.
 7. **Input back.** Element listeners (`render/interactivity.rs`,
    `render/inputs.rs`, …) `cx.emit(wire::Event)` with the guest's handler
-   ids; `Seat` subscribes, drops focus-needing events when the
-   pane is unfocused, takes the one-shot **user activation**
-   (`ViewTree::take_user_activation`) onto `guest.user_activation` and calls
-   `runtime::input::deliver` into `guest.pending`. Raw window input (pointer, wheel, keys, IME, file
-   drops) arrives through `runtime/input.rs`'s `Observe` element after
-   GPUI's own controls have seen it, marked `captured` if a native control
-   consumed it. The multi-line editor is its own loop: `Node::Editor` mounts
+   ids; `Seat` subscribes (`runtime/seat/entity.rs`), drops an event
+   addressed to a generation or revision no longer seated, takes the
+   one-shot **user activation** (`ViewTree::take_user_activation`) onto
+   `guest.user_activation`, pushes the event onto `guest.pending` and
+   turns. A guest hears only what its elements' own listeners emit: no
+   window-wide input (pointer moves, keys, IME, file drops) reaches it.
+   The multi-line editor is its own loop: `Node::Editor` mounts
    a `TextEditor` (`editor/text.rs`) whose edits become `EditorStore`
    transactions (`editor/wire.rs`); claimed key chords go to the guest for
    a decision; the guest's next frame acknowledges the revision.
@@ -729,11 +729,10 @@ House words, and where one word means several things.
   the desks.
 - **props / session** — the session facts every view gets on
   `host.session` (`wire::methods::Session`, built by `runtime::props`).
-- **route** — three meanings. (1) the path part of a `duck://<view>/<route>`
+- **route** — two meanings. (1) the path part of a `duck://<view>/<route>`
   link, held in `runtime::route_to` until the view's first `host.route`
-  subscriber (`take_route`). (2) `runtime::input::Route`: the
-  (seat, generation, revision, alive) an input event is addressed to.
-  (3) a closure-local name for a cloned authored path in `render/`.
+  subscriber (`take_route`). (2) a closure-local name for a cloned
+  authored path in `render/`.
 - **link** — a `duck://` URL (`Roster::parse_link`, `Link`), or, in
   sign-in, "link from another device" (`join_from_device`). Unrelated.
 - **standin / stage words** — the native placeholder drawn where a view is
@@ -753,9 +752,8 @@ House words, and where one word means several things.
 - **pane / window** — `layout::Pane` is one floating frame on the desk
   holding a view, the program finder or Help. User copy, GPUI actions and
   `layout.rs` comments call it a **window**. **window** therefore means
-  three things: an OS window (`WindowRoot`, `WindowKey`,
-  `WindowKind`), a pane, and the view-wire `events::Window` events
-  (`Focused`, `CloseRequested`, `Closed`, …) a guest receives.
+  two things: an OS window (`WindowRoot`, `WindowKey`, `WindowKind`) and
+  a pane.
 - **instance** — a pane's unique u64 (`Pane.instance`), the key for
   `Seats`; `Seat.instance` is its own counter.
 - **split / cycle / fill / measure** — pane geometry operations in
@@ -832,10 +830,12 @@ House words, and where one word means several things.
   Then: a new operation under an existing capability gets an arm in
   `kernel::answer` (or in `clipboard`/`notify`/`store::answer` if it
   belongs there); a node-backed one gets a handler in `kernel/node.rs` and
-  is spawned with `spawn`/`spawn_once`, answering through `Replies`; a
-  subscription writes through `Items`. Add the method to the module doc in
-  `kernel.rs` and a case in `kernel/tests.rs`, which stands up a loopback
-  `TcpListener` as the node.
+  is spawned with `spawn_retrying`, `spawn_retrying_unsent` or
+  `spawn_no_retry` (by whether a lost answer may be asked again),
+  answering through `Replies`; a subscription writes through `Items`. Add
+  the method to the module doc in `kernel.rs` and a case in
+  `kernel/tests/node_methods.rs`, which stands up a fake node on a local
+  socket.
 - **Add a native screen or overlay.** A screen: a `Screen` variant
   (`shell/entities/screen.rs`), its state and the methods that move it on
   `Account` or `Session` (`shell/entities/`), a row in the transition table
