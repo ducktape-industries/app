@@ -34,7 +34,7 @@ pub(crate) use rail::Rail;
 pub(crate) use screen::{AccountStep, Screen};
 pub(crate) use seats::Seats;
 #[cfg(test)]
-pub(crate) use session::{LOST_AFTER, STATUS_EVERY, StatusSource};
+pub(crate) use session::{STATUS_EVERY, StatusSource};
 pub(crate) use session::{Session, SessionEvent, SessionState};
 #[cfg(test)]
 mod account_tests;
@@ -168,6 +168,39 @@ pub(crate) mod tests {
             screen.set(Screen::Desk, cx);
         });
         entities
+    }
+
+    /// The console's desk as its first frame measures it: 1280×800 less the bar.
+    pub(crate) const DESK: (f32, f32) = (1280., 764.);
+
+    /// The app's entities with a console open on a measured desk showing
+    /// `seed`, or one empty window, its OS window on the test platform;
+    /// nothing is drawn. A window that closes is forgotten, as
+    /// `launch::run` wires it.
+    pub(crate) fn console(
+        seed: Option<&'static str>,
+        cx: &mut gpui_kit::TestAppContext,
+    ) -> (Entities, crate::runtime::WindowKey) {
+        use gpui_kit::{Bounds, point, px, size};
+        let app = cx.update(|cx| {
+            gpui_kit::init(cx);
+            let app = entities(cx);
+            Windows::forget_closed(&app.windows, cx);
+            app
+        });
+        let at = Bounds::new(point(px(0.), px(0.)), size(px(1280.), px(800.)));
+        let key = app.windows.update(cx, |windows, cx| {
+            windows.open(crate::shell::WindowKind::Console, Some(at), cx)
+        });
+        cx.run_until_parked();
+        desk_of(&app, key, cx).update(cx, |desk, cx| {
+            desk.resize(DESK, cx);
+            match seed {
+                Some(module) => desk.seed(module, cx),
+                None => desk.split(crate::ui::layout::EMPTY, cx),
+            }
+        });
+        (app, key)
     }
 
     /// Window `key`'s desk.

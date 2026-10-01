@@ -1,11 +1,9 @@
 //! One window's desk moved by its methods (desk.rs): each a compared edit
 //! of the layout, framed and settled.
-use super::tests::notifies;
+use super::tests::{DESK, notifies};
 use super::{Desk, Slice};
-use crate::ui::layout::{EMPTY, Frame, Layout};
+use crate::ui::layout::Layout;
 use gpui_kit::{AppContext as _, Entity, TestAppContext};
-
-const DESK: (f32, f32) = (1280., 764.);
 
 /// A measured desk with "chat" on it, as the console's first frame lands
 /// it: sized, then seeded with the active program.
@@ -36,66 +34,6 @@ fn an_untouched_desk_opens_its_seed_once_and_every_window_has_a_frame(cx: &mut T
     desk.update(cx, |desk, cx| _ = desk.close(0, cx));
     desk.update(cx, |desk, cx| desk.seed("files", cx));
     assert!(modules(&desk, cx).is_empty(), "a closed desk reopened");
-}
-
-/// The bar: a click fills an empty focused window, focuses the window a
-/// program is already in, else opens one of its own; shift puts it in
-/// the focused window in place of what it showed.
-#[gpui_kit::test]
-fn the_bar_fills_focuses_opens_or_replaces(cx: &mut TestAppContext) {
-    let desk = desk(cx);
-    desk.update(cx, |desk, cx| desk.open("files", cx));
-    assert_eq!(modules(&desk, cx), ["chat", "files"]);
-    assert_eq!(layout(&desk, cx).shown(), Some("files"));
-    desk.update(cx, |desk, cx| desk.open("chat", cx));
-    assert_eq!(layout(&desk, cx).focused, 0, "focused where it was");
-    desk.update(cx, |desk, cx| desk.select("calendar", cx));
-    assert_eq!(modules(&desk, cx), ["calendar", "files"]);
-    desk.update(cx, |desk, cx| desk.split(EMPTY, cx));
-    assert_eq!(modules(&desk, cx), ["calendar", EMPTY, "files"]);
-    desk.update(cx, |desk, cx| desk.open("chat", cx));
-    assert_eq!(modules(&desk, cx), ["calendar", "chat", "files"]);
-}
-
-/// ⌘N opens an empty window, ⌘1–9 focus, ⌘` cycles, ⌘W closes.
-#[gpui_kit::test]
-fn the_desk_keys_move_the_desk(cx: &mut TestAppContext) {
-    let desk = desk(cx);
-    let whole = layout(&desk, cx).panes[0].frame;
-    desk.update(cx, |desk, cx| {
-        desk.split(EMPTY, cx);
-        desk.split(EMPTY, cx);
-    });
-    assert_eq!(layout(&desk, cx).panes.len(), 3);
-    desk.update(cx, |desk, cx| desk.focus(0, cx));
-    assert_eq!(
-        (layout(&desk, cx).focused, layout(&desk, cx).shown()),
-        (0, Some("chat"))
-    );
-    desk.update(cx, |desk, cx| desk.cycle(true, cx));
-    assert_ne!(layout(&desk, cx).focused, 0);
-    desk.update(cx, |desk, cx| {
-        _ = desk.close(2, cx);
-        _ = desk.close(1, cx);
-    });
-    assert_eq!(layout(&desk, cx).panes[0].frame, whole, "untouched");
-}
-
-#[gpui_kit::test]
-fn a_drag_and_a_double_press_move_frames_on_the_measured_desk(cx: &mut TestAppContext) {
-    let desk = desk(cx);
-    let small = Frame {
-        x: 100.,
-        y: 80.,
-        w: 500.,
-        h: 400.,
-    };
-    desk.update(cx, |desk, cx| desk.set_frame(0, small, cx));
-    assert_eq!(layout(&desk, cx).panes[0].frame, Some(small));
-    desk.update(cx, |desk, cx| desk.fill(0, cx));
-    assert_eq!(layout(&desk, cx).panes[0].frame, Some(Frame::fill(DESK)));
-    desk.update(cx, |desk, cx| desk.fill(0, cx));
-    assert_eq!(layout(&desk, cx).panes[0].frame, Some(small));
 }
 
 /// A move that changes nothing notifies nobody: the pointer that stays

@@ -1,13 +1,12 @@
 //! `Account`'s flows, as the reducer's tests had them: every way between
 //! the screens as one table, the key and account steps' guards, and what
 //! the desktop does on the account's events (a lock's toast, a new
-//! account's Help, a network left).
-use super::super::{WindowKey, WindowKind};
-use super::tests::{active, desk_of, modules, session};
-use super::{Account, AccountStep, Chain, Entities, Screen, Session, Slice};
+//! account's Help).
+use super::tests::{active, console, modules, session};
+use super::{Account, AccountStep, Entities, Screen, Slice};
 use crate::backend;
 use crate::ui::layout::{EMPTY, HELP};
-use gpui_kit::{Bounds, Entity, TestAppContext, point, px, size};
+use gpui_kit::{Entity, TestAppContext};
 
 /// The node the account is on: none, so it asks nothing. (A socket's
 /// answer would wake the test from the runtime's thread, which the test
@@ -463,21 +462,24 @@ fn an_empty_password_or_name_is_not_sent(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn a_lock_stays_locked_until_unlock_and_approving_needs_a_found_request(cx: &mut TestAppContext) {
+fn a_lock_stays_locked_until_unlock(cx: &mut TestAppContext) {
     let _seat = backend::seat_serial();
     let (account, _) = awaiting(cx);
+    // a keyring to open, so only the lock stops it (a path no key
+    // directory takes: nothing is written if it opens)
+    let dir = tempfile::tempdir().unwrap();
+    account.update(cx, |account, _| {
+        account.seed_network(NODE, "testkit", &dir.path().display().to_string())
+    });
     account.update(cx, |account, cx| account.lock(cx));
     let locked = state(&account, cx);
     assert!(locked.locked && locked.signer_key.is_empty());
     assert!(!locked.seating, "a lock reopened the key on its own");
-    account.update(cx, |account, cx| {
-        account.open_device_key(cx);
-        account.approve_open(cx);
-        account.approve_confirm(cx);
-    });
-    let state = state(&account, cx);
-    assert!(!state.seating, "the key reopened while locked");
-    assert!(!state.busy, "approved with nothing found");
+    account.update(cx, |account, cx| account.open_device_key(cx));
+    assert!(
+        !state(&account, cx).seating,
+        "the key reopened while locked"
+    );
 }
 
 #[gpui_kit::test]
@@ -565,6 +567,8 @@ fn the_approve_dialog_forgets_what_it_found_when_it_opens_or_closes(cx: &mut Tes
             ..Default::default()
         };
         state.signer_key = "ab".into();
+        // on an account, so only what was forgotten stops a confirm
+        state.account = Some(Some((7, "ada".into())));
         (
             state,
             backend::join::Request {
@@ -661,30 +665,11 @@ fn taking_up_another_chain_resets_the_last_ones_state(cx: &mut TestAppContext) {
 
 // ---------- what the desktop does on the account's events ----------
 
-/// The entities with a console window open, its desk laid out with one
-/// empty window; nothing is drawn.
-fn desktop(cx: &mut TestAppContext) -> (Entities, WindowKey) {
-    let entities = cx.update(|cx| {
-        gpui_kit::init(cx);
-        super::tests::entities(cx)
-    });
-    let at = Bounds::new(point(px(0.), px(0.)), size(px(1280.), px(800.)));
-    let key = entities.windows.update(cx, |windows, cx| {
-        windows.open(WindowKind::Console, Some(at), cx)
-    });
-    cx.run_until_parked();
-    desk_of(&entities, key, cx).update(cx, |desk, cx| {
-        desk.resize((1280., 764.), cx);
-        desk.split(EMPTY, cx);
-    });
-    (entities, key)
-}
-
 /// Locking says so: the account's toast reaches the notice.
 #[gpui_kit::test]
 fn a_locked_toast_still_shows(cx: &mut TestAppContext) {
     let _seat = backend::seat_serial();
-    let (entities, _) = desktop(cx);
+    let (entities, _) = console(None, cx);
     entities.account.update(cx, |account, cx| account.lock(cx));
     cx.run_until_parked();
     let toast = entities.toast.read_with(cx, |toast, _| toast.get().clone());
@@ -695,7 +680,7 @@ fn a_locked_toast_still_shows(cx: &mut TestAppContext) {
 /// the step, or a key that already has an account, does not.
 #[gpui_kit::test]
 fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
-    let (entities, key) = desktop(cx);
+    let (entities, key) = console(None, cx);
     let account = &entities.account;
     let signing_in = |entities: &Entities, cx: &mut TestAppContext| {
         entities.screen.update(cx, |screen, cx| {
@@ -724,7 +709,7 @@ fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
     assert_eq!(modules(&entities, key, cx), [HELP], "not twice");
     assert!(!welcome(cx), "asked for, help is just help");
 
-    let (entities, key) = desktop(cx);
+    let (entities, key) = console(None, cx);
     signing_in(&entities, cx);
     entities.account.update(cx, |account, cx| {
         account.resolved(NODE, "ab", None, cx);
@@ -736,7 +721,7 @@ fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
         "not now: the desk as it was"
     );
 
-    let (entities, key) = desktop(cx);
+    let (entities, key) = console(None, cx);
     signing_in(&entities, cx);
     entities.account.update(cx, |account, cx| {
         account.resolved(NODE, "ab", Some((7, "ada".into())), cx);
@@ -747,52 +732,4 @@ fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
         [EMPTY],
         "a known account is not greeted"
     );
-}
-
-/// Leaving the network (disconnect, or a switch that landed on another
-/// chain): every desk's panes go, and the badges and the active program
-/// with them; the chain's node too.
-#[gpui_kit::test]
-fn leaving_the_network_clears_the_desks_and_badges(cx: &mut TestAppContext) {
-    let _seat = backend::seat_serial();
-    let (entities, key) = desktop(cx);
-    entities
-        .windows
-        .update(cx, |windows, cx| windows.select_view("chat", cx));
-    entities
-        .rail
-        .update(cx, |rail, cx| rail.set_badge("chat", 3, cx));
-    entities.chain.update(cx, |chain, cx| {
-        chain.set(
-            Chain {
-                node: Some(crate::shell::entities::tests::status(7)),
-                height: 7,
-                ..Chain::default()
-            },
-            cx,
-        );
-    });
-    assert_eq!(modules(&entities, key, cx), ["chat"]);
-    assert_eq!(active(&entities, cx), Some("chat"));
-    entities.session.update(cx, Session::disconnect);
-    cx.run_until_parked();
-    assert!(
-        modules(&entities, key, cx).is_empty(),
-        "the desk kept its panes"
-    );
-    assert_eq!(active(&entities, cx), None);
-    assert!(
-        entities
-            .rail
-            .read_with(cx, |rail, _| rail.badges().is_empty())
-    );
-    assert!(
-        desk_of(&entities, key, cx).read_with(cx, |desk, _| desk.get().desk.is_some()),
-        "the desk lost its measure"
-    );
-    assert_eq!(
-        entities.chain.read_with(cx, |chain, _| chain.node.clone()),
-        None
-    );
-    assert_eq!(shown(&entities.screen, cx), "Connect");
 }

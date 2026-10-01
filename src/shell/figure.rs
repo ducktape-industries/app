@@ -321,22 +321,6 @@ mod tests {
         cells.iter().filter(|&&step| step > 0).count()
     }
 
-    /// `cargo test show_frames -- --ignored --nocapture` prints frames to
-    /// look at, and what one costs.
-    #[test]
-    #[ignore]
-    fn show_frames() {
-        for figure in ALL {
-            let clock = std::time::Instant::now();
-            let cells = figure.frame(start(), 2.);
-            println!("== {figure:?} {:?}", clock.elapsed());
-            for row in cells.chunks(COLS) {
-                let line: String = row.iter().map(|&step| RAMP[step as usize]).collect();
-                println!("{}", line.trim_end());
-            }
-        }
-    }
-
     /// Every frame is steps on the ramp, never empty and never spilling
     /// off the grid's edge, and the figure keeps moving.
     #[test]

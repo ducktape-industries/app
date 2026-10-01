@@ -983,7 +983,7 @@ pub(in crate::shell) fn tab_label(row: &crate::runtime::RailRow) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn a_folded_tab_is_its_programs_icon_or_its_initial() {
+    fn the_known_programs_fold_to_an_icon_and_an_unknown_one_to_none() {
         for module in [
             "chat",
             "forge",

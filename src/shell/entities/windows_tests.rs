@@ -1,36 +1,11 @@
 //! The windows, moved by their methods (windows.rs), and what the app-wide
 //! entities around them do on their own: a toast's clock, a pref's write,
 //! the theme's sync, the network left.
-use super::tests::{active, desk_of, entities, modules, notifies};
-use super::{Entities, Overlay, SessionState, Windows};
+use super::tests::{DESK, active, console, desk_of, entities, modules, notifies};
+use super::{Entities, Overlay, SessionState};
 use crate::runtime::WindowKey;
-use crate::shell::WindowKind;
 use crate::ui::layout::{EMPTY, Frame, MAX_PANES};
-use gpui_kit::{AppContext as _, Bounds, TestAppContext, point, px, size};
-
-const DESK: (f32, f32) = (1280., 764.);
-
-/// The app's entities with a console open on a measured desk showing
-/// "chat", its OS window on the test platform; a window that closes is
-/// forgotten, as `launch::run` wires it.
-fn console(cx: &mut TestAppContext) -> (Entities, WindowKey) {
-    let app = cx.update(|cx| {
-        gpui_kit::init(cx);
-        let app = entities(cx);
-        Windows::forget_closed(&app.windows, cx);
-        app
-    });
-    let at = Bounds::new(point(px(0.), px(0.)), size(px(1280.), px(800.)));
-    let key = app.windows.update(cx, |windows, cx| {
-        windows.open(WindowKind::Console, Some(at), cx)
-    });
-    cx.run_until_parked();
-    desk_of(&app, key, cx).update(cx, |desk, cx| {
-        desk.resize(DESK, cx);
-        desk.seed("chat", cx);
-    });
-    (app, key)
-}
+use gpui_kit::{AppContext as _, TestAppContext};
 
 fn window_count(app: &Entities, cx: &TestAppContext) -> usize {
     app.windows
@@ -57,7 +32,7 @@ fn listed(app: &Entities, modules: &[&str], cx: &mut TestAppContext) {
 /// window keeps its program, and the pick is the program in front.
 #[gpui_kit::test]
 fn a_picked_view_opens_beside_the_focused_one(cx: &mut TestAppContext) {
-    let (app, key) = console(cx);
+    let (app, key) = console(Some("chat"), cx);
     let pick = |module, cx: &mut TestAppContext| {
         app.windows
             .update(cx, |windows, cx| windows.select_view(module, cx))
@@ -89,7 +64,7 @@ fn a_picked_view_opens_beside_the_focused_one(cx: &mut TestAppContext) {
 /// own; popped back in, it lands on the desk and its window goes.
 #[gpui_kit::test]
 fn pop_out_and_back_in_keep_the_pane(cx: &mut TestAppContext) {
-    let (app, console) = console(cx);
+    let (app, console) = console(Some("chat"), cx);
     let desk = desk_of(&app, console, cx);
     desk.update(cx, |desk, cx| desk.split("files", cx));
     let files = desk.read_with(cx, |desk, _| desk.get().panes[1].instance);
@@ -138,7 +113,7 @@ fn pop_out_and_back_in_keep_the_pane(cx: &mut TestAppContext) {
 /// routes nothing, and says why; a view nobody lists opens nothing.
 #[gpui_kit::test]
 fn a_link_opens_the_seat_and_a_bad_one_toasts(cx: &mut TestAppContext) {
-    let (app, key) = console(cx);
+    let (app, key) = console(Some("chat"), cx);
     app.session.update(cx, |session, cx| {
         let mut state = SessionState::booted();
         state.chain = "testkit#0a1b2c3d".into();
@@ -182,7 +157,7 @@ fn a_link_opens_the_seat_and_a_bad_one_toasts(cx: &mut TestAppContext) {
 fn spotlight_and_links_both_land_in_the_desk_and_leaving_clears_it(cx: &mut TestAppContext) {
     // leaving locks the signer: the seat is one for the process
     let _seat = crate::backend::seat_serial();
-    let (app, key) = console(cx);
+    let (app, key) = console(Some("chat"), cx);
     listed(&app, &["pane-link"], cx);
     app.rail
         .update(cx, |rail, cx| rail.set_badge("pane-link", 2, cx));
@@ -210,7 +185,7 @@ fn spotlight_and_links_both_land_in_the_desk_and_leaving_clears_it(cx: &mut Test
 /// A badge set before its view opens stays until the view clears it.
 #[gpui_kit::test]
 fn opening_a_view_keeps_its_badge_until_the_view_clears_it(cx: &mut TestAppContext) {
-    let (app, _) = console(cx);
+    let (app, _) = console(Some("chat"), cx);
     app.rail
         .update(cx, |rail, cx| rail.set_badge("chat", 3, cx));
     app.windows
@@ -259,7 +234,7 @@ fn a_toast_dismisses_itself_after_3_6_s_with_two_notifies(cx: &mut TestAppContex
 #[gpui_kit::test]
 fn a_node_answering_reopens_a_closed_console(cx: &mut TestAppContext) {
     use super::SessionEvent;
-    let (app, key) = console(cx);
+    let (app, key) = console(Some("chat"), cx);
     let handle = app
         .windows
         .read_with(cx, |windows, _| windows.handles()[&key]);
@@ -305,7 +280,7 @@ fn a_pref_write_notifies_once_and_reaches_disk(cx: &mut TestAppContext) {
 fn a_kept_notice_setting_put_back_reaches_the_prefs_slice(cx: &mut TestAppContext) {
     use crate::runtime::notify;
     use crate::shell::layers::Kept;
-    let (app, key) = console(cx);
+    let (app, key) = console(Some("chat"), cx);
     let burst = |cx: &TestAppContext| app.prefs.read_with(cx, |prefs, _| prefs.get().notify.burst);
     let handle = app
         .windows
@@ -327,7 +302,7 @@ fn a_kept_notice_setting_put_back_reaches_the_prefs_slice(cx: &mut TestAppContex
 #[gpui_kit::test]
 fn an_appearance_change_syncs_the_theme(cx: &mut TestAppContext) {
     use gpui_kit::component::Theme;
-    let (app, _) = console(cx);
+    let (app, _) = console(Some("chat"), cx);
     let dark = |cx: &mut TestAppContext| {
         (
             cx.update(|cx| Theme::global(cx).is_dark()),
@@ -354,7 +329,7 @@ fn an_appearance_change_syncs_the_theme(cx: &mut TestAppContext) {
 /// brings another program forward moves it once.
 #[gpui_kit::test]
 fn the_front_follows_focus_and_not_frames(cx: &mut TestAppContext) {
-    let (app, key) = console(cx);
+    let (app, key) = console(Some("chat"), cx);
     let desk = desk_of(&app, key, cx);
     desk.update(cx, |desk, cx| desk.open("front-test-view", cx));
     let front = app
@@ -384,7 +359,7 @@ fn the_front_follows_focus_and_not_frames(cx: &mut TestAppContext) {
 /// its closing forgets what it found.
 #[gpui_kit::test]
 fn the_windows_follow_what_opens_over_a_desk(cx: &mut TestAppContext) {
-    let (app, key) = console(cx);
+    let (app, key) = console(Some("chat"), cx);
     let (desk, overlays) = app.windows.read_with(cx, |windows, _| {
         let own = windows.own(key).unwrap();
         (own.desk.clone(), own.overlays.clone())
