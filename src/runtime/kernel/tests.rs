@@ -425,6 +425,7 @@ fn link_open_needs_an_activation_and_takes_it() {
 fn a_readers_press_on_a_link_opens_it_once(cx: &mut gpui_kit::TestAppContext) {
     use gpui_kit::Styled as _;
     use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
+    use gpui_kit::test::TestWindowExt as _;
     cx.update(gpui_kit::init);
     let link = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("docs".into())),
