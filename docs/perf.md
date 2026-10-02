@@ -579,7 +579,12 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by module and by window:
      window with no `renders.empty` (a desk whose panes all show views)
      is not judged by this line; only the dot animates there, so there
      is nothing to share, and the ceiling above is its only animations
-     line. The perf gate judges it (`perf-budgets.json` `shared_frames`).
+     line. Like any count, it sees two clocks only while they run apart:
+     two that happen to lock in phase share frames and pass, so the
+     deterministic guard stays the test-clock tests that start them out
+     of phase (`the_breath_and_the_figure_share_frames`, gpui-pre
+     `test_max_fps_animations_started_apart_share_frames`). The perf gate
+     judges it (`perf-budgets.json` `shared_frames`).
 4. **Switch budget** (the keys-only scenario, §4.3): full view redraws per
    window switch (`misses` delta) ≤ 20 per window (11–14 measured; 57–67 was
    the bug); drawing time per frame p95 ≤ 6 ms, report-only (2.5–3.5
