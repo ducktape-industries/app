@@ -557,6 +557,29 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by module and by window:
      (`renders.chrome` 1), so zero idle frames; with the figure still on
      its own 33 ms timer, two runs, root 82 and 81 (the figure 42 and 41),
      over the line.
+   - **Shared frames**, the animations window, the detector the line
+     above is not: per window that has the empty pane's figure
+     (`renders.empty`), root `renders` − `renders.empty` ≤
+     `renders.chrome` + every view's `ticks` + 2 × seconds. The figure
+     and the dot wake on one grid, so the root draws no frame the figure
+     does not, but for what moved and a split wake. Each root frame the
+     figure does not draw is named: the bar's frame for a new height
+     (`renders.chrome`, counted exactly); a view's tick (counted,
+     every view's in all windows, as in the idle line); and a split wake
+     (the dot's and the figure's wakes for one grid line drawing apart), 2
+     a second, four in a 2 s window, twice the most measured. Measured,
+     root − figure − chrome per 2 s: on the shared grid 0, 2 and −1 (the
+     three runs above) and 0 (the census that landed the grid, root 61,
+     figure 60); with the figure on its own clock 39 and 39 (the two runs
+     above), and 31 in a dev census on a slower run (root 63, figure 31,
+     chrome 1, motion on). A second, unshared clock adds about the
+     figure's own frame count, whatever the box's speed, so where two
+     clocks read 63 / 31 or 56 / 28 per 2 s and pass the ceiling, this
+     line reads 32 or 28 against 4 + `renders.chrome`. Blind spot: a
+     window with no `renders.empty` (a desk whose panes all show views)
+     is not judged by this line; only the dot animates there, so there
+     is nothing to share, and the ceiling above is its only animations
+     line. The perf gate judges it (`perf-budgets.json` `shared_frames`).
 4. **Switch budget** (the keys-only scenario, §4.3): full view redraws per
    window switch (`misses` delta) ≤ 20 per window (11–14 measured; 57–67 was
    the bug); drawing time per frame p95 ≤ 6 ms, report-only (2.5–3.5
