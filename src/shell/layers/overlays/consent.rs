@@ -1,7 +1,7 @@
 //! A view's op waiting on the person's yes (`runtime::consent`): the
 //! front of the queue, in the dialog "Add a device…" asks its yes with.
 
-use super::super::super::ink::{self, *};
+use super::super::super::ink::*;
 use super::{OverlayLayer, scrim};
 use crate::runtime::consent;
 use crate::shell::entities::Overlay;
@@ -46,6 +46,23 @@ impl OverlayLayer {
             false,
             &ink,
         );
+        // the sentence, the asking program's id in mono: one Label, its
+        // words its value, as `ink::note`'s text is
+        let said = SharedString::from(words.said);
+        let id = words.id;
+        let instruction = sans(400, 13.)
+            .id("consent-instruction")
+            .role(Role::Label)
+            .aria_value(said.clone())
+            .line_height(px(13. * 1.55))
+            .text_color(ink.muted)
+            .child(
+                StyledText::new(said)
+                    .with_highlights(id.clone().map(|id| (id, HighlightStyle::default())))
+                    .with_font_family_overrides(
+                        id.map(|id| (id, SharedString::from(crate::shell::theme::FAMILY_MONO))),
+                    ),
+            );
         let shown = words.shown.map(|shown| {
             crate::a11y::whole(
                 mono(400, 28.)
@@ -75,7 +92,7 @@ impl OverlayLayer {
                         "Confirm a change to your account",
                         &ink,
                     ))
-                    .child(ink::note("consent-instruction", words.said, ink.muted))
+                    .child(instruction)
                     .child(
                         div()
                             .flex()

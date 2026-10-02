@@ -509,6 +509,7 @@ fn a_views_ask_never_replaces_an_open_dialog(cx: &mut TestAppContext) {
     let open = |cx: &TestAppContext| overlays.read_with(cx, |it, _| *it.get());
     let words = consent::Words {
         said: "chat asks to suspend agent #3.".into(),
+        id: None,
         shown: Some("#3".into()),
     };
     overlays.update(cx, |it, cx| it.open(Overlay::Approve, cx));
@@ -557,6 +558,7 @@ fn a_card_follows_its_request_off(cx: &mut TestAppContext) {
         0,
         consent::Words {
             said: "chat asks to suspend agent #3.".into(),
+            id: None,
             shown: Some("#3".into()),
         },
     )

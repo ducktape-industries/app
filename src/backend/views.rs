@@ -61,7 +61,12 @@ impl std::fmt::Display for Fetch {
 
 /// The roster as the registry program answers it (sorted by name, programs
 /// first): asked of that program through the same query path every view's
-/// request takes.
+/// request takes. Only an id in its one spelling (`program::is_name`) is
+/// taken: the chain accepts more (a capital, a space, a newline), and such
+/// an id could read as another's wherever the app names it (the rail, a
+/// pane, the consent card's "Program <id>", which a newline would end
+/// before a "System asks" of its own). One left off is said in app.log,
+/// once while the same ids are.
 pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>, Fetch> {
     use module_registry::{Query, Reply};
     let Reply::Programs(entries) = ask(client, network, Query::At(0)).await? else {
@@ -83,7 +88,10 @@ pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>,
         code: view.view,
         bare: true,
     });
-    let mut roster: Vec<Program> = programs.chain(views).collect();
+    let (mut roster, misspelled): (Vec<Program>, Vec<Program>) = programs
+        .chain(views)
+        .partition(|program| program::is_name(&program.name));
+    misspelled_said(misspelled.into_iter().map(|program| program.name).collect());
     if roster.len() > MAX_PROGRAMS {
         static SAID: std::sync::Once = std::sync::Once::new();
         SAID.call_once(|| {
@@ -98,6 +106,24 @@ pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>,
         roster.truncate(MAX_PROGRAMS);
     }
     Ok(roster)
+}
+
+/// Warns of the ids left off the roster, escaped (`{:?}`), when they are
+/// not the ones the last read left off: once, not every block.
+fn misspelled_said(ids: Vec<String>) {
+    static LAST: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut last = LAST.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if *last != ids {
+        if !ids.is_empty() {
+            tracing::warn!(
+                target: "ducktape::app",
+                reason = "program_id_misspelled",
+                ids = ?ids,
+                "the node lists program ids outside 1..=64 of [a-z0-9_-]; they are left off the roster"
+            );
+        }
+        *last = ids;
+    }
 }
 
 /// Which programs fill the roles the kernel calls, as genesis bound them

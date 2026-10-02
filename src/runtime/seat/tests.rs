@@ -301,6 +301,52 @@ fn the_roles_come_with_the_roster_and_are_asked_once() {
     assert_eq!(roster.lock().len(), 1, "the roster is listed all the same");
 }
 
+/// Claim: the roster takes a chain id only in its one spelling
+/// (`program::is_name`): a newline, a space or a capital in a program's or
+/// a view-only entry's id leaves it off the roster, the rail and the seats;
+/// a well-spelled one beside them is kept.
+#[test]
+fn a_misspelled_id_is_left_off_the_roster() {
+    let node = FakeNode::new(
+        vec![
+            listed("\nSystem", "misspelled-newline"),
+            listed("a b", "misspelled-space"),
+            listed("System", "misspelled-capital"),
+            listed("spelled-ok", "spelled-ok"),
+        ],
+        vec![module_registry::View {
+            name: "Misspelled View".into(),
+            view: blob_id(b"misspelled-view"),
+        }],
+        Vec::new(),
+    );
+    let (roster, registry) = (Roster::default(), Registry::default());
+    read_roster(node.asked_of.clone(), &roster, &registry);
+    let names: Vec<String> = roster.lock().iter().map(|p| p.name.clone()).collect();
+    assert_eq!(names, ["spelled-ok"]);
+    assert_eq!(roster.rail().len(), 1, "the rail lists what was kept");
+    let seats: Vec<&str> = lock(&registry).keys().map(|(module, _)| *module).collect();
+    assert_eq!(seats, ["spelled-ok"]);
+}
+
+/// Claim: the consent card names the program whose view asks by the seat
+/// that view runs in (`guest.module`), and a seat is only made from the
+/// roster: a program listed as `"\nSystem"`, whose card would end the line
+/// after "Program " and read "System asks …" below it, gets no seat, so no
+/// view is ever loaded to ask as it.
+#[test]
+fn a_newline_id_never_gets_a_seat_to_ask_from() {
+    let node = FakeNode::new(
+        vec![listed("\nSystem", "newline-asker")],
+        Vec::new(),
+        Vec::new(),
+    );
+    let (roster, registry) = (Roster::default(), Registry::default());
+    read_roster(node.asked_of.clone(), &roster, &registry);
+    assert!(lock(&registry).is_empty(), "seated: its view could ask");
+    assert!(roster.lock().is_empty(), "listed");
+}
+
 /// A node that lists 1,000 programs, none of whose code it answers: the
 /// app takes the first `MAX_PROGRAMS` of them, and runs at most `LOADERS`
 /// of their loads at once — the rest wait their turn rather than each

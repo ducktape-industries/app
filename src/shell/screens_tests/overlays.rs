@@ -518,6 +518,7 @@ fn ask(
 ) -> consent::Told {
     let words = consent::Words {
         said: said.into(),
+        id: None,
         shown: None,
     };
     let told = consent::queue(module, 0, words).expect("queued");

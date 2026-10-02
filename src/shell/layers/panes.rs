@@ -381,10 +381,18 @@ impl Render for PaneLayer {
                 )
                 .into_any_element();
         }
+        // each window a layer of its own, a deferred draw at its rank bottom
+        // to top: what its view defers or shows as a tooltip draws inside it,
+        // so a back window's layer stays under the front window. Its rank,
+        // never its `z`, which only grows: the ranks stay under `HOST_BAND`.
         let views = layout
             .stacking()
             .into_iter()
-            .filter_map(|index| self.views.get(&layout.panes[index].instance).cloned());
+            .enumerate()
+            .filter_map(|(rank, index)| {
+                let view = self.views.get(&layout.panes[index].instance)?;
+                Some(deferred(view.clone()).with_priority(rank))
+            });
         div()
             .id("panes")
             .relative()

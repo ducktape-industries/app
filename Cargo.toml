@@ -28,13 +28,15 @@ version = "0.1.0"
 
 [workspace.dependencies]
 
-# --- sdk-line: modules fr/fork-b0e1 @ cfe72716 (modules#252 over modules dev 8592bf9b: gpui-pre 0.3.7 at fork b0e12cc1, gpui-pre#12 ak, #14 P29, #15 P4c, #16 P29b deferred-draw tree, #17 IR-A shared animation frame grid; goldens WIRE_ID be704382 unchanged against 8592bf9b), crates/sdk (abi, view-wire, ducklink, design, describe) ---
-abi = { git = "https://github.com/ducktape-industries/modules", rev = "cfe727162cdcae0b4893bd9c182ab019c3b07b58", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "cfe727162cdcae0b4893bd9c182ab019c3b07b58", package = "view-wire" }
-ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "cfe727162cdcae0b4893bd9c182ab019c3b07b58", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/modules", rev = "cfe727162cdcae0b4893bd9c182ab019c3b07b58", package = "design" }
+# --- sdk-line: modules fr/fork-b0e1 @ 7e761cf1 (modules#252 over modules dev b69dcc78 = #253 one program id spelling, `program::is_name`: gpui-pre 0.3.7 at fork b0e12cc1, gpui-pre#12 ak, #14 P29, #15 P4c, #16 P29b, #17 IR-A shared animation frame grid; goldens WIRE_ID be704382 unchanged), crates/sdk (abi, view-wire, program, ducklink, design, describe) ---
+abi = { git = "https://github.com/ducktape-industries/modules", rev = "7e761cf1465f6040f3b40324342fcf5d0daa7c0b", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "7e761cf1465f6040f3b40324342fcf5d0daa7c0b", package = "view-wire" }
+# `program::is_name`: the one spelling of a program id
+program = { git = "https://github.com/ducktape-industries/modules", rev = "7e761cf1465f6040f3b40324342fcf5d0daa7c0b", package = "program" }
+ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "7e761cf1465f6040f3b40324342fcf5d0daa7c0b", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/modules", rev = "7e761cf1465f6040f3b40324342fcf5d0daa7c0b", package = "design" }
 # `module.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/modules", rev = "cfe727162cdcae0b4893bd9c182ab019c3b07b58", package = "describe", features = ["host"] }
+describe = { git = "https://github.com/ducktape-industries/modules", rev = "7e761cf1465f6040f3b40324342fcf5d0daa7c0b", package = "describe", features = ["host"] }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -87,9 +89,9 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # pick which passkey signed and to frame its assertion), and the identity
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "736865710dcfa7c56f9834747287881c1c25d45d", package = "keyscheme" }
-identity = { git = "https://github.com/ducktape-industries/modules", rev = "cfe727162cdcae0b4893bd9c182ab019c3b07b58", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/modules", rev = "7e761cf1465f6040f3b40324342fcf5d0daa7c0b", package = "identity" }
 # The roster's full query surface: its programs and its view-only entries.
-module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "cfe727162cdcae0b4893bd9c182ab019c3b07b58", package = "module-registry" }
+module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "7e761cf1465f6040f3b40324342fcf5d0daa7c0b", package = "module-registry" }
 base64 = "0.22"
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -106,6 +108,7 @@ tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zeroize.workspace = true
 view-wire = { workspace = true, features = ["manifest"] }
+program.workspace = true
 abi.workspace = true
 borsh.workspace = true
 ducklink.workspace = true

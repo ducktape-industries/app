@@ -556,13 +556,13 @@ impl Drop for NodeTask {
     }
 }
 
-/// The envelope of a node method, its target checked: a program name
-/// (`manifest::program_name`, the rule a manifest's targets follow), not a
+/// The envelope of a node method, its target checked: a program id
+/// (`program::is_name`, the rule a manifest's targets follow), not a
 /// path.
 fn call_of(ask: &[u8]) -> Result<methods::Call, wire::Error> {
     let call: methods::Call = methods::decode(ask).map_err(malformed)?;
     let target = call.target.trim();
-    match wire::manifest::program_name(target) {
+    match program::is_name(target) {
         true => Ok(methods::Call {
             target: target.to_owned(),
             body: call.body,
