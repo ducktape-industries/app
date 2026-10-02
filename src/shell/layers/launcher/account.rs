@@ -165,7 +165,7 @@ impl LauncherLayer {
         let (title, hint) = match account.passkey_qr {
             Some(_) => (
                 "Scan with your phone",
-                "Point its camera at the code. It asks for your passkey twice; this screen moves on by itself.",
+                "Point its camera at the code. Show the code and its link only to your own phone. It asks for your passkey twice; this screen moves on by itself.",
             ),
             None => (
                 "Continue in your browser",
