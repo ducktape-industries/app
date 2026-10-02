@@ -6,7 +6,7 @@
 //! (`App::reduce_motion`, which the kit reads from the OS), it only turns
 //! by hand.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 
@@ -21,13 +21,18 @@ const COAST: f32 = 0.9;
 const RESUME: (f32, f32) = (0.8, 2.2);
 /// The fastest a fling spins, radians a second.
 const FLING_MAX: f32 = 8.;
+/// One frame of `figure::FPS`: the first tick after a rest moves this far.
+const FRAME: Duration = Duration::from_nanos(1_000_000_000 / figure::FPS);
+/// The most one tick moves it: a wake later than this (a window hidden,
+/// never drawn) picks up where it was instead of jumping on.
+const LONGEST_TICK: Duration = Duration::from_millis(100);
 
 pub(super) struct Spin {
     figure: Figure,
     /// The app's motion switch.
     switch: bool,
     /// It tumbles on its own: the switch is on and the system does not ask
-    /// for less motion. Read at `new` and on every tick.
+    /// for less motion. Read at `new`, on every tick and on every `run`.
     moving: bool,
     ink: Hsla,
     /// How it is held now.
@@ -38,8 +43,12 @@ pub(super) struct Spin {
     drag: Option<(Point<Pixels>, Instant)>,
     /// When the pointer last let go: its own tumble waits a moment.
     touched: Instant,
-    /// Frames drawn since it began: the moon's clock.
+    /// Frames drawn since it began.
     ticks: u64,
+    /// How long it has moved on its own: the moon's clock.
+    clock: Duration,
+    /// When its last tick ran, while it keeps moving.
+    last_tick: Option<Instant>,
     /// The ramp, shaped on the first render.
     glyphs: Option<Glyphs>,
     /// Waiting for the next frame.
@@ -76,6 +85,8 @@ impl Spin {
             drag: None,
             touched: Instant::now() - std::time::Duration::from_secs(10),
             ticks: 0,
+            clock: Duration::ZERO,
+            last_tick: None,
             glyphs: None,
             ticking: false,
             last_drawn: None,
@@ -113,7 +124,7 @@ impl Spin {
     /// Where its own motion is, in seconds.
     fn t(&self) -> f32 {
         match self.moving {
-            true => self.ticks as f32 / figure::FPS as f32,
+            true => self.clock.as_secs_f32(),
             false => 0.,
         }
     }
@@ -123,12 +134,13 @@ impl Spin {
         self.drag.is_none() && (self.moving || self.fling.iter().any(|v| v.abs() > 0.02))
     }
 
-    /// One frame on: its own tumble (faded in after a release) and what
-    /// is left of a fling.
-    fn tick(&mut self, cx: &App) {
+    /// `step` on: its own tumble (faded in after a release) and what is
+    /// left of a fling.
+    fn tick(&mut self, step: Duration, cx: &App) {
         self.moving = moving(self.switch, cx);
-        let dt = 1. / figure::FPS as f32;
+        let dt = step.as_secs_f32();
         self.ticks += 1;
+        self.clock += step;
         if self.drag.is_some() {
             return;
         }
@@ -141,6 +153,16 @@ impl Spin {
         self.turn = self.turn.then(step);
         let keep = (-dt / COAST).exp();
         self.fling = self.fling.map(|v| v * keep);
+    }
+
+    /// The frame it waited for came at `now`: on by the time since its
+    /// last tick, at most `LONGEST_TICK`, or by one frame after a rest.
+    fn wake(&mut self, now: Instant, cx: &App) {
+        let step = self
+            .last_tick
+            .map_or(FRAME, |last| (now - last).min(LONGEST_TICK));
+        self.last_tick = Some(now);
+        self.tick(step, cx);
     }
 
     /// The pointer took hold of it at `at`.
@@ -176,25 +198,36 @@ impl Spin {
         }
     }
 
-    /// Waits for the next frame and asks for it to be drawn. Its render
-    /// waits for the one after, so a hidden window, never drawn, stops;
-    /// shown again, it picks up where it was. Stilled while it waited
-    /// (motion switched off, a hand took hold of it), it asks for none.
+    /// Waits for the next frame of the shared grid (every animation at
+    /// `figure::FPS` wakes on it, so they share frames) and asks for it to
+    /// be drawn, moved on by the time since its last tick. Its render waits
+    /// for the one after, so a hidden window, never drawn, stops; shown
+    /// again, it picks up where it was (`LONGEST_TICK`). Stilled while it
+    /// waited (motion switched off, a hand took hold of it), it asks for
+    /// none, and its next tick moves one frame.
     fn run(&mut self, cx: &mut Context<Self>) {
-        if self.ticking || !self.alive() {
+        // the system's ask may have moved since the last tick: a window
+        // drawn again after it stops asking moves again
+        self.moving = moving(self.switch, cx);
+        if !self.alive() {
+            self.last_tick = None;
+            return;
+        }
+        if self.ticking {
             return;
         }
         self.ticking = true;
+        let wait = cx.until_next_animation_frame(figure::FPS as f32);
         cx.spawn(async move |spin, cx| {
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(1000 / figure::FPS))
-                .await;
+            cx.background_executor().timer(wait).await;
             let _ = spin.update(cx, |spin, cx| {
                 spin.ticking = false;
-                if spin.alive() {
-                    spin.tick(cx);
-                    cx.notify();
+                if !spin.alive() {
+                    spin.last_tick = None;
+                    return;
                 }
+                spin.wake(cx.background_executor().now(), cx);
+                cx.notify();
             });
         })
         .detach();
@@ -385,9 +418,10 @@ pub(super) fn drawing(spin: &Entity<Spin>) -> AnyElement {
 
 #[cfg(test)]
 mod tests {
-    use super::{Figure, Spin, figure, stamps};
+    use super::{FRAME, Figure, LONGEST_TICK, Spin, figure, stamps};
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{Hsla, point, px, size};
+    use std::time::Duration;
 
     /// A figure with the motion switch `moving` in a window, the system
     /// asking for less motion when `reduce` (as the kit sets it from the
@@ -408,12 +442,35 @@ mod tests {
     /// `frames` frames, a tick apart.
     fn frame(native: &mut gpui_kit::VisualTestContext, frames: u64) {
         for _ in 0..frames {
-            native
-                .executor()
-                .advance_clock(std::time::Duration::from_millis(1000 / figure::FPS));
+            native.executor().advance_clock(FRAME);
             native.run_until_parked();
             native.update(|window, cx| window.render_frame(cx));
         }
+    }
+
+    /// A moving figure in a window, woken `step` apart (a box that wakes
+    /// on time, or a slow one) for `seconds`: where its own motion is
+    /// (`t`) at the end of each second.
+    fn timed(step: Duration, seconds: u32, cx: &mut gpui_kit::TestAppContext) -> Vec<f32> {
+        cx.update(gpui_kit::init);
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let window = cx.open_window(size(px(400.), px(400.)), |_, cx| {
+            Spin::new(Figure::Roll, true, Hsla::default(), cx)
+        });
+        let spin = window.root(cx).unwrap();
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| window.render_frame(cx));
+        let per_second = (Duration::from_secs(1).as_nanos() / step.as_nanos()) as u32;
+        (0..seconds)
+            .map(|_| {
+                for _ in 0..per_second {
+                    native.executor().advance_clock(step);
+                    native.run_until_parked();
+                    native.update(|window, cx| window.render_frame(cx));
+                }
+                native.update(|_, cx| spin.read(cx).t())
+            })
+            .collect()
     }
 
     fn at(x: f32) -> gpui_kit::Point<gpui_kit::Pixels> {
@@ -439,10 +496,10 @@ mod tests {
                 spin.fling
             );
             assert!(spin.alive());
-            spin.tick(cx);
+            spin.tick(FRAME, cx);
             assert_ne!(spin.turn, held, "it flies on after the release");
             for _ in 0..10 * figure::FPS {
-                spin.tick(cx);
+                spin.tick(FRAME, cx);
             }
             assert!(!spin.alive(), "with motion off, a fling comes to rest");
         });
@@ -496,6 +553,52 @@ mod tests {
         frame(&mut native, 30);
         let ticks = native.update(|_, cx| spin.read(cx).ticks);
         assert!(asked >= 10 && ticks <= asked + 1, "{asked} then {ticks}");
+    }
+
+    /// Its own motion keeps time, not count: woken on time, at 1 s and
+    /// 2 s it is where a frame a tick put it (30 and 60 frames); woken
+    /// late (a slow box, every 50 ms) it is there too, not behind.
+    #[gpui_kit::test]
+    fn its_motion_keeps_time_however_late_it_wakes(cx: &mut gpui_kit::TestAppContext) {
+        let on_time = timed(FRAME, 2, cx);
+        for (second, t) in on_time.into_iter().enumerate() {
+            let frames = (second as u64 + 1) * figure::FPS;
+            let drawn = frames as f32 / figure::FPS as f32;
+            assert!((t - drawn).abs() < 1e-4, "on time, {frames} frames: {t}");
+        }
+        cx.update(|cx| {
+            let mut spin = Spin::new(Figure::Roll, true, Hsla::default(), cx);
+            let now = std::time::Instant::now();
+            for wake in 1..=40 {
+                spin.wake(now + Duration::from_millis(50 * wake), cx);
+            }
+            let t = spin.t();
+            assert!(
+                (t - 2.).abs() <= FRAME.as_secs_f32(),
+                "woken every 50 ms for 2 s, it was at {t}"
+            );
+        });
+    }
+
+    /// A wake long after the last (a window hidden, never drawn, shown
+    /// again) moves it on at most `LONGEST_TICK`: it picks up where it
+    /// was.
+    #[gpui_kit::test]
+    fn a_late_wake_picks_up_where_it_was(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            let mut spin = Spin::new(Figure::Roll, true, Hsla::default(), cx);
+            let now = std::time::Instant::now();
+            for wake in 1..=30 {
+                spin.wake(now + FRAME * wake, cx);
+            }
+            let was = spin.t();
+            spin.wake(now + FRAME * 30 + Duration::from_secs(5), cx);
+            let t = spin.t();
+            assert!(
+                (t - was - LONGEST_TICK.as_secs_f32()).abs() < 1e-4,
+                "{was} then {t}, 5 s later"
+            );
+        });
     }
 
     #[test]

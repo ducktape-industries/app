@@ -1,9 +1,9 @@
 //! Real pane controls exercised through the same AccessKit actions as the AX door.
-use super::entities::tests::active;
+use super::entities::tests::{active, status};
 use super::entities::{Entities, Overlay, Popover, SettingsPage, Spot};
 use super::layers::tests::{
-    frame, line, open_help, open_now, pane, popped, run_spot, select_view, set_motion, show, toast,
-    tree_renders,
+    frame, line, open_help, open_now, pane, polled, popped, run_spot, select_view, set_motion,
+    show, toast, tree_renders,
 };
 use super::*;
 use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
@@ -1112,7 +1112,7 @@ fn a_views_link_opens_its_seat_on_the_console(cx: &mut TestAppContext) {
 fn tick_frame(native: &mut VisualTestContext) {
     native
         .executor()
-        .advance_clock(std::time::Duration::from_millis(1000 / super::figure::FPS));
+        .advance_clock(std::time::Duration::from_secs(1) / super::figure::FPS as u32);
     native.run_until_parked();
     frame(native);
 }
@@ -1162,6 +1162,124 @@ fn an_empty_pane_stops_its_figure_when_motion_goes_off_without_a_frame_loop(
     assert!(
         window_count(key, "renders.empty") >= drawn + 10,
         "switched on again, the figure stayed still"
+    );
+}
+
+/// The bar's breath and the bare desk's figure, both 30 frames a second
+/// and started apart (the figure 10 ms after the breath, between two of
+/// its frames), wake on one grid: over a second the window draws at 30
+/// instants, not at each one's own 30.
+#[gpui_kit::test]
+fn the_breath_and_the_figure_share_frames(cx: &mut TestAppContext) {
+    let _on = crate::perf::on_for_test();
+    let (app, key, view, mut native) = console(cx);
+    native.update(|_, cx| cx.set_reduce_motion(false));
+    native.update(|window, _| window.activate_window());
+    set_motion(&app, true, &mut native);
+    polled(&app, status(7), &mut native);
+    for _ in 0..4 {
+        frame(&mut native);
+    }
+    native
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(10));
+    pane(&view, PaneMessage::Close(0), &mut native);
+    assert_eq!(panes(&mut native, &view).0, 0, "the desk is bare");
+    let (dot, empty) = (
+        window_count(key, "renders.dot"),
+        window_count(key, "renders.empty"),
+    );
+    // a millisecond a step: two wakes in one step drew at one instant
+    let (mut drawn, mut instants) = (window_count(key, "renders"), 0);
+    for _ in 0..1000 {
+        native
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(1));
+        native.run_until_parked();
+        let now = window_count(key, "renders");
+        instants += u64::from(now > drawn);
+        drawn = now;
+    }
+    assert!(
+        window_count(key, "renders.dot") >= dot + 29
+            && window_count(key, "renders.empty") >= empty + 29,
+        "the breath and the figure both moved"
+    );
+    assert!(
+        (29..=31).contains(&instants),
+        "the window drew at {instants} instants in a second"
+    );
+}
+
+/// The system asking for less motion, or the motion switch off: the bare
+/// desk's breath and figure hold still, and the window draws nothing over
+/// two seconds.
+#[gpui_kit::test]
+fn a_still_desk_draws_no_frame(cx: &mut TestAppContext) {
+    let _on = crate::perf::on_for_test();
+    let (app, key, view, mut native) = console(cx);
+    native.update(|_, cx| cx.set_reduce_motion(false));
+    native.update(|window, _| window.activate_window());
+    set_motion(&app, true, &mut native);
+    polled(&app, status(7), &mut native);
+    pane(&view, PaneMessage::Close(0), &mut native);
+    assert_eq!(panes(&mut native, &view).0, 0, "the desk is bare");
+    let run = |native: &mut VisualTestContext, ms: u64| {
+        for _ in 0..ms / 40 {
+            native
+                .executor()
+                .advance_clock(std::time::Duration::from_millis(40));
+            native.run_until_parked();
+        }
+    };
+    run(&mut native, 400);
+    assert!(window_count(key, "renders.empty") > 1, "the figure moved");
+    for (reduce, motion) in [(true, true), (false, false)] {
+        native.update(|_, cx| cx.set_reduce_motion(reduce));
+        set_motion(&app, motion, &mut native);
+        // the frame that shows them still, and a tick already waiting
+        run(&mut native, 200);
+        let drawn = window_count(key, "renders");
+        run(&mut native, 2000);
+        assert_eq!(
+            window_count(key, "renders"),
+            drawn,
+            "less motion asked {reduce}, the switch {motion}: the window drew"
+        );
+    }
+}
+
+/// The system stops asking for less motion: the bare desk's figure
+/// tumbles again, from the frame that redraws the window (AX-122).
+#[gpui_kit::test]
+fn the_figure_moves_again_when_less_motion_is_no_longer_asked(cx: &mut TestAppContext) {
+    let _on = crate::perf::on_for_test();
+    let (app, key, view, mut native) = console(cx);
+    native.update(|_, cx| cx.set_reduce_motion(false));
+    set_motion(&app, true, &mut native);
+    pane(&view, PaneMessage::Close(0), &mut native);
+    let second = |native: &mut VisualTestContext| {
+        let drawn = window_count(key, "renders.empty");
+        for _ in 0..25 {
+            native
+                .executor()
+                .advance_clock(std::time::Duration::from_millis(40));
+            native.run_until_parked();
+        }
+        window_count(key, "renders.empty") - drawn
+    };
+    native.update(|_, cx| cx.set_reduce_motion(true));
+    second(&mut native);
+    assert_eq!(
+        second(&mut native),
+        0,
+        "asked for less motion, it holds still"
+    );
+    native.update(|_, cx| cx.set_reduce_motion(false));
+    let moved = second(&mut native);
+    assert!(
+        moved >= 29,
+        "no longer asked, it drew {moved} frames in a second"
     );
 }
 

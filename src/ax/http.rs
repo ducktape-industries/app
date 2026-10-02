@@ -355,6 +355,7 @@ fn route(method: &str, target: &str, body: &[u8], private: bool) -> Result<Reque
             by_instance: params.get("by") == Some(&"instance"),
         }),
         ("POST", "perf/reset") => Ok(Request::PerfReset),
+        ("POST", "motion") => parse(body).map(Request::Motion),
         _ => {
             let mut endpoints = vec![
                 "GET /tree",
@@ -367,6 +368,7 @@ fn route(method: &str, target: &str, body: &[u8], private: bool) -> Result<Reque
                 "GET /audit",
                 "GET /perf",
                 "POST /perf/reset",
+                "POST /motion",
             ];
             if private {
                 endpoints.push("POST /reveal");
@@ -584,6 +586,24 @@ mod tests {
         };
         assert_eq!(refused.status, 404);
         assert!(refused.body.contains("POST /perf/reset"));
+    }
+
+    /// `POST /motion` carries whether to ask for less motion; a body
+    /// without it is refused, and the path is in the 404 list.
+    #[test]
+    fn motion_route() {
+        assert_eq!(
+            route("POST", "/motion", br#"{"reduce":true}"#, false),
+            Ok(Request::Motion(crate::ax::Motion { reduce: true }))
+        );
+        let Err(refused) = route("POST", "/motion", b"{}", false) else {
+            panic!("a motion request says which");
+        };
+        assert_eq!(refused.status, 400);
+        let Err(refused) = route("GET", "/motion", b"", false) else {
+            panic!("a GET never sets it");
+        };
+        assert!(refused.body.contains("POST /motion"));
     }
 
     /// `ax perf` is a GET of `/perf`, with `--by instance` carried as the
