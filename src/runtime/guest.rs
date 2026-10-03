@@ -402,12 +402,8 @@ pub(super) fn merge(
 pub(super) fn shape(
     bytes: &[u8],
 ) -> Result<(wire::Frame, display_diagnostics::FrameReports), String> {
+    // a frame over `MAX_REQUESTS` or `MAX_CANCELS` does not decode
     let mut frame: wire::Frame = wire::decode(bytes)?;
-    let requests_exceed_budget = frame.requests.len() > wire::MAX_REQUESTS;
-    let cancels_exceed_budget = frame.cancels.len() > wire::MAX_CANCELS;
-    if requests_exceed_budget || cancels_exceed_budget {
-        return Err("frame request or cancellation budget exceeded".into());
-    }
     if frame.unchanged {
         frame.root = None;
     }

@@ -95,18 +95,8 @@ impl Guest {
                 crate::perf::count(self.perf_key(), "busy_ticks", 1);
             }
         }
-        for (nth, request) in std::mem::take(&mut self.frame.requests)
-            .into_iter()
-            .enumerate()
-        {
-            match nth < wire::MAX_REQUESTS {
-                true => self.answer(request, props),
-                false => self.refuse(
-                    request.id,
-                    refusal::TICK_LIMIT,
-                    "too many requests this tick",
-                ),
-            }
+        for request in std::mem::take(&mut self.frame.requests) {
+            self.answer(request, props);
         }
         // what those requests logged reaches the disk once, off this thread
         notify::center().lock().flush();
