@@ -77,7 +77,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::editor::wire::EditorStore;
 use gpui_kit::AppContext as _;
 use pictures::Pictures;
 use view_wire as wire;

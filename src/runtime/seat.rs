@@ -639,11 +639,6 @@ fn swapped(
             .map_err(|failure| failure.to_string())?;
     }
     fresh.frame_rev = old.frame_rev + 1;
-    if let Some(root) = &fresh.frame.root {
-        fresh
-            .inputs
-            .retain_restored_projections(&old.inputs, root)?;
-    }
     let mut pictures = std::mem::take(&mut old.pictures);
     let own = std::mem::take(&mut fresh.pictures);
     let mut none = wire::Node::empty();

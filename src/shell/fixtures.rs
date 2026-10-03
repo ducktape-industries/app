@@ -1,7 +1,6 @@
 //! Debug builds only: `ducktape-app --render-tree <tree.json> [--size WxH]
 //! [--theme dark]` draws one view_wire tree in a window, with no node,
-//! model or runtime behind it. Editor documents come from
-//! `<tree>.editors.json`. dev/screens and the modules' view tests use it.
+//! model or runtime behind it. dev/screens and the modules' view tests use it.
 
 use super::launch::initialize_rendering;
 use crate::fonts::fallback_chain;
@@ -20,7 +19,6 @@ pub(crate) fn render_tree_fixture() {
         .expect("read fixture"),
     )
     .expect("decode wire tree");
-    let path = std::path::PathBuf::from(&args[2]);
     let option = |name: &str| {
         args.windows(2)
             .find(|pair| pair[0] == name)
@@ -58,12 +56,7 @@ pub(crate) fn render_tree_fixture() {
                     ..Default::default()
                 },
                 |window, cx| {
-                    let store = fixture_editor_store(&tree, &path);
-                    let tree = cx.new(|cx| {
-                        let mut view = crate::render::ViewTree::new(tree);
-                        view.set_editor_store(store, cx);
-                        view
-                    });
+                    let tree = cx.new(|_| crate::render::ViewTree::new(tree));
                     let frame = cx.new(|_| TreeFixtureFrame { tree });
                     cx.new(|cx| Root::new(frame, window, cx))
                 },
@@ -90,71 +83,4 @@ impl Render for TreeFixtureFrame {
             .text_color(cx.theme().foreground)
             .child(self.tree.clone())
     }
-}
-
-/// An editor store seeded with the documents the tree references, their
-/// text read from `<fixture>.editors.json` (empty when the file is absent).
-fn fixture_editor_store(
-    root: &view_wire::Node,
-    fixture: &std::path::Path,
-) -> crate::editor::wire::EditorStore {
-    use view_wire::editor_document::{
-        EditorDocumentMessage as Message, EditorTransfer, MAX_EDITOR_CHUNK_BYTES,
-    };
-    #[derive(serde::Deserialize)]
-    struct Document {
-        document: String,
-        text: String,
-    }
-    let path = fixture.with_extension("editors.json");
-    let documents: Vec<Document> = if path.exists() {
-        serde_json::from_slice(&std::fs::read(path).expect("read editor fixture"))
-            .expect("decode editor fixture")
-    } else {
-        Vec::new()
-    };
-    let store = crate::editor::wire::EditorStore::new(1);
-    store.replace(root).expect("mount editor references");
-    while !store.ready().expect("editor store valid") {
-        let requests = store.drain();
-        assert!(!requests.is_empty(), "editor projection stalled");
-        for event in requests {
-            if let view_wire::Event::EditorDocument {
-                message: Message::Request { id, target },
-                ..
-            } = event
-            {
-                let text = documents
-                    .iter()
-                    .find(|d| d.document == target.document)
-                    .map(|d| d.text.as_str())
-                    .unwrap_or("");
-                assert_eq!(
-                    text.len(),
-                    target.byte_len as usize,
-                    "missing or stale text for {}",
-                    target.document
-                );
-                let mut messages = vec![Message::Transfer(EditorTransfer::Begin {
-                    id: id.clone(),
-                    target,
-                })];
-                for (index, bytes) in text.as_bytes().chunks(MAX_EDITOR_CHUNK_BYTES).enumerate() {
-                    messages.push(Message::Transfer(EditorTransfer::Chunk {
-                        id: id.clone(),
-                        index: index.try_into().expect("chunk index"),
-                        bytes: bytes.to_vec(),
-                    }));
-                }
-                messages.push(Message::Transfer(EditorTransfer::Complete { id }));
-                store
-                    .frame(&view_wire::Frame {
-                        editor_documents: messages,
-                        ..Default::default()
-                    })
-                    .expect("seed real editor projection");
-            }
-        }
-    }
-    store
 }

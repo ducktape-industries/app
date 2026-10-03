@@ -250,9 +250,8 @@ fn perform(window: &mut Window, cx: &mut App, node: NodeId, action: &str, value:
     };
     match action {
         "set_value" => {
-            // Focus first, as `type` does: `TextEditor::observed`
-            // (editor/text.rs) forwards an edit to the guest only while its
-            // field is focused (#241).
+            // Focus first, as `type` does: a set-value is typing, and typing
+            // goes where the keys are (#241).
             window.dispatch_a11y_action(request(Action::Focus, None), cx);
             window.dispatch_a11y_action(
                 request(Action::SetValue, Some(ActionData::Value(value.into()))),

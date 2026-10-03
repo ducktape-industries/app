@@ -71,7 +71,6 @@ view's tree lowers onto GPUI elements one to one.
 | `ui.rs`, `ui/` | the pure pane geometry (`ui/layout.rs`: `Layout`, `Pane`, `PaneMessage`), which each window's `Desk` holds | window thread |
 | `runtime.rs`, `runtime/` | seats, guests (wasmtime), the kernel relay, replies, notify, store, clipboard, roster, `Seat` | ticks on the window thread, off the draw path; loads on loader threads; node calls on `views-kernel` |
 | `render.rs`, `render/` | `ViewTree`: one wire tree drawn as GPUI elements, retained native state keyed by `AuthoredPath`, `wire::Event` out, accessibility mapping | window thread |
-| `editor.rs`, `editor/` | `EditorStore` (guest-owned documents projected natively) and `TextEditor` (the one multi-line native field; `editor/text.rs` is mounted as `editor::wire::text` by a `#[path]`) | window thread |
 | `backend/` | everything that crosses the process boundary: `noded` client and signed `Frame`, `session` (seated key, prefs, recent nodes), `device_key`, `passkey`, `join`, `views`, `app_dirs` | async, polled where the caller polls (see below) |
 | `a11y.rs` | role/name/keyboard/state helpers for shell and renderer, plus the class markers the AX door reads | window thread |
 | `ax.rs`, `ax/` | the AX test door: loopback HTTP over the AccessKit tree, its CLI client; built with the `ax-door` feature only | `ax-door` accept thread; answers on the window thread |
@@ -85,8 +84,7 @@ main
      │  ├─► shell::entities ──► backend (connect, keys, prefs)
      │  │                   └──► runtime (Roster, connected, notify)
      │  └─► runtime::Seat ──► render::ViewTree ──► a11y
-     │          │                              └──► editor (TextEditor)
-     │          ├─► runtime::guest (wasmtime) ──► editor::wire (EditorStore)
+     │          ├─► runtime::guest (wasmtime)
      │          └─► runtime::kernel ──► backend::noded / session / views
      ├─► a11y, fonts, tray, ax
      └─► ax ──► (reads the GPUI a11y tree of every window)
@@ -179,7 +177,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    only: anything reachable from a window callback or an entity method
    goes through `Seat::wake` = `cx.defer(turn)`, because `turn` updates the
    window itself. One tick per draw: a turn whose tick gave the tree
-   something to draw (a new tree, or a moved editor document) dirties the
+   something to draw (a new tree) dirties the
    tree and holds the seat until it has drawn (`render::Drawn`, sent by
    every render), and a turn asked for meanwhile runs right after the
    draw; a tick that answered `unchanged` and moved no document dirties
@@ -212,8 +210,8 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    `native_root` (an id-less full-size container: giving it an id would
    shift every `AuthoredPath`) and either `ViewTree::replace`s the existing
    tree or, for a new guest instance, builds `ViewTree::new(root)
-   .with_presentation(old.presentation())` and hands it the guest's
-   `EditorStore`; the seat notifies, and the pane (`layers::PaneView`)
+   .with_presentation(old.presentation())`; the seat notifies, and the
+   pane (`layers::PaneView`)
    draws `seat.tree()` cached (with a11y on too) inside the
    `view/<module>` mark, laid out from `seat.min_width()`, or its `Standin`
    while it holds one (a load, a failure, a stopped view), over any tree it
@@ -239,16 +237,20 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    judged as the command runs. A guest hears only what its elements' own
    listeners emit: no window-wide input (pointer moves, keys, IME, file
    drops) reaches it.
-   The multi-line editor is its own loop: `Node::Editor` mounts
-   a `TextEditor` (`editor/text.rs`) whose edits become `EditorStore`
-   transactions (`editor/wire.rs`); claimed key chords go to the guest for
-   a decision; the guest's next frame acknowledges the revision.
-   Imperative guest requests (`host.widget`: focus, scroll, cursor, editor
-   action) are refused at once when their target is not in the tree the
-   guest shows now (`invalid_widget_command`); admitted ones queue in
-   `guest.widget_commands` until native editor work has drained
-   (`runnable_widget_commands`: a plain `Focus` does not wait, a rich
-   editor's does), then run in the pane's window one frame after the draw
+   A text field (`Node::Field`, one line or many) is the kit's editing
+   engine's (`render/inputs.rs`): every key, selection, IME preedit and
+   undo is the engine's, the guest hears each change as `Event::Text` at
+   the host's `revision`, and asks for an edit with `host.widget`'s
+   `Replace` against the revision it has seen; a stale ask is carried over
+   what was typed since (`view_wire::rebase`), never dropped. The guest's
+   own text is adopted only on a fresh mount or when its `generation`
+   moves. A key the guest claimed reaches it as `Event::KeyDown` on the
+   field's `on_key` and never the engine; Backspace, Delete, Tab and undo
+   are never claimed.
+   Imperative guest requests (`host.widget`: focus, scroll, cursor, a
+   field's edit) are refused at once when their target is not in the tree
+   the guest shows now (`invalid_widget_command`); admitted ones queue in
+   `guest.widget_commands`, then run in the pane's window one frame after the draw
    that mounts the tree (`Seat::run_widget_commands`: an `on_next_frame`
    inside an `on_next_frame`, since a next-frame callback runs before the
    draw), through `ViewTree::execute_widget_command`, re-checked for mount
@@ -259,7 +261,7 @@ prepares the new view as a replacement: instantiate without `init`, take
 `old.snapshot()` (under the seat lock, fuel armed; only if the old view has
 ticked at all, else the fresh one is `init`ed), `restore` it into the fresh
 instance, verify its `first_frame`. An old view that is not `settled()`
-(pending events, unanswered requests, editor work) refuses the replacement
+(pending events, unanswered requests) refuses the replacement
 ("its replacement waits") and the next block tries again. `Loaded::Swap`
 carries the old instance's `alive` token and tick count; `Load::land`
 installs it only if the seat's `generation` is still the one it was asked
@@ -267,8 +269,7 @@ for, the app is still on the node it was asked of (`Connection.rev`), and
 the drawn instance is the one the snapshot came from, at the same tick
 count and still settled. The new guest is `staged`: its first tree is
 already in `frame`, so the next redraw routes its requests without a tick.
-Pictures and editor projections move over (`EditorStore::
-retain_restored_projections`). A new instance means a new `generation` on
+Pictures move over. A new instance means a new `generation` on
 `Seat`: handler ids are fresh, and only `NativePresentation`
 (field text, selection, focus, scroll offsets, decoded pictures) carries
 across into the new `ViewTree`. A snapshot the new code refuses falls back
@@ -285,7 +286,7 @@ from `HostState::panic` when there is one), `Refused` (bytes this build does
 not run, or a load overtaken), `Wire` (built against another wire than
 this app's). A failed candidate is held off
 `RETRY_FIRST` doubling to `RETRY_MAX` while the same bytes keep failing
-(`seat::Retry`). At run time a trap, an `EditorStore` fault, a frame past
+(`seat::Retry`). At run time a trap, a frame past
 `MAX_FRAME_BYTES` or a `Replies` overflow latch `guest.fault`: the view never
 ticks again and the standin shows the message. `Fetching`'s byte counts are
 written once at zero and never advanced.
@@ -753,8 +754,8 @@ House words, and where one word means several things.
 - **presentation / NativePresentation** — host-side native state copied
   into a fresh `ViewTree` across guest instances.
 - **authored path / AuthoredPath** — the wire ids of a node and its
-  identified ancestors, root first: the key for all retained native state
-  and for editor identity. **native_id** — the GPUI `ElementId` lowered
+  identified ancestors, root first: the key for all retained native state.
+  **native_id** — the GPUI `ElementId` lowered
   from a wire id.
 - **handler / message (wire)** — u32 ids the guest attaches to callbacks;
   the host echoes them in `wire::Event`. Fresh per guest instance.
@@ -765,7 +766,7 @@ House words, and where one word means several things.
   (5 s) and taken by the first gated call (`Guest::take_activation`):
   `link.open` and the clipboard are refused `needs_gesture` without it.
 - **widget command** — a `host.widget` request acting on a native control
-  (focus, next/previous, scroll, cursor, editor action); its **target** is
+  (focus, next/previous, scroll, cursor, a field's edit); its **target** is
   an id suffix matched against mounted authored paths.
 - **method / capability / operation** — a request kind is
   `<capability>.<operation>`; `Capability` is the typed part before the dot
@@ -868,12 +869,11 @@ House words, and where one word means several things.
   changing after an act; nodes with a name, value, state or action; one
   (id, action, label) triple from `/actions`; what an act changed; near
   ids returned with a 404.
-- **editor words** — **projection** (what a mounted editor reads from the
-  store), **field** (one mounted `Node::Editor` by `AuthoredPath`),
-  **document / reset / revision** (the guest-owned text, its generation,
-  its commit count), **claim** (a chord the guest wants first),
-  **decision** (the guest's answer to a claimed key), **pump**, **mirror**,
-  **fault** (a sticky error that stops the store and faults the view).
+- **field words** — **generation** (the guest's text, as adopted by the
+  engine), **revision** (the host's count of the engine's changes),
+  **claim** (a key the guest hears instead of the engine), **Replace**
+  (the guest's ask for an edit, carried over the edits since the revision
+  it read).
 - **pictures / hash-only frame** — the seat's image and SVG bytes
   (`runtime/pictures.rs`): bytes cross once, later frames name them by
   hash; `adopt` moves them out of the tree into the store, each held once

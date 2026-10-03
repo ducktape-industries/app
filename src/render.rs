@@ -29,7 +29,6 @@ mod anchored;
 mod canvas;
 mod commands;
 pub(crate) mod deferred;
-mod editor_mount;
 mod frame;
 mod inputs;
 mod interactivity;
@@ -52,7 +51,6 @@ use accessibility::accessible;
 pub(crate) use accessibility::{Accessible, announce};
 use canvas::{canvas_svg, native_canvas_commands, paint_canvas_commands};
 pub(crate) use commands::dialog_entry;
-use editor_mount::EditorMount;
 use inputs::Field;
 use pictures::SharedRasters;
 pub(crate) use pictures::{PictureBytes, qr};
@@ -118,8 +116,6 @@ pub(crate) struct NativePresentation {
     images: Option<SharedRasters>,
     focused_container: Option<(AuthoredPath, std::mem::Discriminant<wire::Node>)>,
     inputs: HashMap<AuthoredPath, InputPresentation>,
-    /// The focused editors' documents; the field named takes the caret back.
-    editors: HashMap<AuthoredPath, wire::editor_document::EditorDocumentRef>,
 }
 
 /// A text field as its user left it: restored only onto a field the new
@@ -154,11 +150,11 @@ pub struct ViewTree {
 
     // Native widgets, one per mounted node.
     fields: HashMap<AuthoredPath, Field>,
+    /// The one keystroke interceptor the fields share, once one is mounted:
+    /// a guest's claim on a key runs before the engine's own bindings.
+    keystrokes: Option<Subscription>,
     /// A rich text with links: its Tab stop and the link its arrows picked.
     links: HashMap<AuthoredPath, text::links::Links>,
-    editors: HashMap<AuthoredPath, EditorMount>,
-    /// The guest's editor documents; handed over by the runtime, not built here.
-    editor_store: Option<crate::editor::wire::EditorStore>,
     sensors: HashMap<AuthoredPath, SensorState>,
     /// A resize handle's press position while its drag lasts.
     drags: HashMap<AuthoredPath, Point<Pixels>>,
@@ -189,7 +185,7 @@ pub struct ViewTree {
     opener: Option<(FocusHandle, WeakFocusHandle)>,
 
     // Measured geometry by path: what `measure` records for identified
-    // containers, editor mounts and canvases, and the sensor canvas for sensors.
+    // containers, growing fields and canvases, and the sensor canvas for sensors.
     bounds: HashMap<AuthoredPath, Bounds<Pixels>>,
 
     // Pictures by the guest's content hash: the seat's bytes, which a node
@@ -232,6 +228,7 @@ impl ViewTree {
             focus_targets: HashMap::new(),
             guest_focus_targets: HashMap::new(),
             fields: HashMap::new(),
+            keystrokes: None,
             links: HashMap::new(),
             authored_path: Vec::new(),
             scrolls: HashMap::new(),
@@ -246,8 +243,6 @@ impl ViewTree {
             sensors: HashMap::new(),
             pictures: Default::default(),
             images: Default::default(),
-            editor_store: None,
-            editors: HashMap::new(),
             mounted: Default::default(),
             presentation: NativePresentation::default(),
             render_index: 0,
@@ -269,7 +264,10 @@ impl ViewTree {
     /// The first one-line field this tree mounted, for a test to focus and blur.
     #[cfg(test)]
     pub(crate) fn first_input_for_test(&self) -> Option<Entity<InputState>> {
-        self.fields.values().next().map(|field| field.state.clone())
+        self.fields.values().find_map(|field| match &field.engine {
+            inputs::Engine::Line(state) => Some(state.clone()),
+            inputs::Engine::Area(_) => None,
+        })
     }
 
     /// The native handle behind a guest focus handle, for a test to ask who has the keys.
@@ -302,7 +300,7 @@ impl ViewTree {
             Node::UniformList { .. } => self.uniform_list(node, window, cx),
             Node::List { .. } => self.variable_list(node, cx),
             Node::Container(view_wire::ContainerNode { .. }) => self.container(node, window, cx),
-            Node::Input { .. } => self.input(node, window, cx),
+            Node::Field { .. } => self.field(node, window, cx),
             Node::Deferred { .. } => self.deferred(node, window, cx),
             Node::ResizeHandle { .. } => self.resize_handle(node, window, cx),
             Node::Sensor { .. } => self.sensor(node, window, cx),
@@ -312,7 +310,6 @@ impl ViewTree {
             Node::Canvas { .. } => self.drawing(node, cx),
             Node::Overlay { .. } => self.overlay(node, window, cx),
             Node::Anchored { .. } => self.anchored(node, window, cx),
-            Node::Editor { .. } => self.editor(node, window, cx),
         };
         if entered_scope {
             self.authored_path.pop();

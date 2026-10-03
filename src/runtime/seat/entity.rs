@@ -64,15 +64,10 @@ impl EventEmitter<Intent> for Seat {}
 /// would otherwise take its content's, and a Fill-sized pane inside it
 /// (a room, a document) collapses to zero height.
 ///
-/// UNNAMED ON PURPOSE: `EditorStore` keys every editor by the `AuthoredPath`
-/// it walks from the guest's OWN root (`guest.frame.root`, never wrapped —
-/// see `guest/requests.rs`'s `tick`). Giving this wrapper an id would push
-/// it onto every descendant's path here and nowhere else, so no editor's
-/// native field could ever find its `EditorStore` entry: it would type
-/// locally (GPUI's own default text handling) while the guest never saw an
-/// edit and every gate on the guest's document (Send, key claims like
-/// Enter) stayed stuck. An id-less `Container` gets GPUI's own synthetic
-/// element id (`ViewTree::container`) instead, so identity is unaffected.
+/// It carries no id: an id here would be one segment on every descendant's
+/// authored path that the view never sent and the AX door would read. An
+/// id-less `Container` gets GPUI's own synthetic element id
+/// (`ViewTree::container`) instead, so identity is unaffected.
 pub(super) fn native_root(root: wire::Node) -> wire::Node {
     use gpui_kit::Styled as _;
     let mut host_root = gpui_kit::div().size_full();
@@ -314,22 +309,29 @@ impl Seat {
                 guest.alive.clone(),
                 guest.replies.changes(),
                 guest.replies.answer_owed(),
-                guest.inputs.clone(),
             )
         });
-        let commands = guest.runnable_widget_commands();
+        let commands = guest.widget_commands.len();
+        // the field edits still queued, which run frames from now against
+        // the text they read: the tree keeps the edits since for them
+        let asked: Vec<(wire::WidgetTarget, u64)> = guest
+            .widget_commands
+            .iter()
+            .filter_map(|(_, command)| match command {
+                wire::WidgetCommand::Replace {
+                    target, revision, ..
+                } => Some((target.clone(), *revision)),
+                _ => None,
+            })
+            .collect();
         let intents = std::mem::take(&mut guest.intents);
         let min_width = guest.min_width as f32;
-        let ticked = ticks != guest.ticks;
-        // a frame that moved a field's document needs the tree's render
-        // (`TextEditor::sync` runs there), fresh tree or not
-        let editor_moved = ticked && guest.editor_moved;
         let first_tree = ticks == 0 && guest.ticks == 1;
         drop(locked);
 
         // a pane draws a placed seat's tree; nothing draws an unplaced one,
         // and nothing redraws for a tick that gave the tree nothing new
-        self.holding = (fresh.is_some() || editor_moved) && self.window.is_some();
+        self.holding = fresh.is_some() && self.window.is_some();
         if self.standin.take().is_some() {
             cx.notify();
         }
@@ -345,7 +347,7 @@ impl Seat {
                 // pane reads off the seat moved
                 (Some(tree), None) => tree.update(cx, |tree, cx| {
                     tree.set_pictures(pictures);
-                    tree.replace(root, cx)
+                    tree.replace(root, &asked, cx)
                 }),
                 (_, adopt) => {
                     self.mount(root, pictures, generation, key, adopt, cx);
@@ -357,8 +359,6 @@ impl Seat {
                 // first to find it seated, to its tree mounted
                 crate::perf::record(key, "first_tree", shown.elapsed().as_micros() as u64);
             }
-        } else if editor_moved && let Some(tree) = &self.tree {
-            tree.update(cx, |_, cx| cx.notify());
         }
         if commands > 0 {
             self.run_widget_commands(generation, cx);
@@ -398,10 +398,10 @@ impl Seat {
         pictures: Arc<crate::render::PictureBytes>,
         generation: u64,
         key: crate::perf::Key,
-        adopt: Option<(Arc<()>, tokio::sync::watch::Receiver<()>, bool, EditorStore)>,
+        adopt: Option<(Arc<()>, tokio::sync::watch::Receiver<()>, bool)>,
         cx: &mut Context<Self>,
     ) {
-        let Some((alive, mut changes, owed, inputs)) = adopt else {
+        let Some((alive, mut changes, owed)) = adopt else {
             return;
         };
         // a first view here, or a new deployment's: its minimum may be
@@ -433,10 +433,7 @@ impl Seat {
                 .with_perf_key(key)
                 .with_keys_grant(self.keys_free)
         });
-        tree.update(cx, |tree, cx| {
-            tree.set_pictures(pictures);
-            tree.set_editor_store(inputs, cx)
-        });
+        tree.update(cx, |tree, _| tree.set_pictures(pictures));
         let seat = self.mounted.clone();
         self._tree_events = Some(
             cx.subscribe(&tree, move |this, _, event: &wire::Event, cx| {

@@ -160,7 +160,7 @@ fn accepted_frames_retain_anonymous_list_scroll(cx: &mut gpui_kit::TestAppContex
                 offset_in_item: px(3.),
             });
             let before = state.logical_scroll_top();
-            tree.replace(root.clone(), cx);
+            tree.replace(root.clone(), &[], cx);
             let retained = tree
                 .variable_lists
                 .values()
@@ -171,7 +171,7 @@ fn accepted_frames_retain_anonymous_list_scroll(cx: &mut gpui_kit::TestAppContex
                 retained.state.logical_scroll_top().offset_in_item,
                 before.offset_in_item
             );
-            tree.replace(wire::Node::empty(), cx);
+            tree.replace(wire::Node::empty(), &[], cx);
             assert!(
                 tree.variable_lists.is_empty(),
                 "unmounted List state is retired"
@@ -221,7 +221,7 @@ fn a_changed_frame_remeasures_no_row_it_kept(cx: &mut gpui_kit::TestAppContext) 
         "the first frame measures its rows"
     );
     for title in ["Room ·", "Room"] {
-        tree.update(&mut native, |tree, cx| tree.replace(screen(title), cx));
+        tree.update(&mut native, |tree, cx| tree.replace(screen(title), &[], cx));
         native.update(|window, cx| window.render_frame(cx));
     }
     assert_eq!(

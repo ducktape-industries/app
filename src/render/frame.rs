@@ -1,6 +1,5 @@
 //! A frame's arrival: `replace` adopts the guest's new root and retains
-//! every native-state map to the paths it still mounts, and the runtime
-//! hands a new guest instance's editor documents over here.
+//! every native-state map to the paths it still mounts.
 
 use super::commands::walk_authored_paths;
 use super::*;
@@ -17,26 +16,24 @@ impl ViewTree {
         self.pictures = pictures;
     }
 
-    pub fn set_editor_store(
+    /// The guest's new root, with the `Replace` asks the host still holds
+    /// for it (target and the revision each read): a field's edit log is kept
+    /// from the oldest ask on it.
+    pub fn replace(
         &mut self,
-        store: crate::editor::wire::EditorStore,
+        mut root: wire::Node,
+        asked: &[(wire::WidgetTarget, u64)],
         cx: &mut Context<Self>,
     ) {
-        self.editors.clear();
-        self.editor_store = Some(store);
-        cx.notify();
-    }
-
-    pub fn replace(&mut self, mut root: wire::Node, cx: &mut Context<Self>) {
         let mut focusable = HashMap::new();
         let mut guest_focus_ids = std::collections::HashSet::new();
-        let mut inputs = std::collections::HashSet::new();
+        // every field, with the guest's revision this frame carries
+        let mut fields = HashMap::new();
         let mut scrolls = std::collections::HashSet::new();
         let mut uniform_lists = std::collections::HashSet::new();
         let mut variable_lists = std::collections::HashSet::new();
         let mut drags = std::collections::HashSet::new();
         let mut dialogs = std::collections::HashSet::new();
-        let mut editors = std::collections::HashSet::new();
         let mut sensors = std::collections::HashSet::new();
         let mut mounted = std::collections::HashSet::new();
         walk_authored_paths(&root, &mut Vec::new(), &mut |node, path| {
@@ -88,8 +85,8 @@ impl ViewTree {
                         state: *state,
                     });
                 }
-                wire::Node::Input { .. } => {
-                    inputs.insert(path.clone());
+                wire::Node::Field { revision, .. } => {
+                    fields.insert(path.clone(), *revision);
                 }
                 wire::Node::ResizeHandle { interactivity, .. } => {
                     if let Some(id) = interactivity.focus_handle {
@@ -104,9 +101,6 @@ impl ViewTree {
                 }
                 wire::Node::Sensor { .. } => {
                     sensors.insert(path.clone());
-                }
-                wire::Node::Editor { .. } => {
-                    editors.insert(path.clone());
                 }
                 _ => {}
             }
@@ -127,7 +121,17 @@ impl ViewTree {
             .retain(|key, (kind, _)| focusable.get(key) == Some(kind));
         self.guest_focus_targets
             .retain(|id, _| guest_focus_ids.contains(id));
-        self.fields.retain(|key, _| inputs.contains(key));
+        self.fields.retain(|key, _| fields.contains_key(key));
+        for (key, field) in self.fields.iter_mut() {
+            // an ask names its target by the whole authored path, as the
+            // guest SDK sends it and `execute_widget_command` reads it
+            let queued = asked
+                .iter()
+                .filter(|(target, _)| key == target)
+                .map(|(_, revision)| *revision)
+                .min();
+            field.frame(fields[key], queued);
+        }
         self.scrolls.retain(|key, _| scrolls.contains(key));
         self.uniform_lists.retain(|id, list| {
             list.rows.clear();
@@ -144,7 +148,6 @@ impl ViewTree {
             }
             open
         });
-        self.editors.retain(|key, _| editors.contains(key));
         self.sensors.retain(|key, _| sensors.contains(key));
         self.root = root;
         cx.notify();

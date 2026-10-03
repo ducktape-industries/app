@@ -7,8 +7,8 @@
 //! whether it is past the launcher (`on_desk`: ⌘K works here even with
 //! something open), whether the desk's keys reach it (`desk`: on the desk,
 //! nothing open over it), and whether something is open over it
-//! (`overlay`). A guest editor (`GuestEditor`) sits deeper, so its own keys
-//! come first. An empty window's ↑↓ and Enter are its field's
+//! (`overlay`). A guest's text field takes its claimed keys at the
+//! keystroke interceptor, before any binding. An empty window's ↑↓ and Enter are its field's
 //! (`layers::EmptyPane` takes them); Tab there is `SwitchMode` once agent chat is built
 //! (`layers::CHAT_READY`), under the empty window's own context
 //! (`layers::CONTEXT`), and until then moves focus. A desk window is a

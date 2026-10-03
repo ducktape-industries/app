@@ -1,6 +1,5 @@
 //! The seat, turned off the draw path, under a bare root that draws it as
 //! `layers::PaneView` does: its tree, cached, or its standin.
-use super::entity::native_root;
 use super::tests::eventually;
 use super::*;
 use gpui_kit::{
@@ -97,85 +96,6 @@ fn renders_of(module: &str) -> u64 {
     crate::perf::snapshot(false)["views"][module]["renders"]
         .as_u64()
         .unwrap_or(0)
-}
-
-/// `EditorStore` keys every editor by the `AuthoredPath` walked from the
-/// guest's OWN root (`guest/requests.rs`'s `tick`, never wrapped). The
-/// native widget tree is built from `native_root(root)` instead — the
-/// wrapper `native_root` adds around that same root so an unsized guest
-/// root still fills the seat. If that wrapper carried an id, every
-/// descendant's `AuthoredPath` as walked from the RENDERED tree would
-/// carry one extra leading segment the store never indexed under, and a
-/// native editor field could never find its `EditorStore` entry: it would
-/// keep typing locally (GPUI's own default text handling on an
-/// editable-by-default field) while the guest's document — and everything
-/// gated on it, like a claimed Enter or the Send button — never moved.
-/// Reproduces that class of bug directly against the two real tree walks,
-/// with no gpui window needed.
-#[test]
-fn native_root_does_not_shift_the_authored_path_editor_store_indexes_by() {
-    let editor = wire::Node::Editor {
-        binding: None,
-        id: wire::ElementIdWire::Name("editor".into()),
-        style: Default::default(),
-        placeholder: String::new(),
-        label: None,
-        document: wire::editor_document::EditorDocumentRef {
-            document: "doc".into(),
-            reset: 1,
-            text_revision: 0,
-            revision: 0,
-            cursor: wire::EditorCursor::default(),
-            byte_len: 0,
-        },
-        on_document: 0,
-        editable: true,
-    };
-    let panel = wire::Node::Container(view_wire::ContainerNode {
-        id: Some(wire::ElementIdWire::Name("panel".into())),
-        style: Default::default(),
-        interactivity: Default::default(),
-        children: vec![editor],
-    });
-
-    // The guest's own root, unwrapped: what `EditorStore::replace` indexes,
-    // exactly as `guest/requests.rs`'s `tick` calls it.
-    let store = EditorStore::new(0);
-    store
-        .replace(&panel)
-        .expect("a valid editor tree validates");
-
-    // The tree the renderer actually walks to mount native widgets — the
-    // one and only tree `native_root` ever produces for it.
-    let rendered = native_root(panel);
-    let mounted_key = editor_authored_path(&rendered).expect("the editor is still in the tree");
-
-    assert!(
-        store.projection(&mounted_key).is_some(),
-        "a native editor's own mounted path must resolve in the EditorStore \
-         the guest's unwrapped tree populated; native_root must add no identity"
-    );
-}
-
-/// The `AuthoredPath` to the first `Editor` node in `root`, walked the same
-/// way `crate::render`'s node lowering (and `EditorStore::collect`) do: by
-/// `crate::render::enter_scope`, which is what decides whether a node
-/// contributes a path segment at all.
-fn editor_authored_path(root: &wire::Node) -> Option<crate::render::AuthoredPath> {
-    fn walk(
-        node: &wire::Node,
-        path: &mut crate::render::AuthoredPath,
-    ) -> Option<crate::render::AuthoredPath> {
-        let entered = crate::render::enter_scope(node, path);
-        let found = matches!(node, wire::Node::Editor { .. })
-            .then(|| path.clone())
-            .or_else(|| node.children().iter().find_map(|child| walk(child, path)));
-        if entered {
-            path.pop();
-        }
-        found
-    }
-    walk(root, &mut crate::render::AuthoredPath::new())
 }
 
 #[gpui_kit::test]
@@ -304,15 +224,22 @@ fn an_idle_view_renders_no_more_than_it_ticks(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_one_line_field_blinks_only_while_focused(cx: &mut TestAppContext) {
     const MODULE: &str = "blink-renders-test";
-    let field = wire::Node::Input {
-        options: wire::InputOptions {
+    let field = wire::Node::Field {
+        options: Box::new(wire::InputOptions {
             label: "Filter members".into(),
             ..Default::default()
-        },
+        }),
         id: wire::ElementIdWire::Name("filter".into()),
+        multiline: false,
+        cursor: wire::TextRange::caret("a value the mount sets".len()),
+        generation: 1,
+        revision: 0,
+        tokens: Default::default(),
+        claims: Default::default(),
         placeholder: "Filter by name".into(),
         value: "a value the mount sets".into(),
-        on_input: Some(1),
+        on_change: Some(1),
+        on_key: None,
         on_submit: None,
         secure: false,
         style: div().w(px(200.)).h(px(24.)).style().clone(),
@@ -548,15 +475,22 @@ fn a_stage_change_and_a_retry_each_turn_the_seat_once(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
     const MODULE: &str = "widget-commands-test";
-    let field = wire::Node::Input {
-        options: wire::InputOptions {
+    let field = wire::Node::Field {
+        options: Box::new(wire::InputOptions {
             label: "Filter".into(),
             ..Default::default()
-        },
+        }),
         id: wire::ElementIdWire::Name("filter".into()),
+        multiline: false,
+        cursor: Default::default(),
+        generation: 1,
+        revision: 0,
+        tokens: Default::default(),
+        claims: Default::default(),
         placeholder: String::new(),
         value: String::new(),
-        on_input: Some(1),
+        on_change: Some(1),
+        on_key: None,
         on_submit: None,
         secure: false,
         style: div().w(px(200.)).h(px(24.)).style().clone(),
@@ -662,15 +596,22 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_view_moves_the_keys_only_while_its_keys_are_free(cx: &mut TestAppContext) {
     const MODULE: &str = "focus-gate-test";
-    let field = wire::Node::Input {
-        options: wire::InputOptions {
+    let field = wire::Node::Field {
+        options: Box::new(wire::InputOptions {
             label: "Filter".into(),
             ..Default::default()
-        },
+        }),
         id: wire::ElementIdWire::Name("filter".into()),
+        multiline: false,
+        cursor: Default::default(),
+        generation: 1,
+        revision: 0,
+        tokens: Default::default(),
+        claims: Default::default(),
         placeholder: String::new(),
         value: String::new(),
-        on_input: Some(1),
+        on_change: Some(1),
+        on_key: None,
         on_submit: None,
         secure: false,
         style: div().w(px(200.)).h(px(24.)).style().clone(),
@@ -812,30 +753,28 @@ fn a_trees_activation_reaches_its_guest_on_the_next_turn(cx: &mut TestAppContext
     );
 }
 
-/// A view's own `host.widget` cursor command on its editor is no input: the
+/// A view's own `host.widget` cursor command on its field is no input: the
 /// guest ends its turn with no activation to spend on the clipboard or a link.
 #[gpui_kit::test]
 fn a_guests_own_cursor_command_grants_it_no_activation(cx: &mut TestAppContext) {
-    use view_wire::editor_document::{EditorDocumentMessage as Message, EditorTransfer};
     const MODULE: &str = "self-stamp-test";
-    const TEXT: &[u8] = b"some words";
     let target = vec![wire::ElementIdWire::Name("document".into())];
-    let root = wire::Node::Editor {
+    let root = wire::Node::Field {
         id: target[0].clone(),
-        style: div().w(px(240.)).h(px(80.)).style().clone(),
-        label: None,
-        binding: None,
+        multiline: true,
+        value: "some words".into(),
+        cursor: Default::default(),
+        generation: 1,
+        revision: 0,
+        tokens: Default::default(),
+        claims: Default::default(),
+        options: Default::default(),
         placeholder: String::new(),
-        document: wire::editor_document::EditorDocumentRef {
-            document: "doc".into(),
-            reset: 1,
-            text_revision: 0,
-            revision: 0,
-            cursor: Default::default(),
-            byte_len: TEXT.len() as u32,
-        },
-        on_document: 0,
-        editable: true,
+        secure: false,
+        on_change: Some(1),
+        on_key: None,
+        on_submit: None,
+        style: div().w(px(240.)).h(px(80.)).style().clone(),
     };
     crate::runtime::seat_drawing_for_test(MODULE, 320, root);
     let (seat, _, mut native) = open(cx, MODULE, false);
@@ -847,39 +786,6 @@ fn a_guests_own_cursor_command_grants_it_no_activation(cx: &mut TestAppContext) 
         };
         f(guest)
     };
-    // the host asked for the document; the guest delivers it
-    with_guest(&native, &mut |guest| {
-        let mut events = guest.inputs.drain();
-        events.extend(guest.pending.iter().cloned());
-        let (id, target) = events
-            .into_iter()
-            .find_map(|event| match event {
-                wire::Event::EditorDocument {
-                    message: Message::Request { id, target },
-                    ..
-                } => Some((id, target)),
-                _ => None,
-            })
-            .expect("the document was asked for");
-        guest
-            .inputs
-            .frame(&wire::Frame {
-                editor_documents: vec![
-                    Message::Transfer(EditorTransfer::Begin {
-                        id: id.clone(),
-                        target,
-                    }),
-                    Message::Transfer(EditorTransfer::Chunk {
-                        id: id.clone(),
-                        index: 0,
-                        bytes: TEXT.to_vec(),
-                    }),
-                    Message::Transfer(EditorTransfer::Complete { id }),
-                ],
-                ..Default::default()
-            })
-            .unwrap();
-    });
     native.run_until_parked();
     let mut activation = None;
     with_guest(&native, &mut |guest| {
@@ -1162,77 +1068,6 @@ fn an_unchanged_tick_redraws_nothing_and_holds_nothing(cx: &mut TestAppContext) 
         renders_of(MODULE),
         1,
         "an unchanged tick does not re-render the tree"
-    );
-}
-
-/// An `unchanged` frame that carries editor traffic still renders the
-/// tree: `TextEditor::sync` reads the store's projection at the tree's
-/// render, so a field shows a guest's decision or document only through
-/// one. The message here matches no transfer (a transfer id carries the
-/// guest store's own instance number, which a baked test frame cannot
-/// know): the frame carrying it is what asks for the render.
-#[gpui_kit::test]
-fn an_unchanged_tick_with_editor_traffic_redraws(cx: &mut TestAppContext) {
-    const MODULE: &str = "unchanged-editor-test";
-    use wire::editor_document::{EditorDocumentMessage as Message, EditorTransferId};
-    let _on = crate::perf::on_for_test();
-    crate::runtime::seat_ticking_for_test(
-        MODULE,
-        320,
-        &[
-            wire::Frame {
-                root: Some(wire::Node::empty()),
-                ..Default::default()
-            },
-            wire::Frame {
-                unchanged: true,
-                editor_documents: vec![Message::Acknowledged {
-                    id: EditorTransferId {
-                        instance: 0,
-                        document: "doc".into(),
-                        reset: 1,
-                        serial: 0,
-                        attempt: 0,
-                    },
-                }],
-                ..Default::default()
-            },
-            wire::Frame {
-                unchanged: true,
-                ..Default::default()
-            },
-        ],
-    );
-    let (seat, _, mut native) = open(cx, MODULE, false);
-    {
-        let mounted = mounted_of(&seat, &native);
-        let mut locked = mounted.lock().unwrap();
-        let Slot::Ready(guest) = &mut locked.slot else {
-            panic!("seated")
-        };
-        guest.props_subscription = Some(98);
-    }
-    let mut tick = |props: &[u8]| {
-        if !props.is_empty() {
-            seat.update(&mut native, |seat, cx| seat.set_props(props.to_vec(), cx));
-            native.run_until_parked();
-        }
-        native.update(|window, cx| {
-            window.draw(cx).clear(cx);
-        });
-        native.run_until_parked();
-        (ticks_of(&seat, &native), renders_of(MODULE))
-    };
-    assert_eq!(tick(b""), (1, 1));
-    assert_eq!(
-        tick(b"one"),
-        (2, 2),
-        "the unchanged frame with editor traffic re-rendered the tree"
-    );
-    assert_eq!(
-        tick(b"two"),
-        (3, 2),
-        "an unchanged tick that moved nothing draws nothing"
     );
 }
 

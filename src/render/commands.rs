@@ -1,5 +1,5 @@
 //! What a guest asks of the mounted tree between frames: widget commands
-//! (`host.widget`: focus, cursor, scroll, editor action) on the node at
+//! (`host.widget`: focus, cursor, scroll, a field's edit) on the node at
 //! the whole authored path they name, the walk that names those paths, the
 //! user-activation mark an event may spend, the entry a dialog gives the
 //! keyboard when it opens, and the way back when it closes.
@@ -161,7 +161,7 @@ impl ViewTree {
                 let trap = gpui_kit::base::active_focus_trap(window, cx);
                 tab(trap.as_ref(), true, window, cx)
             }
-            C::EditorAction { ref target, .. }
+            C::Replace { ref target, .. }
             | C::Focus { ref target }
             | C::CursorFront { ref target }
             | C::CursorEnd { ref target }
@@ -194,12 +194,9 @@ impl ViewTree {
         if let Some((_, handle)) = self.focus_targets.get(target) {
             return handle.is_focused(window);
         }
-        if let Some(field) = self.fields.get(target) {
-            return field.state.read(cx).focus_handle(cx).is_focused(window);
-        }
-        self.editors
+        self.fields
             .get(target)
-            .is_some_and(|editor| editor.view.is_focused(window, cx))
+            .is_some_and(|field| field.is_focused(window, cx))
     }
 
     /// Runs a focus, cursor, selection or editor command on the node at
@@ -238,33 +235,23 @@ impl ViewTree {
                 return Ok(());
             }
         }
-        // A toolbar press names a tag, not an edit: it goes to the guest's
-        // binding as an interaction on that field's document. The native
-        // editor never decides what a view's tag means.
-        if let C::EditorAction { tag, .. } = command {
-            let editor_mounted = self.editors.contains_key(target);
-            let Some(store) = editor_mounted
-                .then_some(self.editor_store.as_ref())
-                .flatten()
-            else {
-                return Err("editor action target is not a mounted editor".into());
+        // a field's edit is the guest's ask of the engine; a cursor command
+        // moves the caret where it is; only Focus takes the keys
+        if let Some(field) = self.fields.get_mut(target) {
+            let event = match command {
+                C::Focus { .. } => {
+                    field.focus(window, cx);
+                    None
+                }
+                C::Replace { .. } => field.ask(command.clone(), window, cx),
+                _ => field.cursor_command(command, window, cx),
             };
-            store.act(target, tag.clone());
-            return Ok(());
-        }
-        if let Some(editor) = self.editors.get(target) {
-            editor.view.widget_command(command, window, cx);
-            return Ok(());
-        }
-        // a plain field answers only Focus; its cursor and selection
-        // commands are taken and dropped
-        if let Some(field) = self.fields.get(target) {
-            if matches!(command, C::Focus { .. }) {
-                field.state.update(cx, |field, cx| field.focus(window, cx));
+            if let Some(event) = event {
+                cx.emit(event);
             }
             return Ok(());
         }
-        Err("the target is no container, field or editor: it takes no focus or caret".into())
+        Err("the target is no container or field: it takes no focus, edit or caret".into())
     }
 
     pub(super) fn scroll_command(

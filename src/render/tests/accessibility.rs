@@ -40,36 +40,25 @@ fn an_input_is_named_by_its_label_and_a_secure_one_never_reports_its_value() {
 
 #[test]
 fn an_editor_is_named_by_its_label_and_described_by_its_placeholder_without_one() {
-    let mut editor = wire::Node::Editor {
-        binding: None,
-        id: named_id("e"),
-        style: gpui_kit::StyleRefinement::default(),
-        label: None,
-        placeholder: "Write something".into(),
-        document: wire::editor_document::EditorDocumentRef {
-            document: "e".into(),
-            reset: 1,
-            text_revision: 0,
-            revision: 0,
-            cursor: Default::default(),
-            byte_len: 0,
-        },
-        on_document: 0,
-        editable: true,
+    let mut editor = area("e", None, "", Default::default());
+    let wire::Node::Field { placeholder, .. } = &mut editor else {
+        unreachable!()
     };
+    *placeholder = "Write something".into();
     assert_eq!(
         accessible(&editor),
         Accessible {
             role: Some(gpui_kit::Role::MultilineTextInput),
             description: Some("Write something".into()),
             placeholder: Some("Write something".into()),
+            value: Some(String::new()),
             ..Default::default()
         }
     );
-    let wire::Node::Editor { label, .. } = &mut editor else {
+    let wire::Node::Field { options, .. } = &mut editor else {
         unreachable!()
     };
-    *label = Some("Message".into());
+    options.label = "Message".into();
     let named = accessible(&editor);
     assert_eq!(named.name.as_deref(), Some("Message"));
     // the placeholder is not a name, nor a second one
@@ -84,30 +73,12 @@ fn a_read_only_editor_reads_its_text_and_is_offered_no_typing(cx: &mut gpui_kit:
     cx.update(gpui_kit::init);
     let words = "no channel is open";
     for editable in [true, false] {
-        let root = wire::Node::Editor {
-            id: named_id("composer"),
-            style: gpui_kit::StyleRefinement::default(),
-            label: Some("Message".into()),
-            binding: None,
-            placeholder: String::new(),
-            document: wire::editor_document::EditorDocumentRef {
-                document: "composer".into(),
-                reset: 1,
-                text_revision: 0,
-                revision: 0,
-                cursor: Default::default(),
-                byte_len: words.len() as u32,
-            },
-            on_document: 0,
-            editable,
+        let mut root = area("composer", Some("Message"), words, Default::default());
+        let wire::Node::Field { options, .. } = &mut root else {
+            unreachable!()
         };
-        let (_, mut native) = with_editors(root, Some(words), cx);
-        let nodes = native.update(|window, cx| {
-            window.activate_a11y();
-            window.render_frame(cx);
-            window.render_frame(cx);
-            crate::ax::snapshot("t", window, false)
-        });
+        options.read_only = !editable;
+        let nodes = draw(cx, root);
         let field = nodes
             .iter()
             .find(|node| node.role == "MultilineTextInput")
@@ -120,8 +91,9 @@ fn a_read_only_editor_reads_its_text_and_is_offered_no_typing(cx: &mut gpui_kit:
                 assert!(field.actions.contains(&"set_value"));
             }
             false => {
-                assert!(field.state.contains(&"disabled"));
-                assert!(field.actions.is_empty(), "{:?}", field.actions);
+                assert!(field.more.read_only);
+                assert!(!field.actions.contains(&"type"), "{:?}", field.actions);
+                assert!(!field.actions.contains(&"set_value"), "{:?}", field.actions);
             }
         }
     }
@@ -299,14 +271,14 @@ fn a_fields_placeholder_reaches_the_door(cx: &mut gpui_kit::TestAppContext) {
 #[gpui_kit::test]
 fn a_field_says_it_is_invalid_required_and_read_only(cx: &mut gpui_kit::TestAppContext) {
     let mut field = input("Room name", false, false);
-    let wire::Node::Input { options, .. } = &mut field else {
+    let wire::Node::Field { options, .. } = &mut field else {
         unreachable!()
     };
     options.invalid = Some(gpui_kit::accesskit::Invalid::True);
     options.required = true;
     options.read_only = true;
     let mut editable = input("Topic", false, false);
-    if let wire::Node::Input { id, .. } = &mut editable {
+    if let wire::Node::Field { id, .. } = &mut editable {
         *id = wire::ElementIdWire::Name("topic".into());
     }
     let nodes = door(cx, axis_container("root", Axis::Column, [field, editable]));

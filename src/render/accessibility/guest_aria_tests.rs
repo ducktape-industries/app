@@ -1023,7 +1023,9 @@ mod phase_two {
                     "right" => step,
                     _ => 0.,
                 };
-                native.update(|_, cx| tree.update(cx, |tree, cx| tree.replace(panes(width), cx)));
+                native.update(|_, cx| {
+                    tree.update(cx, |tree, cx| tree.replace(panes(width), &[], cx))
+                });
             }
             assert_eq!(
                 wide(&mut native),
@@ -1053,7 +1055,7 @@ mod phase_two {
             native.update(|window, cx| {
                 window.render_frame(cx);
                 let handle = tree.read(cx).guest_focus_targets[&PARENT_FOCUS].clone();
-                tree.update(cx, |tree, cx| tree.replace(again, cx));
+                tree.update(cx, |tree, cx| tree.replace(again, &[], cx));
                 window.render_frame(cx);
                 assert!(
                     tree.read(cx).guest_focus_targets[&PARENT_FOCUS] == handle,

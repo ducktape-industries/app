@@ -89,40 +89,36 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
             value: named(content),
             ..Default::default()
         },
-        Node::Input {
+        // the value is the guest's word on the text; the mounted field
+        // reads the engine's (`ViewTree::field`). A field with no name is
+        // described by what it shows in place of its text.
+        Node::Field {
             options,
+            multiline,
             value,
             placeholder,
             secure,
             ..
-        } => Accessible {
-            role: Some(match secure {
-                true => Role::PasswordInput,
-                false => Role::TextInput,
-            }),
-            name: named(&options.label),
-            description: options.description.as_deref().and_then(named),
-            placeholder: named(placeholder),
-            value: (!secure).then(|| value.clone()),
-            disabled: options.disabled,
-            invalid: options.invalid,
-            required: options.required,
-            read_only: options.read_only,
-        },
-        // the document is not on the node: the editor mount adds its text as
-        // the value (`TextEditor::render`)
-        Node::Editor {
-            label,
-            placeholder,
-            editable,
-            ..
         } => {
-            let field = labelled(Role::MultilineTextInput, label);
+            let name = named(&options.label);
             Accessible {
-                description: field.name.is_none().then(|| named(placeholder)).flatten(),
+                role: Some(match (multiline, secure) {
+                    (true, _) => Role::MultilineTextInput,
+                    (false, true) => Role::PasswordInput,
+                    (false, false) => Role::TextInput,
+                }),
+                description: options
+                    .description
+                    .as_deref()
+                    .and_then(named)
+                    .or_else(|| name.is_none().then(|| named(placeholder)).flatten()),
+                name,
                 placeholder: named(placeholder),
-                disabled: !editable,
-                ..field
+                value: (!secure).then(|| value.clone()),
+                disabled: options.disabled,
+                invalid: options.invalid,
+                required: options.required,
+                read_only: options.read_only,
             }
         }
         // only an open named overlay is a dialog; a closed or unnamed one is layout
@@ -395,50 +391,22 @@ impl ViewTree {
 impl ViewTree {
     /// The native state worth keeping when the view's guest is re-instantiated
     /// (a new generation): each field's text, selection and focus, the focused
-    /// container or editor, and the decoded image cache itself (the seat's,
-    /// shared, not copied). Plain data otherwise: no native entity, callback, handler id or IME preedit crosses a
-    /// generation, since the new guest's handler ids mean different things.
-    /// Document selection remains guest-owned.
+    /// container, and the decoded image cache itself (the seat's, shared, not
+    /// copied). Plain data otherwise: no native entity, callback, handler id
+    /// or IME preedit crosses a generation, since the new guest's handler ids
+    /// mean different things.
     pub(crate) fn presentation(&self, window: &Window, cx: &App) -> NativePresentation {
         let inputs = self
             .fields
             .iter()
-            .map(|(key, field)| {
-                let input = field.state.read(cx);
-                (
-                    key.clone(),
-                    InputPresentation {
-                        value: input.value().to_string(),
-                        secure: field.secure,
-                        // ponytail: forward only; gpui-base 0.7.0 reads a
-                        // backward range as empty (`normalize_token_range`), so
-                        // a backward selection comes back with its caret at the
-                        // far end. Save `cursor()` too once upstream takes one.
-                        selection: input.selected_range(),
-                        focused: input.focus_handle(cx).is_focused(window),
-                    },
-                )
-            })
+            .map(|(key, field)| (key.clone(), field.presentation(window, cx)))
             .collect();
-        let mut editors = HashMap::new();
-        super::commands::walk_authored_paths(&self.root, &mut Vec::new(), &mut |node, path| {
-            if let wire::Node::Editor { document, .. } = node {
-                let focused = self
-                    .editors
-                    .get(path)
-                    .is_some_and(|editor| editor.view.is_focused(window, cx));
-                if focused {
-                    editors.insert(path.clone(), document.clone());
-                }
-            }
-        });
         NativePresentation {
             images: Some(self.images.clone()),
             focused_container: self.focus_targets.iter().find_map(|(key, (kind, handle))| {
                 handle.is_focused(window).then(|| (key.clone(), *kind))
             }),
             inputs,
-            editors,
         }
     }
 
