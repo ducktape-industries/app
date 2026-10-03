@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use sha2::Digest as _;
+use tokio::sync::OnceCell;
 use wasmtime::Module;
 
 use super::node::{Answered, Node};
@@ -22,9 +23,14 @@ type Description = Option<methods::Description>;
 /// Answers kept before the table starts over.
 const MAX_KEPT: usize = 4096;
 
-/// Compiled modules by code id; `None` where the code carries none.
-fn modules() -> &'static Mutex<HashMap<abi::BlobId, Option<Arc<Module>>>> {
-    static MODULES: OnceLock<Mutex<HashMap<abi::BlobId, Option<Arc<Module>>>>> = OnceLock::new();
+/// One code id's compiled module, `None` where the code carries none: set
+/// once, by the first ask that fetched and compiled it, while every ask
+/// that came meanwhile waits for it.
+type Compiled = Arc<OnceCell<Option<Arc<Module>>>>;
+
+/// Compiled modules by code id.
+fn modules() -> &'static Mutex<HashMap<abi::BlobId, Compiled>> {
+    static MODULES: OnceLock<Mutex<HashMap<abi::BlobId, Compiled>>> = OnceLock::new();
     MODULES.get_or_init(Mutex::default)
 }
 
@@ -70,33 +76,45 @@ async fn described(node: &Node, program: &str, op: Vec<u8>) -> Result<Descriptio
     Ok(described)
 }
 
-/// The module in `code`'s describe section, compiled; fetched once per id.
+/// The module in `code`'s describe section, compiled: fetched and compiled
+/// once per id, however many ask at once (a page of ops by one program
+/// asks together). An ask that ends with nothing to keep (the node not
+/// reached, the blob not held yet) sets nothing, and the next one tries.
 async fn module(node: &Node, code: abi::BlobId) -> Result<Option<Arc<Module>>, wire::Error> {
-    if let Some(known) = modules().lock().expect("describe modules").get(&code) {
-        return Ok(known.clone());
-    }
-    let bytes = match views::program_bytes(&node.client, &code).await {
-        Ok((bytes, _)) => bytes,
-        // the transport: retried by the node method's loop
-        Err(Fetch::Unreachable(reason)) => {
-            return Err(wire::Error::new(refusal::RPC_CLIENT, reason));
-        }
-        // not held yet, or not the code asked for: nothing now, asked again later
-        Err(_) => return Ok(None),
-    };
-    let module = tokio::task::spawn_blocking(move || {
-        ::describe::host::section(&bytes)
-            .and_then(|section| ::describe::host::compile(super::super::guest::engine(), section))
-            .map(Arc::new)
-    })
-    .await
-    .ok()
-    .flatten();
-    modules()
+    let compiled = modules()
         .lock()
         .expect("describe modules")
-        .insert(code, module.clone());
-    Ok(module)
+        .entry(code)
+        .or_default()
+        .clone();
+    let kept = compiled
+        .get_or_try_init(|| async {
+            let bytes = match views::program_bytes(&node.client, &code).await {
+                Ok((bytes, _)) => bytes,
+                // the transport: retried by the node method's loop
+                Err(Fetch::Unreachable(reason)) => {
+                    return Err(Some(wire::Error::new(refusal::RPC_CLIENT, reason)));
+                }
+                // not held yet, or not the code asked for: nothing now, asked again later
+                Err(_) => return Err(None),
+            };
+            Ok(tokio::task::spawn_blocking(move || {
+                ::describe::host::section(&bytes)
+                    .and_then(|section| {
+                        ::describe::host::compile(super::super::guest::engine(), section)
+                    })
+                    .map(Arc::new)
+            })
+            .await
+            .ok()
+            .flatten())
+        })
+        .await;
+    match kept {
+        Ok(module) => Ok(module.clone()),
+        Err(Some(refused)) => Err(refused),
+        Err(None) => Ok(None),
+    }
 }
 
 #[cfg(test)]
@@ -127,7 +145,15 @@ mod tests {
                 &wat::parse_str(wat).unwrap(),
             )
         });
-        modules().lock().unwrap().insert(code, module.map(Arc::new));
+        modules()
+            .lock()
+            .unwrap()
+            .insert(code, kept(module.map(Arc::new)));
+    }
+
+    /// A code id's entry, its module already compiled (or known absent).
+    fn kept(module: Option<Arc<Module>>) -> Compiled {
+        Arc::new(OnceCell::new_with(Some(module)))
     }
 
     /// Answers `Description { title: "hi", fields: [] }` for any op.
@@ -151,7 +177,7 @@ mod tests {
         modules()
             .lock()
             .unwrap()
-            .insert(abi::BlobId::Sha256([0xd1; 32]), None);
+            .insert(abi::BlobId::Sha256([0xd1; 32]), kept(None));
         let kept = described(&node(), "describe-good", vec![1, 2]).await;
         assert_eq!(kept.unwrap().unwrap().title, "hi");
         assert_eq!(described(&node(), "describe-good", vec![3]).await, Ok(None));
@@ -174,6 +200,49 @@ mod tests {
                 "{program}"
             );
         }
+    }
+
+    /// Asks for one code that arrive together share one fetch and one
+    /// compile: the first does both, the rest wait for its module. Before,
+    /// each ask that found no module fetched and compiled its own (the
+    /// explorer's first Transactions page asked 38 at once).
+    #[tokio::test]
+    async fn asks_for_one_code_at_once_fetch_and_compile_it_once() {
+        use super::super::tests::{Mode, fake_node};
+        let section = wat::parse_str(HI).unwrap();
+        let escaped: String = section.iter().map(|byte| format!("\\{byte:02x}")).collect();
+        let program = wat::parse_str(format!(
+            r#"(module (@custom "{}" "{escaped}"))"#,
+            ::describe::SECTION
+        ))
+        .unwrap();
+        let mut framed = format!("blob {}\0", program.len()).into_bytes();
+        framed.extend_from_slice(&program);
+        let code = abi::BlobId::Sha256(sha2::Sha256::digest(&framed).into());
+        // the fetch keeps the blob in the developer's own cache: not there
+        // before (it would answer instead of the node), gone after
+        let cached = crate::backend::cache_dir()
+            .unwrap()
+            .join("programs")
+            .join(abi::hex(code.digest()));
+        let _ = std::fs::remove_file(&cached);
+        let node = fake_node(vec![(
+            crate::backend::noded::route::BLOB_GET,
+            Mode::Answer(abi::encode(&Some(framed))),
+        )]);
+        let asks = futures::future::join_all((0..8).map(|_| module(&node.node, code))).await;
+        let _ = std::fs::remove_file(&cached);
+        let first = asks[0].clone().unwrap().expect("the section compiles");
+        assert!(
+            asks.iter()
+                .all(|ask| matches!(ask, Ok(Some(module)) if Arc::ptr_eq(module, &first))),
+            "each ask compiled a module of its own"
+        );
+        assert_eq!(
+            node.accepted.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "each ask fetched the code"
+        );
     }
 
     #[test]
