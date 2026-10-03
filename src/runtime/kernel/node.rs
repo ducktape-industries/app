@@ -220,7 +220,7 @@ fn spawn_method(
     // `in_flight_limit` or cancelled by the view, which never got a reply
     let asked = crate::perf::on().then(std::time::Instant::now);
     let attempts_stage = crate::perf::suffixed(stage, ".attempts");
-    run(guest, id, slot, async move {
+    run(guest, id, slot, None, async move {
         if let Some(mut told) = told
             && told.answer().await != Some(true)
         {
@@ -258,11 +258,12 @@ fn spawn_method(
 fn start(
     guest: &mut Guest,
     id: u64,
+    follows: Option<Follow>,
     task: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> bool {
     match admit(guest, id) {
         Some(slot) => {
-            run(guest, id, slot, task);
+            run(guest, id, slot, follows, task);
             true
         }
         None => false,
@@ -289,6 +290,7 @@ fn run(
     guest: &mut Guest,
     id: u64,
     slot: InFlight,
+    follows: Option<Follow>,
     task: impl std::future::Future<Output = ()> + Send + 'static,
 ) {
     let task = handle().spawn(async move {
@@ -298,7 +300,7 @@ fn run(
     guest
         .tasks
         .retain(|(_, pending)| !pending.task.is_finished());
-    guest.tasks.push((id, NodeTask { task }));
+    guest.tasks.push((id, NodeTask { task, follows }));
 }
 
 /// One SUBSCRIPTION's writing end, handed to the loop that feeds it: every
@@ -326,7 +328,7 @@ impl Items {
 /// the node for them). The body owns whatever it holds open, so dropping
 /// the task releases it: a cancel drops the [`NodeTask`], and so do a
 /// guest's teardown, swap and trap, which drop the whole `tasks` list.
-fn spawn_subscription<Body, Fut>(guest: &mut Guest, id: u64, body: Body)
+fn spawn_subscription<Body, Fut>(guest: &mut Guest, id: u64, follows: Follow, body: Body)
 where
     Body: FnOnce(Items) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -337,7 +339,7 @@ where
         replies,
         id,
     };
-    start(guest, id, body(items));
+    start(guest, id, Some(follows), body(items));
 }
 
 /// Runs `future` on the kernel runtime and delivers its result as the one
@@ -351,7 +353,7 @@ pub(in crate::runtime) fn spawn_reply(
     future: impl std::future::Future<Output = Answer> + Send + 'static,
 ) -> bool {
     let replies = guest.replies.clone();
-    start(guest, id, async move {
+    start(guest, id, None, async move {
         replies.item(id, future.await, true);
     })
 }
@@ -370,15 +372,48 @@ fn connected(guest: &mut Guest, id: u64) -> Option<Node> {
         );
         return None;
     }
+    let node = node_on(&connection);
+    drop(connection);
+    if node.is_none() {
+        guest.refuse(id, refusal::NOT_CONNECTED, "not connected to a node");
+    }
+    node
+}
+
+/// The node `connection` names, if it names one.
+fn node_on(connection: &super::super::Connection) -> Option<Node> {
     match (&connection.client, &connection.network) {
         (Some(client), network) if !network.is_empty() => Some(Node {
             client: client.clone(),
             network: network.clone(),
         }),
-        _ => {
-            drop(connection);
-            guest.refuse(id, refusal::NOT_CONNECTED, "not connected to a node");
-            None
+        _ => None,
+    }
+}
+
+/// A connect inside the network, under a view that kept its code
+/// (`Guest::reconnect`): each node subscription goes on, opened again on
+/// `connection`, and its follower with it — a `module.changes` one is told
+/// first to re-read (`None`, as when the node closes the socket), a
+/// `chain.heads` one starts over at the new node's tip. Every other request
+/// still running on the old connection is refused `stale_connection`, for
+/// the view to ask again.
+pub(in crate::runtime) fn reconnected(guest: &mut Guest, connection: &super::super::Connection) {
+    // counted again as each opens
+    guest.live_subscriptions.clear();
+    for (id, mut task) in std::mem::take(&mut guest.tasks) {
+        let follows = task.follows.take();
+        // dropped, it aborts: the old connection's socket goes with it
+        drop(task);
+        match (follows, node_on(connection)) {
+            (Some(Follow::Changes(program)), Some(node)) => {
+                guest
+                    .replies
+                    .item(id, Ok(methods::encode(&None::<u64>)), false);
+                follow_changes(guest, id, node, program);
+            }
+            (Some(Follow::Heads), Some(node)) => follow_heads(guest, id, node),
+            _ => guest.refuse(id, refusal::STALE_CONNECTION, "network connection changed"),
         }
     }
 }
@@ -416,9 +451,15 @@ pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
     let Some(node) = connected(guest, id) else {
         return;
     };
+    follow_changes(guest, id, node, program);
+}
+
+/// Subscription `id`: `module.changes` of `program` on `node`.
+fn follow_changes(guest: &mut Guest, id: u64, node: Node, program: String) {
     let replies = guest.replies.clone();
     let subscribed = (id, program.clone());
-    let started = start(guest, id, async move {
+    let follows = Follow::Changes(program.clone());
+    let started = start(guest, id, Some(follows), async move {
         use futures::StreamExt as _;
         let mut drained = replies.drains();
         let mut warned = false;
@@ -480,7 +521,12 @@ pub(super) fn heads(guest: &mut Guest, id: u64, payload: &[u8]) {
     let Some(node) = connected(guest, id) else {
         return;
     };
-    spawn_subscription(guest, id, move |mut items| async move {
+    follow_heads(guest, id, node);
+}
+
+/// Subscription `id`: `chain.heads` on `node`.
+fn follow_heads(guest: &mut Guest, id: u64, node: Node) {
+    spawn_subscription(guest, id, Follow::Heads, move |mut items| async move {
         let mut last: Option<u64> = None;
         loop {
             let pace = match next_heads(&node, last).await {
@@ -548,6 +594,17 @@ async fn next_heads(node: &Node, last: Option<u64>) -> noded::Result<(Vec<method
 /// how a cancel, a swap or a teardown stops a socket waiting on the node.
 pub(in crate::runtime) struct NodeTask {
     task: tokio::task::JoinHandle<()>,
+    /// What a node subscription follows, which [`reconnected`] opens again
+    /// on a new connection; `None` for a request answered once.
+    follows: Option<Follow>,
+}
+
+/// A node subscription, as a reconnect opens it again.
+enum Follow {
+    /// `module.changes` of this program.
+    Changes(String),
+    /// `chain.heads`.
+    Heads,
 }
 
 impl Drop for NodeTask {

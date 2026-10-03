@@ -49,6 +49,9 @@
 //!   oldest first: the host reads the node's status at half its block
 //!   time and fills each advance from the block archive.
 //!
+//! A connect inside the network opens both again on the new node
+//! (`reconnected`): neither ends on it.
+//!
 //! In a sibling module [`answer`] asks first:
 //! - `clipboard.read`, `clipboard.write` — `clipboard`, run on the window
 //!   thread after the tick.
@@ -115,7 +118,7 @@ mod describe;
 mod node;
 mod replies;
 
-pub(super) use node::{NodeTask, spawn_reply};
+pub(super) use node::{NodeTask, reconnected, spawn_reply};
 use node::{
     blob_get, block, blocks, changes, heads, invite, network, query, spawn_no_retry,
     spawn_retrying, spawn_retrying_unsent, status, submit,

@@ -209,11 +209,13 @@ impl EditorStore {
     }
 
     /// Called after adopting the complete root, including unchanged-tree frames.
-    pub fn frame(&self, frame: &view_wire::Frame) -> Result<(), String> {
+    /// `Ok(true)` when the frame moved a document a mounted field shows: a
+    /// decision, a document message, or an acknowledgment that settled one
+    /// (`TextEditor::sync` reads the projection at the tree's render, so a
+    /// frame that moved one needs that render even with the tree unchanged).
+    pub fn frame(&self, frame: &view_wire::Frame) -> Result<bool, String> {
         let mut store = self.lock();
-        if !frame.busy {
-            store.acknowledge();
-        }
+        let settled = !frame.busy && store.acknowledge();
         for message in &frame.editor_documents {
             store.document_message(message);
         }
@@ -221,7 +223,8 @@ impl EditorStore {
             store.decide(response);
         }
         store.pump();
-        store.check()
+        store.check()?;
+        Ok(settled || !frame.editor_documents.is_empty() || !frame.editor_decisions.is_empty())
     }
 
     pub fn drain(&self) -> Vec<view_wire::Event> {

@@ -31,9 +31,10 @@ fn screen(open: bool) -> wire::Node {
 }
 
 /// The dialog takes the keyboard as it opens, and once it closes the
-/// button that opened it has it again, not nothing.
-#[gpui_kit::test]
-fn a_closed_dialog_gives_focus_back_to_its_opener(cx: &mut gpui_kit::TestAppContext) {
+/// button that opened it has it again, not nothing. With `fallback`, the
+/// window's root takes the keys back when the focused element vanishes in
+/// a draw, as the app's `WindowRoot::focus_lost` does (shell/layers/root.rs).
+fn close_gives_focus_back_to_the_opener(cx: &mut gpui_kit::TestAppContext, fallback: bool) {
     cx.update(gpui_kit::init);
     let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
         ViewTree::new(screen(false)).with_keys_grant(true)
@@ -41,6 +42,15 @@ fn a_closed_dialog_gives_focus_back_to_its_opener(cx: &mut gpui_kit::TestAppCont
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| window.render_frame(cx));
+    let root = native.update(|_, cx| cx.focus_handle());
+    let _fallback = fallback.then(|| {
+        native.update(|window, cx| {
+            let root = root.clone();
+            tree.update(cx, |_, cx| {
+                cx.on_focus_lost(window, move |_, window, cx| window.focus(&root, cx))
+            })
+        })
+    });
     let opener = tree
         .read_with(&native, |tree, _| tree.guest_focus_targets.get(&1).cloned())
         .expect("the opener is drawn");
@@ -57,11 +67,31 @@ fn a_closed_dialog_gives_focus_back_to_its_opener(cx: &mut gpui_kit::TestAppCont
         "the dialog takes the keyboard"
     );
     drop(inside);
+    let after = show(&mut native, false);
+    assert!(
+        after.as_ref() != Some(&root),
+        "the window's root took the keyboard"
+    );
     assert_eq!(
-        show(&mut native, false).as_ref(),
+        after.as_ref(),
         Some(&opener),
         "the opener has the keyboard back"
     );
+}
+
+#[gpui_kit::test]
+fn a_closed_dialog_gives_focus_back_to_its_opener(cx: &mut gpui_kit::TestAppContext) {
+    close_gives_focus_back_to_the_opener(cx, false);
+}
+
+/// Under the window's own fallback, which every console window has: the
+/// draw that drops the dialog drops its focused control, and focus moved to
+/// the opener in that draw's render is never lost, so the root never takes
+/// it. Before, the way back waited until after the draw, found the root
+/// focused, and left the keys there: the next Tab started the window over.
+#[gpui_kit::test]
+fn a_closed_dialog_gives_focus_back_under_a_focus_lost_fallback(cx: &mut gpui_kit::TestAppContext) {
+    close_gives_focus_back_to_the_opener(cx, true);
 }
 
 /// A dialog whose guest may not move the keys (`ViewTree::keys_grant`

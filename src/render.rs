@@ -183,9 +183,10 @@ pub struct ViewTree {
     /// The overlays showing a dialog: where focus enters each, and what
     /// held focus as it opened.
     dialogs: HashMap<AuthoredPath, (FocusHandle, Option<WeakFocusHandle>)>,
-    /// What held focus as a dialog that has just closed opened: it gets
-    /// focus back, if focus went with the dialog.
-    opener: Option<WeakFocusHandle>,
+    /// A dialog that has just closed: where focus entered it, and what
+    /// held focus as it opened, which gets focus back if focus went with
+    /// the dialog.
+    opener: Option<(FocusHandle, WeakFocusHandle)>,
 
     // Measured geometry by path: what `measure` records for identified
     // containers, editor mounts and canvases, and the sensor canvas for sensors.
@@ -345,8 +346,8 @@ impl Render for ViewTree {
         // paragraphs keep stable numbers and two views never interleave.
         self.selection_order
             .set((cx.entity_id().as_u64() & u64::from(u32::MAX)) << 32);
-        if let Some(opener) = self.opener.take() {
-            commands::dialog_exit(opener, window, cx);
+        if let Some((entry, opener)) = self.opener.take() {
+            commands::dialog_exit(&entry, opener, window, cx);
         }
         // drawn in place: nothing in the walk reads `self.root`
         let root = std::mem::replace(&mut self.root, wire::Node::empty());

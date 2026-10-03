@@ -132,9 +132,7 @@ fn missing_far_rows_emit_one_bounded_request_and_bottom_anchor_uses_tail_rows(
 }
 
 #[gpui_kit::test]
-fn accepted_frames_retain_anonymous_list_scroll_and_clear_old_listener_rows(
-    cx: &mut gpui_kit::TestAppContext,
-) {
+fn accepted_frames_retain_anonymous_list_scroll(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     let root = axis_container(
         "room",
@@ -173,10 +171,6 @@ fn accepted_frames_retain_anonymous_list_scroll_and_clear_old_listener_rows(
                 retained.state.logical_scroll_top().offset_in_item,
                 before.offset_in_item
             );
-            assert!(
-                retained.rows.is_empty(),
-                "old-frame listeners are discarded before native rerender"
-            );
             tree.replace(wire::Node::empty(), cx);
             assert!(
                 tree.variable_lists.is_empty(),
@@ -184,4 +178,55 @@ fn accepted_frames_retain_anonymous_list_scroll_and_clear_old_listener_rows(
             );
         })
     });
+}
+
+/// A changed frame that leaves a list's rows as they were (here the title
+/// above it moved) remeasures none of them: a row is kept while its node is
+/// equal, routes included, and a list row's routes are keyed by its row,
+/// not its place in the frame. Before, every frame dropped the rows and
+/// remeasured each one it sent: a chat timeline relaid out every visible
+/// message's text per changed frame.
+#[gpui_kit::test]
+fn a_changed_frame_remeasures_no_row_it_kept(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let screen = |title: &str| {
+        axis_container(
+            "room",
+            Axis::Column,
+            [
+                text("title", title),
+                variable_list_node(
+                    24,
+                    wire::ListAlignment::Bottom,
+                    0,
+                    (0..24).map(|id| fixed_row(id, 20., 0x111111)).collect(),
+                ),
+            ],
+        )
+    };
+    let window = cx.open_window(size(px(200.), px(240.)), |_, _| {
+        ViewTree::new(screen("Room"))
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    let remeasured = |native: &mut gpui_kit::VisualTestContext| {
+        tree.read_with(native, |tree, _| {
+            tree.variable_lists.values().next().unwrap().remeasured
+        })
+    };
+    assert_eq!(
+        remeasured(&mut native),
+        24,
+        "the first frame measures its rows"
+    );
+    for title in ["Room ·", "Room"] {
+        tree.update(&mut native, |tree, cx| tree.replace(screen(title), cx));
+        native.update(|window, cx| window.render_frame(cx));
+    }
+    assert_eq!(
+        remeasured(&mut native),
+        24,
+        "two changed frames with the same rows remeasured them"
+    );
 }

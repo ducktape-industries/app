@@ -129,8 +129,10 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    asked of this node), then returns: nothing waits on a load. Each new block (`Session::status_answered` with a moved
    height → `runtime::deployments_checked`) repeats it, one read in flight
    at a time. A load that finds the drawn view already current
-   (`Loaded::Unchanged`) only calls `Guest::reconnect`, which refuses the
-   tasks of a previous connection with `stale_connection`.
+   (`Loaded::Unchanged`) only calls `Guest::reconnect`: its node
+   subscriptions open again on the new connection (a `module.changes`
+   follower is told to re-read first), and its other tasks of the previous
+   connection are refused `stale_connection`.
 2. **Blob → section.** `backend::views::view_of` fetches the program's code
    blob (`/v1/blob/get`, a disk cache under `cache_dir()/programs/`),
    checks the hash, strips the git-style header (`unframe`) and returns the
@@ -176,13 +178,16 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    `BUSY_FRAME` timer, never back to back). `turn` is entered at app level
    only: anything reachable from a window callback or an entity method
    goes through `Seat::wake` = `cx.defer(turn)`, because `turn` updates the
-   window itself. One tick per draw: a turn that ticked holds the seat
-   until its tree has drawn (`render::Drawn`, sent by every render; a tick
-   dirties the tree), and a turn asked for meanwhile runs right after the
-   draw. So every frame the guest makes is drawn before the next, as when
-   it ticked on the draw path: the first draw of a fresh view shows its
-   first frame (the keys a pane hands its first control go by it) and a
-   reply's chain of ticks advances one frame per draw. The AX door turns
+   window itself. One tick per draw: a turn whose tick gave the tree
+   something to draw (a new tree, or a moved editor document) dirties the
+   tree and holds the seat until it has drawn (`render::Drawn`, sent by
+   every render), and a turn asked for meanwhile runs right after the
+   draw; a tick that answered `unchanged` and moved no document dirties
+   nothing and holds nothing. So every frame the guest makes is drawn
+   before the next, as when it ticked on the draw path: the first draw of
+   a fresh view shows its first frame (the keys a pane hands its first
+   control go by it) and a reply's chain of ticks advances one frame per
+   draw. The AX door turns
    every seat before a read
    (`Seats::settle`), so the tree it draws has what the guest has answered,
    as the draw itself took in; the door's task yields to no reply wake
