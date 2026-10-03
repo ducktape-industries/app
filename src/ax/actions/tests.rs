@@ -40,12 +40,12 @@ fn chat_shaped_field() -> wire::Node {
         cursor: Default::default(),
         generation: 1,
         revision: 0,
-        tokens: Vec::new(),
-        claims: Vec::new(),
-        options: wire::InputOptions {
+        tokens: Default::default(),
+        claims: Default::default(),
+        options: Box::new(wire::InputOptions {
             label: "Message #general".into(),
             ..Default::default()
-        },
+        }),
         placeholder: String::new(),
         secure: false,
         on_change: Some(1),

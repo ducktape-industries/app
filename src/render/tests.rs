@@ -130,20 +130,20 @@ fn axis_container(
 /// `TextField::new` leaves one.
 fn input(label: &str, secure: bool, disabled: bool) -> wire::Node {
     wire::Node::Field {
-        options: wire::InputOptions {
+        options: Box::new(wire::InputOptions {
             label: label.into(),
             description: Some("Shown to members".into()),
             disabled,
             ..Default::default()
-        },
+        }),
         id: wire::ElementIdWire::Name("i".into()),
         multiline: false,
         value: "hunter2".into(),
         cursor: wire::TextRange::caret("hunter2".len()),
         generation: 1,
         revision: 0,
-        tokens: Vec::new(),
-        claims: Vec::new(),
+        tokens: Default::default(),
+        claims: Default::default(),
         placeholder: "Type here".into(),
         secure,
         on_change: Some(1),
@@ -168,12 +168,12 @@ fn area(
         cursor: wire::TextRange::caret(value.len()),
         generation: 1,
         revision: 0,
-        tokens: Vec::new(),
-        claims: Vec::new(),
-        options: wire::InputOptions {
+        tokens: Default::default(),
+        claims: Default::default(),
+        options: Box::new(wire::InputOptions {
             label: label.map(str::to_owned).unwrap_or_default(),
             ..Default::default()
-        },
+        }),
         placeholder: String::new(),
         secure: false,
         on_change: Some(1),

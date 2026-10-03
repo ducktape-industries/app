@@ -556,10 +556,10 @@ fn a_key_in_a_native_editor_activates_the_view_and_escape_does_not(
     let wire::Node::Field { claims, .. } = &mut root else {
         unreachable!()
     };
-    *claims = vec![
+    *claims = Box::new([
         claim(view_wire::keyboard::Named::Escape),
         claim(view_wire::keyboard::Named::Enter),
-    ];
+    ]);
     let (tree, mut native) = mounted(root, cx);
     let path = [named_id("document")];
     focus(&tree, &mut native, &path);
@@ -969,11 +969,11 @@ fn a_letter_typed_ahead_of_a_claimed_enter_is_kept(cx: &mut gpui_kit::TestAppCon
     let wire::Node::Field { claims, .. } = &mut root else {
         unreachable!()
     };
-    claims.push(view_wire::KeyClaim {
+    *claims = Box::new([view_wire::KeyClaim {
         key: view_wire::keyboard::Key::Named(view_wire::keyboard::Named::Enter),
         modifiers: Default::default(),
         command: false,
-    });
+    }]);
     let (tree, mut native) = mounted(root, cx);
     let path = [named_id("doc")];
     focus(&tree, &mut native, &path);

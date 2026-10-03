@@ -225,17 +225,17 @@ fn an_idle_view_renders_no_more_than_it_ticks(cx: &mut TestAppContext) {
 fn a_one_line_field_blinks_only_while_focused(cx: &mut TestAppContext) {
     const MODULE: &str = "blink-renders-test";
     let field = wire::Node::Field {
-        options: wire::InputOptions {
+        options: Box::new(wire::InputOptions {
             label: "Filter members".into(),
             ..Default::default()
-        },
+        }),
         id: wire::ElementIdWire::Name("filter".into()),
         multiline: false,
         cursor: wire::TextRange::caret("a value the mount sets".len()),
         generation: 1,
         revision: 0,
-        tokens: Vec::new(),
-        claims: Vec::new(),
+        tokens: Default::default(),
+        claims: Default::default(),
         placeholder: "Filter by name".into(),
         value: "a value the mount sets".into(),
         on_change: Some(1),
@@ -476,17 +476,17 @@ fn a_stage_change_and_a_retry_each_turn_the_seat_once(cx: &mut TestAppContext) {
 fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
     const MODULE: &str = "widget-commands-test";
     let field = wire::Node::Field {
-        options: wire::InputOptions {
+        options: Box::new(wire::InputOptions {
             label: "Filter".into(),
             ..Default::default()
-        },
+        }),
         id: wire::ElementIdWire::Name("filter".into()),
         multiline: false,
         cursor: Default::default(),
         generation: 1,
         revision: 0,
-        tokens: Vec::new(),
-        claims: Vec::new(),
+        tokens: Default::default(),
+        claims: Default::default(),
         placeholder: String::new(),
         value: String::new(),
         on_change: Some(1),
@@ -597,17 +597,17 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
 fn a_view_moves_the_keys_only_while_its_keys_are_free(cx: &mut TestAppContext) {
     const MODULE: &str = "focus-gate-test";
     let field = wire::Node::Field {
-        options: wire::InputOptions {
+        options: Box::new(wire::InputOptions {
             label: "Filter".into(),
             ..Default::default()
-        },
+        }),
         id: wire::ElementIdWire::Name("filter".into()),
         multiline: false,
         cursor: Default::default(),
         generation: 1,
         revision: 0,
-        tokens: Vec::new(),
-        claims: Vec::new(),
+        tokens: Default::default(),
+        claims: Default::default(),
         placeholder: String::new(),
         value: String::new(),
         on_change: Some(1),
@@ -766,8 +766,8 @@ fn a_guests_own_cursor_command_grants_it_no_activation(cx: &mut TestAppContext) 
         cursor: Default::default(),
         generation: 1,
         revision: 0,
-        tokens: Vec::new(),
-        claims: Vec::new(),
+        tokens: Default::default(),
+        claims: Default::default(),
         options: Default::default(),
         placeholder: String::new(),
         secure: false,

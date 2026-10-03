@@ -64,7 +64,7 @@ pub(super) struct Field {
     on_change: Option<u32>,
     on_key: Option<u32>,
     on_submit: Option<u32>,
-    claims: Vec<wire::KeyClaim>,
+    claims: Box<[wire::KeyClaim]>,
     /// The guest's generation the engine's text was adopted from.
     generation: u64,
     /// The engine's text, cursor and preedit as last reported, at `revision`.
