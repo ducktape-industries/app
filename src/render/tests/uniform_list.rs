@@ -212,3 +212,28 @@ fn uniform_list_click_uses_native_identity_and_records_user_activation(
     )));
     assert!(tree.read_with(&native, |tree, _| tree.take_activation().is_some()));
 }
+
+/// A view that asks for the keys on a uniform list by its path hears the
+/// host say no: the host focuses a container, a field or an editor, and a
+/// list is none of them (a guest focus handle tracked on it is the way).
+#[gpui_kit::test]
+fn a_focus_on_a_uniform_list_is_refused(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let node = uniform_node("rows", 4, 0..4);
+    let window = cx.open_window(size(px(240.), px(96.)), |_, _| ViewTree::new(node));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    let answer = native.update(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            tree.execute_widget_command(
+                wire::WidgetCommand::Focus {
+                    target: vec![named_id("rows")],
+                },
+                window,
+                cx,
+            )
+        })
+    });
+    assert!(answer.is_err(), "{answer:?}");
+}

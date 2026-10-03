@@ -7,12 +7,11 @@ const OP_ENVELOPE_BYTES: usize = 256;
 /// one tick's worth of requests.
 const MAX_PENDING_WIDGET_COMMANDS: usize = wire::MAX_REQUESTS;
 
-/// Whether `target` is a SUFFIX of some mounted node's authored path (the
-/// ancestry `crate::render::enter_scope` walks). A view names a command's
-/// target by the key it holds where it dispatches — the editor's own, the
-/// list's own — never by every named ancestor above it, which other code
-/// owns and reshapes. `ViewTree::resolve_target` (the native renderer)
-/// matches the same way, so the two walks keep agreeing.
+/// Whether `target` is the whole authored path of a node mounted in
+/// `root` (the ancestry `crate::render::enter_scope` walks). A view names a
+/// command's target by the id it holds; the guest SDK, which lowered every
+/// id above it, sends the whole path, so two scopes holding one id are two
+/// targets and neither is taken for the other.
 pub(crate) fn target_names_mounted_node(root: &wire::Node, target: &[wire::ElementIdWire]) -> bool {
     fn contains(
         node: &wire::Node,
@@ -20,11 +19,12 @@ pub(crate) fn target_names_mounted_node(root: &wire::Node, target: &[wire::Eleme
         target: &[wire::ElementIdWire],
     ) -> bool {
         let entered = crate::render::enter_scope(node, path);
-        let found = entered && path.ends_with(target)
-            || node
-                .children()
-                .iter()
-                .any(|child| contains(child, path, target));
+        let found = entered && path == target
+            || target.starts_with(path)
+                && node
+                    .children()
+                    .iter()
+                    .any(|child| contains(child, path, target));
         if entered {
             path.pop();
         }
@@ -553,17 +553,28 @@ mod tests {
         )
     }
 
-    /// A one-segment target matches a nested editor: a full-path match
-    /// would refuse every real composer's command, and `window.dispatch`
-    /// is a notify, so nothing would report the refusal.
+    /// The guest SDK names a nested editor by its whole path, which the
+    /// host finds; the editor's own key alone names no node, since a second
+    /// composer could hold it too.
     #[test]
-    fn a_short_target_matches_its_editor_however_deep_the_named_ancestry() {
+    fn a_target_names_its_editor_by_the_whole_path() {
         let tree = chat_shaped_tree();
-        let target = [wire::ElementIdWire::Name("draft-general/editor".into())];
-        assert!(
-            target_names_mounted_node(&tree, &target),
-            "a composer's own local key must resolve to its deeply-nested editor"
-        );
+        let name = |name: &str| wire::ElementIdWire::Name(name.to_owned().into());
+        let whole = [
+            "chat-viewport",
+            "chat-root",
+            "chat-panes",
+            "chat-room",
+            "draft-general",
+            "draft-general/editor",
+        ]
+        .map(name);
+        assert!(target_names_mounted_node(&tree, &whole));
+        assert!(!target_names_mounted_node(
+            &tree,
+            &[name("draft-general/editor")]
+        ));
+        assert!(!target_names_mounted_node(&tree, &whole[1..]));
     }
 
     #[test]

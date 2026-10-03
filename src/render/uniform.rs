@@ -239,26 +239,7 @@ impl ViewTree {
                 scroll,
             });
         *list.style() = style.clone();
-        let mut list = list.id(native_id);
-        if let Some(group) = &interactivity.group {
-            list = list.group(group.clone());
-        }
-        if let Some(hover) = &interactivity.hover {
-            let hover = (**hover).clone();
-            list = list.hover(move |_| hover);
-        }
-        if let Some(active) = &interactivity.active {
-            let active = (**active).clone();
-            list = list.active(move |_| active);
-        }
-        if let Some(group) = &interactivity.group_hover {
-            let style = (*group.style).clone();
-            list = list.group_hover(group.group.clone(), move |_| style);
-        }
-        if let Some(group) = &interactivity.group_active {
-            let style = (*group.style).clone();
-            list = list.group_active(group.group.clone(), move |_| style);
-        }
+        let list = list.id(native_id);
         self.guest_aria(list, node, interactivity, cx)
             .into_any_element()
     }

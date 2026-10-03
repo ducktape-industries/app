@@ -62,6 +62,85 @@ fn drag_from(x: f32, cx: &mut gpui_kit::TestAppContext) -> (f64, bool) {
     (moved, clicked)
 }
 
+/// A divider styled by its group, as any node is: the split it sits in is
+/// the group, and a pointer over the left pane lights the divider. Its
+/// hover, active and group styles go through the one apply every node
+/// takes, where the divider's own used to be dropped.
+#[gpui_kit::test]
+fn a_divider_wears_its_group_hover(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let lit = gpui_kit::hsla(0.6, 0.5, 0.5, 1.);
+    let mut root = split();
+    let wire::Node::Container(view_wire::ContainerNode {
+        interactivity,
+        children,
+        ..
+    }) = &mut root
+    else {
+        unreachable!()
+    };
+    interactivity.group = Some("split".into());
+    let wire::Node::ResizeHandle { interactivity, .. } = &mut children[1] else {
+        unreachable!()
+    };
+    let mut style = div().bg(lit);
+    interactivity.group_hover = Some(wire::GroupRefinement {
+        group: "split".into(),
+        style: Box::new(style.style().clone()),
+    });
+    let window = cx.open_window(size(px(300.), px(80.)), |_, _| ViewTree::new(root));
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let lit_quads = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            window
+                .painted_quads()
+                .iter()
+                .filter(|quad| quad.background == lit.into())
+                .count()
+        })
+    };
+    native.simulate_mouse_move(point(px(400.), px(200.)), None, Default::default());
+    assert_eq!(
+        lit_quads(&mut native),
+        0,
+        "the pointer is out of the window"
+    );
+    native.simulate_mouse_move(point(px(50.), px(40.)), None, Default::default());
+    assert_eq!(lit_quads(&mut native), 1, "the pointer is in the split");
+}
+
+/// A view that asks for the keys on a divider by its path hears the host say
+/// no: the divider takes no focus, and the id-less line it draws sits on the
+/// divider's path without being the node that path names.
+#[gpui_kit::test]
+fn a_focus_on_a_divider_is_refused(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let mut root = split();
+    if let wire::Node::Container(view_wire::ContainerNode { children, .. }) = &mut root
+        && let wire::Node::ResizeHandle { content, .. } = &mut children[1]
+        && let wire::Node::Container(view_wire::ContainerNode { id, .. }) = &mut **content
+    {
+        *id = None;
+    }
+    let window = cx.open_window(size(px(300.), px(80.)), |_, _| ViewTree::new(root));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    let answer = native.update(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            tree.execute_widget_command(
+                wire::WidgetCommand::Focus {
+                    target: vec![named_id("split"), named_id("divider")],
+                },
+                window,
+                cx,
+            )
+        })
+    });
+    assert!(answer.is_err(), "{answer:?}");
+}
+
 #[gpui_kit::test]
 fn a_divider_grips_a_near_miss_on_either_side(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);

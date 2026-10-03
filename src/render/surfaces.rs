@@ -33,7 +33,13 @@ impl ViewTree {
                 // trap registers; drop an obscured ancestor before that pass.
                 self.dialogs.remove(&path);
             }
-            let anchored = matches!(modal, wire::Node::Anchored { .. });
+            // a popover anchored to the view covers nothing, in place or
+            // deferred over what follows it
+            let shown = match modal {
+                wire::Node::Deferred { content, .. } => &**content,
+                modal => modal,
+            };
+            let anchored = matches!(shown, wire::Node::Anchored { .. });
             let shade = shades(anchored, style).then(|| {
                 div()
                     .id(host_id("backdrop"))

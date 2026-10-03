@@ -607,7 +607,7 @@ fn a_container_the_view_focuses_by_id_stays_a_tab_stop(cx: &mut gpui_kit::TestAp
         window.activate_a11y();
         window.render_frame(cx);
         tree.update(cx, |tree, cx| {
-            let target = vec![key("menu")];
+            let target = vec![key("row"), key("menu")];
             tree.execute_widget_command(wire::WidgetCommand::Focus { target }, window, cx)
                 .unwrap();
         });

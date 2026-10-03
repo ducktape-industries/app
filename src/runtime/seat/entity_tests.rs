@@ -714,7 +714,10 @@ fn a_view_moves_the_keys_only_while_its_keys_are_free(cx: &mut TestAppContext) {
         }
     };
     let focus = wire::WidgetCommand::Focus {
-        target: vec![wire::ElementIdWire::Name("filter".into())],
+        target: vec![
+            wire::ElementIdWire::Name("root".into()),
+            wire::ElementIdWire::Name("filter".into()),
+        ],
     };
     let handle = wire::WidgetCommand::FocusHandle { handle: 9 };
     let input_focused = |native: &mut VisualTestContext| {

@@ -274,3 +274,173 @@ fn a_dialog_wrapped_around_its_opener_takes_the_keys(cx: &mut gpui_kit::TestAppC
     );
     drop(fallback);
 }
+
+/// An opener whose dialog hangs from it as a deferred popover (forge's
+/// Finish your review), Submit (2) and Cancel (3), with a pane (4) drawn
+/// after it. Deferred, the dialog paints after the pane, and so do its Tab
+/// places: gpui orders Tab stops as they paint.
+fn popover(open: bool) -> wire::Node {
+    let mut children = vec![handled("open", "Finish", 1)];
+    if open {
+        children.push(wire::Node::Deferred {
+            priority: 1,
+            content: Box::new(wire::Node::Anchored {
+                anchor: wire::Anchor::TopRight,
+                fit: wire::AnchoredFitMode::SnapToWindow,
+                position: Some([0., 0.]),
+                position_mode: wire::AnchoredPositionMode::Local,
+                offset: None,
+                children: vec![container(
+                    "form",
+                    [
+                        handled("submit", "Submit", 2),
+                        handled("cancel", "Cancel", 3),
+                    ],
+                )],
+            }),
+        });
+    }
+    let overlay = wire::Node::Overlay {
+        id: named_id("finish"),
+        label: Some("Finish your review".into()),
+        on_dismiss: Some(7),
+        children,
+        style: Default::default(),
+    };
+    let page = container("page", [overlay, handled("diff", "Diff", 4)]);
+    sized("root", page, Some(fill()), Some(fill()))
+}
+
+/// A dialog drawn as a deferred popover opens with the keys on its first
+/// control, not on the pane painted between its opener and it, and a
+/// view's `focus_next`/`focus_prev` go round it as Tab does.
+#[gpui_kit::test]
+fn a_popover_dialog_takes_the_keys_and_keeps_them(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
+        ViewTree::new(popover(false)).with_keys_grant(true)
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    let opener = tree
+        .read_with(&native, |tree, _| tree.guest_focus_targets.get(&1).cloned())
+        .expect("the opener is drawn");
+    native.update(|window, cx| opener.focus(window, cx));
+    tree.update(&mut native, |tree, cx| tree.replace(popover(true), cx));
+    native.update(|window, cx| window.render_frame(cx));
+    native.run_until_parked();
+    assert_eq!(
+        holder(&tree, &mut native),
+        Some(2),
+        "the dialog opens on Submit"
+    );
+    let mut walk = Vec::new();
+    for command in [
+        wire::WidgetCommand::FocusNext,
+        wire::WidgetCommand::FocusNext,
+        wire::WidgetCommand::FocusPrevious,
+    ] {
+        native
+            .update(|window, cx| {
+                tree.update(cx, |tree, cx| {
+                    tree.execute_widget_command(command, window, cx)
+                })
+            })
+            .unwrap();
+        walk.push(holder(&tree, &mut native));
+    }
+    assert_eq!(
+        walk,
+        [Some(3), Some(2), Some(3)],
+        "Cancel, round to Submit and back: never out to the pane"
+    );
+}
+
+/// A dialog drawn as a deferred popover holds its controls for assistive
+/// technology: Submit and Cancel are in the Dialog node's subtree, not hung
+/// off the window beside an empty dialog that hides everything else.
+#[gpui_kit::test]
+fn a_popover_dialog_holds_its_controls_for_assistive_technology(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
+        ViewTree::new(popover(true))
+    });
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let held = native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        window.render_frame(cx);
+        let update = window.a11y_tree().expect("an a11y tree once activated");
+        let nodes: std::collections::HashMap<_, _> =
+            update.nodes.iter().map(|(id, node)| (*id, node)).collect();
+        let (dialog, _) = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == gpui_kit::Role::Dialog)
+            .expect("a dialog");
+        let mut names = Vec::new();
+        let mut stack = vec![*dialog];
+        while let Some(id) = stack.pop() {
+            let node = nodes[&id];
+            names.extend(node.label().map(str::to_owned));
+            stack.extend(node.children().iter().copied());
+        }
+        names
+    });
+    assert!(
+        ["Submit", "Cancel"]
+            .iter()
+            .all(|name| held.iter().any(|held| held == name)),
+        "the dialog holds {held:?}"
+    );
+}
+
+/// Under the kit's root, Tab and Shift+Tab go round a dialog drawn as a
+/// deferred popover, never out to the pane painted after its opener, and
+/// Escape dismisses it.
+#[gpui_kit::test]
+fn tab_and_escape_hold_in_a_popover_dialog(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::AppContext as _;
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(300.), px(200.)), |window, cx| {
+        let tree = cx.new(|_| ViewTree::new(popover(false)).with_keys_grant(true));
+        gpui_kit::component::Root::new(tree, window, cx)
+    });
+    let tree = window
+        .read_with(cx, |root, _| root.view().clone())
+        .unwrap()
+        .downcast::<ViewTree>()
+        .unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    let (events, _subscription) = super::emitted(&tree, &mut native);
+    tree.update(&mut native, |tree, cx| tree.replace(popover(true), cx));
+    native.update(|window, cx| window.render_frame(cx));
+    native.run_until_parked();
+    assert_eq!(
+        holder(&tree, &mut native),
+        Some(2),
+        "the dialog opens on Submit"
+    );
+    let walk: Vec<_> = ["tab", "tab", "shift-tab", "shift-tab"]
+        .into_iter()
+        .map(|key| {
+            native.simulate_keystrokes(key);
+            holder(&tree, &mut native)
+        })
+        .collect();
+    assert_eq!(
+        walk,
+        [Some(3), Some(2), Some(3), Some(2)],
+        "Submit, Cancel and round: the keys stay in the dialog"
+    );
+    native.simulate_keystrokes("escape");
+    assert!(
+        events
+            .borrow()
+            .iter()
+            .any(|event| matches!(event, wire::Event::Message(7))),
+        "Escape dismissed it"
+    );
+}
