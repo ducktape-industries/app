@@ -731,3 +731,278 @@ fn esc_then_tab_leaves_an_editor_whose_guest_claims_tab(cx: &mut gpui_kit::TestA
         native.update(|window, cx| window.blur(cx));
     }
 }
+
+// S9: the headline cases of one text model, driven against the editor lane
+// as it stands (TE.verify's drive of the real store). Each fails here.
+
+fn named_key(named: wire::keyboard::Named) -> wire::keyboard::KeyState {
+    use wire::keyboard::{Key, KeyState, Location, NativeCode, Physical};
+    KeyState {
+        key: Key::Named(named),
+        modified_key: Key::Named(named),
+        physical_key: Physical::Unidentified(NativeCode::Unidentified),
+        location: Location::Standard,
+        modifiers: Default::default(),
+    }
+}
+
+fn claim(named: wire::keyboard::Named) -> wire::EditorKeyClaim {
+    wire::EditorKeyClaim {
+        key: wire::keyboard::Key::Named(named),
+        modifiers: Default::default(),
+        command: false,
+    }
+}
+
+fn caret(text: &str, at: usize) -> wire::EditorCursor {
+    wire::EditorCursor {
+        position: position(text, at),
+        selection: None,
+    }
+}
+
+/// The guest's frames show each commit until the queue is drained; a fault
+/// is the error.
+fn drained(store: &EditorStore, name: &str) -> Result<String, String> {
+    loop {
+        let mut locked = store.lock();
+        locked.check()?;
+        if locked.documents[name].queue.is_empty() {
+            break;
+        }
+        let accepted = locked.documents[name].reference.clone();
+        locked.fields.get_mut(&editor_path()).unwrap().reference = accepted;
+        locked.acknowledge();
+        locked.pump();
+    }
+    Ok(store
+        .projection(&editor_path())
+        .and_then(|projection| projection.text)
+        .map(|text| text.to_string())
+        .unwrap_or_default())
+}
+
+/// The document after the field selected `lo..hi` of `text`, the writer
+/// pressed the claimed `key` and typed `typed` inside the round trip, and
+/// the guest answered the key with `decision`.
+fn typed_inside_the_round_trip(
+    text: &str,
+    lo: usize,
+    hi: usize,
+    key: wire::keyboard::Named,
+    typed: &str,
+    decision: wire::EditorDecision,
+) -> Result<String, String> {
+    let store = store_with("doc", text, vec![claim(key)], "");
+    let selection = wire::EditorCursor {
+        position: position(text, hi),
+        selection: Some(position(text, lo)),
+    };
+    {
+        let mut locked = store.lock();
+        locked.documents.get_mut("doc").unwrap().reference.cursor = selection;
+        locked
+            .fields
+            .get_mut(&editor_path())
+            .unwrap()
+            .reference
+            .cursor = selection;
+    }
+    store.key_for_test(&editor_path(), named_key(key));
+    let shown = format!("{}{typed}{}", &text[..lo], &text[hi..]);
+    store.native(
+        &editor_path(),
+        text,
+        selection,
+        &shown,
+        caret(&shown, lo + typed.len()),
+        wire::EditorEditKind::Insert,
+    );
+    let id = store
+        .drain()
+        .into_iter()
+        .find_map(|event| match event {
+            wire::Event::EditorRequest { request, .. } => Some(request.id),
+            _ => None,
+        })
+        .expect("the claimed key reached the guest");
+    store.frame(&wire::Frame {
+        editor_decisions: vec![wire::EditorResponse { id, decision }],
+        ..Default::default()
+    })?;
+    drained(&store, "doc")
+}
+
+/// A word selected, Backspace, a letter typed inside the round trip: the
+/// person saw "say x now".
+#[test]
+fn a_letter_typed_behind_a_claimed_backspace_replaces_what_was_selected() {
+    assert_eq!(
+        typed_inside_the_round_trip(
+            "say word now",
+            4,
+            8,
+            wire::keyboard::Named::Backspace,
+            "x",
+            wire::EditorDecision::DefaultEditorAction,
+        ),
+        Ok("say x now".into())
+    );
+}
+
+/// The first word selected, Backspace, a letter: the view must not stop.
+#[test]
+fn a_letter_typed_behind_a_claimed_backspace_on_the_first_word_never_stops_the_view() {
+    assert_eq!(
+        typed_inside_the_round_trip(
+            "say word now",
+            0,
+            3,
+            wire::keyboard::Named::Backspace,
+            "x",
+            wire::EditorDecision::DefaultEditorAction,
+        ),
+        Ok("x word now".into())
+    );
+}
+
+/// Everything selected, Enter (the composer's Send clears the draft), a
+/// letter typed ahead: the draft is sent once and the letter is kept.
+#[test]
+fn a_letter_typed_ahead_of_a_claimed_enter_is_kept() {
+    let send = wire::EditorDecision::Apply {
+        patches: vec![wire::EditorPatch {
+            start_byte: 0,
+            end_byte: 5,
+            replacement: String::new(),
+        }],
+        cursor: Default::default(),
+        history: wire::EditorHistoryEffect::Native,
+    };
+    assert_eq!(
+        typed_inside_the_round_trip("hello", 0, 5, wire::keyboard::Named::Enter, "x", send),
+        Ok("x".into())
+    );
+}
+
+/// Edits the guest has not acknowledged never stop the view, however many.
+#[test]
+fn unacknowledged_edits_never_stop_the_view() {
+    let store = store_with("doc", "", Vec::new(), "");
+    let mut text = String::new();
+    for _ in 0..129 {
+        let before = text.clone();
+        text.push('a');
+        store.native(
+            &editor_path(),
+            &before,
+            caret(&before, before.len()),
+            &text,
+            caret(&text, text.len()),
+            wire::EditorEditKind::Insert,
+        );
+    }
+    assert_eq!(
+        store.ready(),
+        Ok(true),
+        "129 edits typed ahead of the guest"
+    );
+}
+
+/// A held Backspace drains at the key's repeat rate: five presses in one
+/// frame take five characters by the next.
+#[test]
+fn a_held_backspace_drains_at_repeat_rate() {
+    let store = store_with(
+        "doc",
+        "aaaaa",
+        vec![claim(wire::keyboard::Named::Backspace)],
+        "",
+    );
+    for _ in 0..5 {
+        store.key_for_test(&editor_path(), named_key(wire::keyboard::Named::Backspace));
+    }
+    // the guest's one frame answers every key it was asked about
+    let editor_decisions = store
+        .drain()
+        .into_iter()
+        .filter_map(|event| match event {
+            wire::Event::EditorRequest { request, .. } => Some(wire::EditorResponse {
+                id: request.id,
+                decision: wire::EditorDecision::DefaultEditorAction,
+            }),
+            _ => None,
+        })
+        .collect();
+    store
+        .frame(&wire::Frame {
+            editor_decisions,
+            ..Default::default()
+        })
+        .unwrap();
+    let text = store.projection(&editor_path()).unwrap().text.unwrap();
+    assert_eq!(text.as_ref(), "", "five Backspaces, one frame later");
+}
+
+/// The field's text after `keys`, pressed one frame apart.
+fn pressed(
+    editor: &Entity<TextEditor>,
+    native: &mut gpui_kit::VisualTestContext,
+    keys: &[&str],
+) -> String {
+    use gpui_kit::test::TestWindowExt as _;
+    native.update(|window, cx| {
+        for key in keys {
+            window.dispatch_keystroke(Keystroke::parse(key).unwrap(), cx);
+            window.render_frame(cx);
+        }
+    });
+    native.run_until_parked();
+    native.update(|window, cx| {
+        window.render_frame(cx);
+        editor.read(cx).input.read(cx).value().to_string()
+    })
+}
+
+/// Undo crosses an indent: Tab is an edit like any other.
+#[gpui_kit::test]
+fn undo_crosses_a_tab(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let store = store_with("tabs", "", Vec::new(), "");
+    let (editor, mut native) = focused_editor(&store, cx);
+    native.simulate_input("one");
+    native.run_until_parked();
+    assert_eq!(pressed(&editor, &mut native, &["tab"]), "one  ");
+    assert_eq!(pressed(&editor, &mut native, &["ctrl-z"]), "one");
+}
+
+/// Undo works after the guest cleared a sent draft: the words come back.
+#[gpui_kit::test]
+fn undo_after_the_guest_cleared_a_sent_draft_brings_the_words_back(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    let store = store_with("draft", "", Vec::new(), "");
+    let (editor, mut native) = focused_editor(&store, cx);
+    native.simulate_input("hi");
+    native.run_until_parked();
+    settle(&store, "draft");
+    // the guest sends the draft and resets its document
+    {
+        let mut locked = store.lock();
+        let document = locked.documents.get_mut("draft").unwrap();
+        document.reference = wire::editor_document::EditorDocumentRef {
+            document: "draft".into(),
+            reset: 2,
+            text_revision: 0,
+            revision: 0,
+            cursor: Default::default(),
+            byte_len: 0,
+        };
+        document.text = Some(Arc::from(""));
+        let reference = document.reference.clone();
+        locked.fields.get_mut(&editor_path()).unwrap().reference = reference;
+    }
+    assert_eq!(pressed(&editor, &mut native, &[]), "");
+    assert_eq!(pressed(&editor, &mut native, &["ctrl-z"]), "hi");
+}

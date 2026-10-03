@@ -788,3 +788,50 @@ fn a_focus_takes_the_field_at_its_whole_path(cx: &mut gpui_kit::TestAppContext) 
         })
     });
 }
+
+/// S9 (IM-2): a commit the IME makes between the key the guest last heard
+/// and the guest's echo of it is kept; the echo is what the guest knows,
+/// not what the field reads.
+#[gpui_kit::test]
+fn an_ime_commit_inside_the_echo_window_is_kept(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::EntityInputHandler as _;
+    cx.update(gpui_kit::init);
+    let field = |value: &str| {
+        let mut node = input("Message", false, false);
+        let wire::Node::Input { value: shown, .. } = &mut node else {
+            unreachable!()
+        };
+        *shown = value.into();
+        node
+    };
+    let window = cx.open_window(size(px(400.), px(200.)), |_, _| {
+        ViewTree::new(container("form", [field("ab")]))
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let state = native.update(|window, cx| {
+        window.render_frame(cx);
+        let state = tree.read(cx).fields.values().next().unwrap().state.clone();
+        state.update(cx, |state, cx| state.focus(window, cx));
+        state
+    });
+    native.simulate_input("c");
+    native.run_until_parked();
+    // the IME commits while the guest's frame, built on "abc", is in flight
+    native.update(|window, cx| {
+        state.update(cx, |state, cx| {
+            state.replace_text_in_range(None, "d", window, cx)
+        });
+    });
+    native.run_until_parked();
+    native.update(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            tree.replace(container("form", [field("abc")]), cx)
+        });
+        window.render_frame(cx);
+    });
+    assert_eq!(
+        state.read_with(&native, |state, _| state.value().to_string()),
+        "abcd"
+    );
+}
