@@ -39,10 +39,22 @@ macro_rules! engine {
 }
 
 /// An ask held while an IME composes: the engine's text is the IME's until
-/// it commits, and an edit under a preedit would be an edit in it.
+/// it commits, and an edit under a preedit would be an edit in it. An ask
+/// for a generation of the guest's text the host has not adopted yet is
+/// held the same way, until the frame that carries it.
 enum Deferred {
     Replace(wire::WidgetCommand),
     Adopt(String, Vec<wire::TextToken>, Range<usize>),
+}
+
+/// What moved the engine's text, for `settle` to report: the writer or the
+/// IME (the edit is the span that differs), a guest's ask (the edit it made,
+/// exactly), or the adopt of a new generation of the guest's text, which is
+/// a new document in the field, not an edit of the old one.
+enum Made {
+    Observed,
+    Asked(wire::Edit),
+    Adopted,
 }
 
 /// A mounted `Node::Field`: the engine's state, the guest's routes, and the
@@ -210,6 +222,8 @@ impl ViewTree {
         if field.generation != *generation {
             field.generation = *generation;
             events.extend(field.adopt(value, tokens, cursor.range(), window, cx));
+            // an ask for this generation that outran its frame
+            events.extend(field.land(window, cx));
         }
         if field.placeholder != *placeholder {
             field.placeholder.clone_from(placeholder);
@@ -350,7 +364,7 @@ impl ViewTree {
         let Some(field) = self.fields.get_mut(path) else {
             return;
         };
-        let Some((event, typed)) = field.settle(None, window, cx) else {
+        let Some((event, typed)) = field.settle(Made::Observed, window, cx) else {
             return;
         };
         let landed = field.land(window, cx);
@@ -555,9 +569,11 @@ impl Field {
         }));
     }
 
-    /// A new generation of the guest's text: adopted, and reported as the
-    /// edit it was from the text before, so an ask built against that text
-    /// is carried over it. Held while an IME composes.
+    /// A new generation of the guest's text: adopted, and reported at its
+    /// revision with no edit, since it is a new document and not an edit of
+    /// the old one. The edit log goes with the old document: no ask on the
+    /// new one predates it, and an ask on the old one edits nothing now
+    /// (`ask`). Held while an IME composes.
     fn adopt(
         &mut self,
         value: &str,
@@ -572,7 +588,9 @@ impl Field {
             return None;
         }
         self.install(value, tokens, cursor, window, cx);
-        self.settle(None, window, cx).and_then(|(event, _)| event)
+        self.log.clear();
+        self.settle(Made::Adopted, window, cx)
+            .and_then(|(event, _)| event)
     }
 
     /// A frame arrived with the guest at `revision`, and `queued` is the
@@ -592,14 +610,14 @@ impl Field {
     }
 
     /// What differs from the last report, reported: the text at its next
-    /// revision when it changed, with the edit that changed it (`exact`
-    /// when an ask landed, else the span that differs), logged and told to
-    /// the guest as one and the same; the cursor and the preedit as they
-    /// stand. `None` when nothing moved. The second answer says whether
+    /// revision when it changed, with the edit that changed it (an ask's
+    /// exactly, else the span that differs; none for an adopt), logged and
+    /// told to the guest as one and the same; the cursor and the preedit as
+    /// they stand. `None` when nothing moved. The second answer says whether
     /// the text itself changed.
     fn settle(
         &mut self,
-        exact: Option<wire::Edit>,
+        made: Made,
         window: &mut Window,
         cx: &mut App,
     ) -> Option<(Option<wire::Event>, bool)> {
@@ -615,7 +633,7 @@ impl Field {
                 state.set_selected_range(cut..text.len(), cx);
                 state.replace("", window, cx);
             }));
-            return self.settle(None, window, cx);
+            return self.settle(Made::Observed, window, cx);
         }
         let changed = text != self.text;
         if !changed && cursor == self.cursor && preedit == self.preedit {
@@ -624,12 +642,16 @@ impl Field {
         let mut edit = None;
         if changed {
             self.revision += 1;
-            edit = exact.or_else(|| {
-                wire::changed_span(&self.text, &text).map(|(range, text)| wire::Edit {
-                    range,
-                    len: text.len() as u32,
-                })
-            });
+            edit = match made {
+                Made::Asked(edit) => Some(edit),
+                Made::Observed => {
+                    wire::changed_span(&self.text, &text).map(|(range, text)| wire::Edit {
+                        range,
+                        len: text.len() as u32,
+                    })
+                }
+                Made::Adopted => None,
+            };
             if let Some(edit) = edit {
                 self.log.push((self.revision, edit));
             }
@@ -640,6 +662,7 @@ impl Field {
         let event = self.on_change.map(|handler| wire::Event::Text {
             handler,
             change: wire::TextChange {
+                generation: self.generation,
                 revision: self.revision,
                 edit,
                 text,
@@ -675,13 +698,28 @@ impl Field {
     /// it made. One span when the guest named a token for it and nothing
     /// typed since sits inside, as plain text when the engine refuses the
     /// span (a masked field, a range off a grapheme) or the field is at its
-    /// span cap. Held while an IME composes.
+    /// span cap. Held while an IME composes. The ask names the generation of
+    /// the guest's text its bytes are of: one the field has not adopted yet
+    /// is held until it has (its frame is drawn before its asks run, so
+    /// only a held adopt leaves one waiting); one the guest has since left
+    /// edits a document that is gone, and nothing here.
     pub(super) fn ask(
         &mut self,
         command: wire::WidgetCommand,
         window: &mut Window,
         cx: &mut App,
     ) -> Option<wire::Event> {
+        let wire::WidgetCommand::Replace { generation, .. } = &command else {
+            return None;
+        };
+        match generation.cmp(&self.generation) {
+            std::cmp::Ordering::Less => return None,
+            std::cmp::Ordering::Greater => {
+                self.deferred.push(Deferred::Replace(command));
+                return None;
+            }
+            std::cmp::Ordering::Equal => {}
+        }
         if self.composing(window, cx) {
             self.deferred.push(Deferred::Replace(command));
             return None;
@@ -735,7 +773,7 @@ impl Field {
                 len: len as u32,
             }
         }));
-        self.settle(Some(edit), window, cx)
+        self.settle(Made::Asked(edit), window, cx)
             .and_then(|(event, _)| event)
     }
 
@@ -764,7 +802,8 @@ impl Field {
         };
         engine!(&self.engine, |state| state
             .update(cx, |state, cx| { state.set_selected_range(range, cx) }));
-        self.settle(None, window, cx).and_then(|(event, _)| event)
+        self.settle(Made::Observed, window, cx)
+            .and_then(|(event, _)| event)
     }
 
     /// A key pressed in this focused field, no IME composing.

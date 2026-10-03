@@ -104,9 +104,10 @@ fn last_change(events: &Rc<RefCell<Vec<wire::Event>>>) -> wire::TextChange {
         .expect("the guest heard a change")
 }
 
-/// The guest's `Replace`: `range` of the text it read at `revision` becomes
-/// `text`, the caret after it.
-fn replace(
+/// The guest's `Replace`: `range` of the text it read at `revision` of
+/// its document `generation` becomes `text`, the caret after it.
+fn replace_in(
+    generation: u64,
     target: &[wire::ElementIdWire],
     revision: u64,
     range: std::ops::Range<usize>,
@@ -114,12 +115,23 @@ fn replace(
 ) -> wire::WidgetCommand {
     wire::WidgetCommand::Replace {
         target: target.to_vec(),
+        generation,
         revision,
         range: range.clone().into(),
         text: text.into(),
         token: None,
         cursor: wire::TextRange::caret(range.start + text.len()),
     }
+}
+
+/// `replace_in` on the generation `input` and `area` mount.
+fn replace(
+    target: &[wire::ElementIdWire],
+    revision: u64,
+    range: std::ops::Range<usize>,
+    text: &str,
+) -> wire::WidgetCommand {
+    replace_in(1, target, revision, range, text)
 }
 
 #[gpui_kit::test]
@@ -1323,6 +1335,7 @@ fn a_mention_lands_as_one_span_and_its_space_follows_it(cx: &mut gpui_kit::TestA
         tree.update(cx, |tree, cx| {
             let label = wire::WidgetCommand::Replace {
                 target: path.to_vec(),
+                generation: 1,
                 revision: 0,
                 range: (3..6).into(),
                 text: "@Alice".into(),
@@ -1353,4 +1366,92 @@ fn a_mention_lands_as_one_span_and_its_space_follows_it(cx: &mut gpui_kit::TestA
             id: "<@1>".into(),
         }]
     );
+}
+
+/// A Restore and an Enter the guest handled in one tick: the frame carries
+/// the seeded text as a new generation and the ask a clear of it, both in
+/// the seeded text's bytes. The adopt is a new document, told with no edit;
+/// the clear names the generation and lands on it whole, not rebased over
+/// the adopt as if it were typing. An ask on the generation the guest left
+/// edits nothing, and one for a generation the field has not seen waits
+/// for its frame.
+#[gpui_kit::test]
+fn a_clear_asked_against_a_seed_lands_after_the_adopt(cx: &mut gpui_kit::TestAppContext) {
+    let style = div().w(px(240.)).h(px(80.)).style().clone();
+    let (tree, mut native) = mounted(area("doc", None, "", style.clone()), cx);
+    let path = [named_id("doc")];
+    let (events, _subscription) = emitted(&tree, &mut native);
+    let seed = |generation: u64, value: &str| {
+        let mut root = area("doc", None, value, style.clone());
+        let wire::Node::Field {
+            generation: shown, ..
+        } = &mut root
+        else {
+            unreachable!()
+        };
+        *shown = generation;
+        root
+    };
+    native.update(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            tree.replace(seed(2, "hello"), &[(path.to_vec(), 0)], cx)
+        });
+        window.render_frame(cx);
+    });
+    native.run_until_parked();
+    let adopt = last_change(&events);
+    assert_eq!(
+        (
+            adopt.generation,
+            adopt.revision,
+            adopt.edit,
+            adopt.text.as_str()
+        ),
+        (2, 1, None, "hello")
+    );
+    // the old generation's ask edits a document that is gone
+    native.update(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            tree.execute_widget_command(replace_in(1, &path, 0, 0..5, "x"), window, cx)
+                .unwrap();
+        });
+    });
+    native.run_until_parked();
+    assert_eq!(text(&tree, &mut native), "hello");
+    native.update(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            tree.execute_widget_command(replace_in(2, &path, 0, 0..5, ""), window, cx)
+                .unwrap();
+        });
+    });
+    native.run_until_parked();
+    assert_eq!(text(&tree, &mut native), "");
+    let cleared = last_change(&events);
+    assert_eq!(
+        (cleared.generation, cleared.revision, cleared.edit),
+        (
+            2,
+            2,
+            Some(wire::Edit {
+                range: (0..5).into(),
+                len: 0
+            })
+        )
+    );
+    // an ask that outran its frame waits for it
+    native.update(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            tree.execute_widget_command(replace_in(3, &path, 0, 0..3, "yo"), window, cx)
+                .unwrap();
+        });
+    });
+    native.run_until_parked();
+    assert_eq!(text(&tree, &mut native), "");
+    native.update(|window, cx| {
+        tree.update(cx, |tree, cx| tree.replace(seed(3, "abcde"), &[], cx));
+        window.render_frame(cx);
+    });
+    native.run_until_parked();
+    assert_eq!(text(&tree, &mut native), "yode");
+    assert_eq!(told(&events).last().map(String::as_str), Some("yode"));
 }
