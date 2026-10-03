@@ -92,10 +92,10 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         child: Box::new(wire::Node::Container(view_wire::ContainerNode {
             id: Some(named_id("press-area")),
             style: sized_style(Some(fill()), Some(fill())),
-            interactivity: wire::Interactivity {
+            interactivity: Box::new(wire::Interactivity {
                 on_click: Some(2),
                 ..Default::default()
-            },
+            }),
             children: vec![room],
         })),
     };
@@ -171,24 +171,24 @@ fn styled_container_uses_native_interactivity_and_typed_identity(
     let root = wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id("interactive")),
         style: base.style().clone(),
-        interactivity: wire::Interactivity {
+        interactivity: Box::new(wire::Interactivity {
             role: Some(gpui_kit::Role::Button),
             aria: Default::default(),
             focusable: true,
             group: Some("card".into()),
-            hover: Some(hover.style().clone()),
-            active: Some(active.style().clone()),
+            hover: Some(Box::new(hover.style().clone())),
+            active: Some(Box::new(active.style().clone())),
             group_hover: Some(wire::GroupRefinement {
                 group: "card".into(),
-                style: hover.style().clone(),
+                style: Box::new(hover.style().clone()),
             }),
             group_active: Some(wire::GroupRefinement {
                 group: "card".into(),
-                style: active.style().clone(),
+                style: Box::new(active.style().clone()),
             }),
             on_click: Some(42),
             ..Default::default()
-        },
+        }),
         children: vec![text("interactive-label", "Click")],
     });
     let window = cx.open_window(size(px(200.), px(100.)), |_, _| ViewTree::new(root));
@@ -219,13 +219,13 @@ fn container_interactivity_emits_native_pointer_and_key_payloads(
     let root = wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id("events")),
         style: sized_style(Some(fixed(120.)), Some(fixed(60.))),
-        interactivity: wire::Interactivity {
+        interactivity: Box::new(wire::Interactivity {
             focusable: true,
             on_mouse_down: Some(10),
             capture_mouse_down: Some(11),
             on_key_down: Some(12),
             ..Default::default()
-        },
+        }),
         children: vec![text("event-label", "Events")],
     });
     let window = cx.open_window(size(px(200.), px(100.)), |_, _| ViewTree::new(root));

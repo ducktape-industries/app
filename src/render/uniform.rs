@@ -244,19 +244,19 @@ impl ViewTree {
             list = list.group(group.clone());
         }
         if let Some(hover) = &interactivity.hover {
-            let hover = hover.clone();
+            let hover = (**hover).clone();
             list = list.hover(move |_| hover);
         }
         if let Some(active) = &interactivity.active {
-            let active = active.clone();
+            let active = (**active).clone();
             list = list.active(move |_| active);
         }
         if let Some(group) = &interactivity.group_hover {
-            let style = group.style.clone();
+            let style = (*group.style).clone();
             list = list.group_hover(group.group.clone(), move |_| style);
         }
         if let Some(group) = &interactivity.group_active {
-            let style = group.style.clone();
+            let style = (*group.style).clone();
             list = list.group_active(group.group.clone(), move |_| style);
         }
         self.guest_aria(list, node, interactivity, cx)

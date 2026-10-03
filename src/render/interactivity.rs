@@ -30,15 +30,15 @@ pub(super) fn apply<E: StatefulInteractiveElement>(
         element = element.track_focus(handle);
     }
     if let Some(style) = &interactivity.focus {
-        let style = style.clone();
+        let style = (**style).clone();
         element = element.focus(move |_| style);
     }
     if let Some(style) = &interactivity.in_focus {
-        let style = style.clone();
+        let style = (**style).clone();
         element = element.in_focus(move |_| style);
     }
     if let Some(style) = &interactivity.focus_visible {
-        let style = style.clone();
+        let style = (**style).clone();
         element = element.focus_visible(move |_| style);
     }
     if let Some(context) = &interactivity.key_context {

@@ -1093,7 +1093,7 @@ fn item(
             .h(gpui_kit::px(24.))
             .style()
             .clone(),
-        interactivity: view_wire::Interactivity {
+        interactivity: Box::new(view_wire::Interactivity {
             role: Some(role),
             aria: view_wire::Aria {
                 label: Some(id.into()),
@@ -1103,7 +1103,7 @@ fn item(
                 ..Default::default()
             },
             ..Default::default()
-        },
+        }),
         children,
     })
 }
@@ -1121,7 +1121,7 @@ fn one_stop(
     view_wire::Node::Container(view_wire::ContainerNode {
         id: Some(view_wire::ElementIdWire::Name(id.to_owned().into())),
         style: gpui_kit::div().flex().flex_col().style().clone(),
-        interactivity: view_wire::Interactivity {
+        interactivity: Box::new(view_wire::Interactivity {
             role: Some(role),
             focusable: true,
             tab_stop: Some(true),
@@ -1132,7 +1132,7 @@ fn one_stop(
                 ..Default::default()
             },
             ..Default::default()
-        },
+        }),
         children: items,
     })
 }

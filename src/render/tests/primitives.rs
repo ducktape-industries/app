@@ -209,10 +209,10 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
     let root = wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id("wrapping-parent")),
         style: div().w_full().style().clone(),
-        interactivity: wire::Interactivity {
+        interactivity: Box::new(wire::Interactivity {
             on_click: Some(1),
             ..Default::default()
-        },
+        }),
         children: vec![root],
     });
     let window = cx.open_window(size(px(800.), px(500.)), |_, _| ViewTree::new(root));

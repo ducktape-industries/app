@@ -386,7 +386,7 @@ fn a_roled_box_keeps_its_aria_and_the_links_of_the_text_it_holds(
     let note = wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id("note")),
         style: Default::default(),
-        interactivity: wire::Interactivity {
+        interactivity: Box::new(wire::Interactivity {
             role: Some(gpui_kit::Role::Status),
             aria: wire::Aria {
                 label: Some("Note".into()),
@@ -395,7 +395,7 @@ fn a_roled_box_keeps_its_aria_and_the_links_of_the_text_it_holds(
                 ..Default::default()
             },
             ..Default::default()
-        },
+        }),
         children: vec![rich()],
     });
     let nodes = door(cx, note);

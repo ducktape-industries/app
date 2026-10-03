@@ -211,7 +211,7 @@ fn pressable(
     wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id(key)),
         style,
-        interactivity: wire::Interactivity {
+        interactivity: Box::new(wire::Interactivity {
             role: Some(role),
             aria: wire::Aria {
                 label: Some(name.into()),
@@ -219,7 +219,7 @@ fn pressable(
             },
             on_click: Some(click),
             ..Default::default()
-        },
+        }),
         children: Vec::new(),
     })
 }

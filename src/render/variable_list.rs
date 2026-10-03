@@ -181,7 +181,7 @@ impl ViewTree {
                 });
             });
         }
-        if *interactivity == wire::Interactivity::default() {
+        if **interactivity == wire::Interactivity::default() {
             return native.into_any_element();
         }
         // gpui's list is no interactive element: a list the view roled,
