@@ -592,8 +592,9 @@ impl Field {
     }
 
     /// What differs from the last report, reported: the text at its next
-    /// revision when it changed (`exact` being the edit that changed it,
-    /// else the span that differs), the cursor and the preedit as they
+    /// revision when it changed, with the edit that changed it (`exact`
+    /// when an ask landed, else the span that differs), logged and told to
+    /// the guest as one and the same; the cursor and the preedit as they
     /// stand. `None` when nothing moved. The second answer says whether
     /// the text itself changed.
     fn settle(
@@ -620,9 +621,10 @@ impl Field {
         if !changed && cursor == self.cursor && preedit == self.preedit {
             return None;
         }
+        let mut edit = None;
         if changed {
             self.revision += 1;
-            let edit = exact.or_else(|| {
+            edit = exact.or_else(|| {
                 wire::changed_span(&self.text, &text).map(|(range, text)| wire::Edit {
                     range,
                     len: text.len() as u32,
@@ -639,6 +641,7 @@ impl Field {
             handler,
             change: wire::TextChange {
                 revision: self.revision,
+                edit,
                 text,
                 cursor,
                 preedit,

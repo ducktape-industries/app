@@ -991,6 +991,59 @@ fn a_letter_typed_ahead_of_a_claimed_enter_is_kept(cx: &mut gpui_kit::TestAppCon
     assert_eq!((heard.text.as_str(), heard.cursor), ("x", (1..1).into()));
 }
 
+/// The guest hears the edit a clear made, not a diff of the texts: "ok"
+/// sent while "o" was typed ahead reads "oko", then "o", and a diff of
+/// those takes the first "o" for the one that stayed. The composer cuts
+/// what a send spoke for by this edit, so the typed "o" stays the writer's.
+#[gpui_kit::test]
+fn the_guest_hears_the_edit_a_clear_made_not_a_diff_of_the_texts(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let (tree, mut native) = mounted(
+        area(
+            "doc",
+            None,
+            "ok",
+            div().w(px(240.)).h(px(80.)).style().clone(),
+        ),
+        cx,
+    );
+    let path = [named_id("doc")];
+    focus(&tree, &mut native, &path);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    native.simulate_input("o");
+    native.run_until_parked();
+    assert_eq!(text(&tree, &mut native), "oko");
+    native.update(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            tree.execute_widget_command(replace(&path, 0, 0..2, ""), window, cx)
+                .unwrap();
+        });
+    });
+    native.run_until_parked();
+    let edits: Vec<_> = events
+        .borrow()
+        .iter()
+        .filter_map(|event| match event {
+            wire::Event::Text { change, .. } => Some((change.text.clone(), change.edit)),
+            _ => None,
+        })
+        .collect();
+    let edit = |range: std::ops::Range<usize>, len| {
+        Some(wire::Edit {
+            range: range.into(),
+            len,
+        })
+    };
+    assert_eq!(
+        edits,
+        [
+            ("oko".to_owned(), edit(2..2, 1)),
+            ("o".to_owned(), edit(0..2, 0))
+        ]
+    );
+}
+
 /// Enter claimed with the caret inside the words, a letter typed before the
 /// clear lands: the clear takes only the words the guest read, the letter
 /// stays with the caret after it, and one undo brings the words back round
