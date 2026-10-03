@@ -541,9 +541,9 @@ fn install(
     // across it. A connect bumps the revision before it reaches this
     // seat, so the revision read here is the one the seat installs
     // against — and `connected` reconnects a seat it passed already
-    let current_rev = connection().lock().expect("views rpc").rev;
+    let current = connection().lock().expect("views rpc").clone();
     let from_the_node = view_override(module).is_none();
-    let node_since_left = current_rev != asked_of.rev;
+    let node_since_left = current.rev != asked_of.rev;
     if from_the_node && node_since_left {
         return false;
     }
@@ -572,7 +572,7 @@ fn install(
         }
         Loaded::Unchanged => {
             if let Slot::Ready(guest) = slot {
-                guest.reconnect(current_rev);
+                guest.reconnect(&current);
             }
         }
         Loaded::Empty => {

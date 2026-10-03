@@ -152,7 +152,7 @@ fn a_query_to_a_stalled_node_is_refused_at_its_deadline_and_frees_its_slot() {
     let mut guest = guest();
     let replies = guest.replies.clone();
     let asked = std::time::Instant::now();
-    start(&mut guest, 1, async move {
+    start(&mut guest, 1, None, async move {
         let budget = std::time::Duration::from_secs(1);
         let per_attempt = std::time::Duration::from_millis(300);
         let (answer, _) = until_answered(budget, per_attempt, transport_failed, || {
@@ -374,4 +374,90 @@ async fn two_submits_in_flight_take_one_sequence_each() {
         "signed at the sequence the first moved to"
     );
     assert_eq!(applied.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+/// A node whose `/v1/changes/<program>` socket sends one change at each of
+/// `heights`, then stays open for as long as the client holds it.
+fn changes_node(heights: &'static [u64]) -> Node {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let node = Node {
+        client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
+        network: "test-network".into(),
+    };
+    handle().spawn(async move {
+        use futures::{SinkExt as _, StreamExt as _};
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        while let Ok((stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                // anything but the socket (a `chain.heads` status read) is dropped
+                let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
+                    return;
+                };
+                for &height in heights {
+                    let change = noded::Change {
+                        height,
+                        root: abi::Root([0; 32]),
+                        writes: Vec::new(),
+                    };
+                    let sent =
+                        tokio_tungstenite::tungstenite::Message::Binary(abi::encode(&change));
+                    socket.send(sent).await.unwrap();
+                }
+                while socket.next().await.is_some() {}
+            });
+        }
+    });
+    node
+}
+
+/// A connect inside the network, under a view that kept its code: its
+/// `module.changes` subscription goes on, on the new node, so its follower
+/// hears `None` (re-read what moved meanwhile) and then the new node's
+/// blocks; its `chain.heads` goes on too; a request still running on the
+/// old connection is refused `stale_connection`. Before, the subscriptions
+/// were refused too, which ends a view's stream: the view went deaf to
+/// every block after the connect.
+#[test]
+fn a_reconnect_opens_a_views_subscriptions_again_on_the_new_node() {
+    let mut guest = guest();
+    guest.targets = vec!["chat".into()];
+    follow_changes(&mut guest, 1, changes_node(&[]), "chat".into());
+    assert!(spawn_reply(&mut guest, 2, std::future::pending::<Answer>()));
+    follow_heads(&mut guest, 3, changes_node(&[]));
+    let new = changes_node(&[7]);
+    let rev = guest.connection_rev + 1;
+    guest.reconnect(&crate::runtime::Connection {
+        client: Some(new.client),
+        network: new.network,
+        chain: String::new(),
+        rev,
+    });
+    assert_eq!(refused(&mut guest, 2).0, refusal::STALE_CONNECTION);
+    assert_eq!(guest.pending, [], "a subscription was refused");
+    let following: Vec<u64> = guest
+        .tasks
+        .iter()
+        .filter_map(|(id, task)| task.follows.as_ref().map(|_| *id))
+        .collect();
+    assert_eq!(following, [1, 3], "both subscriptions run again");
+    let mut items = Vec::new();
+    for _ in 0..200 {
+        guest.replies.drain_into(&mut items).unwrap();
+        if items.len() >= 2 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let item = |height: Option<u64>| wire::Event::Response {
+        id: 1,
+        result: Ok(methods::encode(&height)),
+        done: false,
+    };
+    assert_eq!(
+        items,
+        [item(None), item(Some(7))],
+        "the follower is told to re-read, then hears the new node"
+    );
+    assert_eq!(guest.live_subscriptions, [(1, "chat".to_owned())]);
 }

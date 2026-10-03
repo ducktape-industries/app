@@ -129,8 +129,10 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    asked of this node), then returns: nothing waits on a load. Each new block (`Session::status_answered` with a moved
    height → `runtime::deployments_checked`) repeats it, one read in flight
    at a time. A load that finds the drawn view already current
-   (`Loaded::Unchanged`) only calls `Guest::reconnect`, which refuses the
-   tasks of a previous connection with `stale_connection`.
+   (`Loaded::Unchanged`) only calls `Guest::reconnect`: its node
+   subscriptions open again on the new connection (a `module.changes`
+   follower is told to re-read first), and its other tasks of the previous
+   connection are refused `stale_connection`.
 2. **Blob → section.** `backend::views::view_of` fetches the program's code
    blob (`/v1/blob/get`, a disk cache under `cache_dir()/programs/`),
    checks the hash, strips the git-style header (`unframe`) and returns the

@@ -17,18 +17,16 @@ const MAX_TABLE_ELEMENTS: usize = 1 << 20;
 const MAX_PANIC_BYTES: u32 = 1024;
 
 impl Guest {
-    /// Reusing identical code still retires work started on the old connection.
-    pub(crate) fn reconnect(&mut self, revision: u64) {
-        if self.connection_rev == revision {
+    /// Reusing identical code over a new connection: the node subscriptions
+    /// go on, opened on it, and the rest of the work started on the old one
+    /// is retired (`kernel::reconnected`).
+    pub(crate) fn reconnect(&mut self, connection: &Connection) {
+        if self.connection_rev == connection.rev {
             return;
         }
-        let ids: Vec<_> = self.tasks.iter().map(|(id, _)| *id).collect();
-        self.tasks.clear();
+        self.connection_rev = connection.rev;
         self.clipboard = Default::default();
-        for id in ids {
-            self.refuse(id, refusal::STALE_CONNECTION, "network connection changed");
-        }
-        self.connection_rev = revision;
+        kernel::reconnected(self, connection);
     }
 
     /// A view comes from the roster's `code` for `module` on the connected
