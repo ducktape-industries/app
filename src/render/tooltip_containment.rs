@@ -391,4 +391,138 @@ mod tests {
             );
         });
     }
+
+    /// The store behind the tree: a response is kept only for a route the
+    /// tree holds, on every node kind that carries a tooltip, and the
+    /// contents together stay within the frame's node budget.
+    #[gpui_kit::test]
+    fn tooltip_responses_hold_the_trees_routes_within_the_node_budget(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let tip = |request| {
+            Box::new(wire::Interactivity {
+                tooltip: Some(wire::Tooltip {
+                    request,
+                    hoverable: false,
+                    delay_ms: 10,
+                }),
+                ..Default::default()
+            })
+        };
+        let name = |name: &str| wire::ElementIdWire::Name(name.into());
+        let kinds = vec![
+            wire::Node::Image {
+                id: Some(name("image")),
+                hash: 0,
+                data: None,
+                label: None,
+                image_style: wire::ImageStyle {
+                    grayscale: false,
+                    object_fit: wire::ImageObjectFit::Contain,
+                },
+                loading: false,
+                fallback: false,
+                state_children: Vec::new(),
+                style: Default::default(),
+                interactivity: tip(1),
+            },
+            wire::Node::Svg {
+                id: Some(name("svg")),
+                source: wire::SvgSource::None,
+                transformation: wire::SvgTransformation {
+                    scale: [1.0, 1.0],
+                    translate: [0.0, 0.0],
+                    rotate: 0.0,
+                },
+                label: None,
+                style: Default::default(),
+                interactivity: tip(2),
+            },
+            wire::Node::UniformList {
+                id: name("uniform"),
+                path: vec![name("uniform")],
+                route: 90,
+                style: Default::default(),
+                interactivity: tip(3),
+                count: 0,
+                measure_index: 0,
+                sizing: Default::default(),
+                horizontal_sizing: Default::default(),
+                y_flipped: false,
+                scroll_request: None,
+                indices: Vec::new(),
+                children: Vec::new(),
+            },
+            wire::Node::List {
+                state: 1,
+                path: vec![name("list")],
+                item_count: 0,
+                alignment: wire::ListAlignment::Top,
+                overdraw: 0.,
+                sizing: wire::ListSizingBehavior::Infer,
+                following_tail: false,
+                revision: 0,
+                commands: Vec::new(),
+                request_handler: 91,
+                scroll_handler: None,
+                range_start: 0,
+                style: Default::default(),
+                interactivity: tip(4),
+                children: Vec::new(),
+            },
+            wire::Node::ResizeHandle {
+                id: name("grip"),
+                style: Default::default(),
+                interactivity: tip(5),
+                on_press: None,
+                on_release: None,
+                on_drag: None,
+                cursor: None,
+                content: Box::new(wire::Node::empty()),
+            },
+        ];
+        let tree = cx.new(|_| {
+            ViewTree::new(wire::Node::Container(view_wire::ContainerNode {
+                id: None,
+                style: Default::default(),
+                interactivity: Default::default(),
+                children: kinds,
+            }))
+        });
+        let held = |cx: &mut gpui_kit::TestAppContext| {
+            let mut routes: Vec<u32> =
+                tree.read_with(cx, |tree, _| tree.tooltips.keys().copied().collect());
+            routes.sort();
+            routes
+        };
+
+        tree.update(cx, |tree, cx| {
+            tree.tooltip_responses(vec![answer(9, node(20., None))], cx)
+        });
+        assert_eq!(
+            held(cx),
+            [0u32; 0],
+            "a route the tree does not hold took content"
+        );
+
+        let answers = (1..=5).map(|request| answer(request, node(20., None)));
+        tree.update(cx, |tree, cx| tree.tooltip_responses(answers.collect(), cx));
+        assert_eq!(
+            held(cx),
+            [1, 2, 3, 4, 5],
+            "image, svg, uniform list, list and grip each keep their tooltip"
+        );
+
+        // with the four others it would hold one frame's budget and more
+        let budget = wire::Node::Container(view_wire::ContainerNode {
+            id: None,
+            style: Default::default(),
+            interactivity: Default::default(),
+            children: vec![wire::Node::empty(); wire::MAX_NODES - 1],
+        });
+        tree.update(cx, |tree, cx| {
+            tree.tooltip_responses(vec![answer(3, budget)], cx)
+        });
+        assert_eq!(held(cx), [3], "the store went past the node budget");
+    }
 }
