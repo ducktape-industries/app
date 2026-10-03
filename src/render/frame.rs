@@ -85,7 +85,7 @@ impl ViewTree {
         let mut sensors = std::collections::HashSet::new();
         let mut mounted = std::collections::HashSet::new();
         let mut tooltip_routes = std::collections::HashSet::new();
-        walk_authored_paths(&root, &mut Vec::new(), &mut |node, path| {
+        walk_authored_paths(&root, None, &mut Vec::new(), &mut |node, path| {
             mounted.insert(path.clone());
             tooltip_routes.extend(tooltip_route(node));
             // a scrolling container with an id keeps its handle; an id-less

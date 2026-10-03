@@ -230,3 +230,98 @@ fn a_changed_frame_remeasures_no_row_it_kept(cx: &mut gpui_kit::TestAppContext) 
         "two changed frames with the same rows remeasured them"
     );
 }
+
+/// A list row with no id of its own, 32 px tall, holding a text field
+/// `name` labelled `label` and holding `value`.
+fn field_row(label: &str, value: &str) -> wire::Node {
+    let mut field = input(label, false, false);
+    let wire::Node::Field {
+        id,
+        value: held,
+        cursor,
+        ..
+    } = &mut field
+    else {
+        unreachable!()
+    };
+    *id = wire::ElementIdWire::Name("name".into());
+    *held = value.into();
+    *cursor = wire::TextRange::caret(value.len());
+    wire::Node::Container(view_wire::ContainerNode {
+        id: None,
+        style: div().w_full().h(px(32.)).style().clone(),
+        interactivity: Default::default(),
+        children: vec![field],
+    })
+}
+
+/// Two rows of a list, neither with an id of its own, each with a field
+/// `name` inside (P28's shape): each row is filed under its index, so the
+/// two are two native fields, each holding its own text, and two nodes a
+/// screen reader reads. Filed under one path they were one field.
+#[gpui_kit::test]
+fn rows_holding_one_id_are_each_their_own_field(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let root = variable_list_node(
+        2,
+        wire::ListAlignment::Top,
+        0,
+        vec![field_row("Name 0", "ada"), field_row("Name 1", "grace")],
+    );
+    let window = cx.open_window(size(px(300.), px(120.)), |_, _| ViewTree::new(root));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let nodes = native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        window.render_frame(cx);
+        crate::ax::snapshot("t", window, false)
+    });
+    let fields: Vec<(&str, Option<&str>)> = nodes
+        .iter()
+        .filter(|node| node.role == "TextInput")
+        .map(|node| (node.name.as_str(), node.value.as_deref()))
+        .collect();
+    assert_eq!(fields, [("Name 0", Some("ada")), ("Name 1", Some("grace"))]);
+    assert_eq!(tree.read_with(&native, |tree, _| tree.fields.len()), 2);
+}
+
+/// A list row with no id of its own and no box either (a deferred draw),
+/// holding an `open` button named `name`.
+fn deferred_row(name: &str) -> wire::Node {
+    let mut open = view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("open".into())),
+        style: div().w(px(80.)).h(px(24.)).style().clone(),
+        interactivity: Default::default(),
+        children: Vec::new(),
+    };
+    open.interactivity.role = Some(gpui_kit::Role::Button);
+    open.interactivity.aria.label = Some(name.into());
+    open.interactivity.on_click = Some(1);
+    wire::Node::Deferred {
+        priority: 1,
+        content: Box::new(wire::Node::Container(open)),
+    }
+}
+
+/// Rows that lay out no element of their own still draw under their index:
+/// two `open` buttons, two nodes. Under one id gpui keeps the first node
+/// and drops the second.
+#[gpui_kit::test]
+fn rows_without_a_box_draw_under_their_index(cx: &mut gpui_kit::TestAppContext) {
+    let nodes = draw(
+        cx,
+        variable_list_node(
+            2,
+            wire::ListAlignment::Top,
+            0,
+            vec![deferred_row("Open 0"), deferred_row("Open 1")],
+        ),
+    );
+    let buttons: Vec<&str> = nodes
+        .iter()
+        .filter(|node| node.role == "Button")
+        .map(|node| node.name.as_str())
+        .collect();
+    assert_eq!(buttons, ["Open 0", "Open 1"]);
+}

@@ -94,12 +94,13 @@ pub(crate) fn is_host_id(id: &ElementId) -> bool {
 /// module (`Seat::ax_mark`): the AX door reads the module off it.
 pub(crate) const VIEW_MARK: &str = "view/";
 
-/// Pushes the node's identity onto `path` when it has one; the caller pops
-/// on the way out when this answers `true`.
-pub(crate) fn enter_scope(node: &wire::Node, path: &mut AuthoredPath) -> bool {
-    match node.identity() {
+/// Pushes the id `node` is filed under onto `path` (`wire::identity`: its
+/// own, else, as row `row` of a list, its index); the caller pops on the
+/// way out when this answers `true`.
+pub(crate) fn enter_scope(node: &wire::Node, row: Option<usize>, path: &mut AuthoredPath) -> bool {
+    match wire::identity::segment(node.identity().cloned(), row) {
         Some(id) => {
-            path.push(id.clone());
+            path.push(id);
             true
         }
         None => false,
@@ -300,11 +301,12 @@ impl ViewTree {
         // function the stack of ALL its arms at once — inlined bodies here
         // once cost 570 KiB a level and overflowed the main thread at a depth
         // of fourteen.
-        let entered_scope = enter_scope(node, &mut self.authored_path);
+        self.row = self.next_row.take();
+        let index = self.row.map(|(position, _)| position - 1);
+        let entered_scope = enter_scope(node, index, &mut self.authored_path);
         if entered_scope {
             self.mounted.insert(self.authored_path.clone());
         }
-        self.row = self.next_row.take();
         use wire::Node;
         let element = match node {
             Node::Text(view_wire::TextNode { .. }) => self.text(node, cx),
@@ -326,7 +328,76 @@ impl ViewTree {
         if entered_scope {
             self.authored_path.pop();
         }
-        element
+        // a row with no id of its own is drawn under the index it is filed
+        // under, so gpui files its ids (and their accessibility nodes and
+        // element state) under the row too
+        match index {
+            Some(index) if node.identity().is_none() => {
+                RowScope { index, element }.into_any_element()
+            }
+            _ => element,
+        }
+    }
+}
+
+/// A list row with no id of its own, drawn under its index: what `.id(index)`
+/// would do, without the box an id-carrying element lays out.
+struct RowScope {
+    index: usize,
+    element: AnyElement,
+}
+
+impl IntoElement for RowScope {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for RowScope {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some(ElementId::Integer(self.index as u64))
+    }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.element.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.element.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        _prepaint: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.element.paint(window, cx);
     }
 }
 

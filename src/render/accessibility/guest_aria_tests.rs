@@ -712,7 +712,7 @@ fn a_held_pane_over_two_claiming_composites_reports_the_pane_box(
     let root = sanitized(root);
     let claims = |node: &wire::Node| {
         let mut claims = 0;
-        super::super::commands::walk_authored_paths(node, &mut Vec::new(), &mut |node, _| {
+        super::super::commands::walk_authored_paths(node, None, &mut Vec::new(), &mut |node, _| {
             if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = node {
                 claims += usize::from(interactivity.aria.active_descendant);
             }

@@ -15,18 +15,20 @@ pub(super) enum ScrollRequest {
     End,
 }
 
-/// Visits every node with its authored path, depth first.
+/// Visits every node with its authored path, depth first; `row` is the
+/// node's index when it is a row of a list.
 pub(super) fn walk_authored_paths(
     node: &wire::Node,
+    row: Option<usize>,
     path: &mut AuthoredPath,
     visit: &mut impl FnMut(&wire::Node, &AuthoredPath),
 ) {
-    let entered_scope = crate::render::enter_scope(node, path);
+    let entered_scope = crate::render::enter_scope(node, row, path);
     // Anonymous primitives (notably List) still own retained host state at
-    // their current authored ancestry; they do not add a fabricated segment.
+    // their current authored ancestry; they add no segment of their own.
     visit(node, path);
-    for child in node.children() {
-        walk_authored_paths(child, path, visit);
+    for (at, child) in node.children().iter().enumerate() {
+        walk_authored_paths(child, wire::identity::row(node, at), path, visit);
     }
     if entered_scope {
         path.pop();
@@ -215,7 +217,7 @@ impl ViewTree {
             // the container that owns the path: an id-less one sits on its
             // nearest named ancestor's path and is not the node it names
             let mut kind = None;
-            walk_authored_paths(&self.root, &mut Vec::new(), &mut |node, path| {
+            walk_authored_paths(&self.root, None, &mut Vec::new(), &mut |node, path| {
                 if path == target
                     && matches!(
                         node,
