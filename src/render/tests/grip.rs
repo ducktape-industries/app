@@ -110,6 +110,37 @@ fn a_divider_wears_its_group_hover(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(lit_quads(&mut native), 1, "the pointer is in the split");
 }
 
+/// A view that asks for the keys on a divider by its path hears the host say
+/// no: the divider takes no focus, and the id-less line it draws sits on the
+/// divider's path without being the node that path names.
+#[gpui_kit::test]
+fn a_focus_on_a_divider_is_refused(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let mut root = split();
+    if let wire::Node::Container(view_wire::ContainerNode { children, .. }) = &mut root
+        && let wire::Node::ResizeHandle { content, .. } = &mut children[1]
+        && let wire::Node::Container(view_wire::ContainerNode { id, .. }) = &mut **content
+    {
+        *id = None;
+    }
+    let window = cx.open_window(size(px(300.), px(80.)), |_, _| ViewTree::new(root));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    let answer = native.update(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            tree.execute_widget_command(
+                wire::WidgetCommand::Focus {
+                    target: vec![named_id("split"), named_id("divider")],
+                },
+                window,
+                cx,
+            )
+        })
+    });
+    assert!(answer.is_err(), "{answer:?}");
+}
+
 #[gpui_kit::test]
 fn a_divider_grips_a_near_miss_on_either_side(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);

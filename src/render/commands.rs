@@ -215,11 +215,15 @@ impl ViewTree {
     ) -> Result<(), String> {
         use wire::WidgetCommand as C;
         if matches!(command, C::Focus { .. }) {
+            // the container that owns the path: an id-less one sits on its
+            // nearest named ancestor's path and is not the node it names
             let mut kind = None;
             walk_authored_paths(&self.root, &mut Vec::new(), &mut |node, path| {
-                if kind.is_none()
-                    && path == target
-                    && matches!(node, wire::Node::Container(view_wire::ContainerNode { .. }))
+                if path == target
+                    && matches!(
+                        node,
+                        wire::Node::Container(view_wire::ContainerNode { id: Some(_), .. })
+                    )
                 {
                     kind = Some(std::mem::discriminant(node));
                 }
