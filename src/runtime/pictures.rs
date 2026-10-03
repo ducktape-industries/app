@@ -239,7 +239,7 @@ mod tests {
         let mut root = wire::Node::Container(view_wire::ContainerNode {
             id: None,
             style: Default::default(),
-            interactivity: wire::Interactivity {
+            interactivity: Box::new(wire::Interactivity {
                 tooltip: Some(wire::Tooltip {
                     request: 1,
                     content: Some(Box::new(vector(9, Some(b"tip".to_vec())))),
@@ -247,7 +247,7 @@ mod tests {
                     delay_ms: 0,
                 }),
                 ..Default::default()
-            },
+            }),
             children: Vec::new(),
         });
         let mut pictures = Pictures::default();

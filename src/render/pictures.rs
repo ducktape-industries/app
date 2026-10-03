@@ -504,11 +504,11 @@ impl ViewTree {
             element = element.group(group.clone());
         }
         if let Some(style) = &interactivity.hover {
-            let style = style.clone();
+            let style = (**style).clone();
             element = element.hover(move |_| style);
         }
         if let Some(group) = &interactivity.group_hover {
-            let style = group.style.clone();
+            let style = (*group.style).clone();
             element = element.group_hover(group.group.clone(), move |_| style);
         }
         let native_id = id.as_ref().map(native_id).unwrap_or_else(|| {
@@ -518,11 +518,11 @@ impl ViewTree {
         });
         let mut element = element.id(native_id);
         if let Some(style) = &interactivity.active {
-            let style = style.clone();
+            let style = (**style).clone();
             element = element.active(move |_| style);
         }
         if let Some(group) = &interactivity.group_active {
-            let style = group.style.clone();
+            let style = (*group.style).clone();
             element = element.group_active(group.group.clone(), move |_| style);
         }
         element = self.guest_aria(element, node, interactivity, cx);

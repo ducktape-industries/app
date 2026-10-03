@@ -1017,11 +1017,11 @@ fn a_views_deferred_draw_stays_under_a_dialog(cx: &mut TestAppContext) {
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("lookalike".into())),
             style: style.style().clone(),
-            interactivity: wire::Interactivity {
+            interactivity: Box::new(wire::Interactivity {
                 on_click: Some(1),
                 occlude: true,
                 ..Default::default()
-            },
+            }),
             children: Vec::new(),
         })
     };
@@ -1102,18 +1102,18 @@ fn a_views_tooltip_stays_under_a_dialog(cx: &mut TestAppContext) {
         let tip = wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("tip".into())),
             style: tip.style().clone(),
-            interactivity: wire::Interactivity {
+            interactivity: Box::new(wire::Interactivity {
                 on_click: Some(1),
                 occlude: true,
                 ..Default::default()
-            },
+            }),
             children: Vec::new(),
         });
         let mut source = gpui_kit::div().size_full().bg(gpui_kit::rgb(CYAN));
         let root = wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("source".into())),
             style: source.style().clone(),
-            interactivity: wire::Interactivity {
+            interactivity: Box::new(wire::Interactivity {
                 tooltip: Some(wire::Tooltip {
                     request: 7,
                     content: Some(Box::new(tip)),
@@ -1121,7 +1121,7 @@ fn a_views_tooltip_stays_under_a_dialog(cx: &mut TestAppContext) {
                     delay_ms: 10,
                 }),
                 ..Default::default()
-            },
+            }),
             children: Vec::new(),
         });
         crate::runtime::seat_drawing_for_test(module, 400, root);
@@ -1212,11 +1212,11 @@ fn a_views_deferred_draw_takes_no_click_outside_its_pane(cx: &mut TestAppContext
     let cover = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("cover".into())),
         style: cover.style().clone(),
-        interactivity: wire::Interactivity {
+        interactivity: Box::new(wire::Interactivity {
             on_click: Some(1),
             occlude: true,
             ..Default::default()
-        },
+        }),
         children: Vec::new(),
     });
     let hostile = wire::Node::Container(view_wire::ContainerNode {
@@ -1239,10 +1239,10 @@ fn a_views_deferred_draw_takes_no_click_outside_its_pane(cx: &mut TestAppContext
     let neighbour = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("neighbour".into())),
         style: neighbour.style().clone(),
-        interactivity: wire::Interactivity {
+        interactivity: Box::new(wire::Interactivity {
             on_click: Some(2),
             ..Default::default()
-        },
+        }),
         children: Vec::new(),
     });
     crate::runtime::seat_drawing_for_test(HOSTILE, 400, hostile);
@@ -1367,10 +1367,10 @@ fn cascade(
     let body = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("front".into())),
         style: body.style().clone(),
-        interactivity: wire::Interactivity {
+        interactivity: Box::new(wire::Interactivity {
             on_click: Some(2),
             ..Default::default()
-        },
+        }),
         children: Vec::new(),
     });
     crate::runtime::seat_drawing_for_test(back, 400, tree);
@@ -1459,11 +1459,11 @@ fn a_back_windows_deferred_draw_takes_no_click_on_the_front_window(cx: &mut Test
     let cover = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("cover".into())),
         style: cover.style().clone(),
-        interactivity: wire::Interactivity {
+        interactivity: Box::new(wire::Interactivity {
             on_click: Some(1),
             occlude: true,
             ..Default::default()
-        },
+        }),
         children: Vec::new(),
     });
     let hostile = wire::Node::Container(view_wire::ContainerNode {
@@ -1514,18 +1514,18 @@ fn a_back_windows_tooltip_stays_under_the_front_window(cx: &mut TestAppContext) 
     let tip = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("tip".into())),
         style: tip.style().clone(),
-        interactivity: wire::Interactivity {
+        interactivity: Box::new(wire::Interactivity {
             on_click: Some(1),
             occlude: true,
             ..Default::default()
-        },
+        }),
         children: Vec::new(),
     });
     let mut source = gpui_kit::div().size_full().bg(gpui_kit::rgb(YELLOW));
     let source = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("source".into())),
         style: source.style().clone(),
-        interactivity: wire::Interactivity {
+        interactivity: Box::new(wire::Interactivity {
             tooltip: Some(wire::Tooltip {
                 request: 7,
                 content: Some(Box::new(tip)),
@@ -1533,7 +1533,7 @@ fn a_back_windows_tooltip_stays_under_the_front_window(cx: &mut TestAppContext) 
                 delay_ms: 10,
             }),
             ..Default::default()
-        },
+        }),
         children: Vec::new(),
     });
     let (_, mut native, back, front) = cascade(

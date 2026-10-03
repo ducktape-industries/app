@@ -18,7 +18,7 @@ fn primitive_tooltip_route(kind: &str, request: u32) -> wire::Node {
         "container" => wire::Node::Container(view_wire::ContainerNode {
             id: None,
             style: Default::default(),
-            interactivity,
+            interactivity: Box::new(interactivity),
             children: Vec::new(),
         }),
         "uniform-list" => wire::Node::UniformList {
@@ -26,7 +26,7 @@ fn primitive_tooltip_route(kind: &str, request: u32) -> wire::Node {
             path: vec![wire::ElementIdWire::Name("list".into())],
             route: 90,
             style: Default::default(),
-            interactivity,
+            interactivity: Box::new(interactivity),
             count: 0,
             measure_index: 0,
             sizing: Default::default(),
@@ -49,7 +49,7 @@ fn primitive_tooltip_route(kind: &str, request: u32) -> wire::Node {
             fallback: false,
             state_children: Vec::new(),
             style: Default::default(),
-            interactivity,
+            interactivity: Box::new(interactivity),
         },
         "svg" => wire::Node::Svg {
             id: Some(wire::ElementIdWire::Name("svg".into())),
@@ -61,7 +61,7 @@ fn primitive_tooltip_route(kind: &str, request: u32) -> wire::Node {
             },
             label: None,
             style: Default::default(),
-            interactivity,
+            interactivity: Box::new(interactivity),
         },
         _ => unreachable!(),
     }

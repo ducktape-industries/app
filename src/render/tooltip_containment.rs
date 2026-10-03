@@ -78,7 +78,7 @@ mod tests {
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("tooltip-content".into())),
             style: element.style().clone(),
-            interactivity,
+            interactivity: Box::new(interactivity),
             children: Vec::new(),
         })
     }
@@ -105,7 +105,7 @@ mod tests {
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("ordinary-source".into())),
             style: div().size(px(40.)).style().clone(),
-            interactivity,
+            interactivity: Box::new(interactivity),
             children: Vec::new(),
         })
     }
