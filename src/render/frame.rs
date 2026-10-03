@@ -133,10 +133,8 @@ impl ViewTree {
             list.rows.clear();
             uniform_lists.contains(id)
         });
-        self.variable_lists.retain(|id, list| {
-            list.rows.clear();
-            variable_lists.contains(id)
-        });
+        self.variable_lists
+            .retain(|id, _| variable_lists.contains(id));
         self.drags.retain(|key, _| drags.contains(key));
         let opener = &mut self.opener;
         self.dialogs.retain(|key, (entry, was)| {

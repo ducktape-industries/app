@@ -22,6 +22,9 @@ pub(super) struct VariableList {
     /// The rows to ask for in the request already scheduled this frame.
     requested: Option<std::ops::Range<usize>>,
     request_scheduled: bool,
+    /// Rows remeasured, summed over renders.
+    #[cfg(test)]
+    pub(super) remeasured: usize,
 }
 
 impl ViewTree {
@@ -74,6 +77,8 @@ impl ViewTree {
                 revision: *revision,
                 requested: None,
                 request_scheduled: false,
+                #[cfg(test)]
+                remeasured: 0,
             }
         });
         if created {
@@ -98,6 +103,10 @@ impl ViewTree {
             }
         }
         list.rows.retain(|index, _| incoming.contains(index));
+        #[cfg(test)]
+        {
+            list.remeasured += changed.len();
+        }
         for index in changed {
             list.state.remeasure_items(index..index + 1);
         }
