@@ -793,4 +793,6 @@ pub(crate) use entity::Seat;
 #[cfg(test)]
 mod entity_tests;
 #[cfg(test)]
+mod first_frame_tests;
+#[cfg(test)]
 mod tests;

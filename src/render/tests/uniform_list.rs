@@ -33,6 +33,7 @@ fn uniform_node(id: &str, count: usize, rows: Range<usize>) -> wire::Node {
         horizontal_sizing: wire::list::UniformListHorizontalSizing::FitList,
         y_flipped: false,
         scroll_request: None,
+        revision: 0,
         indices,
         children,
     }
@@ -84,10 +85,11 @@ fn uniform_list_measures_row_zero_and_emits_bounded_viewport_ranges(
             wire::Event::UniformListRange {
                 start: 0,
                 end,
+                item_height,
                 ..
-            } if *end > 1 && (*end as usize) <= wire::MAX_UNIFORM_LIST_ROWS
+            } if *end > 1 && (*end as usize) <= wire::MAX_UNIFORM_LIST_ROWS && *item_height == 24.
         )),
-        "initial viewport event: {events:?}"
+        "initial viewport event, with the measured row height: {events:?}"
     );
     tree.read_with(&native, |tree, _| {
         let state = tree.uniform_lists.get(&vec![named_id("uniform")]).unwrap();
@@ -243,4 +245,94 @@ fn a_focus_on_a_uniform_list_is_refused(cx: &mut gpui_kit::TestAppContext) {
         })
     });
     assert!(answer.is_err(), "{answer:?}");
+}
+
+/// A scroll request is the view's one-shot: applied when its revision
+/// moves, not on every frame that carries it on, so the reader's wheel
+/// keeps its place across a frame that changed nothing else (V3/V4).
+#[gpui_kit::test]
+fn a_scroll_request_is_applied_once_per_revision(cx: &mut gpui_kit::TestAppContext) {
+    struct Host {
+        tree: Entity<ViewTree>,
+        _subscription: Subscription,
+    }
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.tree.clone())
+        }
+    }
+    cx.update(gpui_kit::init);
+    let asked = |index: usize, revision: u64| {
+        let mut node = uniform_node("uniform", 2_000, 0..1);
+        let wire::Node::UniformList {
+            scroll_request,
+            revision: carried,
+            ..
+        } = &mut node
+        else {
+            unreachable!()
+        };
+        *scroll_request = Some(wire::list::UniformListScrollRequest {
+            index,
+            strategy: wire::list::UniformListScrollStrategy::Top,
+            offset: 0,
+            strict: true,
+        });
+        *carried = revision;
+        node
+    };
+    let shown = Rc::new(RefCell::new(Vec::new()));
+    let received = shown.clone();
+    let window = cx.open_window(size(px(240.), px(96.)), |_, cx| {
+        let tree = cx.new(|_| ViewTree::new(asked(1_500, 1)));
+        let subscription = cx.subscribe(&tree, move |_, _, event: &wire::Event, _| {
+            if let wire::Event::UniformListRange { start, .. } = event {
+                received.borrow_mut().push(*start);
+            }
+        });
+        Host {
+            tree,
+            _subscription: subscription,
+        }
+    });
+    let tree = window
+        .root(cx)
+        .unwrap()
+        .read_with(cx, |host, _| host.tree.clone());
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let drawn = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+        });
+        native.run_until_parked();
+    };
+    drawn(&mut native);
+    assert_eq!(
+        shown.borrow().last(),
+        Some(&1_500),
+        "the request scrolled the list"
+    );
+    // the reader wheels up to row 1_000
+    tree.read_with(&native, |tree, _| {
+        let state = tree.uniform_lists.get(&vec![named_id("uniform")]).unwrap();
+        state
+            .scroll
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(point(px(0.), px(-1_000. * 24.)));
+    });
+    native.update(|_, cx| tree.update(cx, |_, cx| cx.notify()));
+    drawn(&mut native);
+    assert_eq!(
+        shown.borrow().last(),
+        Some(&1_000),
+        "a frame carrying the request on leaves the wheel where it is: {:?}",
+        shown.borrow()
+    );
+    // the view asks again, under the next revision: applied
+    native.update(|_, cx| tree.update(cx, |tree, cx| tree.replace(asked(100, 2), &[], cx)));
+    drawn(&mut native);
+    assert_eq!(shown.borrow().last(), Some(&100), "{:?}", shown.borrow());
 }

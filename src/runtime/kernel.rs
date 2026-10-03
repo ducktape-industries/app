@@ -11,8 +11,6 @@
 //!
 //! Here, in [`answer`], from app state, on the window thread:
 //! - `host.visible` — a subscription to whether the view's window shows it.
-//! - `host.offset` — a subscription to the reader's UTC offset in minutes,
-//!   from the OS's local time, re-sent when it moves (a DST change).
 //! - `host.route` — a subscription that gets the route a `duck://` link
 //!   asked of this view (`explorer/tx/<hash>` → `tx/<hash>`), once,
 //!   DECODED: the link's `%XX` escapes read back (`chat/forge%3Aweb%3A3`
@@ -251,26 +249,6 @@ pub(super) fn answer(
                 done: false,
             });
         }
-        (Capability::Host, "offset") => {
-            if !payload.is_empty() {
-                guest.refuse(
-                    id,
-                    refusal::MALFORMED_REQUEST,
-                    "offset subscription takes no payload",
-                );
-                return true;
-            }
-            // the subscribers already here hear a move first: they share
-            // the one last-sent offset
-            let minutes = offset_minutes();
-            guest.sync_offset(minutes);
-            guest.offset_subscriptions.push(id);
-            guest.pending.push(wire::Event::Response {
-                id,
-                result: Ok(methods::encode(&minutes)),
-                done: false,
-            });
-        }
         (Capability::Host, "route") => {
             if !payload.is_empty() {
                 guest.refuse(
@@ -444,7 +422,8 @@ pub(crate) fn local_offset(wall: i64) -> i64 {
     }
 }
 
-/// The reader's UTC offset in minutes now, as `host.offset` hands it.
+/// The reader's UTC offset in minutes now, as `Event::Offset` carries it
+/// (`Guest::sync_offset`), from the OS's local time.
 pub(super) fn offset_minutes() -> i32 {
     (local_offset(super::notify::wall()) / 60) as i32
 }

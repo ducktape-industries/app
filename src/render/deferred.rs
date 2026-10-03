@@ -376,6 +376,7 @@ mod tests {
                 horizontal_sizing: wire::list::UniformListHorizontalSizing::FitList,
                 y_flipped: false,
                 scroll_request: None,
+                revision: 0,
                 indices: vec![0],
                 children: vec![row],
             })

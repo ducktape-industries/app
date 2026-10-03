@@ -8,6 +8,7 @@
 //! `Windows`.
 use super::{Account, Notifications, Rail, Session, Windows};
 use crate::runtime::{Intent, Seat, WindowKey};
+use crate::shell::layers::view_body;
 use crate::ui::layout::Layout;
 use gpui_kit::{AnyWindowHandle, App, AppContext as _, Context, Entity, Subscription, WeakEntity};
 use std::collections::BTreeMap;
@@ -135,9 +136,10 @@ impl Seats {
         let Some(windows) = self.windows.upgrade() else {
             return;
         };
-        let (layouts, handles): (
+        let (layouts, handles, console): (
             BTreeMap<WindowKey, Layout>,
             BTreeMap<WindowKey, AnyWindowHandle>,
+            Option<WindowKey>,
         ) = {
             let windows = windows.read(cx);
             (
@@ -147,17 +149,26 @@ impl Seats {
                     .map(|(key, own)| (*key, own.desk.read(cx).get().clone()))
                     .collect(),
                 windows.handles().clone(),
+                windows.console(),
             )
         };
-        let wanted: BTreeMap<u64, (&'static str, Option<AnyWindowHandle>)> = layouts
+        type Place = (&'static str, Option<(AnyWindowHandle, Option<(f32, f32)>)>);
+        let wanted: BTreeMap<u64, Place> = layouts
             .iter()
             .flat_map(|(key, layout)| {
                 let window = handles.get(key).copied();
+                let console = console == Some(*key);
                 layout
                     .panes
                     .iter()
                     .filter(|pane| pane.is_view())
-                    .map(move |pane| (pane.instance, (pane.module, window)))
+                    .map(move |pane| {
+                        let body = view_body(console, pane, layout.desk);
+                        (
+                            pane.instance,
+                            (pane.module, window.map(|window| (window, body))),
+                        )
+                    })
             })
             .collect();
         let gone: Vec<u64> = self
@@ -179,8 +190,10 @@ impl Seats {
                 seat.update(cx, |seat, cx| seat.set_props(props.clone(), cx));
                 Placed { seat, _intents }
             });
-            if let Some(window) = window {
-                placed.seat.update(cx, |seat, cx| seat.place(window, cx));
+            if let Some((window, body)) = window {
+                placed
+                    .seat
+                    .update(cx, |seat, cx| seat.place(window, body, cx));
             }
         }
         let mut hidden = Vec::new();

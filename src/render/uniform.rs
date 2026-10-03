@@ -1,7 +1,8 @@
 //! The UniformList node: a gpui `uniform_list` over a host-owned viewport.
-//! The guest sends only the rows the host asked for (`UniformListRange`),
-//! keyed by index; a row not yet sent draws as a placeholder of
-//! `PLACEHOLDER_HEIGHT`.
+//! The guest sends the rows of a window around what the host shows, keyed
+//! by index, sized from the viewport and the row height the host measured
+//! (`UniformListRange`); a row a far scroll reaches before the guest's
+//! next frame draws as a placeholder of `PLACEHOLDER_HEIGHT`.
 use super::*;
 use crate::render::native_id;
 use gpui_kit::UniformListDecoration;
@@ -14,6 +15,10 @@ pub(super) struct UniformListHostState {
     /// The list's request route: another route in this place is another
     /// list, whose rows these are not.
     pub(super) route: u32,
+    /// The scroll request revision last applied: a request is a one-shot
+    /// the view made, applied when the revision moves and never again for
+    /// the frames that carry it on (the reader's wheel keeps its place).
+    pub(super) revision: Option<u64>,
     pub(super) count: usize,
     /// The rows the guest sent for the range it was asked, by index.
     pub(super) rows: HashMap<usize, wire::Node>,
@@ -31,6 +36,7 @@ impl UniformListHostState {
     fn new(route: u32, count: usize) -> Self {
         Self {
             route,
+            revision: None,
             count,
             rows: HashMap::new(),
             #[cfg(test)]
@@ -59,7 +65,7 @@ impl UniformListDecoration for RangeObserver {
         visible: Range<usize>,
         _bounds: Bounds<Pixels>,
         _scroll_offset: Point<Pixels>,
-        _item_height: Pixels,
+        item_height: Pixels,
         item_count: usize,
         _window: &mut Window,
         app: &mut App,
@@ -83,6 +89,7 @@ impl UniformListDecoration for RangeObserver {
                     route: self.route,
                     start: range.start as u32,
                     end: range.end as u32,
+                    item_height: f32::from(item_height),
                 });
             }
             // gpui's `logical_scroll_top_index` is test-support-only. Its
@@ -131,6 +138,7 @@ impl ViewTree {
             horizontal_sizing,
             y_flipped,
             scroll_request,
+            revision,
             indices,
             children,
         } = node
@@ -144,6 +152,7 @@ impl ViewTree {
             .or_insert_with(|| UniformListHostState::new(*route, count));
         if state.route != *route {
             state.route = *route;
+            state.revision = None;
             state.rows.clear();
             state.requested = None;
             state.observed = None;
@@ -171,7 +180,9 @@ impl ViewTree {
 
         let native_id = native_id(id);
         let scroll = state.scroll.clone();
-        if let Some(request) = scroll_request {
+        let asked = state.revision != Some(*revision);
+        state.revision = Some(*revision);
+        if let Some(request) = scroll_request.filter(|_| asked) {
             let strategy = match request.strategy {
                 wire::list::UniformListScrollStrategy::Top => gpui_kit::ScrollStrategy::Top,
                 wire::list::UniformListScrollStrategy::Center => gpui_kit::ScrollStrategy::Center,

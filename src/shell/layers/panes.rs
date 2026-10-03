@@ -29,7 +29,24 @@ use gpui_kit::*;
 use std::collections::HashMap;
 
 /// A title bar's height.
-const TITLE: f32 = 32.;
+pub(in crate::shell) const TITLE: f32 = 32.;
+/// A pane's border on the desk (`border_1`), each side.
+pub(in crate::shell) const BORDER: f32 = 1.;
+
+/// The body a view's root is laid out in, as [`PaneView::place`] draws it:
+/// on the console a pane's frame less its border and title bar, in a window
+/// of its own the window less the title bar; none until the desk is drawn.
+/// The seat widens it to the view's own minimum (`Pane::min_width`).
+pub(in crate::shell) fn view_body(
+    console: bool,
+    pane: &layout::Pane,
+    desk: Option<(f32, f32)>,
+) -> Option<(f32, f32)> {
+    match pane.frame.filter(|_| console) {
+        Some(frame) => Some((frame.w - 2. * BORDER, frame.h - 2. * BORDER - TITLE)),
+        None => desk.map(|(width, height)| (width, height - TITLE)),
+    }
+}
 
 /// The layer drew the panes as this layout has them, every pane with its
 /// view. An effect: its handler runs after the draw, in the frame that

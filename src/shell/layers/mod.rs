@@ -26,6 +26,8 @@ pub(super) use launcher::{LAUNCHER_SIZE, LauncherLayer};
 #[cfg(any(test, feature = "ax-door"))]
 pub(crate) use overlays::Kept;
 pub(super) use overlays::OverlayLayer;
-pub(super) use panes::{PaneLayer, PaneView};
+#[cfg(test)]
+pub(super) use panes::{BORDER, TITLE};
+pub(super) use panes::{PaneLayer, PaneView, view_body};
 pub(super) use root::WindowRoot;
 pub(super) use toast::ToastView;

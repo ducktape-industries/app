@@ -60,7 +60,9 @@ fn open(
     cx.update(gpui_kit::init);
     let window = cx.open_window(size(px(400.), px(300.)), |window, cx| {
         let seat = cx.new(|cx| Seat::new(module, cx));
-        seat.update(cx, |seat, cx| seat.place(window.window_handle(), cx));
+        seat.update(cx, |seat, cx| {
+            seat.place(window.window_handle(), Some((400., 300.)), cx)
+        });
         Root {
             seat: seat.clone(),
             selection_layer,
@@ -532,7 +534,7 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
         seat.update(cx, |seat, cx| {
             // the pane in front, as the pane layer would say
             seat.set_keys_free(true, cx);
-            seat.place(handle, cx);
+            seat.place(handle, Some((400., 300.)), cx);
             seat.turn(cx);
         });
         handle
@@ -1101,6 +1103,7 @@ fn uniform(rows: std::ops::Range<u32>) -> wire::Node {
         horizontal_sizing: wire::list::UniformListHorizontalSizing::FitList,
         y_flipped: false,
         scroll_request: None,
+        revision: 0,
         children: indices.iter().map(|_| row()).collect(),
         indices,
     }
