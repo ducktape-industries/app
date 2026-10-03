@@ -395,10 +395,11 @@ fn changes_node(heights: &'static [u64]) -> Node {
                     return;
                 };
                 for &height in heights {
+                    // each block wrote one row, as a program's block does
                     let change = noded::Change {
                         height,
                         root: abi::Root([0; 32]),
-                        writes: Vec::new(),
+                        writes: vec![(format!("row/{height}").into_bytes(), None)],
                     };
                     let sent =
                         tokio_tungstenite::tungstenite::Message::Binary(abi::encode(&change));
@@ -449,15 +450,19 @@ fn a_reconnect_opens_a_views_subscriptions_again_on_the_new_node() {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    let item = |height: Option<u64>| wire::Event::Response {
+    let item = |change: Option<methods::Change>| wire::Event::Response {
         id: 1,
-        result: Ok(methods::encode(&height)),
+        result: Ok(methods::encode(&change)),
         done: false,
+    };
+    let block = methods::Change {
+        height: 7,
+        keys: vec![b"row/7".to_vec()],
     };
     assert_eq!(
         items,
-        [item(None), item(Some(7))],
-        "the follower is told to re-read, then hears the new node"
+        [item(None), item(Some(block))],
+        "the follower is told to re-read, then hears the new node's block with the keys it wrote"
     );
     assert_eq!(guest.live_subscriptions, [(1, "chat".to_owned())]);
 }

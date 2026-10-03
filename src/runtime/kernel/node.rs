@@ -409,7 +409,7 @@ pub(in crate::runtime) fn reconnected(guest: &mut Guest, connection: &super::sup
             (Some(Follow::Changes(program)), Some(node)) => {
                 guest
                     .replies
-                    .item(id, Ok(methods::encode(&None::<u64>)), false);
+                    .item(id, Ok(methods::encode(&None::<methods::Change>)), false);
                 follow_changes(guest, id, node, program);
             }
             (Some(Follow::Heads), Some(node)) => follow_heads(guest, id, node),
@@ -418,7 +418,8 @@ pub(in crate::runtime) fn reconnected(guest: &mut Guest, connection: &super::sup
     }
 }
 
-/// `module.changes <program>`: one item per block that wrote to the program.
+/// `module.changes <program>`: one item per block that wrote to the program,
+/// carrying the keys it wrote.
 pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
     let program = methods::decode::<String>(payload)
         .unwrap_or_default()
@@ -478,8 +479,13 @@ fn follow_changes(guest: &mut Guest, id: u64, node: Node, program: String) {
                 }
             };
             while let Some(change) = changes.next().await {
+                // what the node publishes, as it publishes it: the height and
+                // the keys the block wrote (the values stay on the node)
                 let item = match change {
-                    Ok(change) => Ok(methods::encode(&Some(change.height))),
+                    Ok(change) => Ok(methods::encode(&Some(methods::Change {
+                        height: change.height,
+                        keys: change.writes.into_iter().map(|(key, _)| key).collect(),
+                    }))),
                     Err(_) => break,
                 };
                 if !replies.subscription_item(&mut drained, id, item).await {
@@ -489,7 +495,11 @@ fn follow_changes(guest: &mut Guest, id: u64, node: Node, program: String) {
             // the socket closed: the node restarted or the link dropped. Say
             // so once (the view re-reads) and open it again.
             if !replies
-                .subscription_item(&mut drained, id, Ok(methods::encode(&None::<u64>)))
+                .subscription_item(
+                    &mut drained,
+                    id,
+                    Ok(methods::encode(&None::<methods::Change>)),
+                )
                 .await
             {
                 return;
