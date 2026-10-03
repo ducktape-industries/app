@@ -327,7 +327,7 @@ fn a_popover_dialog_takes_the_keys_and_keeps_them(cx: &mut gpui_kit::TestAppCont
         .read_with(&native, |tree, _| tree.guest_focus_targets.get(&1).cloned())
         .expect("the opener is drawn");
     native.update(|window, cx| opener.focus(window, cx));
-    tree.update(&mut native, |tree, cx| tree.replace(popover(true), cx));
+    tree.update(&mut native, |tree, cx| tree.replace(popover(true), &[], cx));
     native.update(|window, cx| window.render_frame(cx));
     native.run_until_parked();
     assert_eq!(
@@ -415,7 +415,7 @@ fn tab_and_escape_hold_in_a_popover_dialog(cx: &mut gpui_kit::TestAppContext) {
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| window.render_frame(cx));
     let (events, _subscription) = super::emitted(&tree, &mut native);
-    tree.update(&mut native, |tree, cx| tree.replace(popover(true), cx));
+    tree.update(&mut native, |tree, cx| tree.replace(popover(true), &[], cx));
     native.update(|window, cx| window.render_frame(cx));
     native.run_until_parked();
     assert_eq!(

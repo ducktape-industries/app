@@ -123,10 +123,11 @@ impl ViewTree {
             .retain(|id, _| guest_focus_ids.contains(id));
         self.fields.retain(|key, _| fields.contains_key(key));
         for (key, field) in self.fields.iter_mut() {
-            // an ask names its target as `resolve_target` reads it: a suffix
+            // an ask names its target by the whole authored path, as the
+            // guest SDK sends it and `execute_widget_command` reads it
             let queued = asked
                 .iter()
-                .filter(|(target, _)| key.ends_with(target))
+                .filter(|(target, _)| key == target)
                 .map(|(_, revision)| *revision)
                 .min();
             field.frame(fields[key], queued);

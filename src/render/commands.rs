@@ -249,8 +249,9 @@ impl ViewTree {
             if let Some(event) = event {
                 cx.emit(event);
             }
+            return Ok(());
         }
-        Err("the target is no container, field or editor: it takes no focus or caret".into())
+        Err("the target is no container or field: it takes no focus, edit or caret".into())
     }
 
     pub(super) fn scroll_command(
