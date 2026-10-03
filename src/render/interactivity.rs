@@ -1,10 +1,10 @@
 //! A node's `wire::Interactivity` onto a gpui element: focus and tab
-//! order, key context, tooltips, and one listener per handler the guest
-//! set, each emitting the matching `wire::Event`.
+//! order, tooltips, one listener per handler the guest set, each emitting
+//! the matching `wire::Event`, and the keys the guest consumes.
 
 use super::ViewTree;
 use gpui_kit::{
-    Context, FocusHandle, KeyDownEvent, KeyUpEvent, ModifiersChangedEvent, MouseButton,
+    Context, FocusHandle, KeyDownEvent, KeyUpEvent, Keystroke, ModifiersChangedEvent, MouseButton,
     MouseDownEvent, MouseExitEvent, MouseMoveEvent, MousePressureEvent, MouseUpEvent, PinchEvent,
     ScrollWheelEvent, StatefulInteractiveElement,
 };
@@ -61,9 +61,6 @@ pub(super) fn apply<E: StatefulInteractiveElement>(
     if let Some(group) = &interactivity.group_active {
         let style = (*group.style).clone();
         element = element.group_active(group.group.clone(), move |_| style);
-    }
-    if let Some(context) = &interactivity.key_context {
-        element = element.key_context(context.to_gpui());
     }
     if interactivity.occlude {
         element = element.occlude();
@@ -293,6 +290,26 @@ fn apply_keyboard<E: StatefulInteractiveElement>(
                 });
             },
         ));
+    }
+    // the keys the guest consumes stop here once this node's own
+    // listeners (and gpui's keyboard click, which notes Enter and Space
+    // first) have heard them, as gpui's `cx.stop_propagation()` in them
+    // would
+    let keys: Vec<Keystroke> = interactivity
+        .consumes_keys
+        .iter()
+        .filter_map(|key| Keystroke::parse(key).ok())
+        .collect();
+    if !keys.is_empty() {
+        element = element.on_key_down(move |event: &KeyDownEvent, _, cx| {
+            let stroke = &event.keystroke;
+            if keys
+                .iter()
+                .any(|key| key.key == stroke.key && key.modifiers == stroke.modifiers)
+            {
+                cx.stop_propagation();
+            }
+        });
     }
     element
 }

@@ -136,3 +136,64 @@ fn a_key_activates_the_view_and_escape_does_not(cx: &mut gpui_kit::TestAppContex
         );
     });
 }
+
+/// What a node consumes stops at it, as gpui's `cx.stop_propagation()` in
+/// its listener would: a link's click does not reach the card it is drawn
+/// on, and the Enter and Space it takes for its keyboard click do not
+/// reach the composite around it, which hears every other key.
+#[gpui_kit::test]
+fn a_consumed_press_stops_at_the_node_that_consumes_it(cx: &mut gpui_kit::TestAppContext) {
+    const CARD: u32 = 81;
+    const LINK: u32 = 82;
+    const KEYS: u32 = 83;
+    cx.update(gpui_kit::init);
+    let mut link = button("link", "block 12");
+    if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut link {
+        interactivity.on_click = Some(LINK);
+        interactivity.consumes_click = true;
+        interactivity.consumes_keys = vec!["enter".into(), "space".into()];
+    }
+    let mut card = container_with_style("card", div().size_full().style().clone(), [link]);
+    if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut card {
+        interactivity.on_click = Some(CARD);
+        interactivity.on_key_down = Some(KEYS);
+    }
+    let window = cx.open_window(size(px(120.), px(80.)), |_, _| ViewTree::new(card));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    native.update(|window, cx| window.render_frame(cx));
+    native.update(|window, cx| window.click("link", cx));
+    native.update(|window, cx| {
+        window.focus_next(cx);
+        window.render_frame(cx);
+    });
+    for key in ["space", "enter", "x"] {
+        native.update(|window, cx| {
+            let keystroke = gpui_kit::Keystroke::parse(key).unwrap();
+            window.dispatch_keystroke(keystroke.clone(), cx);
+            window.dispatch_event(
+                gpui_kit::PlatformInput::KeyUp(gpui_kit::KeyUpEvent { keystroke }),
+                cx,
+            );
+        });
+    }
+    let heard: Vec<String> = events
+        .borrow()
+        .iter()
+        .filter_map(|event| match event {
+            wire::Event::Click { handler, .. } => Some(format!("click {handler}")),
+            wire::Event::KeyDown {
+                handler: KEYS,
+                event,
+                ..
+            } => Some(event.clone().into_gpui().keystroke.key),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        heard,
+        ["click 82", "click 82", "click 82", "x"],
+        "the link took its presses, the card and the composite none"
+    );
+}
