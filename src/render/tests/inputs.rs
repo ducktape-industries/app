@@ -1455,3 +1455,72 @@ fn a_clear_asked_against_a_seed_lands_after_the_adopt(cx: &mut gpui_kit::TestApp
     assert_eq!(text(&tree, &mut native), "yode");
     assert_eq!(told(&events).last().map(String::as_str), Some("yode"));
 }
+
+/// A guest's reset arrives while an IME composes: the adopt waits for the
+/// commit, and until then the field is still the old document, so what the
+/// IME does to it is told as the old generation's. The adopt lands at the
+/// commit as the new generation, with no edit.
+#[gpui_kit::test]
+fn an_adopt_held_by_an_ime_keeps_the_old_generation_until_it_lands(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use gpui_kit::EntityInputHandler as _;
+    let style = div().w(px(240.)).h(px(80.)).style().clone();
+    let (tree, mut native) = mounted(area("doc", None, "ab", style.clone()), cx);
+    let path = [named_id("doc")];
+    let (events, _subscription) = emitted(&tree, &mut native);
+    let state = native.update(|_, cx| {
+        let crate::render::inputs::Engine::Area(state) =
+            tree.read(cx).fields[&path[..]].engine.clone()
+        else {
+            unreachable!()
+        };
+        state
+    });
+    // the IME starts composing at the end of "ab"
+    native.update(|window, cx| {
+        state.update(cx, |state, cx| {
+            state.focus(window, cx);
+            state.set_selected_range(2..2, cx);
+            state.replace_and_mark_text_in_range(None, "k", None, window, cx);
+        });
+    });
+    native.run_until_parked();
+    // the guest resets to "hello" meanwhile: a frame with generation 2
+    native.update(|window, cx| {
+        let mut root = area("doc", None, "hello", style.clone());
+        let wire::Node::Field { generation, .. } = &mut root else {
+            unreachable!()
+        };
+        *generation = 2;
+        tree.update(cx, |tree, cx| tree.replace(root, &[], cx));
+        window.render_frame(cx);
+    });
+    native.run_until_parked();
+    // the IME goes on composing: the old document, told as the old generation
+    native.update(|window, cx| {
+        state.update(cx, |state, cx| {
+            state.replace_and_mark_text_in_range(None, "ka", None, window, cx);
+        });
+    });
+    native.run_until_parked();
+    let composing = last_change(&events);
+    assert_eq!(
+        (composing.generation, composing.text.as_str()),
+        (1, "abka"),
+        "the field is the old document until the adopt lands"
+    );
+    // the commit: the adopt lands as generation 2, a new document, no edit
+    native.update(|window, cx| {
+        state.update(cx, |state, cx| {
+            state.replace_text_in_range(None, "か", window, cx);
+        });
+    });
+    native.run_until_parked();
+    let adopt = last_change(&events);
+    assert_eq!(
+        (adopt.generation, adopt.edit, adopt.text.as_str()),
+        (2, None, "hello")
+    );
+    assert_eq!(text(&tree, &mut native), "hello");
+}

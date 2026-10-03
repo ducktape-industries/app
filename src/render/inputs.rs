@@ -44,7 +44,7 @@ macro_rules! engine {
 /// held the same way, until the frame that carries it.
 enum Deferred {
     Replace(wire::WidgetCommand),
-    Adopt(String, Vec<wire::TextToken>, Range<usize>),
+    Adopt(u64, String, Vec<wire::TextToken>, Range<usize>),
 }
 
 /// What moved the engine's text, for `settle` to report: the writer or the
@@ -219,9 +219,20 @@ impl ViewTree {
         field.on_submit = *on_submit;
         field.claims.clone_from(claims);
         let mut events = Vec::new();
-        if field.generation != *generation {
-            field.generation = *generation;
-            events.extend(field.adopt(value, tokens, cursor.range(), window, cx));
+        // the generation the field holds, or the one an IME is keeping it
+        // from adopting: the field's generation moves when the adopt lands,
+        // so every change until then is told as the old document's
+        let awaited = field
+            .deferred
+            .iter()
+            .rev()
+            .find_map(|deferred| match deferred {
+                Deferred::Adopt(generation, ..) => Some(*generation),
+                _ => None,
+            })
+            .unwrap_or(field.generation);
+        if awaited != *generation {
+            events.extend(field.adopt(*generation, value, tokens, cursor.range(), window, cx));
             // an ask for this generation that outran its frame
             events.extend(field.land(window, cx));
         }
@@ -573,9 +584,12 @@ impl Field {
     /// revision with no edit, since it is a new document and not an edit of
     /// the old one. The edit log goes with the old document: no ask on the
     /// new one predates it, and an ask on the old one edits nothing now
-    /// (`ask`). Held while an IME composes.
+    /// (`ask`). Held while an IME composes, and the field stays on the old
+    /// generation until it lands: what the IME does meanwhile is done to the
+    /// old document, and is told as such.
     fn adopt(
         &mut self,
+        generation: u64,
         value: &str,
         tokens: &[wire::TextToken],
         cursor: Range<usize>,
@@ -583,10 +597,15 @@ impl Field {
         cx: &mut App,
     ) -> Option<wire::Event> {
         if self.composing(window, cx) {
-            self.deferred
-                .push(Deferred::Adopt(value.to_owned(), tokens.to_vec(), cursor));
+            self.deferred.push(Deferred::Adopt(
+                generation,
+                value.to_owned(),
+                tokens.to_vec(),
+                cursor,
+            ));
             return None;
         }
+        self.generation = generation;
         self.install(value, tokens, cursor, window, cx);
         self.log.clear();
         self.settle(Made::Adopted, window, cx)
@@ -684,8 +703,8 @@ impl Field {
             .into_iter()
             .filter_map(|deferred| match deferred {
                 Deferred::Replace(command) => self.ask(command, window, cx),
-                Deferred::Adopt(value, tokens, cursor) => {
-                    self.adopt(&value, &tokens, cursor, window, cx)
+                Deferred::Adopt(generation, value, tokens, cursor) => {
+                    self.adopt(generation, &value, &tokens, cursor, window, cx)
                 }
             })
             .collect()
