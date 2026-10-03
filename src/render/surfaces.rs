@@ -33,17 +33,13 @@ impl ViewTree {
                 // trap registers; drop an obscured ancestor before that pass.
                 self.dialogs.remove(&path);
             }
-            // a modal deferred over what follows it takes its layer along:
-            // the dialog, its trap and its press outside are drawn in the
-            // pass its content is, so the dialog holds its content (gpui
-            // gives a deferred draw's accessibility nodes the window as
-            // their parent) and its trap holds its Tab stops
-            let (modal, deferral) = match modal {
-                wire::Node::Deferred { content, priority } => (&**content, Some(*priority)),
-                modal => (modal, None),
+            // a popover anchored to the view covers nothing, in place or
+            // deferred over what follows it
+            let shown = match modal {
+                wire::Node::Deferred { content, .. } => &**content,
+                modal => modal,
             };
-            // a popover anchored to the view covers nothing
-            let anchored = matches!(modal, wire::Node::Anchored { .. });
+            let anchored = matches!(shown, wire::Node::Anchored { .. });
             let shade = shades(anchored, style).then(|| {
                 div()
                     .id(host_id("backdrop"))
@@ -119,10 +115,6 @@ impl ViewTree {
                 }
             } else {
                 layer.into_any_element()
-            };
-            let layer = match deferral {
-                Some(priority) => super::deferred::deferred(layer, priority).into_any_element(),
-                None => layer,
             };
             element = element.children(shade).child(layer);
         }
