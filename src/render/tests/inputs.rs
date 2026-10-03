@@ -741,3 +741,50 @@ fn a_backward_selection_crosses_a_new_generation(cx: &mut gpui_kit::TestAppConte
     });
     assert_eq!(restored, (2..5, 5));
 }
+
+/// A target is a whole authored path, as the guest SDK sends it. Here one
+/// scope `b` sits inside `a` and another `b` stands alone, each with a
+/// field: the lone one's is focused, never the first field whose path
+/// only ends the same way.
+#[gpui_kit::test]
+fn a_focus_takes_the_field_at_its_whole_path(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let field = || {
+        let mut node = input("Message", false, false);
+        let wire::Node::Input { id, .. } = &mut node else {
+            unreachable!()
+        };
+        *id = named_id("input");
+        node
+    };
+    // an id-less root: every path starts at the scopes under it
+    let root = wire::Node::Container(view_wire::ContainerNode {
+        id: None,
+        style: Default::default(),
+        interactivity: Default::default(),
+        children: vec![
+            container("a", [container("b", [field()])]),
+            container("b", [field()]),
+        ],
+    });
+    let window = cx.open_window(size(px(500.), px(200.)), |_, _| ViewTree::new(root));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    let nested = vec![named_id("a"), named_id("b"), named_id("input")];
+    let alone = vec![named_id("b"), named_id("input")];
+    native.update(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            tree.execute_widget_command(
+                wire::WidgetCommand::Focus {
+                    target: alone.clone(),
+                },
+                window,
+                cx,
+            )
+            .unwrap();
+            assert!(tree.target_focused(&alone, window, cx), "the one asked for");
+            assert!(!tree.target_focused(&nested, window, cx));
+        })
+    });
+}

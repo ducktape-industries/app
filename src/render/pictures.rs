@@ -499,34 +499,14 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        let mut element = element;
-        if let Some(group) = &interactivity.group {
-            element = element.group(group.clone());
-        }
-        if let Some(style) = &interactivity.hover {
-            let style = (**style).clone();
-            element = element.hover(move |_| style);
-        }
-        if let Some(group) = &interactivity.group_hover {
-            let style = (*group.style).clone();
-            element = element.group_hover(group.group.clone(), move |_| style);
-        }
         let native_id = id.as_ref().map(native_id).unwrap_or_else(|| {
             let index = self.render_index;
             self.render_index += 1;
             host_id(format!("primitive-{index}"))
         });
-        let mut element = element.id(native_id);
-        if let Some(style) = &interactivity.active {
-            let style = (**style).clone();
-            element = element.active(move |_| style);
-        }
-        if let Some(group) = &interactivity.group_active {
-            let style = (*group.style).clone();
-            element = element.group_active(group.group.clone(), move |_| style);
-        }
-        element = self.guest_aria(element, node, interactivity, cx);
-        element.into_any_element()
+        let element = element.id(native_id);
+        self.guest_aria(element, node, interactivity, cx)
+            .into_any_element()
     }
 }
 

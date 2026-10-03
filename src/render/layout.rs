@@ -30,25 +30,6 @@ impl ViewTree {
             host_id(format!("container-{index}"))
         });
         let mut element = element.id(native_id);
-        if let Some(group) = &interactivity.group {
-            element = element.group(group.clone());
-        }
-        if let Some(style) = &interactivity.hover {
-            let style = (**style).clone();
-            element = element.hover(move |_| style);
-        }
-        if let Some(style) = &interactivity.active {
-            let style = (**style).clone();
-            element = element.active(move |_| style);
-        }
-        if let Some(group) = &interactivity.group_hover {
-            let style = (*group.style).clone();
-            element = element.group_hover(group.group.clone(), move |_| style);
-        }
-        if let Some(group) = &interactivity.group_active {
-            let style = (*group.style).clone();
-            element = element.group_active(group.group.clone(), move |_| style);
-        }
         element = self.guest_aria(element, node, interactivity, cx);
         // Only a container with an id of its own owns its path. An id-less one
         // sits on its nearest named ancestor's path: measuring there, it and

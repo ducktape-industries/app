@@ -1,6 +1,6 @@
 //! What a guest asks of the mounted tree between frames: widget commands
-//! (`host.widget`: focus, cursor, scroll, editor action) resolved against
-//! the paths this tree mounts, the walk that names those paths, the
+//! (`host.widget`: focus, cursor, scroll, editor action) on the node at
+//! the whole authored path they name, the walk that names those paths, the
 //! user-activation mark an event may spend, the entry a dialog gives the
 //! keyboard when it opens, and the way back when it closes.
 
@@ -35,9 +35,9 @@ pub(super) fn walk_authored_paths(
 
 /// Where focus enters a dialog that opens this frame: `entry`, the handle
 /// its focus trap tracks. Focus that is not in the dialog at the end of the
-/// frame moves to the first Tab stop after the trap's — the dialog's first
-/// control — so a keyboard is in the dialog it opened, not behind it. Focus
-/// the dialog's own content took is left alone.
+/// frame moves to the dialog's first Tab stop, as Tab from the trap would
+/// take it ([`tab`]) — so a keyboard is in the dialog it opened, not behind
+/// it. Focus the dialog's own content took is left alone.
 ///
 /// Not "focus still where it was": a view that wraps its screen in the
 /// overlay only while the dialog is open (chat's Create channel) moves every
@@ -53,9 +53,37 @@ pub(crate) fn dialog_entry(entry: &FocusHandle, window: &mut Window, cx: &mut Ap
     window.defer(cx, move |window, cx| {
         if !entry.contains_focused(window, cx) {
             window.focus(&entry, cx);
-            window.focus_next(cx);
+            tab(Some(&entry), true, window, cx);
         }
     });
+}
+
+/// Tab's step (`forward`) or Shift-Tab's, as the kit's root takes it for a
+/// key press (gpui-base `Root::on_action_tab`): one stop on, and while that
+/// leaves `trap`, on round the window's stops until the keys are back in
+/// it; with no stop in the trap they stay where they were. A bare
+/// `focus_next` is not Tab: gpui orders stops as they paint, a deferred
+/// popover's after everything painted in place, so one step from a dialog's
+/// trap lands on whatever is drawn after its opener, outside the dialog.
+pub(crate) fn tab(trap: Option<&FocusHandle>, forward: bool, window: &mut Window, cx: &mut App) {
+    let step = |window: &mut Window, cx: &mut App| match forward {
+        true => window.focus_next(cx),
+        false => window.focus_prev(cx),
+    };
+    let start = window.focused(cx);
+    step(window, cx);
+    let Some(trap) = trap else { return };
+    let first = window.focused(cx);
+    while !trap.contains_focused(window, cx) {
+        step(window, cx);
+        if window.focused(cx) == first {
+            // round once, and no stop in the trap
+            if let Some(start) = &start {
+                window.focus(start, cx);
+            }
+            return;
+        }
+    }
 }
 
 /// Where focus goes when a dialog closes: back to `opener`, what held it as
@@ -123,8 +151,16 @@ impl ViewTree {
                     .clone();
                 focus.focus(window, cx);
             }
-            C::FocusPrevious => self.focus_relative(false, window, cx)?,
-            C::FocusNext => self.focus_relative(true, window, cx)?,
+            // Tab's own move: through the window's Tab stops, kept in a
+            // focus trap, never a walk of this tree's own
+            C::FocusPrevious => {
+                let trap = gpui_kit::base::active_focus_trap(window, cx);
+                tab(trap.as_ref(), false, window, cx)
+            }
+            C::FocusNext => {
+                let trap = gpui_kit::base::active_focus_trap(window, cx);
+                tab(trap.as_ref(), true, window, cx)
+            }
             C::EditorAction { ref target, .. }
             | C::Focus { ref target }
             | C::CursorFront { ref target }
@@ -133,47 +169,28 @@ impl ViewTree {
             | C::SelectAll { ref target }
             | C::Select { ref target, .. } => self.input_command(target, &command, window, cx)?,
             C::Snap { target, x, y } => {
-                self.scroll_command(&target, ScrollRequest::Relative(x, y), cx)
+                self.scroll_command(&target, ScrollRequest::Relative(x, y), cx)?
             }
-            C::SnapEnd { target } => self.scroll_command(&target, ScrollRequest::End, cx),
+            C::SnapEnd { target } => self.scroll_command(&target, ScrollRequest::End, cx)?,
             C::ScrollTo { target, x, y } => {
-                self.scroll_command(&target, ScrollRequest::Absolute(x, y), cx)
+                self.scroll_command(&target, ScrollRequest::Absolute(x, y), cx)?
             }
             C::ScrollBy { target, x, y } => {
-                self.scroll_command(&target, ScrollRequest::By(x, y), cx)
+                self.scroll_command(&target, ScrollRequest::By(x, y), cx)?
             }
         }
         Ok(wire::encode(&()))
     }
 
-    /// The full authored path of the node a widget command's target names.
-    /// A guest sends a suffix (the node's own id, maybe a parent or two),
-    /// never the ancestors other code owns, while every retained map is
-    /// keyed by the full walked ancestry: any path ending with the target
-    /// matches, and the first in depth-first order wins.
-    pub(super) fn resolve_target(&self, target: &[wire::ElementIdWire]) -> Option<AuthoredPath> {
-        if target.is_empty() {
-            return None;
-        }
-        let mut found = None;
-        walk_authored_paths(&self.root, &mut Vec::new(), &mut |_, path| {
-            if found.is_none() && path.ends_with(target) {
-                found = Some(path.clone());
-            }
-        });
-        found
-    }
-
+    /// Whether the keyboard is in the node at `target`, a whole authored
+    /// path.
+    #[cfg(test)]
     pub(super) fn target_focused(
         &self,
         target: &[wire::ElementIdWire],
         window: &Window,
         cx: &App,
     ) -> bool {
-        let Some(target) = self.resolve_target(target) else {
-            return false;
-        };
-        let target = target.as_slice();
         if let Some((_, handle)) = self.focus_targets.get(target) {
             return handle.is_focused(window);
         }
@@ -185,43 +202,10 @@ impl ViewTree {
             .is_some_and(|editor| editor.view.is_focused(window, cx))
     }
 
-    pub(super) fn focus_relative(
-        &mut self,
-        forward: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Result<(), String> {
-        let mut targets = Vec::new();
-        walk_authored_paths(&self.root, &mut Vec::new(), &mut |_, path| {
-            let available = self.mounted.contains(path)
-                && (self.focus_targets.contains_key(path) || self.editors.contains_key(path));
-            if available {
-                targets.push(path.clone());
-            }
-        });
-        if targets.is_empty() {
-            return Ok(());
-        }
-        let current = targets
-            .iter()
-            .position(|key| self.target_focused(key, window, cx));
-        let index = match (current, forward) {
-            (Some(index), true) => (index + 1) % targets.len(),
-            (Some(index), false) => (index + targets.len() - 1) % targets.len(),
-            (None, true) => 0,
-            (None, false) => targets.len() - 1,
-        };
-        let target = &targets[index];
-        self.input_command(
-            target,
-            &wire::WidgetCommand::Focus {
-                target: target.clone(),
-            },
-            window,
-            cx,
-        )
-    }
-
+    /// Runs a focus, cursor, selection or editor command on the node at
+    /// `target`: a whole authored path, as the guest SDK names it from the
+    /// frame it lowered, so two scopes holding one id are two targets. A
+    /// node that cannot take the command answers so.
     pub(super) fn input_command(
         &mut self,
         target: &[wire::ElementIdWire],
@@ -230,14 +214,11 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         use wire::WidgetCommand as C;
-        let Some(target) = self.resolve_target(target) else {
-            return Ok(());
-        };
-        let target = target.as_slice();
         if matches!(command, C::Focus { .. }) {
             let mut kind = None;
             walk_authored_paths(&self.root, &mut Vec::new(), &mut |node, path| {
-                if path == target
+                if kind.is_none()
+                    && path == target
                     && matches!(node, wire::Node::Container(view_wire::ContainerNode { .. }))
                 {
                     kind = Some(std::mem::discriminant(node));
@@ -279,7 +260,7 @@ impl ViewTree {
             }
             return Ok(());
         }
-        Ok(())
+        Err("the target is no container, field or editor: it takes no focus or caret".into())
     }
 
     pub(super) fn scroll_command(
@@ -287,13 +268,9 @@ impl ViewTree {
         target: &[wire::ElementIdWire],
         request: ScrollRequest,
         cx: &mut Context<Self>,
-    ) {
-        let Some(target) = self.resolve_target(target) else {
-            return;
-        };
-        let target = target.as_slice();
+    ) -> Result<(), String> {
         let Some(handle) = self.scrolls.get(target) else {
-            return;
+            return Err("the target is no scroller with an id".into());
         };
         // an offset is measured from the start: gpui scrolls into the negative
         let maximum = handle.max_offset();
@@ -310,5 +287,6 @@ impl ViewTree {
             next.y.clamp(-maximum.y, px(0.0)),
         ));
         cx.notify();
+        Ok(())
     }
 }
