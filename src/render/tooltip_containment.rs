@@ -92,11 +92,14 @@ mod tests {
         })
     }
 
-    fn ordinary_source(request: u32, content: Option<wire::Node>) -> wire::Node {
+    fn ordinary_source(request: u32) -> wire::Node {
+        sized_source(request, 40.)
+    }
+
+    fn sized_source(request: u32, size: f32) -> wire::Node {
         let interactivity = wire::Interactivity {
             tooltip: Some(wire::Tooltip {
                 request,
-                content: content.map(Box::new),
                 hoverable: false,
                 delay_ms: 10,
             }),
@@ -104,10 +107,26 @@ mod tests {
         };
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("ordinary-source".into())),
-            style: div().size(px(40.)).style().clone(),
+            style: div().size(px(size)).style().clone(),
             interactivity: Box::new(interactivity),
             children: Vec::new(),
         })
+    }
+
+    /// The guest's answer to `request`: `content`.
+    fn answer(request: u32, content: wire::Node) -> wire::TooltipResponse {
+        wire::TooltipResponse {
+            request,
+            character_index: None,
+            content: Some(Box::new(content)),
+        }
+    }
+
+    fn tooltip_painted(window: &mut Window) -> bool {
+        window
+            .painted_quads()
+            .iter()
+            .any(|quad| quad.background.as_solid() == Some(rgb(TOOLTIP_COLOR).into()))
     }
 
     struct TooltipFixture {
@@ -235,7 +254,7 @@ mod tests {
         let requests = Rc::new(Cell::new(0));
         let observed = requests.clone();
         let window = cx.open_window(size(px(200.), px(200.)), |_, cx| {
-            let tree = cx.new(|_| ViewTree::new(ordinary_source(71, None)));
+            let tree = cx.new(|_| ViewTree::new(ordinary_source(71)));
             let subscription = cx.subscribe(&tree, move |_, source, event: &wire::Event, cx| {
                 if !matches!(
                     event,
@@ -250,7 +269,7 @@ mod tests {
                 let source = source.downgrade();
                 cx.defer(move |cx| {
                     let _ = source.update(cx, |tree, cx| {
-                        tree.replace(ordinary_source(71, Some(node(120., None))), &[], cx)
+                        tree.tooltip_responses(vec![answer(71, node(120., None))], cx)
                     });
                 });
             });
@@ -306,7 +325,11 @@ mod tests {
             content: Box::new(node(20., None)),
         };
         let window = cx.open_window(size(px(200.), px(200.)), move |_, cx| {
-            Slot(cx.new(|_| ViewTree::new(ordinary_source(93, Some(content)))))
+            let tree = cx.new(|_| ViewTree::new(ordinary_source(93)));
+            tree.update(cx, |tree, cx| {
+                tree.tooltip_responses(vec![answer(93, content)], cx)
+            });
+            Slot(tree)
         });
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
         native.update(|window, cx| window.render_frame(cx));
@@ -321,6 +344,50 @@ mod tests {
                     .iter()
                     .any(|quad| quad.background.as_solid() == Some(rgb(TOOLTIP_COLOR).into())),
                 "the tooltip's deferred content paints"
+            );
+        });
+    }
+
+    /// The tooltip's content lives beside the tree, by route: a frame that
+    /// changes the hovered node's props (here its size) replaces the tree
+    /// and the open tooltip stays, since the route stays.
+    #[gpui_kit::test]
+    fn a_props_change_on_the_hovered_node_keeps_its_tooltip(cx: &mut gpui_kit::TestAppContext) {
+        struct Host(Entity<ViewTree>);
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size(px(60.)).overflow_hidden().child(self.0.clone())
+            }
+        }
+        cx.update(gpui_kit::init);
+        let window = cx.open_window(size(px(200.), px(200.)), |_, cx| {
+            let tree = cx.new(|_| ViewTree::new(ordinary_source(71)));
+            tree.update(cx, |tree, cx| {
+                tree.tooltip_responses(vec![answer(71, node(20., None))], cx)
+            });
+            Host(tree)
+        });
+        let tree = window
+            .root(cx)
+            .unwrap()
+            .read_with(cx, |host, _| host.0.clone());
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| window.render_frame(cx));
+        native.simulate_mouse_move(point(px(10.), px(10.)), None, Default::default());
+        native.executor().advance_clock(Duration::from_millis(11));
+        native.run_until_parked();
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(tooltip_painted(window), "the tooltip opened");
+        });
+        native.update(|_, cx| {
+            tree.update(cx, |tree, cx| tree.replace(sized_source(71, 44.), &[], cx));
+        });
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                tooltip_painted(window),
+                "the props change closed the tooltip"
             );
         });
     }

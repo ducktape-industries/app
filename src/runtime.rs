@@ -250,10 +250,20 @@ pub(crate) fn wat_frame(frame: &wire::Frame) -> (String, u32) {
 /// [`seat_for_test`], its view drawing `root` on every tick.
 #[cfg(test)]
 pub(crate) fn seat_drawing_for_test(module: &'static str, min_width: u32, root: wire::Node) {
-    let (bytes, len) = wat_frame(&wire::Frame {
-        root: Some(root),
-        ..Default::default()
-    });
+    seat_frame_for_test(
+        module,
+        min_width,
+        wire::Frame {
+            root: Some(root),
+            ..Default::default()
+        },
+    );
+}
+
+/// [`seat_for_test`], its view answering every tick with `frame`.
+#[cfg(test)]
+pub(crate) fn seat_frame_for_test(module: &'static str, min_width: u32, frame: wire::Frame) {
+    let (bytes, len) = wat_frame(&frame);
     let tick = wire::abi::pack(65536, len);
     let code = Module::new(
         guest::engine(),

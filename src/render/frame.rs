@@ -16,6 +16,54 @@ impl ViewTree {
         self.pictures = pictures;
     }
 
+    /// Takes what the guest built for tooltip routes. A response is kept by
+    /// its route while the tree holds that route, the newest for a route
+    /// winning, and a response for a route the tree does not hold is for
+    /// nothing. Together the contents are held to the frame's node budget,
+    /// as the frames that brought them were: one that would take them past
+    /// it starts the store over, so the tooltip the pointer rests on shows.
+    pub fn tooltip_responses(
+        &mut self,
+        responses: Vec<wire::TooltipResponse>,
+        cx: &mut Context<Self>,
+    ) {
+        let routes = tooltip_routes(&self.root);
+        let mut changed = false;
+        for response in responses {
+            if !routes.contains(&response.request) {
+                continue;
+            }
+            let Some(content) = response.content else {
+                changed |= self.tooltips.remove(&response.request).is_some();
+                continue;
+            };
+            let same = self.tooltips.get(&response.request).is_some_and(|held| {
+                held.character_index == response.character_index && *held.content == *content
+            });
+            if same {
+                continue;
+            }
+            let held: usize = (self.tooltips.iter())
+                .filter(|(request, _)| **request != response.request)
+                .map(|(_, held)| held.content.count())
+                .sum();
+            if held + content.count() > wire::MAX_NODES {
+                self.tooltips.clear();
+            }
+            self.tooltips.insert(
+                response.request,
+                TooltipContent {
+                    character_index: response.character_index,
+                    content: Arc::new(*content),
+                },
+            );
+            changed = true;
+        }
+        if changed {
+            cx.notify();
+        }
+    }
+
     /// The guest's new root, with the `Replace` asks the host still holds
     /// for it (target and the revision each read): a field's edit log is kept
     /// from the oldest ask on it.
@@ -36,8 +84,10 @@ impl ViewTree {
         let mut dialogs = std::collections::HashSet::new();
         let mut sensors = std::collections::HashSet::new();
         let mut mounted = std::collections::HashSet::new();
+        let mut tooltip_routes = std::collections::HashSet::new();
         walk_authored_paths(&root, &mut Vec::new(), &mut |node, path| {
             mounted.insert(path.clone());
+            tooltip_routes.extend(tooltip_route(node));
             // a scrolling container with an id keeps its handle; an id-less
             // one has no path of its own to keep it at
             if let wire::Node::Container(view_wire::ContainerNode {
@@ -133,10 +183,10 @@ impl ViewTree {
             field.frame(fields[key], queued);
         }
         self.scrolls.retain(|key, _| scrolls.contains(key));
-        self.uniform_lists.retain(|id, list| {
-            list.rows.clear();
-            uniform_lists.contains(id)
-        });
+        self.uniform_lists
+            .retain(|id, _| uniform_lists.contains(id));
+        self.tooltips
+            .retain(|request, _| tooltip_routes.contains(request));
         self.variable_lists
             .retain(|id, _| variable_lists.contains(id));
         self.drags.retain(|key, _| drags.contains(key));
@@ -152,4 +202,32 @@ impl ViewTree {
         self.root = root;
         cx.notify();
     }
+}
+
+/// The tooltip route a node holds, if it holds one.
+fn tooltip_route(node: &wire::Node) -> Option<u32> {
+    match node {
+        wire::Node::Container(view_wire::ContainerNode { interactivity, .. })
+        | wire::Node::UniformList { interactivity, .. }
+        | wire::Node::List { interactivity, .. }
+        | wire::Node::ResizeHandle { interactivity, .. }
+        | wire::Node::Image { interactivity, .. }
+        | wire::Node::Svg { interactivity, .. } => interactivity
+            .tooltip
+            .as_ref()
+            .map(|tooltip| tooltip.request),
+        wire::Node::RichText { tooltip, .. } => *tooltip,
+        _ => None,
+    }
+}
+
+/// Every tooltip route the tree holds: the requests a response may answer.
+fn tooltip_routes(root: &wire::Node) -> std::collections::HashSet<u32> {
+    let mut routes = std::collections::HashSet::new();
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        routes.extend(tooltip_route(node));
+        pending.extend(node.children());
+    }
+    routes
 }

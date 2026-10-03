@@ -192,6 +192,10 @@ pub struct ViewTree {
     // that names a hash alone draws from, and the rasters decoded from them.
     pictures: Arc<PictureBytes>,
     images: SharedRasters,
+    /// What the guest built for the tree's tooltip routes, by route
+    /// (`wire::TooltipResponse`): beside the tree, never written into it,
+    /// kept while the tree holds the route (`tooltip_responses`).
+    tooltips: HashMap<u32, TooltipContent>,
 
     // Plumbing.
     /// State carried over from the previous guest instance's tree; emptied by the first render.
@@ -212,6 +216,13 @@ pub struct ViewTree {
 }
 
 impl EventEmitter<wire::Event> for ViewTree {}
+
+/// The content a tooltip route's response brought, and for a rich text's
+/// tooltip the character it was built for.
+struct TooltipContent {
+    character_index: Option<u32>,
+    content: Arc<wire::Node>,
+}
 
 /// The tree has drawn: every render says so, and the seat that ticked
 /// waits for it before its next turn (one tick per draw).
@@ -243,6 +254,7 @@ impl ViewTree {
             sensors: HashMap::new(),
             pictures: Default::default(),
             images: Default::default(),
+            tooltips: HashMap::new(),
             mounted: Default::default(),
             presentation: NativePresentation::default(),
             render_index: 0,

@@ -325,6 +325,7 @@ impl Seat {
             })
             .collect();
         let intents = std::mem::take(&mut guest.intents);
+        let tooltips = std::mem::take(&mut guest.tooltip_responses);
         let min_width = guest.min_width as f32;
         let first_tree = ticks == 0 && guest.ticks == 1;
         drop(locked);
@@ -359,6 +360,11 @@ impl Seat {
                 // first to find it seated, to its tree mounted
                 crate::perf::record(key, "first_tree", shown.elapsed().as_micros() as u64);
             }
+        }
+        if !tooltips.is_empty()
+            && let Some(tree) = &self.tree
+        {
+            tree.update(cx, |tree, cx| tree.tooltip_responses(tooltips, cx));
         }
         if commands > 0 {
             self.run_widget_commands(generation, cx);
@@ -443,7 +449,7 @@ impl Seat {
                 };
                 let current =
                     guest.seated_generation() == generation && Arc::ptr_eq(&alive, &guest.alive);
-                if current && guest.frame_rev == this.revision {
+                if current {
                     guest.pending.push(event.clone());
                 }
                 drop(locked);

@@ -95,6 +95,13 @@ fn uniform_list_measures_row_zero_and_emits_bounded_viewport_ranges(
         assert!(state.rows.contains_key(&0));
         assert!(state.requested.is_some());
     });
+    // the same rows drawn again are the ones held, not taken again
+    native.update(|_, cx| tree.update(cx, |_, cx| cx.notify()));
+    native.update(|window, cx| window.render_frame(cx));
+    tree.read_with(&native, |tree, _| {
+        let state = tree.uniform_lists.get(&vec![named_id("uniform")]).unwrap();
+        assert_eq!(state.replaced, 1, "row zero was taken once");
+    });
 }
 
 #[gpui_kit::test]

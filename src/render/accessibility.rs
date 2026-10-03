@@ -367,7 +367,11 @@ impl ViewTree {
                 .or_insert_with(|| cx.focus_handle());
             tabbed(handle.clone(), interactivity)
         });
-        element = super::interactivity::apply(element, interactivity, focus_handle, cx);
+        // the content the guest built for the node's tooltip, if it has
+        let tooltip = (interactivity.tooltip.as_ref())
+            .and_then(|tooltip| self.tooltips.get(&tooltip.request))
+            .map(|held| held.content.clone());
+        element = super::interactivity::apply(element, interactivity, focus_handle, tooltip, cx);
         // assistive technology's press is this click too: gpui-pre answers
         // AccessKit's Click on an element with click listeners by running
         // them (a keyboard click on its bounds), wherever it is drawn, so

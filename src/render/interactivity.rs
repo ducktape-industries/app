@@ -8,6 +8,7 @@ use gpui_kit::{
     MouseDownEvent, MouseExitEvent, MouseMoveEvent, MousePressureEvent, MouseUpEvent, PinchEvent,
     ScrollWheelEvent, StatefulInteractiveElement,
 };
+use std::sync::Arc;
 use std::time::Duration;
 use view_wire as wire;
 
@@ -15,6 +16,7 @@ pub(super) fn apply<E: StatefulInteractiveElement>(
     mut element: E,
     interactivity: &wire::Interactivity,
     focus_handle: Option<FocusHandle>,
+    tooltip: Option<Arc<wire::Node>>,
     cx: &mut Context<ViewTree>,
 ) -> E {
     if let Some(value) = interactivity.tab_stop {
@@ -72,20 +74,17 @@ pub(super) fn apply<E: StatefulInteractiveElement>(
     element = apply_mouse(element, interactivity, cx);
     element = apply_keyboard(element, interactivity, cx);
     element = apply_misc(element, interactivity, cx);
-    if let Some(tooltip) = &interactivity.tooltip
-        && let Some(content) = &tooltip.content
-    {
+    if let (Some(tooltip), Some(content)) = (&interactivity.tooltip, tooltip) {
         let parent = cx.entity().downgrade();
-        let content = content.clone();
         let delay = Duration::from_millis(tooltip.delay_ms);
         element = element.tooltip_show_delay(delay);
         if tooltip.hoverable {
             element = element.hoverable_tooltip(move |_, cx| {
-                super::tooltip_containment::build(parent.clone(), *content.clone(), cx)
+                super::tooltip_containment::build(parent.clone(), (*content).clone(), cx)
             });
         } else {
             element = element.tooltip(move |_, cx| {
-                super::tooltip_containment::build(parent.clone(), *content.clone(), cx)
+                super::tooltip_containment::build(parent.clone(), (*content).clone(), cx)
             });
         }
     }
