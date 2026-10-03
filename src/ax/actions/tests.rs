@@ -1,10 +1,9 @@
-//! Regression tests for the AX door's editor path: `perform_by_id` on a
-//! nested editor must reach the guest's own document; an action a view
-//! advertises reaches the view; and a press on a view's control is that
-//! control's click, wherever it is drawn.
+//! Regression tests for the AX door's field path: `perform_by_id` on a
+//! nested composer field must reach the guest as the change it is; an
+//! action a view advertises reaches the view; and a press on a view's
+//! control is that control's click, wherever it is drawn.
 
 use super::*;
-use crate::editor::wire::{EditorStore, seed_editor_text};
 use crate::render::ViewTree;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{px, size};
@@ -28,34 +27,33 @@ fn container(key: &str, children: Vec<wire::Node>) -> wire::Node {
     })
 }
 
-/// The real shape a chat composer's editor mounts under (see PR #238's
+/// The real shape a chat composer's field mounts under (see PR #238's
 /// `chat_shaped_tree` in `runtime/guest/requests.rs`): `chat-viewport >
 /// chat-root > chat-panes > chat-room > draft-general >
 /// draft-general/editor`. Every one of those named ancestors is owned by
-/// a different file, none of which the editor's own key threads through.
-fn chat_shaped_editor() -> (wire::Node, crate::render::AuthoredPath) {
-    let editor = wire::Node::Editor {
-        binding: Some(Box::new(wire::EditorBinding {
-            claims: Vec::new(),
-            on_request: 1,
-            on_event: 2,
-        })),
+/// a different file, none of which the field's own key threads through.
+fn chat_shaped_field() -> wire::Node {
+    let field = wire::Node::Field {
         id: named_id("draft-general/editor"),
-        style: Default::default(),
-        placeholder: String::new(),
-        label: Some("Message #general".into()),
-        document: wire::editor_document::EditorDocumentRef {
-            document: "draft-general".into(),
-            reset: 1,
-            text_revision: 0,
-            revision: 0,
-            cursor: Default::default(),
-            byte_len: 0,
+        multiline: true,
+        value: String::new(),
+        cursor: Default::default(),
+        generation: 1,
+        revision: 0,
+        tokens: Vec::new(),
+        claims: Vec::new(),
+        options: wire::InputOptions {
+            label: "Message #general".into(),
+            ..Default::default()
         },
-        on_document: 0,
-        editable: true,
+        placeholder: String::new(),
+        secure: false,
+        on_change: Some(1),
+        on_key: Some(2),
+        on_submit: None,
+        style: Default::default(),
     };
-    let root = container(
+    container(
         "chat-viewport",
         vec![container(
             "chat-root",
@@ -63,42 +61,33 @@ fn chat_shaped_editor() -> (wire::Node, crate::render::AuthoredPath) {
                 "chat-panes",
                 vec![container(
                     "chat-room",
-                    vec![container("draft-general", vec![editor])],
+                    vec![container("draft-general", vec![field])],
                 )],
             )],
         )],
-    );
-    let path = [
-        "chat-viewport",
-        "chat-root",
-        "chat-panes",
-        "chat-room",
-        "draft-general",
-        "draft-general/editor",
-    ]
-    .into_iter()
-    .map(named_id)
-    .collect();
-    (root, path)
+    )
 }
 
 /// Drives `action` with the value "hello" through the AX door path a QA
 /// runner uses (`perform_by_id`) against a tree shaped like the real
-/// composer's nested ancestry, and asserts the store the guest reads
-/// ends up holding it.
-fn ax_action_reaches_the_guests_document(cx: &mut gpui_kit::TestAppContext, action: &str) {
+/// composer's nested ancestry, and asserts the guest hears the field
+/// reading it.
+fn ax_action_reaches_the_guests_field(cx: &mut gpui_kit::TestAppContext, action: &str) {
     cx.update(gpui_kit::init);
-    let (root, path) = chat_shaped_editor();
-    let store = EditorStore::new(1);
-    store.replace(&root).expect("mount editor references");
-    seed_editor_text(&store, "");
-    let window_store = store.clone();
-    let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
-        let mut tree = ViewTree::new(root);
-        tree.set_editor_store(window_store, cx);
-        tree
+    let window = cx.open_window(size(px(400.), px(300.)), |_, _| {
+        ViewTree::new(chat_shaped_field())
     });
+    let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = heard.clone();
+    let _subscription = native.update(|_, cx| {
+        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
+            if let wire::Event::Text { handler, change } = event {
+                seen.borrow_mut().push((*handler, change.text.clone()));
+            }
+        })
+    });
     native.update(|window, cx| {
         window.activate_a11y();
         window.render_frame(cx);
@@ -106,38 +95,33 @@ fn ax_action_reaches_the_guests_document(cx: &mut gpui_kit::TestAppContext, acti
     });
     let performed = native
         .update(|window, cx| perform_by_id("t", window, cx, "t:editor-field", action, "hello"));
-    assert!(performed, "the editor's AX field must be in the tree");
+    assert!(performed, "the composer's AX field must be in the tree");
     native.update(|window, cx| {
         window.render_frame(cx);
         window.render_frame(cx);
     });
-    store
-        .ready()
-        .unwrap_or_else(|fault| panic!("no fault after AX `{action}`: {fault}"));
-    let text = store
-        .projection(&path)
-        .and_then(|projection| projection.text)
-        .unwrap_or_default();
+    native.run_until_parked();
     assert_eq!(
-        &*text, "hello",
-        "AX `{action}` on the composer's editor must reach the guest's own document"
+        heard.borrow().last(),
+        Some(&(1, "hello".to_owned())),
+        "AX `{action}` on the composer's field must reach the guest as its change"
     );
 }
 
 /// The QA runner's `type` AX action typed into the composer's
 /// AX-visible native field (focus and value both showed it) but the
-/// guest's own document never moved: Send stayed disabled forever.
+/// guest never heard of it: Send stayed disabled forever.
 #[gpui_kit::test]
 fn ax_type_on_a_nested_editor_reaches_the_guests_document(cx: &mut gpui_kit::TestAppContext) {
-    ax_action_reaches_the_guests_document(cx, "type");
+    ax_action_reaches_the_guests_field(cx, "type");
 }
 
 /// The same drive, through AX `set_value`. `perform` focuses the node
-/// before SetValue, as it does for `type` (#241); without that focus
-/// `TextEditor::observed` drops the edit and the guest never sees it.
+/// before SetValue, as it does for `type` (#241): typing goes where the
+/// keys are.
 #[gpui_kit::test]
 fn ax_set_value_on_a_nested_editor_reaches_the_guests_document(cx: &mut gpui_kit::TestAppContext) {
-    ax_action_reaches_the_guests_document(cx, "set_value");
+    ax_action_reaches_the_guests_field(cx, "set_value");
 }
 
 /// A view's stepper advertising increment, decrement and one custom

@@ -1,14 +1,124 @@
 use super::*;
+use gpui_kit::Keystroke;
+
+/// The one-line kit state behind the first field, for a test to drive.
+fn line(tree: &Entity<ViewTree>, cx: &gpui_kit::VisualTestContext) -> Entity<InputState> {
+    tree.read_with(cx, |tree, _| {
+        tree.first_input_for_test().expect("a one-line field")
+    })
+}
+
+/// `root` in a window, drawn once.
+fn mounted(
+    root: wire::Node,
+    cx: &mut gpui_kit::TestAppContext,
+) -> (Entity<ViewTree>, gpui_kit::VisualTestContext) {
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    (tree, native)
+}
+
+/// The field at `path` takes the keys, through the view's own Focus.
+fn focus(
+    tree: &Entity<ViewTree>,
+    native: &mut gpui_kit::VisualTestContext,
+    path: &[wire::ElementIdWire],
+) {
+    native.update(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            tree.execute_widget_command(
+                wire::WidgetCommand::Focus {
+                    target: path.to_vec(),
+                },
+                window,
+                cx,
+            )
+            .unwrap();
+        });
+        window.render_frame(cx);
+    });
+}
+
+/// The text the first field holds, as the engine has it.
+fn text(tree: &Entity<ViewTree>, native: &mut gpui_kit::VisualTestContext) -> String {
+    native.update(|window, cx| {
+        window.render_frame(cx);
+        let tree = tree.read(cx);
+        tree.fields
+            .values()
+            .next()
+            .expect("a field")
+            .presentation(window, cx)
+            .value
+    })
+}
+
+/// The text the field at `path` holds, as the engine has it.
+fn text_at(
+    tree: &Entity<ViewTree>,
+    native: &mut gpui_kit::VisualTestContext,
+    path: &[wire::ElementIdWire],
+) -> String {
+    native.update(|window, cx| {
+        window.render_frame(cx);
+        tree.read(cx).fields[path].presentation(window, cx).value
+    })
+}
+
+/// `keys`, pressed one frame apart.
+fn pressed(native: &mut gpui_kit::VisualTestContext, keys: &[&str]) {
+    native.update(|window, cx| {
+        for key in keys {
+            window.dispatch_keystroke(Keystroke::parse(key).unwrap(), cx);
+            window.render_frame(cx);
+        }
+    });
+    native.run_until_parked();
+}
+
+/// What the guest heard of the first field's text, in order.
+fn told(events: &Rc<RefCell<Vec<wire::Event>>>) -> Vec<String> {
+    events
+        .borrow()
+        .iter()
+        .filter_map(|event| match event {
+            wire::Event::Text { change, .. } => Some(change.text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The guest's `Replace`: `range` of the text it read at `revision` becomes
+/// `text`, the caret after it.
+fn replace(
+    target: &[wire::ElementIdWire],
+    revision: u64,
+    range: std::ops::Range<usize>,
+    text: &str,
+) -> wire::WidgetCommand {
+    wire::WidgetCommand::Replace {
+        target: target.to_vec(),
+        revision,
+        range: range.clone().into(),
+        text: text.into(),
+        token: None,
+        cursor: wire::TextRange::caret(range.start + text.len()),
+    }
+}
 
 #[gpui_kit::test]
 fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     let field = |handler| {
         let mut node = input("Message", false, false);
-        let wire::Node::Input {
+        let wire::Node::Field {
             id,
             value,
-            on_input,
+            cursor,
+            on_change,
             on_submit,
             ..
         } = &mut node
@@ -17,7 +127,8 @@ fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestApp
         };
         *id = wire::ElementIdWire::Name("field".into());
         value.clear();
-        *on_input = Some(handler);
+        *cursor = Default::default();
+        *on_change = Some(handler);
         *on_submit = Some(handler + 10);
         node
     };
@@ -41,28 +152,24 @@ fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestApp
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| window.render_frame(cx));
 
+    let left_path = vec![
+        named_id("form"),
+        wire::ElementIdWire::Integer(1),
+        named_id("field"),
+    ];
+    let right_path = vec![named_id("form"), named_id("1"), named_id("field")];
     let (left, right) = tree.read_with(&native, |tree, _| {
         assert_eq!(tree.fields.len(), 2);
-        let left = vec![
-            named_id("form"),
-            wire::ElementIdWire::Integer(1),
-            named_id("field"),
-        ];
-        let right = vec![named_id("form"), named_id("1"), named_id("field")];
-        (
-            tree.fields[&left].state.clone(),
-            tree.fields[&right].state.clone(),
-        )
+        let line = |path: &AuthoredPath| match &tree.fields[path].engine {
+            crate::render::inputs::Engine::Line(state) => state.clone(),
+            crate::render::inputs::Engine::Area(_) => unreachable!(),
+        };
+        (line(&left_path), line(&right_path))
     });
     assert_ne!(left.entity_id(), right.entity_id());
 
     native.update(|window, cx| {
         tree.update(cx, |tree, cx| {
-            let left_path = vec![
-                named_id("form"),
-                wire::ElementIdWire::Integer(1),
-                named_id("field"),
-            ];
             tree.execute_widget_command(
                 wire::WidgetCommand::Focus {
                     target: left_path.clone(),
@@ -72,11 +179,7 @@ fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestApp
             )
             .unwrap();
             assert!(tree.target_focused(&left_path, window, cx));
-            assert!(!tree.target_focused(
-                &[named_id("form"), named_id("1"), named_id("field")],
-                window,
-                cx,
-            ));
+            assert!(!tree.target_focused(&right_path, window, cx));
         });
     });
 
@@ -84,11 +187,9 @@ fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestApp
     native.update(|window, cx| left.update(cx, |state, cx| state.focus(window, cx)));
     native.simulate_input("hello");
     native.run_until_parked();
-    assert!(
-        events.borrow().iter().any(
-            |event| matches!(event, wire::Event::Input { handler: 1, text } if text == "hello")
-        )
-    );
+    assert!(events.borrow().iter().any(
+        |event| matches!(event, wire::Event::Text { handler: 1, change } if change.text == "hello")
+    ));
     assert_eq!(
         right.read_with(&native, |state, _| state.value().to_string()),
         ""
@@ -108,7 +209,7 @@ fn a_read_only_field_takes_no_typing_and_no_set_value(cx: &mut gpui_kit::TestApp
         (false, false, true),
     ] {
         let mut field = input("Room name", false, disabled);
-        let wire::Node::Input { options, .. } = &mut field else {
+        let wire::Node::Field { options, .. } = &mut field else {
             unreachable!()
         };
         options.read_only = read_only;
@@ -121,7 +222,7 @@ fn a_read_only_field_takes_no_typing_and_no_set_value(cx: &mut gpui_kit::TestApp
             window.activate_a11y();
             window.render_frame(cx);
             window.render_frame(cx);
-            let state = tree.read(cx).fields.values().next().unwrap().state.clone();
+            let state = tree.read(cx).first_input_for_test().unwrap();
             state.update(cx, |state, cx| state.focus(window, cx));
             state
         });
@@ -147,14 +248,7 @@ fn a_read_only_field_takes_no_typing_and_no_set_value(cx: &mut gpui_kit::TestApp
         });
         native.run_until_parked();
         let value = state.read_with(&native, |state, _| state.value().to_string());
-        let told: Vec<String> = events
-            .borrow()
-            .iter()
-            .filter_map(|event| match event {
-                wire::Event::Input { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect();
+        let told = told(&events);
         match changes {
             true => {
                 assert_eq!(value, "set");
@@ -170,7 +264,7 @@ fn a_read_only_field_takes_no_typing_and_no_set_value(cx: &mut gpui_kit::TestApp
 /// its border `border`, then a spacer and a 100 px box.
 fn filter_row(width: impl Into<gpui_kit::Length> + Clone, border: gpui_kit::Hsla) -> wire::Node {
     let mut field = input("Filter", false, false);
-    let wire::Node::Input { style, .. } = &mut field else {
+    let wire::Node::Field { style, .. } = &mut field else {
         unreachable!()
     };
     *style = div()
@@ -246,10 +340,8 @@ fn a_focused_field_wears_one_ring_on_its_own_box(cx: &mut gpui_kit::TestAppConte
     native.update(|window, _| window.activate_a11y());
     let unfocused = drawn(&mut native);
     assert_eq!((unfocused.0, unfocused.1, unfocused.2), (16., grey, 0));
-    native.update(|window, cx| {
-        let state = tree.read(cx).fields.values().next().unwrap().state.clone();
-        state.update(cx, |state, cx| state.focus(window, cx));
-    });
+    let state = line(&tree, &native);
+    native.update(|window, cx| state.update(cx, |state, cx| state.focus(window, cx)));
     let (origin, border, over, node) = drawn(&mut native);
     let ink = native.update(|_, cx| crate::a11y::ink(cx));
     assert_eq!(
@@ -303,7 +395,7 @@ fn a_disabled_field_wears_no_ring(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     let grey = gpui_kit::hsla(0., 0., 0.5, 1.);
     let mut field = input("Filter", false, true);
-    let wire::Node::Input { style, .. } = &mut field else {
+    let wire::Node::Field { style, .. } = &mut field else {
         unreachable!()
     };
     *style = div()
@@ -318,7 +410,7 @@ fn a_disabled_field_wears_no_ring(cx: &mut gpui_kit::TestAppContext) {
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let border = native.update(|window, cx| {
-        let state = tree.read(cx).fields.values().next().unwrap().state.clone();
+        let state = tree.read(cx).first_input_for_test().unwrap();
         state.update(cx, |state, cx| state.focus(window, cx));
         window.render_frame(cx);
         let scale = window.scale_factor();
@@ -335,37 +427,20 @@ fn a_disabled_field_wears_no_ring(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(border, grey);
 }
 
-/// An editor's box is the view's, border and padding round the text: that
-/// box, not the text inside the padding, wears the ring and its colour.
+/// A growing field's box is the view's, border and padding round the text:
+/// that box, not the text inside the padding, wears the ring and its colour.
 #[gpui_kit::test]
 fn a_focused_editor_wears_the_ring_on_the_views_box(cx: &mut gpui_kit::TestAppContext) {
-    cx.update(gpui_kit::init);
     let grey = gpui_kit::hsla(0., 0., 0.5, 1.);
-    let root = wire::Node::Editor {
-        id: named_id("document"),
-        style: div()
-            .w(px(240.))
-            .h(px(60.))
-            .px_2()
-            .border_1()
-            .border_color(grey)
-            .style()
-            .clone(),
-        label: None,
-        binding: None,
-        placeholder: String::new(),
-        document: wire::editor_document::EditorDocumentRef {
-            document: "ring".into(),
-            reset: 1,
-            text_revision: 0,
-            revision: 0,
-            cursor: Default::default(),
-            byte_len: 0,
-        },
-        on_document: 0,
-        editable: true,
-    };
-    let (tree, mut native) = with_editors(root, None, cx);
+    let style = div()
+        .w(px(240.))
+        .h(px(60.))
+        .px_2()
+        .border_1()
+        .border_color(grey)
+        .style()
+        .clone();
+    let (tree, mut native) = mounted(area("document", None, "", style), cx);
     let border = |native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, cx| {
             window.render_frame(cx);
@@ -379,15 +454,7 @@ fn a_focused_editor_wears_the_ring_on_the_views_box(cx: &mut gpui_kit::TestAppCo
         })
     };
     assert_eq!(border(&mut native), grey);
-    native.update(|window, cx| {
-        let path = [named_id("document")];
-        let editor_mount::EditorView::Text(editor) = &tree.read(cx).editors[path.as_slice()].view;
-        let editor = editor.clone();
-        let focus = wire::WidgetCommand::Focus {
-            target: path.to_vec(),
-        };
-        editor.update(cx, |editor, cx| editor.widget_command(&focus, window, cx));
-    });
+    focus(&tree, &mut native, &[named_id("document")]);
     let ink = native.update(|_, cx| crate::a11y::ink(cx));
     assert_eq!(border(&mut native), ink);
 }
@@ -396,126 +463,89 @@ fn a_focused_editor_wears_the_ring_on_the_views_box(cx: &mut gpui_kit::TestAppCo
 /// `Focus` does, and only through the seat's gate.
 #[gpui_kit::test]
 fn a_cursor_command_moves_the_caret_without_taking_the_keys(cx: &mut gpui_kit::TestAppContext) {
-    cx.update(gpui_kit::init);
-    let root = wire::Node::Editor {
-        id: named_id("document"),
-        style: div().w(px(240.)).h(px(80.)).style().clone(),
-        label: None,
-        binding: None,
-        placeholder: String::new(),
-        document: wire::editor_document::EditorDocumentRef {
-            document: "ring".into(),
-            reset: 1,
-            text_revision: 0,
-            revision: 0,
-            cursor: Default::default(),
-            byte_len: "some words".len() as u32,
-        },
-        on_document: 0,
-        editable: true,
-    };
-    let (tree, mut native) = with_editors(root, Some("some words"), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    let style = div().w(px(240.)).h(px(80.)).style().clone();
+    let (tree, mut native) = mounted(area("document", None, "some words", style), cx);
     let path = [named_id("document")];
     let run = |native: &mut gpui_kit::VisualTestContext, command: wire::WidgetCommand| {
         native.update(|window, cx| {
-            let editor_mount::EditorView::Text(editor) =
-                &tree.read(cx).editors[path.as_slice()].view;
-            let editor = editor.clone();
-            editor.update(cx, |editor, cx| editor.widget_command(&command, window, cx));
-            editor.read(cx).is_focused(window, cx)
+            tree.update(cx, |tree, cx| {
+                tree.execute_widget_command(command, window, cx).unwrap();
+            });
+            let tree = tree.read(cx);
+            let field = &tree.fields[path.as_slice()];
+            (
+                field.is_focused(window, cx),
+                field.presentation(window, cx).selection,
+            )
         })
     };
-    assert!(
-        !run(
+    assert_eq!(
+        run(
             &mut native,
-            wire::WidgetCommand::CursorEnd {
+            wire::WidgetCommand::CursorFront {
                 target: path.to_vec()
             }
         ),
-        "CursorEnd took the keys"
+        (false, 0..0),
+        "CursorFront took the keys"
     );
-    assert!(
-        !run(
+    assert_eq!(
+        run(
             &mut native,
             wire::WidgetCommand::SelectAll {
                 target: path.to_vec()
             }
         ),
+        (false, 0..10),
         "SelectAll took the keys"
     );
-    assert!(run(
-        &mut native,
-        wire::WidgetCommand::Focus {
-            target: path.to_vec()
-        }
-    ));
+    assert!(
+        run(
+            &mut native,
+            wire::WidgetCommand::Focus {
+                target: path.to_vec()
+            }
+        )
+        .0
+    );
 }
 
-/// A key typed into a native editor activates the view as the host
-/// receives it, claimed by the binding (chat's ⌘V, acted on a redraw
-/// later: the activation is already there) or not; a claimed Escape does
-/// not.
+/// A key typed into a field activates the view as the host receives it,
+/// claimed by the guest (chat's Enter, acted on a redraw later: the
+/// activation is already there) or not; a claimed Escape does not.
 #[gpui_kit::test]
 fn a_key_in_a_native_editor_activates_the_view_and_escape_does_not(
     cx: &mut gpui_kit::TestAppContext,
 ) {
-    cx.update(gpui_kit::init);
-    let claims = vec![
-        view_wire::EditorKeyClaim {
-            key: view_wire::keyboard::Key::Named(view_wire::keyboard::Named::Escape),
-            modifiers: Default::default(),
-            command: false,
-        },
-        view_wire::EditorKeyClaim {
-            key: view_wire::keyboard::Key::Named(view_wire::keyboard::Named::Enter),
-            modifiers: Default::default(),
-            command: false,
-        },
-    ];
-    let root = wire::Node::Editor {
-        id: named_id("document"),
-        style: div().w(px(240.)).h(px(80.)).style().clone(),
-        label: None,
-        binding: Some(Box::new(view_wire::EditorBinding {
-            claims,
-            on_request: 1,
-            on_event: 2,
-        })),
-        placeholder: String::new(),
-        document: wire::editor_document::EditorDocumentRef {
-            document: "ring".into(),
-            reset: 1,
-            text_revision: 0,
-            revision: 0,
-            cursor: Default::default(),
-            byte_len: "some words".len() as u32,
-        },
-        on_document: 0,
-        editable: true,
+    let claim = |named| view_wire::KeyClaim {
+        key: view_wire::keyboard::Key::Named(named),
+        modifiers: Default::default(),
+        command: false,
     };
-    let (tree, mut native) = with_editors(root, Some("some words"), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    let mut root = area(
+        "document",
+        None,
+        "some words",
+        div().w(px(240.)).h(px(80.)).style().clone(),
+    );
+    let wire::Node::Field { claims, .. } = &mut root else {
+        unreachable!()
+    };
+    *claims = vec![
+        claim(view_wire::keyboard::Named::Escape),
+        claim(view_wire::keyboard::Named::Enter),
+    ];
+    let (tree, mut native) = mounted(root, cx);
     let path = [named_id("document")];
-    native.update(|window, cx| {
-        tree.update(cx, |tree, cx| {
-            tree.execute_widget_command(
-                wire::WidgetCommand::Focus {
-                    target: path.to_vec(),
-                },
-                window,
-                cx,
-            )
-            .unwrap();
-        });
-        window.render_frame(cx);
-    });
+    focus(&tree, &mut native, &path);
+    let (events, _subscription) = emitted(&tree, &mut native);
     tree.read_with(&native, |tree, _| tree.take_activation());
     let press = |native: &mut gpui_kit::VisualTestContext, key: &str| {
         native.update(|window, cx| {
             window.dispatch_keystroke(gpui_kit::Keystroke::parse(key).unwrap(), cx);
             window.render_frame(cx);
         });
+        native.run_until_parked();
     };
     press(&mut native, "escape");
     tree.read_with(&native, |tree, _| {
@@ -531,6 +561,31 @@ fn a_key_in_a_native_editor_activates_the_view_and_escape_does_not(
             "a claimed key did not activate the view"
         );
     });
+    let claimed: Vec<_> = events
+        .borrow()
+        .iter()
+        .filter_map(|event| match event {
+            wire::Event::KeyDown { handler, event, .. } => {
+                Some((*handler, event.state.key.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        claimed,
+        vec![
+            (
+                2,
+                view_wire::keyboard::Key::Named(view_wire::keyboard::Named::Escape)
+            ),
+            (
+                2,
+                view_wire::keyboard::Key::Named(view_wire::keyboard::Named::Enter)
+            ),
+        ],
+        "the guest hears the keys it claimed, and the engine does not"
+    );
+    assert_eq!(text(&tree, &mut native), "some words");
     press(&mut native, "a");
     tree.read_with(&native, |tree, _| {
         assert!(
@@ -565,6 +620,7 @@ fn a_key_in_a_native_editor_activates_the_view_and_escape_does_not(
             });
             window.render_frame(cx);
         });
+        native.run_until_parked();
         tree.read_with(&native, |tree, _| {
             assert!(
                 tree.take_activation().is_none(),
@@ -576,7 +632,6 @@ fn a_key_in_a_native_editor_activates_the_view_and_escape_does_not(
 
 #[gpui_kit::test]
 fn editor_obeys_authored_size_and_height_limits(cx: &mut gpui_kit::TestAppContext) {
-    cx.update(gpui_kit::init);
     for (height, minimum, maximum, expected) in [
         (Some(60.), None, None, 60.),
         (Some(60.), Some(100.), None, 100.),
@@ -595,24 +650,12 @@ fn editor_obeys_authored_size_and_height_limits(cx: &mut gpui_kit::TestAppContex
         if let Some(maximum) = maximum {
             authored = authored.max_h(px(maximum));
         }
-        let root = wire::Node::Editor {
-            id: named_id("document"),
-            style: authored.style().clone(),
-            label: None,
-            binding: None,
-            placeholder: String::new(),
-            document: wire::editor_document::EditorDocumentRef {
-                document: "sizing".into(),
-                reset: 1,
-                text_revision: 0,
-                revision: 0,
-                cursor: Default::default(),
-                byte_len: 0,
-            },
-            on_document: 0,
-            editable: false,
+        let mut root = area("document", None, "", authored.style().clone());
+        let wire::Node::Field { options, .. } = &mut root else {
+            unreachable!()
         };
-        let (tree, mut native) = with_editors(root, None, cx);
+        options.read_only = true;
+        let (tree, mut native) = mounted(root, cx);
         native.update(|window, cx| window.render_frame(cx));
         let bounds = tree
             .read_with(&native, |tree, _| {
@@ -623,44 +666,26 @@ fn editor_obeys_authored_size_and_height_limits(cx: &mut gpui_kit::TestAppContex
     }
 }
 
-/// An editor asked to lay out to its own content is as tall as the words in
+/// A field asked to lay out to its own content is as tall as the words in
 /// it — every line of them.
 ///
 /// A card that grows with what you type is the whole reason a view asks for
-/// `Shrink`, and a shrunk editor that reported one line's height made every
+/// `Shrink`, and a shrunk field that reported one line's height made every
 /// such card hide what had just been written in it.
 #[gpui_kit::test]
 fn a_shrunk_editor_is_as_tall_as_all_of_its_lines(cx: &mut gpui_kit::TestAppContext) {
-    cx.update(gpui_kit::init);
     let words = "one\ntwo\nthree\nfour\nfive\nsix";
     let leading = 20.;
     let mut authored = div()
         .w(px(240.))
         .text_size(px(14.))
         .line_height(px(leading));
-    let root = wire::Node::Editor {
-        id: named_id("document"),
-        style: authored.style().clone(),
-        label: None,
-        binding: None,
-        placeholder: String::new(),
-        document: wire::editor_document::EditorDocumentRef {
-            document: "sizing".into(),
-            reset: 1,
-            text_revision: 0,
-            revision: 0,
-            cursor: Default::default(),
-            byte_len: words.len() as u32,
-        },
-        on_document: 0,
-        editable: true,
-    };
+    let root = area("document", None, words, authored.style().clone());
     // In a box with room to spare, which is the only place shrinking means
-    // anything: the editor is the root of nothing in a real view, it sits
+    // anything: the field is the root of nothing in a real view, it sits
     // inside the card's own layout.
     let root = sized("card", root, Some(fill()), Some(fill()));
-    let (tree, mut native) = with_editors(root, Some(words), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    let (tree, mut native) = mounted(root, cx);
     native.update(|window, cx| window.render_frame(cx));
     let bounds = tree
         .read_with(&native, |tree, _| {
@@ -716,7 +741,7 @@ fn a_backward_selection_crosses_a_new_generation(cx: &mut gpui_kit::TestAppConte
     // "hunter2", the caret at 5, then Shift+Left three times: 2..5, caret at 2
     let saved = native.update(|window, cx| {
         window.render_frame(cx);
-        let state = tree.read(cx).fields.values().next().unwrap().state.clone();
+        let state = tree.read(cx).first_input_for_test().unwrap();
         state.update(cx, |state, cx| {
             state.focus(window, cx);
             state.set_selected_range(5..5, cx);
@@ -736,7 +761,7 @@ fn a_backward_selection_crosses_a_new_generation(cx: &mut gpui_kit::TestAppConte
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let restored = native.update(|window, cx| {
         window.render_frame(cx);
-        let state = tree.read(cx).fields.values().next().unwrap().state.clone();
+        let state = tree.read(cx).first_input_for_test().unwrap();
         state.read_with(cx, |state, _| (state.selected_range(), state.cursor()))
     });
     assert_eq!(restored, (2..5, 5));
@@ -751,7 +776,7 @@ fn a_focus_takes_the_field_at_its_whole_path(cx: &mut gpui_kit::TestAppContext) 
     cx.update(gpui_kit::init);
     let field = || {
         let mut node = input("Message", false, false);
-        let wire::Node::Input { id, .. } = &mut node else {
+        let wire::Node::Field { id, .. } = &mut node else {
             unreachable!()
         };
         *id = named_id("input");
@@ -798,10 +823,16 @@ fn an_ime_commit_inside_the_echo_window_is_kept(cx: &mut gpui_kit::TestAppContex
     cx.update(gpui_kit::init);
     let field = |value: &str| {
         let mut node = input("Message", false, false);
-        let wire::Node::Input { value: shown, .. } = &mut node else {
+        let wire::Node::Field {
+            value: shown,
+            cursor,
+            ..
+        } = &mut node
+        else {
             unreachable!()
         };
         *shown = value.into();
+        *cursor = wire::TextRange::caret(value.len());
         node
     };
     let window = cx.open_window(size(px(400.), px(200.)), |_, _| {
@@ -811,7 +842,7 @@ fn an_ime_commit_inside_the_echo_window_is_kept(cx: &mut gpui_kit::TestAppContex
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let state = native.update(|window, cx| {
         window.render_frame(cx);
-        let state = tree.read(cx).fields.values().next().unwrap().state.clone();
+        let state = tree.read(cx).first_input_for_test().unwrap();
         state.update(cx, |state, cx| state.focus(window, cx));
         state
     });
@@ -833,5 +864,329 @@ fn an_ime_commit_inside_the_echo_window_is_kept(cx: &mut gpui_kit::TestAppContex
     assert_eq!(
         state.read_with(&native, |state, _| state.value().to_string()),
         "abcd"
+    );
+}
+
+// S9: the headline cases of one text model, against the engine. Each failed
+// against the editor lane as it stood (TE.verify's drive of the real store).
+
+/// The document after the field selected `lo..hi` of `text`, the writer
+/// pressed Backspace and typed `typed`, and the guest's next frame still
+/// showed the text it had: the engine's text stands, the guest's is
+/// behind it.
+fn typed_over_a_selection(
+    text_before: &str,
+    lo: usize,
+    hi: usize,
+    typed: &str,
+    cx: &mut gpui_kit::TestAppContext,
+) -> String {
+    let style = div().w(px(240.)).h(px(80.)).style().clone();
+    let (tree, mut native) = mounted(area("doc", None, text_before, style.clone()), cx);
+    let path = [named_id("doc")];
+    focus(&tree, &mut native, &path);
+    native.update(|window, cx| {
+        let crate::render::inputs::Engine::Area(state) =
+            tree.read(cx).fields[path.as_slice()].engine.clone()
+        else {
+            unreachable!()
+        };
+        state.update(cx, |state, cx| state.set_selected_range(lo..hi, cx));
+        window.render_frame(cx);
+    });
+    pressed(&mut native, &["backspace"]);
+    native.simulate_input(typed);
+    native.run_until_parked();
+    // the guest's frame, built before any of it, echoes the old text
+    native.update(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            tree.replace(area("doc", None, text_before, style), cx)
+        });
+        window.render_frame(cx);
+    });
+    text(&tree, &mut native)
+}
+
+/// A word selected, Backspace, a letter typed: the person sees "say x now",
+/// and the guest's late frame takes nothing back.
+#[gpui_kit::test]
+fn a_letter_typed_behind_a_claimed_backspace_replaces_what_was_selected(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    assert_eq!(
+        typed_over_a_selection("say word now", 4, 8, "x", cx),
+        "say x now"
+    );
+}
+
+/// The first word selected, Backspace, a letter: the view must not stop.
+#[gpui_kit::test]
+fn a_letter_typed_behind_a_claimed_backspace_on_the_first_word_never_stops_the_view(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    assert_eq!(
+        typed_over_a_selection("say word now", 0, 3, "x", cx),
+        "x word now"
+    );
+}
+
+/// Enter claimed (the composer's Send clears the draft), a letter typed
+/// ahead of the guest's answer: the draft is cleared once and the letter is
+/// kept, since the guest's ask is carried over the typing it did not see.
+#[gpui_kit::test]
+fn a_letter_typed_ahead_of_a_claimed_enter_is_kept(cx: &mut gpui_kit::TestAppContext) {
+    let mut root = area(
+        "doc",
+        None,
+        "hello",
+        div().w(px(240.)).h(px(80.)).style().clone(),
+    );
+    let wire::Node::Field { claims, .. } = &mut root else {
+        unreachable!()
+    };
+    claims.push(view_wire::KeyClaim {
+        key: view_wire::keyboard::Key::Named(view_wire::keyboard::Named::Enter),
+        modifiers: Default::default(),
+        command: false,
+    });
+    let (tree, mut native) = mounted(root, cx);
+    let path = [named_id("doc")];
+    focus(&tree, &mut native, &path);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    pressed(&mut native, &["enter"]);
+    assert!(
+        events
+            .borrow()
+            .iter()
+            .any(|event| matches!(event, wire::Event::KeyDown { handler: 2, .. })),
+        "the guest heard its Enter"
+    );
+    native.simulate_input("x");
+    native.run_until_parked();
+    assert_eq!(text(&tree, &mut native), "hellox");
+    // the guest answers the Enter against the text it read: revision 0
+    native.update(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            tree.execute_widget_command(replace(&path, 0, 0..5, ""), window, cx)
+                .unwrap();
+        });
+    });
+    native.run_until_parked();
+    assert_eq!(text(&tree, &mut native), "x");
+    assert_eq!(told(&events).last().map(String::as_str), Some("x"));
+}
+
+/// Edits the guest has not acknowledged never stop the view, however many.
+#[gpui_kit::test]
+fn unacknowledged_edits_never_stop_the_view(cx: &mut gpui_kit::TestAppContext) {
+    let (tree, mut native) = mounted(
+        area(
+            "doc",
+            None,
+            "",
+            div().w(px(240.)).h(px(80.)).style().clone(),
+        ),
+        cx,
+    );
+    focus(&tree, &mut native, &[named_id("doc")]);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    for _ in 0..129 {
+        native.simulate_input("a");
+    }
+    native.run_until_parked();
+    assert_eq!(text(&tree, &mut native), "a".repeat(129));
+    let told = told(&events);
+    assert_eq!(told.len(), 129, "129 edits typed ahead of the guest");
+    assert_eq!(told.last().map(String::len), Some(129));
+}
+
+/// A held Backspace drains at the key's repeat rate: five presses in one
+/// frame take five characters by the next.
+#[gpui_kit::test]
+fn a_held_backspace_drains_at_repeat_rate(cx: &mut gpui_kit::TestAppContext) {
+    let (tree, mut native) = mounted(
+        area(
+            "doc",
+            None,
+            "aaaaa",
+            div().w(px(240.)).h(px(80.)).style().clone(),
+        ),
+        cx,
+    );
+    focus(&tree, &mut native, &[named_id("doc")]);
+    native.update(|window, cx| {
+        for _ in 0..5 {
+            window.dispatch_keystroke(Keystroke::parse("backspace").unwrap(), cx);
+        }
+    });
+    native.run_until_parked();
+    assert_eq!(
+        text(&tree, &mut native),
+        "",
+        "five Backspaces, one frame later"
+    );
+}
+
+/// Undo crosses an indent: Tab is an edit like any other.
+#[gpui_kit::test]
+fn undo_crosses_a_tab(cx: &mut gpui_kit::TestAppContext) {
+    let (tree, mut native) = mounted(
+        area(
+            "tabs",
+            None,
+            "",
+            div().w(px(240.)).h(px(80.)).style().clone(),
+        ),
+        cx,
+    );
+    focus(&tree, &mut native, &[named_id("tabs")]);
+    native.simulate_input("one");
+    native.run_until_parked();
+    pressed(&mut native, &["tab"]);
+    assert_eq!(text(&tree, &mut native), "one  ");
+    pressed(&mut native, &["ctrl-z"]);
+    assert_eq!(text(&tree, &mut native), "one");
+}
+
+/// Undo works after the guest cleared a sent draft: the words come back.
+#[gpui_kit::test]
+fn undo_after_the_guest_cleared_a_sent_draft_brings_the_words_back(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let (tree, mut native) = mounted(
+        area(
+            "draft",
+            None,
+            "",
+            div().w(px(240.)).h(px(80.)).style().clone(),
+        ),
+        cx,
+    );
+    let path = [named_id("draft")];
+    focus(&tree, &mut native, &path);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    native.simulate_input("hi");
+    native.run_until_parked();
+    let revision = events
+        .borrow()
+        .iter()
+        .filter_map(|event| match event {
+            wire::Event::Text { change, .. } => Some(change.revision),
+            _ => None,
+        })
+        .next_back()
+        .expect("the guest heard the draft");
+    // the guest sends the draft and clears its field at the revision it knows
+    native.update(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            tree.execute_widget_command(replace(&path, revision, 0..2, ""), window, cx)
+                .unwrap();
+        });
+    });
+    native.run_until_parked();
+    assert_eq!(text(&tree, &mut native), "");
+    pressed(&mut native, &["ctrl-z"]);
+    assert_eq!(text(&tree, &mut native), "hi");
+}
+
+/// Esc lets go of Tab for the next key: Tab then leaves the field; any
+/// other key takes Tab back for indenting (owner, 2026-09-28; AX-022).
+#[gpui_kit::test]
+fn esc_then_tab_leaves_the_field_and_any_other_key_takes_tab_back(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    // a stop after the field, for Tab to leave to, under the kit's Root,
+    // which walks the focus ring on Tab as the shell's window does
+    cx.update(gpui_kit::init);
+    let root = container(
+        "form",
+        [
+            area(
+                "doc",
+                None,
+                "",
+                div().w(px(240.)).h(px(80.)).style().clone(),
+            ),
+            input("Next", false, false),
+        ],
+    );
+    let mut mounted = None;
+    let window = cx.open_window(size(px(400.), px(300.)), |window, cx| {
+        let tree = cx.new(|_| ViewTree::new(root));
+        mounted = Some(tree.clone());
+        gpui_kit::component::Root::new(tree, window, cx)
+    });
+    let tree = mounted.expect("the tree is mounted");
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    let path = [named_id("form"), named_id("doc")];
+    let focused = |tree: &Entity<ViewTree>, native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| tree.read(cx).fields[path.as_slice()].is_focused(window, cx))
+    };
+    focus(&tree, &mut native, &path);
+    pressed(&mut native, &["escape", "a", "tab"]);
+    assert_eq!(
+        text_at(&tree, &mut native, &path),
+        "a  ",
+        "a key between took Tab back"
+    );
+    assert!(focused(&tree, &mut native));
+    pressed(&mut native, &["escape", "tab"]);
+    assert!(
+        !focused(&tree, &mut native),
+        "Esc then Tab leaves the field"
+    );
+    assert_eq!(text_at(&tree, &mut native, &path), "a  ");
+}
+
+/// A mention the guest asks for lands as one span with the space it asked
+/// for after it, both carried over the first ask by the second: the guest
+/// speaks at one revision for both.
+#[gpui_kit::test]
+fn a_mention_lands_as_one_span_and_its_space_follows_it(cx: &mut gpui_kit::TestAppContext) {
+    let (tree, mut native) = mounted(
+        area(
+            "doc",
+            None,
+            "hi @al",
+            div().w(px(240.)).h(px(80.)).style().clone(),
+        ),
+        cx,
+    );
+    let path = [named_id("doc")];
+    let (events, _subscription) = emitted(&tree, &mut native);
+    native.update(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            let label = wire::WidgetCommand::Replace {
+                target: path.to_vec(),
+                revision: 0,
+                range: (3..6).into(),
+                text: "@Alice".into(),
+                token: Some("<@1>".into()),
+                cursor: wire::TextRange::caret(9),
+            };
+            tree.execute_widget_command(label, window, cx).unwrap();
+            tree.execute_widget_command(replace(&path, 0, 6..6, " "), window, cx)
+                .unwrap();
+        });
+    });
+    native.run_until_parked();
+    assert_eq!(text(&tree, &mut native), "hi @Alice ");
+    let last = events
+        .borrow()
+        .iter()
+        .filter_map(|event| match event {
+            wire::Event::Text { change, .. } => Some(change.clone()),
+            _ => None,
+        })
+        .next_back()
+        .expect("the guest heard the mention");
+    assert_eq!(last.cursor, wire::TextRange::caret(10));
+    assert_eq!(
+        last.tokens,
+        vec![wire::TextToken {
+            range: (3..9).into(),
+            id: "<@1>".into(),
+        }]
     );
 }

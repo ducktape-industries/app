@@ -54,11 +54,6 @@ impl Guest {
             return false;
         }
         self.sync_props(props);
-        self.pending.extend(self.inputs.drain());
-        if let Err(error) = self.inputs.ready() {
-            self.fault = Some(error);
-            return false;
-        }
         match self.replies.drain_into(&mut self.pending) {
             Ok(backlog) => crate::perf::record(self.perf_key(), "backlog", backlog as u64),
             Err(error) => {
@@ -80,11 +75,7 @@ impl Guest {
             // requests and cancels are still to route
             self.staged = false;
         } else {
-            let quiet = self.ticks > 0
-                && !self.frame.busy
-                && self.pending.is_empty()
-                && !self.inputs.pending()
-                && self.inputs.ready() != Ok(false);
+            let quiet = self.ticks > 0 && !self.frame.busy && self.pending.is_empty();
             if quiet {
                 return false;
             }
@@ -118,11 +109,7 @@ impl Guest {
             self.tasks.retain(|(task, _)| *task != id);
             self.clocks.retain(|clock| clock.id != id);
         }
-        self.fault.is_none()
-            && (self.frame.busy
-                || self.inputs.pending()
-                || !self.pending.is_empty()
-                || self.inputs.ready() == Ok(false))
+        self.fault.is_none() && (self.frame.busy || !self.pending.is_empty())
     }
 
     /// Whether this view's activation is fresh, taking it: the gated call
@@ -224,7 +211,7 @@ impl Guest {
         use wire::WidgetCommand as C;
         match command {
             C::FocusPrevious | C::FocusNext | C::FocusHandle { .. } => None,
-            C::EditorAction { target, .. }
+            C::Replace { target, .. }
             | C::Focus { target }
             | C::CursorFront { target }
             | C::CursorEnd { target }
@@ -245,7 +232,7 @@ impl Guest {
         use wire::WidgetCommand as C;
         match command {
             C::Focus { .. } | C::FocusHandle { .. } | C::FocusNext | C::FocusPrevious => true,
-            C::EditorAction { .. }
+            C::Replace { .. }
             | C::CursorFront { .. }
             | C::CursorEnd { .. }
             | C::Cursor { .. }
@@ -297,30 +284,14 @@ impl Guest {
         }
     }
 
-    /// How many of the queued widget commands can run now. They wait for
-    /// native editor work to drain, since a caret or a selection is placed in
-    /// the document as it stands. A Focus does not wait: a field the view
-    /// just opened has to hold the keys typed into it before its document
-    /// arrives.
-    pub(crate) fn runnable_widget_commands(&self) -> usize {
-        if !self.inputs.pending() {
-            return self.widget_commands.len();
-        }
-        self.widget_commands
-            .iter()
-            .take_while(|(_, command)| matches!(command, wire::WidgetCommand::Focus { .. }))
-            .count()
-    }
-
-    /// Called on this guest's mounted tree with the commands that can run
-    /// now. A command whose target left the tree in the meantime is answered
-    /// with that, never performed.
+    /// Called on this guest's mounted tree with the queued commands. A
+    /// command whose target left the tree in the meantime is answered with
+    /// that, never performed.
     pub(crate) fn execute_widget_commands(
         &mut self,
         mut execute: impl FnMut(wire::WidgetCommand) -> Result<Vec<u8>, String>,
     ) {
-        let runnable = self.runnable_widget_commands();
-        let commands: Vec<_> = self.widget_commands.drain(..runnable).collect();
+        let commands: Vec<_> = self.widget_commands.drain(..).collect();
         for (id, command) in commands {
             let result = match self.target_is_mounted(&command) {
                 true => execute(command)
@@ -377,7 +348,6 @@ impl Guest {
         let events = std::mem::take(&mut self.pending);
         let bytes = wire::encode(&events);
         perf::record(key, "events_bytes", bytes.len() as u64);
-        self.editor_moved = false;
         arm(&mut self.store);
         let called = perf::time(key, "tick.call");
         let answer = self
@@ -410,16 +380,7 @@ impl Guest {
                 let mut previous = self.frame.root.take();
                 let mut accepted = true;
                 let merging = perf::time(key, "merge");
-                let merged = merge(&mut previous, &mut frame)
-                    .map_err(str::to_owned)
-                    .and_then(|changed| {
-                        if changed.0
-                            && let Some(root) = &frame.root
-                        {
-                            self.inputs.validate(root)?;
-                        }
-                        Ok(changed)
-                    });
+                let merged = merge(&mut previous, &mut frame).map_err(str::to_owned);
                 drop(merging);
                 match merged {
                     Ok((false, _)) => {}
@@ -427,9 +388,6 @@ impl Guest {
                         reports.local.merge(report);
                         self.frame_rev += 1;
                         if let Some(root) = &mut frame.root {
-                            if let Err(error) = self.inputs.replace(root) {
-                                self.fault = Some(error);
-                            }
                             // The guest remembers its tree without the
                             // picture bytes; the tree its patches build on
                             // has to be that one.
@@ -446,7 +404,7 @@ impl Guest {
                             }
                         }
                     }
-                    // Preserve accepted document state while requesting a full tree.
+                    // the tree shown stays while a full one is asked for
                     Err(refused) => {
                         accepted = false;
                         frame.root = previous;
@@ -467,11 +425,6 @@ impl Guest {
                     }
                     self.frame_reports = reports;
                     self.report_display_truncation();
-                    match self.inputs.frame(&frame) {
-                        Ok(moved) => self.editor_moved = moved,
-                        Err(error) => self.fault = Some(error),
-                    }
-                    self.pending.extend(self.inputs.drain());
                 }
                 self.frame = frame;
                 if perf::on() {
@@ -512,28 +465,28 @@ mod tests {
         })
     }
 
-    fn editor(id: &str) -> wire::Node {
-        wire::Node::Editor {
-            binding: None,
+    fn field(id: &str) -> wire::Node {
+        wire::Node::Field {
             id: wire::ElementIdWire::Name(id.into()),
-            style: Default::default(),
+            multiline: true,
+            value: String::new(),
+            cursor: Default::default(),
+            generation: 1,
+            revision: 0,
+            tokens: Vec::new(),
+            claims: Vec::new(),
+            options: Default::default(),
             placeholder: String::new(),
-            label: None,
-            document: wire::editor_document::EditorDocumentRef {
-                document: "doc".into(),
-                reset: 1,
-                text_revision: 0,
-                revision: 0,
-                cursor: wire::EditorCursor::default(),
-                byte_len: 0,
-            },
-            on_document: 0,
-            editable: true,
+            secure: false,
+            on_change: Some(1),
+            on_key: None,
+            on_submit: None,
+            style: Default::default(),
         }
     }
 
-    /// An editor five named ancestors deep, the way a composer mounts in a
-    /// real view; the editor is targeted by its own key alone.
+    /// A field five named ancestors deep, the way a composer mounts in a
+    /// real view; the field is targeted by its own key alone.
     fn chat_shaped_tree() -> wire::Node {
         container(
             "chat-viewport",
@@ -545,7 +498,7 @@ mod tests {
                         "chat-room",
                         vec![container(
                             "draft-general",
-                            vec![editor("draft-general/editor")],
+                            vec![field("draft-general/editor")],
                         )],
                     )],
                 )],
@@ -553,8 +506,8 @@ mod tests {
         )
     }
 
-    /// The guest SDK names a nested editor by its whole path, which the
-    /// host finds; the editor's own key alone names no node, since a second
+    /// The guest SDK names a nested field by its whole path, which the
+    /// host finds; the field's own key alone names no node, since a second
     /// composer could hold it too.
     #[test]
     fn a_target_names_its_editor_by_the_whole_path() {

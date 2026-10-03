@@ -33,7 +33,7 @@ pub(super) enum Snapshot {
 
 /// One instantiated view: its wasm store and exports, the last frame it
 /// sent, and everything the host keeps on its behalf between ticks — the
-/// events owed to it, the live text of its inputs, its pictures, and the
+/// events owed to it, its pictures, and the
 /// subscriptions it opened. Every subscription here (`props`,
 /// `visibility`, `offset`, `route`, `live`, `tasks`, `clocks`) has one
 /// lifecycle: opened by a request, retired by its cancel in `redraw`, and
@@ -85,12 +85,7 @@ pub(super) struct Guest {
     /// Bumped when `frame.root` changes: the widget rebuilds when it sees a
     /// number it has not rendered.
     pub(crate) frame_rev: u64,
-    /// The last tick moved an editor document (`EditorStore::frame`): the
-    /// tree has to render for its fields to show it, new tree or not.
-    pub(crate) editor_moved: bool,
     pub(crate) ticks: u64,
-    /// The live text of every input in the tree — the host's, not the guest's.
-    pub(crate) inputs: EditorStore,
     /// Every picture the guest has sent, by hash: the bytes cross once.
     pub(crate) pictures: Pictures,
     /// The guest's `<module>.props` subscription, once it asked, and the

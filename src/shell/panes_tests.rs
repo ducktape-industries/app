@@ -1540,15 +1540,22 @@ fn a_popped_out_seat_moves_into_its_window_when_it_opens(cx: &mut TestAppContext
 fn a_pane_picked_in_spotlight_hands_the_keys_by_its_first_frame(cx: &mut TestAppContext) {
     use gpui_kit::Styled as _;
     const MODULE: &str = "pane-first-frame-view";
-    let field = view_wire::Node::Input {
+    let field = view_wire::Node::Field {
         options: view_wire::InputOptions {
             label: "Search".into(),
             ..Default::default()
         },
         id: view_wire::ElementIdWire::Name("search".into()),
+        multiline: false,
+        cursor: Default::default(),
+        generation: 1,
+        revision: 0,
+        tokens: Vec::new(),
+        claims: Vec::new(),
         placeholder: String::new(),
         value: String::new(),
-        on_input: Some(1),
+        on_change: Some(1),
+        on_key: None,
         on_submit: None,
         secure: false,
         style: gpui_kit::div().w(px(200.)).h(px(24.)).style().clone(),

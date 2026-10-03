@@ -1,13 +1,9 @@
 use super::*;
 
-/// Ticks a replacement gets to publish its tree and finish its document
-/// transfers. The host fetches documents one at a time, and a view answers
-/// the request with `Begin`, then one chunk a tick, then `Complete`, and
-/// hears the acknowledgement on one more tick; the last tick is the quiet
-/// one that shows the transfer done.
-const FIRST_FRAME_TICK_LIMIT: usize = wire::editor_document::MAX_EDITOR_DOCUMENTS
-    * (wire::editor_document::MAX_EDITOR_CHUNKS + 3)
-    + 1;
+/// Ticks a replacement gets to publish its tree: the tree itself, the
+/// resync a picture it names by hash alone may cost it (`Pictures::adopt`),
+/// and the quiet tick that shows nothing more is owed.
+const FIRST_FRAME_TICK_LIMIT: usize = 3;
 /// Tables are allocated eagerly at their declared minimum, before any fuel
 /// or memory limit is consulted; a view is one core instance and one memory.
 const MAX_TABLES: usize = 4;
@@ -401,9 +397,7 @@ impl Guest {
             display_diagnostics: _,
             installed_generation: _,
             frame_rev: _,
-            editor_moved: _,
             ticks: _,
-            inputs: _,
             pictures: _,
             props_subscription: _,
             props_sent: _,
@@ -480,8 +474,6 @@ impl Guest {
             && self.replies.fault().is_none()
             && self.pending.is_empty()
             && self.widget_commands.is_empty()
-            && self.inputs.ready() == Ok(true)
-            && !self.inputs.pending()
             && (self.staged || self.frame.requests.is_empty())
     }
 
@@ -544,14 +536,12 @@ impl Guest {
                     "{shown}: replacement requests exceed the first-frame budget"
                 ));
             }
-            if self.inputs.ready()? && self.pending.is_empty() {
+            if self.pending.is_empty() {
                 break;
             }
         }
-        if !self.inputs.ready()? || !self.pending.is_empty() {
-            return Err(format!(
-                "{shown}: replacement document transfer did not complete"
-            ));
+        if !self.pending.is_empty() {
+            return Err(format!("{shown}: the replacement did not settle"));
         }
         requests.retain(|request| !cancels.contains(&request.id));
         self.frame.requests = requests;
@@ -681,12 +671,7 @@ impl Guest {
             display_diagnostics: Default::default(),
             installed_generation: None,
             frame_rev: 0,
-            editor_moved: false,
             ticks: 0,
-            inputs: {
-                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-                EditorStore::new(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
-            },
             pictures: Pictures::default(),
             props_subscription: None,
             props_sent: None,

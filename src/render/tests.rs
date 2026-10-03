@@ -126,8 +126,10 @@ fn axis_container(
     })
 }
 
+/// A one-line field holding "hunter2", its caret at the end, as the guest's
+/// `TextField::new` leaves one.
 fn input(label: &str, secure: bool, disabled: bool) -> wire::Node {
-    wire::Node::Input {
+    wire::Node::Field {
         options: wire::InputOptions {
             label: label.into(),
             description: Some("Shown to members".into()),
@@ -135,12 +137,49 @@ fn input(label: &str, secure: bool, disabled: bool) -> wire::Node {
             ..Default::default()
         },
         id: wire::ElementIdWire::Name("i".into()),
-        placeholder: "Type here".into(),
+        multiline: false,
         value: "hunter2".into(),
-        on_input: Some(1),
-        on_submit: None,
+        cursor: wire::TextRange::caret("hunter2".len()),
+        generation: 1,
+        revision: 0,
+        tokens: Vec::new(),
+        claims: Vec::new(),
+        placeholder: "Type here".into(),
         secure,
+        on_change: Some(1),
+        on_key: None,
+        on_submit: None,
         style: Default::default(),
+    }
+}
+
+/// A growing field holding `value`, its caret at the end: what a composer
+/// or a comment box mounts. It hears changes on 1 and claimed keys on 2.
+fn area(
+    key: &str,
+    label: Option<&str>,
+    value: &str,
+    style: gpui_kit::StyleRefinement,
+) -> wire::Node {
+    wire::Node::Field {
+        id: named_id(key),
+        multiline: true,
+        value: value.into(),
+        cursor: wire::TextRange::caret(value.len()),
+        generation: 1,
+        revision: 0,
+        tokens: Vec::new(),
+        claims: Vec::new(),
+        options: wire::InputOptions {
+            label: label.map(str::to_owned).unwrap_or_default(),
+            ..Default::default()
+        },
+        placeholder: String::new(),
+        secure: false,
+        on_change: Some(1),
+        on_key: Some(2),
+        on_submit: None,
+        style,
     }
 }
 
@@ -221,30 +260,6 @@ fn draw(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> Vec<crate::ax::A
     })
 }
 
-/// `root` in a window, its editors on a store of their own; with `text`,
-/// the document they ask for holds it.
-fn with_editors(
-    root: wire::Node,
-    text: Option<&str>,
-    cx: &mut gpui_kit::TestAppContext,
-) -> (Entity<ViewTree>, gpui_kit::VisualTestContext) {
-    let store = crate::editor::wire::EditorStore::new(91);
-    store.replace(&root).unwrap();
-    if let Some(text) = text {
-        seed_editor_text(&store, text);
-    }
-    let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
-        let mut tree = ViewTree::new(root);
-        tree.set_editor_store(store, cx);
-        tree
-    });
-    let tree = window.root(cx).unwrap();
-    (
-        tree,
-        gpui_kit::VisualTestContext::from_window(window.into(), cx),
-    )
-}
-
 /// A view mounted the way a module seat mounts a guest: a cached view under
 /// a full-size div, not as the window root (which gpui stretches).
 pub(super) struct Seat(pub(super) Entity<ViewTree>);
@@ -273,8 +288,6 @@ pub(super) fn emitted(
     });
     (events, subscription)
 }
-
-use crate::editor::wire::seed_editor_text;
 
 mod accessibility;
 mod dialog_focus;

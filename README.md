@@ -51,7 +51,7 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 | `src/backend/views.rs` | roster → blob → `ducktape.view` section |
 | `src/backend/session.rs` | the seated key, its frames, preferences |
 | `src/runtime.rs`, `runtime/` | the wasm view runtime: seats, loads, swaps, the kernel relay |
-| `src/render.rs`, `editor/` | the wire tree presenter and the one native text field (IME, caret, clipboard) |
+| `src/render.rs`, `render/` | the wire tree presenter, its text fields the kit's engine holds (IME, caret, clipboard, undo) |
 | `src/shell.rs`, `shell/` | the native chrome: the app's state as entities (`shell/entities/`, each written by its own methods) and each window's root with its layers (`shell/layers/`: launcher, menu bar, panes, dialogs, footer) |
 | `src/ui/layout.rs`, `src/shell/entities/{desk,windows}.rs` | panes floating on the desk, popped out into their own windows and back |
 

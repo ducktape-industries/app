@@ -48,11 +48,6 @@ second wire schema. Width and height are positive integer pixels; theme is
 painting. Additional manifest fields, such as a scenario description, are
 ignored.
 
-Trees containing editor references also need `<name>.editors.json`, an
-array of `{"document": "<document-id>", "text": "<full text>"}` records.
-The text's byte length must match the reference in the tree. The harness
-seeds the real editor store using the normal document transfer messages.
-
 Each fixture gets an isolated Xvfb display. Capture waits for first paint
 and two unchanged image samples with more than 32 colors, then applies any
 scroll/hover actions. It rejects blank final PNGs and returns a failure if

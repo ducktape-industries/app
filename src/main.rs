@@ -6,7 +6,6 @@ mod ui;
 #[cfg(any(test, feature = "ax-door"))]
 mod ax;
 mod backend;
-mod editor;
 mod fonts;
 mod perf;
 mod render;
