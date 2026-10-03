@@ -976,6 +976,54 @@ fn a_letter_typed_ahead_of_a_claimed_enter_is_kept(cx: &mut gpui_kit::TestAppCon
     assert_eq!(told(&events).last().map(String::as_str), Some("x"));
 }
 
+/// A frame drawn twice keeps the edits its own asks still read against: the
+/// guest's ask, built between two edits of one batch, lands where it meant
+/// to however many times its frame is drawn before it runs.
+#[gpui_kit::test]
+fn a_frame_drawn_twice_keeps_the_edits_its_asks_read_against(cx: &mut gpui_kit::TestAppContext) {
+    let style = div().w(px(240.)).h(px(80.)).style().clone();
+    let (tree, mut native) = mounted(area("doc", None, "hello", style.clone()), cx);
+    let path = [named_id("doc")];
+    focus(&tree, &mut native, &path);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    // revision 1: a letter at the end; revision 2: a letter inside "hello"
+    native.simulate_input("a");
+    native.update(|window, cx| {
+        let crate::render::inputs::Engine::Area(state) =
+            tree.read(cx).fields[path.as_slice()].engine.clone()
+        else {
+            unreachable!()
+        };
+        state.update(cx, |state, cx| state.set_selected_range(2..2, cx));
+        window.render_frame(cx);
+    });
+    native.simulate_input("b");
+    native.run_until_parked();
+    assert_eq!(text(&tree, &mut native), "heblloa");
+    // the guest heard both; its frame is drawn twice before its ask runs
+    native.update(|window, cx| {
+        let mut root = area("doc", None, "heblloa", style);
+        let wire::Node::Field { revision, .. } = &mut root else {
+            unreachable!()
+        };
+        *revision = 2;
+        tree.update(cx, |tree, cx| tree.replace(root, cx));
+        window.render_frame(cx);
+        tree.update(cx, |_, cx| cx.notify());
+        window.render_frame(cx);
+    });
+    // the ask it built between the two letters, against "helloa": clear "hello"
+    native.update(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            tree.execute_widget_command(replace(&path, 1, 0..5, ""), window, cx)
+                .unwrap();
+        });
+    });
+    native.run_until_parked();
+    assert_eq!(text(&tree, &mut native), "a");
+    assert_eq!(told(&events).last().map(String::as_str), Some("a"));
+}
+
 /// Edits the guest has not acknowledged never stop the view, however many.
 #[gpui_kit::test]
 fn unacknowledged_edits_never_stop_the_view(cx: &mut gpui_kit::TestAppContext) {

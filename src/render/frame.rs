@@ -19,7 +19,8 @@ impl ViewTree {
     pub fn replace(&mut self, mut root: wire::Node, cx: &mut Context<Self>) {
         let mut focusable = HashMap::new();
         let mut guest_focus_ids = std::collections::HashSet::new();
-        let mut fields = std::collections::HashSet::new();
+        // every field, with the guest's revision this frame carries
+        let mut fields = HashMap::new();
         let mut scrolls = std::collections::HashSet::new();
         let mut uniform_lists = std::collections::HashSet::new();
         let mut variable_lists = std::collections::HashSet::new();
@@ -76,8 +77,8 @@ impl ViewTree {
                         state: *state,
                     });
                 }
-                wire::Node::Field { .. } => {
-                    fields.insert(path.clone());
+                wire::Node::Field { revision, .. } => {
+                    fields.insert(path.clone(), *revision);
                 }
                 wire::Node::ResizeHandle { interactivity, .. } => {
                     if let Some(id) = interactivity.focus_handle {
@@ -112,7 +113,10 @@ impl ViewTree {
             .retain(|key, (kind, _)| focusable.get(key) == Some(kind));
         self.guest_focus_targets
             .retain(|id, _| guest_focus_ids.contains(id));
-        self.fields.retain(|key, _| fields.contains(key));
+        self.fields.retain(|key, _| fields.contains_key(key));
+        for (key, field) in self.fields.iter_mut() {
+            field.frame(fields[key]);
+        }
         self.scrolls.retain(|key, _| scrolls.contains(key));
         self.uniform_lists.retain(|id, list| {
             list.rows.clear();

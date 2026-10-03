@@ -55,9 +55,9 @@ pub(super) struct Field {
     claims: Vec<wire::KeyClaim>,
     /// The guest's generation the engine's text was adopted from.
     generation: u64,
-    /// The guest's revision as of the frame before this one. Every ask a
-    /// frame carries was built after the frame before it, so the log is
-    /// kept from there.
+    /// The guest's revision as of the frame before the one shown. Every ask
+    /// a frame carries was built after the frame before it, so the log is
+    /// kept from there (`frame`).
     seen: u64,
     /// The engine's text, cursor and preedit as last reported, at `revision`.
     text: String,
@@ -210,8 +210,6 @@ impl ViewTree {
         field.on_key = *on_key;
         field.on_submit = *on_submit;
         field.claims.clone_from(claims);
-        field.prune();
-        field.seen = *revision;
         let mut events = Vec::new();
         if field.generation != *generation {
             field.generation = *generation;
@@ -581,9 +579,13 @@ impl Field {
         self.settle(None, window, cx).and_then(|(event, _)| event)
     }
 
-    /// The log is kept from the frame before the one shown: every ask that
-    /// frame carries was built after it, and a held ask from before it.
-    fn prune(&mut self) {
+    /// A frame arrived with the guest at `revision`: the log is kept from
+    /// the frame before it, since every ask this frame carries was built
+    /// after that one, and from any ask still held. Once per frame
+    /// (`ViewTree::replace`), not per render: a second render of the same
+    /// frame would otherwise move the floor past the edits its own asks
+    /// still read against.
+    pub(super) fn frame(&mut self, revision: u64) {
         let held = self
             .deferred
             .iter()
@@ -595,6 +597,7 @@ impl Field {
             .unwrap_or(u64::MAX);
         let floor = self.seen.min(held);
         self.log.retain(|(at, _)| *at > floor);
+        self.seen = revision;
     }
 
     /// What differs from the last report, reported: the text at its next
