@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "abi"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=7e761cf1465f6040f3b40324342fcf5d0daa7c0b#7e761cf1465f6040f3b40324342fcf5d0daa7c0b"
+source = "git+https://github.com/ducktape-industries/modules?rev=f6a905ccc62c9461ad466ba97d93a914bead2dbb#f6a905ccc62c9461ad466ba97d93a914bead2dbb"
 dependencies = [
  "borsh",
  "design",
@@ -2155,7 +2155,7 @@ dependencies = [
 [[package]]
 name = "describe"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=7e761cf1465f6040f3b40324342fcf5d0daa7c0b#7e761cf1465f6040f3b40324342fcf5d0daa7c0b"
+source = "git+https://github.com/ducktape-industries/modules?rev=f6a905ccc62c9461ad466ba97d93a914bead2dbb#f6a905ccc62c9461ad466ba97d93a914bead2dbb"
 dependencies = [
  "borsh",
  "serde",
@@ -2165,7 +2165,7 @@ dependencies = [
 [[package]]
 name = "design"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=7e761cf1465f6040f3b40324342fcf5d0daa7c0b#7e761cf1465f6040f3b40324342fcf5d0daa7c0b"
+source = "git+https://github.com/ducktape-industries/modules?rev=f6a905ccc62c9461ad466ba97d93a914bead2dbb#f6a905ccc62c9461ad466ba97d93a914bead2dbb"
 
 [[package]]
 name = "digest"
@@ -2316,7 +2316,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 [[package]]
 name = "ducklink"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=7e761cf1465f6040f3b40324342fcf5d0daa7c0b#7e761cf1465f6040f3b40324342fcf5d0daa7c0b"
+source = "git+https://github.com/ducktape-industries/modules?rev=f6a905ccc62c9461ad466ba97d93a914bead2dbb#f6a905ccc62c9461ad466ba97d93a914bead2dbb"
 dependencies = [
  "abi",
  "program",
@@ -2676,7 +2676,7 @@ dependencies = [
 [[package]]
 name = "error"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=7e761cf1465f6040f3b40324342fcf5d0daa7c0b#7e761cf1465f6040f3b40324342fcf5d0daa7c0b"
+source = "git+https://github.com/ducktape-industries/modules?rev=f6a905ccc62c9461ad466ba97d93a914bead2dbb#f6a905ccc62c9461ad466ba97d93a914bead2dbb"
 dependencies = [
  "borsh",
  "serde",
@@ -4006,7 +4006,7 @@ dependencies = [
 [[package]]
 name = "guest"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=7e761cf1465f6040f3b40324342fcf5d0daa7c0b#7e761cf1465f6040f3b40324342fcf5d0daa7c0b"
+source = "git+https://github.com/ducktape-industries/modules?rev=f6a905ccc62c9461ad466ba97d93a914bead2dbb#f6a905ccc62c9461ad466ba97d93a914bead2dbb"
 dependencies = [
  "abi",
  "borsh",
@@ -4433,7 +4433,7 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 [[package]]
 name = "identity"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=7e761cf1465f6040f3b40324342fcf5d0daa7c0b#7e761cf1465f6040f3b40324342fcf5d0daa7c0b"
+source = "git+https://github.com/ducktape-industries/modules?rev=f6a905ccc62c9461ad466ba97d93a914bead2dbb#f6a905ccc62c9461ad466ba97d93a914bead2dbb"
 dependencies = [
  "abi",
  "borsh",
@@ -5338,7 +5338,7 @@ dependencies = [
 [[package]]
 name = "module-registry"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=7e761cf1465f6040f3b40324342fcf5d0daa7c0b#7e761cf1465f6040f3b40324342fcf5d0daa7c0b"
+source = "git+https://github.com/ducktape-industries/modules?rev=f6a905ccc62c9461ad466ba97d93a914bead2dbb#f6a905ccc62c9461ad466ba97d93a914bead2dbb"
 dependencies = [
  "abi",
  "borsh",
@@ -6731,10 +6731,21 @@ dependencies = [
 [[package]]
 name = "program"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=7e761cf1465f6040f3b40324342fcf5d0daa7c0b#7e761cf1465f6040f3b40324342fcf5d0daa7c0b"
+source = "git+https://github.com/ducktape-industries/modules?rev=f6a905ccc62c9461ad466ba97d93a914bead2dbb#f6a905ccc62c9461ad466ba97d93a914bead2dbb"
 dependencies = [
  "abi",
  "borsh",
+ "program-derive",
+]
+
+[[package]]
+name = "program-derive"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/modules?rev=f6a905ccc62c9461ad466ba97d93a914bead2dbb#f6a905ccc62c9461ad466ba97d93a914bead2dbb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -8272,7 +8283,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "store"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=7e761cf1465f6040f3b40324342fcf5d0daa7c0b#7e761cf1465f6040f3b40324342fcf5d0daa7c0b"
+source = "git+https://github.com/ducktape-industries/modules?rev=f6a905ccc62c9461ad466ba97d93a914bead2dbb#f6a905ccc62c9461ad466ba97d93a914bead2dbb"
 dependencies = [
  "abi",
  "borsh",
@@ -9433,7 +9444,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "view-wire"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=7e761cf1465f6040f3b40324342fcf5d0daa7c0b#7e761cf1465f6040f3b40324342fcf5d0daa7c0b"
+source = "git+https://github.com/ducktape-industries/modules?rev=f6a905ccc62c9461ad466ba97d93a914bead2dbb#f6a905ccc62c9461ad466ba97d93a914bead2dbb"
 dependencies = [
  "accesskit",
  "borsh",

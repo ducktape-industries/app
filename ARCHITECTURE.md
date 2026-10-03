@@ -201,9 +201,9 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    (`MAX_FRAME_BYTES`, request and cancel counts, sanitize), `merge`
    applies tooltip replies and patches onto the held root. A changed root
    bumps `frame_rev`. A frame carrying more than `view_wire::MAX_REQUESTS`
-   requests (or twice that in cancels) is refused whole by `shape`, which
-   faults the view; the `tick_limit` refusal in `redraw` is a second guard
-   behind it. A patch `merge` refuses does not fault: the held root stays,
+   requests (or `MAX_CANCELS` cancels) does not decode, so `shape` refuses
+   it whole and the view faults; the view SDK sends at most that many a
+   frame and keeps the rest for the next. A patch `merge` refuses does not fault: the held root stays,
    `frame_rev` bumps and `Event::Resync` asks the guest for a full tree.
 6. **Frame → render.** When `frame_rev` moved, `turn` takes the held
    tree, its pictures named by hash alone, with the seat's picture bytes
