@@ -59,16 +59,26 @@ pub(crate) fn dialog_entry(entry: &FocusHandle, window: &mut Window, cx: &mut Ap
 }
 
 /// Where focus goes when a dialog closes: back to `opener`, what held it as
-/// the dialog opened, after the frame that drops the dialog — if focus went
-/// with it. Focus the view moved elsewhere itself stays there.
-pub(crate) fn dialog_exit(opener: WeakFocusHandle, window: &mut Window, cx: &mut App) {
-    window.defer(cx, move |window, cx| {
-        if window.focused(cx).is_none()
-            && let Some(opener) = opener.upgrade()
-        {
-            window.focus(&opener, cx);
-        }
-    });
+/// the dialog opened, if focus is in the dialog (`entry`, its trap) as the
+/// frame that drops it renders. Focus the view moved elsewhere itself stays
+/// there.
+///
+/// Decided in that render, not after its draw: the draw drops the focused
+/// element with the dialog, and a window that takes the keys back to its
+/// own root when its focused element vanishes (`WindowRoot::focus_lost`,
+/// shell/layers/root.rs) has them on the root by then. Focus moved to the
+/// opener before the draw compares focus paths is never lost.
+pub(crate) fn dialog_exit(
+    entry: &FocusHandle,
+    opener: WeakFocusHandle,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if entry.contains_focused(window, cx)
+        && let Some(opener) = opener.upgrade()
+    {
+        window.focus(&opener, cx);
+    }
 }
 
 impl ViewTree {

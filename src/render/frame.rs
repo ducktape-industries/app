@@ -139,10 +139,10 @@ impl ViewTree {
         });
         self.drags.retain(|key, _| drags.contains(key));
         let opener = &mut self.opener;
-        self.dialogs.retain(|key, (_, was)| {
+        self.dialogs.retain(|key, (entry, was)| {
             let open = dialogs.contains(key);
-            if !open && was.is_some() {
-                *opener = was.take();
+            if !open && let Some(was) = was.take() {
+                *opener = Some((entry.clone(), was));
             }
             open
         });
