@@ -215,7 +215,9 @@ impl Store {
         };
     }
 
-    pub(super) fn acknowledge(&mut self) {
+    /// Whether any document left its acknowledgment phase.
+    pub(super) fn acknowledge(&mut self) -> bool {
+        let mut settled = false;
         for document in self.documents.values_mut() {
             let Phase::Acknowledgment { revision } = document.phase else {
                 continue;
@@ -236,7 +238,9 @@ impl Store {
                 document.queued_bytes = document.queued_bytes.saturating_sub(bytes);
             }
             document.phase = Phase::Ready;
+            settled = true;
         }
+        settled
     }
 
     pub(super) fn decide(&mut self, response: &view_wire::EditorResponse) {

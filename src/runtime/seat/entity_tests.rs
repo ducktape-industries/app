@@ -14,6 +14,9 @@ struct Root {
     /// The desk's selection layer, whose sweep of a cached frame's
     /// paragraphs refreshed the window on every frame before #347.
     selection_layer: bool,
+    /// `(ticks, frame_rev)` of the seated guest at each draw that shows its
+    /// tree: which of the guest's frames the window drew, read off the log.
+    drawn: Vec<(u64, u64)>,
     _watch: Subscription,
 }
 
@@ -25,6 +28,12 @@ impl Render for Root {
     ) -> impl IntoElement {
         use gpui_kit::prelude::FluentBuilder as _;
         let seat = self.seat.read(cx);
+        if seat.standin().is_none() && seat.tree().is_some() {
+            let mounted = registry().lock().unwrap()[&(seat.module(), seat.instance())].clone();
+            if let Slot::Ready(guest) = &mounted.lock().unwrap().slot {
+                self.drawn.push((guest.ticks, guest.frame_rev));
+            }
+        }
         let body = match (seat.standin(), seat.tree()) {
             (Some(standin), _) => standin.element(seat.module(), seat.instance(), seat.ax_mark()),
             // the cached path, no a11y reader
@@ -56,6 +65,7 @@ fn open(
         Root {
             seat: seat.clone(),
             selection_layer,
+            drawn: Vec::new(),
             _watch: cx.observe(&seat, |_, _, cx| cx.notify()),
         }
     });
@@ -577,6 +587,7 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
         Root {
             seat: seat.clone(),
             selection_layer: false,
+            drawn: Vec::new(),
             _watch: cx.observe(&seat, |_, _, cx| cx.notify()),
         }
     });
@@ -1083,6 +1094,211 @@ fn a_seat_ticks_once_per_draw_of_its_tree(cx: &mut TestAppContext) {
         3,
         "each fresh frame drew before the next turn replaced it"
     );
+}
+
+/// A tick the guest answers `unchanged` gives the tree nothing to draw: the
+/// tree is not re-rendered for it (before, every tick notified the tree, so
+/// an idle view's whole tree was rebuilt per clock item and per reply with
+/// nothing to show), and the seat holds nothing for it, so the next wake
+/// still turns.
+#[gpui_kit::test]
+fn an_unchanged_tick_redraws_nothing_and_holds_nothing(cx: &mut TestAppContext) {
+    const MODULE: &str = "unchanged-tick-test";
+    let _on = crate::perf::on_for_test();
+    crate::runtime::seat_ticking_for_test(
+        MODULE,
+        320,
+        &[
+            wire::Frame {
+                root: Some(wire::Node::empty()),
+                ..Default::default()
+            },
+            wire::Frame {
+                unchanged: true,
+                ..Default::default()
+            },
+        ],
+    );
+    let (seat, _, mut native) = open(cx, MODULE, false);
+    native.update(|window, cx| {
+        window.draw(cx).clear(cx);
+    });
+    native.run_until_parked();
+    assert_eq!((ticks_of(&seat, &native), renders_of(MODULE)), (1, 1));
+    // a props move ticks only a guest subscribed to them (`redraw`'s
+    // `quiet` gate): subscribe it, as `a_seat_ticks_once_per_draw_of_its_tree`
+    // does
+    {
+        let mounted = mounted_of(&seat, &native);
+        let mut locked = mounted.lock().unwrap();
+        let Slot::Ready(guest) = &mut locked.slot else {
+            panic!("seated")
+        };
+        guest.props_subscription = Some(98);
+    }
+    // no draw asked for here: the harness draws a window only once
+    // something dirtied it (a notified tree did, before)
+    for props in [b"one".as_slice(), b"two".as_slice()] {
+        native.update(|_, cx| {
+            seat.update(cx, |seat, cx| seat.set_props(props.to_vec(), cx));
+        });
+        native.run_until_parked();
+    }
+    assert_eq!(
+        ticks_of(&seat, &native),
+        3,
+        "moved props tick the guest; an unchanged tick holds no turn back"
+    );
+    assert_eq!(renders_of(MODULE), 1, "an unchanged tick dirties nothing");
+    // a draw asked for by something else leaves the cached tree alone too
+    native.update(|window, cx| {
+        window.draw(cx).clear(cx);
+    });
+    native.run_until_parked();
+    assert_eq!(
+        renders_of(MODULE),
+        1,
+        "an unchanged tick does not re-render the tree"
+    );
+}
+
+/// An `unchanged` frame that carries editor traffic still renders the
+/// tree: `TextEditor::sync` reads the store's projection at the tree's
+/// render, so a field shows a guest's decision or document only through
+/// one. The message here matches no transfer (a transfer id carries the
+/// guest store's own instance number, which a baked test frame cannot
+/// know): the frame carrying it is what asks for the render.
+#[gpui_kit::test]
+fn an_unchanged_tick_with_editor_traffic_redraws(cx: &mut TestAppContext) {
+    const MODULE: &str = "unchanged-editor-test";
+    use wire::editor_document::{EditorDocumentMessage as Message, EditorTransferId};
+    let _on = crate::perf::on_for_test();
+    crate::runtime::seat_ticking_for_test(
+        MODULE,
+        320,
+        &[
+            wire::Frame {
+                root: Some(wire::Node::empty()),
+                ..Default::default()
+            },
+            wire::Frame {
+                unchanged: true,
+                editor_documents: vec![Message::Acknowledged {
+                    id: EditorTransferId {
+                        instance: 0,
+                        document: "doc".into(),
+                        reset: 1,
+                        serial: 0,
+                        attempt: 0,
+                    },
+                }],
+                ..Default::default()
+            },
+            wire::Frame {
+                unchanged: true,
+                ..Default::default()
+            },
+        ],
+    );
+    let (seat, _, mut native) = open(cx, MODULE, false);
+    {
+        let mounted = mounted_of(&seat, &native);
+        let mut locked = mounted.lock().unwrap();
+        let Slot::Ready(guest) = &mut locked.slot else {
+            panic!("seated")
+        };
+        guest.props_subscription = Some(98);
+    }
+    let mut tick = |props: &[u8]| {
+        if !props.is_empty() {
+            seat.update(&mut native, |seat, cx| seat.set_props(props.to_vec(), cx));
+            native.run_until_parked();
+        }
+        native.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        native.run_until_parked();
+        (ticks_of(&seat, &native), renders_of(MODULE))
+    };
+    assert_eq!(tick(b""), (1, 1));
+    assert_eq!(
+        tick(b"one"),
+        (2, 2),
+        "the unchanged frame with editor traffic re-rendered the tree"
+    );
+    assert_eq!(
+        tick(b"two"),
+        (3, 2),
+        "an unchanged tick that moved nothing draws nothing"
+    );
+}
+
+/// A 24 px row with nothing in it.
+fn row() -> wire::Node {
+    wire::Node::Space {
+        style: div().h(px(24.)).w_full().style().clone(),
+    }
+}
+
+/// A 2,000-row uniform list filling the view, carrying `rows` and, as the
+/// guest always does, the measurement row 0.
+fn uniform(rows: std::ops::Range<u32>) -> wire::Node {
+    let id = wire::ElementIdWire::Name("rows".into());
+    let mut indices: Vec<u32> = rows.collect();
+    if !indices.contains(&0) {
+        indices.insert(0, 0);
+    }
+    wire::Node::UniformList {
+        id: id.clone(),
+        path: vec![id],
+        route: 1,
+        style: div().size_full().style().clone(),
+        interactivity: Default::default(),
+        count: 2_000,
+        measure_index: 0,
+        sizing: wire::list::UniformListSizing::Auto,
+        horizontal_sizing: wire::list::UniformListHorizontalSizing::FitList,
+        y_flipped: false,
+        scroll_request: None,
+        children: indices.iter().map(|_| row()).collect(),
+        indices,
+    }
+}
+
+/// A uniform list's first frame carries one row. The layout that draws it
+/// asks for the rows (a tick, drawn next) and reports the list's scroll
+/// state (`UniformListState`), a third tick the guest answers `unchanged`:
+/// that one draws nothing, so the open costs two draws, the one-row frame
+/// and the rows. Before, every tick notified the tree, and the state tick
+/// drew the same rows a third time.
+#[gpui_kit::test]
+fn a_uniform_lists_open_draws_its_two_frames_and_nothing_for_its_state(cx: &mut TestAppContext) {
+    const MODULE: &str = "uniform-open-test";
+    let _on = crate::perf::on_for_test();
+    let full = |root| wire::Frame {
+        root: Some(root),
+        ..Default::default()
+    };
+    crate::runtime::seat_ticking_for_test(
+        MODULE,
+        320,
+        &[
+            full(uniform(0..1)),
+            full(uniform(0..16)),
+            wire::Frame {
+                unchanged: true,
+                ..Default::default()
+            },
+        ],
+    );
+    let (seat, root, native) = open(cx, MODULE, false);
+    native.run_until_parked();
+    assert_eq!(
+        root.read_with(&native, |root, _| root.drawn.clone()),
+        [(1, 1), (2, 2)],
+        "draw 1 showed the one-row frame, draw 2 the rows asked for, and nothing drew for the state tick"
+    );
+    assert_eq!((ticks_of(&seat, &native), renders_of(MODULE)), (3, 2));
 }
 
 /// A seat claimed or dropped moves what `Roster::rail` reads, so each wakes

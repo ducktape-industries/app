@@ -403,6 +403,7 @@ impl Guest {
             display_diagnostics: _,
             installed_generation: _,
             frame_rev: _,
+            editor_moved: _,
             ticks: _,
             inputs: _,
             pictures: _,
@@ -682,6 +683,7 @@ impl Guest {
             display_diagnostics: Default::default(),
             installed_generation: None,
             frame_rev: 0,
+            editor_moved: false,
             ticks: 0,
             inputs: {
                 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);

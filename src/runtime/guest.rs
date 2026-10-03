@@ -85,6 +85,9 @@ pub(super) struct Guest {
     /// Bumped when `frame.root` changes: the widget rebuilds when it sees a
     /// number it has not rendered.
     pub(crate) frame_rev: u64,
+    /// The last tick moved an editor document (`EditorStore::frame`): the
+    /// tree has to render for its fields to show it, new tree or not.
+    pub(crate) editor_moved: bool,
     pub(crate) ticks: u64,
     /// The live text of every input in the tree — the host's, not the guest's.
     pub(crate) inputs: EditorStore,
