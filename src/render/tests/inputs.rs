@@ -91,6 +91,19 @@ fn told(events: &Rc<RefCell<Vec<wire::Event>>>) -> Vec<String> {
         .collect()
 }
 
+/// The last change the guest heard.
+fn last_change(events: &Rc<RefCell<Vec<wire::Event>>>) -> wire::TextChange {
+    events
+        .borrow()
+        .iter()
+        .filter_map(|event| match event {
+            wire::Event::Text { change, .. } => Some(change.clone()),
+            _ => None,
+        })
+        .next_back()
+        .expect("the guest heard a change")
+}
+
 /// The guest's `Replace`: `range` of the text it read at `revision` becomes
 /// `text`, the caret after it.
 fn replace(
@@ -857,7 +870,7 @@ fn an_ime_commit_inside_the_echo_window_is_kept(cx: &mut gpui_kit::TestAppContex
     native.run_until_parked();
     native.update(|window, cx| {
         tree.update(cx, |tree, cx| {
-            tree.replace(container("form", [field("abc")]), cx)
+            tree.replace(container("form", [field("abc")]), &[], cx)
         });
         window.render_frame(cx);
     });
@@ -900,7 +913,7 @@ fn typed_over_a_selection(
     // the guest's frame, built before any of it, echoes the old text
     native.update(|window, cx| {
         tree.update(cx, |tree, cx| {
-            tree.replace(area("doc", None, text_before, style), cx)
+            tree.replace(area("doc", None, text_before, style), &[], cx)
         });
         window.render_frame(cx);
     });
@@ -973,14 +986,62 @@ fn a_letter_typed_ahead_of_a_claimed_enter_is_kept(cx: &mut gpui_kit::TestAppCon
     });
     native.run_until_parked();
     assert_eq!(text(&tree, &mut native), "x");
-    assert_eq!(told(&events).last().map(String::as_str), Some("x"));
+    // the caret stays where the writer is, after the letter
+    let heard = last_change(&events);
+    assert_eq!((heard.text.as_str(), heard.cursor), ("x", (1..1).into()));
 }
 
-/// A frame drawn twice keeps the edits its own asks still read against: the
-/// guest's ask, built between two edits of one batch, lands where it meant
-/// to however many times its frame is drawn before it runs.
+/// Enter claimed with the caret inside the words, a letter typed before the
+/// clear lands: the clear takes only the words the guest read, the letter
+/// stays with the caret after it, and one undo brings the words back round
+/// it.
 #[gpui_kit::test]
-fn a_frame_drawn_twice_keeps_the_edits_its_asks_read_against(cx: &mut gpui_kit::TestAppContext) {
+fn a_letter_typed_inside_the_words_a_send_clears_is_kept(cx: &mut gpui_kit::TestAppContext) {
+    let (tree, mut native) = mounted(
+        area(
+            "doc",
+            None,
+            "hello",
+            div().w(px(240.)).h(px(80.)).style().clone(),
+        ),
+        cx,
+    );
+    let path = [named_id("doc")];
+    focus(&tree, &mut native, &path);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    native.update(|window, cx| {
+        let crate::render::inputs::Engine::Area(state) =
+            tree.read(cx).fields[path.as_slice()].engine.clone()
+        else {
+            unreachable!()
+        };
+        state.update(cx, |state, cx| state.set_selected_range(3..3, cx));
+        window.render_frame(cx);
+    });
+    native.simulate_input("x");
+    native.run_until_parked();
+    assert_eq!(text(&tree, &mut native), "helxlo");
+    native.update(|window, cx| {
+        tree.update(cx, |tree, cx| {
+            tree.execute_widget_command(replace(&path, 0, 0..5, ""), window, cx)
+                .unwrap();
+        });
+    });
+    native.run_until_parked();
+    let heard = last_change(&events);
+    assert_eq!((heard.text.as_str(), heard.cursor), ("x", (1..1).into()));
+    pressed(&mut native, &["ctrl-z"]);
+    assert_eq!(text(&tree, &mut native), "helxlo", "one undo step");
+}
+
+/// The frames that arrive before an ask runs keep the edits it read
+/// against: an ask runs frames after the one that carried it, and the frames
+/// between (a keystroke's tick, a Drawn-owed turn, a redraw) arrive first.
+/// The host holds the ask, so it knows what the ask still needs.
+#[gpui_kit::test]
+fn frames_arriving_before_an_ask_runs_keep_the_edits_it_read_against(
+    cx: &mut gpui_kit::TestAppContext,
+) {
     let style = div().w(px(240.)).h(px(80.)).style().clone();
     let (tree, mut native) = mounted(area("doc", None, "hello", style.clone()), cx);
     let path = [named_id("doc")];
@@ -1000,19 +1061,21 @@ fn a_frame_drawn_twice_keeps_the_edits_its_asks_read_against(cx: &mut gpui_kit::
     native.simulate_input("b");
     native.run_until_parked();
     assert_eq!(text(&tree, &mut native), "heblloa");
-    // the guest heard both; its frame is drawn twice before its ask runs
+    // the guest heard both; two frames arrive and draw before its ask,
+    // built between the two letters and still queued, runs
     native.update(|window, cx| {
-        let mut root = area("doc", None, "heblloa", style);
-        let wire::Node::Field { revision, .. } = &mut root else {
-            unreachable!()
-        };
-        *revision = 2;
-        tree.update(cx, |tree, cx| tree.replace(root, cx));
-        window.render_frame(cx);
-        tree.update(cx, |_, cx| cx.notify());
-        window.render_frame(cx);
+        for _ in 0..2 {
+            let mut root = area("doc", None, "heblloa", style.clone());
+            let wire::Node::Field { revision, .. } = &mut root else {
+                unreachable!()
+            };
+            *revision = 2;
+            tree.update(cx, |tree, cx| tree.replace(root, &[(path.to_vec(), 1)], cx));
+            window.render_frame(cx);
+        }
     });
-    // the ask it built between the two letters, against "helloa": clear "hello"
+    // the ask, against "helloa": clear "hello". The "b" typed into it since
+    // stays; without the edit it was typed by, the clear would take "hebll"
     native.update(|window, cx| {
         tree.update(cx, |tree, cx| {
             tree.execute_widget_command(replace(&path, 1, 0..5, ""), window, cx)
@@ -1020,8 +1083,8 @@ fn a_frame_drawn_twice_keeps_the_edits_its_asks_read_against(cx: &mut gpui_kit::
         });
     });
     native.run_until_parked();
-    assert_eq!(text(&tree, &mut native), "a");
-    assert_eq!(told(&events).last().map(String::as_str), Some("a"));
+    assert_eq!(text(&tree, &mut native), "ba");
+    assert_eq!(told(&events).last().map(String::as_str), Some("ba"));
 }
 
 /// Edits the guest has not acknowledged never stop the view, however many.

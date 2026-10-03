@@ -130,7 +130,7 @@ fn container_focus_is_native_and_handoff_never_reuses_retired_handles(
     assert_eq!(keys.get(), 2);
     native.update(|window, cx| {
         replacement.update(cx, |tree, cx| {
-            tree.replace(text("closed", "menu closed"), cx);
+            tree.replace(text("closed", "menu closed"), &[], cx);
             assert!(tree.focus_targets.is_empty());
             assert!(!tree.target_focused(&[named_id("menu")], window, cx));
         })
@@ -399,14 +399,16 @@ fn a_scrolling_container_keeps_its_handle_at_its_own_id(cx: &mut gpui_kit::TestA
         tree.scrolls[&path].set_offset(point(px(0.), px(-300.)));
     });
     native.update(|window, cx| window.render_frame(cx));
-    tree.update(&mut native, |tree, cx| tree.replace(root(true, 12), cx));
+    tree.update(&mut native, |tree, cx| {
+        tree.replace(root(true, 12), &[], cx)
+    });
     native.update(|window, cx| window.render_frame(cx));
     tree.read_with(&native, |tree, _| {
         assert_eq!(tree.scrolls[&path].offset().y, px(-300.));
         assert_eq!(tree.scrolls[&path].max_offset().y, px(1000.));
     });
     tree.update(&mut native, |tree, cx| {
-        tree.replace(container("main", [banner()]), cx)
+        tree.replace(container("main", [banner()]), &[], cx)
     });
     native.update(|window, cx| window.render_frame(cx));
     tree.read_with(&native, |tree, _| {
@@ -426,6 +428,7 @@ fn a_scrolling_container_keeps_its_handle_at_its_own_id(cx: &mut gpui_kit::TestA
     tree.update(&mut native, |tree, cx| {
         tree.replace(
             container("main", [anonymous("b", 10), anonymous("c", 20)]),
+            &[],
             cx,
         )
     });

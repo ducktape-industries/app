@@ -264,7 +264,7 @@ fn a_full_raster_cache_draws_the_fallback_then_evicts(cx: &mut gpui_kit::TestApp
 
     native
         .cx
-        .update(|cx| tree.update(cx, |tree, cx| tree.replace(image_with_states(7), cx)));
+        .update(|cx| tree.update(cx, |tree, cx| tree.replace(image_with_states(7), &[], cx)));
     native.update(|window, cx| window.render_frame(cx));
     tree.read_with(&native, |tree, _| {
         assert!(tree.image_for_test(7).is_some(), "the picture drew");
@@ -382,7 +382,7 @@ fn a_seat_at_its_raster_cap(cx: &mut gpui_kit::TestAppContext) {
     native.cx.update(|cx| {
         tree.update(cx, |tree, cx| {
             tree.set_pictures(second);
-            tree.replace(row(64), cx);
+            tree.replace(row(64), &[], cx);
         })
     });
     native.update(|window, cx| window.render_frame(cx));

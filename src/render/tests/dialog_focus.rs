@@ -55,7 +55,7 @@ fn close_gives_focus_back_to_the_opener(cx: &mut gpui_kit::TestAppContext, fallb
         .read_with(&native, |tree, _| tree.guest_focus_targets.get(&1).cloned())
         .expect("the opener is drawn");
     let show = |native: &mut gpui_kit::VisualTestContext, open: bool| {
-        tree.update(native, |tree, cx| tree.replace(screen(open), cx));
+        tree.update(native, |tree, cx| tree.replace(screen(open), &[], cx));
         native.update(|window, cx| window.render_frame(cx));
         native.run_until_parked();
         native.update(|window, cx| window.focused(cx))
@@ -110,7 +110,7 @@ fn a_dialog_takes_no_keys_without_the_grant(cx: &mut gpui_kit::TestAppContext) {
         .read_with(&native, |tree, _| tree.guest_focus_targets.get(&1).cloned())
         .expect("the opener is drawn");
     native.update(|window, cx| opener.focus(window, cx));
-    tree.update(&mut native, |tree, cx| tree.replace(screen(true), cx));
+    tree.update(&mut native, |tree, cx| tree.replace(screen(true), &[], cx));
     native.update(|window, cx| window.render_frame(cx));
     native.run_until_parked();
     assert_eq!(
@@ -155,7 +155,7 @@ fn tab_goes_round_a_view_dialog_and_never_out(cx: &mut gpui_kit::TestAppContext)
         .read_with(&native, |tree, _| tree.guest_focus_targets.get(&1).cloned())
         .expect("the opener is drawn");
     native.update(|window, cx| opener.focus(window, cx));
-    tree.update(&mut native, |tree, cx| tree.replace(screen(true), cx));
+    tree.update(&mut native, |tree, cx| tree.replace(screen(true), &[], cx));
     native.update(|window, cx| window.render_frame(cx));
     native.run_until_parked();
     assert_eq!(
@@ -247,7 +247,7 @@ fn a_dialog_wrapped_around_its_opener_takes_the_keys(cx: &mut gpui_kit::TestAppC
     );
     let opener = native.update(|window, cx| window.focused(cx));
     assert!(opener.is_some(), "a press gave the opener the keys");
-    tree.update(&mut native, |tree, cx| tree.replace(wrapped(true), cx));
+    tree.update(&mut native, |tree, cx| tree.replace(wrapped(true), &[], cx));
     native.update(|window, cx| window.render_frame(cx));
     native.run_until_parked();
     let now = native.update(|window, cx| window.focused(cx));

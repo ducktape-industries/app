@@ -16,7 +16,15 @@ impl ViewTree {
         self.pictures = pictures;
     }
 
-    pub fn replace(&mut self, mut root: wire::Node, cx: &mut Context<Self>) {
+    /// The guest's new root, with the `Replace` asks the host still holds
+    /// for it (target and the revision each read): a field's edit log is kept
+    /// from the oldest ask on it.
+    pub fn replace(
+        &mut self,
+        mut root: wire::Node,
+        asked: &[(wire::WidgetTarget, u64)],
+        cx: &mut Context<Self>,
+    ) {
         let mut focusable = HashMap::new();
         let mut guest_focus_ids = std::collections::HashSet::new();
         // every field, with the guest's revision this frame carries
@@ -115,7 +123,13 @@ impl ViewTree {
             .retain(|id, _| guest_focus_ids.contains(id));
         self.fields.retain(|key, _| fields.contains_key(key));
         for (key, field) in self.fields.iter_mut() {
-            field.frame(fields[key]);
+            // an ask names its target as `resolve_target` reads it: a suffix
+            let queued = asked
+                .iter()
+                .filter(|(target, _)| key.ends_with(target))
+                .map(|(_, revision)| *revision)
+                .min();
+            field.frame(fields[key], queued);
         }
         self.scrolls.retain(|key, _| scrolls.contains(key));
         self.uniform_lists.retain(|id, list| {

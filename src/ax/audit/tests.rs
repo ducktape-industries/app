@@ -1024,12 +1024,12 @@ async fn arrow_probe(
             };
             active.set(next);
             let Some(after) = after else {
-                tree.update(cx, |tree, cx| tree.replace(members(next), cx));
+                tree.update(cx, |tree, cx| tree.replace(members(next), &[], cx));
                 return;
             };
             cx.spawn(async move |cx| {
                 cx.background_executor().timer(after).await;
-                tree.update(cx, |tree, cx| tree.replace(members(next), cx))
+                tree.update(cx, |tree, cx| tree.replace(members(next), &[], cx))
             })
             .detach();
         })
@@ -1260,7 +1260,7 @@ async fn composites_audit(
                 key if key == previous => active[n].saturating_sub(1),
                 _ => return,
             };
-            tree.update(cx, |tree, cx| tree.replace(screen(&active), cx));
+            tree.update(cx, |tree, cx| tree.replace(screen(&active), &[], cx));
         })
     });
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);

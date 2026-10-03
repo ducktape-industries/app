@@ -55,16 +55,13 @@ pub(super) struct Field {
     claims: Vec<wire::KeyClaim>,
     /// The guest's generation the engine's text was adopted from.
     generation: u64,
-    /// The guest's revision as of the frame before the one shown. Every ask
-    /// a frame carries was built after the frame before it, so the log is
-    /// kept from there (`frame`).
-    seen: u64,
     /// The engine's text, cursor and preedit as last reported, at `revision`.
     text: String,
     cursor: wire::TextRange,
     preedit: Option<wire::TextRange>,
     revision: u64,
-    /// Every edit since `seen`, at the revision that made it.
+    /// Every edit an ask the host still holds may have read against, at the
+    /// revision that made it (`frame`).
     log: Vec<(u64, wire::Edit)>,
     deferred: Vec<Deferred>,
     /// Esc let go of Tab: the next Tab leaves the field instead of
@@ -175,7 +172,6 @@ impl ViewTree {
                 on_submit: *on_submit,
                 claims: claims.clone(),
                 generation: *generation,
-                seen: *revision,
                 text: String::new(),
                 cursor: Default::default(),
                 preedit: None,
@@ -579,25 +575,20 @@ impl Field {
         self.settle(None, window, cx).and_then(|(event, _)| event)
     }
 
-    /// A frame arrived with the guest at `revision`: the log is kept from
-    /// the frame before it, since every ask this frame carries was built
-    /// after that one, and from any ask still held. Once per frame
-    /// (`ViewTree::replace`), not per render: a second render of the same
-    /// frame would otherwise move the floor past the edits its own asks
-    /// still read against.
-    pub(super) fn frame(&mut self, revision: u64) {
-        let held = self
-            .deferred
-            .iter()
-            .filter_map(|deferred| match deferred {
-                Deferred::Replace(wire::WidgetCommand::Replace { revision, .. }) => Some(*revision),
-                _ => None,
-            })
-            .min()
-            .unwrap_or(u64::MAX);
-        let floor = self.seen.min(held);
+    /// A frame arrived with the guest at `revision`, and `queued` is the
+    /// oldest revision an ask the host still holds for this field read: the
+    /// log is kept from the older of the two, and from any ask held while an
+    /// IME composes. An ask runs frames after the one it came with
+    /// (`Seat::run_widget_commands`), and the frames between may arrive
+    /// first, so a frame's arrival alone says nothing about which edits are
+    /// still read against; what the host holds does.
+    pub(super) fn frame(&mut self, revision: u64, queued: Option<u64>) {
+        let held = self.deferred.iter().filter_map(|deferred| match deferred {
+            Deferred::Replace(wire::WidgetCommand::Replace { revision, .. }) => Some(*revision),
+            _ => None,
+        });
+        let floor = held.chain(queued).fold(revision, u64::min);
         self.log.retain(|(at, _)| *at > floor);
-        self.seen = revision;
     }
 
     /// What differs from the last report, reported: the text at its next
@@ -675,11 +666,13 @@ impl Field {
     }
 
     /// A guest's `Replace`: carried over every edit since the revision it
-    /// read, landed through the engine's history so the writer can undo it,
-    /// and reported at the revision it made. One span when the guest named
-    /// a token for it, as plain text when the engine refuses the span (a
-    /// masked field, a range off a grapheme) or the field is at its span
-    /// cap. Held while an IME composes.
+    /// read, so it takes only the bytes the guest read and what was typed
+    /// into them since stays after its text; landed as one edit through the
+    /// engine's history so the writer can undo it; reported at the revision
+    /// it made. One span when the guest named a token for it and nothing
+    /// typed since sits inside, as plain text when the engine refuses the
+    /// span (a masked field, a range off a grapheme) or the field is at its
+    /// span cap. Held while an IME composes.
     pub(super) fn ask(
         &mut self,
         command: wire::WidgetCommand,
@@ -707,14 +700,18 @@ impl Field {
             .filter(|(at, _)| *at > revision)
             .map(|(_, edit)| *edit)
             .collect();
-        let (range, cursor) = wire::rebase(range, text.len(), cursor, since);
-        let range = clamp(range, self.text.len());
+        let rebased = wire::rebase(range, text.len(), cursor, since);
+        let range = clamp(rebased.range, self.text.len());
+        let replacement = rebased.replacement(&self.text, &text);
         let edit = engine!(&self.engine, |state| state.update(cx, |state, cx| {
             state.set_selected_range(range, cx);
             let range = state.selected_range();
             let before = state.value().len();
-            let span =
-                token.filter(|_| !text.is_empty() && state.tokens().len() < wire::MAX_FIELD_TOKENS);
+            let span = token.filter(|_| {
+                replacement == text
+                    && !text.is_empty()
+                    && state.tokens().len() < wire::MAX_FIELD_TOKENS
+            });
             let landed = span.is_some_and(|id| {
                 state
                     .replace_range_with_token(
@@ -726,10 +723,10 @@ impl Field {
                     .is_ok()
             });
             if !landed {
-                state.replace(text.clone(), window, cx);
+                state.replace(replacement, window, cx);
             }
             let len = state.value().len() + range.len() - before;
-            state.set_selected_range(clamp(cursor, state.value().len()), cx);
+            state.set_selected_range(clamp(rebased.cursor, state.value().len()), cx);
             wire::Edit {
                 range: range.into(),
                 len: len as u32,

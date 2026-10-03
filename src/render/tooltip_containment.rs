@@ -250,7 +250,7 @@ mod tests {
                 let source = source.downgrade();
                 cx.defer(move |cx| {
                     let _ = source.update(cx, |tree, cx| {
-                        tree.replace(ordinary_source(71, Some(node(120., None))), cx)
+                        tree.replace(ordinary_source(71, Some(node(120., None))), &[], cx)
                     });
                 });
             });

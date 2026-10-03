@@ -441,7 +441,7 @@ fn a_claimed_row_below_the_fold_is_scrolled_into_view(cx: &mut gpui_kit::TestApp
         "opened on row 7 (280..320), it sits on the bottom edge"
     );
     let claim = |native: &mut gpui_kit::VisualTestContext, row: usize| {
-        tree.update(native, |tree, cx| tree.replace(claiming_list(row), cx));
+        tree.update(native, |tree, cx| tree.replace(claiming_list(row), &[], cx));
     };
     claim(&mut native, 3);
     assert_eq!(

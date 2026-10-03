@@ -155,7 +155,7 @@ fn uniform_list_row_cache_contains_only_the_current_frame(cx: &mut gpui_kit::Tes
     native.run_until_parked();
 
     tree.update(&mut native, |tree, cx| {
-        tree.replace(uniform_node("uniform", 2_000, 1_000..1_020), cx);
+        tree.replace(uniform_node("uniform", 2_000, 1_000..1_020), &[], cx);
     });
     native.update(|window, cx| window.render_frame(cx));
     native.run_until_parked();

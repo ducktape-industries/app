@@ -75,6 +75,7 @@ fn rich_text_tooltip_dispatches_character_index_and_stays_in_slot(
                     character_index,
                     content: Some(Box::new(tip)),
                 }),
+                &[],
                 cx,
             );
         });

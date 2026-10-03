@@ -312,6 +312,18 @@ impl Seat {
             )
         });
         let commands = guest.widget_commands.len();
+        // the field edits still queued, which run frames from now against
+        // the text they read: the tree keeps the edits since for them
+        let asked: Vec<(wire::WidgetTarget, u64)> = guest
+            .widget_commands
+            .iter()
+            .filter_map(|(_, command)| match command {
+                wire::WidgetCommand::Replace {
+                    target, revision, ..
+                } => Some((target.clone(), *revision)),
+                _ => None,
+            })
+            .collect();
         let intents = std::mem::take(&mut guest.intents);
         let min_width = guest.min_width as f32;
         let first_tree = ticks == 0 && guest.ticks == 1;
@@ -335,7 +347,7 @@ impl Seat {
                 // pane reads off the seat moved
                 (Some(tree), None) => tree.update(cx, |tree, cx| {
                     tree.set_pictures(pictures);
-                    tree.replace(root, cx)
+                    tree.replace(root, &asked, cx)
                 }),
                 (_, adopt) => {
                     self.mount(root, pictures, generation, key, adopt, cx);
