@@ -57,6 +57,16 @@ fn open(
     cx: &mut TestAppContext,
     module: &'static str,
 ) -> (Entity<Seat>, DrawnLog, Arc<Mutex<Mounted>>, Opened) {
+    open_in(cx, module, Some(WINDOW))
+}
+
+/// [`open`], the seat placed with `body`: none is a pane whose desk is not
+/// drawn yet.
+fn open_in(
+    cx: &mut TestAppContext,
+    module: &'static str,
+    body: Option<(f32, f32)>,
+) -> (Entity<Seat>, DrawnLog, Arc<Mutex<Mounted>>, Opened) {
     cx.update(gpui_kit::init);
     let drawn: DrawnLog = Default::default();
     let log = drawn.clone();
@@ -64,9 +74,7 @@ fn open(
         let seat = cx.new(|cx| Seat::new(module, cx));
         let key = seat.read(cx);
         let mounted = registry().lock().unwrap()[&(key.module(), key.instance())].clone();
-        seat.update(cx, |seat, cx| {
-            seat.place(window.window_handle(), Some(WINDOW), cx)
-        });
+        seat.update(cx, |seat, cx| seat.place(window.window_handle(), body, cx));
         Root {
             seat: seat.clone(),
             mounted,
@@ -174,6 +182,33 @@ fn a_views_first_tick_carries_the_hosts_facts(cx: &mut TestAppContext) {
         }],
         "the new body, and nothing that did not move"
     );
+}
+
+/// A pane with no body yet (its desk is not drawn: a pane popped out while
+/// its view was loading, any pane of a window before its first frame) does
+/// not tick its view: the view would lay itself out in a viewport nobody
+/// sent, 0 × 0, and keep what it sized from that. The seat turns when the
+/// pane is placed with a body, and that first tick carries it.
+#[gpui_kit::test]
+fn a_view_is_not_ticked_before_its_pane_has_a_body(cx: &mut TestAppContext) {
+    const MODULE: &str = "first-frame-no-body-test";
+    frames_in_order(MODULE, 320, &[full(boxed("card"))]);
+    let (seat, drawn, mounted, opened) = open_in(cx, MODULE, None);
+    let Opened { mut native, handle } = opened;
+    native.run_until_parked();
+    assert_eq!(
+        ticked_with(&mounted),
+        Vec::<Vec<wire::Event>>::new(),
+        "no tick before the pane has a body"
+    );
+    assert!(drawn.borrow().is_empty());
+
+    seat.update(&mut native, |seat, cx| seat.place(handle, Some(WINDOW), cx));
+    native.run_until_parked();
+    let ticks = ticked_with(&mounted);
+    assert_eq!(ticks.len(), 1);
+    assert_eq!(facts(&ticks[0]).1, Some(WINDOW), "{:?}", ticks[0]);
+    assert_eq!(*drawn.borrow(), vec![(1, 1)]);
 }
 
 /// A view is never laid out narrower than its own minimum: the pane gives
