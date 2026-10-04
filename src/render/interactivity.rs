@@ -294,7 +294,7 @@ fn apply_keyboard<E: StatefulInteractiveElement>(
     // the keys the guest consumes stop here once this node's own
     // listeners (and gpui's keyboard click, which notes Enter and Space
     // first) have heard them, as gpui's `cx.stop_propagation()` in them
-    // would
+    // would; the sanitizer refused a frame with a key gpui cannot read
     let keys: Vec<Keystroke> = interactivity
         .consumes_keys
         .iter()

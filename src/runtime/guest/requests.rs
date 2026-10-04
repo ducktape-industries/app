@@ -332,7 +332,7 @@ impl Guest {
             tracing::warn!(target: "ducktape::app", module = self.module, generation,
                 reason = "frame_cut", nodes = cuts.nodes, depth = cuts.depth,
                 strings = cuts.strings, text = cuts.text, pictures = cuts.pictures,
-                first = ?cuts.first, "module view frame cut by the host's budgets");
+                canvases = cuts.canvases, lists = cuts.lists, first = ?cuts.first, "module view frame cut by the host's budgets");
         }
     }
 
