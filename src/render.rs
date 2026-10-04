@@ -437,9 +437,10 @@ impl Render for ViewTree {
         let node = self.node(&root, window, cx);
         self.root = root;
         // Carried-over state is for the first frame of a new tree only:
-        // whatever that frame did not claim is dropped. A list's rows and a
-        // deferred draw are drawn after this call returns, so it lives to
-        // the end of the frame, not of this call.
+        // whatever that frame did not claim is dropped. The rows of a list
+        // (variable or uniform) are built after this call returns, when gpui
+        // lays the list out, so it lives to the end of the frame, not of
+        // this call. A deferred node's content is built in this walk.
         if self.presentation.focused_container.is_some() || !self.presentation.inputs.is_empty() {
             let tree = cx.entity().downgrade();
             cx.defer(move |cx| {
