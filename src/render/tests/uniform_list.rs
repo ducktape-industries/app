@@ -336,3 +336,40 @@ fn a_scroll_request_is_applied_once_per_revision(cx: &mut gpui_kit::TestAppConte
     drawn(&mut native);
     assert_eq!(shown.borrow().last(), Some(&100), "{:?}", shown.borrow());
 }
+
+/// A guest uniform list draws the host's scroll bar, as the host's own
+/// scrollers do: the reader sees where in the rows they are. The bar is the
+/// only paint in the list's right strip (the rows start at its left edge).
+#[gpui_kit::test]
+fn a_uniform_list_draws_the_hosts_scroll_bar(cx: &mut gpui_kit::TestAppContext) {
+    struct Host {
+        tree: Entity<ViewTree>,
+    }
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.tree.clone())
+        }
+    }
+    cx.update(gpui_kit::init);
+    let width = 240.;
+    let window = cx.open_window(size(px(width), px(96.)), |_, cx| Host {
+        tree: cx.new(|_| ViewTree::new(uniform_node("uniform", 2_000, 0..1))),
+    });
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+    });
+    native.run_until_parked();
+    let in_the_strip = native.update(|window, _| {
+        window
+            .painted_quads()
+            .iter()
+            .filter(|quad| quad.bounds.origin.x.0 >= width - 16.)
+            .count()
+    });
+    assert!(
+        in_the_strip > 0,
+        "the bar's track and thumb are painted in the list's right strip"
+    );
+}

@@ -119,6 +119,26 @@ impl UniformListDecoration for RangeObserver {
     }
 }
 
+/// The list's vertical bar, the one the host draws on its own scrollers
+/// (`layout::vertical_bar`): a decoration is laid out over the list's
+/// bounds, and the bar reads the viewport and the content from the handle.
+struct Bar(gpui_kit::UniformListScrollHandle);
+
+impl UniformListDecoration for Bar {
+    fn compute(
+        &self,
+        _visible: Range<usize>,
+        _bounds: Bounds<Pixels>,
+        _scroll_offset: Point<Pixels>,
+        _item_height: Pixels,
+        _item_count: usize,
+        _window: &mut Window,
+        _app: &mut App,
+    ) -> AnyElement {
+        super::layout::vertical_bar(&self.0).into_any_element()
+    }
+}
+
 impl ViewTree {
     pub(super) fn uniform_list(
         &mut self,
@@ -253,6 +273,7 @@ impl ViewTree {
             })
             .track_scroll(&scroll)
             .y_flipped(*y_flipped)
+            .with_decoration(Bar(scroll.clone()))
             .with_decoration(RangeObserver {
                 tree: cx.entity().downgrade(),
                 path: path.clone(),
