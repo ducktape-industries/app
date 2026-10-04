@@ -28,15 +28,15 @@ version = "0.1.0"
 
 [workspace.dependencies]
 
-# --- sdk-line: modules dev @ 53432468 (SDK fixes S2 #257 boxed styles + node decode budget, S3 #254 view decides when it renders, S4 #258 guest API honesty, S5 #255 truthful test host + request pacing, S6 #256 typed asks / ordered principals, S9 #259 one text model, S7 #260 stable route identity, S13a #261 child entities, S10 #262 data contract, S7b #263 row scopes + an authored list id, S11 #264 wire and sanitizer honesty, S12 #265 style table + no field names on the wire; gpui-pre 0.3.7 at fork ec44f1bb (gpui-pre#19 a gradient's payload reads back); goldens WIRE_ID 77d6293a (S12)), crates/sdk (abi, view-wire, program, ducklink, design, describe) ---
-abi = { git = "https://github.com/ducktape-industries/modules", rev = "53432468db31558c3e28b4a8c56615a5bb5fa657", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "53432468db31558c3e28b4a8c56615a5bb5fa657", package = "view-wire" }
+# --- sdk-line: modules dev @ b650bebf (SDK fixes S2 #257 boxed styles + node decode budget, S3 #254 view decides when it renders, S4 #258 guest API honesty, S5 #255 truthful test host + request pacing, S6 #256 typed asks / ordered principals, S9 #259 one text model, S7 #260 stable route identity, S13a #261 child entities, S10 #262 data contract, S7b #263 row scopes + an authored list id, S11 #264 wire and sanitizer honesty, S12 #265 style table + no field names on the wire, S14 #266 package ducktape-view-guest, S8 #267 viewport + list rows follow the host + host-drawn list gutter, S10b #268 Paged<T>; gpui-pre 0.3.7 at fork ec44f1bb (gpui-pre#19 a gradient's payload reads back); goldens WIRE_ID 4be0d378 (S8)), crates/sdk (abi, view-wire, program, ducklink, design, describe) ---
+abi = { git = "https://github.com/ducktape-industries/modules", rev = "b650bebf4e09a896c695228755da657c273a8e7b", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "b650bebf4e09a896c695228755da657c273a8e7b", package = "view-wire" }
 # `program::is_name`: the one spelling of a program id
-program = { git = "https://github.com/ducktape-industries/modules", rev = "53432468db31558c3e28b4a8c56615a5bb5fa657", package = "program" }
-ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "53432468db31558c3e28b4a8c56615a5bb5fa657", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/modules", rev = "53432468db31558c3e28b4a8c56615a5bb5fa657", package = "design" }
+program = { git = "https://github.com/ducktape-industries/modules", rev = "b650bebf4e09a896c695228755da657c273a8e7b", package = "program" }
+ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "b650bebf4e09a896c695228755da657c273a8e7b", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/modules", rev = "b650bebf4e09a896c695228755da657c273a8e7b", package = "design" }
 # `module.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/modules", rev = "53432468db31558c3e28b4a8c56615a5bb5fa657", package = "describe", features = ["host"] }
+describe = { git = "https://github.com/ducktape-industries/modules", rev = "b650bebf4e09a896c695228755da657c273a8e7b", package = "describe", features = ["host"] }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -89,9 +89,9 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # pick which passkey signed and to frame its assertion), and the identity
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "736865710dcfa7c56f9834747287881c1c25d45d", package = "keyscheme" }
-identity = { git = "https://github.com/ducktape-industries/modules", rev = "53432468db31558c3e28b4a8c56615a5bb5fa657", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/modules", rev = "b650bebf4e09a896c695228755da657c273a8e7b", package = "identity" }
 # The roster's full query surface: its programs and its view-only entries.
-module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "53432468db31558c3e28b4a8c56615a5bb5fa657", package = "module-registry" }
+module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "b650bebf4e09a896c695228755da657c273a8e7b", package = "module-registry" }
 base64 = "0.22"
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
