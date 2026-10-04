@@ -11,8 +11,11 @@ fn variable_list_node(
     style.size.width = Some(relative(1.).into());
     style.size.height = Some(relative(1.).into());
     wire::Node::List {
-        state: 17,
-        path: vec![wire::ElementIdWire::Name("room".into())],
+        id: wire::ElementIdWire::ListState(17),
+        path: vec![
+            wire::ElementIdWire::Name("room".into()),
+            wire::ElementIdWire::ListState(17),
+        ],
         item_count: count,
         alignment,
         overdraw: 32.,
@@ -324,4 +327,33 @@ fn rows_without_a_box_draw_under_their_index(cx: &mut gpui_kit::TestAppContext) 
         .map(|node| node.name.as_str())
         .collect();
     assert_eq!(buttons, ["Open 0", "Open 1"]);
+}
+
+/// Two lists under one parent, their rows with no id of their own, each
+/// holding an `open` button: a list is a scope of its own, so each list's
+/// rows are drawn under the list, and a row of one never meets the row of
+/// the other at its index. Four buttons, four nodes; under one id gpui
+/// keeps the first node and drops the second.
+#[gpui_kit::test]
+fn two_lists_under_one_parent_each_draw_their_own_rows(cx: &mut gpui_kit::TestAppContext) {
+    let lists = (1..=2).map(|state| {
+        let rows = (0..2)
+            .map(|row| deferred_row(&format!("Open {state}.{row}")))
+            .collect();
+        let mut list = variable_list_node(2, wire::ListAlignment::Top, 0, rows);
+        let wire::Node::List { id, path, .. } = &mut list else {
+            unreachable!()
+        };
+        *id = wire::ElementIdWire::ListState(state);
+        *path = vec![named_id("page"), id.clone()];
+        list
+    });
+    let page = div().size_full().flex().flex_col().style().clone();
+    let nodes = draw(cx, container_with_style("page", page, lists));
+    let buttons: Vec<&str> = nodes
+        .iter()
+        .filter(|node| node.role == "Button")
+        .map(|node| node.name.as_str())
+        .collect();
+    assert_eq!(buttons, ["Open 1.0", "Open 1.1", "Open 2.0", "Open 2.1"]);
 }

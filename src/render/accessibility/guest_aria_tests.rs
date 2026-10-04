@@ -153,10 +153,10 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
             cursor: None,
             content: Box::new(text("child-text")),
         },
-        // a list has no id: its path is where it sits
+        // a list's id is its state's, which no author writes
         Site::List => wire::Node::List {
-            state: 1,
-            path: Vec::new(),
+            id: wire::ElementIdWire::ListState(1),
+            path: vec![wire::ElementIdWire::ListState(1)],
             item_count: 1,
             alignment: wire::ListAlignment::Top,
             overdraw: 0.,
@@ -1158,8 +1158,8 @@ mod phase_two {
             ]
         );
         let variable = wire::Node::List {
-            state: 1,
-            path: Vec::new(),
+            id: wire::ElementIdWire::ListState(1),
+            path: vec![wire::ElementIdWire::ListState(1)],
             item_count: 4,
             alignment: wire::ListAlignment::Top,
             overdraw: 0.,

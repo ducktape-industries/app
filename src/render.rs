@@ -58,7 +58,7 @@ use sensors::SensorState;
 use style::{has_named_overlay, named_overlay, native_cursor};
 use svg_limits::{SvgPaintSource, guarded_svg_paint, svg_data_allowed};
 use uniform::UniformListHostState;
-use variable_list::{VariableList, VariableListKey};
+use variable_list::VariableList;
 
 /// The ids of a node and of its identified ancestors, root first: the key
 /// every piece of retained native state is stored under. Only a node with an
@@ -169,7 +169,7 @@ pub struct ViewTree {
     claiming: std::collections::HashSet<AuthoredPath>,
     revealed: std::collections::HashSet<AuthoredPath>,
     uniform_lists: HashMap<AuthoredPath, UniformListHostState>,
-    variable_lists: HashMap<VariableListKey, VariableList>,
+    variable_lists: HashMap<AuthoredPath, VariableList>,
 
     // Focus: two systems. A container enters the native focus path only on
     // an explicit Focus widget command (keyed by path, with the node kind
@@ -332,34 +332,37 @@ impl ViewTree {
         // under, so gpui files its ids (and their accessibility nodes and
         // element state) under the row too
         match index {
-            Some(index) if node.identity().is_none() => {
-                RowScope { index, element }.into_any_element()
+            Some(index) if node.identity().is_none() => Scope {
+                id: ElementId::Integer(index as u64),
+                element,
             }
+            .into_any_element(),
             _ => element,
         }
     }
 }
 
-/// A list row with no id of its own, drawn under its index: what `.id(index)`
-/// would do, without the box an id-carrying element lays out.
-struct RowScope {
-    index: usize,
+/// An element drawn under `id` without the box an id-carrying element lays
+/// out: a list row with no id of its own under its index (what `.id(index)`
+/// would do), a list under the host's id for it.
+struct Scope {
+    id: ElementId,
     element: AnyElement,
 }
 
-impl IntoElement for RowScope {
+impl IntoElement for Scope {
     type Element = Self;
     fn into_element(self) -> Self {
         self
     }
 }
 
-impl Element for RowScope {
+impl Element for Scope {
     type RequestLayoutState = ();
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
-        Some(ElementId::Integer(self.index as u64))
+        Some(self.id.clone())
     }
     fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
         None

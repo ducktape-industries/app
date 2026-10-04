@@ -123,17 +123,13 @@ impl ViewTree {
                 }
                 wire::Node::List {
                     path,
-                    state,
                     interactivity,
                     ..
                 } => {
                     if let Some(id) = interactivity.focus_handle {
                         guest_focus_ids.insert(id);
                     }
-                    variable_lists.insert(VariableListKey {
-                        path: path.clone(),
-                        state: *state,
-                    });
+                    variable_lists.insert(path.clone());
                 }
                 wire::Node::Field { revision, .. } => {
                     fields.insert(path.clone(), *revision);

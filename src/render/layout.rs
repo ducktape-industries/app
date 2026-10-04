@@ -130,7 +130,7 @@ impl ViewTree {
         let nearest = (0..path.len()).rev().map(|end| &path[..end]).find(|above| {
             self.scrolls.contains_key(*above)
                 || self.uniform_lists.contains_key(*above)
-                || self.variable_lists.keys().any(|list| list.path == *above)
+                || self.variable_lists.contains_key(*above)
         });
         let Some(scroller) = nearest.and_then(|above| self.scrolls.get(above)) else {
             return false;
