@@ -950,10 +950,37 @@ mod tests {
         });
         cx.run_until_parked();
         let instance = seat.read_with(cx, |seat, _| seat.instance());
+        // the seat's pane, with a body and drawn: a seat is ticked once its
+        // pane has a body, and turns again once the tree it made has drawn
+        struct Pane {
+            seat: gpui_kit::Entity<crate::runtime::Seat>,
+            _watch: gpui_kit::Subscription,
+        }
+        impl gpui_kit::Render for Pane {
+            fn render(
+                &mut self,
+                _: &mut gpui_kit::Window,
+                cx: &mut gpui_kit::Context<Self>,
+            ) -> impl gpui_kit::IntoElement {
+                use gpui_kit::{ParentElement as _, Styled as _};
+                gpui_kit::div()
+                    .size_full()
+                    .children(self.seat.read(cx).tree())
+            }
+        }
         let window = cx.open_window(
             gpui_kit::size(gpui_kit::px(400.), gpui_kit::px(300.)),
-            |_, _| crate::render::ViewTree::new(view_wire::Node::empty()),
+            |window, cx| {
+                seat.update(cx, |seat, cx| {
+                    seat.place(window.window_handle(), Some((400., 300.)), cx)
+                });
+                Pane {
+                    seat: seat.clone(),
+                    _watch: cx.observe(&seat, |_, _, cx| cx.notify()),
+                }
+            },
         );
+        cx.run_until_parked();
         let handle: AnyWindowHandle = window.into();
         let key = crate::runtime::WindowKey::unique();
         let served = move |_: &App| vec![("console".to_owned(), key, handle)];

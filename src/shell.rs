@@ -31,6 +31,8 @@ mod keys;
 mod launch;
 mod layers;
 pub(in crate::shell) use layers::WindowRoot;
+#[cfg(test)]
+mod first_frame_tests;
 mod pane_drag;
 mod pane_hold;
 #[cfg(test)]

@@ -182,8 +182,11 @@ pub(super) fn over_padding(
     frame(1.).child(frame(-1.).child(overlay))
 }
 
-/// A scroller's vertical bar, always shown while it scrolls.
-pub(super) fn vertical_bar(handle: &ScrollHandle) -> impl IntoElement {
+/// A scroller's vertical bar, always shown while it scrolls: a plain
+/// scroller's or a uniform list's, by the handle that knows its offset.
+pub(super) fn vertical_bar(
+    handle: &(impl gpui_base::ScrollbarHandle + Clone),
+) -> gpui_kit::component::scroll::Scrollbar {
     gpui_kit::component::scroll::Scrollbar::vertical(handle)
         .id(host_id("scrollbar"))
         .mode(gpui_kit::component::scroll::ScrollbarMode::Always)

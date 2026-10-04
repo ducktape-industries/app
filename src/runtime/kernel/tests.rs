@@ -612,64 +612,43 @@ fn host_session_is_program_independent_and_tracks_updates() {
     assert_eq!(decoded.account, Some(7));
 }
 
+/// The host's facts reach the guest as events, each once until it moves:
+/// the reader's UTC offset (a DST change moves it) and the body the view
+/// is laid out in. The latest of each wins the tick.
 #[test]
-fn host_offset_hands_the_readers_utc_offset_and_its_moves() {
+fn the_hosts_facts_cross_once_and_again_when_they_move() {
     let mut guest = guest();
-    guest.answer(
-        wire::Request {
-            id: 23,
-            kind: "host.offset".into(),
-            payload: Vec::new(),
-        },
-        &None,
-    );
-    let Some(wire::Event::Response {
-        id: 23,
-        result: Ok(bytes),
-        done: false,
-    }) = guest.pending.pop()
-    else {
-        panic!("the offset subscription stays live")
-    };
-    let minutes: i32 = methods::decode(&bytes).unwrap();
-    assert_eq!(minutes, super::offset_minutes());
+    guest.pending.clear();
+    let minutes = super::offset_minutes();
     assert!((-14 * 60..=14 * 60).contains(&minutes));
-    // the same offset is not sent twice; a moved one (DST) is
     guest.sync_offset(minutes);
-    assert!(guest.pending.is_empty());
-    guest.sync_offset(minutes + 60);
-    let Some(wire::Event::Response {
-        id: 23,
-        result: Ok(bytes),
-        done: false,
-    }) = guest.pending.pop()
-    else {
-        panic!("a moved offset is pushed")
-    };
-    assert_eq!(methods::decode::<i32>(&bytes).unwrap(), minutes + 60);
-    // a subscriber that arrives after a move the others have not heard
-    // brings them up to date with it
-    guest.answer(
-        wire::Request {
-            id: 24,
-            kind: "host.offset".into(),
-            payload: Vec::new(),
+    guest.sync_viewport(766., 501.);
+    let told = vec![
+        wire::Event::Offset { minutes },
+        wire::Event::Viewport {
+            width: 766.,
+            height: 501.,
         },
-        &None,
+    ];
+    assert_eq!(guest.pending, told);
+    guest.sync_offset(minutes);
+    guest.sync_viewport(766., 501.);
+    assert_eq!(guest.pending, told, "the same facts are not sent twice");
+    guest.sync_offset(minutes + 60);
+    guest.sync_viewport(800., 501.);
+    assert_eq!(
+        guest.pending,
+        [
+            wire::Event::Offset {
+                minutes: minutes + 60
+            },
+            wire::Event::Viewport {
+                width: 800.,
+                height: 501.,
+            },
+        ],
+        "a moved fact replaces the one waiting"
     );
-    let heard: Vec<_> = guest
-        .pending
-        .drain(..)
-        .map(|event| match event {
-            wire::Event::Response {
-                id,
-                result: Ok(bytes),
-                done: false,
-            } => (id, methods::decode::<i32>(&bytes).unwrap()),
-            other => panic!("{other:?}"),
-        })
-        .collect();
-    assert_eq!(heard, [(23, minutes), (24, minutes)]);
 }
 
 /// `host.id` replies a borsh `String` like every other method

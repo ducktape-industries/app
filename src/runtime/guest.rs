@@ -72,7 +72,17 @@ pub(super) struct Guest {
     exports: Exports,
     /// The guest's events for its next tick.
     pub(crate) pending: Vec<wire::Event>,
+    /// The host's facts as the guest last heard them: the theme, the
+    /// body it is laid out in, the reader's UTC offset. Each crosses once
+    /// (`sync_theme`, `sync_viewport`, `sync_offset`), and a replacement
+    /// hears them before its first frame (`seed`).
     pub(crate) theme_dark: Option<bool>,
+    pub(crate) viewport_sent: Option<(f32, f32)>,
+    pub(crate) offset_sent: Option<i32>,
+    /// The events every tick carried, in order, for tests of what a view
+    /// knew when it drew.
+    #[cfg(test)]
+    pub(crate) ticked_with: Vec<Vec<wire::Event>>,
     /// Requests wait for the native layout of a frame that still mounts
     /// their target, inside this instance only.
     pub(crate) widget_commands: Vec<(u64, wire::WidgetCommand)>,
@@ -102,9 +112,6 @@ pub(super) struct Guest {
     pub(crate) visible: bool,
     pub(crate) visibility_change: Option<bool>,
     pub(crate) visibility_subscriptions: Vec<u64>,
-    /// `host.offset` subscriptions, and the offset they were last handed.
-    pub(crate) offset_subscriptions: Vec<u64>,
-    pub(crate) offset_sent: Option<i32>,
     /// `host.route` subscriptions; the first is handed a pending link route.
     pub(crate) route_subscriptions: Vec<u64>,
     /// What the guest asked the app to do this redraw.

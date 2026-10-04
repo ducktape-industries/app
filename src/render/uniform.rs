@@ -1,7 +1,9 @@
 //! The UniformList node: a gpui `uniform_list` over a host-owned viewport.
-//! The guest sends only the rows the host asked for (`UniformListRange`),
-//! keyed by index; a row not yet sent draws as a placeholder of
-//! `PLACEHOLDER_HEIGHT`.
+//! The guest sends the rows of a window around what the host shows, keyed
+//! by index, sized from the viewport and the row height the host measured
+//! (`UniformListRange`); a row a far scroll reaches before the guest's
+//! next frame draws as a placeholder of `PLACEHOLDER_HEIGHT`. The host draws
+//! the list's scroll bar in a gutter it keeps beside the list.
 use super::*;
 use crate::render::native_id;
 use gpui_kit::UniformListDecoration;
@@ -14,6 +16,10 @@ pub(super) struct UniformListHostState {
     /// The list's request route: another route in this place is another
     /// list, whose rows these are not.
     pub(super) route: u32,
+    /// The scroll request revision last applied: a request is a one-shot
+    /// the view made, applied when the revision moves and never again for
+    /// the frames that carry it on (the reader's wheel keeps its place).
+    pub(super) revision: Option<u64>,
     pub(super) count: usize,
     /// The rows the guest sent for the range it was asked, by index.
     pub(super) rows: HashMap<usize, wire::Node>,
@@ -31,6 +37,7 @@ impl UniformListHostState {
     fn new(route: u32, count: usize) -> Self {
         Self {
             route,
+            revision: None,
             count,
             rows: HashMap::new(),
             #[cfg(test)]
@@ -59,7 +66,7 @@ impl UniformListDecoration for RangeObserver {
         visible: Range<usize>,
         _bounds: Bounds<Pixels>,
         _scroll_offset: Point<Pixels>,
-        _item_height: Pixels,
+        item_height: Pixels,
         item_count: usize,
         _window: &mut Window,
         app: &mut App,
@@ -83,6 +90,7 @@ impl UniformListDecoration for RangeObserver {
                     route: self.route,
                     start: range.start as u32,
                     end: range.end as u32,
+                    item_height: f32::from(item_height),
                 });
             }
             // gpui's `logical_scroll_top_index` is test-support-only. Its
@@ -112,6 +120,77 @@ impl UniformListDecoration for RangeObserver {
     }
 }
 
+/// The room the view gave the list, taken out of `list`: how the node sits
+/// in its parent (shown or not, its place, its size, its margin, its share
+/// of a flex or grid parent). The row that holds the list and the bar's
+/// gutter takes it; `list` keeps its own box (padding, border, fill, text).
+fn room(list: &mut gpui_kit::StyleRefinement) -> gpui_kit::StyleRefinement {
+    use std::mem::take;
+    gpui_kit::StyleRefinement {
+        display: list
+            .display
+            .take_if(|display| *display == gpui_kit::Display::None),
+        visibility: list.visibility.take(),
+        opacity: list.opacity.take(),
+        position: list.position.take(),
+        inset: take(&mut list.inset),
+        size: take(&mut list.size),
+        min_size: take(&mut list.min_size),
+        max_size: take(&mut list.max_size),
+        aspect_ratio: list.aspect_ratio.take(),
+        margin: take(&mut list.margin),
+        align_self: list.align_self.take(),
+        flex_basis: list.flex_basis.take(),
+        flex_grow: list.flex_grow.take(),
+        flex_shrink: list.flex_shrink.take(),
+        grid_location: list.grid_location.take(),
+        ..Default::default()
+    }
+}
+
+/// The list and, beside it, the gutter the host keeps for the list's bar:
+/// the row takes the list's `room`, the list fills what the gutter leaves,
+/// so the list's own box (its rows, its fill, its ring) ends where the
+/// gutter begins and no view writes padding for a bar it did not draw. The
+/// gutter is kept whether or not the list scrolls, as a view's scroller
+/// keeps its own (the SDK's `bar_gutter`), and the wheel over it scrolls
+/// the list, as it does over a scroller's bar. The gutter is `list_id`'s:
+/// the kit keeps a bar's hover and drag by the ids around the bar, and
+/// the gutter is outside the list's, so it takes one of its own, apart
+/// from a sibling list's and from an enclosing scroller's.
+fn beside_its_bar(
+    room: gpui_kit::StyleRefinement,
+    list: impl IntoElement,
+    list_id: &ElementId,
+    scroll: &gpui_kit::UniformListScrollHandle,
+    tree: gpui_kit::EntityId,
+) -> impl IntoElement {
+    use gpui_base::ScrollbarHandle as _;
+    let wheel = scroll.clone();
+    let gutter = div()
+        // `Debug` tells any two ids apart; `Display` prints every focus
+        // handle alike
+        .id(host_id(format!("gutter-{list_id:?}")))
+        .w(gpui_kit::component::scroll::Scrollbar::width())
+        .flex_none()
+        .relative()
+        // the wheel goes on to whatever scrolls around the list, as it
+        // does over the rows
+        .on_scroll_wheel(move |event, window, cx| {
+            let delta = event.delta.pixel_delta(window.line_height());
+            let offset = wheel.offset();
+            // the list keeps the offset inside its rows when it next draws
+            wheel.set_offset(point(offset.x, offset.y + delta.y));
+            cx.notify(tree);
+        })
+        .child(super::layout::vertical_bar(scroll).viewport_from_layout());
+    let mut row = div();
+    *row.style() = room;
+    // a list the view hid stays hidden; any other is a row of two
+    row.style().display.get_or_insert(gpui_kit::Display::Flex);
+    row.child(list).child(gutter)
+}
+
 impl ViewTree {
     pub(super) fn uniform_list(
         &mut self,
@@ -131,6 +210,7 @@ impl ViewTree {
             horizontal_sizing,
             y_flipped,
             scroll_request,
+            revision,
             indices,
             children,
         } = node
@@ -144,6 +224,7 @@ impl ViewTree {
             .or_insert_with(|| UniformListHostState::new(*route, count));
         if state.route != *route {
             state.route = *route;
+            state.revision = None;
             state.rows.clear();
             state.requested = None;
             state.observed = None;
@@ -171,7 +252,9 @@ impl ViewTree {
 
         let native_id = native_id(id);
         let scroll = state.scroll.clone();
-        if let Some(request) = scroll_request {
+        let asked = state.revision != Some(*revision);
+        state.revision = Some(*revision);
+        if let Some(request) = scroll_request.filter(|_| asked) {
             let strategy = match request.strategy {
                 wire::list::UniformListScrollStrategy::Top => gpui_kit::ScrollStrategy::Top,
                 wire::list::UniformListScrollStrategy::Center => gpui_kit::ScrollStrategy::Center,
@@ -246,11 +329,17 @@ impl ViewTree {
                 tree: cx.entity().downgrade(),
                 path: path.clone(),
                 route: *route,
-                scroll,
+                scroll: scroll.clone(),
             });
-        *list.style() = self.styles[*style].clone();
-        let list = list.id(native_id);
-        self.guest_aria(list, node, interactivity, cx)
-            .into_any_element()
+        let mut style = self.styles[*style].clone();
+        let room = room(&mut style);
+        *list.style() = style;
+        let list = list
+            .flex_grow(1.)
+            .flex_shrink(1.)
+            .min_w_0()
+            .id(native_id.clone());
+        let list = self.guest_aria(list, node, interactivity, cx);
+        beside_its_bar(room, list, &native_id, &scroll, cx.entity_id()).into_any_element()
     }
 }

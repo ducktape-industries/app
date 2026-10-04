@@ -27,6 +27,11 @@ pub(crate) struct Seat {
     /// The window the pane is placed in now; set by `Seats::reconcile`
     /// through `place`. Widget commands and the carried presentation need it.
     window: Option<AnyWindowHandle>,
+    /// The body the pane lays the view out in, as the layout has it before
+    /// the draw (`place`): the guest hears it ahead of every tick, so its
+    /// first frame is laid out to its pane. None until the pane's desk is
+    /// drawn, and the view is not ticked until then (`turn`).
+    body: Option<(f32, f32)>,
     tree: Option<Entity<crate::render::ViewTree>>,
     _tree_events: Option<Subscription>,
     _tree_drawn: Option<Subscription>,
@@ -104,6 +109,7 @@ impl Seat {
             instance,
             mounted,
             window: None,
+            body: None,
             tree: None,
             _tree_events: None,
             _tree_drawn: None,
@@ -170,10 +176,17 @@ impl Seat {
         });
     }
 
-    /// `Seats::reconcile` places the pane: the window its commands run in.
-    pub(crate) fn place(&mut self, window: AnyWindowHandle, cx: &mut Context<Self>) {
-        if self.window != Some(window) {
+    /// `Seats::reconcile` places the pane: the window its commands run in,
+    /// and the body its view is laid out in (none until the desk is drawn).
+    pub(crate) fn place(
+        &mut self,
+        window: AnyWindowHandle,
+        body: Option<(f32, f32)>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.window != Some(window) || self.body != body {
             self.window = Some(window);
+            self.body = body;
             self.wake(cx);
         }
     }
@@ -276,6 +289,12 @@ impl Seat {
                 return self.show_standin(standin, cx);
             }
         };
+        // The view lays itself out in its pane's body, and hears it ahead
+        // of every tick. A pane with none yet (its desk is not drawn) does
+        // not tick: `place` turns the seat when the body comes.
+        let Some((width, height)) = self.body else {
+            return;
+        };
         guest.instance = self.instance;
         // the press or key the host last received for this tree is the
         // view's activation for the requests this redraw answers
@@ -288,6 +307,9 @@ impl Seat {
         let ticks = guest.ticks;
         guest.set_visible(true);
         guest.sync_theme(gpui_kit::component::Theme::global(cx).is_dark());
+        // the view is never laid out narrower than its own minimum
+        // (`layers/panes.rs` gives its body `min_w`)
+        guest.sync_viewport(width.max(guest.min_width as f32), height);
         let again = guest.redraw(props);
         clipboard::mount(guest, cx);
         // a clipboard answer lands after `redraw` judged the frame: it is

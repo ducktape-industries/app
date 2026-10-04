@@ -77,10 +77,23 @@ fn native_variable_list_measures_different_heights_and_keeps_slot_clip(
     });
 }
 
+/// A bottom-anchored list whose rows the guest sent do not reach the top
+/// of the viewport and its overdraw: the list lays the row above them
+/// out, finds it missing and asks for it once, in one bounded request;
+/// the rows it has are the tail, drawn from the bottom.
 #[gpui_kit::test]
 fn missing_far_rows_emit_one_bounded_request_and_bottom_anchor_uses_tail_rows(
     cx: &mut gpui_kit::TestAppContext,
 ) {
+    struct Host {
+        tree: Entity<ViewTree>,
+        _subscription: Subscription,
+    }
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.tree.clone())
+        }
+    }
     cx.update(gpui_kit::init);
     let root = variable_list_node(
         2_000,
@@ -91,10 +104,23 @@ fn missing_far_rows_emit_one_bounded_request_and_bottom_anchor_uses_tail_rows(
             fixed_row(1999, 96., 0x222222),
         ],
     );
-    let window = cx.open_window(size(px(240.), px(120.)), |_, _| ViewTree::new(root));
-    let tree = window.root(cx).unwrap();
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let received = events.clone();
+    let window = cx.open_window(size(px(240.), px(120.)), |_, cx| {
+        let tree = cx.new(|_| ViewTree::new(root));
+        let subscription = cx.subscribe(&tree, move |_, _, event: &wire::Event, _| {
+            received.borrow_mut().push(event.clone());
+        });
+        Host {
+            tree,
+            _subscription: subscription,
+        }
+    });
+    let tree = window
+        .root(cx)
+        .unwrap()
+        .read_with(cx, |host, _| host.tree.clone());
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let (events, _subscription) = emitted(&tree, &mut native);
     native.update(|window, cx| {
         window.render_frame(cx);
         window.render_frame(cx);
@@ -108,14 +134,13 @@ fn missing_far_rows_emit_one_bounded_request_and_bottom_anchor_uses_tail_rows(
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert!(
-        !requests.is_empty(),
-        "leading overdraw requests its missing row"
-    );
-    assert!(
-        requests
-            .iter()
-            .all(|request| request.end - request.start <= wire::MAX_LIST_ROWS)
+    assert_eq!(
+        requests,
+        [wire::ListRequest {
+            start: 1_997,
+            end: 1_998,
+        }],
+        "the row the overdraw lays out and lacks, asked for once"
     );
     tree.read_with(&native, |tree, _| {
         let list = tree.variable_lists.values().next().unwrap();

@@ -58,9 +58,20 @@ fn open(
     selection_layer: bool,
 ) -> (Entity<Seat>, Entity<Root>, VisualTestContext) {
     cx.update(gpui_kit::init);
+    another(cx, module, selection_layer)
+}
+
+/// [`open`] in an app already set up: one more window, one more seat.
+fn another(
+    cx: &mut TestAppContext,
+    module: &'static str,
+    selection_layer: bool,
+) -> (Entity<Seat>, Entity<Root>, VisualTestContext) {
     let window = cx.open_window(size(px(400.), px(300.)), |window, cx| {
         let seat = cx.new(|cx| Seat::new(module, cx));
-        seat.update(cx, |seat, cx| seat.place(window.window_handle(), cx));
+        seat.update(cx, |seat, cx| {
+            seat.place(window.window_handle(), Some((400., 300.)), cx)
+        });
         Root {
             seat: seat.clone(),
             selection_layer,
@@ -100,9 +111,9 @@ fn renders_of(module: &str) -> u64 {
 
 #[gpui_kit::test]
 fn same_module_instances_receive_independent_props(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let first = cx.new(|cx| Seat::new("independent-props-test", cx));
-    let second = cx.new(|cx| Seat::new("independent-props-test", cx));
+    // each in a pane with a body: a seat is not ticked before it has one
+    let (first, _, _first) = open(cx, "independent-props-test", false);
+    let (second, _, _second) = another(cx, "independent-props-test", false);
     // after both: it readies every seat the module has
     crate::runtime::seat_for_test("independent-props-test", 320);
     for (seat, props) in [(&first, b"channel-one"), (&second, b"channel-two")] {
@@ -111,6 +122,7 @@ fn same_module_instances_receive_independent_props(cx: &mut TestAppContext) {
             seat.turn(cx);
         });
     }
+    cx.run_until_parked();
     // what the guest is handed: `Mounted.props`, the slot `redraw` reads
     let props = |seat: &Entity<Seat>, cx: &TestAppContext| {
         mounted_of(seat, cx).lock().unwrap().props.clone()
@@ -136,6 +148,7 @@ fn same_module_instances_receive_independent_props(cx: &mut TestAppContext) {
         seat.set_props(b"channel-three".to_vec(), cx);
         seat.turn(cx);
     });
+    cx.run_until_parked();
     assert_eq!(
         props(&first, cx).as_deref(),
         Some(b"channel-three".as_slice())
@@ -149,10 +162,8 @@ fn same_module_instances_receive_independent_props(cx: &mut TestAppContext) {
 /// The root a view is drawn in is laid out from the view's own minimum.
 #[gpui_kit::test]
 fn a_view_is_laid_out_from_its_own_minimum(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
     crate::runtime::seat_for_test("laid-out-from", 560);
-    let seat = cx.new(|cx| Seat::new("laid-out-from", cx));
-    seat.update(cx, |seat, cx| seat.turn(cx));
+    let (seat, _, _native) = open(cx, "laid-out-from", false);
     assert_eq!(seat.read_with(cx, |seat, _| seat.min_width()), 560.);
 }
 
@@ -307,10 +318,8 @@ fn a_one_line_field_blinks_only_while_focused(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_busy_frame_turns_once_per_frame(cx: &mut TestAppContext) {
     const MODULE: &str = "busy-frame-test";
-    cx.update(gpui_kit::init);
     crate::runtime::seat_busy_for_test(MODULE, 320, 2);
-    let seat = cx.new(|cx| Seat::new(MODULE, cx));
-    seat.update(cx, |seat, cx| seat.turn(cx));
+    let (seat, _, _native) = open(cx, MODULE, false);
     assert_eq!(ticks_of(&seat, cx), 1);
     cx.run_until_parked();
     assert_eq!(
@@ -532,7 +541,7 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
         seat.update(cx, |seat, cx| {
             // the pane in front, as the pane layer would say
             seat.set_keys_free(true, cx);
-            seat.place(handle, cx);
+            seat.place(handle, Some((400., 300.)), cx);
             seat.turn(cx);
         });
         handle
@@ -1101,6 +1110,7 @@ fn uniform(rows: std::ops::Range<u32>) -> wire::Node {
         horizontal_sizing: wire::list::UniformListHorizontalSizing::FitList,
         y_flipped: false,
         scroll_request: None,
+        revision: 0,
         children: indices.iter().map(|_| row()).collect(),
         indices,
     }

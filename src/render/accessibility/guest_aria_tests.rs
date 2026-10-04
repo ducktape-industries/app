@@ -120,6 +120,7 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
             horizontal_sizing: wire::list::UniformListHorizontalSizing::FitList,
             y_flipped: false,
             scroll_request: None,
+            revision: 0,
             indices: vec![0],
             children: vec![wire::Node::Container(view_wire::ContainerNode {
                 id: Some(key("child/row:0")),
@@ -140,6 +141,7 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
             horizontal_sizing: wire::list::UniformListHorizontalSizing::FitList,
             y_flipped: false,
             scroll_request: None,
+            revision: 0,
             indices: vec![0],
             children: vec![child(&Site::Container, interactivity)],
         },
@@ -1147,6 +1149,7 @@ mod phase_two {
             horizontal_sizing: wire::list::UniformListHorizontalSizing::FitList,
             y_flipped: false,
             scroll_request: None,
+            revision: 0,
             indices: vec![0, 1, 2],
             children: vec![row(0, Some(Role::ListBoxOption)), row(1, None), told],
         };

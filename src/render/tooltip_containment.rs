@@ -509,6 +509,7 @@ mod tests {
                 horizontal_sizing: Default::default(),
                 y_flipped: false,
                 scroll_request: None,
+                revision: 0,
                 indices: Vec::new(),
                 children: Vec::new(),
             },

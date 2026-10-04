@@ -45,6 +45,30 @@ impl Guest {
         }
     }
 
+    /// The body the view is laid out in, as the pane has it before the
+    /// draw: the guest's `Window::viewport_size()`. Sent when it moved;
+    /// the latest size wins the tick.
+    pub(crate) fn sync_viewport(&mut self, width: f32, height: f32) {
+        if self.viewport_sent != Some((width, height)) {
+            self.viewport_sent = Some((width, height));
+            self.pending
+                .retain(|event| !matches!(event, wire::Event::Viewport { .. }));
+            self.pending.push(wire::Event::Viewport { width, height });
+        }
+    }
+
+    /// The reader's UTC offset in minutes, sent when it moved (a DST
+    /// change): every time the view writes is in the reader's zone from
+    /// its first frame on.
+    pub(crate) fn sync_offset(&mut self, minutes: i32) {
+        if self.offset_sent != Some(minutes) {
+            self.offset_sent = Some(minutes);
+            self.pending
+                .retain(|event| !matches!(event, wire::Event::Offset { .. }));
+            self.pending.push(wire::Event::Offset { minutes });
+        }
+    }
+
     /// One redraw: tick if there is anything to deliver — or never was a
     /// first frame — answer the requests, and say whether the guest is due
     /// again at once. A guest with nothing to deliver is left alone: the
@@ -66,9 +90,7 @@ impl Guest {
         // Queued results precede becoming visible, so a view can distinguish
         // arrivals while hidden from data received after it returns to screen.
         self.sync_visibility();
-        if !self.offset_subscriptions.is_empty() {
-            self.sync_offset(kernel::offset_minutes());
-        }
+        self.sync_offset(kernel::offset_minutes());
         self.sync_route();
         if self.staged {
             // a replacement's first tree is already here; only its
@@ -99,8 +121,6 @@ impl Guest {
             }
             self.live_subscriptions.retain(|(live, _)| *live != id);
             self.visibility_subscriptions
-                .retain(|subscription| *subscription != id);
-            self.offset_subscriptions
                 .retain(|subscription| *subscription != id);
             self.route_subscriptions
                 .retain(|subscription| *subscription != id);
@@ -344,6 +364,8 @@ impl Guest {
         use crate::perf;
         let key = self.perf_key();
         let events = std::mem::take(&mut self.pending);
+        #[cfg(test)]
+        self.ticked_with.push(events.clone());
         let bytes = wire::encode(&events);
         perf::record(key, "events_bytes", bytes.len() as u64);
         arm(&mut self.store);

@@ -12,6 +12,12 @@ const MAX_TABLE_ELEMENTS: usize = 1 << 20;
 /// the guest, the first line, at most this many chars.
 const MAX_PANIC_BYTES: u32 = 1024;
 
+/// The host's facts a drawn view holds for its replacement (`Guest::ambient`).
+pub(crate) struct Ambient {
+    pub(crate) theme_dark: Option<bool>,
+    pub(crate) viewport: Option<(f32, f32)>,
+}
+
 impl Guest {
     /// Reusing identical code over a new connection: the node subscriptions
     /// go on, opened on it, and the rest of the work started on the old one
@@ -248,7 +254,7 @@ impl Guest {
                 ));
             }
             *ticks = old.ticks;
-            old.handover(&fresh, timing)?
+            (old.handover(&fresh, timing)?, old.ambient())
         };
         Self::prepared(fresh, state, code, shown, timing)
     }
@@ -264,8 +270,31 @@ impl Guest {
         timing: &mut LoadTiming,
     ) -> Result<Self, Failure> {
         let fresh = like.sibling(code, shown).map_err(Failure::Refused)?;
-        let state = old.handover(&fresh, timing)?;
+        let state = (old.handover(&fresh, timing)?, old.ambient());
         Self::prepared(fresh, state, code, shown, timing)
+    }
+
+    /// The host's facts this drawn view holds, for its replacement to draw
+    /// its first tree by: the theme and the body it is laid out in, as the
+    /// seat last told them. The offset is the host's to read at any time.
+    fn ambient(&self) -> Ambient {
+        Ambient {
+            theme_dark: self.theme_dark,
+            viewport: self.viewport_sent,
+        }
+    }
+
+    /// A replacement hears the host's facts before its first frame, so the
+    /// tree it draws is themed, laid out to its pane and in the reader's
+    /// zone, and the seat's first turn finds nothing to tell it.
+    fn seed(&mut self, ambient: Ambient) {
+        if let Some(dark) = ambient.theme_dark {
+            self.sync_theme(dark);
+        }
+        if let Some((width, height)) = ambient.viewport {
+            self.sync_viewport(width, height);
+        }
+        self.sync_offset(kernel::offset_minutes());
     }
 
     /// What this drawn view hands `to`, its replacement: its snapshot, held
@@ -325,7 +354,7 @@ impl Guest {
     /// verified.
     fn prepared(
         mut fresh: Self,
-        state: Option<Vec<u8>>,
+        (state, ambient): (Option<Vec<u8>>, Ambient),
         code: &Module,
         shown: &str,
         timing: &mut LoadTiming,
@@ -356,6 +385,7 @@ impl Guest {
         if !carried {
             fresh.timed_init(shown, timing)?;
         }
+        fresh.seed(ambient);
         let framed = Instant::now();
         let frame = fresh.first_frame(shown);
         let first_frame = framed.elapsed();
@@ -391,6 +421,10 @@ impl Guest {
             exports: _,
             pending: _,
             theme_dark: _,
+            viewport_sent: _,
+            offset_sent: _,
+            #[cfg(test)]
+                ticked_with: _,
             widget_commands: _,
             frame: _,
             styles: _,
@@ -406,8 +440,6 @@ impl Guest {
             visible: _,
             visibility_change: _,
             visibility_subscriptions: _,
-            offset_subscriptions: _,
-            offset_sent: _,
             route_subscriptions: _,
             intents: _,
             replies: _,
@@ -667,6 +699,10 @@ impl Guest {
             exports,
             pending: Vec::new(),
             theme_dark: None,
+            viewport_sent: None,
+            offset_sent: None,
+            #[cfg(test)]
+            ticked_with: Vec::new(),
             widget_commands: Vec::new(),
             frame: wire::Frame::default(),
             styles: wire::Styles::default(),
@@ -682,8 +718,6 @@ impl Guest {
             visible: false,
             visibility_change: None,
             visibility_subscriptions: Vec::new(),
-            offset_subscriptions: Vec::new(),
-            offset_sent: None,
             route_subscriptions: Vec::new(),
             intents: Vec::new(),
             replies: Arc::default(),
@@ -728,18 +762,6 @@ impl Guest {
         };
         if let Some(route) = crate::runtime::take_route(self.module) {
             self.stream_item(id, wire::methods::encode(&route));
-        }
-    }
-
-    /// Hands every `host.offset` subscriber the reader's offset, if it
-    /// moved since they last heard it.
-    pub(crate) fn sync_offset(&mut self, minutes: i32) {
-        if self.offset_sent == Some(minutes) {
-            return;
-        }
-        self.offset_sent = Some(minutes);
-        for id in self.offset_subscriptions.clone() {
-            self.stream_item(id, wire::methods::encode(&minutes));
         }
     }
 

@@ -107,7 +107,6 @@ impl ViewTree {
         }
 
         let state = list.state.clone();
-        let bottom = native_alignment == ListAlignment::Bottom;
         let weak = cx.entity().downgrade();
         let render_key = key.clone();
         let request_route = *request_handler;
@@ -116,17 +115,6 @@ impl ViewTree {
                 let list = this.variable_lists.get(&render_key);
                 let row = list.and_then(|list| list.rows.get(&index)).cloned();
                 let count = list.map_or(0, |list| list.item_count);
-                // The first row the guest sent is on screen: ask for the one
-                // above it. Asking whenever rows were missing above walked a
-                // bottom-anchored list back one row a frame, off screen too,
-                // re-rendering the guest's whole window every step.
-                let leading = bottom
-                    && index > 0
-                    && row.is_some()
-                    && list.is_some_and(|list| !list.rows.contains_key(&(index - 1)));
-                if leading {
-                    request_row(this, &render_key, index - 1, request_route, cx);
-                }
                 if let Some(row) = row {
                     let parent = std::mem::replace(&mut this.authored_path, render_key.clone());
                     this.next_row = Some((index + 1, count));

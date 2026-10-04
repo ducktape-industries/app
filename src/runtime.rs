@@ -416,6 +416,22 @@ pub(crate) fn fault_for_test(module: &str, instance: u64) {
     locked.wake.send_replace(());
 }
 
+/// The events every tick of `module`'s seated view carried, in order:
+/// what the view knew when it drew each frame.
+#[cfg(test)]
+pub(crate) fn ticks_for_test(module: &str) -> Vec<Vec<wire::Event>> {
+    let registry = registry().lock().unwrap();
+    let seat = registry
+        .iter()
+        .find(|((name, _), _)| *name == module)
+        .map(|(_, seat)| seat.clone())
+        .expect("a seat of the module");
+    match &seat.lock().unwrap().slot {
+        Slot::Ready(guest) => guest.ticked_with.clone(),
+        _ => panic!("{module} is not seated"),
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn seat_code_for_test(module: &'static str, min_width: u32, code: Module) {
     let ready = || {
