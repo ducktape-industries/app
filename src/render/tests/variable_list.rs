@@ -11,11 +11,8 @@ fn variable_list_node(
     style.size.width = Some(relative(1.).into());
     style.size.height = Some(relative(1.).into());
     wire::Node::List {
-        id: wire::ElementIdWire::ListState(17),
-        path: vec![
-            wire::ElementIdWire::Name("room".into()),
-            wire::ElementIdWire::ListState(17),
-        ],
+        id: named_id("messages"),
+        path: vec![named_id("room"), named_id("messages")],
         item_count: count,
         alignment,
         overdraw: 32.,
@@ -336,15 +333,15 @@ fn rows_without_a_box_draw_under_their_index(cx: &mut gpui_kit::TestAppContext) 
 /// keeps the first node and drops the second.
 #[gpui_kit::test]
 fn two_lists_under_one_parent_each_draw_their_own_rows(cx: &mut gpui_kit::TestAppContext) {
-    let lists = (1..=2).map(|state| {
+    let lists = (1..=2).map(|at| {
         let rows = (0..2)
-            .map(|row| deferred_row(&format!("Open {state}.{row}")))
+            .map(|row| deferred_row(&format!("Open {at}.{row}")))
             .collect();
         let mut list = variable_list_node(2, wire::ListAlignment::Top, 0, rows);
         let wire::Node::List { id, path, .. } = &mut list else {
             unreachable!()
         };
-        *id = wire::ElementIdWire::ListState(state);
+        *id = named_id(&format!("list-{at}"));
         *path = vec![named_id("page"), id.clone()];
         list
     });

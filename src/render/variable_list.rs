@@ -48,13 +48,10 @@ impl ViewTree {
             unreachable!()
         };
         let key = path.clone();
-        // gpui's list has no id, so its rows are drawn under one of the
-        // host's own, which no view id is: two lists' rows never share
-        // gpui's element state or an accessibility node
-        let wire::ElementIdWire::ListState(state_id) = id else {
-            unreachable!("the sanitizer holds a list to its state's id")
-        };
-        let scope = host_id(format!("list-{state_id}"));
+        // gpui's list has no id, so its rows are drawn under the list's
+        // own, as its path files them: two lists' rows never share gpui's
+        // element state or an accessibility node
+        let scope = native_id(id);
         let native_alignment = match alignment {
             wire::ListAlignment::Top => ListAlignment::Top,
             wire::ListAlignment::Bottom => ListAlignment::Bottom,

@@ -344,7 +344,7 @@ impl ViewTree {
 
 /// An element drawn under `id` without the box an id-carrying element lays
 /// out: a list row with no id of its own under its index (what `.id(index)`
-/// would do), a list under the host's id for it.
+/// would do), a list under its own id (gpui's list element takes none).
 struct Scope {
     id: ElementId,
     element: AnyElement,

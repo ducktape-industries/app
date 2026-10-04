@@ -24,8 +24,8 @@ pub(super) fn walk_authored_paths(
     visit: &mut impl FnMut(&wire::Node, &AuthoredPath),
 ) {
     let entered_scope = crate::render::enter_scope(node, row, path);
-    // Anonymous primitives (notably List) still own retained host state at
-    // their current authored ancestry; they add no segment of their own.
+    // A node filed under no id is visited at its nearest identified
+    // ancestor's path, which is not its own to key state by.
     visit(node, path);
     for (at, child) in node.children().iter().enumerate() {
         walk_authored_paths(child, wire::identity::row(node, at), path, visit);
