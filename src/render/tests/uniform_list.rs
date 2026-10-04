@@ -39,6 +39,16 @@ fn uniform_node(id: &str, count: usize, rows: Range<usize>) -> wire::Node {
     }
 }
 
+/// `list`'s style with `edit` applied, named in this test's table.
+fn restyle(list: &mut wire::Node, edit: impl FnOnce(&mut gpui_kit::StyleRefinement)) {
+    let wire::Node::UniformList { style, .. } = list else {
+        unreachable!()
+    };
+    let mut edited = test_styles()[*style].clone();
+    edit(&mut edited);
+    *style = crate::render::test_style(edited);
+}
+
 #[gpui_kit::test]
 fn uniform_list_measures_row_zero_and_emits_bounded_viewport_ranges(
     cx: &mut gpui_kit::TestAppContext,
@@ -372,4 +382,86 @@ fn a_uniform_list_draws_the_hosts_scroll_bar(cx: &mut gpui_kit::TestAppContext) 
         in_the_strip > 0,
         "the bar's track and thumb are painted in the list's right strip"
     );
+}
+
+/// The host keeps the bar's gutter beside every guest uniform list, outside
+/// the list's own box: the box (its fill here) and its rows end where the
+/// gutter begins, and the room the view gave the list holds both. A list of
+/// few rows keeps the gutter, as a view's scroller does.
+#[gpui_kit::test]
+fn a_uniform_list_ends_where_the_bars_gutter_begins(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let width = 240.;
+    let gutter = width - 16.;
+    for count in [2_000, 3] {
+        let mut node = uniform_node("uniform", count, 0..3);
+        restyle(&mut node, |style| {
+            style.background = Some(gpui_kit::red().into());
+        });
+        let window = cx.open_window(size(px(width), px(96.)), |_, _| ViewTree::new(node));
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+        });
+        native.run_until_parked();
+        // the rows draw no quad: the list's fill starts at the window's left
+        // edge, the bar's track and thumb are the quads past it
+        let (fill, bar): (Vec<_>, Vec<_>) = native.update(|window, _| {
+            let scale = window.scale_factor();
+            let quads = window.painted_quads();
+            let edges = quads.iter().map(|quad| {
+                let left = quad.bounds.origin.x.0 / scale;
+                (left, left + quad.bounds.size.width.0 / scale)
+            });
+            edges.partition(|(left, _)| *left == 0.)
+        });
+        assert_eq!(
+            fill,
+            [(0., gutter)],
+            "{count} rows: the list's box ends where the gutter begins"
+        );
+        let row =
+            native.update(|window, _| window.within("uniform").find("uniform/row:0").bounds());
+        assert_eq!(
+            row.right(),
+            px(gutter),
+            "{count} rows: the rows end with it"
+        );
+        assert!(
+            bar.iter()
+                .all(|(left, right)| *left >= gutter && *right <= width),
+            "{count} rows: the bar is in the gutter: {bar:?}"
+        );
+        assert_eq!(
+            bar.is_empty(),
+            count == 3,
+            "{count} rows: a list that scrolls draws the bar: {bar:?}"
+        );
+    }
+}
+
+/// The wheel over the bar's gutter scrolls the list, as it does over a
+/// scroller's bar: the gutter is outside the list's box, not outside its
+/// reach.
+#[gpui_kit::test]
+fn the_wheel_over_the_bars_gutter_scrolls_the_list(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let node = uniform_node("uniform", 2_000, 0..3);
+    let window = cx.open_window(size(px(240.), px(96.)), |_, _| ViewTree::new(node));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    native.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: point(px(232.), px(48.)),
+        delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-240.))),
+        ..Default::default()
+    });
+    native.update(|window, cx| window.render_frame(cx));
+    native.run_until_parked();
+    let top = tree.read_with(&native, |tree, _| {
+        let state = tree.uniform_lists.get(&vec![named_id("uniform")]).unwrap();
+        state.requested.clone().map(|rows| rows.start)
+    });
+    assert_eq!(top, Some(10), "ten rows of 24 px down");
 }
