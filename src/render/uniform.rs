@@ -154,26 +154,34 @@ fn room(list: &mut gpui_kit::StyleRefinement) -> gpui_kit::StyleRefinement {
 /// gutter begins and no view writes padding for a bar it did not draw. The
 /// gutter is kept whether or not the list scrolls, as a view's scroller
 /// keeps its own (the SDK's `bar_gutter`), and the wheel over it scrolls
-/// the list, as it does over a scroller's bar.
+/// the list, as it does over a scroller's bar. The gutter is `list_id`'s:
+/// the kit keeps a bar's hover and drag by the ids around the bar, and
+/// the gutter is outside the list's, so it takes one of its own, apart
+/// from a sibling list's and from an enclosing scroller's.
 fn beside_its_bar(
     room: gpui_kit::StyleRefinement,
     list: impl IntoElement,
+    list_id: &ElementId,
     scroll: &gpui_kit::UniformListScrollHandle,
     tree: gpui_kit::EntityId,
 ) -> impl IntoElement {
     use gpui_base::ScrollbarHandle as _;
     let wheel = scroll.clone();
     let gutter = div()
+        // `Debug` tells any two ids apart; `Display` prints every focus
+        // handle alike
+        .id(host_id(format!("gutter-{list_id:?}")))
         .w(gpui_kit::component::scroll::Scrollbar::width())
         .flex_none()
         .relative()
+        // the wheel goes on to whatever scrolls around the list, as it
+        // does over the rows
         .on_scroll_wheel(move |event, window, cx| {
             let delta = event.delta.pixel_delta(window.line_height());
             let offset = wheel.offset();
             // the list keeps the offset inside its rows when it next draws
             wheel.set_offset(point(offset.x, offset.y + delta.y));
             cx.notify(tree);
-            cx.stop_propagation();
         })
         .child(super::layout::vertical_bar(scroll).viewport_from_layout());
     let mut row = div();
@@ -326,8 +334,12 @@ impl ViewTree {
         let mut style = self.styles[*style].clone();
         let room = room(&mut style);
         *list.style() = style;
-        let list = list.flex_grow(1.).flex_shrink(1.).min_w_0().id(native_id);
+        let list = list
+            .flex_grow(1.)
+            .flex_shrink(1.)
+            .min_w_0()
+            .id(native_id.clone());
         let list = self.guest_aria(list, node, interactivity, cx);
-        beside_its_bar(room, list, &scroll, cx.entity_id()).into_any_element()
+        beside_its_bar(room, list, &native_id, &scroll, cx.entity_id()).into_any_element()
     }
 }

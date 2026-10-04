@@ -465,3 +465,116 @@ fn the_wheel_over_the_bars_gutter_scrolls_the_list(cx: &mut gpui_kit::TestAppCon
     });
     assert_eq!(top, Some(10), "ten rows of 24 px down");
 }
+
+/// The wheel over a list's gutter is the wheel over its rows: the list
+/// takes it and so does a page that scrolls around the list, whether the
+/// list has rows to scroll or not.
+#[gpui_kit::test]
+fn the_wheel_over_the_bars_gutter_reaches_the_page_as_over_the_rows(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use gpui_base::ScrollbarHandle as _;
+    cx.update(gpui_kit::init);
+    // the page's and the list's offsets after one wheel of 50 px at `x`
+    let offsets = |cx: &mut gpui_kit::TestAppContext, count: usize, x: f32| {
+        let mut style = div()
+            .flex()
+            .flex_col()
+            .w(px(240.))
+            .h(px(96.))
+            .style()
+            .clone();
+        style.overflow.y = Some(gpui_kit::Overflow::Scroll);
+        let filler = sized(
+            "filler",
+            text("filler/label", "Filler"),
+            Some(fill()),
+            Some(fixed(300.)),
+        );
+        let mut list = uniform_node("uniform", count, 0..3);
+        // as the SDK sends a list: it scrolls
+        restyle(&mut list, |own| {
+            own.overflow.y = Some(gpui_kit::Overflow::Scroll);
+        });
+        let node = container_with_style("page", style, [list, filler]);
+        let window = cx.open_window(size(px(240.), px(96.)), |_, _| ViewTree::new(node));
+        let tree = window.root(cx).unwrap();
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+        });
+        native.simulate_event(gpui_kit::ScrollWheelEvent {
+            position: point(px(x), px(48.)),
+            delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-50.))),
+            ..Default::default()
+        });
+        native.update(|window, cx| window.render_frame(cx));
+        native.run_until_parked();
+        tree.read_with(&native, |tree, _| {
+            let list = tree.uniform_lists.get(&vec![named_id("uniform")]).unwrap();
+            (
+                f32::from(tree.scrolls[&vec![named_id("page")]].offset().y),
+                f32::from(list.scroll.offset().y),
+            )
+        })
+    };
+    for count in [3, 2_000] {
+        let over_rows = offsets(cx, count, 100.);
+        let over_gutter = offsets(cx, count, 232.);
+        assert_eq!(over_rows.0, -50., "{count} rows: the page scrolls");
+        assert_eq!(
+            over_gutter, over_rows,
+            "{count} rows: (page, list) over the gutter as over the rows"
+        );
+    }
+}
+
+/// Each list's bar is its own: of two lists side by side, a drag on the
+/// second's thumb scrolls the second and leaves the first where it was.
+#[gpui_kit::test]
+fn each_of_two_lists_side_by_side_drags_its_own_bar(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_base::ScrollbarHandle as _;
+    cx.update(gpui_kit::init);
+    let node = axis_container(
+        "pair",
+        Axis::Row,
+        [
+            uniform_node("a", 2_000, 0..3),
+            uniform_node("b", 2_000, 0..3),
+        ],
+    );
+    let window = cx.open_window(size(px(248.), px(96.)), |_, _| ViewTree::new(node));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+    });
+    native.run_until_parked();
+    // b's thumb is at the top of b's gutter, past b's rows
+    let rows_end = native.update(|window, _| window.within("b").find("b/row:0").bounds().right());
+    let x = rows_end + px(8.);
+    native.simulate_mouse_move(point(x, px(12.)), None, Default::default());
+    native.simulate_mouse_down(
+        point(x, px(12.)),
+        gpui_kit::MouseButton::Left,
+        Default::default(),
+    );
+    native.update(|window, cx| window.render_frame(cx));
+    native.simulate_mouse_move(
+        point(x, px(60.)),
+        gpui_kit::MouseButton::Left,
+        Default::default(),
+    );
+    native.update(|window, cx| window.render_frame(cx));
+    native.run_until_parked();
+    let [a, b] = tree.read_with(&native, |tree, _| {
+        ["a", "b"].map(|id| {
+            let list = tree.uniform_lists.get(&vec![named_id(id)]).unwrap();
+            f32::from(list.scroll.offset().y)
+        })
+    });
+    assert_eq!(a, 0., "the first list stays (the second is at {b})");
+    assert!(b < 0., "the second list scrolls: {b}");
+}
