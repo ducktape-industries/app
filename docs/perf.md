@@ -380,14 +380,17 @@ Measured so far (fold in, attribute, do not over-trust):
   per-tick fuel trace, screen and stage not recorded, before the qa gate
   existed.
 - Explorer, qa's `a11y-census` on a freshly seeded stage (`kit up`,
-  `kit seed`, the seed inside the 1,000-block window). The heaviest tick is
-  one render of the Transactions page, 50 rows and 1,074 wire nodes
-  (`nodes.max`). `fuel.tick.max` read 111.95–114.43M in all 89 such runs on
-  record before modules#232 (2026-09-29 to 10-01). modules#232 (`62e52242`)
-  made the SDK's diff move a replaced subtree instead of copying it:
+  `kit seed`, the seed inside the 1,000-block window). Until modules#267
+  the heaviest tick was one render of the Transactions page, 50 rows and
+  1,074 wire nodes (`nodes.max`). `fuel.tick.max` read 111.95–114.43M in
+  all 89 such runs on record before modules#232 (2026-09-29 to 10-01).
+  modules#232 (`62e52242`) made the SDK's diff move a replaced subtree
+  instead of copying it:
   96,763,257 in the census at the `dev` heads (2026-10-01: app `cf8384cd`,
   modules `62e52242`, qa `24a1e33a`), and 96.7–96.8M in every seeded
-  census on record since.
+  census on record until the SDK fix campaign (2026-10-03 and 10-04). Since
+  modules#267 the page is a window of the rows shown, 696 nodes, and the
+  explorer reads 31.4–33.7M (rule 2 below).
   Without the seed the explorer reads less: 18.8M at 218 nodes when every
   block in the window was empty (2026-09-29), 57–59M at 394 nodes once the
   seed had aged out of the window, and 53–61M at 467–468 nodes in
@@ -434,35 +437,48 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by module and by window:
    bytes, memory max, picture bytes, view bytes — refreshed from a green
    run on `dev`. For `fuel.tick.max` a run is green when the steps that
    produce the metric pass, whatever AX audits fail elsewhere in it.
-   Starting points: chat 72M → 90M, forge 45M → 56M, explorer 26M → 33M;
-   the explorer's was refreshed to 96.8M → 121M (below). Gate on `max` and
+   Starting points (#291's trace): chat 72M → 90M, forge 45M → 56M,
+   explorer 26M → 33M. All three are census readings now (below): chat
+   37M, forge 11M, explorer 42M. Gate on `max` and
    counts since the last reset, never on equality: inputs vary with when
    replies and blocks land.
 
-   The explorer's refresh, and the procedure for the next one. Bring up a
-   fresh stage and seed it (`kit up`, `kit seed`), run qa's `a11y-census`
-   with the app and the views at the `dev` heads, and read
-   `views.explorer.fuel.tick.max` from the end snapshot in the run's
-   `perf.jsonl`. The run is green for this metric when "open the
-   Transactions page" and "audit Explorer: transactions" pass, and it is a
-   baseline only when it drew the full Transactions page: explorer
-   `nodes.max` 1,074 today, and a run far under that had a seed that had
-   aged out of the window. The budget is the reading × 1.25, rounded to
-   the million. At or over rule 1's ceiling it would be no regression
-   budget: the ceiling reports the same tick without it.
+   The procedure for a refresh. Bring up a fresh stage and seed it
+   (`kit up`, `kit seed`), run qa's `a11y-census` with the app and the
+   views at the `dev` heads, and read `views.<module>.fuel.tick.max` from
+   the end snapshot in the run's `perf.jsonl`. The run is green for a
+   view's metric when that view's steps pass (for the explorer: "open the
+   Transactions page" and "audit Explorer: transactions"), and it is an
+   explorer baseline only when it drew the full Transactions window:
+   explorer `nodes.max` 696 today, and a run far under that had a seed
+   that had aged out of the window. A reading moves from run to run with
+   when replies and blocks land: the explorer's follows the largest event
+   payload one tick takes (`events_bytes.max`: 48.8 kB read 31.4M and 54.1
+   kB read 33.7M below), so the baseline is the largest of at least three
+   runs. The budget is that reading × 1.25, rounded to the million. At or
+   over rule 1's ceiling it would be no regression budget: the ceiling
+   reports the same tick without it.
 
-   Refreshed 2026-10-01: 96,763,257 × 1.25 = 120,954,071, so 121M. The run
-   is the census at the `dev` heads (app `cf8384cd`, modules `62e52242`, qa
-   `24a1e33a`): 93 of its 94 steps passed, both Transactions steps among
-   them, and the one that failed is the Chat reaction-picker audit. The 33M
-   it replaces was never reachable on a seeded stage (113M before
-   modules#232), and 113M × 1.25 is over rule 1.
+   Refreshed 2026-10-04, after the SDK fix campaign: the largest of five
+   seeded censuses of this code, four on the branches before the merge and
+   the last at the `dev` heads (app `72555218`, modules `b650bebf`, qa
+   `39aab414`), every run 94 of 94 steps. Chat 29,856,561 × 1.25 = 37M (746
+   nodes), forge 8,626,202 × 1.25 = 11M (252 nodes), explorer 33,669,182 ×
+   1.25 = 42M (696 nodes; 31.4–33.7M across the five). They replace 90M and
+   56M (#291's trace × 1.25) and the explorer's 121M (96,763,257 on
+   2026-10-01). The last two moves, each read in a census: a node names
+   its style by an id into one table per tree (modules#265: chat 34.0M →
+   27.5M, forge 12.1M → 8.7M, explorer 51.0M → 31.8M), and chat keeps a
+   window of rows from its first frame (modules#267: 27.5M → 29.8M, 568 →
+   746 nodes) while the explorer's Transactions page became a window of
+   the rows shown (1,074 → 696 nodes).
 
-   What holds the explorer's fuel, in order: this budget (a tick over 121M
-   is reported, 25% over the baseline), rule 1 at 125M (4M above it), and
-   the 250M kill (§4.1). Nothing in `perf-budgets.json` reports a
-   regression under 25%, and of this rule's D metrics the file holds only
-   the fuel max for the explorer. `--perf-baseline <run-dir>` (§4.4) is the
+   What holds a view's fuel, in order: its budget (a tick 25% over the
+   baseline is reported), rule 1 at 125M, and the 250M kill (§4.1).
+   Nothing in `perf-budgets.json` reports a regression under 25%, and of
+   this rule's D metrics the file holds only the fuel max, for chat, forge
+   and the explorer: every other view is held by rule 1 alone.
+   `--perf-baseline <run-dir>` (§4.4) is the
    check that compares every D metric with a recorded run (fuel p95 and
    nodes max among them), and no census run passes it today. Every line
    here is a report: `breach_fails_the_scenario` is false.
