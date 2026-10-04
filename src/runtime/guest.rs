@@ -79,7 +79,7 @@ pub(super) struct Guest {
     /// The last frame, its `root` kept across `unchanged` ticks and patched
     /// in place by a frame that carries patches instead of a tree.
     pub(crate) frame: wire::Frame,
-    pub(crate) frame_reports: display_diagnostics::FrameReports,
+    pub(crate) frame_reports: wire::SanitizeReport,
     pub(crate) display_diagnostics: display_diagnostics::DisplayDiagnostics,
     pub(crate) installed_generation: Option<u64>,
     /// Bumped when `frame.root` changes: the widget rebuilds when it sees a
@@ -312,9 +312,7 @@ pub(super) fn merge(
 
 /// What the host is willing to take from one tick's bytes, already held to
 /// `MAX_FRAME_BYTES`: nothing in here is trusted — the counts, the tree.
-pub(super) fn shape(
-    bytes: &[u8],
-) -> Result<(wire::Frame, display_diagnostics::FrameReports), String> {
+pub(super) fn shape(bytes: &[u8]) -> Result<(wire::Frame, wire::SanitizeReport), String> {
     // a frame over `MAX_REQUESTS` or `MAX_CANCELS` does not decode
     let mut frame: wire::Frame = wire::decode(bytes)?;
     if frame.unchanged {
@@ -323,10 +321,8 @@ pub(super) fn shape(
     if frame.unchanged || frame.root.is_some() {
         frame.patches = Vec::new();
     }
-    let upstream = frame.upstream_sanitization;
-    let local = wire::sanitize(&mut frame).map_err(|refused| refused.to_string())?;
-    frame.upstream_sanitization = upstream;
-    Ok((frame, display_diagnostics::FrameReports { local, upstream }))
+    let cuts = wire::sanitize(&mut frame).map_err(|refused| refused.to_string())?;
+    Ok((frame, cuts))
 }
 
 /// A view built against another wire than this app's, as the plain refusal

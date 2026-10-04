@@ -326,15 +326,13 @@ impl Guest {
         let Some(generation) = self.installed_generation else {
             return;
         };
-        for origin in self
-            .display_diagnostics
-            .observe(self.frame_reports)
-            .into_iter()
-            .flatten()
-        {
+        if self.display_diagnostics.first_cut(&self.frame_reports) {
+            let cuts = &self.frame_reports;
             crate::perf::count(self.perf_key(), "truncations", 1);
             tracing::warn!(target: "ducktape::app", module = self.module, generation,
-                reason = "display_text_truncated", origin, "module view display text truncated");
+                reason = "frame_cut", nodes = cuts.nodes, depth = cuts.depth,
+                strings = cuts.strings, text = cuts.text, pictures = cuts.pictures,
+                canvases = cuts.canvases, lists = cuts.lists, first = ?cuts.first, "module view frame cut by the host's budgets");
         }
     }
 
@@ -386,7 +384,7 @@ impl Guest {
                 match merged {
                     Ok((false, _)) => {}
                     Ok((true, report)) => {
-                        reports.local.merge(report);
+                        reports.merge(report);
                         self.frame_rev += 1;
                         if let Some(root) = &mut frame.root {
                             // The guest remembers its tree without the
@@ -422,7 +420,7 @@ impl Guest {
                 }
                 if accepted {
                     if inherits {
-                        reports.inherit(self.frame_reports);
+                        reports.merge(std::mem::take(&mut self.frame_reports));
                     }
                     self.frame_reports = reports;
                     self.report_display_truncation();

@@ -96,3 +96,30 @@ fn a_guest_svg_with_no_colour_paints_in_the_one_it_inherits() {
     assert_near(outside, WHITE, "the page around the glyph");
     assert_near(glyph, BLUE, "the glyph's middle");
 }
+
+/// A guest's gradient background crosses the host's sanitizer and paints
+/// as gpui draws one: red at its left, blue at its right, where the
+/// sanitizer once dropped it and left the page white.
+#[test]
+fn a_guest_gradient_background_paints() {
+    let gradient = gpui_kit::linear_gradient(
+        90.,
+        gpui_kit::linear_color_stop(rgb(0xff0000), 0.),
+        gpui_kit::linear_color_stop(rgb(0x0000ff), 1.),
+    );
+    let mut frame = wire::Frame {
+        root: Some(wire::Node::Container(view_wire::ContainerNode {
+            id: Some(named_id("gradient")),
+            style: div().size_full().bg(gradient).style().clone(),
+            interactivity: Default::default(),
+            children: vec![],
+        })),
+        ..wire::Frame::default()
+    };
+    wire::sanitize(&mut frame).unwrap();
+    let (left, right) = painted(div(), frame.root.unwrap());
+    assert!(
+        left[0] > left[2] && right[2] > right[0],
+        "red to blue, left to right: {left:?} then {right:?}"
+    );
+}

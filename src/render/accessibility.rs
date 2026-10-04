@@ -377,7 +377,11 @@ impl ViewTree {
         // them (a keyboard click on its bounds), wherever it is drawn, so
         // the reader's press is the node's, with the one activation a
         // pointer's or Enter's has
+        // a click the guest consumes stops here, as gpui's
+        // `cx.stop_propagation()` in the listener would: no element under
+        // it hears the same press
         if let Some(handler) = interactivity.on_click {
+            let consumes = interactivity.consumes_click;
             element = element.on_click(cx.listener(
                 move |this, event: &gpui_kit::ClickEvent, _, cx| {
                     this.activate();
@@ -385,6 +389,9 @@ impl ViewTree {
                         handler,
                         event: event.into(),
                     });
+                    if consumes {
+                        cx.stop_propagation();
+                    }
                 },
             ));
         }

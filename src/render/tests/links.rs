@@ -175,12 +175,14 @@ fn a_rich_text_without_links_is_no_tab_stop(cx: &mut gpui_kit::TestAppContext) {
     assert!(native.update(|window, cx| window.focused(cx)).is_none());
 }
 
-/// Space on a text's links is theirs: it presses nothing, and it does not
-/// bubble to a composite around the text (a message list whose Space
-/// presses its active message), which hears every other key the box does
-/// not take.
+/// Space on a text's links presses the picked one, as Enter does and as on
+/// any pressable element, and does not bubble to a composite around the
+/// text (a message list whose Space presses its active message), which
+/// hears every other key the box does not take.
 #[gpui_kit::test]
-fn space_on_a_link_box_does_not_reach_the_composite_around_it(cx: &mut gpui_kit::TestAppContext) {
+fn space_on_a_link_box_presses_its_link_and_does_not_reach_the_composite_around_it(
+    cx: &mut gpui_kit::TestAppContext,
+) {
     const KEYS: u32 = 9;
     cx.update(gpui_kit::init);
     let mut grid = axis_container("messages", Axis::Column, [rich()]);
@@ -194,21 +196,7 @@ fn space_on_a_link_box_does_not_reach_the_composite_around_it(cx: &mut gpui_kit:
     let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(grid));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let seen = heard.clone();
-    let _subscription = native.update(|_, cx| {
-        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
-            if let wire::Event::KeyDown {
-                handler: KEYS,
-                event,
-                ..
-            } = event
-            {
-                seen.borrow_mut()
-                    .push(event.clone().into_gpui().keystroke.key);
-            }
-        })
-    });
+    let (events, _subscription) = emitted(&tree, &mut native);
     native.update(|window, cx| {
         window.activate_a11y();
         window.render_frame(cx);
@@ -218,5 +206,22 @@ fn space_on_a_link_box_does_not_reach_the_composite_around_it(cx: &mut gpui_kit:
     assert_eq!(press(&mut native, "tab").as_deref(), Some("the docs"));
     press(&mut native, "space");
     press(&mut native, "x");
-    assert_eq!(*heard.borrow(), ["x"], "Space stayed in the box");
+    let heard: Vec<String> = events
+        .borrow()
+        .iter()
+        .filter_map(|event| match event {
+            wire::Event::KeyDown {
+                handler: KEYS,
+                event,
+                ..
+            } => Some(event.clone().into_gpui().keystroke.key),
+            wire::Event::Select { handler: 72, index } => Some(format!("link {index}")),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        heard,
+        ["link 0", "x"],
+        "Space pressed the link and stayed in the box"
+    );
 }

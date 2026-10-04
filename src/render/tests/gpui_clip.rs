@@ -21,12 +21,15 @@ fn hostile_guest_position_size_and_overflow_remain_inside_host_slot(
             .absolute()
             .left(px(30.))
             .size(px(100.)),
+        // negative margins and insets keep their sign (bounded): these
+        // leave part of the box over the slot, which must clip it
         gpui_kit::StyleRefinement::default()
             .size(px(1e20))
-            .m(px(-1e20)),
+            .mr(px(-1e20))
+            .mb(px(-1e20)),
         gpui_kit::StyleRefinement::default()
             .absolute()
-            .top(px(-100.))
+            .top(px(-50.))
             .size(px(100.))
             .opacity(5.),
     ];

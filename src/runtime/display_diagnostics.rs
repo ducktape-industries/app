@@ -1,34 +1,17 @@
-//! Warns once per guest when display text was truncated, kept apart by who
-//! cut it: this host's sanitizer (`local`, the "host" origin) or the view
-//! itself, which reports its own cuts in the frame (`upstream`,
-//! "producer-reported"). Each origin is logged the first time it is seen.
+//! Warns once per guest when this host's sanitizer cut its frame: what was
+//! cut and where the first cut fell. A view's own tests fail on any cut,
+//! so one seen here is a view that was not tested against this SDK.
 use super::*;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct FrameReports {
-    pub(super) local: wire::SanitizeReport,
-    pub(super) upstream: wire::SanitizeReport,
-}
-impl FrameReports {
-    pub(super) fn inherit(&mut self, held: Self) {
-        self.local.merge(held.local);
-        self.upstream.merge(held.upstream);
-    }
-}
 #[derive(Default)]
 pub(super) struct DisplayDiagnostics {
-    seen: FrameReports,
+    warned: bool,
 }
 impl DisplayDiagnostics {
-    pub(super) fn observe(&mut self, reports: FrameReports) -> [Option<&'static str>; 2] {
-        let mut origins = [None, None];
-        if reports.local.display_text_truncated && !self.seen.local.display_text_truncated {
-            origins[0] = Some("host");
-        }
-        if reports.upstream.display_text_truncated && !self.seen.upstream.display_text_truncated {
-            origins[1] = Some("producer-reported");
-        }
-        self.seen.inherit(reports);
-        origins
+    /// Whether `cuts` is the first cut seen for this guest.
+    pub(super) fn first_cut(&mut self, cuts: &wire::SanitizeReport) -> bool {
+        let first = !cuts.is_empty() && !self.warned;
+        self.warned |= first;
+        first
     }
 }

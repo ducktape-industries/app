@@ -127,16 +127,11 @@ impl ViewTree {
                             "right" | "down" => (at + 1).min(last),
                             "home" => 0,
                             "end" => last,
-                            "enter" => {
+                            // gpui's activation keys, as on any pressable
+                            // element (a guest's `block_link` too)
+                            "enter" | "space" => {
                                 cx.stop_propagation();
                                 press(at, cx);
-                                return;
-                            }
-                            // Enter presses a link, Space nothing; kept from
-                            // a composite around the text, which cannot tell
-                            // it came from here and would press its own item
-                            "space" => {
-                                cx.stop_propagation();
                                 return;
                             }
                             _ => return,
