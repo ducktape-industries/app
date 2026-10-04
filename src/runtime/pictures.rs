@@ -42,26 +42,25 @@ impl Pictures {
         self.bytes
     }
 
-    /// Moves every picture's bytes out of `root` and the tooltip trees it
-    /// holds, leaving the hashes: the tree as the guest remembers it. A hash
-    /// already held keeps its first bytes. Then holds the budget against
-    /// `root`; `true` when it evicted, and the guest is owed a `Resync`.
+    /// Moves every picture's bytes out of `root`, leaving the hashes: the
+    /// tree as the guest remembers it. A hash already held keeps its first
+    /// bytes. Then holds the budget against `root`; `true` when it evicted,
+    /// and the guest is owed a `Resync`.
     pub(super) fn adopt(&mut self, root: &mut wire::Node, module: &str) -> bool {
-        let mut raster = Vec::new();
-        let mut vector = Vec::new();
-        each_picture(root, &mut |picture| match picture {
-            Picture::Raster(hash, data) => raster.extend(data.take().map(|data| (hash, data))),
-            Picture::Vector(hash, bytes) => vector.extend(bytes.take().map(|bytes| (hash, bytes))),
-        });
-        let fresh = PictureBytes {
-            raster: (raster.into_iter())
-                .map(|(hash, data)| (hash, Arc::new(data)))
-                .collect(),
-            vector: (vector.into_iter())
-                .map(|(hash, bytes)| (hash, Arc::from(bytes)))
-                .collect(),
-        };
-        self.join(fresh);
+        self.join(bytes_of(root));
+        self.hold(root, module)
+    }
+
+    /// Moves the pictures' bytes out of a tooltip's `content` the same way,
+    /// the budget held against `root`, the tree drawn (a tooltip's pictures
+    /// go first when it is over). `true` when it evicted.
+    pub(super) fn take(
+        &mut self,
+        content: &mut wire::Node,
+        root: &mut wire::Node,
+        module: &str,
+    ) -> bool {
+        self.join(bytes_of(content));
         self.hold(root, module)
     }
 
@@ -156,37 +155,34 @@ enum Picture<'a> {
     Vector(u64, &'a mut Option<Vec<u8>>),
 }
 
-/// Every picture in `root` and in the tooltip trees its nodes hold, in tree
-/// order (a node's tooltip after the node, before its children).
+/// Every picture in `root`, in tree order.
 fn each_picture(root: &mut wire::Node, visit: &mut dyn FnMut(Picture<'_>)) {
-    root.for_each_mut(&mut |node| {
-        match node {
-            wire::Node::Image { hash, data, .. } => visit(Picture::Raster(*hash, data)),
-            wire::Node::Svg {
-                source: wire::SvgSource::Data { hash, bytes },
-                ..
-            } => visit(Picture::Vector(*hash, bytes)),
-            _ => {}
-        }
-        if let Some(content) = tooltip_content(node) {
-            each_picture(content, &mut *visit);
-        }
+    root.for_each_mut(&mut |node| match node {
+        wire::Node::Image { hash, data, .. } => visit(Picture::Raster(*hash, data)),
+        wire::Node::Svg {
+            source: wire::SvgSource::Data { hash, bytes },
+            ..
+        } => visit(Picture::Vector(*hash, bytes)),
+        _ => {}
     });
 }
 
-/// The tree a node's tooltip holds, if it holds one.
-fn tooltip_content(node: &mut wire::Node) -> Option<&mut wire::Node> {
-    let content = match node {
-        wire::Node::Container(view_wire::ContainerNode { interactivity, .. })
-        | wire::Node::UniformList { interactivity, .. }
-        | wire::Node::List { interactivity, .. }
-        | wire::Node::ResizeHandle { interactivity, .. }
-        | wire::Node::Image { interactivity, .. }
-        | wire::Node::Svg { interactivity, .. } => &mut interactivity.tooltip.as_mut()?.content,
-        wire::Node::RichText { tooltip, .. } => &mut tooltip.as_mut()?.content,
-        _ => return None,
-    };
-    content.as_deref_mut()
+/// Every picture's bytes moved out of `root`, by hash, the hashes left.
+fn bytes_of(root: &mut wire::Node) -> PictureBytes {
+    let mut raster = Vec::new();
+    let mut vector = Vec::new();
+    each_picture(root, &mut |picture| match picture {
+        Picture::Raster(hash, data) => raster.extend(data.take().map(|data| (hash, data))),
+        Picture::Vector(hash, bytes) => vector.extend(bytes.take().map(|bytes| (hash, bytes))),
+    });
+    PictureBytes {
+        raster: (raster.into_iter())
+            .map(|(hash, data)| (hash, Arc::new(data)))
+            .collect(),
+        vector: (vector.into_iter())
+            .map(|(hash, bytes)| (hash, Arc::from(bytes)))
+            .collect(),
+    }
 }
 
 #[cfg(test)]
@@ -232,29 +228,17 @@ mod tests {
         assert_eq!(pictures.bytes(), 5);
     }
 
-    /// A tooltip's tree is drawn from the same store: its pictures are
+    /// A tooltip's content is drawn from the same store: its pictures are
     /// taken in, and named, like the tree's own.
     #[test]
     fn a_tooltips_pictures_are_held_and_named() {
-        let mut root = wire::Node::Container(view_wire::ContainerNode {
-            id: None,
-            style: Default::default(),
-            interactivity: Box::new(wire::Interactivity {
-                tooltip: Some(wire::Tooltip {
-                    request: 1,
-                    content: Some(Box::new(vector(9, Some(b"tip".to_vec())))),
-                    hoverable: false,
-                    delay_ms: 0,
-                }),
-                ..Default::default()
-            }),
-            children: Vec::new(),
-        });
+        let mut root = wire::Node::empty();
+        let mut content = vector(9, Some(b"tip".to_vec()));
         let mut pictures = Pictures::default();
-        pictures.adopt(&mut root, "test");
+        pictures.take(&mut content, &mut root, "test");
         assert_eq!(held_vector(&pictures, 9).as_deref(), Some(&b"tip"[..]));
         let mut named = Vec::new();
-        each_picture(&mut root, &mut |picture| match picture {
+        each_picture(&mut content, &mut |picture| match picture {
             Picture::Vector(hash, bytes) => named.push((hash, bytes.is_some())),
             Picture::Raster(..) => {}
         });

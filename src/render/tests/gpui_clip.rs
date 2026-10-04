@@ -163,15 +163,19 @@ fn a_tooltip_and_a_popup_on_a_scrolled_lists_last_row_draw_whole(
     let magenta = |id: &str, style: Div| {
         container(id, style.bg(rgb(MAGENTA)), Default::default(), Vec::new())
     };
-    // 100 by 120: below the pointer it runs past the pane's foot
     let tooltip = |row: usize| wire::Interactivity {
         tooltip: Some(wire::Tooltip {
             request: row as u32,
-            content: Some(Box::new(magenta("tip", div().w(px(100.)).h(px(120.))))),
             hoverable: false,
             delay_ms: 10,
         }),
         ..Default::default()
+    };
+    // 100 by 120: below the pointer it runs past the pane's foot
+    let tip = |row: u32| wire::TooltipResponse {
+        request: row,
+        character_index: None,
+        content: Some(Box::new(magenta("tip", div().w(px(100.)).h(px(120.))))),
     };
     // 100 by 60, under its row: past the list's foot, inside the pane
     let popup = || wire::Node::Deferred {
@@ -214,8 +218,14 @@ fn a_tooltip_and_a_popup_on_a_scrolled_lists_last_row_draw_whole(
     cx.update(gpui_kit::init);
     for (variant, tooltips) in [("tooltip", true), ("popup", false)] {
         let root = list(tooltips);
-        let window = cx.open_window(size(px(400.), px(400.)), move |_, cx| Pane {
-            tree: cx.new(|_| ViewTree::new(root)),
+        let window = cx.open_window(size(px(400.), px(400.)), move |_, cx| {
+            let tree = cx.new(|_| ViewTree::new(root));
+            if tooltips {
+                tree.update(cx, |tree, cx| {
+                    tree.tooltip_responses((0..5).map(tip).collect(), cx)
+                });
+            }
+            Pane { tree }
         });
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
         native.update(|window, cx| window.render_frame(cx));

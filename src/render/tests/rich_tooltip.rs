@@ -27,7 +27,7 @@ fn rich_text_tooltip_dispatches_character_index_and_stays_in_slot(
         interactivity: Default::default(),
         children: Vec::new(),
     });
-    fn rich(tooltip: wire::TooltipResponse) -> wire::Node {
+    fn rich(tooltip: u32) -> wire::Node {
         let mut style = div().size(px(40.)).text_color(rgb(0xffffff));
         wire::Node::RichText {
             id: Some(named_id("rich-tip-source")),
@@ -44,13 +44,7 @@ fn rich_text_tooltip_dispatches_character_index_and_stays_in_slot(
 
     cx.update(gpui_kit::init);
     let window = cx.open_window(size(px(200.), px(200.)), move |_, cx| Host {
-        tree: cx.new(|_| {
-            ViewTree::new(rich(wire::TooltipResponse {
-                request: 41,
-                character_index: None,
-                content: None,
-            }))
-        }),
+        tree: cx.new(|_| ViewTree::new(rich(41))),
     });
     let host = window.root(cx).unwrap();
     let tree = cx.update(|cx| host.read(cx).tree.clone());
@@ -69,13 +63,12 @@ fn rich_text_tooltip_dispatches_character_index_and_stays_in_slot(
     assert_eq!(character_index, Some(0));
     native.update(|_, cx| {
         tree.update(cx, |tree, cx| {
-            tree.replace(
-                rich(wire::TooltipResponse {
+            tree.tooltip_responses(
+                vec![wire::TooltipResponse {
                     request: 41,
                     character_index,
                     content: Some(Box::new(tip)),
-                }),
-                &[],
+                }],
                 cx,
             );
         });

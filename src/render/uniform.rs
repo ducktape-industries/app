@@ -11,11 +11,15 @@ const PLACEHOLDER_HEIGHT: f32 = 24.;
 
 /// A UniformList's retained state, per wire `path`.
 pub(super) struct UniformListHostState {
-    /// The guest's list generation: a new route means row nodes and handler
-    /// ids from older frames are invalid, so the rows are dropped.
+    /// The list's request route: another route in this place is another
+    /// list, whose rows these are not.
     pub(super) route: u32,
     pub(super) count: usize,
+    /// The rows the guest sent for the range it was asked, by index.
     pub(super) rows: HashMap<usize, wire::Node>,
+    /// How many rows were taken as sent (new, or not the one held).
+    #[cfg(test)]
+    pub(super) replaced: usize,
     pub(super) scroll: gpui_kit::UniformListScrollHandle,
     /// The last range asked of the guest; asked again only when it changes.
     pub(super) requested: Option<Range<usize>>,
@@ -29,6 +33,8 @@ impl UniformListHostState {
             route,
             count,
             rows: HashMap::new(),
+            #[cfg(test)]
+            replaced: 0,
             scroll: gpui_kit::UniformListScrollHandle::new(),
             requested: None,
             observed: None,
@@ -144,20 +150,24 @@ impl ViewTree {
         }
         state.count = count;
         let measure_index = (*measure_index).min(count.saturating_sub(1));
-        // Listener routes are assigned per accepted guest frame. Never keep a
-        // row node from an older frame, because its callback IDs may have been
-        // reassigned even when this list's route and identity remain stable.
-        state.rows.clear();
-        for (&index, child) in indices
+        // the rows are the ones sent: a row held as sent stays as it is
+        let sent = indices
             .iter()
             .zip(children)
-            .take(wire::MAX_UNIFORM_LIST_ROWS)
-        {
+            .take(wire::MAX_UNIFORM_LIST_ROWS);
+        for (&index, child) in sent.clone() {
             let index = index as usize;
-            if index < count {
+            if index < count && state.rows.get(&index) != Some(child) {
                 state.rows.insert(index, child.clone());
+                #[cfg(test)]
+                {
+                    state.replaced += 1;
+                }
             }
         }
+        state
+            .rows
+            .retain(|index, _| sent.clone().any(|(&sent, _)| sent as usize == *index));
 
         let native_id = native_id(id);
         let scroll = state.scroll.clone();

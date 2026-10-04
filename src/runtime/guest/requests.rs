@@ -425,6 +425,18 @@ impl Guest {
                     }
                     self.frame_reports = reports;
                     self.report_display_truncation();
+                    // the tooltip content built this tick goes to the tree
+                    // beside its root; its pictures join the store like the
+                    // tree's own, the budget held against the tree
+                    for mut response in frame.tooltip_responses.drain(..) {
+                        if let (Some(content), Some(root)) =
+                            (&mut response.content, &mut frame.root)
+                            && self.pictures.take(content, root, self.module)
+                        {
+                            self.pending.push(wire::Event::Resync);
+                        }
+                        self.tooltip_responses.push(response);
+                    }
                 }
                 self.frame = frame;
                 if perf::on() {

@@ -7,23 +7,15 @@ use crate::render::native_id;
 
 pub(super) mod links;
 
+/// The content the guest built for the rich tooltip `request` over
+/// `character_index`, once it has answered for that character.
 fn rich_tooltip_content(
-    node: &wire::Node,
+    tooltips: &HashMap<u32, TooltipContent>,
     request: u32,
     character_index: u32,
 ) -> Option<wire::Node> {
-    if let wire::Node::RichText {
-        tooltip: Some(tooltip),
-        ..
-    } = node
-        && tooltip.request == request
-        && tooltip.character_index == Some(character_index)
-    {
-        return tooltip.content.as_deref().cloned();
-    }
-    node.children()
-        .iter()
-        .find_map(|child| rich_tooltip_content(child, request, character_index))
+    let held = tooltips.get(&request)?;
+    (held.character_index == Some(character_index)).then(|| (*held.content).clone())
 }
 
 thread_local! {
@@ -371,7 +363,7 @@ impl ViewTree {
             _ => None,
         };
         let hover_handler = *on_hover;
-        let tooltip_request = tooltip.as_ref().map(|tooltip| tooltip.request);
+        let tooltip_request = *tooltip;
         if hover_handler.is_some() || tooltip_request.is_some() {
             let view = cx.entity().downgrade();
             interactive = interactive.on_hover(move |index, event, _, cx| {
@@ -399,14 +391,14 @@ impl ViewTree {
                 });
             });
         }
-        if let Some(tooltip) = tooltip {
-            let request = tooltip.request;
+        if let Some(request) = *tooltip {
             let parent = cx.entity().downgrade();
             interactive = interactive.tooltip(move |index, _, cx| {
                 let character_index = u32::try_from(index).ok()?;
                 let content = parent
                     .update(cx, |this, cx| {
-                        let content = rich_tooltip_content(&this.root, request, character_index);
+                        let content =
+                            rich_tooltip_content(&this.tooltips, request, character_index);
                         cx.emit(wire::Event::TooltipRequest {
                             request,
                             character_index: Some(character_index),

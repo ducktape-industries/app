@@ -1116,7 +1116,6 @@ fn a_views_tooltip_stays_under_a_dialog(cx: &mut TestAppContext) {
             interactivity: Box::new(wire::Interactivity {
                 tooltip: Some(wire::Tooltip {
                     request: 7,
-                    content: Some(Box::new(tip)),
                     hoverable,
                     delay_ms: 10,
                 }),
@@ -1124,7 +1123,7 @@ fn a_views_tooltip_stays_under_a_dialog(cx: &mut TestAppContext) {
             }),
             children: Vec::new(),
         });
-        crate::runtime::seat_drawing_for_test(module, 400, root);
+        crate::runtime::seat_frame_for_test(module, 400, tooltip_frame(root, 7, tip));
         set_motion(&app, false, &mut native);
         pane(&view, PaneMessage::Select(module), &mut native);
         for _ in 0..4 {
@@ -1350,10 +1349,28 @@ type Clicks = std::rc::Rc<std::cell::RefCell<Vec<u32>>>;
 /// split over it (a split cascades 28px from the window under it), front
 /// and focused, with a cyan body that takes clicks as handler 2. Returns
 /// the window, the back view's clicks and the front view's.
+/// A view's frame: `root`, with `content` as its answer for the tooltip
+/// route `request`.
+fn tooltip_frame(
+    root: view_wire::Node,
+    request: u32,
+    content: view_wire::Node,
+) -> view_wire::Frame {
+    view_wire::Frame {
+        root: Some(root),
+        tooltip_responses: vec![view_wire::TooltipResponse {
+            request,
+            character_index: None,
+            content: Some(Box::new(content)),
+        }],
+        ..Default::default()
+    }
+}
+
 fn cascade(
     back: &'static str,
     front: &'static str,
-    tree: view_wire::Node,
+    tree: view_wire::Frame,
     cx: &mut TestAppContext,
 ) -> (
     gpui_kit::Entity<super::WindowRoot>,
@@ -1373,7 +1390,7 @@ fn cascade(
         }),
         children: Vec::new(),
     });
-    crate::runtime::seat_drawing_for_test(back, 400, tree);
+    crate::runtime::seat_frame_for_test(back, 400, tree);
     crate::runtime::seat_drawing_for_test(front, 400, body);
     let mut seed = Seed::boot();
     seed.roster = Default::default();
@@ -1485,7 +1502,10 @@ fn a_back_windows_deferred_draw_takes_no_click_on_the_front_window(cx: &mut Test
     let (_, mut native, back, front) = cascade(
         "root-cascade-hostile-view",
         "root-cascade-front-view",
-        hostile,
+        view_wire::Frame {
+            root: Some(hostile),
+            ..Default::default()
+        },
         cx,
     );
     let (_, middle) = front_body(&mut native);
@@ -1528,7 +1548,6 @@ fn a_back_windows_tooltip_stays_under_the_front_window(cx: &mut TestAppContext) 
         interactivity: Box::new(wire::Interactivity {
             tooltip: Some(wire::Tooltip {
                 request: 7,
-                content: Some(Box::new(tip)),
                 hoverable: true,
                 delay_ms: 10,
             }),
@@ -1539,7 +1558,7 @@ fn a_back_windows_tooltip_stays_under_the_front_window(cx: &mut TestAppContext) 
     let (_, mut native, back, front) = cascade(
         "root-cascade-tip-view",
         "root-cascade-tip-front-view",
-        source,
+        tooltip_frame(source, 7, tip),
         cx,
     );
     let scale = native.update(|window, _| window.scale_factor());
