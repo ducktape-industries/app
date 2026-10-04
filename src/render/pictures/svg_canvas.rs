@@ -87,7 +87,7 @@ mod tests {
     fn boxed(id: Option<&str>, width: f32, height: f32, children: Vec<wire::Node>) -> wire::Node {
         wire::Node::Container(view_wire::ContainerNode {
             id: id.map(named_id),
-            style: div().w(px(width)).h(px(height)).style().clone(),
+            style: crate::render::test_style(div().w(px(width)).h(px(height)).style().clone()),
             interactivity: Default::default(),
             children,
         })
@@ -135,7 +135,7 @@ mod tests {
                 stroke: None,
                 even_odd: false,
             }],
-            style: div().w(px(50.)).h(px(50.)).style().clone(),
+            style: crate::render::test_style(div().w(px(50.)).h(px(50.)).style().clone()),
         };
         let root = boxed(Some("card"), 200., 100., vec![drawing]);
         let (redraws, tree, native) = redraws_at_rest(root, cx);

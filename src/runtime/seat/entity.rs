@@ -68,15 +68,21 @@ impl EventEmitter<Intent> for Seat {}
 /// authored path that the view never sent and the AX door would read. An
 /// id-less `Container` gets GPUI's own synthetic element id
 /// (`ViewTree::container`) instead, so identity is unaffected.
-pub(super) fn native_root(root: wire::Node) -> wire::Node {
+///
+/// Its style is the host's own, no entry of the view's table
+/// (`wire::Styles::host`).
+pub(super) fn native_root(tree: crate::render::Tree) -> crate::render::Tree {
     use gpui_kit::Styled as _;
-    let mut host_root = gpui_kit::div().size_full();
-    wire::Node::Container(view_wire::ContainerNode {
+    static FILL: std::sync::LazyLock<Arc<gpui_kit::StyleRefinement>> =
+        std::sync::LazyLock::new(|| Arc::new(gpui_kit::div().size_full().style().clone()));
+    let crate::render::Tree { root, mut styles } = tree;
+    let root = wire::Node::Container(view_wire::ContainerNode {
         id: None,
-        style: host_root.style().clone(),
+        style: styles.host(FILL.clone()),
         interactivity: Default::default(),
         children: vec![root],
-    })
+    });
+    crate::render::Tree { root, styles }
 }
 
 impl Seat {
@@ -301,8 +307,8 @@ impl Seat {
                 .as_ref()
                 .is_some_and(|alive| Arc::ptr_eq(alive, &guest.alive));
         let fresh = (!same || self.revision != guest.frame_rev).then(|| {
-            let (root, pictures) = guest.drawn();
-            (native_root(root), pictures, guest.frame_rev)
+            let (tree, pictures) = guest.drawn();
+            (native_root(tree), pictures, guest.frame_rev)
         });
         let adopt = (!same).then(|| {
             (
@@ -400,7 +406,7 @@ impl Seat {
     /// of its events back into the guest.
     fn mount(
         &mut self,
-        root: wire::Node,
+        root: crate::render::Tree,
         pictures: Arc<crate::render::PictureBytes>,
         generation: u64,
         key: crate::perf::Key,

@@ -46,6 +46,8 @@ mod variable_list;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) use tests::{answered, plain_style, sanitize_whole, sent, test_style};
 
 use accessibility::accessible;
 pub(crate) use accessibility::{Accessible, announce};
@@ -128,12 +130,22 @@ struct InputPresentation {
     focused: bool,
 }
 
+/// A tree to draw and the table its nodes name their styles in: what a
+/// seat hands its [`ViewTree`] with each frame, and what a tooltip's
+/// content is kept as. An id means a style only beside its table.
+pub(crate) struct Tree {
+    pub(crate) root: wire::Node,
+    pub(crate) styles: wire::Styles,
+}
+
 /// The gpui entity that draws one guest view's wire tree and keeps the
 /// native state that outlives a frame, keyed by [`AuthoredPath`]. `replace`
 /// adopts each new root and retains every map to the paths it still mounts.
 pub struct ViewTree {
     // The frame being drawn.
     root: wire::Node,
+    /// The table `root`'s nodes name their styles in.
+    styles: wire::Styles,
     /// The path of the node `node()` is drawing; pushed and popped on the way.
     authored_path: AuthoredPath,
     /// Every identified path this render passed: what a widget command may target.
@@ -218,11 +230,12 @@ pub struct ViewTree {
 
 impl EventEmitter<wire::Event> for ViewTree {}
 
-/// The content a tooltip route's response brought, and for a rich text's
-/// tooltip the character it was built for.
+/// The content a tooltip route's response brought with the table it came
+/// with, and for a rich text's tooltip the character it was built for.
 struct TooltipContent {
     character_index: Option<u32>,
     content: Arc<wire::Node>,
+    styles: wire::Styles,
 }
 
 /// The tree has drawn: every render says so, and the seat that ticked
@@ -232,11 +245,13 @@ pub(crate) struct Drawn;
 impl EventEmitter<Drawn> for ViewTree {}
 
 impl ViewTree {
-    pub fn new(root: wire::Node) -> Self {
+    pub(crate) fn new(tree: impl Into<Tree>) -> Self {
+        let Tree { root, styles } = tree.into();
         Self {
             activation: Default::default(),
             keys_grant: false,
             root,
+            styles,
             focus_targets: HashMap::new(),
             guest_focus_targets: HashMap::new(),
             fields: HashMap::new(),
@@ -289,6 +304,12 @@ impl ViewTree {
         self.guest_focus_targets.get(&handle).cloned()
     }
 
+    /// The style `id` names in the table of the tree being drawn, shared:
+    /// the walk borrows the tree for everything else.
+    fn style(&self, id: wire::StyleId) -> Arc<gpui_kit::StyleRefinement> {
+        self.styles.share(id)
+    }
+
     fn node(
         &mut self,
         node: &wire::Node,
@@ -310,7 +331,7 @@ impl ViewTree {
         use wire::Node;
         let element = match node {
             Node::Text(view_wire::TextNode { .. }) => self.text(node, cx),
-            Node::Space { style } => div().refine_style(style).into_any_element(),
+            Node::Space => div().into_any_element(),
             Node::UniformList { .. } => self.uniform_list(node, window, cx),
             Node::List { .. } => self.variable_list(node, cx),
             Node::Container(view_wire::ContainerNode { .. }) => self.container(node, window, cx),

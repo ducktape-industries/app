@@ -429,7 +429,7 @@ fn a_readers_press_on_a_link_opens_it_once(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     let link = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("docs".into())),
-        style: gpui_kit::div().size_full().style().clone(),
+        style: crate::render::test_style(gpui_kit::div().size_full().style().clone()),
         interactivity: Box::new(wire::Interactivity {
             role: Some(gpui_kit::Role::Link),
             aria: wire::Aria {

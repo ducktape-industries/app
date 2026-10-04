@@ -242,7 +242,7 @@ pub(crate) fn seat_for_test(module: &'static str, min_width: u32) {
 /// `frame` encoded as the string of a WAT `data` segment, and its length.
 #[cfg(test)]
 pub(crate) fn wat_frame(frame: &wire::Frame) -> (String, u32) {
-    let frame = wire::encode(frame);
+    let frame = wire::encode(&crate::render::sent(frame.clone()));
     let bytes = frame.iter().map(|byte| format!("\\{byte:02x}")).collect();
     (bytes, frame.len() as u32)
 }

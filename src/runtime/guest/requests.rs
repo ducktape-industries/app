@@ -264,7 +264,7 @@ impl Guest {
     pub(crate) fn widget_request(&mut self, id: u64, payload: &[u8]) {
         let admitted = (|| -> Result<wire::WidgetCommand, String> {
             let mut command: wire::WidgetCommand = wire::decode(payload)?;
-            let exact_payload = wire::encoded_size(&command) == payload.len() as u64;
+            let exact_payload = wire::encode(&command).len() == payload.len();
             if !exact_payload {
                 return Err("widget request has trailing bytes".into());
             }
@@ -362,7 +362,7 @@ impl Guest {
         let outcome = answer.and_then(|frame| {
             perf::record(key, "frame_bytes", frame.len() as u64);
             let _decoded = perf::time(key, "tick.decode");
-            shape(&frame)
+            shape(&frame, &mut self.styles)
         });
         match outcome {
             Ok((mut frame, mut reports)) => {
@@ -378,8 +378,8 @@ impl Guest {
                 let mut previous = self.frame.root.take();
                 let mut accepted = true;
                 let merging = perf::time(key, "merge");
-                let merged =
-                    merge(&mut previous, &mut frame).map_err(|refused| refused.to_string());
+                let merged = merge(&mut previous, &mut frame, &self.styles)
+                    .map_err(|refused| refused.to_string());
                 drop(merging);
                 match merged {
                     Ok((false, _)) => {}
@@ -434,7 +434,7 @@ impl Guest {
                         {
                             self.pending.push(wire::Event::Resync);
                         }
-                        self.tooltip_responses.push(response);
+                        self.tooltip_responses.push((response, self.styles.clone()));
                     }
                 }
                 self.frame = frame;
@@ -470,7 +470,7 @@ mod tests {
     fn container(id: &str, children: Vec<wire::Node>) -> wire::Node {
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name(id.into())),
-            style: Default::default(),
+            style: crate::render::plain_style(),
             interactivity: Default::default(),
             children,
         })
@@ -492,7 +492,7 @@ mod tests {
             on_change: Some(1),
             on_key: None,
             on_submit: None,
-            style: Default::default(),
+            style: crate::render::plain_style(),
         }
     }
 

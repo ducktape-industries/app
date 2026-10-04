@@ -305,7 +305,7 @@ pub(in crate::shell) fn frame(native: &mut VisualTestContext) {
 pub(in crate::shell) fn line(text: &str) -> wire::Node {
     wire::Node::RichText {
         id: Some(wire::ElementIdWire::Name("line".into())),
-        style: gpui_kit::div().h(px(20.)).style().clone(),
+        style: crate::render::test_style(gpui_kit::div().h(px(20.)).style().clone()),
         text: text.into(),
         runs: wire::RichTextRuns::Highlights(Vec::new()),
         font_family_overrides: Vec::new(),

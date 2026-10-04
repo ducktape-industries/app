@@ -40,7 +40,7 @@ fn glyph(style: gpui_kit::Div) -> wire::Node {
             rotate: 0.0,
         },
         label: None,
-        style: style.size(px(30.)).style().clone(),
+        style: crate::render::test_style(style.size(px(30.)).style().clone()),
         interactivity: Default::default(),
     }
 }
@@ -52,7 +52,7 @@ fn painted(page: gpui_kit::Div, child: wire::Node) -> ([u8; 4], [u8; 4]) {
     let mut cx = rendering_app();
     let root = wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id("page")),
-        style: page.size_full().bg(rgb(0xffffff)).style().clone(),
+        style: crate::render::test_style(page.size_full().bg(rgb(0xffffff)).style().clone()),
         interactivity: Default::default(),
         children: vec![child],
     });
@@ -110,13 +110,13 @@ fn a_guest_gradient_background_paints() {
     let mut frame = wire::Frame {
         root: Some(wire::Node::Container(view_wire::ContainerNode {
             id: Some(named_id("gradient")),
-            style: div().size_full().bg(gradient).style().clone(),
+            style: crate::render::test_style(div().size_full().bg(gradient).style().clone()),
             interactivity: Default::default(),
             children: vec![],
         })),
         ..wire::Frame::default()
     };
-    wire::sanitize(&mut frame).unwrap();
+    crate::render::sanitize_whole(&mut frame).unwrap();
     let (left, right) = painted(div(), frame.root.unwrap());
     assert!(
         left[0] > left[2] && right[2] > right[0],

@@ -199,7 +199,7 @@ mod tests {
                 rotate: 0.,
             },
             label: None,
-            style: Default::default(),
+            style: crate::render::plain_style(),
             interactivity: Default::default(),
         }
     }
@@ -255,7 +255,7 @@ mod tests {
         let mut fresh = Pictures::default();
         let mut first_tree = wire::Node::Container(view_wire::ContainerNode {
             id: None,
-            style: Default::default(),
+            style: crate::render::plain_style(),
             interactivity: Default::default(),
             children: vec![
                 vector(7, Some(b"conflicting".to_vec())),
@@ -287,7 +287,7 @@ mod tests {
             loading: false,
             fallback: false,
             state_children: vec![],
-            style: Default::default(),
+            style: crate::render::plain_style(),
             interactivity: Default::default(),
         };
         pictures.adopt(&mut image, "test");

@@ -20,6 +20,7 @@ impl ViewTree {
         else {
             unreachable!()
         };
+        let style = self.style(*style);
         let path = self.authored_path.clone();
         let mut element = div().id(native_id(id)).relative().size_full();
         if let Some(base) = children.first() {
@@ -40,7 +41,7 @@ impl ViewTree {
                 modal => modal,
             };
             let anchored = matches!(shown, wire::Node::Anchored { .. });
-            let shade = shades(anchored, style).then(|| {
+            let shade = shades(anchored, &style).then(|| {
                 div()
                     .id(host_id("backdrop"))
                     .absolute()
@@ -63,7 +64,7 @@ impl ViewTree {
                 .id(host_id("layer"))
                 .absolute()
                 .inset_0()
-                .refine_style(style)
+                .refine_style(&style)
                 .flex();
             if let Some(message) = on_dismiss {
                 let message = *message;

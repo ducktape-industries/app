@@ -16,20 +16,22 @@ impl ViewTree {
         self.pictures = pictures;
     }
 
-    /// Takes what the guest built for tooltip routes. A response is kept by
-    /// its route while the tree holds that route, the newest for a route
-    /// winning, and a response for a route the tree does not hold is for
-    /// nothing. Together the contents are held to the frame's node budget,
+    /// Takes what the guest built for tooltip routes, each with the table
+    /// it came with: a content is its own tree, and names its styles in the
+    /// table of the frame that brought it, whatever table the tree has by
+    /// now. A response is kept by its route while the tree holds that
+    /// route, the newest for a route winning, and a response for a route
+    /// the tree does not hold is for nothing. Together the contents are held to the frame's node budget,
     /// as the frames that brought them were: one that would take them past
     /// it starts the store over, so the tooltip the pointer rests on shows.
     pub fn tooltip_responses(
         &mut self,
-        responses: Vec<wire::TooltipResponse>,
+        responses: Vec<(wire::TooltipResponse, wire::Styles)>,
         cx: &mut Context<Self>,
     ) {
         let routes = tooltip_routes(&self.root);
         let mut changed = false;
-        for response in responses {
+        for (response, styles) in responses {
             if !routes.contains(&response.request) {
                 continue;
             }
@@ -38,7 +40,10 @@ impl ViewTree {
                 continue;
             };
             let same = self.tooltips.get(&response.request).is_some_and(|held| {
-                held.character_index == response.character_index && *held.content == *content
+                // equal ids are equal styles only in one table
+                held.character_index == response.character_index
+                    && *held.content == *content
+                    && styles.extends(&held.styles)
             });
             if same {
                 continue;
@@ -55,6 +60,7 @@ impl ViewTree {
                 TooltipContent {
                     character_index: response.character_index,
                     content: Arc::new(*content),
+                    styles,
                 },
             );
             changed = true;
@@ -64,15 +70,24 @@ impl ViewTree {
         }
     }
 
-    /// The guest's new root, with the `Replace` asks the host still holds
-    /// for it (target and the revision each read): a field's edit log is kept
-    /// from the oldest ask on it.
-    pub fn replace(
+    /// The guest's new root and its style table, with the `Replace` asks
+    /// the host still holds for it (target and the revision each read): a
+    /// field's edit log is kept from the oldest ask on it.
+    pub(crate) fn replace(
         &mut self,
-        mut root: wire::Node,
+        tree: impl Into<Tree>,
         asked: &[(wire::WidgetTarget, u64)],
         cx: &mut Context<Self>,
     ) {
+        let Tree { mut root, styles } = tree.into();
+        // Another table, not this one grown: a row a list holds and the
+        // row the new tree brings may name different styles by one id, so
+        // no held row answers for a new one, and each is measured again.
+        if !styles.extends(&self.styles) {
+            for list in self.variable_lists.values_mut() {
+                list.rows.clear();
+            }
+        }
         let mut focusable = HashMap::new();
         let mut guest_focus_ids = std::collections::HashSet::new();
         // every field, with the guest's revision this frame carries
@@ -93,7 +108,7 @@ impl ViewTree {
             if let wire::Node::Container(view_wire::ContainerNode {
                 id: Some(_), style, ..
             }) = node
-                && style.overflow.y == Some(gpui_kit::Overflow::Scroll)
+                && styles[*style].overflow.y == Some(gpui_kit::Overflow::Scroll)
             {
                 scrolls.insert(path.clone());
             }
@@ -196,6 +211,7 @@ impl ViewTree {
         });
         self.sensors.retain(|key, _| sensors.contains(key));
         self.root = root;
+        self.styles = styles;
         cx.notify();
     }
 }

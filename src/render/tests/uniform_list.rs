@@ -25,7 +25,7 @@ fn uniform_node(id: &str, count: usize, rows: Range<usize>) -> wire::Node {
         id: wire_id.clone(),
         path: vec![wire_id],
         route: 1,
-        style: sized_style(Some(fill()), Some(fixed(96.))),
+        style: crate::render::test_style(sized_style(Some(fill()), Some(fixed(96.)))),
         interactivity: Default::default(),
         count,
         measure_index: 0,

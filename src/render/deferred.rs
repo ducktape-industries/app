@@ -338,7 +338,7 @@ mod tests {
                 .bg(rgb(0xff00ff));
             wire::Node::Container(view_wire::ContainerNode {
                 id: None,
-                style,
+                style: crate::render::test_style(style),
                 interactivity: Default::default(),
                 children: Vec::new(),
             })
@@ -366,7 +366,9 @@ mod tests {
                 id,
                 path: own,
                 route: 1,
-                style: gpui_kit::StyleRefinement::default().size(px(40.)),
+                style: crate::render::test_style(
+                    gpui_kit::StyleRefinement::default().size(px(40.)),
+                ),
                 interactivity: Default::default(),
                 count: 1,
                 measure_index: 0,
@@ -385,7 +387,7 @@ mod tests {
                 root: Some(root),
                 ..Default::default()
             };
-            wire::sanitize(&mut frame).unwrap();
+            crate::render::sanitize_whole(&mut frame).unwrap();
             let root = frame.root.unwrap();
             let window = cx.open_window(size(px(200.), px(200.)), move |_, _| ViewTree::new(root));
             cx.update_window(window.into(), |_, window, cx| {

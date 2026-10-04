@@ -1,7 +1,7 @@
 # Fixture screenshots (Linux)
 
-This development tool renders serialized `view_wire::Node` trees through the
-real app renderer, theme and bundled fonts. It creates no node or network
+This development tool renders serialized whole `view_wire::Frame`s (a tree
+and its style table) through the real app renderer, theme and bundled fonts. It creates no node or network
 runtime. The `--render-tree` entry point only exists in debug builds.
 
 Requirements: Python 3, Xvfb, xdotool, ImageMagick (`import`, `identify`,
@@ -40,8 +40,10 @@ per-fixture renderer/Xvfb logs are written to `OUTPUT_DIR/logs`.
 ```
 
 Each `name` references `FIXTURES_DIR/<name>.json`, the serde JSON encoding of
-one `view_wire::Node` (for example a `Text`, `Linear`, or `Sensor` root).
-Generate trees with the matching modules SDK; this tool does not maintain a
+one whole `view_wire::Frame`: its `root` and the `styles` the root's nodes
+name. The renderer takes it as the host takes a frame, so one the sanitizer
+refuses does not draw. Generate frames with the matching modules SDK (a view
+test's `TestAppContext::whole_frame`); this tool does not maintain a
 second wire schema. Width and height are positive integer pixels; theme is
 `light` or `dark`. Optional `scroll` is `none`, `top`, or `bottom`. Optional
 `hover: true` places the pointer over the chat message action area after
@@ -55,10 +57,10 @@ the renderer exits or a stable nonblank image does not appear within 60
 seconds. Outputs are `<name>.png`; only processes started by the harness
 are terminated. Three fixtures render concurrently.
 
-For a single tree without a manifest, start an X display and run the debug
+For a single frame without a manifest, start an X display and run the debug
 binary directly:
 
 ```sh
 "${CARGO_TARGET_DIR:-target}/debug/ducktape-app" \
-  --render-tree path/to/tree.json --size 900x300 --theme light
+  --render-tree path/to/frame.json --size 900x300 --theme light
 ```

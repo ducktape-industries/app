@@ -296,7 +296,7 @@ impl ViewTree {
             _ => None,
         };
         let mut element = div();
-        *element.style() = style.clone();
+        *element.style() = self.styles[*style].clone();
         let native_transform =
             Transformation::scale(size(transformation.scale[0], transformation.scale[1]))
                 .with_translation(point(
@@ -343,7 +343,7 @@ impl ViewTree {
             unreachable!()
         };
         let mut root = div().relative().overflow_hidden();
-        *root.style() = style.clone();
+        *root.style() = self.styles[*style].clone();
         let commands = commands.clone();
         if native_canvas_commands(&commands) {
             return root
@@ -441,7 +441,7 @@ impl ViewTree {
             .or_else(|| pictures.raster.get(hash).map(|data| &**data));
         let full = data.is_some_and(|data| !self.remember_image(*hash, data, Some(window), cx));
         let mut element = div();
-        *element.style() = style.clone();
+        *element.style() = self.styles[*style].clone();
         match data {
             Some(wire::ImageData::Refusal(reason)) => {
                 element = match Self::image_state(*loading, *fallback, state_children, true) {

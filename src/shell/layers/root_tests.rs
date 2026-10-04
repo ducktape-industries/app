@@ -1016,7 +1016,7 @@ fn a_views_deferred_draw_stays_under_a_dialog(cx: &mut TestAppContext) {
             .bg(gpui_kit::rgb(MAGENTA));
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("lookalike".into())),
-            style: style.style().clone(),
+            style: crate::render::test_style(style.style().clone()),
             interactivity: Box::new(wire::Interactivity {
                 on_click: Some(1),
                 occlude: true,
@@ -1037,7 +1037,9 @@ fn a_views_deferred_draw_stays_under_a_dialog(cx: &mut TestAppContext) {
         let (app, _, view, mut native) = console(cx);
         let root = wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("slot".into())),
-            style: gpui_kit::div().size_full().relative().style().clone(),
+            style: crate::render::test_style(
+                gpui_kit::div().size_full().relative().style().clone(),
+            ),
             interactivity: Default::default(),
             children: vec![root],
         });
@@ -1101,7 +1103,7 @@ fn a_views_tooltip_stays_under_a_dialog(cx: &mut TestAppContext) {
             .bg(gpui_kit::rgb(MAGENTA));
         let tip = wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("tip".into())),
-            style: tip.style().clone(),
+            style: crate::render::test_style(tip.style().clone()),
             interactivity: Box::new(wire::Interactivity {
                 on_click: Some(1),
                 occlude: true,
@@ -1112,7 +1114,7 @@ fn a_views_tooltip_stays_under_a_dialog(cx: &mut TestAppContext) {
         let mut source = gpui_kit::div().size_full().bg(gpui_kit::rgb(CYAN));
         let root = wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("source".into())),
-            style: source.style().clone(),
+            style: crate::render::test_style(source.style().clone()),
             interactivity: Box::new(wire::Interactivity {
                 tooltip: Some(wire::Tooltip {
                     request: 7,
@@ -1210,7 +1212,7 @@ fn a_views_deferred_draw_takes_no_click_outside_its_pane(cx: &mut TestAppContext
         .bg(gpui_kit::rgb(0xff00ff));
     let cover = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("cover".into())),
-        style: cover.style().clone(),
+        style: crate::render::test_style(cover.style().clone()),
         interactivity: Box::new(wire::Interactivity {
             on_click: Some(1),
             occlude: true,
@@ -1220,7 +1222,7 @@ fn a_views_deferred_draw_takes_no_click_outside_its_pane(cx: &mut TestAppContext
     });
     let hostile = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("slot".into())),
-        style: gpui_kit::div().size_full().relative().style().clone(),
+        style: crate::render::test_style(gpui_kit::div().size_full().relative().style().clone()),
         interactivity: Default::default(),
         children: vec![wire::Node::Deferred {
             priority: 16,
@@ -1237,7 +1239,7 @@ fn a_views_deferred_draw_takes_no_click_outside_its_pane(cx: &mut TestAppContext
     let mut neighbour = gpui_kit::div().size_full().bg(gpui_kit::rgb(CYAN));
     let neighbour = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("neighbour".into())),
-        style: neighbour.style().clone(),
+        style: crate::render::test_style(neighbour.style().clone()),
         interactivity: Box::new(wire::Interactivity {
             on_click: Some(2),
             ..Default::default()
@@ -1383,7 +1385,7 @@ fn cascade(
     let mut body = gpui_kit::div().size_full().bg(gpui_kit::rgb(0x00ffff));
     let body = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("front".into())),
-        style: body.style().clone(),
+        style: crate::render::test_style(body.style().clone()),
         interactivity: Box::new(wire::Interactivity {
             on_click: Some(2),
             ..Default::default()
@@ -1475,7 +1477,7 @@ fn a_back_windows_deferred_draw_takes_no_click_on_the_front_window(cx: &mut Test
         .bg(gpui_kit::rgb(0xff00ff));
     let cover = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("cover".into())),
-        style: cover.style().clone(),
+        style: crate::render::test_style(cover.style().clone()),
         interactivity: Box::new(wire::Interactivity {
             on_click: Some(1),
             occlude: true,
@@ -1485,7 +1487,7 @@ fn a_back_windows_deferred_draw_takes_no_click_on_the_front_window(cx: &mut Test
     });
     let hostile = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("slot".into())),
-        style: gpui_kit::div().size_full().relative().style().clone(),
+        style: crate::render::test_style(gpui_kit::div().size_full().relative().style().clone()),
         interactivity: Default::default(),
         children: vec![wire::Node::Deferred {
             priority: 16,
@@ -1533,7 +1535,7 @@ fn a_back_windows_tooltip_stays_under_the_front_window(cx: &mut TestAppContext) 
         .bg(gpui_kit::rgb(MAGENTA));
     let tip = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("tip".into())),
-        style: tip.style().clone(),
+        style: crate::render::test_style(tip.style().clone()),
         interactivity: Box::new(wire::Interactivity {
             on_click: Some(1),
             occlude: true,
@@ -1544,7 +1546,7 @@ fn a_back_windows_tooltip_stays_under_the_front_window(cx: &mut TestAppContext) 
     let mut source = gpui_kit::div().size_full().bg(gpui_kit::rgb(YELLOW));
     let source = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("source".into())),
-        style: source.style().clone(),
+        style: crate::render::test_style(source.style().clone()),
         interactivity: Box::new(wire::Interactivity {
             tooltip: Some(wire::Tooltip {
                 request: 7,

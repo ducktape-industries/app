@@ -53,7 +53,7 @@ fn native_rich_text_click_grants_one_user_activation(cx: &mut gpui_kit::TestAppC
     cx.update(gpui_kit::init);
     let root = wire::Node::RichText {
         id: Some(named_id("link")),
-        style: Default::default(),
+        style: crate::render::plain_style(),
         text: "Open link".into(),
         runs: wire::RichTextRuns::Highlights(Vec::new()),
         font_family_overrides: Vec::new(),

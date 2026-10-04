@@ -23,7 +23,7 @@ fn rich_text_tooltip_dispatches_character_index_and_stays_in_slot(
     let mut tip = div().size(px(120.)).bg(rgb(TIP_COLOR));
     let tip = wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id("rich-tip-content")),
-        style: tip.style().clone(),
+        style: crate::render::test_style(tip.style().clone()),
         interactivity: Default::default(),
         children: Vec::new(),
     });
@@ -31,7 +31,7 @@ fn rich_text_tooltip_dispatches_character_index_and_stays_in_slot(
         let mut style = div().size(px(40.)).text_color(rgb(0xffffff));
         wire::Node::RichText {
             id: Some(named_id("rich-tip-source")),
-            style: style.style().clone(),
+            style: crate::render::test_style(style.style().clone()),
             text: "A".into(),
             runs: wire::RichTextRuns::Highlights(Vec::new()),
             font_family_overrides: Vec::new(),
@@ -64,11 +64,11 @@ fn rich_text_tooltip_dispatches_character_index_and_stays_in_slot(
     native.update(|_, cx| {
         tree.update(cx, |tree, cx| {
             tree.tooltip_responses(
-                vec![wire::TooltipResponse {
+                answered([wire::TooltipResponse {
                     request: 41,
                     character_index,
                     content: Some(Box::new(tip)),
-                }],
+                }]),
                 cx,
             );
         });

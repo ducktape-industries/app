@@ -22,8 +22,13 @@ Three things cross between a view and the app, and only three:
 
 - **The wire** (`view_wire`, aliased `wire` everywhere): the view sends a
   `Frame` holding an element tree of `Node`s, patches to the tree the host
-  already holds, requests and cancels. The tree is named MessagePack
-  (`rmp-serde`); the host sanitizes it and draws it with real GPUI controls.
+  already holds, requests and cancels. The tree is MessagePack with no
+  names in it (a struct is its fields in order), and a node names its style
+  by id in the frame's style table, which the host holds beside the tree
+  (`Guest::styles`): a whole frame's table replaces it, a patch frame's
+  entries join it. The host sanitizes the tree and the table (a style no
+  entry stands for refuses the frame) and draws them with real GPUI
+  controls.
   Events go back the other way as `wire::Event` values carrying the guest's
   own handler ids.
 - **The kernel contract** (`src/runtime/kernel.rs`): the fixed set of
@@ -196,7 +201,8 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    `busy`, or there was never a first tree — calls `Guest::tick`: `arm`
    refills `FUEL_PER_TICK`, `Exports::tick` runs the wasm with the encoded
    events, `shape` decodes and bound-checks the returned `Frame`
-   (`MAX_FRAME_BYTES`, request and cancel counts, sanitize), `merge`
+   (`MAX_FRAME_BYTES`, request and cancel counts, sanitize, the frame's
+   style entries into the held table), `merge`
    applies tooltip replies and patches onto the held root. A changed root
    bumps `frame_rev`. A frame carrying more than `view_wire::MAX_REQUESTS`
    requests (or `MAX_CANCELS` cancels) does not decode, so `shape` refuses

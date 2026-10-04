@@ -21,7 +21,7 @@ fn container(key: &str, children: Vec<wire::Node>) -> wire::Node {
     // an invisible (zero-bounds) node never reaches the AX door's tree.
     wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id(key)),
-        style: gpui_kit::div().size_full().style().clone(),
+        style: crate::render::test_style(gpui_kit::div().size_full().style().clone()),
         interactivity: Default::default(),
         children,
     })
@@ -51,7 +51,7 @@ fn chat_shaped_field() -> wire::Node {
         on_change: Some(1),
         on_key: Some(2),
         on_submit: None,
-        style: Default::default(),
+        style: crate::render::plain_style(),
     };
     container(
         "chat-viewport",
@@ -194,7 +194,7 @@ fn pressable(
 ) -> wire::Node {
     wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id(key)),
-        style,
+        style: crate::render::test_style(style),
         interactivity: Box::new(wire::Interactivity {
             role: Some(role),
             aria: wire::Aria {
@@ -240,7 +240,7 @@ fn a_press_on_a_view_row_scrolled_out_of_its_list_is_that_rows_click(
     scrolls.overflow.y = Some(gpui_kit::Overflow::Scroll);
     let list = wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id("list")),
-        style: scrolls,
+        style: crate::render::test_style(scrolls),
         interactivity: Default::default(),
         children: rows.collect(),
     });
@@ -260,7 +260,7 @@ fn a_press_on_a_view_row_scrolled_out_of_its_list_is_that_rows_click(
     );
     let root = wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id("root")),
-        style: gpui_kit::div().relative().size(px(300.)).style().clone(),
+        style: crate::render::test_style(gpui_kit::div().relative().size(px(300.)).style().clone()),
         interactivity: Default::default(),
         children: vec![list, over],
     });

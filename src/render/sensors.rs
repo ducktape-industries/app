@@ -138,7 +138,7 @@ impl ViewTree {
             },
         ));
         let element = div()
-            .refine_style(style)
+            .refine_style(&self.styles[*style])
             .id(native_id(id))
             .relative()
             .cursor(cursor)
@@ -216,7 +216,7 @@ impl ViewTree {
         div()
             .id(native_id(id))
             .relative()
-            .refine_style(style)
+            .refine_style(&self.style(*style))
             .child(self.node(child, window, cx))
             .child(measure)
             .into_any_element()

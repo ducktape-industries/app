@@ -124,6 +124,7 @@ impl ViewTree {
         else {
             unreachable!()
         };
+        let style = self.style(*style);
         let path = self.authored_path.clone();
         debug_assert_eq!(path.last(), Some(id));
         // Native key bindings consume Enter, Tab and navigation before
@@ -252,7 +253,7 @@ impl ViewTree {
             // A height the guest gave is a box to fill; none (a composer's
             // `min_h`..`max_h`) is a field as tall as its lines, which the
             // field's own auto-grow reports up to the parent that waits on it.
-            field.set_fills(style.size.height.is_some(), field_rows(style), cx);
+            field.set_fills(style.size.height.is_some(), field_rows(&style), cx);
             // read-only as the kit's: it refuses what the user types, and
             // takes what the guest asks
             if state.read(cx).is_editable() != editable {
@@ -304,7 +305,7 @@ impl ViewTree {
                 // the ring on itself (`around_field`); the kit's own focus
                 // look is off: a second ring painted round the outside, and a
                 // border colour laid over any style given here.
-                let (placed, drawn) = placed(style);
+                let (placed, drawn) = placed(&style);
                 let mut input = Input::new(state)
                     .id(host_id("input"))
                     .disabled(options.disabled)
@@ -358,7 +359,7 @@ impl ViewTree {
                         accessible,
                     ));
                 let mut element = div().relative().id(native_id(id));
-                *element.style() = style.clone();
+                *element.style() = (*style).clone();
                 crate::a11y::around_field(element, focused, crate::a11y::ink(cx))
                     .child(words)
                     .child(self.measure(&path, cx))

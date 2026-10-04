@@ -118,10 +118,7 @@ fn a_labelled_picture_is_an_image_and_an_unlabelled_one_is_decoration() {
 
 #[test]
 fn layout_is_not_in_the_accessibility_tree() {
-    let space = wire::Node::Space {
-        style: gpui_kit::StyleRefinement::default(),
-    };
-    assert_eq!(accessible(&space), Accessible::default());
+    assert_eq!(accessible(&wire::Node::Space), Accessible::default());
 }
 
 #[test]
@@ -135,7 +132,7 @@ fn a_named_overlay_is_a_dialog_and_an_unnamed_one_is_layout() {
         } else {
             Vec::new()
         },
-        style: gpui_kit::StyleRefinement::default(),
+        style: crate::render::test_style(gpui_kit::StyleRefinement::default()),
     };
     assert_eq!(
         accessible(&overlay(Some("Rename channel"), true)),
@@ -167,7 +164,7 @@ fn door(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> Vec<serde_json::
 fn a_view_text_reads_its_words_as_its_name_through_the_door(cx: &mut gpui_kit::TestAppContext) {
     let rich = wire::Node::RichText {
         id: Some(named_id("rich")),
-        style: Default::default(),
+        style: crate::render::plain_style(),
         text: "Three online".into(),
         runs: wire::RichTextRuns::Highlights(Vec::new()),
         font_family_overrides: Vec::new(),
@@ -194,7 +191,7 @@ fn a_blank_text_is_no_node_and_a_heading_is_named_by_its_rich_text(
 ) {
     let rich = wire::Node::RichText {
         id: Some(named_id("words")),
-        style: Default::default(),
+        style: crate::render::plain_style(),
         text: "sandbox".into(),
         runs: wire::RichTextRuns::Highlights(Vec::new()),
         font_family_overrides: Vec::new(),
@@ -217,7 +214,7 @@ fn a_blank_text_is_no_node_and_a_heading_is_named_by_its_rich_text(
             // as the SDK sends every text: no id, so the host numbers it
             wire::Node::Text(view_wire::TextNode {
                 id: None,
-                style: Default::default(),
+                style: crate::render::plain_style(),
                 content: " ".into(),
             }),
             text("kept", "kept"),
@@ -357,7 +354,7 @@ fn a_roled_box_keeps_its_aria_and_the_links_of_the_text_it_holds(
 ) {
     let note = wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id("note")),
-        style: Default::default(),
+        style: crate::render::plain_style(),
         interactivity: Box::new(wire::Interactivity {
             role: Some(gpui_kit::Role::Status),
             aria: wire::Aria {

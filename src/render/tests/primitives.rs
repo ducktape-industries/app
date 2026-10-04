@@ -16,7 +16,7 @@ fn primitive_canvas_paints_in_the_first_frame_and_after_a_move(cx: &mut gpui_kit
     let mut canvas_style = div().w(px(100.)).h(px(80.));
     let node = wire::Node::Canvas {
         commands: vec![command.clone()],
-        style: canvas_style.style().clone(),
+        style: crate::render::test_style(canvas_style.style().clone()),
     };
     let window = cx.open_window(size(px(100.), px(80.)), |_, _| ViewTree::new(node));
     let tree = window.root(cx).unwrap();
@@ -160,7 +160,7 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
         };
         wire::Node::Text(view_wire::TextNode {
             id: Some(named_id(key)),
-            style: element.style().clone(),
+            style: crate::render::test_style(element.style().clone()),
             content,
         })
     };
@@ -184,9 +184,12 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
     if let wire::Node::Container(view_wire::ContainerNode { children, .. }) = &mut header {
         *children = vec![
             text("label", "Header".into(), None, true),
-            wire::Node::Space {
-                style: sized_style(Some(fill()), None),
-            },
+            wire::Node::Container(view_wire::ContainerNode {
+                id: None,
+                style: crate::render::test_style(sized_style(Some(fill()), None)),
+                interactivity: Default::default(),
+                children: vec![],
+            }),
             text("actions", "New page".into(), Some(fixed(100.)), true),
         ];
     }
@@ -204,11 +207,11 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
             .min_h_0()
             .gap(px(8.))
             .max_w(px(620.));
-        *style = root_style.style().clone();
+        *style = crate::render::test_style(root_style.style().clone());
     }
     let root = wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id("wrapping-parent")),
-        style: div().w_full().style().clone(),
+        style: crate::render::test_style(div().w_full().style().clone()),
         interactivity: Box::new(wire::Interactivity {
             on_click: Some(1),
             ..Default::default()
@@ -315,16 +318,24 @@ fn sensor_preserves_linear_fill_bounds(cx: &mut gpui_kit::TestAppContext) {
             let mut content = axis_container(
                 "content",
                 Axis::Column,
-                [wire::Node::Space {
-                    style: sized_style(Some(fixed(20.)), Some(fixed(5.))),
-                }],
+                [wire::Node::Container(view_wire::ContainerNode {
+                    id: None,
+                    style: crate::render::test_style(sized_style(
+                        Some(fixed(20.)),
+                        Some(fixed(5.)),
+                    )),
+                    interactivity: Default::default(),
+                    children: vec![],
+                })],
             );
             if let wire::Node::Container(view_wire::ContainerNode { style, .. }) = &mut content {
-                *style = div().flex().flex_col().w_full().h_full().style().clone();
+                *style = crate::render::test_style(
+                    div().flex().flex_col().w_full().h_full().style().clone(),
+                );
             }
             content
         }),
-        style: sized_style(Some(fill()), Some(fill())),
+        style: crate::render::test_style(sized_style(Some(fill()), Some(fill()))),
     };
     let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
@@ -420,7 +431,7 @@ fn a_scrolling_container_keeps_its_handle_at_its_own_id(cx: &mut gpui_kit::TestA
     let anonymous = |tag: &str, n: usize| {
         wire::Node::Container(view_wire::ContainerNode {
             id: None,
-            style: scroll_style(),
+            style: crate::render::test_style(scroll_style()),
             interactivity: Default::default(),
             children: rows(tag, n),
         })

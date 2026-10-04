@@ -25,7 +25,7 @@ fn screen(open: bool) -> wire::Node {
         label: Some("Rename channel".into()),
         on_dismiss: None,
         children,
-        style: div().size_full().style().clone(),
+        style: crate::render::test_style(div().size_full().style().clone()),
     };
     sized("root", overlay, Some(fill()), Some(fill()))
 }
@@ -201,7 +201,7 @@ fn wrapped(open: bool) -> wire::Node {
                 ],
             ),
         ],
-        style: div().size_full().style().clone(),
+        style: crate::render::test_style(div().size_full().style().clone()),
     };
     sized("root", overlay, Some(fill()), Some(fill()))
 }
@@ -305,7 +305,7 @@ fn popover(open: bool) -> wire::Node {
         label: Some("Finish your review".into()),
         on_dismiss: Some(7),
         children,
-        style: Default::default(),
+        style: crate::render::plain_style(),
     };
     let page = container("page", [overlay, handled("diff", "Diff", 4)]);
     sized("root", page, Some(fill()), Some(fill()))

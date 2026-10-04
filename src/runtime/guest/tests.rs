@@ -27,7 +27,7 @@ fn label(guest: &Guest) -> (String, u32) {
 fn an_unchanged_frame_takes_the_held_tree_without_walking_it() {
     let oversized = wire::Node::Container(view_wire::ContainerNode {
         id: None,
-        style: Default::default(),
+        style: crate::render::plain_style(),
         interactivity: Default::default(),
         children: (0..2 * wire::MAX_NODES)
             .map(|_| wire::Node::empty())
@@ -39,7 +39,7 @@ fn an_unchanged_frame_takes_the_held_tree_without_walking_it() {
         ..Default::default()
     };
     assert_eq!(
-        merge(&mut held, &mut frame),
+        merge(&mut held, &mut frame, &wire::Styles::default()),
         Ok((false, Default::default()))
     );
     assert_eq!(frame.root, Some(oversized), "the held tree, unwalked");
@@ -64,15 +64,24 @@ fn scripted_view() -> Guest {
 
 /// One tick of `guest`, answering with a frame whose tree is `children`.
 fn draw(guest: &mut Guest, children: Vec<wire::Node>) {
-    let frame = wire::encode(&wire::Frame {
-        root: Some(wire::Node::Container(view_wire::ContainerNode {
-            id: None,
-            style: Default::default(),
-            interactivity: Default::default(),
-            children,
-        })),
-        ..Default::default()
-    });
+    answer(
+        guest,
+        &crate::render::sent(wire::Frame {
+            root: Some(wire::Node::Container(view_wire::ContainerNode {
+                id: None,
+                style: crate::render::plain_style(),
+                interactivity: Default::default(),
+                children,
+            })),
+            ..Default::default()
+        }),
+    );
+    assert_eq!(guest.fault, None);
+}
+
+/// One tick of `guest`, answering with `frame` as it stands.
+fn answer(guest: &mut Guest, frame: &wire::Frame) {
+    let frame = wire::encode(frame);
     let memory = guest.exports.memory;
     let at = memory.data_size(&guest.store) - frame.len();
     memory.write(&mut guest.store, at, &frame).unwrap();
@@ -81,7 +90,69 @@ fn draw(guest: &mut Guest, children: Vec<wire::Node>) {
         .write(&mut guest.store, 8, &answer.to_le_bytes())
         .unwrap();
     guest.tick();
-    assert_eq!(guest.fault, None);
+}
+
+/// The host holds the style table of the tree it holds: a whole frame's
+/// entries are the table, a patch frame's join it, and the next whole
+/// frame's replace it. A node naming a style the table does not hold ends
+/// the view; the host never draws it with a style of its own choosing.
+#[test]
+fn the_host_holds_a_trees_styles_and_refuses_a_style_it_does_not_hold() {
+    use gpui_kit::Styled as _;
+    let boxed = |style: u32| {
+        wire::Node::Container(view_wire::ContainerNode {
+            id: None,
+            style: wire::StyleId(style),
+            interactivity: Default::default(),
+            children: Vec::new(),
+        })
+    };
+    let wide = wire::Style::new(gpui_kit::div().w_full().style());
+    let tall = wire::Style::new(gpui_kit::div().h_full().style());
+    let whole = |style: u32| wire::Frame {
+        root: Some(boxed(style)),
+        styles: vec![wide.clone()],
+        ..Default::default()
+    };
+    let mut guest = scripted_view();
+    answer(&mut guest, &whole(0));
+    assert_eq!((guest.fault.as_deref(), guest.styles.len()), (None, 1));
+
+    let patch = wire::Frame {
+        patches: vec![wire::Patch::Replace {
+            path: Vec::new(),
+            node: boxed(1),
+        }],
+        styles: vec![tall],
+        ..Default::default()
+    };
+    answer(&mut guest, &patch);
+    assert_eq!((guest.fault.as_deref(), guest.styles.len()), (None, 2));
+    assert_eq!(guest.frame.root, Some(boxed(1)));
+    assert_eq!(
+        guest.styles[wire::StyleId(1)].size.height,
+        gpui_kit::div().h_full().style().size.height,
+        "the patch's node names the entry the patch brought"
+    );
+
+    answer(&mut guest, &whole(0));
+    assert_eq!(
+        (guest.fault.as_deref(), guest.styles.len()),
+        (None, 1),
+        "a whole frame's table is the table"
+    );
+
+    // the id the patch's entry had, in a table that no longer holds it
+    answer(&mut guest, &whole(1));
+    assert_eq!(
+        guest.fault.as_deref(),
+        Some("a node names a style its table does not hold")
+    );
+    assert_eq!(
+        guest.frame.root,
+        Some(boxed(0)),
+        "the refused tree is not held"
+    );
 }
 
 /// An Image under `hash`, bringing `bytes` of picture or naming it alone.
@@ -98,7 +169,7 @@ fn image(hash: u64, bytes: Option<usize>) -> wire::Node {
         loading: false,
         fallback: false,
         state_children: Vec::new(),
-        style: Default::default(),
+        style: crate::render::plain_style(),
         interactivity: Default::default(),
     }
 }
@@ -130,10 +201,10 @@ fn a_picture_named_by_every_node_is_held_once() {
     let mut guest = scripted_view();
     draw(&mut guest, vec![image(1, Some(PICTURE))]);
     draw(&mut guest, (0..8_000).map(|_| image(1, None)).collect());
-    let (root, held) = guest.drawn();
-    assert_eq!(root.count(), 8_001);
+    let (tree, held) = guest.drawn();
+    assert_eq!(tree.root.count(), 8_001);
     assert_eq!(
-        inline_picture_bytes(root),
+        inline_picture_bytes(tree.root),
         0,
         "the tree drawn names the picture by hash alone"
     );
@@ -794,7 +865,7 @@ fn resident_at_the_picture_budget(picture: usize) {
     let drawn = guest.drawn();
     let handed = resident_mib();
     let (nodes, held) = (
-        drawn.0.count(),
+        drawn.0.root.count(),
         drawn
             .1
             .raster
