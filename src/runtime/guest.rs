@@ -294,7 +294,7 @@ fn arm(store: &mut Store<HostState>) {
 pub(super) fn merge(
     held: &mut Option<wire::Node>,
     frame: &mut wire::Frame,
-) -> Result<(bool, wire::SanitizeReport), &'static str> {
+) -> Result<(bool, wire::SanitizeReport), wire::Refused> {
     if frame.unchanged {
         // the held tree passed when it arrived: taken as it is
         frame.root = held.take();
@@ -324,7 +324,7 @@ pub(super) fn shape(
         frame.patches = Vec::new();
     }
     let upstream = frame.upstream_sanitization;
-    let local = wire::sanitize(&mut frame).map_err(str::to_owned)?;
+    let local = wire::sanitize(&mut frame).map_err(|refused| refused.to_string())?;
     frame.upstream_sanitization = upstream;
     Ok((frame, display_diagnostics::FrameReports { local, upstream }))
 }

@@ -454,8 +454,8 @@ mod tests {
                 children: Vec::new(),
             },
             wire::Node::List {
-                state: 1,
-                path: vec![name("list")],
+                id: name("rows"),
+                path: vec![name("list"), name("rows")],
                 item_count: 0,
                 alignment: wire::ListAlignment::Top,
                 overdraw: 0.,

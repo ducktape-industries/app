@@ -349,7 +349,8 @@ mod tests {
                 content: Box::new(content),
             }
         }
-        // each level a list whose one row is the next level
+        // each level a list whose one row is the next level; the row, with
+        // no id of its own, is filed under its index
         fn listed(level: usize, path: &mut Vec<wire::ElementIdWire>) -> wire::Node {
             if level == DEPTH {
                 return leaf();
@@ -357,7 +358,9 @@ mod tests {
             let id = wire::ElementIdWire::Name(format!("list-{level}").into());
             path.push(id.clone());
             let own = path.clone();
+            path.push(wire::ElementIdWire::Integer(0));
             let row = listed(level + 1, path);
+            path.pop();
             path.pop();
             deferred(wire::Node::UniformList {
                 id,

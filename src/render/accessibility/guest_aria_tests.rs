@@ -153,10 +153,9 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
             cursor: None,
             content: Box::new(text("child-text")),
         },
-        // a list has no id: its path is where it sits
         Site::List => wire::Node::List {
-            state: 1,
-            path: Vec::new(),
+            id: key("rows"),
+            path: vec![key("rows")],
             item_count: 1,
             alignment: wire::ListAlignment::Top,
             overdraw: 0.,
@@ -712,7 +711,7 @@ fn a_held_pane_over_two_claiming_composites_reports_the_pane_box(
     let root = sanitized(root);
     let claims = |node: &wire::Node| {
         let mut claims = 0;
-        super::super::commands::walk_authored_paths(node, &mut Vec::new(), &mut |node, _| {
+        super::super::commands::walk_authored_paths(node, None, &mut Vec::new(), &mut |node, _| {
             if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = node {
                 claims += usize::from(interactivity.aria.active_descendant);
             }
@@ -1158,8 +1157,8 @@ mod phase_two {
             ]
         );
         let variable = wire::Node::List {
-            state: 1,
-            path: Vec::new(),
+            id: key("rows"),
+            path: vec![key("rows")],
             item_count: 4,
             alignment: wire::ListAlignment::Top,
             overdraw: 0.,

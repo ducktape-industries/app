@@ -1,17 +1,11 @@
 //! The List node: variable-height rows in a gpui `ListState`. The guest
 //! sends a window of rows from `range_start`; a row the list needs and does
 //! not have is asked for with one `ListRequest` per frame, and a row it has
-//! is rendered under the list's own authored path.
+//! is rendered under the list's own authored path, which ends in the
+//! list's id: a list is a scope of its own (`wire::identity`).
 use super::*;
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(super) struct VariableListKey {
-    pub(super) path: Vec<wire::ElementIdWire>,
-    /// The guest's list id (wire `List.state`), not the gpui state.
-    pub(super) state: u64,
-}
-
-/// A List's retained state, per key.
+/// A List's retained state, per authored path.
 pub(super) struct VariableList {
     pub(super) state: ListState,
     pub(super) rows: HashMap<usize, wire::Node>,
@@ -34,7 +28,7 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::List {
-            state: state_id,
+            id,
             path,
             item_count,
             alignment,
@@ -53,10 +47,11 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        let key = VariableListKey {
-            path: path.clone(),
-            state: *state_id,
-        };
+        let key = path.clone();
+        // gpui's list has no id, so its rows are drawn under the list's
+        // own, as its path files them: two lists' rows never share gpui's
+        // element state or an accessibility node
+        let scope = native_id(id);
         let native_alignment = match alignment {
             wire::ListAlignment::Top => ListAlignment::Top,
             wire::ListAlignment::Bottom => ListAlignment::Bottom,
@@ -133,8 +128,7 @@ impl ViewTree {
                     request_row(this, &render_key, index - 1, request_route, cx);
                 }
                 if let Some(row) = row {
-                    let parent =
-                        std::mem::replace(&mut this.authored_path, render_key.path.clone());
+                    let parent = std::mem::replace(&mut this.authored_path, render_key.clone());
                     this.next_row = Some((index + 1, count));
                     let element = this.node(&row, window, cx);
                     this.authored_path = parent;
@@ -182,15 +176,17 @@ impl ViewTree {
             });
         }
         if **interactivity == wire::Interactivity::default() {
-            return native.into_any_element();
+            return Scope {
+                id: scope,
+                element: native.into_any_element(),
+            }
+            .into_any_element();
         }
         // gpui's list is no interactive element: a list the view roled,
         // named or wired is a box in the list's place, holding it whole
         let mut host = div();
         *host.style() = std::mem::take(native.style());
-        let host = host
-            .id(host_id(format!("list-{state_id}")))
-            .child(native.size_full());
+        let host = host.id(scope).child(native.size_full());
         self.guest_aria(host, node, interactivity, cx)
             .into_any_element()
     }
@@ -220,7 +216,7 @@ fn scroll(list: &mut VariableList, command: &wire::ListCommand) {
 
 fn request_row(
     tree: &mut ViewTree,
-    key: &VariableListKey,
+    key: &AuthoredPath,
     index: usize,
     handler: u32,
     cx: &mut Context<ViewTree>,

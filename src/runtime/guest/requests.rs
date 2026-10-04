@@ -15,22 +15,22 @@ const MAX_PENDING_WIDGET_COMMANDS: usize = wire::MAX_REQUESTS;
 pub(crate) fn target_names_mounted_node(root: &wire::Node, target: &[wire::ElementIdWire]) -> bool {
     fn contains(
         node: &wire::Node,
+        row: Option<usize>,
         path: &mut Vec<wire::ElementIdWire>,
         target: &[wire::ElementIdWire],
     ) -> bool {
-        let entered = crate::render::enter_scope(node, path);
+        let entered = crate::render::enter_scope(node, row, path);
         let found = entered && path == target
             || target.starts_with(path)
-                && node
-                    .children()
-                    .iter()
-                    .any(|child| contains(child, path, target));
+                && node.children().iter().enumerate().any(|(at, child)| {
+                    contains(child, wire::identity::row(node, at), path, target)
+                });
         if entered {
             path.pop();
         }
         found
     }
-    contains(root, &mut Vec::new(), target)
+    contains(root, None, &mut Vec::new(), target)
 }
 
 impl Guest {
@@ -380,7 +380,8 @@ impl Guest {
                 let mut previous = self.frame.root.take();
                 let mut accepted = true;
                 let merging = perf::time(key, "merge");
-                let merged = merge(&mut previous, &mut frame).map_err(str::to_owned);
+                let merged =
+                    merge(&mut previous, &mut frame).map_err(|refused| refused.to_string());
                 drop(merging);
                 match merged {
                     Ok((false, _)) => {}

@@ -11,8 +11,8 @@ fn variable_list_node(
     style.size.width = Some(relative(1.).into());
     style.size.height = Some(relative(1.).into());
     wire::Node::List {
-        state: 17,
-        path: vec![wire::ElementIdWire::Name("room".into())],
+        id: named_id("messages"),
+        path: vec![named_id("room"), named_id("messages")],
         item_count: count,
         alignment,
         overdraw: 32.,
@@ -229,4 +229,185 @@ fn a_changed_frame_remeasures_no_row_it_kept(cx: &mut gpui_kit::TestAppContext) 
         24,
         "two changed frames with the same rows remeasured them"
     );
+}
+
+/// A list row with no id of its own, 32 px tall, holding a text field
+/// `name` labelled `label` and holding `value`.
+fn field_row(label: &str, value: &str) -> wire::Node {
+    let mut field = input(label, false, false);
+    let wire::Node::Field {
+        id,
+        value: held,
+        cursor,
+        ..
+    } = &mut field
+    else {
+        unreachable!()
+    };
+    *id = wire::ElementIdWire::Name("name".into());
+    *held = value.into();
+    *cursor = wire::TextRange::caret(value.len());
+    wire::Node::Container(view_wire::ContainerNode {
+        id: None,
+        style: div().w_full().h(px(32.)).style().clone(),
+        interactivity: Default::default(),
+        children: vec![field],
+    })
+}
+
+/// Two rows of a list, neither with an id of its own, each with a field
+/// `name` inside (P28's shape): each row is filed under its index, so the
+/// two are two native fields, each holding its own text, and two nodes a
+/// screen reader reads. Filed under one path they were one field.
+#[gpui_kit::test]
+fn rows_holding_one_id_are_each_their_own_field(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let root = variable_list_node(
+        2,
+        wire::ListAlignment::Top,
+        0,
+        vec![field_row("Name 0", "ada"), field_row("Name 1", "grace")],
+    );
+    let window = cx.open_window(size(px(300.), px(120.)), |_, _| ViewTree::new(root));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let nodes = native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        window.render_frame(cx);
+        crate::ax::snapshot("t", window, false)
+    });
+    let fields: Vec<(&str, Option<&str>)> = nodes
+        .iter()
+        .filter(|node| node.role == "TextInput")
+        .map(|node| (node.name.as_str(), node.value.as_deref()))
+        .collect();
+    assert_eq!(fields, [("Name 0", Some("ada")), ("Name 1", Some("grace"))]);
+    assert_eq!(tree.read_with(&native, |tree, _| tree.fields.len()), 2);
+}
+
+/// A list row with no id of its own and no box either (a deferred draw),
+/// holding an `open` button named `name`.
+fn deferred_row(name: &str) -> wire::Node {
+    let mut open = view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("open".into())),
+        style: div().w(px(80.)).h(px(24.)).style().clone(),
+        interactivity: Default::default(),
+        children: Vec::new(),
+    };
+    open.interactivity.role = Some(gpui_kit::Role::Button);
+    open.interactivity.aria.label = Some(name.into());
+    open.interactivity.on_click = Some(1);
+    wire::Node::Deferred {
+        priority: 1,
+        content: Box::new(wire::Node::Container(open)),
+    }
+}
+
+/// Rows that lay out no element of their own still draw under their index:
+/// two `open` buttons, two nodes. Under one id gpui keeps the first node
+/// and drops the second.
+#[gpui_kit::test]
+fn rows_without_a_box_draw_under_their_index(cx: &mut gpui_kit::TestAppContext) {
+    let nodes = draw(
+        cx,
+        variable_list_node(
+            2,
+            wire::ListAlignment::Top,
+            0,
+            vec![deferred_row("Open 0"), deferred_row("Open 1")],
+        ),
+    );
+    let buttons: Vec<&str> = nodes
+        .iter()
+        .filter(|node| node.role == "Button")
+        .map(|node| node.name.as_str())
+        .collect();
+    assert_eq!(buttons, ["Open 0", "Open 1"]);
+}
+
+/// Two lists under one parent, their rows with no id of their own, each
+/// holding an `open` button: a list is a scope of its own, so each list's
+/// rows are drawn under the list, and a row of one never meets the row of
+/// the other at its index. Four buttons, four nodes; under one id gpui
+/// keeps the first node and drops the second.
+#[gpui_kit::test]
+fn two_lists_under_one_parent_each_draw_their_own_rows(cx: &mut gpui_kit::TestAppContext) {
+    let lists = (1..=2).map(|at| {
+        let rows = (0..2)
+            .map(|row| deferred_row(&format!("Open {at}.{row}")))
+            .collect();
+        let mut list = variable_list_node(2, wire::ListAlignment::Top, 0, rows);
+        let wire::Node::List { id, path, .. } = &mut list else {
+            unreachable!()
+        };
+        *id = named_id(&format!("list-{at}"));
+        *path = vec![named_id("page"), id.clone()];
+        list
+    });
+    let page = div().size_full().flex().flex_col().style().clone();
+    let nodes = draw(cx, container_with_style("page", page, lists));
+    let buttons: Vec<&str> = nodes
+        .iter()
+        .filter(|node| node.role == "Button")
+        .map(|node| node.name.as_str())
+        .collect();
+    assert_eq!(buttons, ["Open 1.0", "Open 1.1", "Open 2.0", "Open 2.1"]);
+}
+
+/// A field in a list row keeps what the host holds for it (here, the words
+/// selected in it) when the view's guest is instantiated again. The new
+/// instance files the row under the path the old one did, the list's id in
+/// it, and the host finds the field by that path, whichever list the new
+/// instance draws first. A list draws its rows after the tree's render
+/// returns: what the old tree carried over is theirs to claim until the
+/// frame is drawn.
+#[gpui_kit::test]
+fn a_field_in_a_list_row_crosses_a_new_generation(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let root = |order: [&str; 2]| {
+        let panes = order.map(|pane| {
+            let rows = vec![field_row(pane, "hunter2")];
+            let mut list = variable_list_node(1, wire::ListAlignment::Top, 0, rows);
+            let wire::Node::List { id, path, .. } = &mut list else {
+                unreachable!()
+            };
+            *id = named_id(pane);
+            *path = vec![named_id("page"), id.clone()];
+            list
+        });
+        let page = div().size_full().flex().flex_col().style().clone();
+        container_with_style("page", page, panes)
+    };
+    let field = |pane: &str| {
+        let row = wire::ElementIdWire::Integer(0);
+        vec![named_id("page"), named_id(pane), row, named_id("name")]
+    };
+    let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
+        ViewTree::new(root(["timeline", "thread"]))
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let saved = native.update(|window, cx| {
+        window.render_frame(cx);
+        let (target, start, end) = (field("thread"), 2, 5);
+        let select = wire::WidgetCommand::Select { target, start, end };
+        tree.update(cx, |tree, cx| {
+            tree.execute_widget_command(select, window, cx).unwrap();
+        });
+        tree.read(cx).presentation(window, cx)
+    });
+    let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
+        ViewTree::new(root(["thread", "timeline"])).with_presentation(saved)
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let selected = native.update(|window, cx| {
+        window.render_frame(cx);
+        let tree = tree.read(cx);
+        ["timeline", "thread"]
+            .map(|pane| tree.fields[field(pane).as_slice()].presentation(window, cx))
+            .map(|field| field.selection)
+    });
+    assert_eq!(selected, [7..7, 2..5]);
 }

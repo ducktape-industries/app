@@ -58,7 +58,7 @@ use sensors::SensorState;
 use style::{has_named_overlay, named_overlay, native_cursor};
 use svg_limits::{SvgPaintSource, guarded_svg_paint, svg_data_allowed};
 use uniform::UniformListHostState;
-use variable_list::{VariableList, VariableListKey};
+use variable_list::VariableList;
 
 /// The ids of a node and of its identified ancestors, root first: the key
 /// every piece of retained native state is stored under. Only a node with an
@@ -94,12 +94,13 @@ pub(crate) fn is_host_id(id: &ElementId) -> bool {
 /// module (`Seat::ax_mark`): the AX door reads the module off it.
 pub(crate) const VIEW_MARK: &str = "view/";
 
-/// Pushes the node's identity onto `path` when it has one; the caller pops
-/// on the way out when this answers `true`.
-pub(crate) fn enter_scope(node: &wire::Node, path: &mut AuthoredPath) -> bool {
-    match node.identity() {
+/// Pushes the id `node` is filed under onto `path` (`wire::identity`: its
+/// own, else, as row `row` of a list, its index); the caller pops on the
+/// way out when this answers `true`.
+pub(crate) fn enter_scope(node: &wire::Node, row: Option<usize>, path: &mut AuthoredPath) -> bool {
+    match wire::identity::segment(node.identity().cloned(), row) {
         Some(id) => {
-            path.push(id.clone());
+            path.push(id);
             true
         }
         None => false,
@@ -109,7 +110,7 @@ pub(crate) fn enter_scope(node: &wire::Node, path: &mut AuthoredPath) -> bool {
 /// Native widget state worth carrying into a fresh `ViewTree` when a view's
 /// guest is re-instantiated: plain data only, no entity or handler id, since
 /// the new guest's handler ids mean different things. Taken by
-/// `ViewTree::presentation`, consumed by the new tree's first render.
+/// `ViewTree::presentation`, consumed by the new tree's first frame.
 #[derive(Default)]
 pub(crate) struct NativePresentation {
     /// The seat's rasters, the cache itself: the new tree draws on in it.
@@ -168,7 +169,7 @@ pub struct ViewTree {
     claiming: std::collections::HashSet<AuthoredPath>,
     revealed: std::collections::HashSet<AuthoredPath>,
     uniform_lists: HashMap<AuthoredPath, UniformListHostState>,
-    variable_lists: HashMap<VariableListKey, VariableList>,
+    variable_lists: HashMap<AuthoredPath, VariableList>,
 
     // Focus: two systems. A container enters the native focus path only on
     // an explicit Focus widget command (keyed by path, with the node kind
@@ -300,11 +301,12 @@ impl ViewTree {
         // function the stack of ALL its arms at once — inlined bodies here
         // once cost 570 KiB a level and overflowed the main thread at a depth
         // of fourteen.
-        let entered_scope = enter_scope(node, &mut self.authored_path);
+        self.row = self.next_row.take();
+        let index = self.row.map(|(position, _)| position - 1);
+        let entered_scope = enter_scope(node, index, &mut self.authored_path);
         if entered_scope {
             self.mounted.insert(self.authored_path.clone());
         }
-        self.row = self.next_row.take();
         use wire::Node;
         let element = match node {
             Node::Text(view_wire::TextNode { .. }) => self.text(node, cx),
@@ -326,7 +328,79 @@ impl ViewTree {
         if entered_scope {
             self.authored_path.pop();
         }
-        element
+        // a row with no id of its own is drawn under the index it is filed
+        // under, so gpui files its ids (and their accessibility nodes and
+        // element state) under the row too
+        match index {
+            Some(index) if node.identity().is_none() => Scope {
+                id: ElementId::Integer(index as u64),
+                element,
+            }
+            .into_any_element(),
+            _ => element,
+        }
+    }
+}
+
+/// An element drawn under `id` without the box an id-carrying element lays
+/// out: a list row with no id of its own under its index (what `.id(index)`
+/// would do), a list under its own id (gpui's list element takes none).
+struct Scope {
+    id: ElementId,
+    element: AnyElement,
+}
+
+impl IntoElement for Scope {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for Scope {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.element.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.element.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        _prepaint: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.element.paint(window, cx);
     }
 }
 
@@ -362,9 +436,17 @@ impl Render for ViewTree {
         let root = std::mem::replace(&mut self.root, wire::Node::empty());
         let node = self.node(&root, window, cx);
         self.root = root;
-        // Carried-over state is for the first render of a new tree only:
-        // whatever it did not claim is dropped.
-        self.presentation = NativePresentation::default();
+        // Carried-over state is for the first frame of a new tree only:
+        // whatever that frame did not claim is dropped. The rows of a list
+        // (variable or uniform) are built after this call returns, when gpui
+        // lays the list out, so it lives to the end of the frame, not of
+        // this call. A deferred node's content is built in this walk.
+        if self.presentation.focused_container.is_some() || !self.presentation.inputs.is_empty() {
+            let tree = cx.entity().downgrade();
+            cx.defer(move |cx| {
+                let _ = tree.update(cx, |tree, _| tree.presentation = Default::default());
+            });
+        }
         // Host-owned clip box around the guest root (guest style never
         // reaches it): the pane's mask, which the guest's layer (its
         // tooltips and deferred draws) is fitted and clipped to.
