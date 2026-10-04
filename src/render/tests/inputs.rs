@@ -160,7 +160,7 @@ fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestApp
     let branch = |id, child| {
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(id),
-            style: gpui_kit::StyleRefinement::default(),
+            style: crate::render::test_style(gpui_kit::StyleRefinement::default()),
             interactivity: Default::default(),
             children: vec![child],
         })
@@ -292,15 +292,17 @@ fn filter_row(width: impl Into<gpui_kit::Length> + Clone, border: gpui_kit::Hsla
     let wire::Node::Field { style, .. } = &mut field else {
         unreachable!()
     };
-    *style = div()
-        .ml(px(16.))
-        .w(width)
-        .h(px(32.))
-        .px_2()
-        .border_1()
-        .border_color(border)
-        .style()
-        .clone();
+    *style = crate::render::test_style(
+        div()
+            .ml(px(16.))
+            .w(width)
+            .h(px(32.))
+            .px_2()
+            .border_1()
+            .border_color(border)
+            .style()
+            .clone(),
+    );
     container_with_style(
         "row",
         div().flex().items_center().w(px(600.)).style().clone(),
@@ -322,7 +324,8 @@ fn filter_row(width: impl Into<gpui_kit::Length> + Clone, border: gpui_kit::Hsla
 #[gpui_kit::test]
 fn a_focused_field_wears_one_ring_on_its_own_box(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
-    let grey = gpui_kit::hsla(0., 0., 0.5, 1.);
+    // eight bits a channel, as a colour crosses the wire
+    let grey: gpui_kit::Hsla = gpui_kit::rgb(0x808080).into();
     let root = filter_row(px(260.), grey);
     let window = cx.open_window(size(px(600.), px(200.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
@@ -392,7 +395,8 @@ fn a_focused_field_wears_one_ring_on_its_own_box(cx: &mut gpui_kit::TestAppConte
 #[gpui_kit::test]
 fn a_fraction_wide_field_takes_its_fraction_once(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
-    let grey = gpui_kit::hsla(0., 0., 0.5, 1.);
+    // eight bits a channel, as a colour crosses the wire
+    let grey: gpui_kit::Hsla = gpui_kit::rgb(0x808080).into();
     let root = filter_row(gpui_kit::relative(0.5), grey);
     let window = cx.open_window(size(px(600.), px(200.)), |_, _| ViewTree::new(root));
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
@@ -418,18 +422,21 @@ fn a_fraction_wide_field_takes_its_fraction_once(cx: &mut gpui_kit::TestAppConte
 #[gpui_kit::test]
 fn a_disabled_field_wears_no_ring(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
-    let grey = gpui_kit::hsla(0., 0., 0.5, 1.);
+    // eight bits a channel, as a colour crosses the wire
+    let grey: gpui_kit::Hsla = gpui_kit::rgb(0x808080).into();
     let mut field = input("Filter", false, true);
     let wire::Node::Field { style, .. } = &mut field else {
         unreachable!()
     };
-    *style = div()
-        .w(px(260.))
-        .h(px(32.))
-        .border_1()
-        .border_color(grey)
-        .style()
-        .clone();
+    *style = crate::render::test_style(
+        div()
+            .w(px(260.))
+            .h(px(32.))
+            .border_1()
+            .border_color(grey)
+            .style()
+            .clone(),
+    );
     let root = container_with_style("row", div().w(px(600.)).style().clone(), [field]);
     let window = cx.open_window(size(px(600.), px(200.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
@@ -456,7 +463,8 @@ fn a_disabled_field_wears_no_ring(cx: &mut gpui_kit::TestAppContext) {
 /// that box, not the text inside the padding, wears the ring and its colour.
 #[gpui_kit::test]
 fn a_focused_editor_wears_the_ring_on_the_views_box(cx: &mut gpui_kit::TestAppContext) {
-    let grey = gpui_kit::hsla(0., 0., 0.5, 1.);
+    // eight bits a channel, as a colour crosses the wire
+    let grey: gpui_kit::Hsla = gpui_kit::rgb(0x808080).into();
     let style = div()
         .w(px(240.))
         .h(px(60.))
@@ -810,7 +818,7 @@ fn a_focus_takes_the_field_at_its_whole_path(cx: &mut gpui_kit::TestAppContext) 
     // an id-less root: every path starts at the scopes under it
     let root = wire::Node::Container(view_wire::ContainerNode {
         id: None,
-        style: Default::default(),
+        style: crate::render::plain_style(),
         interactivity: Default::default(),
         children: vec![
             container("a", [container("b", [field()])]),

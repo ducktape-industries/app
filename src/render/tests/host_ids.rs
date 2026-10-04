@@ -8,7 +8,7 @@ use super::*;
 fn plain_text(id: Option<wire::ElementIdWire>, content: &str) -> wire::Node {
     wire::Node::Text(view_wire::TextNode {
         id,
-        style: gpui_kit::StyleRefinement::default(),
+        style: crate::render::test_style(gpui_kit::StyleRefinement::default()),
         content: content.into(),
     })
 }
@@ -16,7 +16,7 @@ fn plain_text(id: Option<wire::ElementIdWire>, content: &str) -> wire::Node {
 fn rich(id: Option<wire::ElementIdWire>, content: &str) -> wire::Node {
     wire::Node::RichText {
         id,
-        style: Default::default(),
+        style: crate::render::plain_style(),
         text: content.into(),
         runs: wire::RichTextRuns::Highlights(Vec::new()),
         font_family_overrides: Vec::new(),
@@ -30,7 +30,7 @@ fn rich(id: Option<wire::ElementIdWire>, content: &str) -> wire::Node {
 fn box_of(id: Option<wire::ElementIdWire>, children: Vec<wire::Node>) -> wire::Node {
     wire::Node::Container(view_wire::ContainerNode {
         id,
-        style: div().flex().flex_col().style().clone(),
+        style: crate::render::test_style(div().flex().flex_col().style().clone()),
         interactivity: Default::default(),
         children,
     })
@@ -45,7 +45,7 @@ fn button(id: Option<wire::ElementIdWire>, name: &str, handler: u32) -> wire::No
         ..
     }) = &mut node
     {
-        *style = div().w(px(80.)).h(px(24.)).style().clone();
+        *style = crate::render::test_style(div().w(px(80.)).h(px(24.)).style().clone());
         interactivity.role = Some(gpui_kit::Role::Button);
         interactivity.aria.label = Some(name.into());
         interactivity.on_click = Some(handler);
@@ -181,7 +181,7 @@ fn a_view_text_spelled_layer_keeps_a_nested_dialog_its_node(cx: &mut gpui_kit::T
             label: Some(label.into()),
             on_dismiss: None,
             children: vec![base, modal],
-            style: div().size_full().style().clone(),
+            style: crate::render::test_style(div().size_full().style().clone()),
         };
     let inner = overlay(
         "inner",

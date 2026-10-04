@@ -18,7 +18,7 @@ fn key(name: &str) -> wire::ElementIdWire {
 fn text(id: &str) -> wire::Node {
     wire::Node::Text(view_wire::TextNode {
         id: Some(key(id)),
-        style: Default::default(),
+        style: crate::render::plain_style(),
         content: WORDS.into(),
     })
 }
@@ -88,7 +88,7 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
     match site {
         Site::Container => wire::Node::Container(view_wire::ContainerNode {
             id: Some(key("child")),
-            style: boxed(),
+            style: crate::render::test_style(boxed()),
             interactivity: Box::new(interactivity),
             children: vec![text("child-text")],
         }),
@@ -105,14 +105,14 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
             loading: true,
             fallback: false,
             state_children: vec![text("child-text")],
-            style: boxed(),
+            style: crate::render::test_style(boxed()),
             interactivity: Box::new(interactivity),
         },
         Site::UniformList => wire::Node::UniformList {
             id: key("child"),
             path: vec![key("child")],
             route: 1,
-            style: boxed(),
+            style: crate::render::test_style(boxed()),
             interactivity: Box::new(interactivity),
             count: 1,
             measure_index: 0,
@@ -123,7 +123,7 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
             indices: vec![0],
             children: vec![wire::Node::Container(view_wire::ContainerNode {
                 id: Some(key("child/row:0")),
-                style: boxed(),
+                style: crate::render::test_style(boxed()),
                 interactivity: Default::default(),
                 children: vec![text("child-text")],
             })],
@@ -132,7 +132,7 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
             id: key("list"),
             path: vec![key("list")],
             route: 1,
-            style: boxed(),
+            style: crate::render::test_style(boxed()),
             interactivity: Default::default(),
             count: 1,
             measure_index: 0,
@@ -145,7 +145,7 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
         },
         Site::ResizeHandle => wire::Node::ResizeHandle {
             id: key("child"),
-            style: boxed(),
+            style: crate::render::test_style(boxed()),
             interactivity: Box::new(interactivity),
             on_press: None,
             on_release: None,
@@ -166,7 +166,7 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
             request_handler: 1,
             scroll_handler: None,
             range_start: 0,
-            style: boxed(),
+            style: crate::render::test_style(boxed()),
             interactivity: Box::new(interactivity),
             children: vec![text("child-text")],
         },
@@ -185,7 +185,7 @@ fn root(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
     });
     wire::Node::Container(view_wire::ContainerNode {
         id: Some(key("parent")),
-        style: div().w(px(280.)).h(px(180.)).style().clone(),
+        style: crate::render::test_style(div().w(px(280.)).h(px(180.)).style().clone()),
         interactivity: Box::new(wire::Interactivity {
             role: Some(Role::Group),
             focusable: true,
@@ -207,7 +207,7 @@ fn sanitized(root: wire::Node) -> wire::Node {
         root: Some(root),
         ..Default::default()
     };
-    wire::sanitize(&mut frame).expect("the host takes the tree");
+    crate::render::sanitize_whole(&mut frame).expect("the host takes the tree");
     frame.root.expect("the tree stays")
 }
 
@@ -413,7 +413,7 @@ fn a_labelled_picture_without_a_role_is_an_image_in_the_tree(cx: &mut gpui_kit::
             loading: false,
             fallback: false,
             state_children: Vec::new(),
-            style: boxed(),
+            style: crate::render::test_style(boxed()),
             interactivity: Box::new(aria.clone()),
         };
         let vector = wire::Node::Svg {
@@ -425,7 +425,7 @@ fn a_labelled_picture_without_a_role_is_an_image_in_the_tree(cx: &mut gpui_kit::
                 rotate: 0.,
             },
             label: label.map(Into::into),
-            style: boxed(),
+            style: crate::render::test_style(boxed()),
             interactivity: Box::new(aria),
         };
         for picture in [image, vector] {
@@ -453,7 +453,7 @@ fn a_tracked_handle_the_view_makes_a_tab_stop_takes_tab(cx: &mut gpui_kit::TestA
     let button = |key_name: &str, focus: u64, tab_stop: Option<bool>| {
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(key(key_name)),
-            style: div().w(px(80.)).h(px(40.)).style().clone(),
+            style: crate::render::test_style(div().w(px(80.)).h(px(40.)).style().clone()),
             interactivity: Box::new(wire::Interactivity {
                 role: Some(Role::Button),
                 focusable: true,
@@ -471,7 +471,7 @@ fn a_tracked_handle_the_view_makes_a_tab_stop_takes_tab(cx: &mut gpui_kit::TestA
     };
     let root = wire::Node::Container(view_wire::ContainerNode {
         id: Some(key("row")),
-        style: div().flex().w(px(280.)).h(px(80.)).style().clone(),
+        style: crate::render::test_style(div().flex().w(px(280.)).h(px(80.)).style().clone()),
         interactivity: Default::default(),
         children: vec![button("skipped", 1, None), button("stop", 2, Some(true))],
     });
@@ -499,7 +499,7 @@ fn pressable_after_tab(cx: &mut gpui_kit::TestAppContext, tab_stop: Option<bool>
     cx.update(gpui_kit::init);
     let button = wire::Node::Container(view_wire::ContainerNode {
         id: Some(key("press")),
-        style: div().w(px(80.)).h(px(40.)).style().clone(),
+        style: crate::render::test_style(div().w(px(80.)).h(px(40.)).style().clone()),
         interactivity: Box::new(wire::Interactivity {
             role: Some(Role::Button),
             focusable: true,
@@ -516,7 +516,7 @@ fn pressable_after_tab(cx: &mut gpui_kit::TestAppContext, tab_stop: Option<bool>
     });
     let root = wire::Node::Container(view_wire::ContainerNode {
         id: Some(key("row")),
-        style: div().flex().w(px(280.)).h(px(80.)).style().clone(),
+        style: crate::render::test_style(div().flex().w(px(280.)).h(px(80.)).style().clone()),
         interactivity: Default::default(),
         children: vec![button],
     });
@@ -567,7 +567,7 @@ fn a_container_the_view_focuses_by_id_stays_a_tab_stop(cx: &mut gpui_kit::TestAp
     let stop = |key_name: &str, role: Role| {
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(key(key_name)),
-            style: div().w(px(80.)).h(px(40.)).style().clone(),
+            style: crate::render::test_style(div().w(px(80.)).h(px(40.)).style().clone()),
             interactivity: Box::new(wire::Interactivity {
                 role: Some(role),
                 focusable: true,
@@ -584,7 +584,7 @@ fn a_container_the_view_focuses_by_id_stays_a_tab_stop(cx: &mut gpui_kit::TestAp
     };
     let root = wire::Node::Container(view_wire::ContainerNode {
         id: Some(key("row")),
-        style: div().flex().w(px(280.)).h(px(80.)).style().clone(),
+        style: crate::render::test_style(div().flex().w(px(280.)).h(px(80.)).style().clone()),
         interactivity: Default::default(),
         children: vec![stop("menu", Role::Menu), stop("next", Role::Button)],
     });
@@ -631,7 +631,7 @@ fn claiming_composite(id: &str, role: Role, item: Role) -> wire::Node {
             let row = format!("{id}-{n}");
             wire::Node::Container(view_wire::ContainerNode {
                 id: Some(key(&row)),
-                style: div().w(px(60.)).h(px(20.)).style().clone(),
+                style: crate::render::test_style(div().w(px(60.)).h(px(20.)).style().clone()),
                 interactivity: Box::new(wire::Interactivity {
                     role: Some(item),
                     aria: wire::Aria {
@@ -650,7 +650,7 @@ fn claiming_composite(id: &str, role: Role, item: Role) -> wire::Node {
         .collect();
     wire::Node::Container(view_wire::ContainerNode {
         id: Some(key(id)),
-        style: div().flex().w(px(200.)).h(px(20.)).style().clone(),
+        style: crate::render::test_style(div().flex().w(px(200.)).h(px(20.)).style().clone()),
         interactivity: Box::new(wire::Interactivity {
             role: Some(role),
             focusable: true,
@@ -695,13 +695,15 @@ fn a_held_pane_over_two_claiming_composites_reports_the_pane_box(
     cx.update(gpui_kit::init);
     let root = wire::Node::Container(view_wire::ContainerNode {
         id: Some(key("screen")),
-        style: div()
-            .flex()
-            .flex_col()
-            .w(px(280.))
-            .h(px(80.))
-            .style()
-            .clone(),
+        style: crate::render::test_style(
+            div()
+                .flex()
+                .flex_col()
+                .w(px(280.))
+                .h(px(80.))
+                .style()
+                .clone(),
+        ),
         interactivity: Default::default(),
         children: vec![
             claiming_composite("tabs", Role::TabList, Role::Tab),
@@ -931,13 +933,15 @@ mod phase_two {
             };
             let pane = wire::Node::Container(view_wire::ContainerNode {
                 id: Some(key("list-pane")),
-                style: div().w(px(width)).h_full().flex_shrink_0().style().clone(),
+                style: crate::render::test_style(
+                    div().w(px(width)).h_full().flex_shrink_0().style().clone(),
+                ),
                 interactivity: Box::new(named(Role::Group, "List")),
                 children: Vec::new(),
             });
             let divider = wire::Node::ResizeHandle {
                 id: key("list-resize"),
-                style: div().w(px(1.)).h_full().style().clone(),
+                style: crate::render::test_style(div().w(px(1.)).h_full().style().clone()),
                 interactivity: Box::new(wire::Interactivity {
                     focusable: true,
                     tab_stop: Some(true),
@@ -954,14 +958,16 @@ mod phase_two {
                 cursor: None,
                 content: Box::new(wire::Node::Container(view_wire::ContainerNode {
                     id: Some(key("list-rule")),
-                    style: div().w(px(1.)).h_full().style().clone(),
+                    style: crate::render::test_style(div().w(px(1.)).h_full().style().clone()),
                     interactivity: Default::default(),
                     children: Vec::new(),
                 })),
             };
             sanitized(wire::Node::Container(view_wire::ContainerNode {
                 id: Some(key("panes")),
-                style: div().flex().w(px(600.)).h(px(200.)).style().clone(),
+                style: crate::render::test_style(
+                    div().flex().w(px(600.)).h(px(200.)).style().clone(),
+                ),
                 interactivity: Default::default(),
                 children: vec![pane, divider],
             }))
@@ -1077,13 +1083,13 @@ mod phase_two {
         };
         let inner = wire::Node::Container(view_wire::ContainerNode {
             id: Some(key(&format!("inner-{n}"))),
-            style: div().h(px(20.)).style().clone(),
+            style: crate::render::test_style(div().h(px(20.)).style().clone()),
             interactivity: Box::new(named(format!("inner-{n}"))),
             children: Vec::new(),
         });
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(key(&format!("row-{n}"))),
-            style: div().h(px(20.)).style().clone(),
+            style: crate::render::test_style(div().h(px(20.)).style().clone()),
             interactivity: Box::new(wire::Interactivity {
                 role,
                 ..named(format!("row-{n}"))
@@ -1133,7 +1139,7 @@ mod phase_two {
             id: key("list"),
             path: vec![key("list")],
             route: 1,
-            style: boxed(),
+            style: crate::render::test_style(boxed()),
             interactivity: Default::default(),
             count: 5,
             measure_index: 0,
@@ -1169,7 +1175,7 @@ mod phase_two {
             request_handler: 1,
             scroll_handler: None,
             range_start: 0,
-            style: boxed(),
+            style: crate::render::test_style(boxed()),
             interactivity: Default::default(),
             children: vec![
                 row(0, Some(Role::ListBoxOption)),

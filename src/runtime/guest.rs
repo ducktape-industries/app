@@ -79,6 +79,9 @@ pub(super) struct Guest {
     /// The last frame, its `root` kept across `unchanged` ticks and patched
     /// in place by a frame that carries patches instead of a tree.
     pub(crate) frame: wire::Frame,
+    /// The style table of `frame.root`: a whole frame's entries, and each
+    /// one a later frame brought.
+    pub(crate) styles: wire::Styles,
     pub(crate) frame_reports: wire::SanitizeReport,
     pub(crate) display_diagnostics: display_diagnostics::DisplayDiagnostics,
     pub(crate) installed_generation: Option<u64>,
@@ -86,8 +89,9 @@ pub(super) struct Guest {
     /// number it has not rendered.
     pub(crate) frame_rev: u64,
     /// What the guest built for tooltip routes since the seat last took
-    /// them: for the tree it draws, which keeps them by route.
-    pub(crate) tooltip_responses: Vec<wire::TooltipResponse>,
+    /// them, each with the table of the frame it came in: for the tree the
+    /// seat draws, which keeps them by route.
+    pub(crate) tooltip_responses: Vec<(wire::TooltipResponse, wire::Styles)>,
     pub(crate) ticks: u64,
     /// Every picture the guest has sent, by hash: the bytes cross once.
     pub(crate) pictures: Pictures,
@@ -145,11 +149,15 @@ impl Guest {
         FUEL_PER_TICK - self.store.get_fuel().unwrap_or(0)
     }
 
-    /// What the seat hands its tree to draw: the held tree, pictures named
-    /// by hash alone, and the bytes those hashes resolve to, shared.
-    pub(crate) fn drawn(&self) -> (wire::Node, Arc<crate::render::PictureBytes>) {
-        let root = self.frame.root.clone().unwrap_or_else(wire::Node::empty);
-        (root, self.pictures.held())
+    /// What the seat hands its tree to draw: the held tree with its style
+    /// table, pictures named by hash alone, and the bytes those hashes
+    /// resolve to, shared.
+    pub(crate) fn drawn(&self) -> (crate::render::Tree, Arc<crate::render::PictureBytes>) {
+        let tree = crate::render::Tree {
+            root: self.frame.root.clone().unwrap_or_else(wire::Node::empty),
+            styles: self.styles.clone(),
+        };
+        (tree, self.pictures.held())
     }
 }
 
@@ -294,6 +302,7 @@ fn arm(store: &mut Store<HostState>) {
 pub(super) fn merge(
     held: &mut Option<wire::Node>,
     frame: &mut wire::Frame,
+    styles: &wire::Styles,
 ) -> Result<(bool, wire::SanitizeReport), wire::Refused> {
     if frame.unchanged {
         // the held tree passed when it arrived: taken as it is
@@ -305,14 +314,19 @@ pub(super) fn merge(
     }
     let patches = std::mem::take(&mut frame.patches);
     let mut root = held.as_ref().ok_or("no tree to patch")?.clone();
-    let report = wire::apply(&mut root, patches)?;
+    let report = wire::apply(&mut root, patches, styles)?;
     frame.root = Some(root);
     Ok((true, report))
 }
 
 /// What the host is willing to take from one tick's bytes, already held to
 /// `MAX_FRAME_BYTES`: nothing in here is trusted — the counts, the tree.
-pub(super) fn shape(bytes: &[u8]) -> Result<(wire::Frame, wire::SanitizeReport), String> {
+/// The frame's style entries join `styles`, the table of the tree the host
+/// holds (a whole tree's replace it); a refused frame leaves it as it was.
+pub(super) fn shape(
+    bytes: &[u8],
+    styles: &mut wire::Styles,
+) -> Result<(wire::Frame, wire::SanitizeReport), String> {
     // a frame over `MAX_REQUESTS` or `MAX_CANCELS` does not decode
     let mut frame: wire::Frame = wire::decode(bytes)?;
     if frame.unchanged {
@@ -321,7 +335,7 @@ pub(super) fn shape(bytes: &[u8]) -> Result<(wire::Frame, wire::SanitizeReport),
     if frame.unchanged || frame.root.is_some() {
         frame.patches = Vec::new();
     }
-    let cuts = wire::sanitize(&mut frame).map_err(|refused| refused.to_string())?;
+    let cuts = wire::sanitize(&mut frame, styles).map_err(|refused| refused.to_string())?;
     Ok((frame, cuts))
 }
 

@@ -39,7 +39,7 @@ fn hostile_guest_position_size_and_overflow_remain_inside_host_slot(
         style.overflow.y = Some(gpui_kit::Overflow::Visible);
         let root = wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Integer(1)),
-            style,
+            style: crate::render::test_style(style),
             interactivity: Default::default(),
             children: vec![],
         });
@@ -47,7 +47,7 @@ fn hostile_guest_position_size_and_overflow_remain_inside_host_slot(
             root: Some(root),
             ..Default::default()
         };
-        wire::sanitize(&mut frame).unwrap();
+        sanitize_whole(&mut frame).unwrap();
         let root = frame.root.unwrap();
         let window = cx.open_window(size(px(200.), px(200.)), move |_, cx| GuestSlot {
             tree: cx.new(|_| ViewTree::new(root)),
@@ -95,7 +95,7 @@ fn an_anchored_popup_fits_its_slot_not_the_window(cx: &mut gpui_kit::TestAppCont
     style.background = Some(rgb(0xff00ff).into());
     let popup = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Integer(1)),
-        style,
+        style: crate::render::test_style(style),
         interactivity: Default::default(),
         children: vec![],
     });
@@ -158,7 +158,7 @@ fn a_tooltip_and_a_popup_on_a_scrolled_lists_last_row_draw_whole(
     ) -> wire::Node {
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(named_id(id)),
-            style: style.style().clone(),
+            style: crate::render::test_style(style.style().clone()),
             interactivity: Box::new(interactivity),
             children,
         })
@@ -225,7 +225,7 @@ fn a_tooltip_and_a_popup_on_a_scrolled_lists_last_row_draw_whole(
             let tree = cx.new(|_| ViewTree::new(root));
             if tooltips {
                 tree.update(cx, |tree, cx| {
-                    tree.tooltip_responses((0..5).map(tip).collect(), cx)
+                    tree.tooltip_responses(answered((0..5).map(tip)), cx)
                 });
             }
             Pane { tree }

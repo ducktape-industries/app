@@ -2,11 +2,11 @@
 //! order, tooltips, one listener per handler the guest set, each emitting
 //! the matching `wire::Event`, and the keys the guest consumes.
 
-use super::ViewTree;
+use super::{Tree, ViewTree};
 use gpui_kit::{
-    Context, FocusHandle, KeyDownEvent, KeyUpEvent, Keystroke, ModifiersChangedEvent, MouseButton,
-    MouseDownEvent, MouseExitEvent, MouseMoveEvent, MousePressureEvent, MouseUpEvent, PinchEvent,
-    ScrollWheelEvent, StatefulInteractiveElement,
+    App, Context, FocusHandle, KeyDownEvent, KeyUpEvent, Keystroke, ModifiersChangedEvent,
+    MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MousePressureEvent, MouseUpEvent,
+    PinchEvent, ScrollWheelEvent, StatefulInteractiveElement,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,8 +15,9 @@ use view_wire as wire;
 pub(super) fn apply<E: StatefulInteractiveElement>(
     mut element: E,
     interactivity: &wire::Interactivity,
+    styles: &wire::Styles,
     focus_handle: Option<FocusHandle>,
-    tooltip: Option<Arc<wire::Node>>,
+    tooltip: Option<(Arc<wire::Node>, wire::Styles)>,
     cx: &mut Context<ViewTree>,
 ) -> E {
     if let Some(value) = interactivity.tab_stop {
@@ -31,35 +32,35 @@ pub(super) fn apply<E: StatefulInteractiveElement>(
     if let Some(handle) = focus_handle.as_ref() {
         element = element.track_focus(handle);
     }
-    if let Some(style) = &interactivity.focus {
-        let style = (**style).clone();
+    if let Some(style) = interactivity.focus {
+        let style = styles[style].clone();
         element = element.focus(move |_| style);
     }
-    if let Some(style) = &interactivity.in_focus {
-        let style = (**style).clone();
+    if let Some(style) = interactivity.in_focus {
+        let style = styles[style].clone();
         element = element.in_focus(move |_| style);
     }
-    if let Some(style) = &interactivity.focus_visible {
-        let style = (**style).clone();
+    if let Some(style) = interactivity.focus_visible {
+        let style = styles[style].clone();
         element = element.focus_visible(move |_| style);
     }
     if let Some(group) = &interactivity.group {
         element = element.group(group.clone());
     }
-    if let Some(style) = &interactivity.hover {
-        let style = (**style).clone();
+    if let Some(style) = interactivity.hover {
+        let style = styles[style].clone();
         element = element.hover(move |_| style);
     }
-    if let Some(style) = &interactivity.active {
-        let style = (**style).clone();
+    if let Some(style) = interactivity.active {
+        let style = styles[style].clone();
         element = element.active(move |_| style);
     }
     if let Some(group) = &interactivity.group_hover {
-        let style = (*group.style).clone();
+        let style = styles[group.style].clone();
         element = element.group_hover(group.group.clone(), move |_| style);
     }
     if let Some(group) = &interactivity.group_active {
-        let style = (*group.style).clone();
+        let style = styles[group.style].clone();
         element = element.group_active(group.group.clone(), move |_| style);
     }
     if interactivity.occlude {
@@ -71,18 +72,22 @@ pub(super) fn apply<E: StatefulInteractiveElement>(
     element = apply_mouse(element, interactivity, cx);
     element = apply_keyboard(element, interactivity, cx);
     element = apply_misc(element, interactivity, cx);
-    if let (Some(tooltip), Some(content)) = (&interactivity.tooltip, tooltip) {
+    if let (Some(tooltip), Some((content, styles))) = (&interactivity.tooltip, tooltip) {
         let parent = cx.entity().downgrade();
         let delay = Duration::from_millis(tooltip.delay_ms);
         element = element.tooltip_show_delay(delay);
+        // the content is drawn with the table it came with
+        let build = move |cx: &mut App| {
+            let tree = Tree {
+                root: (*content).clone(),
+                styles: styles.clone(),
+            };
+            super::tooltip_containment::build(parent.clone(), tree, cx)
+        };
         if tooltip.hoverable {
-            element = element.hoverable_tooltip(move |_, cx| {
-                super::tooltip_containment::build(parent.clone(), (*content).clone(), cx)
-            });
+            element = element.hoverable_tooltip(move |_, cx| build(cx));
         } else {
-            element = element.tooltip(move |_, cx| {
-                super::tooltip_containment::build(parent.clone(), (*content).clone(), cx)
-            });
+            element = element.tooltip(move |_, cx| build(cx));
         }
     }
     element

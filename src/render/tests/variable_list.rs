@@ -23,7 +23,7 @@ fn variable_list_node(
         request_handler: 41,
         scroll_handler: Some(42),
         range_start,
-        style,
+        style: crate::render::test_style(style),
         interactivity: Default::default(),
         children: rows,
     }
@@ -34,7 +34,7 @@ fn fixed_row(id: u64, height: f32, color: u32) -> wire::Node {
     style.background = Some(rgb(color).into());
     wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Integer(id)),
-        style,
+        style: crate::render::test_style(style),
         interactivity: Default::default(),
         children: vec![],
     })
@@ -180,6 +180,65 @@ fn accepted_frames_retain_anonymous_list_scroll(cx: &mut gpui_kit::TestAppContex
     });
 }
 
+/// A row is kept while its node is equal, and equal ids are equal styles
+/// only in one table. A whole frame brings its own: its rows, equal by id
+/// to the ones held, are other rows (here twice as tall), and each is
+/// taken and measured again.
+#[gpui_kit::test]
+fn a_row_equal_by_its_ids_is_measured_again_under_another_table(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    const ROWS: usize = 4;
+    let tree = |height: f32| {
+        let list = gpui_kit::StyleRefinement::default().size_full();
+        let mut row = gpui_kit::StyleRefinement::default().h(px(height)).w_full();
+        row.background = Some(rgb(0x111111).into());
+        let mut styles = wire::Styles::default();
+        styles
+            .extend(vec![wire::Style::new(&list), wire::Style::new(&row)])
+            .unwrap();
+        let rows = (0..ROWS as u64).map(|id| {
+            wire::Node::Container(view_wire::ContainerNode {
+                id: Some(wire::ElementIdWire::Integer(id)),
+                style: wire::StyleId(1),
+                interactivity: Default::default(),
+                children: vec![],
+            })
+        });
+        let mut root = variable_list_node(ROWS, wire::ListAlignment::Top, 0, rows.collect());
+        let wire::Node::List { style, .. } = &mut root else {
+            unreachable!()
+        };
+        *style = wire::StyleId(0);
+        Tree { root, styles }
+    };
+    let window = cx.open_window(size(px(200.), px(240.)), |_, _| ViewTree::new(tree(20.)));
+    let view = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let drawn = |native: &mut gpui_kit::VisualTestContext| {
+        let heights: Vec<f32> = native.update(|window, cx| {
+            window.render_frame(cx);
+            let scale = window.scale_factor();
+            let quads = window.painted_quads();
+            let rows = quads
+                .iter()
+                .filter(|quad| quad.background.as_solid() == Some(rgb(0x111111).into()));
+            rows.map(|quad| quad.bounds.size.height.as_f32() / scale)
+                .collect()
+        });
+        let remeasured = view.read_with(native, |tree, _| {
+            tree.variable_lists.values().next().unwrap().remeasured
+        });
+        (heights, remeasured)
+    };
+    assert_eq!(drawn(&mut native), (vec![20.; ROWS], ROWS));
+    view.update(&mut native, |view, cx| view.replace(tree(40.), &[], cx));
+    assert_eq!(
+        drawn(&mut native),
+        (vec![40.; ROWS], 2 * ROWS),
+        "another table's rows were taken for the ones held"
+    );
+}
+
 /// A changed frame that leaves a list's rows as they were (here the title
 /// above it moved) remeasures none of them: a row is kept while its node is
 /// equal, routes included, and a list row's routes are keyed by its row,
@@ -249,7 +308,7 @@ fn field_row(label: &str, value: &str) -> wire::Node {
     *cursor = wire::TextRange::caret(value.len());
     wire::Node::Container(view_wire::ContainerNode {
         id: None,
-        style: div().w_full().h(px(32.)).style().clone(),
+        style: crate::render::test_style(div().w_full().h(px(32.)).style()),
         interactivity: Default::default(),
         children: vec![field],
     })
@@ -291,7 +350,7 @@ fn rows_holding_one_id_are_each_their_own_field(cx: &mut gpui_kit::TestAppContex
 fn deferred_row(name: &str) -> wire::Node {
     let mut open = view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("open".into())),
-        style: div().w(px(80.)).h(px(24.)).style().clone(),
+        style: crate::render::test_style(div().w(px(80.)).h(px(24.)).style()),
         interactivity: Default::default(),
         children: Vec::new(),
     };

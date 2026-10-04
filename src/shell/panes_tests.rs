@@ -958,7 +958,7 @@ fn a_closed_panes_pictures_leave_the_atlas(cx: &mut TestAppContext) {
             loading: false,
             fallback: false,
             state_children: Vec::new(),
-            style: gpui_kit::div().size(px(30.)).style().clone(),
+            style: crate::render::test_style(gpui_kit::div().size(px(30.)).style().clone()),
             interactivity: Default::default(),
         },
     );
@@ -1558,7 +1558,7 @@ fn a_pane_picked_in_spotlight_hands_the_keys_by_its_first_frame(cx: &mut TestApp
         on_key: None,
         on_submit: None,
         secure: false,
-        style: gpui_kit::div().w(px(200.)).h(px(24.)).style().clone(),
+        style: crate::render::test_style(gpui_kit::div().w(px(200.)).h(px(24.)).style().clone()),
     };
     let (_, _, view, mut native) = console(cx);
     settle(&mut native);

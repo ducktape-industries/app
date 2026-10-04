@@ -15,7 +15,7 @@ fn split() -> wire::Node {
             container_with_style("left", div().w(px(100.)).h_full().style().clone(), []),
             wire::Node::ResizeHandle {
                 id: named_id("divider"),
-                style: Default::default(),
+                style: crate::render::plain_style(),
                 interactivity: Default::default(),
                 on_press: None,
                 on_release: None,
@@ -69,7 +69,8 @@ fn drag_from(x: f32, cx: &mut gpui_kit::TestAppContext) -> (f64, bool) {
 #[gpui_kit::test]
 fn a_divider_wears_its_group_hover(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
-    let lit = gpui_kit::hsla(0.6, 0.5, 0.5, 1.);
+    // eight bits a channel, as a colour crosses the wire
+    let lit: gpui_kit::Hsla = gpui_kit::rgb(0x4073bf).into();
     let mut root = split();
     let wire::Node::Container(view_wire::ContainerNode {
         interactivity,
@@ -86,7 +87,7 @@ fn a_divider_wears_its_group_hover(cx: &mut gpui_kit::TestAppContext) {
     let mut style = div().bg(lit);
     interactivity.group_hover = Some(wire::GroupRefinement {
         group: "split".into(),
-        style: Box::new(style.style().clone()),
+        style: crate::render::test_style(style.style().clone()),
     });
     let window = cx.open_window(size(px(300.), px(80.)), |_, _| ViewTree::new(root));
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);

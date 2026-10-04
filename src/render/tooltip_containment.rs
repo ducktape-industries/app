@@ -10,7 +10,7 @@ use gpui_kit::{Subscription, WeakEntity};
 
 pub(super) fn build(
     parent: WeakEntity<ViewTree>,
-    content: wire::Node,
+    content: Tree,
     cx: &mut App,
 ) -> gpui_kit::AnyView {
     // the source view's pictures and their rasters: a tooltip names them
@@ -77,7 +77,7 @@ mod tests {
         };
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("tooltip-content".into())),
-            style: element.style().clone(),
+            style: crate::render::test_style(element.style().clone()),
             interactivity: Box::new(interactivity),
             children: Vec::new(),
         })
@@ -86,7 +86,7 @@ mod tests {
     fn parent_node() -> wire::Node {
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("source-content".into())),
-            style: div().size_full().style().clone(),
+            style: crate::render::test_style(div().size_full().style().clone()),
             interactivity: Default::default(),
             children: Vec::new(),
         })
@@ -107,7 +107,7 @@ mod tests {
         };
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("ordinary-source".into())),
-            style: div().size(px(size)).style().clone(),
+            style: crate::render::test_style(div().size(px(size)).style().clone()),
             interactivity: Box::new(interactivity),
             children: Vec::new(),
         })
@@ -147,9 +147,11 @@ mod tests {
                 .tooltip_show_delay(Duration::from_millis(10))
                 .child(self.parent.clone());
             let source = if self.hoverable {
-                source.hoverable_tooltip(move |_, cx| build(parent.clone(), tooltip.clone(), cx))
+                source.hoverable_tooltip(move |_, cx| {
+                    build(parent.clone(), tooltip.clone().into(), cx)
+                })
             } else {
-                source.tooltip(move |_, cx| build(parent.clone(), tooltip.clone(), cx))
+                source.tooltip(move |_, cx| build(parent.clone(), tooltip.clone().into(), cx))
             };
             // the source in its pane's layer, as `Render for ViewTree` draws one
             div()
@@ -269,7 +271,7 @@ mod tests {
                 let source = source.downgrade();
                 cx.defer(move |cx| {
                     let _ = source.update(cx, |tree, cx| {
-                        tree.tooltip_responses(vec![answer(71, node(120., None))], cx)
+                        tree.tooltip_responses(answered([answer(71, node(120., None))]), cx)
                     });
                 });
             });
@@ -327,7 +329,7 @@ mod tests {
         let window = cx.open_window(size(px(200.), px(200.)), move |_, cx| {
             let tree = cx.new(|_| ViewTree::new(ordinary_source(93)));
             tree.update(cx, |tree, cx| {
-                tree.tooltip_responses(vec![answer(93, content)], cx)
+                tree.tooltip_responses(answered([answer(93, content)]), cx)
             });
             Slot(tree)
         });
@@ -363,7 +365,7 @@ mod tests {
         let window = cx.open_window(size(px(200.), px(200.)), |_, cx| {
             let tree = cx.new(|_| ViewTree::new(ordinary_source(71)));
             tree.update(cx, |tree, cx| {
-                tree.tooltip_responses(vec![answer(71, node(20., None))], cx)
+                tree.tooltip_responses(answered([answer(71, node(20., None))]), cx)
             });
             Host(tree)
         });
@@ -388,6 +390,63 @@ mod tests {
             assert!(
                 tooltip_painted(window),
                 "the props change closed the tooltip"
+            );
+        });
+    }
+
+    /// A tooltip's content names its styles in the table of the frame it
+    /// came in, and is kept past that frame: the next whole frame brings
+    /// another table, where the same id is another style, and the content
+    /// is still drawn with its own.
+    #[gpui_kit::test]
+    fn a_tooltip_is_drawn_with_the_table_it_came_with(cx: &mut gpui_kit::TestAppContext) {
+        struct Host(Entity<ViewTree>);
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size(px(60.)).overflow_hidden().child(self.0.clone())
+            }
+        }
+        // the source names style 0 and the tooltip's content style 1
+        let tree = |tip: u32| {
+            let source = div().size(px(40.)).style().clone();
+            let tip = div().size(px(20.)).bg(rgb(tip)).style().clone();
+            let mut styles = wire::Styles::default();
+            styles
+                .extend(vec![wire::Style::new(&source), wire::Style::new(&tip)])
+                .unwrap();
+            let mut root = ordinary_source(71);
+            let wire::Node::Container(view_wire::ContainerNode { style, .. }) = &mut root else {
+                unreachable!()
+            };
+            *style = wire::StyleId(0);
+            Tree { root, styles }
+        };
+        let mut content = node(20., None);
+        let wire::Node::Container(view_wire::ContainerNode { style, .. }) = &mut content else {
+            unreachable!()
+        };
+        *style = wire::StyleId(1);
+        cx.update(gpui_kit::init);
+        let window = cx.open_window(size(px(200.), px(200.)), |_, cx| {
+            let first = tree(TOOLTIP_COLOR);
+            let came_with = first.styles.clone();
+            let view = cx.new(|_| ViewTree::new(first));
+            view.update(cx, |view, cx| {
+                view.tooltip_responses(vec![(answer(71, content), came_with)], cx);
+                view.replace(tree(0x00ff00), &[], cx);
+            });
+            Host(view)
+        });
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| window.render_frame(cx));
+        native.simulate_mouse_move(point(px(10.), px(10.)), None, Default::default());
+        native.executor().advance_clock(Duration::from_millis(11));
+        native.run_until_parked();
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                tooltip_painted(window),
+                "the tooltip wears the style its id names in a later table"
             );
         });
     }
@@ -423,7 +482,7 @@ mod tests {
                 loading: false,
                 fallback: false,
                 state_children: Vec::new(),
-                style: Default::default(),
+                style: crate::render::plain_style(),
                 interactivity: tip(1),
             },
             wire::Node::Svg {
@@ -435,14 +494,14 @@ mod tests {
                     rotate: 0.0,
                 },
                 label: None,
-                style: Default::default(),
+                style: crate::render::plain_style(),
                 interactivity: tip(2),
             },
             wire::Node::UniformList {
                 id: name("uniform"),
                 path: vec![name("uniform")],
                 route: 90,
-                style: Default::default(),
+                style: crate::render::plain_style(),
                 interactivity: tip(3),
                 count: 0,
                 measure_index: 0,
@@ -466,13 +525,13 @@ mod tests {
                 request_handler: 91,
                 scroll_handler: None,
                 range_start: 0,
-                style: Default::default(),
+                style: crate::render::plain_style(),
                 interactivity: tip(4),
                 children: Vec::new(),
             },
             wire::Node::ResizeHandle {
                 id: name("grip"),
-                style: Default::default(),
+                style: crate::render::plain_style(),
                 interactivity: tip(5),
                 on_press: None,
                 on_release: None,
@@ -484,7 +543,7 @@ mod tests {
         let tree = cx.new(|_| {
             ViewTree::new(wire::Node::Container(view_wire::ContainerNode {
                 id: None,
-                style: Default::default(),
+                style: crate::render::plain_style(),
                 interactivity: Default::default(),
                 children: kinds,
             }))
@@ -497,7 +556,7 @@ mod tests {
         };
 
         tree.update(cx, |tree, cx| {
-            tree.tooltip_responses(vec![answer(9, node(20., None))], cx)
+            tree.tooltip_responses(answered([answer(9, node(20., None))]), cx)
         });
         assert_eq!(
             held(cx),
@@ -506,7 +565,7 @@ mod tests {
         );
 
         let answers = (1..=5).map(|request| answer(request, node(20., None)));
-        tree.update(cx, |tree, cx| tree.tooltip_responses(answers.collect(), cx));
+        tree.update(cx, |tree, cx| tree.tooltip_responses(answered(answers), cx));
         assert_eq!(
             held(cx),
             [1, 2, 3, 4, 5],
@@ -516,12 +575,12 @@ mod tests {
         // with the four others it would hold one frame's budget and more
         let budget = wire::Node::Container(view_wire::ContainerNode {
             id: None,
-            style: Default::default(),
+            style: crate::render::plain_style(),
             interactivity: Default::default(),
             children: vec![wire::Node::empty(); wire::MAX_NODES - 1],
         });
         tree.update(cx, |tree, cx| {
-            tree.tooltip_responses(vec![answer(3, budget)], cx)
+            tree.tooltip_responses(answered([answer(3, budget)]), cx)
         });
         assert_eq!(held(cx), [3], "the store went past the node budget");
     }

@@ -248,7 +248,7 @@ impl ViewTree {
                 route: *route,
                 scroll,
             });
-        *list.style() = style.clone();
+        *list.style() = self.styles[*style].clone();
         let list = list.id(native_id);
         self.guest_aria(list, node, interactivity, cx)
             .into_any_element()

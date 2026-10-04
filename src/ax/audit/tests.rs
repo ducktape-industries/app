@@ -948,7 +948,7 @@ fn members(active: usize) -> view_wire::Node {
     let container = |key: String, children| {
         view_wire::Node::Container(view_wire::ContainerNode {
             id: Some(view_wire::ElementIdWire::Name(key.into())),
-            style: gpui_kit::div().flex().flex_col().style().clone(),
+            style: crate::render::test_style(gpui_kit::div().flex().flex_col().style().clone()),
             interactivity: Default::default(),
             children,
         })
@@ -962,11 +962,13 @@ fn members(active: usize) -> view_wire::Node {
                 ..
             }) = &mut row
             {
-                *style = gpui_kit::div()
-                    .w(gpui_kit::px(80.))
-                    .h(gpui_kit::px(24.))
-                    .style()
-                    .clone();
+                *style = crate::render::test_style(
+                    gpui_kit::div()
+                        .w(gpui_kit::px(80.))
+                        .h(gpui_kit::px(24.))
+                        .style()
+                        .clone(),
+                );
                 interactivity.role = Some(gpui_kit::Role::ListBoxOption);
                 interactivity.aria.label = Some(format!("Row {n}").into());
                 interactivity.aria.selected = Some(n == active);
@@ -1087,12 +1089,14 @@ fn item(
     use gpui_kit::Styled as _;
     view_wire::Node::Container(view_wire::ContainerNode {
         id: Some(view_wire::ElementIdWire::Name(id.clone().into())),
-        style: gpui_kit::div()
-            .flex()
-            .w(gpui_kit::px(80.))
-            .h(gpui_kit::px(24.))
-            .style()
-            .clone(),
+        style: crate::render::test_style(
+            gpui_kit::div()
+                .flex()
+                .w(gpui_kit::px(80.))
+                .h(gpui_kit::px(24.))
+                .style()
+                .clone(),
+        ),
         interactivity: Box::new(view_wire::Interactivity {
             role: Some(role),
             aria: view_wire::Aria {
@@ -1120,7 +1124,7 @@ fn one_stop(
     use gpui_kit::Styled as _;
     view_wire::Node::Container(view_wire::ContainerNode {
         id: Some(view_wire::ElementIdWire::Name(id.to_owned().into())),
-        style: gpui_kit::div().flex().flex_col().style().clone(),
+        style: crate::render::test_style(gpui_kit::div().flex().flex_col().style().clone()),
         interactivity: Box::new(view_wire::Interactivity {
             role: Some(role),
             focusable: true,
@@ -1153,7 +1157,7 @@ fn pages_over_rows(active: &[usize]) -> view_wire::Node {
     });
     view_wire::Node::Container(view_wire::ContainerNode {
         id: Some(view_wire::ElementIdWire::Name("screen".into())),
-        style: Default::default(),
+        style: crate::render::plain_style(),
         interactivity: Default::default(),
         children: vec![
             one_stop(
@@ -1181,7 +1185,7 @@ fn messages(active: &[usize]) -> view_wire::Node {
     let rows = (0..3).map(|n| {
         let body = (n == 0).then(|| view_wire::Node::RichText {
             id: Some(view_wire::ElementIdWire::Name("body".into())),
-            style: Default::default(),
+            style: crate::render::plain_style(),
             text: "See the docs".into(),
             runs: view_wire::RichTextRuns::Highlights(Vec::new()),
             font_family_overrides: Vec::new(),
@@ -1338,13 +1342,13 @@ fn pick_dialog(_: &[usize]) -> view_wire::Node {
     view_wire::Node::Overlay {
         id: view_wire::ElementIdWire::Name("pick".into()),
         label: Some("Pick".to_owned()),
-        style: gpui_kit::div().size_full().style().clone(),
+        style: crate::render::test_style(gpui_kit::div().size_full().style().clone()),
         on_dismiss: None,
         children: vec![
             view_button("opener"),
             view_wire::Node::Container(view_wire::ContainerNode {
                 id: Some(view_wire::ElementIdWire::Name("sheet".into())),
-                style: Default::default(),
+                style: crate::render::plain_style(),
                 interactivity: Default::default(),
                 children: vec![view_button("one"), view_button("two")],
             }),

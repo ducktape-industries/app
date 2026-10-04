@@ -3,7 +3,7 @@ use super::*;
 fn paragraph(key: &str, text: &str) -> wire::Node {
     wire::Node::RichText {
         id: Some(named_id(key)),
-        style: div().h(px(20.)).style().clone(),
+        style: crate::render::test_style(div().h(px(20.)).style().clone()),
         text: text.into(),
         runs: wire::RichTextRuns::Highlights(Vec::new()),
         font_family_overrides: Vec::new(),

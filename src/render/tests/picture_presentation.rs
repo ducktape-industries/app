@@ -22,13 +22,15 @@ fn pictures(with_bytes: bool) -> wire::Node {
     let mut svg_style = div().size(px(30.)).text_color(rgb(0x00ff00));
     wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("pictures".into())),
-        style: div()
-            .flex()
-            .flex_row()
-            .size_full()
-            .bg(rgb(0xffffff))
-            .style()
-            .clone(),
+        style: crate::render::test_style(
+            div()
+                .flex()
+                .flex_row()
+                .size_full()
+                .bg(rgb(0xffffff))
+                .style()
+                .clone(),
+        ),
         interactivity: Default::default(),
         children: vec![
             wire::Node::Image {
@@ -47,7 +49,7 @@ fn pictures(with_bytes: bool) -> wire::Node {
                 loading: false,
                 fallback: false,
                 state_children: Vec::new(),
-                style: image_style.style().clone(),
+                style: crate::render::test_style(image_style.style().clone()),
                 interactivity: Default::default(),
             },
             wire::Node::Svg {
@@ -62,7 +64,7 @@ fn pictures(with_bytes: bool) -> wire::Node {
                     rotate: 0.0,
                 },
                 label: None,
-                style: svg_style.style().clone(),
+                style: crate::render::test_style(svg_style.style().clone()),
                 interactivity: Default::default(),
             },
         ],
@@ -202,7 +204,7 @@ fn image_with_states(hash: u64) -> wire::Node {
     let state = |name: &str| {
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name(name.into())),
-            style: div().size(px(10.)).style().clone(),
+            style: crate::render::test_style(div().size(px(10.)).style().clone()),
             interactivity: Default::default(),
             children: Vec::new(),
         })
@@ -219,7 +221,7 @@ fn image_with_states(hash: u64) -> wire::Node {
         loading: true,
         fallback: true,
         state_children: vec![state("loading"), state("fallback")],
-        style: div().size(px(30.)).style().clone(),
+        style: crate::render::test_style(div().size(px(30.)).style().clone()),
         interactivity: Default::default(),
     }
 }
@@ -350,7 +352,7 @@ fn a_seat_at_its_raster_cap(cx: &mut gpui_kit::TestAppContext) {
         *data = None;
         wire::Node::Container(view_wire::ContainerNode {
             id: None,
-            style: div().flex().flex_wrap().size_full().style().clone(),
+            style: crate::render::test_style(div().flex().flex_wrap().size_full().style().clone()),
             interactivity: Default::default(),
             children: (from..from + 64)
                 .map(|hash| {

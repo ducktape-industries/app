@@ -170,14 +170,14 @@ fn an_idle_view_renders_no_more_than_it_ticks(cx: &mut TestAppContext) {
     let bare = |children: Vec<wire::Node>| {
         wire::Node::Container(view_wire::ContainerNode {
             id: None,
-            style: div().p_2().style().clone(),
+            style: crate::render::test_style(div().p_2().style().clone()),
             interactivity: Default::default(),
             children,
         })
     };
     let paragraph = wire::Node::RichText {
         id: Some(wire::ElementIdWire::Name("line".into())),
-        style: div().h(px(20.)).style().clone(),
+        style: crate::render::test_style(div().h(px(20.)).style().clone()),
         text: "a line".into(),
         runs: wire::RichTextRuns::Highlights(Vec::new()),
         font_family_overrides: Vec::new(),
@@ -188,7 +188,7 @@ fn an_idle_view_renders_no_more_than_it_ticks(cx: &mut TestAppContext) {
     };
     let card = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("card".into())),
-        style: div().w(px(200.)).h(px(100.)).style().clone(),
+        style: crate::render::test_style(div().w(px(200.)).h(px(100.)).style().clone()),
         interactivity: Default::default(),
         children: vec![bare(vec![bare(vec![paragraph])])],
     });
@@ -242,11 +242,11 @@ fn a_one_line_field_blinks_only_while_focused(cx: &mut TestAppContext) {
         on_key: None,
         on_submit: None,
         secure: false,
-        style: div().w(px(200.)).h(px(24.)).style().clone(),
+        style: crate::render::test_style(div().w(px(200.)).h(px(24.)).style().clone()),
     };
     let card = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("card".into())),
-        style: div().w(px(240.)).h(px(100.)).style().clone(),
+        style: crate::render::test_style(div().w(px(240.)).h(px(100.)).style().clone()),
         interactivity: Default::default(),
         children: vec![field],
     });
@@ -493,7 +493,7 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
         on_key: None,
         on_submit: None,
         secure: false,
-        style: div().w(px(200.)).h(px(24.)).style().clone(),
+        style: crate::render::test_style(div().w(px(200.)).h(px(24.)).style().clone()),
     };
     let focus_it = |instance| {
         let registry = registry().lock().unwrap();
@@ -614,18 +614,18 @@ fn a_view_moves_the_keys_only_while_its_keys_are_free(cx: &mut TestAppContext) {
         on_key: None,
         on_submit: None,
         secure: false,
-        style: div().w(px(200.)).h(px(24.)).style().clone(),
+        style: crate::render::test_style(div().w(px(200.)).h(px(24.)).style().clone()),
     };
     let mut button = view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("button".into())),
-        style: div().w(px(200.)).h(px(24.)).style().clone(),
+        style: crate::render::test_style(div().w(px(200.)).h(px(24.)).style().clone()),
         interactivity: Default::default(),
         children: Vec::new(),
     };
     button.interactivity.focus_handle = Some(9);
     let root = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("root".into())),
-        style: Default::default(),
+        style: crate::render::plain_style(),
         interactivity: Default::default(),
         children: vec![field, wire::Node::Container(button)],
     });
@@ -774,7 +774,7 @@ fn a_guests_own_cursor_command_grants_it_no_activation(cx: &mut TestAppContext) 
         on_change: Some(1),
         on_key: None,
         on_submit: None,
-        style: div().w(px(240.)).h(px(80.)).style().clone(),
+        style: crate::render::test_style(div().w(px(240.)).h(px(80.)).style().clone()),
     };
     crate::runtime::seat_drawing_for_test(MODULE, 320, root);
     let (seat, _, mut native) = open(cx, MODULE, false);
@@ -1073,9 +1073,12 @@ fn an_unchanged_tick_redraws_nothing_and_holds_nothing(cx: &mut TestAppContext) 
 
 /// A 24 px row with nothing in it.
 fn row() -> wire::Node {
-    wire::Node::Space {
-        style: div().h(px(24.)).w_full().style().clone(),
-    }
+    wire::Node::Container(view_wire::ContainerNode {
+        id: None,
+        style: crate::render::test_style(div().h(px(24.)).w_full().style().clone()),
+        interactivity: Default::default(),
+        children: vec![],
+    })
 }
 
 /// A 2,000-row uniform list filling the view, carrying `rows` and, as the
@@ -1090,7 +1093,7 @@ fn uniform(rows: std::ops::Range<u32>) -> wire::Node {
         id: id.clone(),
         path: vec![id],
         route: 1,
-        style: div().size_full().style().clone(),
+        style: crate::render::test_style(div().size_full().style().clone()),
         interactivity: Default::default(),
         count: 2_000,
         measure_index: 0,

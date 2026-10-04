@@ -14,7 +14,7 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
     let mut error_text_style = div().w_full().whitespace_normal();
     let error_text = wire::Node::Text(view_wire::TextNode {
         id: Some(named_id("error-text")),
-        style: error_text_style.style().clone(),
+        style: crate::render::test_style(error_text_style.style().clone()),
         content: refusal.into(),
     });
     let mut notice_style = div()
@@ -30,9 +30,12 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         [
             rule("header-rule", Axis::Row),
             notice,
-            wire::Node::Space {
-                style: sized_style(None, Some(fill())),
-            },
+            wire::Node::Container(view_wire::ContainerNode {
+                id: None,
+                style: crate::render::test_style(sized_style(None, Some(fill()))),
+                interactivity: Default::default(),
+                children: vec![],
+            }),
             sized(
                 "composer",
                 container("composer-content", [wire::Node::empty()]),
@@ -42,14 +45,16 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         ],
     );
     if let wire::Node::Container(view_wire::ContainerNode { style, .. }) = &mut room_column {
-        *style = div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .h_full()
-            .gap(px(8.))
-            .style()
-            .clone();
+        *style = crate::render::test_style(
+            div()
+                .flex()
+                .flex_col()
+                .w_full()
+                .h_full()
+                .gap(px(8.))
+                .style()
+                .clone(),
+        );
     }
     let room = sized("room", room_column, Some(fill()), Some(fill()));
     let mut sidebar_style = div()
@@ -73,14 +78,16 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         ],
     );
     if let wire::Node::Container(view_wire::ContainerNode { style, .. }) = &mut workspace_row {
-        *style = div()
-            .flex()
-            .flex_row()
-            .w_full()
-            .h_full()
-            .gap(px(8.))
-            .style()
-            .clone();
+        *style = crate::render::test_style(
+            div()
+                .flex()
+                .flex_row()
+                .w_full()
+                .h_full()
+                .gap(px(8.))
+                .style()
+                .clone(),
+        );
     }
     let room = sized("workspace", workspace_row, Some(fill()), Some(fill()));
     // A room's real root: a viewport sensor around the press area.
@@ -88,10 +95,10 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         id: named_id("viewport"),
         on_show: None,
         on_resize: Some(1),
-        style: sized_style(Some(fill()), Some(fill())),
+        style: crate::render::test_style(sized_style(Some(fill()), Some(fill()))),
         child: Box::new(wire::Node::Container(view_wire::ContainerNode {
             id: Some(named_id("press-area")),
-            style: sized_style(Some(fill()), Some(fill())),
+            style: crate::render::test_style(sized_style(Some(fill()), Some(fill()))),
             interactivity: Box::new(wire::Interactivity {
                 on_click: Some(2),
                 ..Default::default()
@@ -170,21 +177,21 @@ fn styled_container_uses_native_interactivity_and_typed_identity(
     let mut active = div().bg(rgb(0x405060));
     let root = wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id("interactive")),
-        style: base.style().clone(),
+        style: crate::render::test_style(base.style().clone()),
         interactivity: Box::new(wire::Interactivity {
             role: Some(gpui_kit::Role::Button),
             aria: Default::default(),
             focusable: true,
             group: Some("card".into()),
-            hover: Some(Box::new(hover.style().clone())),
-            active: Some(Box::new(active.style().clone())),
+            hover: Some(crate::render::test_style(hover.style().clone())),
+            active: Some(crate::render::test_style(active.style().clone())),
             group_hover: Some(wire::GroupRefinement {
                 group: "card".into(),
-                style: Box::new(hover.style().clone()),
+                style: crate::render::test_style(hover.style().clone()),
             }),
             group_active: Some(wire::GroupRefinement {
                 group: "card".into(),
-                style: Box::new(active.style().clone()),
+                style: crate::render::test_style(active.style().clone()),
             }),
             on_click: Some(42),
             ..Default::default()
@@ -218,7 +225,7 @@ fn container_interactivity_emits_native_pointer_and_key_payloads(
     cx.update(gpui_kit::init);
     let root = wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id("events")),
-        style: sized_style(Some(fixed(120.)), Some(fixed(60.))),
+        style: crate::render::test_style(sized_style(Some(fixed(120.)), Some(fixed(60.)))),
         interactivity: Box::new(wire::Interactivity {
             focusable: true,
             on_mouse_down: Some(10),
@@ -309,14 +316,14 @@ fn an_unchanged_guest_tree_is_not_drawn_again(cx: &mut gpui_kit::TestAppContext)
     let bare = |children: Vec<wire::Node>| {
         wire::Node::Container(view_wire::ContainerNode {
             id: None,
-            style: div().p_2().style().clone(),
+            style: crate::render::test_style(div().p_2().style().clone()),
             interactivity: Default::default(),
             children,
         })
     };
     let paragraph = wire::Node::RichText {
         id: Some(named_id("line")),
-        style: div().h(px(20.)).style().clone(),
+        style: crate::render::test_style(div().h(px(20.)).style().clone()),
         text: "a line".into(),
         runs: wire::RichTextRuns::Highlights(Vec::new()),
         font_family_overrides: Vec::new(),

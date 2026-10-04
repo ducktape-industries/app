@@ -1,6 +1,7 @@
-//! Debug builds only: `ducktape-app --render-tree <tree.json> [--size WxH]
-//! [--theme dark]` draws one view_wire tree in a window, with no node,
-//! model or runtime behind it. dev/screens and the modules' view tests use it.
+//! Debug builds only: `ducktape-app --render-tree <frame.json> [--size WxH]
+//! [--theme dark]` draws one whole view_wire frame (a tree and its style
+//! table) in a window, with no node, model or runtime behind it.
+//! dev/screens and the modules' view tests use it.
 
 use super::launch::initialize_rendering;
 use crate::fonts::fallback_chain;
@@ -11,14 +12,20 @@ pub(crate) fn render_tree_fixture() {
     use gpui_kit::component::{Root, Theme, ThemeMode};
     use gpui_kit::*;
     let args: Vec<_> = std::env::args().collect();
-    let tree: view_wire::Node = serde_json::from_slice(
+    let mut frame: view_wire::Frame = serde_json::from_slice(
         &std::fs::read(
             args.get(2)
                 .expect("--render-tree <json> --size WxH --theme light|dark"),
         )
         .expect("read fixture"),
     )
-    .expect("decode wire tree");
+    .expect("decode wire frame");
+    let mut styles = view_wire::Styles::default();
+    view_wire::sanitize(&mut frame, &mut styles).expect("a frame the host takes");
+    let tree = crate::render::Tree {
+        root: frame.root.expect("a whole frame"),
+        styles,
+    };
     let option = |name: &str| {
         args.windows(2)
             .find(|pair| pair[0] == name)

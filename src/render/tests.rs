@@ -11,6 +11,77 @@ pub(super) fn resident_mib() -> f64 {
     kib / 1024.
 }
 
+thread_local! {
+    /// The style table of the test on this thread: every style one of its
+    /// nodes names, as the guest numbers them and the host holds them.
+    static STYLES: RefCell<(wire::Interner, wire::Styles)> = Default::default();
+}
+
+/// The id `style` has in this test's table, which holds it from here on.
+pub(crate) fn test_style(
+    style: impl std::borrow::Borrow<gpui_kit::StyleRefinement>,
+) -> wire::StyleId {
+    STYLES.with_borrow_mut(|(guest, host)| {
+        let id = guest.intern(style.borrow());
+        host.extend(guest.unsent()).expect("a style the host takes");
+        id
+    })
+}
+
+/// The id of the style that sets nothing.
+pub(crate) fn plain_style() -> wire::StyleId {
+    test_style(gpui_kit::StyleRefinement::default())
+}
+
+/// This test's table, as far as it has named styles.
+pub(crate) fn test_styles() -> wire::Styles {
+    STYLES.with_borrow(|(_, host)| host.clone())
+}
+
+/// `frame` as a guest sends it: a whole one carries this test's table.
+pub(crate) fn sent(mut frame: wire::Frame) -> wire::Frame {
+    if frame.root.is_some() {
+        let held = test_styles();
+        frame.styles = (0..held.len() as u32)
+            .map(|id| wire::Style::new(&held[wire::StyleId(id)]))
+            .collect();
+    }
+    frame
+}
+
+/// A whole `frame` through the sanitizer, as the host takes one a guest
+/// sent.
+pub(crate) fn sanitize_whole(
+    frame: &mut wire::Frame,
+) -> Result<wire::SanitizeReport, wire::Refused> {
+    *frame = sent(std::mem::take(frame));
+    wire::sanitize(frame, &mut wire::Styles::default())
+}
+
+/// Tooltip answers as a seat hands them to its tree: each with the table
+/// of the frame it came in, here this test's.
+pub(crate) fn answered(
+    responses: impl IntoIterator<Item = wire::TooltipResponse>,
+) -> Vec<(wire::TooltipResponse, wire::Styles)> {
+    // the answers first: building one may name a style
+    let responses: Vec<_> = responses.into_iter().collect();
+    let styles = test_styles();
+    responses
+        .into_iter()
+        .map(|response| (response, styles.clone()))
+        .collect()
+}
+
+/// A test's tree is drawn with the test's table.
+impl From<wire::Node> for Tree {
+    fn from(root: wire::Node) -> Self {
+        Self {
+            root,
+            styles: test_styles(),
+        }
+    }
+}
+
 pub(super) fn named_id(key: &str) -> wire::ElementIdWire {
     wire::ElementIdWire::Name(key.into())
 }
@@ -58,7 +129,7 @@ fn container_with_style(
 ) -> wire::Node {
     wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id(key)),
-        style,
+        style: crate::render::test_style(style),
         interactivity: Default::default(),
         children: children.into_iter().collect(),
     })
@@ -72,7 +143,7 @@ fn sized(
 ) -> wire::Node {
     wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id(key)),
-        style: sized_style(width, height),
+        style: crate::render::test_style(sized_style(width, height)),
         interactivity: Default::default(),
         children: vec![child],
     })
@@ -103,7 +174,7 @@ fn rule(key: &str, axis: Axis) -> wire::Node {
 fn text(key: &str, content: impl Into<String>) -> wire::Node {
     wire::Node::Text(view_wire::TextNode {
         id: Some(named_id(key)),
-        style: gpui_kit::StyleRefinement::default(),
+        style: crate::render::test_style(gpui_kit::StyleRefinement::default()),
         content: content.into(),
     })
 }
@@ -120,7 +191,7 @@ fn axis_container(
     };
     wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id(key)),
-        style: element.style().clone(),
+        style: crate::render::test_style(element.style().clone()),
         interactivity: Default::default(),
         children: children.into_iter().collect(),
     })
@@ -149,7 +220,7 @@ fn input(label: &str, secure: bool, disabled: bool) -> wire::Node {
         on_change: Some(1),
         on_key: None,
         on_submit: None,
-        style: Default::default(),
+        style: crate::render::plain_style(),
     }
 }
 
@@ -179,7 +250,7 @@ fn area(
         on_change: Some(1),
         on_key: Some(2),
         on_submit: None,
-        style,
+        style: crate::render::test_style(style),
     }
 }
 
@@ -198,7 +269,7 @@ fn picture(label: Option<&str>) -> [wire::Node; 2] {
             loading: false,
             fallback: false,
             state_children: vec![],
-            style: Default::default(),
+            style: crate::render::plain_style(),
             interactivity: Default::default(),
         },
         wire::Node::Svg {
@@ -213,7 +284,7 @@ fn picture(label: Option<&str>) -> [wire::Node; 2] {
                 rotate: 0.,
             },
             label,
-            style: Default::default(),
+            style: crate::render::plain_style(),
             interactivity: Default::default(),
         },
     ]
@@ -236,7 +307,7 @@ fn button(key: &str, name: &str) -> wire::Node {
 fn rich() -> wire::Node {
     wire::Node::RichText {
         id: Some(named_id("rich")),
-        style: Default::default(),
+        style: crate::render::plain_style(),
         text: "Read the docs or the code".into(),
         runs: wire::RichTextRuns::Highlights(Vec::new()),
         font_family_overrides: Vec::new(),
