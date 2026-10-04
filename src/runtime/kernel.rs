@@ -27,12 +27,19 @@
 //! up to a minute unless said otherwise:
 //! - `module.query` `Call{target, body}` — one query on the connected node:
 //!   `body` is the payload of a signed frame to `target`, and the bytes the
-//!   program `Respond`ed come back as they are.
+//!   program `Respond`ed come back as they are. It reads the node's
+//!   preconfirmed layer: an op this view was just answered for is already
+//!   in what it reads.
 //! - `op.submit` `Call{target, body}` — one op, signed with the key
 //!   unlocked in this session at the signer's next sequence and submitted;
-//!   answered with the receipt's output, or the program's refusal. Retried
-//!   only while nothing reached the node: a lost answer is reported
-//!   ([`refusal::NODE_FAILED`]), never followed by a second submission.
+//!   answered with the receipt's output, or the program's refusal. The
+//!   receipt is the node's preconfirmation, not finality: the op ran over
+//!   the preconfirmed layer and waits for a block, and until one carries it
+//!   the node can still drop it (a block that lands first and makes it
+//!   fail, a node restart) with no word to anyone; a view shows what
+//!   `module.query` reads. Retried only while nothing reached the node: a
+//!   lost answer is reported ([`refusal::NODE_FAILED`]), never followed by
+//!   a second submission.
 //! - `chain.status` — node status as `NodeStatus`.
 //! - `chain.blocks` `BlockPage` — finalized blocks, newest first, from the
 //!   node's block archive (`/v1/blocks`); `chain.block` `BlockRef` — one by
@@ -43,8 +50,10 @@
 //! - `invite.create` `CreateInvite{ttl_days}` — minted ONCE, never retried;
 //!   `Invite{invite, notes}`. Node refusals retain their tokens.
 //! - `module.changes` `<program>` — a subscription that gets one item per
-//!   block that wrote to `program` (`/v1/changes/<program>`), so the view
-//!   re-reads what moved.
+//!   block that wrote to `program` (`/v1/changes/<program>`): the block's
+//!   height and the keys it wrote, as the node publishes them, so the view
+//!   re-reads what moved; `None` when the link was reopened and the view
+//!   should re-read everything.
 //! - `chain.heads` — a subscription that gets one `Head` per finalized block,
 //!   oldest first: the host reads the node's status at half its block
 //!   time and fills each advance from the block archive.
