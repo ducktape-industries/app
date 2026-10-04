@@ -354,3 +354,60 @@ fn two_lists_under_one_parent_each_draw_their_own_rows(cx: &mut gpui_kit::TestAp
         .collect();
     assert_eq!(buttons, ["Open 1.0", "Open 1.1", "Open 2.0", "Open 2.1"]);
 }
+
+/// A field in a list row keeps what the host holds for it (here, the words
+/// selected in it) when the view's guest is instantiated again. The new
+/// instance files the row under the path the old one did, the list's id in
+/// it, and the host finds the field by that path, whichever list the new
+/// instance draws first. A list draws its rows after the tree's render
+/// returns: what the old tree carried over is theirs to claim until the
+/// frame is drawn.
+#[gpui_kit::test]
+fn a_field_in_a_list_row_crosses_a_new_generation(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let root = |order: [&str; 2]| {
+        let panes = order.map(|pane| {
+            let rows = vec![field_row(pane, "hunter2")];
+            let mut list = variable_list_node(1, wire::ListAlignment::Top, 0, rows);
+            let wire::Node::List { id, path, .. } = &mut list else {
+                unreachable!()
+            };
+            *id = named_id(pane);
+            *path = vec![named_id("page"), id.clone()];
+            list
+        });
+        let page = div().size_full().flex().flex_col().style().clone();
+        container_with_style("page", page, panes)
+    };
+    let field = |pane: &str| {
+        let row = wire::ElementIdWire::Integer(0);
+        vec![named_id("page"), named_id(pane), row, named_id("name")]
+    };
+    let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
+        ViewTree::new(root(["timeline", "thread"]))
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let saved = native.update(|window, cx| {
+        window.render_frame(cx);
+        let (target, start, end) = (field("thread"), 2, 5);
+        let select = wire::WidgetCommand::Select { target, start, end };
+        tree.update(cx, |tree, cx| {
+            tree.execute_widget_command(select, window, cx).unwrap();
+        });
+        tree.read(cx).presentation(window, cx)
+    });
+    let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
+        ViewTree::new(root(["thread", "timeline"])).with_presentation(saved)
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let selected = native.update(|window, cx| {
+        window.render_frame(cx);
+        let tree = tree.read(cx);
+        ["timeline", "thread"]
+            .map(|pane| tree.fields[field(pane).as_slice()].presentation(window, cx))
+            .map(|field| field.selection)
+    });
+    assert_eq!(selected, [7..7, 2..5]);
+}

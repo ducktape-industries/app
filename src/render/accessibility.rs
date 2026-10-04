@@ -415,8 +415,8 @@ impl ViewTree {
     }
 
     /// A fresh tree that starts from the old one's `presentation`: the caches
-    /// are taken now, the rest is claimed by each node's first render and
-    /// dropped after it (`Render for ViewTree`).
+    /// are taken now, the rest is claimed by each node the first frame draws
+    /// and dropped after it (`Render for ViewTree`).
     pub(crate) fn with_presentation(mut self, mut presentation: NativePresentation) -> Self {
         if let Some(images) = presentation.images.take() {
             self.images = images;

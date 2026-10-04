@@ -110,7 +110,7 @@ pub(crate) fn enter_scope(node: &wire::Node, row: Option<usize>, path: &mut Auth
 /// Native widget state worth carrying into a fresh `ViewTree` when a view's
 /// guest is re-instantiated: plain data only, no entity or handler id, since
 /// the new guest's handler ids mean different things. Taken by
-/// `ViewTree::presentation`, consumed by the new tree's first render.
+/// `ViewTree::presentation`, consumed by the new tree's first frame.
 #[derive(Default)]
 pub(crate) struct NativePresentation {
     /// The seat's rasters, the cache itself: the new tree draws on in it.
@@ -436,9 +436,16 @@ impl Render for ViewTree {
         let root = std::mem::replace(&mut self.root, wire::Node::empty());
         let node = self.node(&root, window, cx);
         self.root = root;
-        // Carried-over state is for the first render of a new tree only:
-        // whatever it did not claim is dropped.
-        self.presentation = NativePresentation::default();
+        // Carried-over state is for the first frame of a new tree only:
+        // whatever that frame did not claim is dropped. A list's rows and a
+        // deferred draw are drawn after this call returns, so it lives to
+        // the end of the frame, not of this call.
+        if self.presentation.focused_container.is_some() || !self.presentation.inputs.is_empty() {
+            let tree = cx.entity().downgrade();
+            cx.defer(move |cx| {
+                let _ = tree.update(cx, |tree, _| tree.presentation = Default::default());
+            });
+        }
         // Host-owned clip box around the guest root (guest style never
         // reaches it): the pane's mask, which the guest's layer (its
         // tooltips and deferred draws) is fitted and clipped to.
