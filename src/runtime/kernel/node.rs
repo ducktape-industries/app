@@ -1,0 +1,897 @@
+//! The node-backed methods and how a view request becomes a task: a
+//! handler is `fn(Node, Vec<u8>) -> Answered`, run on [`handle`] with an
+//! in-flight slot from [`Replies::admit`], its answer put in [`Replies`];
+//! transport failures are retried for [`NODE_RETRY_BUDGET`]. A subscription
+//! (`module.changes`, `chain.heads`) is one long task writing items. Every
+//! task is a [`NodeTask`] in `guest.tasks`, aborted when dropped.
+use super::*;
+use crate::backend::noded;
+
+pub(super) type Answered = std::pin::Pin<Box<dyn std::future::Future<Output = Answer> + Send>>;
+/// One node-backed method: the node to ask and the request's payload in,
+/// the answer out. Not a [`methods::Call`], which is `module.query`'s and
+/// `op.submit`'s envelope.
+type NodeMethod = fn(Node, Vec<u8>) -> Answered;
+
+/// The node a view's request goes to, and the network its frames name.
+#[derive(Clone)]
+pub(super) struct Node {
+    pub(super) client: RpcClient,
+    pub(super) network: String,
+}
+
+/// How long a view's node request keeps asking a node that does not answer.
+const NODE_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// A refusal the transport produced is retried; one that is the node's
+/// own word ends the retry loop. For a READ: asking again costs nothing.
+pub(super) fn transport_failed(refusal: &wire::Error) -> bool {
+    matches!(
+        refusal.code.as_str(),
+        refusal::RPC_CLIENT | refusal::NODE_FAILED
+    )
+}
+
+/// Only a refusal that proves no frame went out is retried (a connect
+/// failure, `backend::refused`; or a transport failure of the sequence read
+/// that comes before the frame, `submitted`). For a WRITE: a request the node
+/// may have applied is not signed and sent again — the sequence moved, so
+/// the node would apply it twice.
+fn unsent(refusal: &wire::Error) -> bool {
+    refusal.code == refusal::RPC_CLIENT
+}
+
+/// The answer, and how many times the node was asked for it: each ask
+/// given `per_attempt` to answer ([`noded::ANSWER_DEADLINE`], never the
+/// budget's remainder, which would cut a recovering node's held answer
+/// short), asked again while `retry_on` the refusal and `budget` lasts. An
+/// ask cut at its deadline may have reached the node: `node_failed`, which
+/// a submit does not sign again.
+async fn until_answered(
+    budget: std::time::Duration,
+    per_attempt: std::time::Duration,
+    retry_on: fn(&wire::Error) -> bool,
+    mut ask: impl FnMut() -> Answered,
+) -> (Answer, u64) {
+    let deadline = tokio::time::Instant::now() + budget;
+    let mut attempt: u32 = 0;
+    loop {
+        let refusal = match tokio::time::timeout(per_attempt, ask()).await {
+            Ok(Ok(bytes)) => return (Ok(bytes), u64::from(attempt) + 1),
+            Ok(Err(refusal)) => refusal,
+            Err(_) => wire::Error::new(
+                refusal::NODE_FAILED,
+                "no answer came back: the node did not answer in time",
+            ),
+        };
+        if !retry_on(&refusal) {
+            return (Err(refusal), u64::from(attempt) + 1);
+        }
+        let detail = refusal.message;
+        attempt += 1;
+        let delay = backend::retry_delay(attempt);
+        if tokio::time::Instant::now() + delay > deadline {
+            tracing::warn!(
+                target: "ducktape::app",
+                reason = "view_request_unanswered",
+                error = %detail,
+                attempts = attempt,
+                "a view's node request got no answer within its retry budget"
+            );
+            return (
+                Err(wire::Error::new(
+                    refusal::RPC_CLIENT,
+                    super::super::NODE_UNREACHABLE,
+                )),
+                u64::from(attempt),
+            );
+        }
+        tokio::time::sleep(delay).await;
+    }
+}
+
+/// Runs `method` on the connected node as a task, RETRYING transport
+/// failures for [`NODE_RETRY_BUDGET`]: for reads, which ask again from
+/// scratch at no cost.
+pub(super) fn spawn_retrying(
+    guest: &mut Guest,
+    id: u64,
+    payload: &[u8],
+    method: NodeMethod,
+    stage: &'static str,
+) {
+    spawn_method(
+        guest,
+        id,
+        payload,
+        method,
+        Some(transport_failed),
+        stage,
+        None,
+    );
+}
+
+/// Runs `method` on the connected node as a task, retrying for
+/// [`NODE_RETRY_BUDGET`] only while nothing reached the node: for
+/// `op.submit`, which re-signs at a fresh sequence and so must not follow
+/// an answer that went missing with a second submission.
+pub(super) fn spawn_retrying_unsent(
+    guest: &mut Guest,
+    id: u64,
+    payload: &[u8],
+    method: NodeMethod,
+    stage: &'static str,
+) {
+    spawn_method(guest, id, payload, method, Some(unsent), stage, None);
+}
+
+/// `op.submit` of an op the person confirms first (`consent::needed`):
+/// only the person's activation opens the dialog, taken by the ask as
+/// `link.open` takes it (a view resubmitting after Cancel, or asking on a
+/// clock, gets `needs_gesture` and no second card); refused
+/// `session_locked` at once with no key to sign it (no dialog that cannot
+/// lead to a signature); else queued for the person and run as
+/// [`spawn_retrying_unsent`] once they approve, refused `consent_refused`
+/// otherwise.
+pub(super) fn spawn_consented(
+    guest: &mut Guest,
+    id: u64,
+    payload: &[u8],
+    words: super::super::consent::Words,
+) {
+    if !guest.take_activation() {
+        guest.refuse(
+            id,
+            refusal::NEEDS_GESTURE,
+            "this op asks the person and needs a press or key",
+        );
+        return;
+    }
+    if !backend::seated() {
+        guest.refuse(
+            id,
+            refusal::SESSION_LOCKED,
+            "this device's key is locked; unlock it first",
+        );
+        return;
+    }
+    if connected(guest, id).is_none() {
+        return;
+    }
+    // the in-flight slot before the ask: a request refused
+    // `in_flight_limit` never puts a card up that leads nowhere
+    let Some(slot) = admit(guest, id) else {
+        return;
+    };
+    let Some(told) = super::super::consent::ask(guest, id, words) else {
+        return;
+    };
+    spawn_method(
+        guest,
+        id,
+        payload,
+        submit,
+        Some(unsent),
+        "host_call.op.submit",
+        Some((slot, told)),
+    );
+}
+
+/// Runs `method` on the connected node as a task, asking exactly once: a
+/// transport failure is the answer (`invite.create` must not mint twice).
+pub(super) fn spawn_no_retry(
+    guest: &mut Guest,
+    id: u64,
+    payload: &[u8],
+    method: NodeMethod,
+    stage: &'static str,
+) {
+    spawn_method(guest, id, payload, method, None, stage, None);
+}
+
+/// `stage` names the call in the perf registry (`host_call.<kind>`): its
+/// latency from here to the reply, and the attempts it took. `consent`,
+/// when given, is the person's answer the task waits on before it asks
+/// the node at all: anything but `true` is `consent_refused`.
+#[allow(clippy::too_many_arguments, reason = "one spawn, every node method")]
+fn spawn_method(
+    guest: &mut Guest,
+    id: u64,
+    payload: &[u8],
+    method: NodeMethod,
+    retry_on: Option<fn(&wire::Error) -> bool>,
+    stage: &'static str,
+    consent: Option<(InFlight, super::super::consent::Told)>,
+) {
+    let ask = payload.to_vec();
+    let Some(node) = connected(guest, id) else {
+        return;
+    };
+    let (slot, told) = match consent {
+        Some((slot, told)) => (slot, Some(told)),
+        None => match admit(guest, id) {
+            Some(slot) => (slot, None),
+            None => return,
+        },
+    };
+    let replies = guest.replies.clone();
+    let key = guest.perf_key();
+    // not a `perf::Timer`: its drop would record a call refused
+    // `in_flight_limit` or cancelled by the view, which never got a reply
+    let asked = crate::perf::on().then(std::time::Instant::now);
+    let attempts_stage = crate::perf::suffixed(stage, ".attempts");
+    run(guest, id, slot, None, async move {
+        if let Some(mut told) = told
+            && told.answer().await != Some(true)
+        {
+            replies.item(
+                id,
+                Err(wire::Error::new(
+                    refusal::CONSENT_REFUSED,
+                    "the person did not confirm",
+                )),
+                true,
+            );
+            return;
+        }
+        let (result, attempts) = match retry_on {
+            Some(retry_on) => {
+                until_answered(NODE_RETRY_BUDGET, noded::ANSWER_DEADLINE, retry_on, || {
+                    method(node.clone(), ask.clone())
+                })
+                .await
+            }
+            None => (method(node, ask).await, 1),
+        };
+        if let Some(asked) = asked {
+            crate::perf::record(key, stage, asked.elapsed().as_micros() as u64);
+        }
+        if let Some(attempts_stage) = attempts_stage {
+            crate::perf::count(key, attempts_stage, attempts);
+        }
+        replies.item(id, result, true);
+    });
+}
+
+/// Every task starts here: an in-flight slot ([`admit`]) — or the request
+/// refused `in_flight_limit`, and `false` — then [`run`].
+fn start(
+    guest: &mut Guest,
+    id: u64,
+    follows: Option<Follow>,
+    task: impl std::future::Future<Output = ()> + Send + 'static,
+) -> bool {
+    match admit(guest, id) {
+        Some(slot) => {
+            run(guest, id, slot, follows, task);
+            true
+        }
+        None => false,
+    }
+}
+
+/// An in-flight slot from [`Replies::admit`] for request `id`, or the
+/// request refused `in_flight_limit` and `None`.
+fn admit(guest: &mut Guest, id: u64) -> Option<InFlight> {
+    let slot = guest.replies.admit();
+    if slot.is_none() {
+        guest.refuse(
+            id,
+            refusal::IN_FLIGHT_LIMIT,
+            "too many in-flight view requests",
+        );
+    }
+    slot
+}
+
+/// `task` on [`handle`] holding its `slot`, its [`NodeTask`] kept in
+/// `guest.tasks` (finished ones pruned) so it is aborted with the guest.
+fn run(
+    guest: &mut Guest,
+    id: u64,
+    slot: InFlight,
+    follows: Option<Follow>,
+    task: impl std::future::Future<Output = ()> + Send + 'static,
+) {
+    let task = handle().spawn(async move {
+        let _slot = slot;
+        task.await;
+    });
+    guest
+        .tasks
+        .retain(|(_, pending)| !pending.task.is_finished());
+    guest.tasks.push((id, NodeTask { task, follows }));
+}
+
+/// One SUBSCRIPTION's writing end, handed to the loop that feeds it: every
+/// item goes through the same backlog park as a node socket's, so a source
+/// that outruns the redraw waits instead of growing the reply queue into a
+/// fault.
+struct Items {
+    replies: std::sync::Arc<Replies>,
+    drained: tokio::sync::watch::Receiver<()>,
+    id: u64,
+}
+
+impl Items {
+    /// One more item. `false` when the view is gone or its reply queue
+    /// faulted, and the subscription should end — the caller returns, and
+    /// everything it holds is dropped.
+    async fn send(&mut self, result: Answer) -> bool {
+        self.replies
+            .subscription_item(&mut self.drained, self.id, result)
+            .await
+    }
+}
+
+/// A subscription whose items come from a host loop (`chain.heads` polls
+/// the node for them). The body owns whatever it holds open, so dropping
+/// the task releases it: a cancel drops the [`NodeTask`], and so do a
+/// guest's teardown, swap and trap, which drop the whole `tasks` list.
+fn spawn_subscription<Body, Fut>(guest: &mut Guest, id: u64, follows: Follow, body: Body)
+where
+    Body: FnOnce(Items) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let replies = guest.replies.clone();
+    let items = Items {
+        drained: replies.drains(),
+        replies,
+        id,
+    };
+    start(guest, id, Some(follows), body(items));
+}
+
+/// Runs `future` on the kernel runtime and delivers its result as the one
+/// reply to request `id`; counted in flight, aborted with the guest. For a
+/// host method that waits on something other than the node (`notify.post`
+/// waits on its banner, `store.*` on its file). `false` when the request
+/// was refused `in_flight_limit` instead.
+pub(in crate::runtime) fn spawn_reply(
+    guest: &mut Guest,
+    id: u64,
+    future: impl std::future::Future<Output = Answer> + Send + 'static,
+) -> bool {
+    let replies = guest.replies.clone();
+    start(guest, id, None, async move {
+        replies.item(id, future.await, true);
+    })
+}
+
+/// The node to ask, or `None` with the request REFUSED: `stale_connection`
+/// for a view from before the last (re)connect, `not_connected` without a
+/// node.
+fn connected(guest: &mut Guest, id: u64) -> Option<Node> {
+    let connection = super::super::connection().lock().expect("views rpc");
+    if connection.rev != guest.connection_rev {
+        drop(connection);
+        guest.refuse(
+            id,
+            refusal::STALE_CONNECTION,
+            "view belongs to a previous network connection",
+        );
+        return None;
+    }
+    let node = node_on(&connection);
+    drop(connection);
+    if node.is_none() {
+        guest.refuse(id, refusal::NOT_CONNECTED, "not connected to a node");
+    }
+    node
+}
+
+/// The node `connection` names, if it names one.
+fn node_on(connection: &super::super::Connection) -> Option<Node> {
+    match (&connection.client, &connection.network) {
+        (Some(client), network) if !network.is_empty() => Some(Node {
+            client: client.clone(),
+            network: network.clone(),
+        }),
+        _ => None,
+    }
+}
+
+/// A connect inside the network, under a view that kept its code
+/// (`Guest::reconnect`): each node subscription goes on, opened again on
+/// `connection`, and its follower with it — a `module.changes` one is told
+/// first to re-read (`None`, as when the node closes the socket), a
+/// `chain.heads` one starts over at the new node's tip. Every other request
+/// still running on the old connection is refused `stale_connection`, for
+/// the view to ask again.
+pub(in crate::runtime) fn reconnected(guest: &mut Guest, connection: &super::super::Connection) {
+    // counted again as each opens
+    guest.live_subscriptions.clear();
+    for (id, mut task) in std::mem::take(&mut guest.tasks) {
+        let follows = task.follows.take();
+        // dropped, it aborts: the old connection's socket goes with it
+        drop(task);
+        match (follows, node_on(connection)) {
+            (Some(Follow::Changes(program)), Some(node)) => {
+                guest
+                    .replies
+                    .item(id, Ok(methods::encode(&None::<methods::Change>)), false);
+                follow_changes(guest, id, node, program);
+            }
+            (Some(Follow::Heads), Some(node)) => follow_heads(guest, id, node),
+            _ => guest.refuse(id, refusal::STALE_CONNECTION, "network connection changed"),
+        }
+    }
+}
+
+/// `module.changes <program>`: one item per block that wrote to the program,
+/// carrying the keys it wrote.
+pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
+    let program = methods::decode::<String>(payload)
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    if program.is_empty() {
+        guest.refuse(
+            id,
+            refusal::MALFORMED_REQUEST,
+            "`module.changes` names no program",
+        );
+        return;
+    }
+    if !guest.targets.contains(&program) {
+        guest.refuse(
+            id,
+            refusal::UNDECLARED_TARGET,
+            undeclared("module.changes", &program),
+        );
+        return;
+    }
+    if guest.live_subscriptions.len() >= MAX_SUBSCRIPTIONS {
+        guest.refuse(
+            id,
+            refusal::SUBSCRIPTION_LIMIT,
+            "too many `module.changes` subscriptions",
+        );
+        return;
+    }
+    let Some(node) = connected(guest, id) else {
+        return;
+    };
+    follow_changes(guest, id, node, program);
+}
+
+/// Subscription `id`: `module.changes` of `program` on `node`.
+fn follow_changes(guest: &mut Guest, id: u64, node: Node, program: String) {
+    let replies = guest.replies.clone();
+    let subscribed = (id, program.clone());
+    let follows = Follow::Changes(program.clone());
+    let started = start(guest, id, Some(follows), async move {
+        use futures::StreamExt as _;
+        let mut drained = replies.drains();
+        let mut warned = false;
+        loop {
+            let mut changes = match node.client.changes(&program).await {
+                Ok(changes) => changes,
+                Err(error) => {
+                    if warned {
+                        tracing::debug!(target: "ducktape::app", %error, program, "changes stream not opened");
+                    } else {
+                        warned = true;
+                        tracing::warn!(target: "ducktape::app", %error, program, "changes stream not opened");
+                    }
+                    tokio::time::sleep(backend::retry_delay(2)).await;
+                    continue;
+                }
+            };
+            while let Some(change) = changes.next().await {
+                // what the node publishes, as it publishes it: the height and
+                // the keys the block wrote (the values stay on the node)
+                let item = match change {
+                    Ok(change) => Ok(methods::encode(&Some(methods::Change {
+                        height: change.height,
+                        keys: change.writes.into_iter().map(|(key, _)| key).collect(),
+                    }))),
+                    Err(_) => break,
+                };
+                if !replies.subscription_item(&mut drained, id, item).await {
+                    return;
+                }
+            }
+            // the socket closed: the node restarted or the link dropped. Say
+            // so once (the view re-reads) and open it again.
+            if !replies
+                .subscription_item(
+                    &mut drained,
+                    id,
+                    Ok(methods::encode(&None::<methods::Change>)),
+                )
+                .await
+            {
+                return;
+            }
+            tokio::time::sleep(backend::retry_delay(1)).await;
+        }
+    });
+    if started {
+        guest.live_subscriptions.push(subscribed);
+    }
+}
+
+/// The most blocks one `/v1/blocks` page answers (the node's cap).
+const MAX_BLOCK_PAGE: u32 = 100;
+
+/// `chain.heads`: one [`methods::Head`] per finalized block, oldest first. The
+/// node pushes no block stream, so this reads its status at half the block
+/// time and fills each advance from the archive (a page, at most the node's
+/// cap); where the archive holds none, the tip alone.
+pub(super) fn heads(guest: &mut Guest, id: u64, payload: &[u8]) {
+    if !payload.is_empty() {
+        guest.refuse(
+            id,
+            refusal::MALFORMED_REQUEST,
+            "`chain.heads` takes no payload",
+        );
+        return;
+    }
+    let Some(node) = connected(guest, id) else {
+        return;
+    };
+    follow_heads(guest, id, node);
+}
+
+/// Subscription `id`: `chain.heads` on `node`.
+fn follow_heads(guest: &mut Guest, id: u64, node: Node) {
+    spawn_subscription(guest, id, Follow::Heads, move |mut items| async move {
+        let mut last: Option<u64> = None;
+        loop {
+            let pace = match next_heads(&node, last).await {
+                Ok((heads, block_time_ms)) => {
+                    for head in heads {
+                        last = Some(head.height);
+                        if !items.send(Ok(methods::encode(&head))).await {
+                            return;
+                        }
+                    }
+                    std::time::Duration::from_millis(block_time_ms / 2).clamp(
+                        std::time::Duration::from_millis(100),
+                        std::time::Duration::from_secs(2),
+                    )
+                }
+                Err(error) => {
+                    tracing::debug!(target: "ducktape::app", %error, "heads not read");
+                    backend::retry_delay(2)
+                }
+            };
+            tokio::time::sleep(pace).await;
+        }
+    });
+}
+
+/// The heads past `last` (the tip alone at the first read), oldest first,
+/// and the node's block time.
+async fn next_heads(node: &Node, last: Option<u64>) -> noded::Result<(Vec<methods::Head>, u64)> {
+    let status = node.client.status().await?;
+    let tip = status.height;
+    if last.is_some_and(|last| last >= tip) {
+        return Ok((Vec::new(), status.block_time_ms));
+    }
+    let wanted = last
+        .map_or(1, |last| tip - last)
+        .min(u64::from(MAX_BLOCK_PAGE));
+    let page = noded::Blocks {
+        before: tip.checked_add(1),
+        limit: wanted as u32,
+    };
+    let mut heads: Vec<methods::Head> = node
+        .client
+        .blocks(&page)
+        .await?
+        .into_iter()
+        .rev()
+        .filter(|block| last.is_none_or(|last| block.height > last))
+        .map(|block| methods::Head {
+            height: block.height,
+            time: block.time,
+            id: block.id,
+        })
+        .collect();
+    if heads.last().is_none_or(|head| head.height < tip) {
+        heads.push(methods::Head {
+            height: tip,
+            time: 0,
+            id: status.tip,
+        });
+    }
+    Ok((heads, status.block_time_ms))
+}
+
+/// A running request or subscription; dropping it aborts the task, which is
+/// how a cancel, a swap or a teardown stops a socket waiting on the node.
+pub(in crate::runtime) struct NodeTask {
+    task: tokio::task::JoinHandle<()>,
+    /// What a node subscription follows, which [`reconnected`] opens again
+    /// on a new connection; `None` for a request answered once.
+    follows: Option<Follow>,
+}
+
+/// A node subscription, as a reconnect opens it again.
+enum Follow {
+    /// `module.changes` of this program.
+    Changes(String),
+    /// `chain.heads`.
+    Heads,
+}
+
+impl Drop for NodeTask {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// The envelope of a node method, its target checked: a program id
+/// (`program::is_name`, the rule a manifest's targets follow), not a
+/// path.
+fn call_of(ask: &[u8]) -> Result<methods::Call, wire::Error> {
+    let call: methods::Call = methods::decode(ask).map_err(malformed)?;
+    let target = call.target.trim();
+    match program::is_name(target) {
+        true => Ok(methods::Call {
+            target: target.to_owned(),
+            body: call.body,
+        }),
+        false => Err(malformed("request names no target")),
+    }
+}
+
+fn undeclared(kind: &str, target: &str) -> String {
+    format!("`{kind}` names `{target}`, which this view's manifest does not list among its targets")
+}
+
+/// The envelope of `module.query` or `op.submit` (`kind`) from `guest`, its
+/// target among the view's manifest targets; `None` with the request
+/// refused otherwise (`malformed_request`, `undeclared_target`). The task
+/// decodes the envelope again: a string and the bytes, cheaper than
+/// carrying it.
+pub(super) fn targeted(
+    guest: &mut Guest,
+    id: u64,
+    payload: &[u8],
+    kind: &str,
+) -> Option<methods::Call> {
+    let call = match call_of(payload) {
+        Ok(call) => call,
+        Err(refusal) => {
+            guest.reply(id, Err(refusal));
+            return None;
+        }
+    };
+    if !guest.targets.contains(&call.target) {
+        guest.refuse(
+            id,
+            refusal::UNDECLARED_TARGET,
+            undeclared(kind, &call.target),
+        );
+        return None;
+    }
+    Some(call)
+}
+
+pub(super) fn query(node: Node, ask: Vec<u8>) -> Answered {
+    Box::pin(async move {
+        let call = call_of(&ask)?;
+        let frame = backend::query_frame(&node.network, &call.target, call.body).await;
+        node.client
+            .query(backend::Layer::Preconfirmed, frame)
+            .await
+            .map_err(refused)
+    })
+}
+
+pub(super) fn submit(node: Node, ask: Vec<u8>) -> Answered {
+    Box::pin(async move {
+        let call = call_of(&ask)?;
+        submitted(node, call.target, call.body).await
+    })
+}
+
+/// The receipt's output on success, the program's refusal otherwise.
+async fn submitted(node: Node, target: String, payload: Vec<u8>) -> Answer {
+    // the sequence read comes before any frame: nothing signed, nothing
+    // sent, so its lost answer is asked again as a read's is. The signer's
+    // turn is held until the receipt: the next write reads the sequence
+    // this one moved. A retry takes a fresh turn, so others go in between.
+    let (frame, _turn) = backend::seated_frame(&node.client, &node.network, &target, payload)
+        .await
+        .map_err(|refusal| match transport_failed(&refusal) {
+            true => wire::Error::new(refusal::RPC_CLIENT, refusal.message),
+            false => refusal,
+        })?;
+    let receipt = node.client.submit(frame).await.map_err(refused)?;
+    match receipt.outcome {
+        abi::Outcome::Applied { output } => Ok(output),
+        abi::Outcome::Rejected(refusal) => Err(wire::Error::new(refusal.reason, refusal.sentence)),
+    }
+}
+
+pub(super) fn blob_get(node: Node, ask: Vec<u8>) -> Answered {
+    Box::pin(async move {
+        let id: String = methods::decode(&ask).map_err(malformed)?;
+        let (kind, hex) = id
+            .split_once(':')
+            .ok_or_else(|| malformed("id is `sha256:<hex>` or `sha1:<hex>`"))?;
+        let digest = backend::hex_decode(hex).map_err(malformed)?;
+        let id = match (kind, digest.len()) {
+            ("sha256", 32) => abi::BlobId::Sha256(digest.try_into().expect("32 bytes")),
+            ("sha1", 20) => abi::BlobId::Sha1(digest.try_into().expect("20 bytes")),
+            _ => return Err(malformed("id is `sha256:<hex>` or `sha1:<hex>`")),
+        };
+        // absent is `None`, never a refusal: the ask itself did not fail.
+        // Read no further than the cap and the blob's header (`kind len\0`,
+        // under 32 bytes) in its borsh `Option<Vec<u8>>` (5)
+        let cap = MAX_BLOB_BYTES + 64;
+        let Some(framed) = node.client.blob(id, cap).await.map_err(refused)? else {
+            return Ok(methods::encode(&None::<Vec<u8>>));
+        };
+        let body =
+            backend::noded::unframe(&framed).ok_or_else(|| host_fault("blob has no header"))?;
+        if body.len() > MAX_BLOB_BYTES {
+            return Err(wire::Error::new(
+                refusal::TOO_LARGE,
+                "blob exceeds the view's read limit",
+            ));
+        }
+        Ok(methods::encode(&Some(body.to_vec())))
+    })
+}
+
+pub(super) fn status(node: Node, ask: Vec<u8>) -> Answered {
+    Box::pin(async move {
+        if !ask.is_empty() {
+            return Err(malformed("chain.status takes no payload"));
+        }
+        let status = node.client.status().await.map_err(refused)?;
+        Ok(methods::encode(&methods::NodeStatus {
+            chain_id: status.network,
+            time: status.time,
+            block_time_ms: status.block_time_ms,
+            epoch_length: status.epoch_length,
+            height: status.height,
+            tip: status.tip,
+            root: status.root.0,
+            epoch: status.epoch,
+            identity: status.identity,
+            contract: status.contract,
+        }))
+    })
+}
+
+/// `chain.network`: each member's newest finalize vote. A node from before
+/// `/v1/network` answers a bare 404: refused at once as a request it does
+/// not know, not retried as a node that is down would be, so the view says
+/// to update it.
+pub(super) fn network(node: Node, ask: Vec<u8>) -> Answered {
+    Box::pin(async move {
+        if !ask.is_empty() {
+            return Err(malformed("chain.network takes no payload"));
+        }
+        let network = node.client.network().await.map_err(|error| match error {
+            noded::Error::Failed { status: 404, .. } => wire::Error::new(
+                refusal::UNKNOWN_REQUEST,
+                "This node doesn't report its validators' votes. Update the node.",
+            ),
+            error => refused(error),
+        })?;
+        let members = network
+            .members
+            .into_iter()
+            .map(|peer| methods::Peer {
+                key: peer.key,
+                signed: peer.signed,
+            })
+            .collect();
+        Ok(methods::encode(&methods::NetworkStatus {
+            height: network.height,
+            members,
+        }))
+    })
+}
+
+pub(super) fn invite(node: Node, ask: Vec<u8>) -> Answered {
+    Box::pin(async move {
+        let ttl = methods::decode::<methods::CreateInvite>(&ask)
+            .map_err(malformed)?
+            .ttl_days;
+        if ttl == 0 {
+            return Err(malformed("ttl_days must be a positive integer"));
+        }
+        // a node without /v1/invite answers an unenveloped 404, which the
+        // client classifies `http_error` — its "404 Not Found: no detail." is
+        // not something to show a person as-is.
+        let refusal = |error: ducktape_rpc::Error| {
+            if error.reason() == "http_error" && error.status() == Some(404) {
+                return wire::Error::new(
+                    refusal::INVITE_UNSUPPORTED,
+                    "This node doesn't mint invites.",
+                );
+            }
+            wire::Error::new(error.reason(), error.message())
+        };
+        // `/v1/invite` is JSON and not in `backend::noded`; ducktape-rpc is
+        // used for it alone
+        let client = ducktape_rpc::Client::new(node.client.endpoint()).map_err(refusal)?;
+        let minted = client.mint_invite(ttl).await.map_err(refusal)?;
+        let notes = minted
+            .notes
+            .into_iter()
+            .map(|note| wire::Error {
+                code: note.reason,
+                message: note.sentence,
+            })
+            .collect();
+        Ok(methods::encode(&methods::Invite {
+            invite: minted.invite,
+            notes,
+        }))
+    })
+}
+
+fn block_of(block: noded::Finalized) -> methods::Block {
+    methods::Block {
+        height: block.height,
+        id: block.id,
+        parent: block.parent,
+        time: block.time,
+        epoch: block.epoch,
+        proposer: block.proposer,
+        txs: block
+            .txs
+            .into_iter()
+            .map(|tx| methods::Tx {
+                hash: tx.hash,
+                signer: tx.signer,
+                seq: tx.seq,
+                target: tx.target,
+                payload: tx.payload,
+                receipt: tx.receipt.map(receipt_of),
+            })
+            .collect(),
+    }
+}
+
+fn receipt_of(receipt: noded::Receipt) -> methods::Receipt {
+    methods::Receipt {
+        program: receipt.program,
+        outcome: match receipt.outcome {
+            abi::Outcome::Applied { output } => methods::Outcome::Applied { output },
+            abi::Outcome::Rejected(refusal) => {
+                methods::Outcome::Rejected(wire::Error::new(refusal.reason, refusal.sentence))
+            }
+        },
+        events: receipt.events,
+        nested: receipt.nested.into_iter().map(receipt_of).collect(),
+    }
+}
+
+/// `chain.blocks`: a page of finalized blocks from the node's archive.
+pub(super) fn blocks(node: Node, ask: Vec<u8>) -> Answered {
+    Box::pin(async move {
+        let page: methods::BlockPage = methods::decode(&ask).map_err(malformed)?;
+        let page = noded::Blocks {
+            before: page.before,
+            limit: page.limit,
+        };
+        let blocks = node.client.blocks(&page).await.map_err(refused)?;
+        let blocks: Vec<methods::Block> = blocks.into_iter().map(block_of).collect();
+        Ok(methods::encode(&blocks))
+    })
+}
+
+/// `chain.block`: one finalized block by height or id, if the node has it.
+pub(super) fn block(node: Node, ask: Vec<u8>) -> Answered {
+    Box::pin(async move {
+        let by = match methods::decode::<methods::BlockRef>(&ask).map_err(malformed)? {
+            methods::BlockRef::Height(height) => noded::BlockRef::Height(height),
+            methods::BlockRef::Id(id) => noded::BlockRef::Id(id),
+        };
+        let block = node.client.block(&by).await.map_err(refused)?;
+        Ok(methods::encode(&block.map(block_of)))
+    })
+}
+
+#[cfg(test)]
+mod tests;

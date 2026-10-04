@@ -10,11 +10,17 @@
 # OUT until the kernel branch stops naming `keyscheme` at sdk `dev`, where it
 # no longer exists; cargo refuses a same-source patch. First thing back.
 
+[package]
+name = "ducktape-app"
+edition.workspace = true
+version.workspace = true
+publish = false
+description = "A local-first consensus workspace for people and agents"
+authors = ["Ducktape contributors"]
+
+
 [workspace]
 resolver = "2"
-members = [
-    "app",
-]
 
 [workspace.package]
 edition = "2024"
@@ -22,11 +28,15 @@ version = "0.1.0"
 
 [workspace.dependencies]
 
-# --- sdk-line: modules main, crates/sdk (abi, view-wire, ducklink, design) ---
-abi = { git = "https://github.com/ducktape-industries/modules", branch = "main", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/modules", branch = "main", package = "view-wire" }
-ducklink = { git = "https://github.com/ducktape-industries/modules", branch = "main", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/modules", branch = "main", package = "design" }
+# --- sdk-line: modules dev @ 270a432f (SDK fixes S2 #257 boxed styles + node decode budget, S3 #254 view decides when it renders, S4 #258 guest API honesty, S5 #255 truthful test host + request pacing, S6 #256 typed asks / ordered principals, S9 #259 one text model, S7 #260 stable route identity, S13a #261 child entities, S10 #262 data contract; gpui-pre 0.3.7 at fork b21b4f5d (gpui-pre#18 deferred a11y parent); goldens WIRE_ID 22b89abe (S10)), crates/sdk (abi, view-wire, program, ducklink, design, describe) ---
+abi = { git = "https://github.com/ducktape-industries/modules", rev = "270a432fe6a4a0e7b7df088f8ba2c483ad4af1a2", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "270a432fe6a4a0e7b7df088f8ba2c483ad4af1a2", package = "view-wire" }
+# `program::is_name`: the one spelling of a program id
+program = { git = "https://github.com/ducktape-industries/modules", rev = "270a432fe6a4a0e7b7df088f8ba2c483ad4af1a2", package = "program" }
+ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "270a432fe6a4a0e7b7df088f8ba2c483ad4af1a2", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/modules", rev = "270a432fe6a4a0e7b7df088f8ba2c483ad4af1a2", package = "design" }
+# `module.describe`: the runner a program's untrusted describe module goes through
+describe = { git = "https://github.com/ducktape-industries/modules", rev = "270a432fe6a4a0e7b7df088f8ba2c483ad4af1a2", package = "describe", features = ["host"] }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -39,11 +49,10 @@ sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 futures = "0.3"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 rand = "0.8"
 commonware-cryptography = "2026.9.0"
 commonware-codec = "2026.9.0"
-base64 = "0.22"
 tempfile = "3"
 zeroize = "1"
 # wasmtime — pinned exactly, matching the node's runtime: a module-owned view
@@ -51,8 +60,99 @@ zeroize = "1"
 wasmtime = "=46.0.3"
 libc = "0.2"
 
+[features]
+# dev and qa builds only (owner, 2026-09-28): gpui's own frame and input
+# histograms and its first present into `GET /perf` (docs/perf.md §3.5).
+# A default build compiles none of it: hdrhistogram is not in its graph.
+perf-deep = ["gpui-kit/profiler"]
+# kit and qa builds only (chief, 2026-10-01, hub audit Q7): the AX door
+# (src/ax) and its `ducktape-app ax` client. A default build compiles none
+# of it: DUCKTAPE_AX_DOOR does nothing there.
+ax-door = []
+
+[dependencies]
+gpui-kit = "=0.7.0"
+gpui-base = "=0.7.0"
+unicode-segmentation = "1"
+qrcode = { version = "0.14", default-features = false }
+futures.workspace = true
+design.workspace = true
+describe.workspace = true
+sha2.workspace = true
+ducktape-home.workspace = true
+ducktape-rpc = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b" }
+keystore.workspace = true
+# This device's key, kept by the OS (`backend/device_key.rs`): Keychain,
+# Credential Manager, Secret Service (over zbus, no libdbus to link).
+keyring = { version = "3", features = ["apple-native", "windows-native", "async-secret-service", "async-io", "crypto-rust"] }
+# The passkey lane (`backend/passkey.rs`): the verifier the node runs (to
+# pick which passkey signed and to frame its assertion), and the identity
+# program's own types, so a Create/AddKey/Consent is the program's bytes.
+keyscheme = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "736865710dcfa7c56f9834747287881c1c25d45d", package = "keyscheme" }
+identity = { git = "https://github.com/ducktape-industries/modules", rev = "270a432fe6a4a0e7b7df088f8ba2c483ad4af1a2", package = "identity" }
+# The roster's full query surface: its programs and its view-only entries.
+module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "270a432fe6a4a0e7b7df088f8ba2c483ad4af1a2", package = "module-registry" }
+base64 = "0.22"
+commonware-cryptography.workspace = true
+commonware-codec.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+# A guest SVG's own size, which sets the height gpui rasterises it at
+# (`render/svg_limits.rs`): gpui's own parser, already in the graph.
+usvg = { version = "0.46.0", default-features = false }
+reqwest.workspace = true
+tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zeroize.workspace = true
+view-wire = { workspace = true, features = ["manifest"] }
+program.workspace = true
+abi.workspace = true
+borsh.workspace = true
+ducklink.workspace = true
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+wasmtime.workspace = true
+wasmparser = "0.251"
+libc.workspace = true
+sha1 = "0.10"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tray-icon = { version = "0.24", default-features = false }
+block2 = "0.5"
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", default-features = false, features = ["std", "NSBundle", "NSString", "NSError", "NSDictionary", "NSObject"] }
+objc2-user-notifications = { version = "0.2", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationSound", "UNNotificationTrigger", "UNNotification", "UNNotificationResponse"] }
+
+# Everywhere else the notifier is the freedesktop notifications service, one
+# `Notify` call on the session bus. zbus is already in this binary's graph
+# under the accessibility stack; this only names it.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+zbus = "5"
+
+[dev-dependencies]
+# hand-written wasm for the describe method's hostile-section tests
+wat = "1"
+gpui-kit = { version = "=0.7.0", features = ["test-support"] }
+tempfile.workspace = true
+keyscheme = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "736865710dcfa7c56f9834747287881c1c25d45d", package = "keyscheme", features = ["testkit"] }
+p256 = "0.13"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# test-support: its headless renderer, which `render/tests/picture_pixels.rs`
+# reads pixels back from.
+gpui-wgpu = { package = "gpui-pre-wgpu", version = "=0.3.7", features = ["test-support"] }
+
 [patch.crates-io]
-gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "021b436617db8bf377ad384b464cd1b34692f35e" }
+gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "b21b4f5da8c6ba6e7d3ad683e2d14e9f835b3a35" }
+rmp-serde = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "b21b4f5da8c6ba6e7d3ad683e2d14e9f835b3a35" }
+gpui-pre-scheduler = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "b21b4f5da8c6ba6e7d3ad683e2d14e9f835b3a35" }
+gpui-pre-zlog = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "b21b4f5da8c6ba6e7d3ad683e2d14e9f835b3a35" }
+gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "b21b4f5da8c6ba6e7d3ad683e2d14e9f835b3a35" }
+# Window::set_bounds: the X11 and macOS backends, vendored in the fork
+gpui-pre-linux = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "b21b4f5da8c6ba6e7d3ad683e2d14e9f835b3a35" }
+gpui-pre-macos = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "b21b4f5da8c6ba6e7d3ad683e2d14e9f835b3a35" }
 
 # dev/test builds compile wasm guests through cranelift (module-owned view
 # fixtures); unoptimized cranelift is 10-30x slower, so the code generator
