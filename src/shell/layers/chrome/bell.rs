@@ -249,7 +249,7 @@ impl Chrome {
                 .child(
                     sans(400, 13.)
                         .text_color(ink.muted)
-                        .child("Mentions and messages land here."),
+                        .child("Notices from your programs land here."),
                 ),
             );
         }
