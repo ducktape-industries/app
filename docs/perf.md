@@ -439,7 +439,7 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by module and by window:
    produce the metric pass, whatever AX audits fail elsewhere in it.
    Starting points (#291's trace): chat 72M → 90M, forge 45M → 56M,
    explorer 26M → 33M. All three are census readings now (below): chat
-   37M, forge 11M, explorer 42M. Gate on `max` and
+   15M, forge 3.5M, explorer 8M. Gate on `max` and
    counts since the last reset, never on equality: inputs vary with when
    replies and blocks land.
 
@@ -459,7 +459,17 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by module and by window:
    over rule 1's ceiling it would be no regression budget: the ceiling
    reports the same tick without it.
 
-   Refreshed 2026-10-04, after the SDK fix campaign: the largest of five
+   Refreshed 2026-10-05, after the campaign's second part (bytes cross
+   the wire as a bin, modules#269; a lowered node costs what it sets,
+   modules#270; the views build at `opt-level` 3, modules#271): the
+   largest of seven seeded censuses of this code line, the last at the
+   `dev` heads (app `7bb30f7b`, modules `9c51ad01`), every run 94 of 94
+   steps. Chat 11,974,346 × 1.25 = 15M, explorer 6,528,779 × 1.25 =
+   8M, forge 2,764,051 × 1.25 = 3.46M, kept at 3.5M: a whole million
+   is a third of it. They replace 37M, 42M and 11M. The explorer's
+   reading moves little now (6.50–6.53M across the seven).
+
+   Before that, 2026-10-04, after the SDK fix campaign: the largest of five
    seeded censuses of this code, four on the branches before the merge and
    the last at the `dev` heads (app `72555218`, modules `b650bebf`, qa
    `39aab414`), every run 94 of 94 steps. Chat 29,856,561 × 1.25 = 37M (746
