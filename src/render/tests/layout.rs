@@ -473,3 +473,82 @@ fn a_claimed_row_below_the_fold_is_scrolled_into_view(cx: &mut gpui_kit::TestApp
         "a claim that stays does not pull the scroller back"
     );
 }
+
+/// A `View` node is the box its style gives, its content laid out as a
+/// root inside it, out of flow: the content takes the box's bounds, the
+/// box takes none of the content's size (a box with no height of its own
+/// is flat whatever it holds), and the content keeps its own (a taller
+/// content overflows the box, as a root does its window).
+#[gpui_kit::test]
+fn a_view_node_is_an_id_less_box_filled_by_its_content(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let tall = |key: &str| {
+        container_with_style(
+            key,
+            div().w_full().h(px(500.)).style().clone(),
+            [wire::Node::empty()],
+        )
+    };
+    let root_in =
+        |key: &str, tall| container_with_style(key, div().size_full().style().clone(), [tall]);
+    let boxed = wire::Node::View {
+        view: 7,
+        style: crate::render::test_style(div().w(px(120.)).h(px(80.)).style().clone()),
+        content: Some(Box::new(root_in("content", tall("tall")))),
+    };
+    let flat = wire::Node::View {
+        view: 8,
+        style: crate::render::test_style(div().w(px(120.)).style().clone()),
+        content: Some(Box::new(root_in("loose", tall("loose-tall")))),
+    };
+    let after = container_with_style(
+        "after",
+        div().w_full().h(px(10.)).style().clone(),
+        [wire::Node::empty()],
+    );
+    let root = container_with_style(
+        "frame",
+        div()
+            .flex()
+            .flex_col()
+            .w(px(300.))
+            .h(px(200.))
+            .style()
+            .clone(),
+        [boxed, flat, after],
+    );
+    let window = cx.open_window(size(px(400.), px(400.)), |_, cx| {
+        Seat(cx.new(|_| ViewTree::new(root)))
+    });
+    let tree = window
+        .root(cx)
+        .unwrap()
+        .read_with(cx, |seat, _| seat.0.clone());
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+    });
+    // a box has no path of its own: its content sits on the frame's
+    let bounds = |path: &[&str]| {
+        let path: Vec<_> = std::iter::once("frame")
+            .chain(path.iter().copied())
+            .map(named_id)
+            .collect();
+        tree.read_with(&native, |tree, _| tree.measured_bounds(&path))
+            .unwrap_or_else(|| panic!("{path:?} was measured"))
+    };
+    let at = |y: f32, w: f32, h: f32| Bounds::new(point(px(0.), px(y)), size(px(w), px(h)));
+    assert_eq!(bounds(&["content"]), at(0., 120., 80.));
+    assert_eq!(bounds(&["content", "tall"]), at(0., 120., 500.));
+    assert_eq!(
+        bounds(&["loose"]),
+        at(80., 120., 0.),
+        "a box with no height is flat"
+    );
+    assert_eq!(
+        bounds(&["after"]),
+        at(80., 300., 10.),
+        "the boxes take none of their content's size"
+    );
+}

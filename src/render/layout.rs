@@ -89,6 +89,41 @@ impl ViewTree {
         element.into_any_element()
     }
 
+    /// A cached child entity's box: an id-less container in the whole
+    /// style, holding the kept subtree out of flow, so the box is laid out
+    /// from its style alone and the content as a root inside it (the
+    /// guest's `entity.cached(style)` contract). No path segment, no AX
+    /// node of its own: the content's are the box's.
+    pub(super) fn view(
+        &mut self,
+        node: &wire::Node,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let wire::Node::View { style, content, .. } = node else {
+            unreachable!()
+        };
+        let content = content
+            .as_deref()
+            .expect("a hollow View never reaches the host: the sanitizer refuses it");
+        let style = self.style(*style);
+        let mut element = div();
+        *element.style() = (*style).clone();
+        crate::fonts::refine_fallbacks(element.style());
+        let index = self.render_index;
+        self.render_index += 1;
+        let element = element.id(host_id(format!("container-{index}")));
+        let element = self.guest_aria(element, node, wire::Interactivity::none(), cx);
+        element
+            .child(
+                div()
+                    .absolute()
+                    .size_full()
+                    .child(self.node(content, window, cx)),
+            )
+            .into_any_element()
+    }
+
     /// A zero-paint absolute canvas that records its bounds into
     /// `bounds[path]` and notifies when they change, and, on the first frame
     /// a claim is on `path`, scrolls to it ([`Self::reveal`]). Only a node

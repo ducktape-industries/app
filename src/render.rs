@@ -337,6 +337,7 @@ impl ViewTree {
             Node::Container(view_wire::ContainerNode { .. }) => self.container(node, window, cx),
             Node::Field { .. } => self.field(node, window, cx),
             Node::Deferred { .. } => self.deferred(node, window, cx),
+            Node::View { .. } => self.view(node, window, cx),
             Node::ResizeHandle { .. } => self.resize_handle(node, window, cx),
             Node::Sensor { .. } => self.sensor(node, window, cx),
             Node::RichText { .. } => self.rich_text(node, window, cx),
