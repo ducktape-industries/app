@@ -998,11 +998,18 @@ mod tests {
             };
             super::folded_icon(&row, &gpui_kit::assets::AllAssets)
         };
-        assert_eq!(
-            drawn("icons/hammer.svg"),
-            Some("icons/hammer.svg".into()),
-            "declared and bundled"
-        );
+        // the icons the shipped views declare: a kit that renames one of
+        // these files folds that tab to its initial
+        for icon in [
+            "icons/messages-square.svg",
+            "icons/hammer.svg",
+            "icons/users.svg",
+            "icons/circle-user.svg",
+            "icons/server.svg",
+            "icons/compass.svg",
+        ] {
+            assert_eq!(drawn(icon), Some(icon.into()), "declared and bundled");
+        }
         assert_eq!(drawn(""), None, "none declared");
         assert_eq!(drawn("icons/no-such-icon.svg"), None, "not bundled");
     }
