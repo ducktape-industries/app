@@ -28,15 +28,15 @@ version = "0.1.0"
 
 [workspace.dependencies]
 
-# --- sdk-line: modules dev @ c11e988f (SDK fixes S2 #257 boxed styles + node decode budget, S3 #254 view decides when it renders, S4 #258 guest API honesty, S5 #255 truthful test host + request pacing, S6 #256 typed asks / ordered principals, S9 #259 one text model, S7 #260 stable route identity, S13a #261 child entities, S10 #262 data contract, S7b #263 row scopes + an authored list id, S11 #264 wire and sanitizer honesty, S12 #265 style table + no field names on the wire, S14 #266 package ducktape-view-guest, S8 #267 viewport + list rows follow the host + host-drawn list gutter, S10b #268 Paged<T>, S15 #269 bytes cross the wire as a bin, S17 #270 a lowered node costs what it sets (optional interactivity on the node); gpui-pre 0.3.7 at fork 3207fbe5 (gpui-pre#20 the rmp-serde slice reader says what is left); goldens WIRE_ID bf2590d1 (S15)), crates/sdk (abi, view-wire, program, ducklink, design, describe) ---
-abi = { git = "https://github.com/ducktape-industries/modules", rev = "c11e988ff1abac859aef6fcd2a640a539dc5ca67", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "c11e988ff1abac859aef6fcd2a640a539dc5ca67", package = "view-wire" }
+# --- sdk-line: modules dev @ 9c51ad01 (SDK fixes S2 #257 boxed styles + node decode budget, S3 #254 view decides when it renders, S4 #258 guest API honesty, S5 #255 truthful test host + request pacing, S6 #256 typed asks / ordered principals, S9 #259 one text model, S7 #260 stable route identity, S13a #261 child entities, S10 #262 data contract, S7b #263 row scopes + an authored list id, S11 #264 wire and sanitizer honesty, S12 #265 style table + no field names on the wire, S14 #266 package ducktape-view-guest, S8 #267 viewport + list rows follow the host + host-drawn list gutter, S10b #268 Paged<T>, S15 #269 bytes cross the wire as a bin, S17 #270 a lowered node costs what it sets (optional interactivity on the node), #271 views build at opt-level 3, S18 #272 the system owns the author's plumbing (bound text field, follow, one loader, query_all, one prelude), S19 #273 a composer's draft is the one its frame drew; gpui-pre 0.3.7 at fork 3207fbe5 (gpui-pre#20 the rmp-serde slice reader says what is left); goldens WIRE_ID bf2590d1 (S15)), crates/sdk (abi, view-wire, program, ducklink, design, describe) ---
+abi = { git = "https://github.com/ducktape-industries/modules", rev = "9c51ad012a3ea39526c1af85fbe9dc5109ef05be", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "9c51ad012a3ea39526c1af85fbe9dc5109ef05be", package = "view-wire" }
 # `program::is_name`: the one spelling of a program id
-program = { git = "https://github.com/ducktape-industries/modules", rev = "c11e988ff1abac859aef6fcd2a640a539dc5ca67", package = "program" }
-ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "c11e988ff1abac859aef6fcd2a640a539dc5ca67", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/modules", rev = "c11e988ff1abac859aef6fcd2a640a539dc5ca67", package = "design" }
+program = { git = "https://github.com/ducktape-industries/modules", rev = "9c51ad012a3ea39526c1af85fbe9dc5109ef05be", package = "program" }
+ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "9c51ad012a3ea39526c1af85fbe9dc5109ef05be", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/modules", rev = "9c51ad012a3ea39526c1af85fbe9dc5109ef05be", package = "design" }
 # `module.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/modules", rev = "c11e988ff1abac859aef6fcd2a640a539dc5ca67", package = "describe", features = ["host"] }
+describe = { git = "https://github.com/ducktape-industries/modules", rev = "9c51ad012a3ea39526c1af85fbe9dc5109ef05be", package = "describe", features = ["host"] }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -89,9 +89,9 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # pick which passkey signed and to frame its assertion), and the identity
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "736865710dcfa7c56f9834747287881c1c25d45d", package = "keyscheme" }
-identity = { git = "https://github.com/ducktape-industries/modules", rev = "c11e988ff1abac859aef6fcd2a640a539dc5ca67", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/modules", rev = "9c51ad012a3ea39526c1af85fbe9dc5109ef05be", package = "identity" }
 # The roster's full query surface: its programs and its view-only entries.
-module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "c11e988ff1abac859aef6fcd2a640a539dc5ca67", package = "module-registry" }
+module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "9c51ad012a3ea39526c1af85fbe9dc5109ef05be", package = "module-registry" }
 base64 = "0.22"
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
