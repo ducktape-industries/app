@@ -72,8 +72,12 @@ impl Guest {
                     before_any_candidate(Failure::Refused(format!("{shown}: {error}")))
                 })?;
                 Self::compile(&bytes, &shown).map_err(before_any_candidate)?;
-                let (name, _, min_width, _) = manifest_of(&bytes);
-                return Ok(Loaded::Compiled { name, min_width });
+                let (name, _, min_width, _, icon) = manifest_of(&bytes);
+                return Ok(Loaded::Compiled {
+                    name,
+                    icon,
+                    min_width,
+                });
             }
             return Self::load_from(module, &path)
                 .map(|guest| Loaded::Fresh(Box::new(guest)))
@@ -167,11 +171,15 @@ impl Guest {
                 },
                 1,
             );
-            let (name, capabilities, min_width, targets) = manifest_of(&view_bytes);
-            // a seat no pane holds stops here: the rail reads its name off
-            // the manifest, and the pane that claims it starts it
+            let (name, capabilities, min_width, targets, icon) = manifest_of(&view_bytes);
+            // a seat no pane holds stops here: the rail reads its name and
+            // its icon off the manifest, and the pane that claims it starts it
             if instance == 0 && against.is_none() {
-                return Ok(Loaded::Compiled { name, min_width });
+                return Ok(Loaded::Compiled {
+                    name,
+                    icon,
+                    min_width,
+                });
             }
             let instantiated = Instant::now();
             let mut fresh = Self::instantiate(module, &code, &shown).map_err(Failure::Refused)?;
@@ -180,6 +188,7 @@ impl Guest {
             crate::perf::record(key, "instantiate", timing.instantiate.as_micros() as u64);
             crate::perf::record(key, "fuel.instantiate", fresh.fuel_used());
             fresh.name = name;
+            fresh.icon = icon;
             fresh.capabilities = capabilities;
             fresh.targets = targets;
             fresh.min_width = min_width;
@@ -409,6 +418,7 @@ impl Guest {
             module,
             instance,
             name,
+            icon,
             capabilities,
             targets,
             min_width,
@@ -454,6 +464,7 @@ impl Guest {
         let mut sibling = Self::instantiate(module, code, shown)?;
         sibling.instance = *instance;
         sibling.name = name.clone();
+        sibling.icon = icon.clone();
         sibling.capabilities = capabilities.clone();
         sibling.targets = targets.clone();
         sibling.min_width = *min_width;
@@ -604,6 +615,7 @@ impl Guest {
             guest.capabilities,
             guest.min_width,
             guest.targets,
+            guest.icon,
         ) = manifest_of(bytes);
         guest.init(shown)?;
         Ok(guest)
@@ -691,6 +703,7 @@ impl Guest {
             module,
             instance: 0,
             name: String::new(),
+            icon: String::new(),
             capabilities: Vec::new(),
             targets: Vec::new(),
             min_width: 0,

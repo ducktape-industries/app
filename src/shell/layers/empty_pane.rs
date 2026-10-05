@@ -723,6 +723,7 @@ mod tests {
         RailRow {
             module,
             label: label.into(),
+            icon: String::new(),
             note: None,
             empty,
         }

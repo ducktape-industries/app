@@ -45,12 +45,11 @@ Three things cross between a view and the app, and only three:
 What the app deliberately does not know:
 
 - **No user program by name.** Panes, tabs and labels come from the roster
-  (`Roster::rail`), a tab's name from the view's manifest. Three *system*
-  programs are named by id and nothing else: `identity`
-  (`backend/passkey.rs`, `backend/join.rs`: accounts and keys),
-  `module-registry` (`backend/views.rs`: the roster query;
-  `shell/layers/chrome/menus.rs`: the Account menu opens it), and `valset`;
-  all three also pick an icon on a folded menu bar (`shell/layers/chrome.rs`).
+  (`Roster::rail`), a tab's name and the icon it draws on a folded menu bar
+  from the view's manifest. Two *system* programs are named by id and
+  nothing else: `identity` (`backend/passkey.rs`, `backend/join.rs`:
+  accounts and keys) and `module-registry` (`backend/views.rs`: the roster
+  query; `shell/layers/chrome/menus.rs`: the Account menu opens it).
 - **No payload.** `module.query` and `op.submit` carry `Call{target, body}`;
   the app signs and forwards `body` and returns the program's bytes as
   they are. `module.describe` renders an op readable by running the
@@ -148,7 +147,8 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    against `view_wire::WIRE_ID`, then `compiled_view` compiles through the one
    `Engine` (`guest::engine`: `consume_fuel(true)`, opt level Speed, a
    wasmtime disk cache under `cache_dir()/view-code`); `runtime::manifest_of`
-   reads the same manifest again for the tab name and the capabilities.
+   reads the same manifest again for the tab's name and icon and the
+   capabilities.
    Compiled modules are cached by sha256 of the bytes in `ViewCodeCache`
    (16 modules, 32 MiB of source).
 4. **Seat / mount.** A **seat** is `seat::Mounted`, one per
@@ -163,8 +163,8 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    pane. `Seat::new` claims
    seat `(module, 0)` or makes a new one and subscribes to its `wake`.
    A preloaded seat (instance 0, no pane) stops at the compiled code:
-   `Compiled` keeps the manifest's name and minimum width, which the rail
-   and the layout read, and no instance exists and no `init` runs for a
+   `Compiled` keeps the manifest's name, icon and minimum width, which the
+   rail and the layout read, and no instance exists and no `init` runs for a
    program nobody opened. The pane that claims it loads it again (the
    blob and the code come from the caches), past that point; a seat
    claimed while its preload is on the way gets that load once the

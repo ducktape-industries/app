@@ -57,6 +57,9 @@ pub(super) struct Guest {
     pub(crate) instance: u64,
     /// The manifest's name: what a registered view's tab is called.
     pub(crate) name: String,
+    /// The manifest's icon: what the view's tab draws on a folded menu bar;
+    /// empty when the view declares none.
+    pub(crate) icon: String,
     /// The capabilities the manifest declares: a method whose capability is
     /// not among them is refused before it is routed.
     pub(crate) capabilities: Vec<Capability>,

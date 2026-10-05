@@ -395,6 +395,27 @@ fn a_stalled_load_does_not_hold_the_roster_read() {
     eventually("the load is held by the node", || node.held().0 == 1);
 }
 
+/// A view whose manifest says `name`, `icon` (none when empty) and a 320px
+/// minimum, its `init` the instructions given; its other exports trap.
+fn view_declaring(name: &str, icon: &str, init: &str) -> Vec<u8> {
+    let manifest = format!(
+        "ducktape.view.manifest\\n{name}\\n\\n\\n320\\n{}\\n\\n{icon}",
+        wire::WIRE_ID
+    );
+    wat::parse_str(format!(
+        r#"(module
+        (@custom "{}" "{manifest}")
+        (memory (export "memory") 1)
+        (func (export "alloc") (param i32) (result i32) i32.const 64)
+        (func (export "init") {init})
+        (func (export "tick") (param i32 i32) (result i64) unreachable)
+        (func (export "snapshot") (result i64) unreachable)
+        (func (export "restore") (param i32 i32) (result i64) unreachable))"#,
+        wire::manifest::MANIFEST_SECTION
+    ))
+    .unwrap()
+}
+
 /// A program no pane has opened is compiled for the rail and never
 /// started: its `init` does not run. Here `init` traps, so a load that
 /// started the view fails: the preload lands compiled, named by its
@@ -402,22 +423,7 @@ fn a_stalled_load_does_not_hold_the_roster_read() {
 /// `init`, and fails on it.
 #[test]
 fn an_unopened_program_runs_no_init() {
-    let manifest = format!(
-        "ducktape.view.manifest\\nLazy\\n\\n\\n320\\n{}\\n",
-        wire::WIRE_ID
-    );
-    let view = wat::parse_str(format!(
-        r#"(module
-        (@custom "{}" "{manifest}")
-        (memory (export "memory") 1)
-        (func (export "alloc") (param i32) (result i32) i32.const 64)
-        (func (export "init") unreachable)
-        (func (export "tick") (param i32 i32) (result i64) unreachable)
-        (func (export "snapshot") (result i64) unreachable)
-        (func (export "restore") (param i32 i32) (result i64) unreachable))"#,
-        wire::manifest::MANIFEST_SECTION
-    ))
-    .unwrap();
+    let view = view_declaring("Lazy", "", "unreachable");
     let code = blob_id(&view);
     let listed = module_registry::View {
         name: "lazy-view".into(),
@@ -429,7 +435,10 @@ fn an_unopened_program_runs_no_init() {
     let seat = lock(&registry)[&("lazy-view", 0)].clone();
     eventually("the preload landed", || !lock(&seat).slot.loading());
     assert!(
-        matches!(&lock(&seat).slot, Slot::Compiled { name, min_width: 320 } if name == "Lazy"),
+        matches!(
+            &lock(&seat).slot,
+            Slot::Compiled { name, icon, min_width: 320 } if name == "Lazy" && icon.is_empty()
+        ),
         "the unopened view did not land compiled and unstarted"
     );
     // a pane claims the seat: its load starts the view
@@ -457,6 +466,69 @@ fn an_unopened_program_runs_no_init() {
     let _ = std::fs::remove_file(&kept);
 }
 
+/// A rail row's icon is the one its view's manifest declares, read with its
+/// name as the seat lands compiled and kept once a pane has started the
+/// view; a view that declares none has none.
+#[test]
+fn a_rail_row_carries_the_icon_its_views_manifest_declares() {
+    const ICON: &str = "icons/hammer.svg";
+    let views = [
+        ("iconed-view", view_declaring("Iconed", ICON, "")),
+        ("plain-view", view_declaring("Plain", "", "")),
+    ];
+    let listed = views
+        .iter()
+        .map(|(name, view)| module_registry::View {
+            name: (*name).into(),
+            view: blob_id(view),
+        })
+        .collect();
+    let blobs = views.iter().map(|(_, view)| view.clone()).collect();
+    let node = FakeNode::new(Vec::new(), listed, blobs);
+    let (roster, seats) = (Roster::default(), Registry::default());
+    read_roster(node.asked_of.clone(), &roster, &seats);
+    // the rail reads the app's seats: these two are among them while it looks
+    for (module, _) in &views {
+        let seat = lock(&seats)[&(*module, 0)].clone();
+        eventually("the preload landed", || !lock(&seat).slot.loading());
+        lock(registry()).insert((*module, 0), seat);
+    }
+    let icon = |module: &str| {
+        let rows = roster.rail();
+        let row = rows.iter().find(|row| row.module == module);
+        row.expect("a listed view").icon.clone()
+    };
+    assert_eq!(icon("iconed-view"), ICON, "compiled, not started");
+    assert_eq!(icon("plain-view"), "", "its manifest declares none");
+    // a pane claims the seat: the view its load starts is that manifest's
+    let seat = lock(&seats)[&("iconed-view", 0)].clone();
+    let generation = {
+        let mut locked = lock(&seat);
+        locked.instance = 7;
+        locked.start()
+    };
+    queue(Load {
+        module: "iconed-view",
+        seat: seat.clone(),
+        generation,
+        asked_of: node.asked_of.clone(),
+        code: Some((blob_id(&views[0].1), true)),
+    });
+    eventually("the claiming pane's load started the view", || {
+        matches!(lock(&seat).slot, Slot::Ready(_))
+    });
+    assert_eq!(icon("iconed-view"), ICON, "started");
+    for (module, view) in &views {
+        lock(registry()).remove(&(*module, 0));
+        // the fetch kept the blob in the developer's own cache: it goes
+        let kept = crate::backend::cache_dir()
+            .unwrap()
+            .join("programs")
+            .join(abi::hex(blob_id(view).digest()));
+        let _ = std::fs::remove_file(&kept);
+    }
+}
+
 /// A pane that claims a seat preloaded only as far as compiled starts its
 /// view: the seat leaves `Compiled` for a load of its own (with no node in
 /// a test, a failure offering Retry), where its pane said "Loading" for good.
@@ -466,6 +538,7 @@ fn a_pane_starts_the_view_its_seat_compiled() {
     let preloaded = Mounted::seat();
     lock(&preloaded).slot = Slot::Compiled {
         name: "Claimed".into(),
+        icon: String::new(),
         min_width: 320,
     };
     lock(registry()).insert((MODULE, 0), preloaded);
@@ -496,6 +569,7 @@ fn a_seat_claimed_during_its_preload_is_started() {
     preload.land(|_, _| {
         Ok(Loaded::Compiled {
             name: "Claimed".into(),
+            icon: String::new(),
             min_width: 320,
         })
     });
@@ -514,6 +588,7 @@ fn a_stale_preload_does_not_supersede_the_panes_load() {
     let seat = Mounted::seat();
     lock(&seat).slot = Slot::Compiled {
         name: "Stale".into(),
+        icon: String::new(),
         min_width: 320,
     };
     let reload = lock(&seat).start();
@@ -532,6 +607,7 @@ fn a_stale_preload_does_not_supersede_the_panes_load() {
     .land(|_, _| {
         Ok(Loaded::Compiled {
             name: "Stale".into(),
+            icon: String::new(),
             min_width: 320,
         })
     });
@@ -551,6 +627,7 @@ fn a_load_from_a_node_the_app_left_starts_no_other() {
     let seat = Mounted::seat();
     lock(&seat).slot = Slot::Compiled {
         name: "Left".into(),
+        icon: String::new(),
         min_width: 320,
     };
     let generation = {
@@ -572,6 +649,7 @@ fn a_load_from_a_node_the_app_left_starts_no_other() {
     .land(|_, _| {
         Ok(Loaded::Compiled {
             name: "Left".into(),
+            icon: String::new(),
             min_width: 320,
         })
     });

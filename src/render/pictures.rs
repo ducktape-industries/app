@@ -320,7 +320,7 @@ impl ViewTree {
                 )),
                 None => element.child("SVG data unavailable"),
             },
-            wire::SvgSource::Asset(path) if safe_asset_path(path) => {
+            wire::SvgSource::Asset(path) if wire::safe_asset_path(path) => {
                 element.child(guarded_svg_paint(
                     SvgPaintSource::Asset(path.clone().into()),
                     CurrentColor(
@@ -521,14 +521,4 @@ fn primitive_object_fit(fit: wire::ImageObjectFit) -> ObjectFit {
         wire::ImageObjectFit::ScaleDown => ObjectFit::ScaleDown,
         wire::ImageObjectFit::None => ObjectFit::None,
     }
-}
-
-fn safe_asset_path(path: &str) -> bool {
-    !path.is_empty()
-        && !path.starts_with('/')
-        && !path.contains('\\')
-        && !path.contains(':')
-        && path
-            .split('/')
-            .all(|part| !part.is_empty() && part != "." && part != "..")
 }
