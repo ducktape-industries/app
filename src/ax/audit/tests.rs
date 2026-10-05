@@ -969,6 +969,7 @@ fn members(active: usize) -> view_wire::Node {
                         .style()
                         .clone(),
                 );
+                let interactivity = interactivity.get_or_insert_default();
                 interactivity.role = Some(gpui_kit::Role::ListBoxOption);
                 interactivity.aria.label = Some(format!("Row {n}").into());
                 interactivity.aria.selected = Some(n == active);
@@ -980,6 +981,7 @@ fn members(active: usize) -> view_wire::Node {
         .collect();
     let mut list = container("list".to_owned(), rows);
     if let view_wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut list {
+        let interactivity = interactivity.get_or_insert_default();
         interactivity.role = Some(gpui_kit::Role::ListBox);
         interactivity.aria.label = Some("Members".into());
         interactivity.focusable = true;
@@ -1097,7 +1099,7 @@ fn item(
                 .style()
                 .clone(),
         ),
-        interactivity: Box::new(view_wire::Interactivity {
+        interactivity: Some(Box::new(view_wire::Interactivity {
             role: Some(role),
             aria: view_wire::Aria {
                 label: Some(id.into()),
@@ -1107,7 +1109,7 @@ fn item(
                 ..Default::default()
             },
             ..Default::default()
-        }),
+        })),
         children,
     })
 }
@@ -1125,7 +1127,7 @@ fn one_stop(
     view_wire::Node::Container(view_wire::ContainerNode {
         id: Some(view_wire::ElementIdWire::Name(id.to_owned().into())),
         style: crate::render::test_style(gpui_kit::div().flex().flex_col().style().clone()),
-        interactivity: Box::new(view_wire::Interactivity {
+        interactivity: Some(Box::new(view_wire::Interactivity {
             role: Some(role),
             focusable: true,
             tab_stop: Some(true),
@@ -1136,7 +1138,7 @@ fn one_stop(
                 ..Default::default()
             },
             ..Default::default()
-        }),
+        })),
         children: items,
     })
 }
@@ -1330,8 +1332,8 @@ fn view_button(id: &str) -> view_wire::Node {
     else {
         unreachable!()
     };
-    button.interactivity.focusable = true;
-    button.interactivity.tab_stop = Some(true);
+    button.interactivity.get_or_insert_default().focusable = true;
+    button.interactivity.get_or_insert_default().tab_stop = Some(true);
     view_wire::Node::Container(button)
 }
 

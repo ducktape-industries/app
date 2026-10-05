@@ -339,6 +339,9 @@ impl ViewTree {
             .flex_shrink(1.)
             .min_w_0()
             .id(native_id.clone());
+        let interactivity = interactivity
+            .as_deref()
+            .unwrap_or(wire::Interactivity::none());
         let list = self.guest_aria(list, node, interactivity, cx);
         beside_its_bar(room, list, &native_id, &scroll, cx.entity_id()).into_any_element()
     }

@@ -631,7 +631,7 @@ fn a_view_moves_the_keys_only_while_its_keys_are_free(cx: &mut TestAppContext) {
         interactivity: Default::default(),
         children: Vec::new(),
     };
-    button.interactivity.focus_handle = Some(9);
+    button.interactivity.get_or_insert_default().focus_handle = Some(9);
     let root = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("root".into())),
         style: crate::render::plain_style(),

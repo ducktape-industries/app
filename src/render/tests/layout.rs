@@ -99,10 +99,10 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         child: Box::new(wire::Node::Container(view_wire::ContainerNode {
             id: Some(named_id("press-area")),
             style: crate::render::test_style(sized_style(Some(fill()), Some(fill()))),
-            interactivity: Box::new(wire::Interactivity {
+            interactivity: Some(Box::new(wire::Interactivity {
                 on_click: Some(2),
                 ..Default::default()
-            }),
+            })),
             children: vec![room],
         })),
     };
@@ -178,7 +178,7 @@ fn styled_container_uses_native_interactivity_and_typed_identity(
     let root = wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id("interactive")),
         style: crate::render::test_style(base.style().clone()),
-        interactivity: Box::new(wire::Interactivity {
+        interactivity: Some(Box::new(wire::Interactivity {
             role: Some(gpui_kit::Role::Button),
             aria: Default::default(),
             focusable: true,
@@ -195,7 +195,7 @@ fn styled_container_uses_native_interactivity_and_typed_identity(
             }),
             on_click: Some(42),
             ..Default::default()
-        }),
+        })),
         children: vec![text("interactive-label", "Click")],
     });
     let window = cx.open_window(size(px(200.), px(100.)), |_, _| ViewTree::new(root));
@@ -226,13 +226,13 @@ fn container_interactivity_emits_native_pointer_and_key_payloads(
     let root = wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id("events")),
         style: crate::render::test_style(sized_style(Some(fixed(120.)), Some(fixed(60.)))),
-        interactivity: Box::new(wire::Interactivity {
+        interactivity: Some(Box::new(wire::Interactivity {
             focusable: true,
             on_mouse_down: Some(10),
             capture_mouse_down: Some(11),
             on_key_down: Some(12),
             ..Default::default()
-        }),
+        })),
         children: vec![text("event-label", "Events")],
     });
     let window = cx.open_window(size(px(200.), px(100.)), |_, _| ViewTree::new(root));
@@ -386,6 +386,7 @@ fn claiming_list(claim: usize) -> wire::Node {
             [],
         );
         if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut row {
+            let interactivity = interactivity.get_or_insert_default();
             interactivity.role = Some(gpui_kit::Role::ListBoxOption);
             interactivity.aria.label = Some(format!("Row {n}").into());
             interactivity.aria.selected = Some(false);
@@ -403,6 +404,7 @@ fn claiming_list(claim: usize) -> wire::Node {
     style.overflow.y = Some(gpui_kit::Overflow::Scroll);
     let mut list = container_with_style("list", style, rows);
     if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut list {
+        let interactivity = interactivity.get_or_insert_default();
         interactivity.role = Some(gpui_kit::Role::ListBox);
         interactivity.aria.label = Some("Rows".into());
         interactivity.focusable = true;

@@ -187,6 +187,7 @@ fn space_on_a_link_box_presses_its_link_and_does_not_reach_the_composite_around_
     cx.update(gpui_kit::init);
     let mut grid = axis_container("messages", Axis::Column, [rich()]);
     if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut grid {
+        let interactivity = interactivity.get_or_insert_default();
         interactivity.role = Some(gpui_kit::Role::Grid);
         interactivity.aria.label = Some("Messages".into());
         interactivity.focusable = true;

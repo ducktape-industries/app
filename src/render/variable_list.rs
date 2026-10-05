@@ -163,7 +163,10 @@ impl ViewTree {
                 });
             });
         }
-        if **interactivity == wire::Interactivity::default() {
+        let interactivity = interactivity
+            .as_deref()
+            .unwrap_or(wire::Interactivity::none());
+        if *interactivity == wire::Interactivity::default() {
             return Scope {
                 id: scope,
                 element: native.into_any_element(),

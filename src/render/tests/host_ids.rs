@@ -46,6 +46,7 @@ fn button(id: Option<wire::ElementIdWire>, name: &str, handler: u32) -> wire::No
     }) = &mut node
     {
         *style = crate::render::test_style(div().w(px(80.)).h(px(24.)).style().clone());
+        let interactivity = interactivity.get_or_insert_default();
         interactivity.role = Some(gpui_kit::Role::Button);
         interactivity.aria.label = Some(name.into());
         interactivity.on_click = Some(handler);
