@@ -561,11 +561,15 @@ impl Render for Chrome {
                     ..=0 => name,
                     count => format!("{name}, {count} unread"),
                 };
-                // folded: the program's icon, its initial when it has none,
-                // and its whole name on hover
-                let shown: AnyElement = match (narrow, tab_icon(module)) {
+                // folded: the icon its view declares, its initial when it has
+                // none, and its whole name on hover
+                let icon = narrow
+                    .then(|| folded_icon(row, cx.asset_source().as_ref()))
+                    .flatten();
+                let shown: AnyElement = match (narrow, icon) {
                     (false, _) => shown.into_any_element(),
-                    (true, Some(icon)) => gpui_kit::component::Icon::new(icon)
+                    (true, Some(icon)) => gpui_kit::component::Icon::empty()
+                        .path(icon)
                         .size(px(16.))
                         .into_any_element(),
                     (true, None) => shown
@@ -956,19 +960,13 @@ impl Render for Chrome {
     }
 }
 
-/// A program's icon on a folded bar, by its id (Members is `identity`,
-/// Account `module-registry`, Nodes `valset`); `None` folds to its initial.
-fn tab_icon(module: &str) -> Option<gpui_kit::assets::IconName> {
-    use gpui_kit::assets::IconName;
-    Some(match module {
-        "chat" => IconName::MessagesSquare,
-        "forge" => IconName::Hammer,
-        "identity" => IconName::Users,
-        "module-registry" => IconName::CircleUser,
-        "valset" => IconName::Server,
-        "explorer" => IconName::Compass,
-        _ => return None,
-    })
+/// The icon a folded tab draws: the one `row`'s view declares, when the app
+/// bundles that file. A manifest's icon is a safe path and no more: it can
+/// name a file `assets` does not have, and that tab, like one whose view
+/// declares none, folds to its initial (`None`).
+fn folded_icon(row: &crate::runtime::RailRow, assets: &dyn AssetSource) -> Option<SharedString> {
+    let bundled = !row.icon.is_empty() && matches!(assets.load(&row.icon), Ok(Some(_)));
+    bundled.then(|| row.icon.clone().into())
 }
 
 /// A program's name on the bar. Before the manifest lands (or if it never
@@ -982,18 +980,37 @@ pub(in crate::shell) fn tab_label(row: &crate::runtime::RailRow) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::runtime::RailRow;
+
+    /// A folded tab draws the icon its view declares when the app bundles
+    /// that file (`AllAssets`, the set `launch::run` registers), and folds
+    /// to its initial when the view declares none or names a file the app
+    /// does not have: a safe path is not a bundled one.
     #[test]
-    fn a_folded_tab_is_its_programs_icon_or_its_initial() {
-        for module in [
-            "chat",
-            "forge",
-            "identity",
-            "module-registry",
-            "valset",
-            "explorer",
+    fn a_folded_tab_is_the_icon_its_view_declares_or_its_initial() {
+        let drawn = |icon: &str| {
+            let row = RailRow {
+                module: "folded-tab",
+                label: "Folded".into(),
+                icon: icon.into(),
+                note: None,
+                empty: false,
+            };
+            super::folded_icon(&row, &gpui_kit::assets::AllAssets)
+        };
+        // the icons the shipped views declare: a kit that renames one of
+        // these files folds that tab to its initial
+        for icon in [
+            "icons/messages-square.svg",
+            "icons/hammer.svg",
+            "icons/users.svg",
+            "icons/circle-user.svg",
+            "icons/server.svg",
+            "icons/compass.svg",
         ] {
-            assert!(super::tab_icon(module).is_some(), "{module}");
+            assert_eq!(drawn(icon), Some(icon.into()), "declared and bundled");
         }
-        assert!(super::tab_icon("ledger").is_none());
+        assert_eq!(drawn(""), None, "none declared");
+        assert_eq!(drawn("icons/no-such-icon.svg"), None, "not bundled");
     }
 }

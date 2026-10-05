@@ -175,6 +175,9 @@ pub(super) fn code_digest(code: &abi::BlobId) -> [u8; 32] {
 pub struct RailRow {
     pub module: &'static str,
     pub label: String,
+    /// The icon its view's manifest declares (`icons/hammer.svg`); empty
+    /// until the manifest is read, and for a view that declares none.
+    pub icon: String,
     /// `Some` while the seat is on its way or failed; `None` once drawn.
     pub note: Option<&'static str>,
     /// The program ships no view: the rail leaves it out.
@@ -218,9 +221,16 @@ impl Roster {
                     // else the raw module id flashes in the rail/pane title.
                     Some(_) | None => (module.to_owned(), Some("Loading"), false),
                 };
+                // the manifest's, as the name is: none before it is read
+                let icon = match seat.as_ref().map(|seat| &seat.slot) {
+                    Some(Slot::Ready(guest)) => guest.icon.clone(),
+                    Some(Slot::Compiled { icon, .. }) => icon.clone(),
+                    _ => String::new(),
+                };
                 RailRow {
                     module,
                     label,
+                    icon,
                     note,
                     empty,
                 }
@@ -486,6 +496,7 @@ mod local_link_tests {
         let mut rows = vec![RailRow {
             module: "catalog",
             label: "Preferences".into(),
+            icon: String::new(),
             note: None,
             empty: false,
         }];
@@ -522,6 +533,7 @@ mod local_link_tests {
         rows.push(RailRow {
             module: "other",
             label: "Preferences".into(),
+            icon: String::new(),
             note: None,
             empty: false,
         });
@@ -537,6 +549,7 @@ mod local_link_tests {
         let rows = [RailRow {
             module: "catalog",
             label: "Preferences".into(),
+            icon: String::new(),
             note: None,
             empty: false,
         }];
@@ -570,6 +583,7 @@ mod local_link_tests {
         let rows = [RailRow {
             module: "catalog",
             label: "Preferences".into(),
+            icon: String::new(),
             note: None,
             empty: false,
         }];
@@ -647,6 +661,7 @@ mod rail_tests {
         let seat = Mounted::seat();
         lock(&seat).slot = Slot::Compiled {
             name: "Compiled view".into(),
+            icon: String::new(),
             min_width: 320,
         };
         lock(registry()).insert((module, 0), seat);

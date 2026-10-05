@@ -162,10 +162,12 @@ pub(super) enum Slot {
     /// Verified; its code compiles.
     Compiling,
     /// Compiled, and not started: a seat no pane has claimed keeps only
-    /// what its view's manifest says, the name the rail lists it by and
-    /// the narrowest it is laid out. The pane that claims it starts it.
+    /// what its view's manifest says, the name the rail lists it by, the
+    /// icon its tab draws folded (empty: it declares none) and the
+    /// narrowest it is laid out. The pane that claims it starts it.
     Compiled {
         name: String,
+        icon: String,
         min_width: u32,
     },
     Ready(Box<Guest>),
@@ -578,8 +580,16 @@ fn install(
         Loaded::Empty => {
             *slot = Slot::Empty;
         }
-        Loaded::Compiled { name, min_width } => {
-            *slot = Slot::Compiled { name, min_width };
+        Loaded::Compiled {
+            name,
+            icon,
+            min_width,
+        } => {
+            *slot = Slot::Compiled {
+                name,
+                icon,
+                min_width,
+            };
             return true;
         }
         // the same tab, the same surface handle, the same host-side
@@ -670,7 +680,11 @@ pub(super) enum Loaded {
     /// The deployment ships no view.
     Empty,
     /// The view compiles, and was not started: no pane holds the seat.
-    Compiled { name: String, min_width: u32 },
+    Compiled {
+        name: String,
+        icon: String,
+        min_width: u32,
+    },
 }
 
 /// A load that came back with no view, and the view bytes it failed on —

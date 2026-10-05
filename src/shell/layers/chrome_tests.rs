@@ -261,3 +261,47 @@ fn the_strip_title_follows_the_rail(cx: &mut TestAppContext) {
         "the rail moved and the strip drew other than once"
     );
 }
+
+/// A folded tab whose view declares an icon the app has no file for is its
+/// name's initial, as the tab of a view that declares none: a test's app
+/// bundles no file, so neither tab is an icon's 16px box. (The tab that
+/// draws its icon is `chrome::tests`': no test's app has a file to draw.)
+#[gpui_kit::test]
+fn a_folded_tab_with_no_icon_to_draw_is_its_initial(cx: &mut TestAppContext) {
+    const DECLARED: &str = "chrome-fold-declared";
+    const PLAIN: &str = "chrome-fold-plain";
+    let (app, _, _, mut native) = console(cx);
+    crate::runtime::seat_compiled_for_test(DECLARED, "Folded", "icons/hammer.svg");
+    crate::runtime::seat_compiled_for_test(PLAIN, "Folded", "");
+    let roster = crate::runtime::Roster::listing(&[DECLARED, PLAIN]);
+    app.rail
+        .update(&mut native, |rail, cx| rail.read_off(roster, cx));
+    // how wide the door's tree has each tab, once the bar has measured itself
+    let widths = |native: &mut VisualTestContext| {
+        for _ in 0..4 {
+            frame(native);
+        }
+        let nodes = native.update(|window, cx| {
+            window.activate_a11y();
+            window.render_frame(cx);
+            serde_json::to_value(crate::ax::snapshot("console", window, true)).unwrap()
+        });
+        let nodes = nodes.as_array().unwrap();
+        [DECLARED, PLAIN].map(|module| {
+            let id = format!("console:rail/{module}");
+            let tab = nodes.iter().find(|node| node["id"] == id);
+            let tab = tab.unwrap_or_else(|| panic!("no {id}: {nodes:?}"));
+            assert_eq!(tab["name"], "Folded", "a folded tab keeps its whole name");
+            tab["bounds"][2].as_i64().unwrap() - tab["bounds"][0].as_i64().unwrap()
+        })
+    };
+    let whole = widths(&mut native);
+    native.simulate_resize(size(px(480.), px(800.)));
+    native.run_until_parked();
+    let folded = widths(&mut native);
+    assert!(folded[1] < whole[1], "the bar did not fold: {folded:?}");
+    assert_eq!(
+        folded[0], folded[1],
+        "a tab with no icon to draw is not its initial"
+    );
+}

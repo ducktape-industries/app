@@ -201,10 +201,10 @@ mod display_diagnostics;
 
 pub(crate) mod pictures;
 
-/// The name a view's manifest gives it, the capabilities it declares and
-/// the narrowest it is laid out; empty and 0 for one whose manifest cannot
-/// be read (`compile` refuses those before a seat).
-fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>, u32, Vec<String>) {
+/// The name a view's manifest gives it, the capabilities it declares, the
+/// narrowest it is laid out, its targets and its icon; empty and 0 for one
+/// whose manifest cannot be read (`compile` refuses those before a seat).
+fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>, u32, Vec<String>, String) {
     view_wire::manifest::read_manifest(bytes)
         .map(|manifest| {
             (
@@ -212,6 +212,7 @@ fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>, u32, Vec<String>) {
                 manifest.capabilities,
                 manifest.min_width,
                 manifest.targets,
+                manifest.icon,
             )
         })
         .unwrap_or_default()
@@ -237,6 +238,19 @@ pub(crate) fn min_width(module: &str) -> Option<f32> {
 #[cfg(test)]
 pub(crate) fn seat_for_test(module: &'static str, min_width: u32) {
     seat_drawing_for_test(module, min_width, wire::Node::empty());
+}
+
+/// `module`'s seat preloaded as far as compiled, its view's manifest saying
+/// `name` and `icon` (none when empty): a rail row no pane has opened.
+#[cfg(test)]
+pub(crate) fn seat_compiled_for_test(module: &'static str, name: &str, icon: &str) {
+    let seat = Mounted::seat();
+    lock(&seat).slot = Slot::Compiled {
+        name: name.into(),
+        icon: icon.into(),
+        min_width: 320,
+    };
+    lock(registry()).insert((module, 0), seat);
 }
 
 /// `frame` encoded as the string of a WAT `data` segment, and its length.
