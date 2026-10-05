@@ -6,6 +6,7 @@ fn split() -> wire::Node {
     let row = row.style().clone();
     let mut right = container_with_style("right", div().flex_1().h_full().style().clone(), []);
     if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut right {
+        let interactivity = interactivity.get_or_insert_default();
         interactivity.on_click = Some(9);
     }
     container_with_style(
@@ -80,11 +81,13 @@ fn a_divider_wears_its_group_hover(cx: &mut gpui_kit::TestAppContext) {
     else {
         unreachable!()
     };
+    let interactivity = interactivity.get_or_insert_default();
     interactivity.group = Some("split".into());
     let wire::Node::ResizeHandle { interactivity, .. } = &mut children[1] else {
         unreachable!()
     };
     let mut style = div().bg(lit);
+    let interactivity = interactivity.get_or_insert_default();
     interactivity.group_hover = Some(wire::GroupRefinement {
         group: "split".into(),
         style: crate::render::test_style(style.style().clone()),

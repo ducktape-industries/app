@@ -145,6 +145,9 @@ impl ViewTree {
             .child(self.node(content, window, cx))
             .child(capture)
             .child(grip);
+        let interactivity = interactivity
+            .as_deref()
+            .unwrap_or(wire::Interactivity::none());
         let element = self.guest_aria(element, node, interactivity, cx);
         #[cfg(test)]
         let element = {

@@ -294,6 +294,7 @@ fn picture(label: Option<&str>) -> [wire::Node; 2] {
 fn button(key: &str, name: &str) -> wire::Node {
     let mut node = container_with_style(key, div().w(px(80.)).h(px(24.)).style().clone(), []);
     if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut node {
+        let interactivity = interactivity.get_or_insert_default();
         interactivity.role = Some(gpui_kit::Role::Button);
         interactivity.aria.label = Some(name.into());
         interactivity.focusable = true;

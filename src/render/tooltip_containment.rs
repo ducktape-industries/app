@@ -78,7 +78,7 @@ mod tests {
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("tooltip-content".into())),
             style: crate::render::test_style(element.style().clone()),
-            interactivity: Box::new(interactivity),
+            interactivity: Some(Box::new(interactivity)),
             children: Vec::new(),
         })
     }
@@ -108,7 +108,7 @@ mod tests {
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("ordinary-source".into())),
             style: crate::render::test_style(div().size(px(size)).style().clone()),
-            interactivity: Box::new(interactivity),
+            interactivity: Some(Box::new(interactivity)),
             children: Vec::new(),
         })
     }
@@ -459,14 +459,14 @@ mod tests {
         cx: &mut gpui_kit::TestAppContext,
     ) {
         let tip = |request| {
-            Box::new(wire::Interactivity {
+            Some(Box::new(wire::Interactivity {
                 tooltip: Some(wire::Tooltip {
                     request,
                     hoverable: false,
                     delay_ms: 10,
                 }),
                 ..Default::default()
-            })
+            }))
         };
         let name = |name: &str| wire::ElementIdWire::Name(name.into());
         let kinds = vec![

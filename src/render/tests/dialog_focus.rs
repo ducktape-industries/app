@@ -5,6 +5,7 @@ use super::*;
 fn handled(key: &str, name: &str, handle: u64) -> wire::Node {
     let mut node = button(key, name);
     if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut node {
+        let interactivity = interactivity.get_or_insert_default();
         interactivity.focus_handle = Some(handle);
     }
     node

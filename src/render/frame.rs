@@ -122,7 +122,7 @@ impl ViewTree {
                 wire::Node::Container(view_wire::ContainerNode { interactivity, .. })
                 | wire::Node::Image { interactivity, .. }
                 | wire::Node::Svg { interactivity, .. } => {
-                    if let Some(id) = interactivity.focus_handle {
+                    if let Some(id) = interactivity.as_ref().and_then(|i| i.focus_handle) {
                         guest_focus_ids.insert(id);
                     }
                 }
@@ -131,7 +131,7 @@ impl ViewTree {
                     interactivity,
                     ..
                 } => {
-                    if let Some(id) = interactivity.focus_handle {
+                    if let Some(id) = interactivity.as_ref().and_then(|i| i.focus_handle) {
                         guest_focus_ids.insert(id);
                     }
                     uniform_lists.insert(path.clone());
@@ -141,7 +141,7 @@ impl ViewTree {
                     interactivity,
                     ..
                 } => {
-                    if let Some(id) = interactivity.focus_handle {
+                    if let Some(id) = interactivity.as_ref().and_then(|i| i.focus_handle) {
                         guest_focus_ids.insert(id);
                     }
                     variable_lists.insert(path.clone());
@@ -150,7 +150,7 @@ impl ViewTree {
                     fields.insert(path.clone(), *revision);
                 }
                 wire::Node::ResizeHandle { interactivity, .. } => {
-                    if let Some(id) = interactivity.focus_handle {
+                    if let Some(id) = interactivity.as_ref().and_then(|i| i.focus_handle) {
                         guest_focus_ids.insert(id);
                     }
                     drags.insert(path.clone());
@@ -225,8 +225,8 @@ fn tooltip_route(node: &wire::Node) -> Option<u32> {
         | wire::Node::ResizeHandle { interactivity, .. }
         | wire::Node::Image { interactivity, .. }
         | wire::Node::Svg { interactivity, .. } => interactivity
-            .tooltip
             .as_ref()
+            .and_then(|interactivity| interactivity.tooltip.as_ref())
             .map(|tooltip| tooltip.request),
         wire::Node::RichText { tooltip, .. } => *tooltip,
         _ => None,

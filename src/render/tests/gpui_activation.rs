@@ -5,6 +5,7 @@ fn native_gpui_click_grants_one_user_activation(cx: &mut gpui_kit::TestAppContex
     cx.update(gpui_kit::init);
     let mut root = container_with_style("action", div().size_full().style().clone(), []);
     if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut root {
+        let interactivity = interactivity.get_or_insert_default();
         interactivity.on_click = Some(71);
         interactivity.on_aux_click = Some(72);
     }
@@ -97,6 +98,7 @@ fn a_key_activates_the_view_and_escape_does_not(cx: &mut gpui_kit::TestAppContex
     cx.update(gpui_kit::init);
     let mut root = container_with_style("keys", div().size_full().style().clone(), []);
     if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut root {
+        let interactivity = interactivity.get_or_insert_default();
         interactivity.on_key_down = Some(5);
         interactivity.focusable = true;
         interactivity.tab_stop = Some(true);
@@ -149,12 +151,14 @@ fn a_consumed_press_stops_at_the_node_that_consumes_it(cx: &mut gpui_kit::TestAp
     cx.update(gpui_kit::init);
     let mut link = button("link", "block 12");
     if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut link {
+        let interactivity = interactivity.get_or_insert_default();
         interactivity.on_click = Some(LINK);
         interactivity.consumes_click = true;
         interactivity.consumes_keys = vec!["enter".into(), "space".into()];
     }
     let mut card = container_with_style("card", div().size_full().style().clone(), [link]);
     if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut card {
+        let interactivity = interactivity.get_or_insert_default();
         interactivity.on_click = Some(CARD);
         interactivity.on_key_down = Some(KEYS);
     }

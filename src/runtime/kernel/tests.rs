@@ -430,7 +430,7 @@ fn a_readers_press_on_a_link_opens_it_once(cx: &mut gpui_kit::TestAppContext) {
     let link = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("docs".into())),
         style: crate::render::test_style(gpui_kit::div().size_full().style().clone()),
-        interactivity: Box::new(wire::Interactivity {
+        interactivity: Some(Box::new(wire::Interactivity {
             role: Some(gpui_kit::Role::Link),
             aria: wire::Aria {
                 label: Some("the docs".into()),
@@ -438,7 +438,7 @@ fn a_readers_press_on_a_link_opens_it_once(cx: &mut gpui_kit::TestAppContext) {
             },
             on_click: Some(7),
             ..Default::default()
-        }),
+        })),
         children: Vec::new(),
     });
     let window = cx.open_window(

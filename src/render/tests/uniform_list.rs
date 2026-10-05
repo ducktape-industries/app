@@ -208,6 +208,7 @@ fn uniform_list_click_uses_native_identity_and_records_user_activation(
     let wire::Node::UniformList { interactivity, .. } = &mut node else {
         unreachable!()
     };
+    let interactivity = interactivity.get_or_insert_default();
     interactivity.on_click = Some(42);
     interactivity.role = Some(gpui_kit::Role::List);
     interactivity.aria.label = Some("Rows".into());

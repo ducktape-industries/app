@@ -136,6 +136,9 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
             interactivity,
             ..
         } => {
+            let interactivity = interactivity
+                .as_deref()
+                .unwrap_or(view_wire::Interactivity::none());
             let name = label
                 .as_deref()
                 .and_then(named)

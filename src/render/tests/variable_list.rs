@@ -379,9 +379,9 @@ fn deferred_row(name: &str) -> wire::Node {
         interactivity: Default::default(),
         children: Vec::new(),
     };
-    open.interactivity.role = Some(gpui_kit::Role::Button);
-    open.interactivity.aria.label = Some(name.into());
-    open.interactivity.on_click = Some(1);
+    open.interactivity.get_or_insert_default().role = Some(gpui_kit::Role::Button);
+    open.interactivity.get_or_insert_default().aria.label = Some(name.into());
+    open.interactivity.get_or_insert_default().on_click = Some(1);
     wire::Node::Deferred {
         priority: 1,
         content: Box::new(wire::Node::Container(open)),

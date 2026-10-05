@@ -159,7 +159,7 @@ fn a_tooltip_and_a_popup_on_a_scrolled_lists_last_row_draw_whole(
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(named_id(id)),
             style: crate::render::test_style(style.style().clone()),
-            interactivity: Box::new(interactivity),
+            interactivity: Some(Box::new(interactivity)),
             children,
         })
     }

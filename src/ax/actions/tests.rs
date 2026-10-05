@@ -134,6 +134,7 @@ fn an_action_a_view_advertises_reaches_the_view(cx: &mut gpui_kit::TestAppContex
     cx.update(gpui_kit::init);
     let mut stepper = container("stepper", Vec::new());
     if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut stepper {
+        let interactivity = interactivity.get_or_insert_default();
         interactivity.role = Some(Role::SpinButton);
         interactivity.aria.label = Some("Count".into());
         interactivity.aria.numeric_value = Some(3.);
@@ -195,7 +196,7 @@ fn pressable(
     wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id(key)),
         style: crate::render::test_style(style),
-        interactivity: Box::new(wire::Interactivity {
+        interactivity: Some(Box::new(wire::Interactivity {
             role: Some(role),
             aria: wire::Aria {
                 label: Some(name.into()),
@@ -203,7 +204,7 @@ fn pressable(
             },
             on_click: Some(click),
             ..Default::default()
-        }),
+        })),
         children: Vec::new(),
     })
 }

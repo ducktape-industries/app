@@ -4,7 +4,7 @@ fn label(guest: &Guest) -> (String, u32) {
     match guest.frame.root.as_ref().expect("a tree") {
         wire::Node::Container(wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name(id)),
-            interactivity,
+            interactivity: Some(interactivity),
             children,
             ..
         }) if id == "press" => {

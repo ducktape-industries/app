@@ -89,7 +89,7 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
         Site::Container => wire::Node::Container(view_wire::ContainerNode {
             id: Some(key("child")),
             style: crate::render::test_style(boxed()),
-            interactivity: Box::new(interactivity),
+            interactivity: Some(Box::new(interactivity)),
             children: vec![text("child-text")],
         }),
         // no picture yet: the loading child, a text, is what is drawn
@@ -106,14 +106,14 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
             fallback: false,
             state_children: vec![text("child-text")],
             style: crate::render::test_style(boxed()),
-            interactivity: Box::new(interactivity),
+            interactivity: Some(Box::new(interactivity)),
         },
         Site::UniformList => wire::Node::UniformList {
             id: key("child"),
             path: vec![key("child")],
             route: 1,
             style: crate::render::test_style(boxed()),
-            interactivity: Box::new(interactivity),
+            interactivity: Some(Box::new(interactivity)),
             count: 1,
             measure_index: 0,
             sizing: wire::list::UniformListSizing::Auto,
@@ -148,7 +148,7 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
         Site::ResizeHandle => wire::Node::ResizeHandle {
             id: key("child"),
             style: crate::render::test_style(boxed()),
-            interactivity: Box::new(interactivity),
+            interactivity: Some(Box::new(interactivity)),
             on_press: None,
             on_release: None,
             on_drag: None,
@@ -169,7 +169,7 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
             scroll_handler: None,
             range_start: 0,
             style: crate::render::test_style(boxed()),
-            interactivity: Box::new(interactivity),
+            interactivity: Some(Box::new(interactivity)),
             children: vec![text("child-text")],
         },
     }
@@ -188,7 +188,7 @@ fn root(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
     wire::Node::Container(view_wire::ContainerNode {
         id: Some(key("parent")),
         style: crate::render::test_style(div().w(px(280.)).h(px(180.)).style().clone()),
-        interactivity: Box::new(wire::Interactivity {
+        interactivity: Some(Box::new(wire::Interactivity {
             role: Some(Role::Group),
             focusable: true,
             focus_handle: Some(PARENT_FOCUS),
@@ -198,7 +198,7 @@ fn root(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
                 ..Default::default()
             },
             ..Default::default()
-        }),
+        })),
         children: vec![child],
     })
 }
@@ -416,7 +416,7 @@ fn a_labelled_picture_without_a_role_is_an_image_in_the_tree(cx: &mut gpui_kit::
             fallback: false,
             state_children: Vec::new(),
             style: crate::render::test_style(boxed()),
-            interactivity: Box::new(aria.clone()),
+            interactivity: Some(Box::new(aria.clone())),
         };
         let vector = wire::Node::Svg {
             id: Some(key("picture")),
@@ -428,7 +428,7 @@ fn a_labelled_picture_without_a_role_is_an_image_in_the_tree(cx: &mut gpui_kit::
             },
             label: label.map(Into::into),
             style: crate::render::test_style(boxed()),
-            interactivity: Box::new(aria),
+            interactivity: Some(Box::new(aria)),
         };
         for picture in [image, vector] {
             let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(picture));
@@ -456,7 +456,7 @@ fn a_tracked_handle_the_view_makes_a_tab_stop_takes_tab(cx: &mut gpui_kit::TestA
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(key(key_name)),
             style: crate::render::test_style(div().w(px(80.)).h(px(40.)).style().clone()),
-            interactivity: Box::new(wire::Interactivity {
+            interactivity: Some(Box::new(wire::Interactivity {
                 role: Some(Role::Button),
                 focusable: true,
                 focus_handle: Some(focus),
@@ -467,7 +467,7 @@ fn a_tracked_handle_the_view_makes_a_tab_stop_takes_tab(cx: &mut gpui_kit::TestA
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
+            })),
             children: Vec::new(),
         })
     };
@@ -502,7 +502,7 @@ fn pressable_after_tab(cx: &mut gpui_kit::TestAppContext, tab_stop: Option<bool>
     let button = wire::Node::Container(view_wire::ContainerNode {
         id: Some(key("press")),
         style: crate::render::test_style(div().w(px(80.)).h(px(40.)).style().clone()),
-        interactivity: Box::new(wire::Interactivity {
+        interactivity: Some(Box::new(wire::Interactivity {
             role: Some(Role::Button),
             focusable: true,
             tab_stop,
@@ -513,7 +513,7 @@ fn pressable_after_tab(cx: &mut gpui_kit::TestAppContext, tab_stop: Option<bool>
                 ..Default::default()
             },
             ..Default::default()
-        }),
+        })),
         children: Vec::new(),
     });
     let root = wire::Node::Container(view_wire::ContainerNode {
@@ -570,7 +570,7 @@ fn a_container_the_view_focuses_by_id_stays_a_tab_stop(cx: &mut gpui_kit::TestAp
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(key(key_name)),
             style: crate::render::test_style(div().w(px(80.)).h(px(40.)).style().clone()),
-            interactivity: Box::new(wire::Interactivity {
+            interactivity: Some(Box::new(wire::Interactivity {
                 role: Some(role),
                 focusable: true,
                 tab_stop: Some(true),
@@ -580,7 +580,7 @@ fn a_container_the_view_focuses_by_id_stays_a_tab_stop(cx: &mut gpui_kit::TestAp
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
+            })),
             children: Vec::new(),
         })
     };
@@ -634,7 +634,7 @@ fn claiming_composite(id: &str, role: Role, item: Role) -> wire::Node {
             wire::Node::Container(view_wire::ContainerNode {
                 id: Some(key(&row)),
                 style: crate::render::test_style(div().w(px(60.)).h(px(20.)).style().clone()),
-                interactivity: Box::new(wire::Interactivity {
+                interactivity: Some(Box::new(wire::Interactivity {
                     role: Some(item),
                     aria: wire::Aria {
                         author_id: Some(row.clone().into()),
@@ -645,7 +645,7 @@ fn claiming_composite(id: &str, role: Role, item: Role) -> wire::Node {
                     },
                     on_click: Some(20 + n),
                     ..Default::default()
-                }),
+                })),
                 children: Vec::new(),
             })
         })
@@ -653,7 +653,7 @@ fn claiming_composite(id: &str, role: Role, item: Role) -> wire::Node {
     wire::Node::Container(view_wire::ContainerNode {
         id: Some(key(id)),
         style: crate::render::test_style(div().flex().w(px(200.)).h(px(20.)).style().clone()),
-        interactivity: Box::new(wire::Interactivity {
+        interactivity: Some(Box::new(wire::Interactivity {
             role: Some(role),
             focusable: true,
             tab_stop: Some(true),
@@ -664,7 +664,7 @@ fn claiming_composite(id: &str, role: Role, item: Role) -> wire::Node {
                 ..Default::default()
             },
             ..Default::default()
-        }),
+        })),
         children: rows,
     })
 }
@@ -716,7 +716,11 @@ fn a_held_pane_over_two_claiming_composites_reports_the_pane_box(
     let claims = |node: &wire::Node| {
         let mut claims = 0;
         super::super::commands::walk_authored_paths(node, None, &mut Vec::new(), &mut |node, _| {
-            if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = node {
+            if let wire::Node::Container(view_wire::ContainerNode {
+                interactivity: Some(interactivity),
+                ..
+            }) = node
+            {
                 claims += usize::from(interactivity.aria.active_descendant);
             }
         });
@@ -938,13 +942,13 @@ mod phase_two {
                 style: crate::render::test_style(
                     div().w(px(width)).h_full().flex_shrink_0().style().clone(),
                 ),
-                interactivity: Box::new(named(Role::Group, "List")),
+                interactivity: Some(Box::new(named(Role::Group, "List"))),
                 children: Vec::new(),
             });
             let divider = wire::Node::ResizeHandle {
                 id: key("list-resize"),
                 style: crate::render::test_style(div().w(px(1.)).h_full().style().clone()),
-                interactivity: Box::new(wire::Interactivity {
+                interactivity: Some(Box::new(wire::Interactivity {
                     focusable: true,
                     tab_stop: Some(true),
                     on_key_down: Some(ROUTE),
@@ -953,7 +957,7 @@ mod phase_two {
                         ..named(Role::Splitter, "Resize the list").aria
                     },
                     ..named(Role::Splitter, "Resize the list")
-                }),
+                })),
                 on_press: None,
                 on_release: None,
                 on_drag: None,
@@ -1086,16 +1090,16 @@ mod phase_two {
         let inner = wire::Node::Container(view_wire::ContainerNode {
             id: Some(key(&format!("inner-{n}"))),
             style: crate::render::test_style(div().h(px(20.)).style().clone()),
-            interactivity: Box::new(named(format!("inner-{n}"))),
+            interactivity: Some(Box::new(named(format!("inner-{n}")))),
             children: Vec::new(),
         });
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(key(&format!("row-{n}"))),
             style: crate::render::test_style(div().h(px(20.)).style().clone()),
-            interactivity: Box::new(wire::Interactivity {
+            interactivity: Some(Box::new(wire::Interactivity {
                 role,
                 ..named(format!("row-{n}"))
-            }),
+            })),
             children: vec![inner],
         })
     }
@@ -1135,6 +1139,7 @@ mod phase_two {
         cx.update(gpui_kit::init);
         let mut told = row(2, Some(Role::ListBoxOption));
         if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut told {
+            let interactivity = interactivity.get_or_insert_default();
             interactivity.aria.position_in_set = Some(9);
         }
         let uniform = wire::Node::UniformList {

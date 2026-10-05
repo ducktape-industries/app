@@ -202,6 +202,7 @@ fn a_blank_text_is_no_node_and_a_heading_is_named_by_its_rich_text(
     };
     let mut heading = axis_container("heading", Axis::Column, [rich]);
     if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut heading {
+        let interactivity = interactivity.get_or_insert_default();
         interactivity.role = Some(gpui_kit::Role::Heading);
         interactivity.aria.level = Some(1);
     }
@@ -355,7 +356,7 @@ fn a_roled_box_keeps_its_aria_and_the_links_of_the_text_it_holds(
     let note = wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id("note")),
         style: crate::render::plain_style(),
-        interactivity: Box::new(wire::Interactivity {
+        interactivity: Some(Box::new(wire::Interactivity {
             role: Some(gpui_kit::Role::Status),
             aria: wire::Aria {
                 label: Some("Note".into()),
@@ -364,7 +365,7 @@ fn a_roled_box_keeps_its_aria_and_the_links_of_the_text_it_holds(
                 ..Default::default()
             },
             ..Default::default()
-        }),
+        })),
         children: vec![rich()],
     });
     let nodes = door(cx, note);

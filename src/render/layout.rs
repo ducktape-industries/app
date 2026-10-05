@@ -21,6 +21,9 @@ impl ViewTree {
         else {
             unreachable!()
         };
+        let interactivity = interactivity
+            .as_deref()
+            .unwrap_or(wire::Interactivity::none());
         let style = self.style(*style);
         let mut element = div();
         *element.style() = (*style).clone();
