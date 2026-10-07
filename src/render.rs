@@ -221,8 +221,9 @@ pub struct ViewTree {
     /// (`Seat::keys_free`, mirrored here): a dialog that opens in it takes
     /// the keyboard only then.
     keys_grant: bool,
-    /// The seat this tree draws for, once a widget owns it: its renders and
-    /// their time are counted there (docs/perf.md).
+    /// The seat this tree draws for, once a widget owns it: its renders,
+    /// their time and gpui's passes over what they build (`deferred::Layer`)
+    /// are counted there (docs/perf.md).
     perf_key: Option<crate::perf::Key>,
     #[cfg(test)]
     renders: u64,
@@ -477,6 +478,6 @@ impl Render for ViewTree {
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
-            .child(deferred::Layer(node))
+            .child(deferred::Layer(node, self.perf_key))
     }
 }

@@ -143,7 +143,18 @@ impl Element for SlotDeferred {
 /// A view's tree in its pane's layer: the tooltips registered and the
 /// `Deferred`s met inside it draw at [`GUEST_CEILING`] at most, fitted and
 /// clipped to the content mask the tree is drawn in (the pane's).
-pub(super) struct Layer(pub(super) AnyElement);
+///
+/// Every element of the tree is under it, so with the seat's perf key it
+/// times gpui's work for the tree, which `render` (the element build) does
+/// not hold: `layout.request`, `layout.solve`, `prepaint` and `paint`
+/// (docs/perf.md), a timer each for the whole tree and nothing for a node.
+pub(super) struct Layer(pub(super) AnyElement, pub(super) Option<crate::perf::Key>);
+
+impl Layer {
+    fn time(&self, stage: &'static str) -> Option<crate::perf::Timer> {
+        self.1.and_then(|key| crate::perf::time(key, stage))
+    }
+}
 
 impl IntoElement for Layer {
     type Element = Self;
@@ -153,7 +164,9 @@ impl IntoElement for Layer {
 }
 
 impl Element for Layer {
-    type RequestLayoutState = ();
+    /// `layout.solve`, running: gpui solves the layout between the tree's
+    /// `request_layout` and its `prepaint`.
+    type RequestLayoutState = Option<crate::perf::Timer>;
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
@@ -169,8 +182,11 @@ impl Element for Layer {
         _inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
-    ) -> (LayoutId, ()) {
-        (self.0.request_layout(window, cx), ())
+    ) -> (LayoutId, Option<crate::perf::Timer>) {
+        let requesting = self.time("layout.request");
+        let id = self.0.request_layout(window, cx);
+        drop(requesting);
+        (id, self.time("layout.solve"))
     }
 
     fn prepaint(
@@ -178,10 +194,12 @@ impl Element for Layer {
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
-        _request_layout: &mut (),
+        solving: &mut Option<crate::perf::Timer>,
         window: &mut Window,
         cx: &mut App,
     ) {
+        drop(solving.take());
+        let _timed = self.time("prepaint");
         let layer = TooltipLayer {
             priority: GUEST_CEILING,
             mask: window.content_mask(),
@@ -194,11 +212,12 @@ impl Element for Layer {
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
-        _request_layout: &mut (),
+        _request_layout: &mut Option<crate::perf::Timer>,
         _prepaint: &mut (),
         window: &mut Window,
         cx: &mut App,
     ) {
+        let _timed = self.time("paint");
         self.0.paint(window, cx);
     }
 }
@@ -292,6 +311,7 @@ mod tests {
                     usize::MAX,
                 )
                 .into_any_element(),
+                None,
             ))
         }
     }
@@ -323,6 +343,48 @@ mod tests {
             }
         })
         .unwrap();
+    }
+
+    /// One draw of a seat's tree leaves one sample of each of gpui's four
+    /// passes beside its `render`; a draw the cache answers leaves none.
+    #[gpui_kit::test]
+    fn a_draw_times_gpuis_passes_over_the_tree(cx: &mut gpui_kit::TestAppContext) {
+        let _on = crate::perf::on_for_test();
+        let key = crate::perf::Key::View {
+            module: "layer-test",
+            instance: 1,
+        };
+        cx.update(gpui_kit::init);
+        let window = cx.open_window(size(px(200.), px(200.)), |_, cx| {
+            crate::render::tests::Seat(
+                cx.new(|_| ViewTree::new(wire::Node::Space).with_perf_key(key)),
+            )
+        });
+        let seat = window.root(cx).unwrap();
+        let samples = || {
+            let view = crate::perf::snapshot(false)["views"]["layer-test"].clone();
+            [
+                "render",
+                "layout.request",
+                "layout.solve",
+                "prepaint",
+                "paint",
+            ]
+            .map(|stage| view[stage]["n"].as_u64().unwrap_or(0))
+        };
+        cx.update_window(window.into(), |_, window, cx| {
+            crate::perf::reset();
+            seat.update(cx, |seat, cx| seat.0.update(cx, |_, cx| cx.notify()));
+            window.draw(cx).clear(cx);
+        })
+        .unwrap();
+        assert_eq!(samples(), [1; 5]);
+        cx.update_window(window.into(), |_, window, cx| {
+            seat.update(cx, |_, cx| cx.notify());
+            window.draw(cx).clear(cx);
+        })
+        .unwrap();
+        assert_eq!(samples(), [1; 5], "a cached draw runs no pass");
     }
 
     /// Eleven nested guest `Deferred`s, as the sanitizer passes them, draw
