@@ -1,15 +1,16 @@
 //! The pointer-shaped nodes: ResizeHandle (a divider with a `grip` and a
-//! drag) and Sensor (reports its child's size when shown or resized).
+//! drag) and Sensor (tells its child's bounds when it comes into view and
+//! when they change).
 use super::*;
 use crate::render::native_id;
 
 /// A Sensor's retained state, per authored path.
 pub(super) struct SensorState {
-    /// The child's size as last seen in view; `None` out of view, so the
-    /// next sight of it is a show again.
-    pub(super) size: Option<Size<Pixels>>,
-    pub(super) on_show: Option<u32>,
-    pub(super) on_resize: Option<u32>,
+    /// The child's bounds as last told, in the window's pixels; `None`
+    /// while it is out of view or nothing listens, so the next sight of it
+    /// tells them again.
+    pub(super) told: Option<Bounds<Pixels>>,
+    pub(super) on_bounds: Option<u32>,
 }
 
 /// The invisible hit area of a ResizeHandle: its own box widened by
@@ -165,8 +166,7 @@ impl ViewTree {
     ) -> AnyElement {
         let wire::Node::Sensor {
             id,
-            on_show,
-            on_resize,
+            on_bounds,
             child,
             style,
         } = node
@@ -175,12 +175,10 @@ impl ViewTree {
         };
         let path = self.authored_path.clone();
         let sensor = self.sensors.entry(path.clone()).or_insert(SensorState {
-            size: None,
-            on_show: *on_show,
-            on_resize: *on_resize,
+            told: None,
+            on_bounds: None,
         });
-        sensor.on_show = *on_show;
-        sensor.on_resize = *on_resize;
+        sensor.on_bounds = *on_bounds;
         let route = path;
         let weak = cx.entity().downgrade();
         let measure = canvas(
@@ -191,19 +189,15 @@ impl ViewTree {
                     let Some(sensor) = this.sensors.get_mut(&route) else {
                         return;
                     };
-                    if !visible {
-                        sensor.size = None;
+                    let Some(handler) = sensor.on_bounds.filter(|_| visible) else {
+                        sensor.told = None;
                         return;
-                    }
-                    let handler = match sensor.size {
-                        None => sensor.on_show,
-                        Some(previous) if previous != bounds.size => sensor.on_resize,
-                        Some(_) => None,
                     };
-                    sensor.size = Some(bounds.size);
-                    if let Some(handler) = handler {
-                        cx.emit(wire::Event::Size {
+                    if sensor.told.replace(bounds) != Some(bounds) {
+                        cx.emit(wire::Event::Bounds {
                             handler,
+                            x: f32::from(bounds.origin.x),
+                            y: f32::from(bounds.origin.y),
                             width: f32::from(bounds.size.width),
                             height: f32::from(bounds.size.height),
                         });

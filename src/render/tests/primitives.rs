@@ -312,8 +312,7 @@ fn sensor_preserves_linear_fill_bounds(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     let root = wire::Node::Sensor {
         id: named_id("viewport"),
-        on_show: Some(1),
-        on_resize: None,
+        on_bounds: Some(1),
         child: Box::new({
             let mut content = axis_container(
                 "content",
@@ -343,10 +342,165 @@ fn sensor_preserves_linear_fill_bounds(cx: &mut gpui_kit::TestAppContext) {
     native.update(|window, cx| window.render_frame(cx));
     tree.read_with(&native, |tree, _| {
         assert_eq!(
-            tree.sensors[&vec![named_id("viewport")]].size,
-            Some(size(px(400.), px(300.)))
+            tree.sensors[&vec![named_id("viewport")]].told,
+            Some(Bounds::new(point(px(0.), px(0.)), size(px(400.), px(300.))))
         );
     });
+}
+
+/// A sensor around a box `width` by 60, heard on route 7.
+fn measured(width: f32) -> wire::Node {
+    let boxed = div().w(px(width)).h(px(60.)).flex_none().style().clone();
+    wire::Node::Sensor {
+        id: named_id("measured"),
+        on_bounds: Some(7),
+        style: crate::render::plain_style(),
+        child: Box::new(container_with_style("box", boxed, [])),
+    }
+}
+
+/// Draws a frame and answers the bounds route 7 was told in it, as
+/// `[x, y, width, height]`.
+fn told(
+    events: &RefCell<Vec<wire::Event>>,
+    native: &mut gpui_kit::VisualTestContext,
+) -> Vec<[f32; 4]> {
+    native.update(|window, cx| window.render_frame(cx));
+    let bounds = |event| match event {
+        wire::Event::Bounds {
+            handler: 7,
+            x,
+            y,
+            width,
+            height,
+        } => Some([x, y, width, height]),
+        _ => None,
+    };
+    events.borrow_mut().drain(..).filter_map(bounds).collect()
+}
+
+/// What a sensor tells, and when: its child's bounds in the window's
+/// pixels when it comes into view, and again whenever the origin or the
+/// size differs from the last told. A frame that moves nothing tells
+/// nothing; one that only moves the child tells where it is now, which a
+/// view places the pointer by.
+#[gpui_kit::test]
+fn a_sensor_tells_its_bounds_at_first_sight_and_when_they_differ(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    // a spacer `before` px wide, then the sensor
+    let row = |before: f32, width: f32| {
+        let spacer = div().w(px(before)).h(px(10.)).flex_none().style().clone();
+        container_with_style(
+            "row",
+            div().flex().flex_row().items_start().style().clone(),
+            [container_with_style("before", spacer, []), measured(width)],
+        )
+    };
+    // an empty tree first: opening the window draws it, before anything
+    // listens for what a sensor in it tells
+    let window = cx.open_window(size(px(400.), px(300.)), |_, _| {
+        ViewTree::new(wire::Node::empty())
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    tree.update(&mut native, |tree, cx| {
+        tree.replace(row(50., 100.), &[], cx)
+    });
+    assert_eq!(told(&events, &mut native), [[50., 0., 100., 60.]]);
+    assert!(told(&events, &mut native).is_empty(), "nothing changed");
+    tree.update(&mut native, |tree, cx| {
+        tree.replace(row(80., 100.), &[], cx)
+    });
+    assert_eq!(
+        told(&events, &mut native),
+        [[80., 0., 100., 60.]],
+        "moved, the same size"
+    );
+    tree.update(&mut native, |tree, cx| {
+        tree.replace(row(80., 120.), &[], cx)
+    });
+    assert_eq!(
+        told(&events, &mut native),
+        [[80., 0., 120., 60.]],
+        "resized in place"
+    );
+}
+
+/// A seat `left` px into its window: the view under it is cached, as a
+/// module's is.
+struct Shifted {
+    tree: Entity<ViewTree>,
+    left: f32,
+}
+
+impl Render for Shifted {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let full = gpui_kit::StyleRefinement::default().size_full();
+        let seat = div().size_full().pl(px(self.left));
+        seat.child(self.tree.clone().cached(full))
+    }
+}
+
+/// A pane that moves in the window moves the view in it without a new
+/// frame from the guest: the view is cached and its tree is as it was. The
+/// sensor tells where its child is now all the same, or a pointer would be
+/// placed by where the pane used to be.
+#[gpui_kit::test]
+fn a_sensor_in_a_pane_that_moved_tells_its_new_bounds(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let row = container_with_style(
+        "row",
+        div().flex().flex_row().items_start().style().clone(),
+        [measured(100.)],
+    );
+    let window = cx.open_window(size(px(400.), px(300.)), |_, cx| Shifted {
+        tree: cx.new(|_| ViewTree::new(wire::Node::empty())),
+        left: 0.,
+    });
+    let seat = window.root(cx).unwrap();
+    let tree = seat.read_with(cx, |seat, _| seat.tree.clone());
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    tree.update(&mut native, |tree, cx| tree.replace(row, &[], cx));
+    assert_eq!(told(&events, &mut native), [[0., 0., 100., 60.]]);
+    seat.update(&mut native, |seat, cx| {
+        seat.left = 30.;
+        cx.notify();
+    });
+    assert_eq!(told(&events, &mut native), [[30., 0., 100., 60.]]);
+    assert!(told(&events, &mut native).is_empty(), "nothing changed");
+}
+
+/// Out of view the host forgets what it told, so the next sight of the
+/// child tells its bounds again, the same ones too.
+#[gpui_kit::test]
+fn a_sensor_out_of_view_is_told_again_at_its_next_sight(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    // a clip `height` tall around the sensor: none of it shows at zero
+    let clipped = |height: f32| {
+        let clip = div().flex().flex_row().items_start().w(px(200.));
+        let clip = clip.h(px(height)).overflow_hidden().style().clone();
+        container_with_style("clip", clip, [measured(100.)])
+    };
+    let window = cx.open_window(size(px(400.), px(300.)), |_, _| {
+        ViewTree::new(wire::Node::empty())
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    tree.update(&mut native, |tree, cx| tree.replace(clipped(80.), &[], cx));
+    assert_eq!(told(&events, &mut native), [[0., 0., 100., 60.]]);
+    tree.update(&mut native, |tree, cx| tree.replace(clipped(0.), &[], cx));
+    assert!(told(&events, &mut native).is_empty(), "out of view");
+    tree.update(&mut native, |tree, cx| tree.replace(clipped(80.), &[], cx));
+    assert_eq!(
+        told(&events, &mut native),
+        [[0., 0., 100., 60.]],
+        "in view again"
+    );
 }
 
 /// A scrolling container keeps its handle at its own id: the offset holds

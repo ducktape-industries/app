@@ -93,8 +93,7 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
     // A room's real root: a viewport sensor around the press area.
     let root = wire::Node::Sensor {
         id: named_id("viewport"),
-        on_show: None,
-        on_resize: Some(1),
+        on_bounds: Some(1),
         style: crate::render::test_style(sized_style(Some(fill()), Some(fill()))),
         child: Box::new(wire::Node::Container(view_wire::ContainerNode {
             id: Some(named_id("press-area")),
