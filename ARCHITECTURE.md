@@ -773,7 +773,8 @@ House words, and where one word means several things.
   `link.open` and the clipboard are refused `needs_gesture` without it.
 - **widget command** — a `host.widget` request acting on a native control
   (focus, next/previous, scroll, cursor, a field's edit); its **target** is
-  an id suffix matched against mounted authored paths.
+  a whole authored path, as the guest SDK names it from the frame it
+  lowered (`ViewTree::input_command`, `src/render/commands.rs`).
 - **method / capability / operation** — a request kind is
   `<capability>.<operation>`; `Capability` is the typed part before the dot
   that a manifest must declare; `wire::methods` holds every request and

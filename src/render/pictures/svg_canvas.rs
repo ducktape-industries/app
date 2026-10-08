@@ -127,7 +127,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn a_canvas_leaves_its_parents_measure_alone(cx: &mut gpui_kit::TestAppContext) {
+    fn a_canvas_at_rest_asks_for_no_render(cx: &mut gpui_kit::TestAppContext) {
         // a Path shape takes the SVG road, the one that needs the canvas's size
         let drawing = wire::Node::Canvas {
             commands: vec![wire::CanvasCommand::Draw {
