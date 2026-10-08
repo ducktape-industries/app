@@ -22,13 +22,33 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        let interactivity = interactivity
-            .as_deref()
-            .unwrap_or(wire::Interactivity::none());
         let style = self.style(*style);
         let mut element = div();
         *element.style() = (*style).clone();
         crate::fonts::refine_fallbacks(element.style());
+        // gpui's own split between `Div` and `Stateful<Div>`, by the node:
+        // an id is what gpui keeps element state under, read in each of its
+        // three passes, so a container takes one only when something reads
+        // it. The view's id is read by the view (its path, a widget
+        // command's target). Any interactivity keeps its state there (a
+        // press, a hover, a focus handle, a tooltip) and is an accessibility
+        // node only under an id. A scroller keeps its offset there, on
+        // either axis (gpui `Interactivity::request_layout`): with no id it
+        // would not scroll at all. A container with none of the three is a
+        // box and its children, and its descendants' ids are filed under
+        // its nearest identified ancestor, as the wire files them
+        // (`wire::identity`).
+        let scrolls = style.overflow.x == Some(Overflow::Scroll)
+            || style.overflow.y == Some(Overflow::Scroll);
+        if id.is_none() && interactivity.is_none() && !scrolls {
+            for child in children {
+                element = element.child(self.node(child, window, cx));
+            }
+            return element.into_any_element();
+        }
+        let interactivity = interactivity
+            .as_deref()
+            .unwrap_or(wire::Interactivity::none());
         let native_id = id.as_ref().map(native_id).unwrap_or_else(|| {
             let index = self.render_index;
             self.render_index += 1;

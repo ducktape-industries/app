@@ -1,7 +1,272 @@
-//! A host element costs what its node sets (briefs/perf-root, H2): the
-//! canvas that brings a scroller to a node is drawn only on a node that
-//! claims.
+//! A host element costs what its node sets (briefs/perf-root, H2). gpui
+//! keeps element state under an element's id and reads it in each of its
+//! three passes, so the host gives a container an id only when something
+//! reads one, and draws the canvas that brings a scroller to a node only on
+//! a node that claims.
 use super::*;
+
+/// A box the view gave no id, around a text `leaf`.
+fn around(
+    leaf: &str,
+    style: gpui_kit::StyleRefinement,
+    interactivity: Option<wire::Interactivity>,
+) -> wire::Node {
+    wire::Node::Container(view_wire::ContainerNode {
+        id: None,
+        style: crate::render::test_style(style),
+        interactivity: interactivity.map(Box::new),
+        children: vec![text(leaf, leaf)],
+    })
+}
+
+/// The id gpui files the text `leaf` under, innermost last: its own, and
+/// before it those of the elements around it that have one.
+fn filed(native: &mut gpui_kit::VisualTestContext, leaf: &'static str) -> Vec<ElementId> {
+    native.update(|window, _| window.find(leaf).path().to_vec())
+}
+
+/// Whether `id` is the id the host makes for a container the view gave none.
+fn host_container(id: &ElementId) -> bool {
+    crate::render::is_host_id(id)
+        && matches!(id, ElementId::NamedChild(_, name) if name.starts_with("container-"))
+}
+
+/// A container that sets nothing gpui keeps state for is a `Div` with no
+/// id: what is under it is filed straight under the nearest node that has
+/// one, so gpui makes no global id for it and reads no element state for it
+/// in any pass. A clip is a style, and needs none either.
+#[gpui_kit::test]
+fn a_container_that_sets_nothing_has_no_id(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let plain = around("plain", div().p_2().style().clone(), None);
+    let clipped = around("clipped", div().overflow_hidden().style().clone(), None);
+    let nested = wire::Node::Container(view_wire::ContainerNode {
+        id: None,
+        style: crate::render::plain_style(),
+        interactivity: None,
+        children: vec![around("nested", div().flex().style().clone(), None)],
+    });
+    let root = container("card", [plain, clipped, nested]);
+    let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(root));
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    for leaf in ["plain", "clipped", "nested"] {
+        let path = filed(&mut native, leaf);
+        assert!(
+            path.ends_with(&["card".into(), leaf.into()]),
+            "{leaf} is filed straight under the card: {path:?}"
+        );
+        assert!(!path.iter().any(host_container), "{leaf}: {path:?}");
+    }
+}
+
+/// Each thing gpui or the host reads under a container's id still finds
+/// one: the id the view gave; a scroller's offset, on either axis; and any
+/// interactivity (a listener, focus, a role, a tooltip, a hover, active or
+/// group style, a claim).
+#[gpui_kit::test]
+fn a_container_something_reads_keeps_its_id(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let plain = || div().p_1().style().clone();
+    let scrolls = |x: bool| {
+        let mut style = div().size(px(20.)).style().clone();
+        match x {
+            true => style.overflow.x = Some(gpui_kit::Overflow::Scroll),
+            false => style.overflow.y = Some(gpui_kit::Overflow::Scroll),
+        }
+        style
+    };
+    let lit = || {
+        Some(crate::render::test_style(
+            div().bg(rgb(0x303846)).style().clone(),
+        ))
+    };
+    let with =
+        |leaf: &str, interactivity: wire::Interactivity| around(leaf, plain(), Some(interactivity));
+    let none = wire::Interactivity::default;
+    let kept = [
+        around("scrolls-y", scrolls(false), None),
+        around("scrolls-x", scrolls(true), None),
+        with(
+            "click",
+            wire::Interactivity {
+                on_click: Some(1),
+                ..none()
+            },
+        ),
+        with(
+            "pointer",
+            wire::Interactivity {
+                on_mouse_move: Some(2),
+                ..none()
+            },
+        ),
+        with(
+            "key",
+            wire::Interactivity {
+                on_key_down: Some(3),
+                ..none()
+            },
+        ),
+        with(
+            "focus",
+            wire::Interactivity {
+                focusable: true,
+                ..none()
+            },
+        ),
+        with(
+            "role",
+            wire::Interactivity {
+                role: Some(gpui_kit::Role::Group),
+                ..none()
+            },
+        ),
+        with(
+            "label",
+            wire::Interactivity {
+                aria: wire::Aria {
+                    label: Some("Named".into()),
+                    ..Default::default()
+                },
+                ..none()
+            },
+        ),
+        with(
+            "tooltip",
+            wire::Interactivity {
+                tooltip: Some(wire::Tooltip {
+                    request: 4,
+                    hoverable: false,
+                    delay_ms: 10,
+                }),
+                ..none()
+            },
+        ),
+        with(
+            "hover",
+            wire::Interactivity {
+                hover: lit(),
+                ..none()
+            },
+        ),
+        with(
+            "active",
+            wire::Interactivity {
+                active: lit(),
+                ..none()
+            },
+        ),
+        with(
+            "group",
+            wire::Interactivity {
+                group: Some("row".into()),
+                ..none()
+            },
+        ),
+        with(
+            "claim",
+            wire::Interactivity {
+                role: Some(gpui_kit::Role::ListBoxOption),
+                aria: wire::Aria {
+                    active_descendant: true,
+                    ..Default::default()
+                },
+                ..none()
+            },
+        ),
+    ];
+    let leaves = [
+        "scrolls-y",
+        "scrolls-x",
+        "click",
+        "pointer",
+        "key",
+        "focus",
+        "role",
+        "label",
+        "tooltip",
+        "hover",
+        "active",
+        "group",
+        "claim",
+    ];
+    let authored = container("authored", [text("under-authored", "x")]);
+    let root = container("card", kept.into_iter().chain([authored]));
+    let window = cx.open_window(size(px(400.), px(600.)), |_, _| ViewTree::new(root));
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    let mut ids = std::collections::HashSet::new();
+    for leaf in leaves {
+        let path = filed(&mut native, leaf);
+        let [.., card, own, _] = &path[..] else {
+            panic!("{leaf}: {path:?}")
+        };
+        assert_eq!(card, &ElementId::from("card"), "{leaf}: {path:?}");
+        assert!(
+            host_container(own),
+            "{leaf} has an id of the host's: {path:?}"
+        );
+        assert!(ids.insert(own.clone()), "{leaf} shares {own:?}");
+    }
+    let path = filed(&mut native, "under-authored");
+    assert!(
+        path.ends_with(&["card".into(), "authored".into(), "under-authored".into()]),
+        "{path:?}"
+    );
+}
+
+/// A scroller the view gave no id keeps its offset in gpui's element
+/// state, under the id the host gives it: the wheel moves it, and the next
+/// frame of the same tree draws it where the wheel left it. With no id it
+/// would have no offset to move.
+#[gpui_kit::test]
+fn a_scroller_the_view_gave_no_id_keeps_its_offset(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let frame = || {
+        let rows = (0..10).map(|n| {
+            container_with_style(
+                &format!("row-{n}"),
+                div().h(px(40.)).flex_shrink_0().style().clone(),
+                [],
+            )
+        });
+        let mut style = div()
+            .flex()
+            .flex_col()
+            .w(px(200.))
+            .h(px(100.))
+            .style()
+            .clone();
+        style.overflow.y = Some(gpui_kit::Overflow::Scroll);
+        let scroller = wire::Node::Container(view_wire::ContainerNode {
+            id: None,
+            style: crate::render::test_style(style),
+            interactivity: None,
+            children: rows.collect(),
+        });
+        container("card", [scroller])
+    };
+    let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(frame()));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let top = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            f32::from(window.find("row-0").bounds().top())
+        })
+    };
+    assert_eq!(top(&mut native), 0.);
+    native.update(|window, cx| {
+        window.render_frame(cx);
+        let wheel = gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-120.)));
+        window.scroll("row-1", wheel, cx);
+    });
+    assert_eq!(top(&mut native), -120., "the wheel scrolls it");
+    tree.update(&mut native, |tree, cx| tree.replace(frame(), &[], cx));
+    assert_eq!(top(&mut native), -120., "the next frame keeps the offset");
+    assert_eq!(top(&mut native), -120., "and the one after");
+}
 
 /// A scroller of ten rows, each with an id, the first `first` px tall;
 /// `claim` is the row that claims.

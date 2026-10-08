@@ -148,7 +148,8 @@ pub struct ViewTree {
     styles: wire::Styles,
     /// The path of the node `node()` is drawing; pushed and popped on the way.
     authored_path: AuthoredPath,
-    /// Counts the anonymous elements of a render, for ids of their own.
+    /// Counts the ids a render makes for nodes the view gave none, so each
+    /// is its own.
     render_index: u64,
     /// Where the row a virtualized list draws next sits in its set
     /// (1-based position, set size); `node` hands it to that row alone.
