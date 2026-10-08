@@ -503,6 +503,62 @@ fn a_sensor_out_of_view_is_told_again_at_its_next_sight(cx: &mut gpui_kit::TestA
     );
 }
 
+/// A sensor that left the tree is forgotten with it: back in the tree it
+/// is a first sight, and tells its bounds, the same ones too.
+#[gpui_kit::test]
+fn a_sensor_back_in_the_tree_tells_its_bounds_again(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let row = |sensor: Option<wire::Node>| {
+        let row = div().flex().flex_row().items_start().style().clone();
+        container_with_style("row", row, sensor)
+    };
+    let window = cx.open_window(size(px(400.), px(300.)), |_, _| {
+        ViewTree::new(wire::Node::empty())
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    let with = row(Some(measured(100.)));
+    tree.update(&mut native, |tree, cx| tree.replace(with.clone(), &[], cx));
+    assert_eq!(told(&events, &mut native), [[0., 0., 100., 60.]]);
+    tree.update(&mut native, |tree, cx| tree.replace(row(None), &[], cx));
+    assert!(told(&events, &mut native).is_empty(), "out of the tree");
+    tree.update(&mut native, |tree, cx| tree.replace(with, &[], cx));
+    assert_eq!(
+        told(&events, &mut native),
+        [[0., 0., 100., 60.]],
+        "in the tree again"
+    );
+}
+
+/// A sensor nothing listens to tells nothing and keeps nothing, so the
+/// frame that gives it a listener tells the bounds it has had all along,
+/// each time it does.
+#[gpui_kit::test]
+fn a_sensor_given_a_listener_tells_its_bounds_then(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let row = |heard: bool| {
+        let mut sensor = measured(100.);
+        if let wire::Node::Sensor { on_bounds, .. } = &mut sensor {
+            *on_bounds = on_bounds.filter(|_| heard);
+        }
+        let row = div().flex().flex_row().items_start().style().clone();
+        container_with_style("row", row, [sensor])
+    };
+    let window = cx.open_window(size(px(400.), px(300.)), |_, _| {
+        ViewTree::new(wire::Node::empty())
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    for sight in ["the first listener", "a listener again"] {
+        tree.update(&mut native, |tree, cx| tree.replace(row(false), &[], cx));
+        assert!(told(&events, &mut native).is_empty(), "nothing listens");
+        tree.update(&mut native, |tree, cx| tree.replace(row(true), &[], cx));
+        assert_eq!(told(&events, &mut native), [[0., 0., 100., 60.]], "{sight}");
+    }
+}
+
 /// A scrolling container keeps its handle at its own id: the offset holds
 /// across frames that insert a sibling before it, and goes with it. One
 /// without an id keeps none — its path is its parent's, shared with any
