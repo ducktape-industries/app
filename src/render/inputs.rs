@@ -360,10 +360,14 @@ impl ViewTree {
                     ));
                 let mut element = div().relative().id(native_id(id));
                 *element.style() = (*style).clone();
-                crate::a11y::around_field(element, focused, crate::a11y::ink(cx))
-                    .child(words)
-                    .child(self.measure(&path, cx))
-                    .into_any_element()
+                let element =
+                    crate::a11y::around_field(element, focused, crate::a11y::ink(cx)).child(words);
+                #[cfg(test)]
+                let element = {
+                    use gpui_kit::test::TestSupportExt as _;
+                    element.test_support()
+                };
+                element.into_any_element()
             }
         }
     }

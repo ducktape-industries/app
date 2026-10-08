@@ -108,30 +108,12 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
     let window = cx.open_window(size(px(800.), px(600.)), |_, cx| {
         Seat(cx.new(|_| ViewTree::new(root)))
     });
-    let tree = window
-        .root(cx)
-        .unwrap()
-        .read_with(cx, |seat, _| seat.0.clone());
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| {
         window.render_frame(cx);
         window.render_frame(cx);
     });
-    let bounds = |key: &str| {
-        let mut path = vec![
-            named_id("viewport"),
-            named_id("press-area"),
-            named_id("workspace"),
-            named_id("workspace-row"),
-        ];
-        if key != "sidebar" {
-            path.push(named_id("room"));
-            path.push(named_id("room-column"));
-        }
-        path.push(named_id(key));
-        tree.read_with(&native, |tree, _| tree.measured_bounds(&path))
-            .unwrap_or_else(|| panic!("{key} was measured"))
-    };
+    let mut bounds = |key: &'static str| native.update(|window, _| window.find(key).bounds());
     let (sidebar, error, composer) = (bounds("sidebar"), bounds("error"), bounds("composer"));
     assert_eq!(sidebar.size, size(px(236.), px(600.)), "{sidebar:?}");
     assert!(
@@ -212,9 +194,12 @@ fn styled_container_uses_native_interactivity_and_typed_identity(
             event: wire::click::Click::Mouse { .. }
         }
     )));
-    assert!(tree.read_with(&native, |tree, _| {
-        tree.mounted.contains(&vec![named_id("interactive")])
-    }));
+    // gpui files the label under the id the view gave the container
+    let label = native.update(|window, _| window.find("interactive-label").path().to_vec());
+    assert!(
+        label.ends_with(&["interactive".into(), "interactive-label".into()]),
+        "{label:?}"
+    );
 }
 
 #[gpui_kit::test]
@@ -371,8 +356,8 @@ fn an_unchanged_guest_tree_is_not_drawn_again(cx: &mut gpui_kit::TestAppContext)
         frame(&mut native);
     }
     assert_eq!(tree.read_with(&native, |tree, _| tree.renders), settled);
-    let card = tree.read_with(&native, |tree, _| tree.measured_bounds(&[named_id("card")]));
-    assert_eq!(card.map(|card| card.size), Some(size(px(200.), px(100.))));
+    let card = native.update(|window, _| window.find("card").bounds());
+    assert_eq!(card.size, size(px(200.), px(100.)));
 }
 
 /// A list box in a plain scroller whose `claim`ed row is its active
@@ -431,13 +416,10 @@ fn a_claimed_row_below_the_fold_is_scrolled_into_view(cx: &mut gpui_kit::TestApp
             for _ in 0..3 {
                 window.render_frame(cx);
             }
+            let row = window.find(format!("row-{claim}")).bounds();
             tree.read_with(cx, |tree, _| {
-                let list = vec![named_id("list")];
-                let row = vec![named_id("list"), named_id(&format!("row-{claim}"))];
-                // the scroller's own measure scrolls with its content: its
-                // handle has where it sits
-                let (view, row) = (tree.scrolls[&list].bounds(), tree.bounds[&row]);
-                let offset = f32::from(tree.scrolls[&list].offset().y);
+                let list = &tree.scrolls[&vec![named_id("list")]];
+                let (view, offset) = (list.bounds(), f32::from(list.offset().y));
                 let (top, bottom) = (row.top() - view.top(), row.bottom() - view.top());
                 (offset, f32::from(top), f32::from(bottom))
             })

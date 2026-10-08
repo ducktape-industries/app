@@ -219,67 +219,20 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
         children: vec![root],
     });
     let window = cx.open_window(size(px(800.), px(500.)), |_, _| ViewTree::new(root));
-    let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| window.render_frame(cx));
-    let button_bounds = native.update(|window, _| window.find("wrapping-parent").bounds());
-    tree.read_with(&native, |tree, _| {
-        let parent = named_id("wrapping-parent");
-        let column = named_id("column");
-        let row = named_id("row");
-        let paragraph = tree
-            .measured_bounds(&[parent.clone(), column.clone(), named_id("paragraph")])
-            .unwrap();
-        let hash = tree
-            .measured_bounds(&[
-                parent.clone(),
-                column.clone(),
-                row.clone(),
-                named_id("hash"),
-            ])
-            .unwrap();
+    native.update(|window, _| {
+        let bounds = |key: &'static str| window.find(key).bounds();
+        let button_bounds = bounds("wrapping-parent");
+        let (paragraph, hash, count) = (bounds("paragraph"), bounds("hash"), bounds("count"));
         assert!(
             button_bounds.bottom() >= hash.bottom(),
             "an auto-height clickable must show every wrapped line"
         );
-        let count = tree
-            .measured_bounds(&[
-                parent.clone(),
-                column.clone(),
-                row.clone(),
-                named_id("count"),
-            ])
-            .unwrap();
-        assert!(
-            tree.measured_bounds(&[
-                parent.clone(),
-                column.clone(),
-                row.clone(),
-                named_id("height"),
-            ])
-            .unwrap()
-            .right()
-                <= hash.left()
-        );
+        assert!(bounds("height").right() <= hash.left());
         assert_eq!(
-            tree.measured_bounds(&[
-                parent.clone(),
-                column.clone(),
-                row.clone(),
-                named_id("label"),
-            ])
-            .unwrap()
-            .size
-            .width,
-            tree.measured_bounds(&[
-                parent.clone(),
-                column.clone(),
-                row.clone(),
-                named_id("reference"),
-            ])
-            .unwrap()
-            .size
-            .width,
+            bounds("label").size.width,
+            bounds("reference").size.width,
             "intrinsic labels cannot lose letters to a Fill spacer"
         );
         assert!(paragraph.size.width <= px(620.));
@@ -289,12 +242,7 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
         );
         assert!(hash.right() <= count.left());
         assert!(
-            hash.size.height
-                > tree
-                    .measured_bounds(&[parent, column, row, named_id("reference")])
-                    .unwrap()
-                    .size
-                    .height,
+            hash.size.height > bounds("reference").size.height,
             "WordOrGlyph must override a native Button's inherited nowrap"
         );
         assert!(count.right() <= paragraph.left() + px(620.));
@@ -610,13 +558,13 @@ fn a_scrolling_container_keeps_its_handle_at_its_own_id(cx: &mut gpui_kit::TestA
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| window.render_frame(cx));
     let path = vec![named_id("main"), named_id("list")];
+    assert_eq!(
+        native.update(|window, _| window.find("list").bounds().size),
+        size(px(300.), px(200.)),
+        "the bar leaves the scroller's layout alone"
+    );
     tree.read_with(&native, |tree, _| {
         assert_eq!(tree.scrolls[&path].max_offset().y, px(800.));
-        assert_eq!(
-            tree.measured_bounds(&path).unwrap().size,
-            size(px(300.), px(200.)),
-            "the bar leaves the scroller's layout alone"
-        );
         tree.scrolls[&path].set_offset(point(px(0.), px(-300.)));
     });
     native.update(|window, cx| window.render_frame(cx));

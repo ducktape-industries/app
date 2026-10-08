@@ -83,6 +83,7 @@ impl Element for SvgCanvas {
 mod tests {
     use super::*;
     use crate::render::tests::{Seat, named_id};
+    use gpui_kit::test::TestWindowExt as _;
 
     fn boxed(id: Option<&str>, width: f32, height: f32, children: Vec<wire::Node>) -> wire::Node {
         wire::Node::Container(view_wire::ContainerNode {
@@ -99,7 +100,7 @@ mod tests {
     fn redraws_at_rest(
         root: wire::Node,
         cx: &mut gpui_kit::TestAppContext,
-    ) -> (u64, Entity<ViewTree>, gpui_kit::VisualTestContext) {
+    ) -> (u64, gpui_kit::VisualTestContext) {
         cx.update(gpui_kit::init);
         let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
             Seat(cx.new(|_| ViewTree::new(root)))
@@ -122,11 +123,11 @@ mod tests {
             frame(&mut native);
         }
         let after = tree.read_with(&native, |tree, _| tree.renders);
-        (after - settled, tree, native)
+        (after - settled, native)
     }
 
     #[gpui_kit::test]
-    fn a_canvas_leaves_its_parents_measure_alone(cx: &mut gpui_kit::TestAppContext) {
+    fn a_canvas_at_rest_asks_for_no_render(cx: &mut gpui_kit::TestAppContext) {
         // a Path shape takes the SVG road, the one that needs the canvas's size
         let drawing = wire::Node::Canvas {
             commands: vec![wire::CanvasCommand::Draw {
@@ -138,9 +139,9 @@ mod tests {
             style: crate::render::test_style(div().w(px(50.)).h(px(50.)).style().clone()),
         };
         let root = boxed(Some("card"), 200., 100., vec![drawing]);
-        let (redraws, tree, native) = redraws_at_rest(root, cx);
-        assert_eq!(redraws, 0, "the two measures fight over one entry");
-        let card = tree.read_with(&native, |tree, _| tree.measured_bounds(&[named_id("card")]));
-        assert_eq!(card.map(|card| card.size), Some(size(px(200.), px(100.))));
+        let (redraws, mut native) = redraws_at_rest(root, cx);
+        assert_eq!(redraws, 0, "a canvas at rest asks for no render");
+        let card = native.update(|window, _| window.find("card").bounds());
+        assert_eq!(card.size, size(px(200.), px(100.)));
     }
 }

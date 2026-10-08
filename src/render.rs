@@ -148,9 +148,11 @@ pub struct ViewTree {
     styles: wire::Styles,
     /// The path of the node `node()` is drawing; pushed and popped on the way.
     authored_path: AuthoredPath,
-    /// Every identified path this render passed: what a widget command may target.
-    mounted: std::collections::HashSet<AuthoredPath>,
-    /// Counts the anonymous elements of a render, for ids of their own.
+    /// Counts the nodes of a render the view gave no id, each by its place
+    /// in the walk: the number of the host id one takes (`container-N`,
+    /// `text-N`, `rich-N`, `primitive-N`). A container that makes no id
+    /// (`container`) is counted too, so a number never depends on what an
+    /// earlier node sets.
     render_index: u64,
     /// Where the row a virtualized list draws next sits in its set
     /// (1-based position, set size); `node` hands it to that row alone.
@@ -196,10 +198,6 @@ pub struct ViewTree {
     /// held focus as it opened, which gets focus back if focus went with
     /// the dialog.
     opener: Option<(FocusHandle, WeakFocusHandle)>,
-
-    // Measured geometry by path: what `measure` records for identified
-    // containers, growing fields and canvases, and the sensor canvas for sensors.
-    bounds: HashMap<AuthoredPath, Bounds<Pixels>>,
 
     // Pictures by the guest's content hash: the seat's bytes, which a node
     // that names a hash alone draws from, and the rasters decoded from them.
@@ -267,12 +265,10 @@ impl ViewTree {
             drags: HashMap::new(),
             dialogs: HashMap::new(),
             opener: None,
-            bounds: HashMap::new(),
             sensors: HashMap::new(),
             pictures: Default::default(),
             images: Default::default(),
             tooltips: HashMap::new(),
-            mounted: Default::default(),
             presentation: NativePresentation::default(),
             render_index: 0,
             next_row: None,
@@ -326,12 +322,9 @@ impl ViewTree {
         self.row = self.next_row.take();
         let index = self.row.map(|(position, _)| position - 1);
         let entered_scope = enter_scope(node, index, &mut self.authored_path);
-        if entered_scope {
-            self.mounted.insert(self.authored_path.clone());
-        }
         use wire::Node;
         let element = match node {
-            Node::Text(view_wire::TextNode { .. }) => self.text(node, cx),
+            Node::Text(view_wire::TextNode { .. }) => self.text(node),
             Node::Space => div().into_any_element(),
             Node::UniformList { .. } => self.uniform_list(node, window, cx),
             Node::List { .. } => self.variable_list(node, cx),
@@ -436,7 +429,6 @@ impl Render for ViewTree {
             crate::perf::count(key, "renders", 1);
             crate::perf::time(key, "render")
         });
-        self.mounted.clear();
         self.authored_path.clear();
         self.render_index = 0;
         cx.emit(Drawn);

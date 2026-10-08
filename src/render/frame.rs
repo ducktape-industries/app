@@ -5,11 +5,6 @@ use super::commands::walk_authored_paths;
 use super::*;
 
 impl ViewTree {
-    #[cfg(test)]
-    pub(crate) fn measured_bounds(&self, path: &[wire::ElementIdWire]) -> Option<Bounds<Pixels>> {
-        self.bounds.get(path).copied()
-    }
-
     /// The seat's picture bytes, handed with each root it draws: what a
     /// node that names a picture by hash alone draws.
     pub(crate) fn set_pictures(&mut self, pictures: Arc<PictureBytes>) {
@@ -98,10 +93,8 @@ impl ViewTree {
         let mut drags = std::collections::HashSet::new();
         let mut dialogs = std::collections::HashSet::new();
         let mut sensors = std::collections::HashSet::new();
-        let mut mounted = std::collections::HashSet::new();
         let mut tooltip_routes = std::collections::HashSet::new();
         walk_authored_paths(&root, None, &mut Vec::new(), &mut |node, path| {
-            mounted.insert(path.clone());
             tooltip_routes.extend(tooltip_route(node));
             // a scrolling container with an id keeps its handle; an id-less
             // one has no path of its own to keep it at
@@ -177,7 +170,6 @@ impl ViewTree {
                 self.remember_image(*hash, data, None, cx);
             }
         });
-        self.bounds.retain(|key, _| mounted.contains(key));
         self.focus_targets
             .retain(|key, (kind, _)| focusable.get(key) == Some(kind));
         self.guest_focus_targets

@@ -1,9 +1,10 @@
 //! The Container node, and the layout helpers the other renderers share:
-//! `measure` records an element's bounds under its authored path,
-//! `over_padding` floats a bar or a measure over a scroller without counting
-//! as its content, `vertical_bar` is a scroller's bar.
+//! `reveals` scrolls to a node on the frame it claims, `over_padding`
+//! floats a bar or a `reveals` over a scroller without counting as its
+//! content, `vertical_bar` is a scroller's bar.
 use super::*;
 use crate::render::native_id;
+use gpui_kit::Overflow;
 
 impl ViewTree {
     pub(super) fn container(
@@ -21,13 +22,38 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        let interactivity = interactivity
-            .as_deref()
-            .unwrap_or(wire::Interactivity::none());
         let style = self.style(*style);
         let mut element = div();
         *element.style() = (*style).clone();
         crate::fonts::refine_fallbacks(element.style());
+        // gpui's own split between `Div` and `Stateful<Div>`, by the node:
+        // an id is what gpui keeps element state under, read in each of its
+        // three passes, so a container takes one only when something reads
+        // it. The view's id is read by the view (its path, a widget
+        // command's target). Any interactivity keeps its state there (a
+        // press, a hover, a focus handle, a tooltip) and is an accessibility
+        // node only under an id. A scroller keeps its offset there, on
+        // either axis (gpui `Interactivity::request_layout`): with no id it
+        // would not scroll at all. A container with none of the three is a
+        // box and its children, and its descendants' ids are filed under
+        // its nearest identified ancestor, as the wire files them
+        // (`wire::identity`).
+        let scrolls = style.overflow.x == Some(Overflow::Scroll)
+            || style.overflow.y == Some(Overflow::Scroll);
+        if id.is_none() && interactivity.is_none() && !scrolls {
+            // it makes no id, and still takes its number: a host number is
+            // a node's place among the nodes the view gave no id, so one
+            // that starts or stops setting something moves no number after
+            // it, and gpui keeps what it files under those ids
+            self.render_index += 1;
+            for child in children {
+                element = element.child(self.node(child, window, cx));
+            }
+            return element.into_any_element();
+        }
+        let interactivity = interactivity
+            .as_deref()
+            .unwrap_or(wire::Interactivity::none());
         let native_id = id.as_ref().map(native_id).unwrap_or_else(|| {
             let index = self.render_index;
             self.render_index += 1;
@@ -35,10 +61,8 @@ impl ViewTree {
         });
         let mut element = element.id(native_id);
         element = self.guest_aria(element, node, interactivity, cx);
-        // Only a container with an id of its own owns its path. An id-less one
-        // sits on its nearest named ancestor's path: measuring there, it and
-        // the ancestor overwrite each other's bounds and notify every frame,
-        // so the cached tree re-renders whole, every frame, for good.
+        // Only a container with an id of its own owns its path: an id-less
+        // one sits on its nearest named ancestor's path.
         if node.identity().is_some() {
             let path = self.authored_path.clone();
             let kind = std::mem::discriminant(node);
@@ -59,10 +83,13 @@ impl ViewTree {
                 let handle = super::accessibility::tabbed(handle.clone(), interactivity);
                 element = element.track_focus(&handle);
             }
-            element = match style.overflow.y == Some(gpui_kit::Overflow::Scroll) {
-                true => element.child(over_padding(&style.padding, self.measure(&path, cx))),
-                false => element.child(self.measure(&path, cx)),
-            };
+            // the node claims: the scroller around it is brought to it
+            if interactivity.aria.active_descendant {
+                element = match style.overflow.y == Some(Overflow::Scroll) {
+                    true => element.child(over_padding(&style.padding, self.reveals(&path, cx))),
+                    false => element.child(self.reveals(&path, cx)),
+                };
+            }
         }
         for child in children {
             element = element.child(self.node(child, window, cx));
@@ -71,7 +98,7 @@ impl ViewTree {
         // the scroller's bounds, and the handle keeps the offset across frames.
         // The handle is kept at the scroller's own id: an id-less one would
         // share its parent's path, and so its handle, with any sibling there.
-        if style.overflow.y == Some(gpui_kit::Overflow::Scroll) && id.is_some() {
+        if style.overflow.y == Some(Overflow::Scroll) && id.is_some() {
             let handle = self
                 .scrolls
                 .entry(self.authored_path.clone())
@@ -89,11 +116,12 @@ impl ViewTree {
         element.into_any_element()
     }
 
-    /// A zero-paint absolute canvas that records its bounds into
-    /// `bounds[path]` and notifies when they change, and, on the first frame
-    /// a claim is on `path`, scrolls to it ([`Self::reveal`]). Only a node
-    /// that owns `path` may measure there (see `container`).
-    pub(super) fn measure(
+    /// A zero-paint absolute canvas over the node at `path`, which claims
+    /// (`guest_aria` put the path in `claiming`): on the first frame of the
+    /// claim it scrolls to the node's bounds ([`Self::reveal`]) and asks for
+    /// the frame that draws it there. Only a node that owns `path` may be
+    /// revealed there (see `container`).
+    fn reveals(
         &self,
         path: &[wire::ElementIdWire],
         cx: &Context<Self>,
@@ -103,15 +131,7 @@ impl ViewTree {
         canvas(
             move |bounds, _, cx| {
                 let _ = weak.update(cx, |this, cx| {
-                    let changed = this.bounds.get(&route) != Some(&bounds);
-                    if changed {
-                        this.bounds.insert(route.clone(), bounds);
-                        cx.notify();
-                    }
-                    let moved = this.claiming.contains(&route)
-                        && this.revealed.insert(route.clone())
-                        && this.reveal(&route, bounds);
-                    if moved {
+                    if this.revealed.insert(route.clone()) && this.reveal(&route, bounds) {
                         cx.notify();
                     }
                 });
@@ -153,7 +173,7 @@ impl ViewTree {
     }
 }
 
-/// An absolute overlay on a scroller (its bar, its measure): gpui sizes a
+/// An absolute overlay on a scroller (its bar, its `reveals`): gpui sizes a
 /// scroller's content from its children's bounds plus its padding, so a
 /// child spanning the scroller makes a fitting one scroll by its padding,
 /// or a long one past its end. The overlay's frame is the content box (the
