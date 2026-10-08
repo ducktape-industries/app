@@ -157,7 +157,10 @@ mod tests {
             div()
                 .size(px(40.))
                 .overflow_hidden()
-                .child(crate::render::deferred::Layer(source.into_any_element()))
+                .child(crate::render::deferred::Layer(
+                    source.into_any_element(),
+                    None,
+                ))
         }
     }
 

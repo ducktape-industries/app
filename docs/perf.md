@@ -111,7 +111,7 @@ loop runs on the window thread inside `Seat::turn`
 | Cache hit / miss per view | nothing | On the cached path (`layers::PaneView` draws the seat's tree as a cached `AnyView`, with or without a11y) gpui reuses the last prepaint when bounds, content mask and text style match, the entity is not dirty and the window is not refreshing (`gpui:src/view.rs`, the `AnyView` `prepaint` reuse branch); otherwise it calls `ViewTree::render` again. So `draws` = `PaneView` draws of the seat, `misses` = `ViewTree` renders, `hits = draws − misses`. Before #347 every draw was a miss | C `draws` (D); `misses`, `hits` derived | 70 |
 | Full redraws per interaction | nothing (#347 measured it with temporary spans: 57–67 per window switch before, 11–14 after) | the `misses` delta between two door reads around the interaction | derived (D) | 70 |
 | Refresh causes | nothing | every `window.refresh()` caller in `src` is a cache-buster for all cached views in that window (`gpui:src/view.rs`, `!window.refreshing`). Today there are two, both in `src/render/text.rs`: the selection path (post-#347 `refresh_on_change`, only when the shown selection changes; before it, gpui-base's `refresh_window_on_change`) and the drag mouse-up handler (`MouseUpEvent` while `DRAG_CLIP` is set). `Window::activate_a11y` also refreshes, and so does gpui when the input turns from the pointer to the keys or back (the focus ring follows it). A focus move does not: the pinned fork (gpui-pre#9) draws the view that drew the old focus and the one that draws the new, with their ancestors, so a view that reads at its render a focus handle drawn outside its own subtree (neither by it nor by a view under it) stays stale unless it observes focus (`on_focus`/`on_blur`); no view in `src` draws from such a read (audited 2026-10-01). The two views' draw is held by `shell::layers::root_tests::a_focus_move_re_renders_two_layers_not_the_window`. Count per site | C `refresh.<site>` (D) | free (`text.rs`) |
-| gpui layout / paint per view | nothing. gpui's own histograms are behind the fork's `profiler` feature (§1) | `input::Observe` (`src/runtime/input.rs`) wraps the guest element: `Observe::prepaint` runs render + layout + prepaint for a cached `AnyView`, `Observe::paint` the paint. Per view only on the cached path, which the tree takes with or without a11y | H `layout`, H `paint` (W) | a3 |
+| gpui layout / paint per view | nothing. gpui's own histograms are behind the fork's `profiler` feature (§1) | `render::deferred::Layer`, the element `ViewTree::render` puts every element of the tree under, timed under the seat's key. A pane draws the tree as a cached view, so on a miss gpui runs, in a row, `ViewTree::render`, `layout_as_root` and `prepaint_at` (`gpui:src/view.rs`, `prepaint_view`), and the paint later in the frame; `render` holds the first alone. `layout.request`: `request_layout` of every element (its style resolved, its element state read, one taffy node made; nothing solved). `layout.solve`: from that call's return to the tree's prepaint, which is gpui's `compute_layout` (the taffy solve of the view's own tree with its text measures), and with it one taffy node and the prepaint entry of the host's clip box. `prepaint`: bounds from the solved layout, element state again, hitboxes, each `measure` canvas's closure, and the rows of a list, which gpui builds and lays out as the list prepaints. `paint`: element state a third time, quads, text, the frame's listeners, a canvas's commands. A guest `Deferred`'s content and a tooltip are prepainted and painted later in the frame, in neither sample. One timer a pass for the whole tree, nothing for a node; a draw the cache answers runs no pass and leaves no sample | H `layout.request`, H `layout.solve`, H `prepaint`, H `paint` (W) | a3 |
 | Pictures | nothing | `Pictures::adopt` (`src/runtime/pictures.rs`) keeps a running byte total, held under `MAX_PICTURE_BYTES` (64 MiB) by eviction | G `picture_bytes` (D) | free |
 | Linear memory | nothing (the `MEMORY_LIMIT` trap) | `Exports.memory.data_size(&store)` after `Guest::tick` | G `memory` max (D) | a3 |
 | Snapshot on the way out | nothing | `Guest::snapshot` (covered above) | | a3 |
@@ -276,6 +276,7 @@ only when on and only when the tree changed.
       "ticks": 412, "busy_ticks": 3, "draws": 900, "renders": 415, "faults": 0,
       "fuel.tick": { "n": 412, "p50": 4100000, "p95": 31000000, "max": 71800000 },
       "tick.call": {...}, "tick.decode": {...}, "merge": {...}, "replace": {...}, "render": {...},
+      "layout.request": {...}, "layout.solve": {...}, "prepaint": {...}, "paint": {...},
       "frame_bytes": {...}, "events_bytes": {...}, "snapshot_bytes": { "max": 20480 }, "memory": { "max": 12582912 },
       "picture_bytes": {...}, "view_bytes": {...}, "nodes": { "max": 1900 }, "truncations": 0,
       "frame.full": 3, "frame.patch": 90, "frame.unchanged": 319, "requests": {...}, "cancels": {...}, "backlog": {...},
@@ -818,8 +819,11 @@ Phase 1, as listed:
   selection refresh fails it).
 
 Where the landed code differs from §2: `input::Observe` no longer exists,
-so there is no per-view `layout`/`paint` histogram (gpui's own, under
-`perf-deep`, cover the window); `first_tree` runs from the start of the
+so gpui's passes over a view's tree are timed inside the tree, at
+`render::deferred::Layer`, as four histograms beside `render`
+(`layout.request`, `layout.solve`, `prepaint`, `paint`: the row in §2
+says what each holds; gpui's own, under `perf-deep`, cover the window);
+`first_tree` runs from the start of the
 frame that found the view seated to its tree mounted; `door_draws` is
 process-wide; the registry's JSON is flat (§3.3). `kernel::node` has no
 `spawn_device`.
