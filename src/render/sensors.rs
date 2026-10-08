@@ -187,7 +187,6 @@ impl ViewTree {
             move |bounds, window, cx| {
                 let visible = window.content_mask().bounds.intersects(&bounds);
                 let _ = weak.update(cx, |this, cx| {
-                    this.bounds.insert(route.clone(), bounds);
                     let Some(sensor) = this.sensors.get_mut(&route) else {
                         return;
                     };

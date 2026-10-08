@@ -197,10 +197,6 @@ pub struct ViewTree {
     /// the dialog.
     opener: Option<(FocusHandle, WeakFocusHandle)>,
 
-    // Measured geometry by path: what `measure` records for identified
-    // containers, growing fields and canvases, and the sensor canvas for sensors.
-    bounds: HashMap<AuthoredPath, Bounds<Pixels>>,
-
     // Pictures by the guest's content hash: the seat's bytes, which a node
     // that names a hash alone draws from, and the rasters decoded from them.
     pictures: Arc<PictureBytes>,
@@ -267,7 +263,6 @@ impl ViewTree {
             drags: HashMap::new(),
             dialogs: HashMap::new(),
             opener: None,
-            bounds: HashMap::new(),
             sensors: HashMap::new(),
             pictures: Default::default(),
             images: Default::default(),
@@ -331,7 +326,7 @@ impl ViewTree {
         }
         use wire::Node;
         let element = match node {
-            Node::Text(view_wire::TextNode { .. }) => self.text(node, cx),
+            Node::Text(view_wire::TextNode { .. }) => self.text(node),
             Node::Space => div().into_any_element(),
             Node::UniformList { .. } => self.uniform_list(node, window, cx),
             Node::List { .. } => self.variable_list(node, cx),

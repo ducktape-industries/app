@@ -96,14 +96,10 @@ fn a_views_first_tick_carries_the_body_its_pane_lays_it_out_in(cx: &mut TestAppC
         window.draw(cx).clear(cx);
     });
     native.run_until_parked();
-    let tree = seat
-        .read_with(&native, |seat, _| seat.tree())
-        .expect("the tree is mounted");
-    let bounds = tree
-        .read_with(&native, |tree, _| {
-            tree.measured_bounds(&[wire::ElementIdWire::Name("card".into())])
-        })
-        .expect("the root was measured");
+    let bounds = native.update(|window, _| {
+        use gpui_kit::test::TestWindowExt as _;
+        window.find("card").bounds()
+    });
     assert_eq!(
         (f32::from(bounds.size.width), f32::from(bounds.size.height)),
         body,

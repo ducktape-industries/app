@@ -363,6 +363,7 @@ pub(super) fn emitted(
 
 mod accessibility;
 mod dialog_focus;
+mod element_cost;
 mod gpui_activation;
 mod gpui_clip;
 mod grip;

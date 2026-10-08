@@ -378,11 +378,7 @@ fn a_focused_field_wears_one_ring_on_its_own_box(cx: &mut gpui_kit::TestAppConte
         "one mark, the field's"
     );
     assert_eq!(node, (16., 276.), "the field's node is its box");
-    let end = tree
-        .read_with(&native, |tree, _| {
-            tree.measured_bounds(&[named_id("row"), named_id("end")])
-        })
-        .unwrap();
+    let end = native.update(|window, _| window.find("end").bounds());
     assert_eq!(
         (end.left(), end.right()),
         (px(500.), px(600.)),
@@ -688,13 +684,9 @@ fn editor_obeys_authored_size_and_height_limits(cx: &mut gpui_kit::TestAppContex
             unreachable!()
         };
         options.read_only = true;
-        let (tree, mut native) = mounted(root, cx);
+        let (_, mut native) = mounted(root, cx);
         native.update(|window, cx| window.render_frame(cx));
-        let bounds = tree
-            .read_with(&native, |tree, _| {
-                tree.measured_bounds(&[named_id("document")])
-            })
-            .unwrap();
+        let bounds = native.update(|window, _| window.find("document").bounds());
         assert_eq!(bounds.size, size(px(240.), px(expected)));
     }
 }
@@ -718,13 +710,9 @@ fn a_shrunk_editor_is_as_tall_as_all_of_its_lines(cx: &mut gpui_kit::TestAppCont
     // anything: the field is the root of nothing in a real view, it sits
     // inside the card's own layout.
     let root = sized("card", root, Some(fill()), Some(fill()));
-    let (tree, mut native) = mounted(root, cx);
+    let (_, mut native) = mounted(root, cx);
     native.update(|window, cx| window.render_frame(cx));
-    let bounds = tree
-        .read_with(&native, |tree, _| {
-            tree.measured_bounds(&[named_id("card"), named_id("document")])
-        })
-        .unwrap();
+    let bounds = native.update(|window, _| window.find("document").bounds());
     let lines = f32::from(bounds.size.height) / leading;
     assert!(
         (lines - 6.).abs() < 0.5,

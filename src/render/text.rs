@@ -259,7 +259,7 @@ fn paint_picked_link(
 }
 
 impl ViewTree {
-    pub(super) fn text(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn text(&mut self, node: &wire::Node) -> AnyElement {
         let wire::Node::Text(view_wire::TextNode {
             id, style, content, ..
         }) = node
@@ -280,15 +280,13 @@ impl ViewTree {
             // itself stays out of the AX tree so it is not a second,
             // empty-named node carrying the same content as its value.
             .child(gpui_kit::Text::new_inaccessible(content.clone().into()));
+        let element = announce(element, accessible(node));
         #[cfg(test)]
-        let element = if id.is_some() {
-            element.child(self.measure(&self.authored_path, cx))
-        } else {
-            element
+        let element = {
+            use gpui_kit::test::TestSupportExt as _;
+            element.test_support()
         };
-        #[cfg(not(test))]
-        let _ = cx;
-        announce(element, accessible(node)).into_any_element()
+        element.into_any_element()
     }
 
     pub(super) fn rich_text(
