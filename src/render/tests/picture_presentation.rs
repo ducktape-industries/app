@@ -226,11 +226,9 @@ fn image_with_states(hash: u64) -> wire::Node {
     }
 }
 
-fn mounted(tree: &ViewTree, name: &str) -> bool {
-    tree.mounted.contains(&vec![
-        wire::ElementIdWire::Name("picture".into()),
-        wire::ElementIdWire::Name(name.into()),
-    ])
+/// Whether the last frame drew the picture's state child `name`.
+fn drew(native: &mut gpui_kit::VisualTestContext, name: &'static str) -> bool {
+    native.update(|window, _| window.try_find(name).is_some())
 }
 
 /// A picture the raster cache has no room for, beside what the current
@@ -257,12 +255,12 @@ fn a_full_raster_cache_draws_the_fallback_then_evicts(cx: &mut gpui_kit::TestApp
     native.update(|window, cx| window.render_frame(cx));
     tree.read_with(&native, |tree, _| {
         assert!(tree.image_for_test(7).is_none(), "the cache had no room");
-        assert!(
-            mounted(tree, "fallback"),
-            "the full cache drew the fallback"
-        );
-        assert!(!mounted(tree, "loading"), "not the loading placeholder");
     });
+    assert!(
+        drew(&mut native, "fallback"),
+        "the full cache drew the fallback"
+    );
+    assert!(!drew(&mut native, "loading"), "not the loading placeholder");
 
     native
         .cx
@@ -274,8 +272,8 @@ fn a_full_raster_cache_draws_the_fallback_then_evicts(cx: &mut gpui_kit::TestApp
             .filter(|hash| tree.image_for_test(*hash).is_none())
             .count();
         assert_eq!(evicted, 1, "one raster the last frame drew made room");
-        assert!(!mounted(tree, "fallback") && !mounted(tree, "loading"));
     });
+    assert!(!drew(&mut native, "fallback") && !drew(&mut native, "loading"));
 }
 
 /// A seat that drops releases its pictures' atlas tiles; a hot swap, whose

@@ -195,9 +195,12 @@ fn styled_container_uses_native_interactivity_and_typed_identity(
             event: wire::click::Click::Mouse { .. }
         }
     )));
-    assert!(tree.read_with(&native, |tree, _| {
-        tree.mounted.contains(&vec![named_id("interactive")])
-    }));
+    // gpui files the label under the id the view gave the container
+    let label = native.update(|window, _| window.find("interactive-label").path().to_vec());
+    assert!(
+        label.ends_with(&["interactive".into(), "interactive-label".into()]),
+        "{label:?}"
+    );
 }
 
 #[gpui_kit::test]

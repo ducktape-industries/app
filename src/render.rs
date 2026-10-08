@@ -148,8 +148,6 @@ pub struct ViewTree {
     styles: wire::Styles,
     /// The path of the node `node()` is drawing; pushed and popped on the way.
     authored_path: AuthoredPath,
-    /// Every identified path this render passed: what a widget command may target.
-    mounted: std::collections::HashSet<AuthoredPath>,
     /// Counts the anonymous elements of a render, for ids of their own.
     render_index: u64,
     /// Where the row a virtualized list draws next sits in its set
@@ -267,7 +265,6 @@ impl ViewTree {
             pictures: Default::default(),
             images: Default::default(),
             tooltips: HashMap::new(),
-            mounted: Default::default(),
             presentation: NativePresentation::default(),
             render_index: 0,
             next_row: None,
@@ -321,9 +318,6 @@ impl ViewTree {
         self.row = self.next_row.take();
         let index = self.row.map(|(position, _)| position - 1);
         let entered_scope = enter_scope(node, index, &mut self.authored_path);
-        if entered_scope {
-            self.mounted.insert(self.authored_path.clone());
-        }
         use wire::Node;
         let element = match node {
             Node::Text(view_wire::TextNode { .. }) => self.text(node),
@@ -431,7 +425,6 @@ impl Render for ViewTree {
             crate::perf::count(key, "renders", 1);
             crate::perf::time(key, "render")
         });
-        self.mounted.clear();
         self.authored_path.clear();
         self.render_index = 0;
         cx.emit(Drawn);
