@@ -268,6 +268,123 @@ fn a_scroller_the_view_gave_no_id_keeps_its_offset(cx: &mut gpui_kit::TestAppCon
     assert_eq!(top(&mut native), -120., "and the one after");
 }
 
+/// A card of three nodes the view gave no id: a box 10 px tall, with a hover
+/// style when `lit`; a scroller of ten rows; a text.
+fn anonymous(lit: bool) -> wire::Node {
+    let hover = lit.then(|| wire::Interactivity {
+        hover: Some(crate::render::test_style(
+            div().bg(rgb(0x303846)).style().clone(),
+        )),
+        ..Default::default()
+    });
+    let plain = wire::Node::Container(view_wire::ContainerNode {
+        id: None,
+        style: crate::render::test_style(div().h(px(10.)).flex_shrink_0().style().clone()),
+        interactivity: hover.map(Box::new),
+        children: Vec::new(),
+    });
+    let rows = (0..10).map(|n| {
+        container_with_style(
+            &format!("row-{n}"),
+            div().h(px(40.)).flex_shrink_0().style().clone(),
+            [],
+        )
+    });
+    let mut style = div()
+        .flex()
+        .flex_col()
+        .flex_shrink_0()
+        .w(px(200.))
+        .h(px(100.))
+        .style()
+        .clone();
+    style.overflow.y = Some(gpui_kit::Overflow::Scroll);
+    let scroller = wire::Node::Container(view_wire::ContainerNode {
+        id: None,
+        style: crate::render::test_style(style),
+        interactivity: None,
+        children: rows.collect(),
+    });
+    let words = wire::Node::Text(view_wire::TextNode {
+        id: None,
+        style: crate::render::test_style(gpui_kit::StyleRefinement::default()),
+        content: "words".into(),
+    });
+    container_with_style(
+        "card",
+        div().flex().flex_col().style().clone(),
+        [plain, scroller, words],
+    )
+}
+
+/// A host number is a node's place among the nodes the view gave no id,
+/// whatever each of them sets: a box that starts to take an id (here it
+/// gains a hover style) moves no number after it. So the scroller after it
+/// is the same element on the next frame, and gpui hands it the offset the
+/// wheel left under its id.
+#[gpui_kit::test]
+fn a_scroller_keeps_its_offset_when_a_box_before_it_takes_an_id(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(300.), px(300.)), |_, _| {
+        ViewTree::new(anonymous(false))
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let top = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            f32::from(window.find("row-0").bounds().top())
+        })
+    };
+    assert_eq!(top(&mut native), 10.);
+    native.update(|window, cx| {
+        let wheel = gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-120.)));
+        window.scroll("row-1", wheel, cx);
+    });
+    assert_eq!(top(&mut native), -110., "the wheel scrolls it");
+    tree.update(&mut native, |tree, cx| {
+        tree.replace(anonymous(true), &[], cx)
+    });
+    assert_eq!(
+        top(&mut native),
+        -110.,
+        "the box before it gained a hover style: the scroller keeps its offset"
+    );
+}
+
+/// The same for a text the view gave no id: its number, so its id, so the
+/// accessibility node and whatever gpui keeps under it, stays when a box
+/// before it starts to take an id.
+#[gpui_kit::test]
+fn a_text_keeps_its_number_when_a_box_before_it_takes_an_id(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(300.), px(300.)), |_, _| {
+        ViewTree::new(anonymous(false))
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    // the number of the one text the host numbered
+    let number = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            (0..8).find(|n| {
+                let id = crate::render::host_id(format!("text-{n}"));
+                window.try_find(id).is_some()
+            })
+        })
+    };
+    let before = number(&mut native);
+    assert!(before.is_some(), "the text has a host number");
+    tree.update(&mut native, |tree, cx| {
+        tree.replace(anonymous(true), &[], cx)
+    });
+    assert_eq!(
+        number(&mut native),
+        before,
+        "the box before it gained a hover style: the text keeps its number"
+    );
+}
+
 /// A scroller of ten rows, each with an id, the first `first` px tall;
 /// `claim` is the row that claims.
 fn rows(claim: Option<usize>, first: f32) -> wire::Node {

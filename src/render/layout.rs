@@ -41,6 +41,11 @@ impl ViewTree {
         let scrolls = style.overflow.x == Some(Overflow::Scroll)
             || style.overflow.y == Some(Overflow::Scroll);
         if id.is_none() && interactivity.is_none() && !scrolls {
+            // it makes no id, and still takes its number: a host number is
+            // a node's place among the nodes the view gave no id, so one
+            // that starts or stops setting something moves no number after
+            // it, and gpui keeps what it files under those ids
+            self.render_index += 1;
             for child in children {
                 element = element.child(self.node(child, window, cx));
             }

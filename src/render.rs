@@ -148,8 +148,11 @@ pub struct ViewTree {
     styles: wire::Styles,
     /// The path of the node `node()` is drawing; pushed and popped on the way.
     authored_path: AuthoredPath,
-    /// Counts the ids a render makes for nodes the view gave none, so each
-    /// is its own.
+    /// Counts the nodes of a render the view gave no id, each by its place
+    /// in the walk: the number of the host id one takes (`container-N`,
+    /// `text-N`, `rich-N`, `primitive-N`). A container that makes no id
+    /// (`container`) is counted too, so a number never depends on what an
+    /// earlier node sets.
     render_index: u64,
     /// Where the row a virtualized list draws next sits in its set
     /// (1-based position, set size); `node` hands it to that row alone.
