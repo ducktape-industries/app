@@ -4808,7 +4808,7 @@ dependencies = [
 [[package]]
 name = "keyscheme"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=736865710dcfa7c56f9834747287881c1c25d45d#736865710dcfa7c56f9834747287881c1c25d45d"
+source = "git+https://github.com/ducktape-industries/ducktape?rev=9dfffb0662bd8a16293df8c75de8817a79b0810b#9dfffb0662bd8a16293df8c75de8817a79b0810b"
 dependencies = [
  "base64 0.22.1",
  "borsh",

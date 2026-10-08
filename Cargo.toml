@@ -88,7 +88,7 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # The passkey lane (`backend/passkey.rs`): the verifier the node runs (to
 # pick which passkey signed and to frame its assertion), and the identity
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
-keyscheme = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "736865710dcfa7c56f9834747287881c1c25d45d", package = "keyscheme" }
+keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b", package = "keyscheme" }
 identity = { git = "https://github.com/ducktape-industries/modules", rev = "c27151e68c571a60bf5488a7f36e2c8969afb848", package = "identity" }
 # The roster's full query surface: its programs and its view-only entries.
 module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "c27151e68c571a60bf5488a7f36e2c8969afb848", package = "module-registry" }
@@ -136,7 +136,7 @@ zbus = "5"
 wat = "1"
 gpui-kit = { version = "=0.7.0", features = ["test-support"] }
 tempfile.workspace = true
-keyscheme = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "736865710dcfa7c56f9834747287881c1c25d45d", package = "keyscheme", features = ["testkit"] }
+keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b", package = "keyscheme", features = ["testkit"] }
 p256 = "0.13"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
