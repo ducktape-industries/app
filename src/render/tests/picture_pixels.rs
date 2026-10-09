@@ -423,6 +423,8 @@ fn quads_under_one_draw_order_are_the_picture_they_were_one_by_one() {
 /// the run after, as they did when every quad had a draw order of its own.
 /// Every edge here is on a whole pixel and the lines are solid, so nothing
 /// is anti-aliased and the picture is only which shape lies over which.
+/// The steps go on from each other, so they are one path: its corners are
+/// as open as they were, no join drawn between two steps.
 #[test]
 fn lines_between_runs_of_quads_lie_over_the_run_before_and_under_the_run_after() {
     let ink = gpui_kit::rgba(0x202020ff);
@@ -474,4 +476,150 @@ fn lines_between_runs_of_quads_lie_over_the_run_before_and_under_the_run_after()
         Vec::new(),
         "the pixels that differ"
     );
+}
+
+/// A line as a chart draws an average: a command a segment, each from the
+/// last one's end, at fractions of a pixel.
+fn average(
+    segments: usize,
+    color: gpui_kit::Rgba,
+    width: f32,
+    cap: wire::CanvasLineCap,
+) -> Vec<wire::CanvasCommand> {
+    let step = 220. / segments as f32;
+    let ends: Vec<[f32; 2]> = (0..=segments)
+        .map(|end| {
+            [
+                8.8 + step * end as f32,
+                60.3 + ((end * 7) % 11) as f32 * 2.3,
+            ]
+        })
+        .collect();
+    ends.windows(2)
+        .map(|ends| {
+            stroked(
+                wire::CanvasShape::Line {
+                    from: ends[0],
+                    to: ends[1],
+                },
+                None,
+                color,
+                width,
+                cap,
+            )
+        })
+        .collect()
+}
+
+/// One path with a subpath a line has the triangles its lines have alone,
+/// in their order: two a line, no join between two lines. So what a line
+/// in one path changes in the picture is the renderer's doing, not the
+/// geometry's.
+#[test]
+fn one_path_has_the_triangles_its_lines_have_alone() {
+    let points = [[10.3, 20.7], [14.1, 18.2], [18.9, 19.4], [23.2, 25.1]];
+    let triangles = |points: &[[f32; 2]]| {
+        let mut path = gpui_kit::PathBuilder::stroke(px(1.25));
+        for ends in points.windows(2) {
+            path.move_to(point(px(ends[0][0]), px(ends[0][1])));
+            path.line_to(point(px(ends[1][0]), px(ends[1][1])));
+        }
+        let vertices = path.build().unwrap().vertices;
+        Vec::from_iter(vertices.into_iter().map(|vertex| vertex.xy_position))
+    };
+    let alone = Vec::from_iter(points.windows(2).flat_map(triangles));
+    assert_eq!(alone.len(), 3 * 2 * 3, "two triangles a line");
+    assert_eq!(triangles(&points), alone);
+}
+
+/// A butt-capped line alone, as one path, loses no ink it had as a path a
+/// segment: no pixel is lighter. (With quads ordered between its segments
+/// the old batches were cut elsewhere, and a pixel at a joint can be
+/// lighter.) It is not the same picture: the renderer drops a
+/// path's pixel whose middle is outside that path's own box, which trims
+/// the partly covered pixels at a short segment's edge and not those of
+/// the whole line, so the one path adds ink there. How many pixels that is
+/// depends on the renderer, so no count is held here.
+#[test]
+fn a_line_in_one_path_loses_no_ink_its_segments_had() {
+    for segments in [40, 160] {
+        let commands = average(
+            segments,
+            gpui_kit::rgba(0x404040ff),
+            1.25,
+            wire::CanvasLineCap::Butt,
+        );
+        let before = picture(&commands, painted_one_by_one);
+        let after = picture(&commands, crate::render::canvas::paint_canvas_commands);
+        let ink = before.pixels().filter(|pixel| pixel.0 != WHITE).count();
+        assert!(ink > 500, "the line is drawn: {ink} pixels");
+        let mut lighter = difference(&before, &after);
+        lighter.retain(|(_, _, before, after)| before.iter().zip(after).any(|(b, a)| a > b));
+        assert_eq!(
+            lighter,
+            Vec::new(),
+            "{segments} segments: the pixels that lost ink"
+        );
+    }
+}
+
+/// A line that goes on from the last one's end with another stroke is not
+/// of its run: it keeps its own colour and its own width.
+#[test]
+fn a_line_of_another_stroke_stays_out_of_the_run() {
+    let (black, red) = (gpui_kit::rgba(0x000000ff), gpui_kit::rgba(0xff0000ff));
+    let line = |from: [f32; 2], to: [f32; 2], color, width| {
+        stroked(
+            wire::CanvasShape::Line { from, to },
+            None,
+            color,
+            width,
+            wire::CanvasLineCap::Butt,
+        )
+    };
+    let commands = [
+        line([20., 40.], [120., 40.], black, 4.),
+        line([120., 40.], [220., 40.], red, 4.),
+        line([20., 80.], [120., 80.], black, 4.),
+        line([120., 80.], [220., 80.], black, 8.),
+    ];
+    let before = picture(&commands, painted_one_by_one);
+    let after = picture(&commands, crate::render::canvas::paint_canvas_commands);
+    let scale = after.width() / 240;
+    let at = |x: u32, y: u32| after.get_pixel(x * scale, y * scale).0;
+    assert_near(at(170, 40), RED, "the second line keeps its colour");
+    assert_near(
+        at(170, 77),
+        [0, 0, 0, 255],
+        "the wider line keeps its width",
+    );
+    assert_near(at(70, 77), WHITE, "the narrower line keeps its width");
+    assert_eq!(
+        difference(&before, &after),
+        Vec::new(),
+        "the pixels that differ"
+    );
+}
+
+/// Round-capped lines stay a path each, their caps laid over its ends
+/// before the next one's path, so they are the picture they were.
+#[test]
+fn round_capped_lines_are_the_picture_they_were() {
+    for segments in [40, 160] {
+        let commands = average(
+            segments,
+            gpui_kit::rgba(0xe0a000b0),
+            2.,
+            wire::CanvasLineCap::Round,
+        );
+        let before = picture(&commands, painted_one_by_one);
+        let after = picture(&commands, crate::render::canvas::paint_canvas_commands);
+        let ink = before.pixels().filter(|pixel| pixel.0 != WHITE).count();
+        assert!(ink > 500, "the line is drawn: {ink} pixels");
+        assert_eq!(
+            difference(&before, &after),
+            Vec::new(),
+            "{segments} segments: the pixels that differ"
+        );
+    }
 }
