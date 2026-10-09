@@ -27,7 +27,7 @@ pub(super) use launcher::{LAUNCHER_SIZE, LauncherLayer};
 pub(crate) use overlays::Kept;
 pub(super) use overlays::OverlayLayer;
 #[cfg(test)]
-pub(super) use panes::{BORDER, TITLE};
+pub(super) use panes::{BORDER, FILL_STRIP, TITLE};
 pub(super) use panes::{PaneLayer, PaneView, view_body};
 pub(super) use root::WindowRoot;
 pub(super) use toast::ToastView;

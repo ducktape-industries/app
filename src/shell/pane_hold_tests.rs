@@ -60,6 +60,10 @@ fn held(native: &mut VisualTestContext, view: &Entity<WindowRoot>) -> bool {
     native.update(|_, cx| view.read(cx).layout(cx).held.is_some())
 }
 
+fn filled(native: &mut VisualTestContext, view: &Entity<WindowRoot>) -> bool {
+    native.update(|_, cx| view.read(cx).layout(cx).filled)
+}
+
 fn focused(native: &mut VisualTestContext) -> Option<gpui_kit::FocusHandle> {
     native.update(|window, cx| window.focused(cx))
 }
@@ -85,14 +89,11 @@ fn the_fill_chord_fills_the_window_in_front_and_again_puts_it_back(cx: &mut Test
     let (_, _, view, mut native) = desk_of_two(cx);
     let before = frame(&mut native, &view, 1);
     stroke(&mut native, "secondary-shift-enter");
-    let filled = frame(&mut native, &view, 1);
-    assert_ne!(filled, before);
-    assert_eq!(
-        native.update(|_, cx| view.read(cx).layout(cx).panes[1].restore),
-        Some(before)
-    );
+    assert!(filled(&mut native, &view));
+    assert_eq!(frame(&mut native, &view, 1), before, "its frame kept");
     assert!(in_front(&mut native, &view), "the keys stay in the window");
     stroke(&mut native, "secondary-shift-enter");
+    assert!(!filled(&mut native, &view));
     assert_eq!(frame(&mut native, &view, 1), before);
     assert_eq!(panes(&mut native, &view), (2, 1));
 }
@@ -186,20 +187,17 @@ fn escape_puts_the_window_back_and_a_fill_with_it(cx: &mut TestAppContext) {
     assert_eq!(frame(&mut native, &view, 1), start);
     assert_eq!(focused(&mut native), previous);
 
-    // a filled window moved, then put back filled
+    // a filled desk held: fill off and the window moved, then put back
+    // filled
     stroke(&mut native, "secondary-shift-enter");
-    let (filled, restore) = native.update(|_, cx| {
-        let pane = view.read(cx).layout(cx).panes[1].clone();
-        (pane.frame, pane.restore)
-    });
+    assert!(filled(&mut native, &view));
     stroke(&mut native, "secondary-shift-m");
+    assert!(!filled(&mut native, &view), "the hold left fill");
     stroke(&mut native, "shift-left");
-    assert_ne!(frame(&mut native, &view, 1), filled.unwrap());
+    assert_ne!(frame(&mut native, &view, 1), start);
     stroke(&mut native, "escape");
-    native.update(|_, cx| {
-        let pane = view.read(cx).layout(cx).panes[1].clone();
-        assert_eq!((pane.frame, pane.restore), (filled, restore));
-    });
+    assert!(filled(&mut native, &view));
+    assert_eq!(frame(&mut native, &view, 1), start);
 }
 
 #[gpui_kit::test]
@@ -329,6 +327,7 @@ fn the_chords_and_the_menu_do_nothing_under_an_overlay(cx: &mut TestAppContext) 
     });
     settle(&mut native);
     assert!(!held(&mut native, &view));
+    assert!(!filled(&mut native, &view));
     assert_eq!(frame(&mut native, &view, 1), before);
 }
 
@@ -470,12 +469,11 @@ fn a_hold_run_from_a_drawn_search_keeps_the_keys(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_fill_run_from_a_drawn_search_leaves_the_keys_in_front(cx: &mut TestAppContext) {
     let (_, _, view, mut native) = desk_of_two(cx);
-    let before = frame(&mut native, &view, 1);
     show(&view, Some(Overlay::Spotlight), &mut native);
     settle(&mut native);
     run_spot(&view, Spot::FillWindow, &mut native);
     settle(&mut native);
-    assert_ne!(frame(&mut native, &view, 1), before, "filled");
+    assert!(filled(&mut native, &view));
     assert!(
         in_front(&mut native, &view),
         "the window in front has the keys"

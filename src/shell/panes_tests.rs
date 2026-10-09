@@ -206,17 +206,155 @@ fn a_press_on_a_window_behind_brings_it_to_the_front(cx: &mut TestAppContext) {
     native.update(|window, cx| {
         draw(window, cx);
         let layout = view.read(cx).layout(cx);
-        assert!(layout.panes[0].restore.is_some(), "the front window filled");
-        assert!(
-            layout.panes[1].restore.is_none(),
-            "the one behind heard nothing"
-        );
+        assert!(layout.filled, "the desk filled");
+        assert_eq!(layout.focused, 0, "with the front window");
     });
     settle(&mut native);
     assert_eq!(
         native.update(|window, cx| window.focused(cx)),
         keys,
         "filling the front window moved the keys"
+    );
+}
+
+/// The pointer pressed at `from`, moved to `to` and let go, in one go.
+fn drag(native: &mut VisualTestContext, from: (f32, f32), to: (f32, f32)) {
+    use gpui_kit::{MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput};
+    let (from, to) = (
+        gpui_kit::point(px(from.0), px(from.1)),
+        gpui_kit::point(px(to.0), px(to.1)),
+    );
+    native.update(|window, cx| {
+        for event in [
+            PlatformInput::MouseDown(MouseDownEvent {
+                position: from,
+                button: MouseButton::Left,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position: to,
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Default::default(),
+            }),
+            PlatformInput::MouseUp(MouseUpEvent {
+                position: to,
+                button: MouseButton::Left,
+                modifiers: Default::default(),
+                click_count: 1,
+            }),
+        ] {
+            window.dispatch_event(event, cx);
+        }
+    });
+    settle(native);
+}
+
+/// The bounds of the AX node with `id`, in the window: `[x0, y0, x1, y1]`.
+fn bounds(native: &mut VisualTestContext, id: &str) -> [i64; 4] {
+    native.update(|window, cx| {
+        draw(window, cx);
+        let nodes = serde_json::to_value(crate::ax::snapshot("console", window, true)).unwrap();
+        let node = nodes
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["id"] == format!("console:{id}"))
+            .unwrap_or_else(|| panic!("no {id}: {nodes}"))
+            .clone();
+        serde_json::from_value(node["bounds"].clone()).unwrap()
+    })
+}
+
+/// Fill draws the window in front over the whole desk, edge to edge: no
+/// grips at its edges, not moved by its strip, its view laid out at the
+/// desk less the filled strip. Popped out, the window beneath fills; popped
+/// back in, it fills again. The strip's Restore puts it back at its frame.
+#[gpui_kit::test]
+fn a_filled_window_covers_the_desk_and_restore_puts_it_back(cx: &mut TestAppContext) {
+    let (app, key, view, mut native) = console(cx);
+    native.update(|window, cx| press("pane/0/split", window, cx));
+    settle(&mut native);
+    let (index, frame, instance) = native.update(|_, cx| {
+        let layout = view.read(cx).layout(cx);
+        let pane = &layout.panes[layout.focused];
+        (layout.focused, pane.frame.unwrap(), pane.instance)
+    });
+    let (width, height) = layers::tests::WINDOW;
+    let bar = layers::BAR;
+    pane(&view, PaneMessage::Fill, &mut native);
+    let whole = [0, bar as i64, width as i64, height as i64];
+    assert_eq!(bounds(&mut native, &format!("pane/{index}")), whole);
+    assert_eq!(
+        bounds(&mut native, &format!("pane/{index}/view")),
+        [
+            0,
+            (bar + layers::FILL_STRIP) as i64,
+            width as i64,
+            height as i64
+        ],
+        "under the filled strip"
+    );
+    let seat = native.update(|_, cx| app.seats.read(cx).seat(instance).unwrap());
+    assert_eq!(
+        native.update(|_, cx| seat.read(cx).body()),
+        Some((width, height - bar - layers::FILL_STRIP)),
+        "its view is laid out at the filled size"
+    );
+    // its right edge sizes nothing, its strip moves nothing
+    drag(
+        &mut native,
+        (width - 2., bar + 300.),
+        (width - 300., bar + 300.),
+    );
+    drag(
+        &mut native,
+        (width / 2., bar + 18.),
+        (width / 2. + 80., bar + 120.),
+    );
+    native.update(|_, cx| {
+        let layout = view.read(cx).layout(cx);
+        assert!(layout.filled);
+        assert_eq!(layout.panes[index].frame, Some(frame), "the frame kept");
+    });
+    // out into a window of its own: the one beneath fills the desk
+    native.update(|window, cx| press(&format!("pane/{index}/popout"), window, cx));
+    native.run_until_parked();
+    let front = |native: &mut VisualTestContext| {
+        native.update(|_, cx| {
+            let layout = view.read(cx).layout(cx);
+            let pane = &layout.panes[layout.focused];
+            (layout.filled, layout.focused, pane.instance, pane.frame)
+        })
+    };
+    let (filled, beneath, _, _) = front(&mut native);
+    assert!(filled, "popped out: still filled");
+    assert_eq!(bounds(&mut native, &format!("pane/{beneath}")), whole);
+    // and back in: it comes forward, filling the desk
+    let (_, popped_handle, _) = popped(&app, key, &mut native);
+    native.update(|_, cx| {
+        popped_handle
+            .update(cx, |_, window, cx| press("pane/0/popin", window, cx))
+            .unwrap();
+    });
+    native.run_until_parked();
+    settle(&mut native);
+    let (filled, index, back, frame) = front(&mut native);
+    assert!(filled, "popped in: still filled");
+    assert_eq!(back, instance, "the window that came back is in front");
+    assert_eq!(bounds(&mut native, &format!("pane/{index}")), whole);
+    let frame = frame.unwrap();
+    native.update(|window, cx| press(&format!("pane/{index}/restore"), window, cx));
+    settle(&mut native);
+    assert!(!native.update(|_, cx| view.read(cx).layout(cx).filled));
+    let at = |x: f32, y: f32| [x as i64, (bar + y) as i64];
+    let [x0, y0] = at(frame.x, frame.y);
+    let [x1, y1] = at(frame.x + frame.w, frame.y + frame.h);
+    assert_eq!(
+        bounds(&mut native, &format!("pane/{index}")),
+        [x0, y0, x1, y1],
+        "back at its frame"
     );
 }
 

@@ -31,7 +31,8 @@ gpui_kit::actions!(
         CycleForward,
         /// ⌘⇧` / ctrl-shift-tab: the previous one.
         CycleBack,
-        /// ⌘⇧↩: the window in front fills the desk, or goes back.
+        /// ⌘⇧↩: the window in front fills the desk, or every window goes
+        /// back.
         FillPane,
         /// ⌘⇧M: the arrows move the window in front (⌥ sizes it).
         HoldPane,

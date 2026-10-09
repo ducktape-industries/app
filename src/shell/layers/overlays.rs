@@ -321,8 +321,8 @@ pub(super) fn run(
             .update(cx, |prefs, cx| prefs.set_appearance(mode, cx)),
         Some(Spot::Help) => app.windows.update(cx, |windows, cx| windows.help_asked(cx)),
         Some(Spot::FillWindow) => {
-            if let Some((desk, index)) = framed_pane(cx) {
-                desk.update(cx, |desk, cx| desk.fill(index, cx));
+            if let Some((desk, _)) = framed_pane(cx) {
+                desk.update(cx, |desk, cx| desk.fill(cx));
             }
         }
         Some(Spot::HoldWindow) => {

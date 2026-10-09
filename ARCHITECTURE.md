@@ -436,8 +436,9 @@ draws nothing.
   come from the pane layer's next-frame callback (`PaneLayer::shown`:
   `resize`, then `seed` with the program in front), never from a draw.
 - **Geometry.** `ui/layout.rs` is pure: `Layout` per window holds `Pane`s
-  (frame, `instance`, `module`, z), focus and the desk size; operations
-  (`split`, `cycle`, fill/restore, place, measure). Sentinel modules:
+  (frame, `instance`, `module`, z, title), focus, fill (the window in
+  front covers the desk; frames untouched) and the desk size; operations
+  (`split`, `cycle`, fill, place, measure). Sentinel modules:
   `EMPTY` (an empty pane shows the program finder) and `HELP`.
 - **Windows** (`shell/entities/windows.rs`). The OS windows: each one's
   handle, root view and own entities (`WindowEntities`: its `Desk`, what

@@ -30,21 +30,71 @@ use std::collections::HashMap;
 
 /// A title bar's height.
 pub(in crate::shell) const TITLE: f32 = 32.;
+/// The filled window's strip: as tall as the bar, drawn like it.
+pub(in crate::shell) const FILL_STRIP: f32 = 36.;
 /// A pane's border on the desk (`border_1`), each side.
 pub(in crate::shell) const BORDER: f32 = 1.;
 
-/// The body a view's root is laid out in, as [`PaneView::place`] draws it:
-/// on the console a pane's frame less its border and title bar, in a window
-/// of its own the window less the title bar; none until the desk is drawn.
-/// The seat widens it to the view's own minimum (`Pane::min_width`).
+/// The body the view of `layout`'s pane `index` is laid out in, as
+/// [`PaneView::place`] draws it: on the console a pane's frame less its
+/// border and title bar, or filling the desk the desk less its strip; in a
+/// window of its own the window less the title bar; none until the desk is
+/// drawn. The seat widens it to the view's own minimum (`Pane::min_width`).
 pub(in crate::shell) fn view_body(
     console: bool,
-    pane: &layout::Pane,
-    desk: Option<(f32, f32)>,
+    layout: &layout::Layout,
+    index: usize,
 ) -> Option<(f32, f32)> {
-    match pane.frame.filter(|_| console) {
+    let desk = layout.desk;
+    match layout.panes[index].frame.filter(|_| console) {
+        Some(_) if layout.fills(index) => desk.map(|(width, height)| (width, height - FILL_STRIP)),
         Some(frame) => Some((frame.w - 2. * BORDER, frame.h - 2. * BORDER - TITLE)),
         None => desk.map(|(width, height)| (width, height - TITLE)),
+    }
+}
+
+/// A strip's name: the program's `label`, then the `title` its view gave
+/// the window. A window's strip has the label in mono and the title muted;
+/// the filled strip reads like the bar, the label muted and the title in
+/// ink, or with no title the label alone in ink.
+pub(in crate::shell) fn strip_name(
+    label: &str,
+    title: Option<&str>,
+    filled: bool,
+    ink: &super::super::ink::Ink,
+) -> AnyElement {
+    use super::super::ink::{mono, sans};
+    let name = |first: Div, title: &str, second: Div| {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .min_w_0()
+            .child(first.flex_shrink_0().child(label.to_owned()))
+            .child(second.min_w_0().truncate().child(title.to_owned()))
+            .into_any_element()
+    };
+    match (filled, title) {
+        (false, None) => mono(500, 12.)
+            .flex_shrink_0()
+            .text_color(ink.ink)
+            .child(label.to_owned())
+            .into_any_element(),
+        (false, Some(title)) => name(
+            mono(500, 12.).text_color(ink.ink),
+            title,
+            sans(400, 12.5).text_color(ink.muted),
+        ),
+        (true, None) => sans(500, 13.)
+            .flex_shrink_0()
+            .text_color(ink.ink)
+            .child(label.to_owned())
+            .into_any_element(),
+        (true, Some(title)) => name(
+            sans(400, 13.).text_color(ink.muted),
+            title,
+            sans(500, 13.).text_color(ink.ink),
+        ),
     }
 }
 
@@ -549,6 +599,7 @@ impl PaneView {
         let focused = index == layout.focused;
         let multi = layout.panes.len() > 1;
         let on_desk = self.kind == WindowKind::Console && pane.frame.is_some();
+        let filled = on_desk && layout.fills(index);
         let held = on_desk
             && layout
                 .held
@@ -562,6 +613,16 @@ impl PaneView {
             .role(Role::Group);
         match pane.frame.filter(|_| on_desk) {
             None => body.size_full().children(contents).into_any_element(),
+            // filled: the whole desk, drawn like a page, with no border,
+            // shadow or grips; it still hides what is behind it from presses
+            Some(_) if filled => body
+                .occlude()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .children(contents)
+                .into_any_element(),
             // on the desk: a title bar to hold it by, and edges to size
             // it by that reach past its border, so the grips sit in a
             // frame `GRAB` wider than the window (the body clips)
@@ -675,13 +736,15 @@ impl Render for PaneView {
         // at the title bar's height; while its view asks to notify it
         // grows a bar of its words' height, and draws uncached
         let asking = pane.is_view() && self.notifications.read(cx).asking(pane.module);
+        let filled =
+            self.kind == WindowKind::Console && pane.frame.is_some() && layout.fills(index);
         let strip = match asking {
             true => self.strip.clone().into_any_element(),
             false => AnyView::from(self.strip.clone())
                 .cached(
                     StyleRefinement::default()
                         .w_full()
-                        .h(px(TITLE))
+                        .h(px(if filled { FILL_STRIP } else { TITLE }))
                         .flex_shrink_0(),
                 )
                 .into_any_element(),
@@ -697,8 +760,9 @@ impl Render for PaneView {
 }
 
 /// What of its desk a strip shows, compared: a frame that moves leaves the
-/// strip cached; a focus, a place in the stack or a pop-out draws it again.
-#[derive(Clone, Copy, Default, PartialEq)]
+/// strip cached; a focus, a place in the stack, fill, a title or a pop-out
+/// draws it again.
+#[derive(Clone, Default, PartialEq)]
 struct Shown {
     /// The pane is on its desk (else the strip is stale, and not drawn).
     here: bool,
@@ -706,6 +770,10 @@ struct Shown {
     focused: bool,
     /// Framed on the console's desk (a title bar to hold it by).
     on_desk: bool,
+    /// It fills the desk: the filled strip, nothing to hold it by.
+    filled: bool,
+    /// What its view named the window.
+    title: Option<String>,
     module: &'static str,
     is_view: bool,
     /// Split is offered (the desk has room for another window).
@@ -722,11 +790,14 @@ impl Shown {
             return Self::default();
         };
         let pane = &layout.panes[index];
+        let on_desk = kind == WindowKind::Console && pane.frame.is_some();
         Self {
             here: true,
             index,
             focused: index == layout.focused,
-            on_desk: kind == WindowKind::Console && pane.frame.is_some(),
+            on_desk,
+            filled: on_desk && layout.fills(index),
+            title: pane.title.clone(),
             module: pane.module,
             is_view: pane.is_view(),
             split: layout.panes.len() < layout::MAX_PANES,
@@ -755,6 +826,8 @@ pub(in crate::shell) struct Strip {
 #[derive(Clone, Copy)]
 enum PaneAction {
     Split,
+    /// Fill off: on the filled strip.
+    Restore,
     PopOut,
     PopIn,
     Close,
@@ -776,6 +849,11 @@ impl PaneAction {
         };
         match self {
             Self::Split => ("split", format!("Open another {window}"), IconName::Plus),
+            Self::Restore => (
+                "restore",
+                "Put every window back".to_owned(),
+                IconName::Copy,
+            ),
             Self::PopOut => (
                 "popout",
                 format!("Open {program} in a new window"),
@@ -876,6 +954,7 @@ impl Strip {
                     }
                     let message = match action {
                         PaneAction::Split => PaneMessage::Split(module),
+                        PaneAction::Restore => PaneMessage::Fill,
                         PaneAction::Close => PaneMessage::Close(index),
                         PaneAction::PopOut => PaneMessage::PopOut { index, at: None },
                         PaneAction::PopIn => PaneMessage::PopIn,
@@ -900,6 +979,7 @@ impl Strip {
             index,
             focused,
             on_desk,
+            filled,
             module,
             is_view,
             split,
@@ -909,9 +989,12 @@ impl Strip {
         let controls = div()
             .flex()
             .items_center()
-            .gap(px(2.))
+            .gap(px(if filled { 8. } else { 2. }))
             .when(console, |strip| {
                 strip.child(self.pane_button(index, module, PaneAction::Split, split, ink, cx))
+            })
+            .when(filled, |strip| {
+                strip.child(self.pane_button(index, module, PaneAction::Restore, true, ink, cx))
             })
             // an empty or Help window has no program view to carry out
             .when(console && is_view, |strip| {
@@ -926,18 +1009,24 @@ impl Strip {
         // over its left end. Elsewhere the system's bar names it.
         let lights = theme::traffic_lights(window).filter(|_| !on_desk);
         let handle = lights.is_some();
+        // the filled strip reads like the bar: its height, the page's
+        // ground, the name from 16px in
+        let (height, left, right) = match filled {
+            true => (FILL_STRIP, 16., 4.),
+            false => (TITLE, lights.unwrap_or(12.), 2.),
+        };
         div()
             .id(SharedString::from(format!("pane/{index}/strip")))
-            .h(px(TITLE))
+            .h(px(height))
             .flex_shrink_0()
             .flex()
             .items_center()
             .gap(px(8.))
-            .pl(px(lights.unwrap_or(12.)))
-            .pr(px(2.))
+            .pl(px(left))
+            .pr(px(right))
             .border_b_1()
             .border_color(ink.line)
-            .bg(match focused {
+            .bg(match focused && !filled {
                 true => ink.surface,
                 false => ink.bg,
             })
@@ -945,7 +1034,9 @@ impl Strip {
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     match (on_desk, event.click_count) {
-                        (true, 2) => this.pane_message(PaneMessage::Fill(index), window, cx),
+                        (true, 2) => this.pane_message(PaneMessage::Fill, window, cx),
+                        // a filled window is not moved by its strip
+                        (true, _) if filled => {}
                         (true, _) => this.hold(index, pane_drag::Sides::NONE, event.position, cx),
                         (false, 2) if handle => window.titlebar_double_click(),
                         (false, _) if handle => window.start_window_move(),
@@ -954,12 +1045,12 @@ impl Strip {
                 }),
             )
             .when(on_desk || handle, |title| {
-                title.child(
-                    super::super::ink::mono(500, 12.)
-                        .flex_shrink_0()
-                        .text_color(ink.ink)
-                        .child(panes::label(self.rail.read(cx).rows(), module)),
-                )
+                title.child(strip_name(
+                    &panes::label(self.rail.read(cx).rows(), module),
+                    self.shown.title.as_deref(),
+                    filled,
+                    ink,
+                ))
             })
             // pushes the controls to the bar's right end
             .child(div().flex_1().min_w_0())

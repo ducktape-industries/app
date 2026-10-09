@@ -161,9 +161,10 @@ impl Seats {
                 layout
                     .panes
                     .iter()
-                    .filter(|pane| pane.is_view())
-                    .map(move |pane| {
-                        let body = view_body(console, pane, layout.desk);
+                    .enumerate()
+                    .filter(|(_, pane)| pane.is_view())
+                    .map(move |(index, pane)| {
+                        let body = view_body(console, layout, index);
                         (
                             pane.instance,
                             (pane.module, window.map(|window| (window, body))),

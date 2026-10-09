@@ -91,6 +91,11 @@ pub(super) fn help_view(welcome: bool, dark: bool) -> gpui_kit::AnyElement {
                 false => "Alt",
             }
         ),
+        format!(
+            "While Fill is on, whichever window comes forward fills the desk; \
+                 Restore or {} puts every window back.",
+            chord_label("⇧↩")
+        ),
     ];
     let bar = [
         "Left to right: the network's name, to switch networks; the programs; \

@@ -5,7 +5,8 @@
 //! over the desk or the OS window losing the keys keeps it. Whether a
 //! window is held is the model's (`Layout::held`); this file gives it the
 //! keys while it is, and hands them back to what had them. ⌘⇧↩ fills the
-//! desk with the window in front, as a double press on its title bar does.
+//! desk with the window in front, or puts every window back, as a double
+//! press on its title bar does.
 //! The chords are the window's (`WindowRoot`); the hold on the keys is
 //! the `PaneLayer`'s, brought in line with the model after every draw.
 use super::layers::PaneLayer;
@@ -56,13 +57,13 @@ impl WindowRoot {
 
     /// ⌘⇧↩. A window held lets go where it is first.
     pub(super) fn fill_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(index) = self.desk_pane(cx) else {
+        if self.desk_pane(cx).is_none() {
             return;
-        };
+        }
         if self.layout(cx).held.is_some() {
             self.hold_message(PaneMessage::Release { keep: true }, cx);
         }
-        self.pane_message(PaneMessage::Fill(index), window, cx);
+        self.pane_message(PaneMessage::Fill, window, cx);
     }
 
     /// ⌘⇧M.
