@@ -1302,6 +1302,10 @@ fn a_views_link_opens_its_seat_on_the_console(cx: &mut TestAppContext) {
 fn each_window_takes_the_title_its_own_view_gave(cx: &mut TestAppContext) {
     use crate::runtime::{Intent, intent_for_test};
     const MODULE: &str = "pane-title-view";
+    // a pane number spent with no seat: run alone, a pane's instance and
+    // its seat's own number (`Seat::instance`) would otherwise match, and
+    // a title routed by the wrong one would still land
+    _ = crate::ui::layout::Pane::new(MODULE);
     let (app, _, view, mut native) = console(cx);
     crate::runtime::seat_for_test(MODULE, 400);
     pane(&view, PaneMessage::Select(MODULE), &mut native);
