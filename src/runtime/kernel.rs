@@ -410,11 +410,20 @@ pub(super) fn answer(
 /// The most of a `host.title` the host shows, in chars.
 const MAX_TITLE: usize = 80;
 
-/// A `host.title` as the window shows it: no control characters, no space
-/// at either end, at most [`MAX_TITLE`] chars (a cut on a char boundary).
+/// A `host.title` as the window shows it, one line of the view's own text:
+/// no control characters, no bidi embedding, override or isolate (each
+/// reorders what follows it), no line or paragraph separator, no space at
+/// either end, at most [`MAX_TITLE`] chars (a cut on a char boundary).
+/// Direction marks and joiners stay: an RTL name or an emoji needs them.
 fn shown_title(title: &str) -> String {
-    let title: String = title.chars().filter(|c| !c.is_control()).collect();
-    title.trim().chars().take(MAX_TITLE).collect()
+    let shown = |c: &char| {
+        !(c.is_control()
+            || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            || matches!(c, '\u{2028}' | '\u{2029}'))
+    };
+    let title: String = title.chars().filter(shown).collect();
+    let cut: String = title.trim_start().chars().take(MAX_TITLE).collect();
+    cut.trim_end().to_owned()
 }
 
 /// Whether `link.open` may open `link`: `duck://` or `https://` with
