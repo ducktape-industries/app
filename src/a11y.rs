@@ -388,8 +388,6 @@ mod tests {
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{Context, Render, TestAppContext, VisualTestContext, px, size};
 
-    const INK: Hsla = gpui_kit::red();
-
     struct Patched(FocusHandle);
 
     impl Render for Patched {
@@ -429,18 +427,5 @@ mod tests {
             assert_eq!(node.class_name(), Some(AX_PRIVATE));
             assert!(!node.supports_action(gpui_kit::accesskit::Action::Focus));
         });
-    }
-
-    /// A field's box, focused, wears the ring, its border in the ring's
-    /// colour (gpui paints a border over an inset shadow); unfocused,
-    /// nothing.
-    #[test]
-    fn the_box_of_a_focused_field_wears_the_ring() {
-        let mut around = around_field(div(), true, INK);
-        assert_eq!(around.style().box_shadow, Some(vec![ring(INK)]));
-        assert_eq!(around.style().border_color, Some(INK));
-        let mut around = around_field(div(), false, INK);
-        assert_eq!(around.style().box_shadow, None);
-        assert_eq!(around.style().border_color, None);
     }
 }

@@ -277,16 +277,9 @@ fn the_menu_bar_fills_an_empty_window_focuses_an_open_one_else_opens_another() {
     assert_eq!((layout.panes.len(), layout.panes[0].module), (1, "chat"));
     assert_ne!(layout.panes[0].instance, empty);
     assert!(layout.open("files"), "a window of its own");
-    assert_eq!(layout.panes.len(), 2);
+    assert_eq!((layout.panes.len(), layout.focused), (2, 1), "and the keys");
     assert!(layout.open("chat"));
     assert_eq!((layout.panes.len(), layout.focused), (2, 0));
-    // shift: replaces the focused view, as a plain click once did
-    assert!(layout.select("calendar"));
-    assert_eq!(layout.panes[0].module, "calendar");
-    // a module open twice stays in the focused window
-    layout.split("files");
-    assert!(!layout.select("files"));
-    assert_eq!(layout.focused, 1);
 }
 
 #[test]

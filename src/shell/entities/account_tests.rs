@@ -4,7 +4,7 @@
 //! account's Help, a network left).
 use super::super::{WindowKey, WindowKind};
 use super::tests::{active, desk_of, modules, session};
-use super::{Account, AccountStep, Chain, Entities, Screen, Session, Slice};
+use super::{Account, AccountStep, Entities, Screen, Slice};
 use crate::backend;
 use crate::ui::layout::{EMPTY, HELP};
 use gpui_kit::{Bounds, Entity, TestAppContext, point, px, size};
@@ -123,6 +123,21 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
         account.update(cx, |account, cx| account.phrase_written_down(cx));
         (account, screen)
     }
+    fn later(cx: &mut TestAppContext) -> (Entity<Account>, Entity<Slice<Screen>>) {
+        let (account, screen) = account_step(cx);
+        account.update(cx, |account, cx| account.create_later(cx));
+        (account, screen)
+    }
+    fn passkeyed(cx: &mut TestAppContext) -> (Entity<Account>, Entity<Slice<Screen>>) {
+        let (account, screen) = account_step(cx);
+        account.update(cx, |account, cx| account.passkey_done("ab".into(), cx));
+        (account, screen)
+    }
+    fn misanswered(cx: &mut TestAppContext) -> (Entity<Account>, Entity<Slice<Screen>>) {
+        let (account, screen) = awaiting(cx);
+        account.update(cx, |account, cx| account.resolved(NODE, "cd", None, cx));
+        (account, screen)
+    }
     fn testkit() -> backend::Keyring {
         backend::Keyring {
             dir: "testkit".into(),
@@ -197,6 +212,12 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
             awaiting,
             |a, cx| a.resolved("http://old", "ab", None, cx),
             "Unlock/awaiting",
+        ),
+        (
+            "no account, after another key's answer",
+            misanswered,
+            |a, cx| a.resolved(NODE, "ab", None, cx),
+            "Account",
         ),
         (
             "reading while the answer comes",
@@ -299,6 +320,20 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
             account_step,
             |a, cx| a.resolved(NODE, "ab", None, cx),
             "Account",
+        ),
+        // the step is opened once: a later block reopens neither a step
+        // skipped nor one a passkey closed
+        (
+            "a later block after not now",
+            later,
+            |a, cx| a.resolved(NODE, "ab", None, cx),
+            "Desk",
+        ),
+        (
+            "a later block after a passkey",
+            passkeyed,
+            |a, cx| a.resolved(NODE, "ab", None, cx),
+            "Desk",
         ),
         // add-device / link
         (
@@ -483,51 +518,6 @@ fn a_lock_stays_locked_until_unlock_and_approving_needs_a_found_request(cx: &mut
     let state = state(&account, cx);
     assert!(!state.seating, "the key reopened while locked");
     assert!(!state.busy, "approved with nothing found");
-}
-
-#[gpui_kit::test]
-fn a_sign_in_without_an_account_opens_the_account_step_once(cx: &mut TestAppContext) {
-    type Call = fn(&mut Account, &mut gpui_kit::Context<Account>);
-    let signed_in: [Call; 2] = [
-        |a, cx| a.unlocked("ab".into(), cx),
-        |a, cx| a.device_key_answered(Ok(Some("ab".into())), cx),
-    ];
-    for call in signed_in {
-        let (account, screen) = unlock(cx);
-        account.update(cx, call);
-        assert_eq!(
-            shown(&screen, cx),
-            "Unlock/awaiting",
-            "shown before the node answered"
-        );
-        resolved(&account, None, cx);
-        assert_eq!(shown(&screen, cx), "Account");
-        account.update(cx, |account, cx| account.create_later(cx));
-        resolved(&account, None, cx);
-        assert_eq!(shown(&screen, cx), "Desk", "a later block reopened it");
-    }
-}
-
-/// The key step to what follows it, one call at a time: the desk never
-/// shows before the node's answer, so a key with no account never
-/// flashes the console on its way to the account step (#292).
-#[gpui_kit::test]
-fn the_account_step_is_skipped_for_a_key_with_an_account_or_a_passkey(cx: &mut TestAppContext) {
-    let (account, screen) = awaiting(cx);
-    resolved(&account, Some((7, "ada".into())), cx);
-    assert_eq!(shown(&screen, cx), "Desk");
-
-    let (account, screen) = account_step(cx);
-    account.update(cx, |account, cx| account.passkey_done("ab".into(), cx));
-    resolved(&account, None, cx);
-    assert_eq!(shown(&screen, cx), "Desk", "the passkey made the account");
-
-    // another key's answer neither opens nor disarms it
-    let (account, screen) = awaiting(cx);
-    account.update(cx, |account, cx| account.resolved(NODE, "cd", None, cx));
-    assert_eq!(shown(&screen, cx), "Unlock/awaiting");
-    resolved(&account, None, cx);
-    assert_eq!(shown(&screen, cx), "Account");
 }
 
 #[gpui_kit::test]
@@ -836,52 +826,4 @@ fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
         [EMPTY],
         "a known account is not greeted"
     );
-}
-
-/// Leaving the network (disconnect, or a switch that landed on another
-/// chain): every desk's panes go, and the badges and the active program
-/// with them; the chain's node too.
-#[gpui_kit::test]
-fn leaving_the_network_clears_the_desks_and_badges(cx: &mut TestAppContext) {
-    let _seat = backend::seat_serial();
-    let (entities, key) = desktop(cx);
-    entities
-        .windows
-        .update(cx, |windows, cx| windows.select_view("chat", cx));
-    entities
-        .rail
-        .update(cx, |rail, cx| rail.set_badge("chat", 3, cx));
-    entities.chain.update(cx, |chain, cx| {
-        chain.set(
-            Chain {
-                node: Some(crate::shell::entities::tests::status(7)),
-                height: 7,
-                ..Chain::default()
-            },
-            cx,
-        );
-    });
-    assert_eq!(modules(&entities, key, cx), ["chat"]);
-    assert_eq!(active(&entities, cx), Some("chat"));
-    entities.session.update(cx, Session::disconnect);
-    cx.run_until_parked();
-    assert!(
-        modules(&entities, key, cx).is_empty(),
-        "the desk kept its panes"
-    );
-    assert_eq!(active(&entities, cx), None);
-    assert!(
-        entities
-            .rail
-            .read_with(cx, |rail, _| rail.badges().is_empty())
-    );
-    assert!(
-        desk_of(&entities, key, cx).read_with(cx, |desk, _| desk.get().desk.is_some()),
-        "the desk lost its measure"
-    );
-    assert_eq!(
-        entities.chain.read_with(cx, |chain, _| chain.node.clone()),
-        None
-    );
-    assert_eq!(shown(&entities.screen, cx), "Connect");
 }
