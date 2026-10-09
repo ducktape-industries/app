@@ -155,7 +155,9 @@ mod tests {
         let path = dir.path().join("prefs.json");
         let kept = br#"{"appearance": "dark", "endpoints": []}"#;
         std::fs::write(&path, kept).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if !crate::backend::unreadable_for_test(&path) {
+            return;
+        }
         assert!(read_prefs_at(&path).is_err());
         let saved = edit_prefs_at(&path, |prefs| prefs["motion"] = serde_json::json!(false));
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();

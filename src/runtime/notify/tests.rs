@@ -387,7 +387,9 @@ fn an_unreadable_log_is_not_saved_over() {
     center.open_log("dev", Some(path.clone()));
     center.post(&silent, "chat", "Chat", post("old", ""), Instant::now(), 1);
     flushed(&mut center, &path);
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if !crate::backend::unreadable_for_test(&path) {
+        return;
+    }
 
     let mut reopened = Center::default();
     reopened.open_log("dev", Some(path.clone()));

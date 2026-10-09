@@ -180,6 +180,23 @@ pub(crate) fn read_or_set_aside<T, E: std::fmt::Display>(
     }
 }
 
+/// Takes `path` away from this process's reads, for a test of a file the
+/// device cannot read. False, saying so, where the user reads a file whatever
+/// its mode (root, as in a container): the case cannot be staged there.
+#[cfg(test)]
+pub(crate) fn unreadable_for_test(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let refused = std::fs::File::open(path).is_err();
+    if !refused {
+        eprintln!(
+            "skipping: this user reads {} whatever its mode (root?)",
+            path.display()
+        );
+    }
+    refused
+}
+
 /// One id, unique on this device, for a record a view mints.
 pub(crate) fn fresh_id(prefix: &str) -> String {
     format!("{prefix}-{:x}-{}", epoch_nanos(), fresh_counter())

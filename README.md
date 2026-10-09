@@ -66,5 +66,22 @@ that no longer carries it, and cargo refuses a same-source patch.
 
 ## Building
 
-`cargo fmt --all -- --check`, `cargo clippy --workspace --tests -- -D warnings`
-and `cargo test --workspace` are what CI runs.
+The toolchain is pinned in `rust-toolchain.toml`. A fresh Linux machine needs
+git, a C toolchain and the packages CI installs (Ubuntu names):
+
+```bash
+sudo apt-get install -y pkg-config libclang-dev libasound2-dev \
+  libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev \
+  libfontconfig1-dev libfreetype6-dev \
+  mesa-vulkan-drivers libvulkan1
+```
+
+The last two are the Vulkan driver a machine with no GPU draws with (a
+container, a CI runner): with no driver the app opens no window and says so
+only in `~/.local/state/ducktape/app.log`. On macOS, Xcode is all the build
+needs.
+
+`cargo fmt --all -- --check`,
+`cargo clippy --locked --workspace --tests --no-deps -- -D warnings` (and again
+with `--features ax-door`) and `cargo test --locked --workspace --no-fail-fast`
+are what CI runs.
