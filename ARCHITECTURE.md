@@ -477,7 +477,9 @@ draws nothing.
   (`WindowKind::View`) and back. It observes the session, the account and
   the prefs and hands every seat its props. A seat's `Intent`s route
   (`Seats::route`): `Badge` → `Rail::set_badge`, `Title` → the desk
-  holding that pane (by its layout instance) `Desk::set_title`, `Notified` →
+  holding that pane (by its layout instance) `Desk::set_title` (a
+  pop-out's `layers::Strip` also names its OS window "<program> —
+  <title>", compared before it sets it), `Notified` →
   `Notifications::refresh`, `Seated` → every desk holding the view
   settles (a window placed before its view came widens to it), `OpenLink`
   → `Windows::open_link`. `Seats` holds `Windows` weakly.

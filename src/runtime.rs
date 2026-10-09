@@ -420,6 +420,19 @@ pub(crate) fn intent_for_test(module: &str, instance: u64, intent: Intent) {
     guest.intents.push(intent);
 }
 
+/// Every drawn view of `module` gives itself `name`, as its manifest
+/// would: the rail reads it on its next refresh.
+#[cfg(test)]
+pub(crate) fn name_for_test(module: &str, name: &str) {
+    for ((seated, _), seat) in lock(registry()).iter() {
+        if *seated == module
+            && let Slot::Ready(guest) = &mut lock(seat).slot
+        {
+            guest.name = name.into();
+        }
+    }
+}
+
 /// `module`'s seat `instance` traps: its guest keeps its tree but shows a
 /// fault from now on, and the seat is woken as a trapping tick would.
 #[cfg(test)]

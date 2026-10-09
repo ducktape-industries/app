@@ -1375,6 +1375,56 @@ fn each_window_takes_the_title_its_own_view_gave(cx: &mut TestAppContext) {
     assert_eq!(seen.get(), 1);
 }
 
+/// A window of its own carries its name on the system's title bar, where
+/// on Linux, Windows and in macOS fullscreen its strip draws none: "<program>
+/// — <title>", the program alone while its view gives no title, following
+/// the program's name as its view loads. The console keeps the app's.
+#[gpui_kit::test]
+fn a_popped_out_window_names_its_os_window(cx: &mut TestAppContext) {
+    use crate::runtime::{Intent, Roster, intent_for_test, name_for_test};
+    const MODULE: &str = "popout-title-view";
+    let (app, key, view, mut native) = console(cx);
+    crate::runtime::seat_for_test(MODULE, 400);
+    app.rail.update(&mut native, |rail, cx| {
+        rail.read_off(Roster::listing(&[MODULE]), cx)
+    });
+    // the console keeps a window of its own, so its title is in play too
+    pane(&view, PaneMessage::Split(layout::EMPTY), &mut native);
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    let (_, handle, popped) = super::layers::tests::pop_out(&app, key, &view, &mut native);
+    let mut out = VisualTestContext::from_window(handle, cx);
+    let shown = |out: &mut VisualTestContext| {
+        for _ in 0..2 {
+            app.seats.update(out, |seats, cx| seats.settle(cx));
+            app.rail.update(out, |rail, cx| {
+                rail.refresh(cx);
+            });
+            out.run_until_parked();
+            out.update(|window, cx| {
+                draw(window, cx);
+            });
+        }
+        out.window_title()
+    };
+    assert_eq!(shown(&mut out).as_deref(), Some(MODULE), "unnamed: the id");
+    name_for_test(MODULE, "Chat");
+    assert_eq!(shown(&mut out).as_deref(), Some("Chat"), "its view loaded");
+    let seat = out.update(|_, cx| {
+        let instance = popped.read(cx).layout(cx).panes[0].instance;
+        let seat = app.seats.read(cx).seat(instance).expect("seated");
+        seat.read(cx).instance()
+    });
+    intent_for_test(MODULE, seat, Intent::Title("#general".into()));
+    assert_eq!(shown(&mut out).as_deref(), Some("Chat — #general"));
+    intent_for_test(MODULE, seat, Intent::Title(String::new()));
+    assert_eq!(shown(&mut out).as_deref(), Some("Chat"), "cleared");
+    native.update(|window, cx| {
+        draw(window, cx);
+        assert_eq!(view.read(cx).layout(cx).panes.len(), 1);
+    });
+    assert_eq!(native.window_title(), None, "the console took a view's");
+}
+
 /// A frame as the platform delivers one, a figure's tick after the last:
 /// the timers that came due run, whatever they dirtied draws, then the
 /// next-frame callbacks.

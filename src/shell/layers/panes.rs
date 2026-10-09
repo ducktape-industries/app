@@ -817,7 +817,8 @@ impl Shown {
 /// its name, its buttons at the right end) and, while its view asks to
 /// notify, the permission bar. A cached view: it observes the rail (its
 /// name), the notifications (the ask), the prefs (dark, the burst) and
-/// reads its desk through a compared `Shown`.
+/// reads its desk through a compared `Shown`. In a window of its own it
+/// names the OS window too.
 pub(in crate::shell) struct Strip {
     key: WindowKey,
     kind: WindowKind,
@@ -827,6 +828,8 @@ pub(in crate::shell) struct Strip {
     notifications: Observed<Notifications>,
     prefs: Observed<Slice<Prefs>>,
     shown: Shown,
+    /// The name it last gave its OS window (a window of its own only).
+    os_title: String,
     _desk: Subscription,
 }
 
@@ -907,6 +910,7 @@ impl Strip {
             rail: Observed::new(rail, cx),
             notifications: Observed::new(notifications, cx),
             prefs: Observed::new(prefs, cx),
+            os_title: String::new(),
             _desk: observing,
         }
     }
@@ -1190,6 +1194,19 @@ impl Render for Strip {
                 crate::runtime::intern(&format!("renders.strip.{index}")),
                 1,
             );
+        }
+        // a window of its own is named on the system's bar too: on Linux,
+        // Windows and in macOS fullscreen its strip draws no name
+        if self.kind != WindowKind::Console {
+            let label = panes::label(self.rail.read(cx).rows(), module);
+            let name = match &self.shown.title {
+                Some(title) => format!("{label} — {title}"),
+                None => label,
+            };
+            if name != self.os_title {
+                window.set_window_title(&name);
+                self.os_title = name;
+            }
         }
         let ink = super::super::ink::Ink::of(self.prefs.read(cx).get().dark());
         let title = self.title_bar(&ink, window, cx);
