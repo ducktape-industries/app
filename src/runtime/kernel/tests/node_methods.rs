@@ -324,6 +324,21 @@ async fn blob_get_answers_the_blob_or_none() {
     assert_eq!(methods::decode::<Option<Vec<u8>>>(&answer).unwrap(), None);
 }
 
+/// A blob id is hex digits only: `+f` (which `from_str_radix` reads as 15)
+/// is a malformed id, refused before the node is asked, so each digest has
+/// one spelling.
+#[tokio::test]
+async fn blob_get_refuses_a_signed_hex_spelling() {
+    let held = fake_node(vec![(
+        backend::noded::route::BLOB_GET,
+        Mode::Answer(abi::encode(&Some(b"sha256\0body".to_vec()))),
+    )]);
+    let ask = methods::encode(&format!("sha256:{}", "+f".repeat(32)));
+    let refusal = blob_get(held.node.clone(), ask).await.unwrap_err();
+    assert_eq!(refusal.code, refusal::MALFORMED_REQUEST);
+    assert_eq!(held.accepted.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
 #[tokio::test]
 async fn invite_preserves_blob_notes_ttl_and_typed_refusals() {
     // the node was asked for `ttl` days

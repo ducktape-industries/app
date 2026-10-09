@@ -212,8 +212,8 @@ pub(crate) fn hex_encode(bytes: &[u8]) -> String {
 }
 
 pub(crate) fn hex_decode(value: &str) -> Result<Vec<u8>, String> {
-    if !value.is_ascii() {
-        return Err("non-ASCII hex".into());
+    if !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("non-hex digit".into());
     }
     if !value.len().is_multiple_of(2) {
         return Err("odd-length hex".into());
