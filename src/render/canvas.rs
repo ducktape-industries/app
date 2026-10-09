@@ -26,81 +26,114 @@ pub(super) fn native_canvas_commands(commands: &[wire::CanvasCommand]) -> bool {
     })
 }
 
+/// Paints `commands` in their order with gpui's own primitives. Not to be
+/// called inside a `Window::paint_layer`: there a line keeps the outer
+/// layer's draw order while a run of quads takes a new one, so every line
+/// would lie under every quad.
 pub(super) fn paint_canvas_commands(
     commands: &[wire::CanvasCommand],
     origin: Point<Pixels>,
     window: &mut Window,
 ) {
-    for command in commands {
+    let mut rest = commands;
+    while let Some(first) = rest.first() {
+        // A run of rectangles and circles takes one draw order between
+        // them: gpui paints the quads of one order in the order they came,
+        // which is the commands' own, and a quad that asks for its own
+        // order pays a search of everything painted so far. The layer is
+        // the box around the whole run, so what was painted before lies
+        // under every quad of it and what comes after lies over.
+        let mut run = 0;
+        let mut around: Option<Bounds<Pixels>> = None;
+        for quad in rest.iter().map_while(|command| quad(command, origin)) {
+            around = Some(around.map_or(quad.bounds, |around| around.union(&quad.bounds)));
+            run += 1;
+        }
+        if let Some(around) = around {
+            let (quads, after) = rest.split_at(run);
+            window.paint_layer(around, |window| {
+                for quad in quads.iter().filter_map(|command| quad(command, origin)) {
+                    window.paint_quad(quad);
+                }
+            });
+            rest = after;
+            continue;
+        }
+        rest = &rest[1..];
         let wire::CanvasCommand::Draw {
-            shape,
-            fill: background,
-            stroke,
+            shape: wire::CanvasShape::Line { from, to },
+            stroke: Some(stroke),
             ..
-        } = command
+        } = first
         else {
             continue;
         };
         let position = |p: [f32; 2]| origin + point(px(p[0]), px(p[1]));
-        let (bounds, radius) = match shape {
-            wire::CanvasShape::Rectangle {
-                position: p,
-                size: s,
-                radius,
-            } => (
-                Bounds::new(position(*p), size(px(s[0]), px(s[1]))),
-                radius[0],
-            ),
-            wire::CanvasShape::Circle { center, radius } => (
-                Bounds::new(
-                    position([center[0] - radius, center[1] - radius]),
-                    size(px(2. * radius), px(2. * radius)),
-                ),
-                *radius,
-            ),
-            wire::CanvasShape::Line { from, to } => {
-                if let Some(stroke) = stroke {
-                    let mut path = gpui_kit::PathBuilder::stroke(px(stroke.width));
-                    path.move_to(position(*from));
-                    path.line_to(position(*to));
-                    if let Ok(path) = path.build() {
-                        window.paint_path(path, stroke.color);
-                    }
-                    if stroke.cap == wire::CanvasLineCap::Round {
-                        let r = stroke.width / 2.;
-                        for p in [from, to] {
-                            window.paint_quad(
-                                fill(
-                                    Bounds::new(
-                                        position([p[0] - r, p[1] - r]),
-                                        size(px(2. * r), px(2. * r)),
-                                    ),
-                                    stroke.color,
-                                )
-                                .corner_radii(px(r)),
-                            );
-                        }
-                    }
-                }
-                continue;
+        let mut path = gpui_kit::PathBuilder::stroke(px(stroke.width));
+        path.move_to(position(*from));
+        path.line_to(position(*to));
+        if let Ok(path) = path.build() {
+            window.paint_path(path, stroke.color);
+        }
+        if stroke.cap == wire::CanvasLineCap::Round {
+            let r = stroke.width / 2.;
+            for p in [from, to] {
+                window.paint_quad(
+                    fill(
+                        Bounds::new(position([p[0] - r, p[1] - r]), size(px(2. * r), px(2. * r))),
+                        stroke.color,
+                    )
+                    .corner_radii(px(r)),
+                );
             }
-            wire::CanvasShape::Path(_) => continue,
-        };
-        // SVG strokes straddle the geometry; native quad borders are inset.
-        let border = stroke.as_ref().map_or(0., |s| s.width);
-        let expanded = Bounds::new(
-            bounds.origin - point(px(border / 2.), px(border / 2.)),
-            bounds.size + size(px(border), px(border)),
-        );
-        let color = background.unwrap_or_default();
-        let border_color = stroke.as_ref().map(|s| s.color).unwrap_or_default();
-        window.paint_quad(
-            fill(expanded, color)
-                .corner_radii(px(radius + border / 2.))
-                .border_widths(px(border))
-                .border_color(border_color),
-        );
+        }
     }
+}
+
+/// The quad a rectangle or a circle paints as; nothing else is one.
+fn quad(command: &wire::CanvasCommand, origin: Point<Pixels>) -> Option<gpui_kit::PaintQuad> {
+    let wire::CanvasCommand::Draw {
+        shape,
+        fill: background,
+        stroke,
+        ..
+    } = command
+    else {
+        return None;
+    };
+    let position = |p: [f32; 2]| origin + point(px(p[0]), px(p[1]));
+    let (bounds, radius) = match shape {
+        wire::CanvasShape::Rectangle {
+            position: p,
+            size: s,
+            radius,
+        } => (
+            Bounds::new(position(*p), size(px(s[0]), px(s[1]))),
+            radius[0],
+        ),
+        wire::CanvasShape::Circle { center, radius } => (
+            Bounds::new(
+                position([center[0] - radius, center[1] - radius]),
+                size(px(2. * radius), px(2. * radius)),
+            ),
+            *radius,
+        ),
+        wire::CanvasShape::Line { .. } | wire::CanvasShape::Path(_) => return None,
+    };
+    // SVG strokes straddle the geometry; native quad borders are inset.
+    let border = stroke.as_ref().map_or(0., |s| s.width);
+    let expanded = Bounds::new(
+        bounds.origin - point(px(border / 2.), px(border / 2.)),
+        bounds.size + size(px(border), px(border)),
+    );
+    let color = background.unwrap_or_default();
+    let border_color = stroke.as_ref().map(|s| s.color).unwrap_or_default();
+    Some(
+        fill(expanded, color)
+            .corner_radii(px(radius + border / 2.))
+            .border_widths(px(border))
+            .border_color(border_color),
+    )
 }
 
 fn svg_color(color: Hsla) -> String {
