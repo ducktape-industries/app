@@ -210,6 +210,18 @@ impl Windows {
         key
     }
 
+    /// `--live`: `module` in a window of its own, the only window, and so
+    /// the one dialogs (a consent card) open in.
+    #[cfg(debug_assertions)]
+    pub(crate) fn open_live(&mut self, module: &'static str, cx: &mut Context<Self>) {
+        let key = self.open(WindowKind::View { module }, None, cx);
+        self.console = Some(key);
+        self.active = Some(module);
+        self.by_window[&key]
+            .desk
+            .update(cx, |desk, cx| desk.seed(module, cx));
+    }
+
     /// Window `key`'s own entities, and what follows them here: the
     /// program in front and the notification centre follow its desk;
     /// anything opening over the desk lets go of the keyboard's hold, and

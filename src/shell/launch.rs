@@ -10,7 +10,26 @@ use super::*;
 use futures::StreamExt as _;
 use gpui_kit::AsyncApp;
 
+/// What the first window is: the console (the launcher, then the desk),
+/// or, in a debug build's `--live`, one view on a node already named.
+enum Boot {
+    Console,
+    #[cfg(debug_assertions)]
+    Live(super::Live),
+}
+
 pub(crate) fn run() {
+    start(Boot::Console)
+}
+
+/// `ducktape-app --live`: the app as [`run`] starts it, with the one
+/// view's window in place of the console.
+#[cfg(debug_assertions)]
+pub(crate) fn run_live(live: super::Live) {
+    start(Boot::Live(live))
+}
+
+fn start(boot: Boot) {
     let application = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
     let (url_sender, mut urls) = futures::channel::mpsc::unbounded::<Vec<String>>();
     application.on_open_urls(move |urls| {
@@ -102,16 +121,23 @@ pub(crate) fn run() {
         })
         .detach();
         entities::Windows::forget_closed(&windows, cx);
-        // the first window is the console; it draws the connect screen
-        // until a node answers
-        windows.update(cx, |windows, cx| {
-            windows.open(WindowKind::Console, None, cx);
-        });
-        // the first thing to do: reach the node last used, if there was one
-        if let Some(target) = entities::Session::boot_target() {
-            entities
-                .session
-                .update(cx, |session, cx| session.connect(target, cx));
+        match boot {
+            Boot::Console => {
+                // the first window is the console; it draws the connect
+                // screen until a node answers
+                windows.update(cx, |windows, cx| {
+                    windows.open(WindowKind::Console, None, cx);
+                });
+                // the first thing to do: reach the node last used, if there
+                // was one
+                if let Some(target) = entities::Session::boot_target() {
+                    entities
+                        .session
+                        .update(cx, |session, cx| session.connect(target, cx));
+                }
+            }
+            #[cfg(debug_assertions)]
+            Boot::Live(live) => super::live::boot(live, &entities, cx),
         }
         first_present(cx);
         #[cfg(feature = "ax-door")]

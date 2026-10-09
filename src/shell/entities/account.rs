@@ -434,6 +434,22 @@ impl Account {
     /// Asks the node which account the seated key belongs to; the answer
     /// lands in [`Self::resolved`]. A failed ask keeps what the menu bar
     /// already shows: the next block asks again.
+    /// `--live`: the key the process seated, on `network` at `client`;
+    /// its account is resolved as after any sign-in.
+    #[cfg(debug_assertions)]
+    pub(crate) fn live(
+        &mut self,
+        signer: String,
+        client: backend::RpcClient,
+        network: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.client = client;
+        self.network = network;
+        self.edit(|state| state.signer_key = signer, cx);
+        self.resolve(cx);
+    }
+
     pub(crate) fn resolve(&mut self, cx: &mut Context<Self>) {
         let Ok(key) = backend::hex_decode(&self.state.signer_key) else {
             return;

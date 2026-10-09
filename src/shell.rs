@@ -20,6 +20,10 @@ use crate::ui::layout::{self, PaneMessage};
 mod fixtures;
 #[cfg(debug_assertions)]
 pub(crate) use fixtures::render_tree_fixture;
+#[cfg(debug_assertions)]
+mod live;
+#[cfg(debug_assertions)]
+pub(crate) use live::Live;
 pub(crate) mod entities;
 mod figure;
 mod help;
@@ -47,6 +51,8 @@ mod status_bar;
 mod windows;
 
 pub(crate) use launch::run;
+#[cfg(debug_assertions)]
+pub(crate) use launch::run_live;
 mod spin;
 mod theme;
 

@@ -86,8 +86,15 @@ impl WindowRoot {
             cx.new(|cx| Chrome::new(app, key, &own, this, window, cx))
         });
         let menu = chrome.as_ref().map(|chrome| chrome.read(cx).menu.clone());
-        let overlay_layer = menu.clone().map(|menu| {
-            let app = app.clone();
+        // the dialogs open in the window the app names its console: the
+        // console itself, or a `--live` view's window with no bar to hang
+        // a menu from
+        let dialogs = console || app.windows.read(cx).console() == Some(key);
+        let overlay_layer = dialogs.then(|| {
+            let (app, menu) = (
+                app.clone(),
+                menu.clone().unwrap_or_else(|| cx.focus_handle()),
+            );
             cx.new(|cx| OverlayLayer::new(app, key, &own, menu, window, cx))
         });
         let launcher = console.then(|| cx.new(|cx| LauncherLayer::new(&app, key, window, cx)));
