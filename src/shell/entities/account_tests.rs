@@ -821,11 +821,11 @@ fn a_locked_toast_still_shows(cx: &mut TestAppContext) {
     assert_eq!(toast, "Locked");
 }
 
-/// A new account lands on the desk with Help open in it; one that skips
-/// the step, or a key that already has an account, does not.
+/// A new account lands on the desk with Help open in it, past the layout
+/// step on a device that has none yet; one that skips the step, or a key
+/// that already has an account, does not.
 #[gpui_kit::test]
 fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
-    layout_picked();
     let (entities, key) = desktop(cx);
     let account = &entities.account;
     let signing_in = |entities: &Entities, cx: &mut TestAppContext| {
@@ -844,6 +844,10 @@ fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
     assert_eq!(shown(&entities.screen, cx), "Account");
     account.update(cx, |account, cx| {
         account.account_created(Ok((7, "ada".into())), cx)
+    });
+    assert_eq!(shown(&entities.screen, cx), "Layout");
+    account.update(cx, |account, cx| {
+        account.layout_chosen(backend::Layout::MenuBar, cx)
     });
     assert_eq!(shown(&entities.screen, cx), "Desk");
     assert_eq!(modules(&entities, key, cx), [HELP]);
