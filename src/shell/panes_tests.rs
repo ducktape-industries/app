@@ -358,6 +358,56 @@ fn a_filled_window_covers_the_desk_and_restore_puts_it_back(cx: &mut TestAppCont
     );
 }
 
+/// The window a filled desk covers is out of sight, and out of reach: Tab
+/// goes round the bar and the window in front, never onto the covered
+/// one's controls, and assistive technology lists none of them. Restore
+/// brings it back.
+#[gpui_kit::test]
+fn tab_on_a_filled_desk_never_reaches_the_window_it_covers(cx: &mut TestAppContext) {
+    let (_, _, view, mut native) = console(cx);
+    native.update(|window, cx| press("pane/0/split", window, cx));
+    settle(&mut native);
+    let covered = native.update(|_, cx| 1 - view.read(cx).layout(cx).focused);
+    let mine = |id: &str| id.contains(&format!("pane/{covered}/"));
+    pane(&view, PaneMessage::Fill, &mut native);
+    settle(&mut native);
+    let nodes = native.update(draw);
+    assert!(!ids(&nodes).iter().any(|id| mine(id)), "listed: {nodes}");
+    // the element ids on the path to what has the keys
+    let focused = |native: &mut VisualTestContext| {
+        native.update(|window, cx| {
+            draw(window, cx);
+            let focus = window.a11y_tree().unwrap().focus;
+            window
+                .a11y_element_id(focus)
+                .into_iter()
+                .flat_map(|path| path.iter())
+                .filter_map(|element| match element {
+                    ElementId::Name(name) => Some(name.to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+    let mut seen = Vec::new();
+    for _ in 0..24 {
+        key(&mut native, "tab");
+        let path = focused(&mut native);
+        assert!(!path.iter().any(|id| mine(id)), "Tab reached {path:?}");
+        seen.push(path);
+    }
+    assert!(
+        seen.iter().flatten().any(|id| id.ends_with("/restore")),
+        "Tab went round the window in front"
+    );
+    pane(&view, PaneMessage::Fill, &mut native);
+    let nodes = native.update(draw);
+    assert!(
+        ids(&nodes).contains(&format!("console:pane/{covered}/close")),
+        "back: {nodes}"
+    );
+}
+
 pub(super) fn key(native: &mut VisualTestContext, stroke: &str) {
     native.update(|window, cx| {
         draw(window, cx);

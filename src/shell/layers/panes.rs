@@ -452,9 +452,13 @@ impl Render for PaneLayer {
         // to top: what its view defers or shows as a tooltip draws inside it,
         // so a back window's layer stays under the front window. Its rank,
         // never its `z`, which only grows: the ranks stay under `HOST_BAND`.
+        // A filled desk draws the window in front alone: the ones it covers
+        // stay mounted and seated, but out of the frame, so Tab, presses and
+        // assistive technology never reach a window no one can see.
         let views = layout
             .stacking()
             .into_iter()
+            .filter(|&index| !layout.filled || index == layout.focused)
             .enumerate()
             .filter_map(|(rank, index)| {
                 let view = self.views.get(&layout.panes[index].instance)?;
