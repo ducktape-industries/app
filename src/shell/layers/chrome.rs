@@ -951,6 +951,9 @@ impl Chrome {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // the sidebar's row under the pointer goes with the sidebar: a row
+        // no longer drawn hears no end to its hover
+        self.hovered = None;
         // Folding. The tabs show their full labels until they overflow their
         // strip; then every tab folds to its icon or initial, so none is cut.
         // `bar_needs` is the narrowest window the full labels are known to

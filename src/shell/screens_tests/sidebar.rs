@@ -323,6 +323,26 @@ fn the_plus_on_a_program_row_opens_another_window_of_it(cx: &mut TestAppContext)
     );
     let nodes = native.update(drawn);
     assert!(!ids(&nodes).iter().any(|id| id == plus), "the + stayed");
+    // the pointer on the row, the layout switched to the bar and the
+    // pointer gone to the desk, then back: no row is under it, no +
+    native.simulate_mouse_move(
+        middle(&nodes, "shell:rail/side-plus"),
+        None,
+        gpui_kit::Modifiers::none(),
+    );
+    native.update(drawn);
+    let app = entities(&view, &mut native);
+    let switch = |layout, native: &mut VisualTestContext| {
+        app.prefs
+            .update(native, |prefs, cx| prefs.set_layout(layout, cx));
+        native.update(drawn);
+    };
+    switch(crate::backend::Layout::MenuBar, &mut native);
+    let desk = gpui_kit::point(px(900.), px(500.));
+    native.simulate_mouse_move(desk, None, gpui_kit::Modifiers::none());
+    switch(crate::backend::Layout::Sidebar, &mut native);
+    let nodes = native.update(drawn);
+    assert!(!ids(&nodes).iter().any(|id| id == plus), "a + left over");
 }
 
 /// The ids in a snapshot.
