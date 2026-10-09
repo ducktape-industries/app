@@ -206,6 +206,12 @@ impl Seat {
         self.keys_free
     }
 
+    /// The body its view is laid out in (`place`).
+    #[cfg(test)]
+    pub(crate) fn body(&self) -> Option<(f32, f32)> {
+        self.body
+    }
+
     /// Session, Account and the theme land here as encoded props: a turn
     /// only when the bytes moved. Called from `Seats`' observers and
     /// `Seats::reconcile`.

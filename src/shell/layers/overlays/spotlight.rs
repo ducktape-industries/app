@@ -147,7 +147,12 @@ impl OverlayLayer {
         let spotlight = self.spotlight.entity().clone();
         let scroll = self.spotlight_rows.clone();
         // the field, the longest list and the key hints
-        let (top, tall) = dialog_fit(f32::from(window.viewport_size().height), 490., 84.);
+        let (top, tall) = dialog_fit(
+            f32::from(window.viewport_size().height),
+            self.inset(cx),
+            490.,
+            84.,
+        );
         scrim(
             "spotlight",
             Role::Dialog,
@@ -155,6 +160,7 @@ impl OverlayLayer {
             Overlay::Spotlight,
             self.overlays.entity(),
             &self.modal,
+            self.inset(cx),
             &ink,
             |card| {
                 card.mt(px(top))

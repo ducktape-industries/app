@@ -19,8 +19,8 @@ use super::super::entities::{
     Account, Entities, Notifications, Observed, Overlay, Overlays, Prefs, Rail, Session, Slice,
     Spot, Spotlight, WindowEntities,
 };
-use super::BAR;
 use super::fields::NativeInput;
+use super::{Inset, chrome_inset};
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, FocusHandle, IntoElement, ParentElement as _,
@@ -175,6 +175,12 @@ impl OverlayLayer {
         }
     }
 
+    /// Where the chrome sits, in the layout the prefs pick: the dialogs'
+    /// scrim and room start past it.
+    fn inset(&self, cx: &gpui_kit::App) -> Inset {
+        chrome_inset(self.prefs.read(cx).get().layout_or_default())
+    }
+
     /// The one Tab stop of the tab list or radio group `id`
     /// (`a11y::roving`), made the first time it is drawn.
     fn stop(&mut self, id: &str, cx: &gpui_kit::App) -> FocusHandle {
@@ -321,8 +327,8 @@ pub(super) fn run(
             .update(cx, |prefs, cx| prefs.set_appearance(mode, cx)),
         Some(Spot::Help) => app.windows.update(cx, |windows, cx| windows.help_asked(cx)),
         Some(Spot::FillWindow) => {
-            if let Some((desk, index)) = framed_pane(cx) {
-                desk.update(cx, |desk, cx| desk.fill(index, cx));
+            if let Some((desk, _)) = framed_pane(cx) {
+                desk.update(cx, |desk, cx| desk.fill(cx));
             }
         }
         Some(Spot::HoldWindow) => {
@@ -359,17 +365,18 @@ impl Render for OverlayLayer {
 /// The least a dialog keeps from the window's edges, at any size.
 const DIALOG_EDGE: f32 = 12.;
 
-/// A dialog `tall` high in a window `high` high, hung `top` below the bar
-/// when the window has room for it, higher (not under 12px) when it hasn't:
-/// where its top goes, and the height it may take so its bottom stays 12px
-/// inside the window.
-pub(in crate::shell) fn dialog_fit(high: f32, tall: f32, top: f32) -> (f32, f32) {
-    let room = high - BAR;
+/// A dialog `tall` high in a window `high` high, hung `top` below the
+/// chrome's top `inset` when the window has room for it, higher (not under
+/// 12px) when it hasn't: where its top goes, and the height it may take so
+/// its bottom stays 12px inside the window.
+pub(in crate::shell) fn dialog_fit(high: f32, inset: Inset, tall: f32, top: f32) -> (f32, f32) {
+    let room = high - inset.top;
     let top = (room - tall - DIALOG_EDGE).clamp(DIALOG_EDGE, top);
     (top, (room - top - DIALOG_EDGE).max(0.))
 }
 
-/// A dialog open over the desk, below the bar: a dimmed backdrop that
+/// A dialog open over the desk, past the chrome (`inset`: below the bar,
+/// right of the sidebar): a dimmed backdrop that
 /// closes `closes` on a click, and on it the card the canvas dresses its
 /// dialogs in, `border: 1.5px solid ink` and a soft shadow. `dress` places
 /// and fills the card. Escape closes it through `keys::CloseOverlay`
@@ -386,6 +393,7 @@ pub(in crate::shell) fn scrim(
     closes: Overlay,
     overlays: &Entity<Overlays>,
     modal: &FocusHandle,
+    inset: Inset,
     ink: &super::super::ink::Ink,
     dress: impl FnOnce(gpui_kit::Stateful<gpui_kit::Div>) -> gpui_kit::AnyElement,
 ) -> gpui_kit::AnyElement {
@@ -398,8 +406,8 @@ pub(in crate::shell) fn scrim(
     let backdrop = div()
         .id(backdrop_id.clone())
         .absolute()
-        .top(px(BAR))
-        .left_0()
+        .top(px(inset.top))
+        .left(px(inset.left))
         .right_0()
         .bottom_0()
         .occlude()
@@ -440,12 +448,19 @@ mod tests {
 
     #[test]
     fn a_dialog_rises_then_shrinks_to_stay_inside_a_short_window() {
+        use crate::backend::Layout;
+        let bar = chrome_inset(Layout::MenuBar);
         // room for it: where the design hangs it, whole
-        assert_eq!(dialog_fit(800., 680., 74.), (72., 680.));
-        assert_eq!(dialog_fit(1000., 680., 74.), (74., 878.));
+        assert_eq!(dialog_fit(800., bar, 680., 74.), (72., 680.));
+        assert_eq!(dialog_fit(1000., bar, 680., 74.), (74., 878.));
         // the smallest window: as high as it goes, and no taller than what is left
-        let (top, tall) = dialog_fit(480., 680., 74.);
+        let (top, tall) = dialog_fit(480., bar, 680., 74.);
         assert_eq!(top, 12.);
-        assert_eq!(BAR + top + tall + 12., 480.);
+        assert_eq!(bar.top + top + tall + 12., 480.);
+        // in the sidebar layout nothing is over the desk: the whole height
+        let side = chrome_inset(Layout::Sidebar);
+        assert_eq!(dialog_fit(800., side, 680., 74.), (74., 714.));
+        let (top, tall) = dialog_fit(480., side, 680., 74.);
+        assert_eq!(top + tall + 12., 480.);
     }
 }

@@ -15,7 +15,8 @@
 //!   asked of this view (`explorer/tx/<hash>` → `tx/<hash>`), once,
 //!   DECODED: the link's `%XX` escapes read back (`chat/forge%3Aweb%3A3`
 //!   → `forge:web:3`), checked by `valid_route`.
-//! - `host.badge` — the tab's unread count; `host.id` — a minted id under a
+//! - `host.badge` — the tab's unread count; `host.title` — the name of the
+//!   view's window, cleaned ([`shown_title`]); `host.id` — a minted id under a
 //!   short prefix; `link.open` — the one way out: a `duck://` link, or an
 //!   `https://` one for the system browser; `clock.ticks` — a periodic
 //!   empty item, at most one per redraw ([`ticked`]).
@@ -360,6 +361,13 @@ pub(super) fn answer(
                 "`host.badge` carries no count",
             ),
         },
+        (Capability::Host, "title") => match methods::decode::<String>(payload) {
+            Ok(title) => {
+                guest.intents.push(Intent::Title(shown_title(&title)));
+                guest.reply(id, Ok(Vec::new()));
+            }
+            Err(error) => guest.refuse(id, refusal::MALFORMED_REQUEST, error),
+        },
         (Capability::Clock, "ticks") => {
             let period = tick_period(payload);
             if guest.clocks.len() >= MAX_SUBSCRIPTIONS {
@@ -397,6 +405,25 @@ pub(super) fn answer(
         _ => return false,
     }
     true
+}
+
+/// The most of a `host.title` the host shows, in chars.
+const MAX_TITLE: usize = 80;
+
+/// A `host.title` as the window shows it, one line of the view's own text:
+/// no control characters, no bidi embedding, override or isolate (each
+/// reorders what follows it), no line or paragraph separator, no space at
+/// either end, at most [`MAX_TITLE`] chars (a cut on a char boundary).
+/// Direction marks and joiners stay: an RTL name or an emoji needs them.
+fn shown_title(title: &str) -> String {
+    let shown = |c: &char| {
+        !(c.is_control()
+            || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            || matches!(c, '\u{2028}' | '\u{2029}'))
+    };
+    let title: String = title.chars().filter(shown).collect();
+    let cut: String = title.trim_start().chars().take(MAX_TITLE).collect();
+    cut.trim_end().to_owned()
 }
 
 /// Whether `link.open` may open `link`: `duck://` or `https://` with

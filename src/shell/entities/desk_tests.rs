@@ -49,9 +49,11 @@ fn a_drag_and_a_double_press_move_frames_on_the_measured_desk(cx: &mut TestAppCo
     };
     desk.update(cx, |desk, cx| desk.set_frame(0, small, cx));
     assert_eq!(layout(&desk, cx).panes[0].frame, Some(small));
-    desk.update(cx, |desk, cx| desk.fill(0, cx));
-    assert_eq!(layout(&desk, cx).panes[0].frame, Some(Frame::fill(DESK)));
-    desk.update(cx, |desk, cx| desk.fill(0, cx));
+    desk.update(cx, |desk, cx| desk.fill(cx));
+    assert!(layout(&desk, cx).filled);
+    assert_eq!(layout(&desk, cx).panes[0].frame, Some(small), "kept");
+    desk.update(cx, |desk, cx| desk.fill(cx));
+    assert!(!layout(&desk, cx).filled);
     assert_eq!(layout(&desk, cx).panes[0].frame, Some(small));
 }
 

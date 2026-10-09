@@ -1,7 +1,8 @@
 //! The launcher: everything before the desk, in a smaller window of its
-//! own size — reaching a node, this device's key, its recovery phrase, and
-//! the account on the network. A drawing on the left, one column to read
-//! on the right, the way a game client signs in before its main window.
+//! own size — reaching a node, this device's key, its recovery phrase, the
+//! account on the network, and once, where the programs sit. A drawing on
+//! the left, one column to read on the right, the way a game client signs
+//! in before its main window.
 //!
 //! Two different things happen here, one after the other. The KEY is this
 //! device's: kept by the system and opened on its own; it never leaves the
@@ -30,6 +31,7 @@ use gpui_kit::*;
 mod account;
 mod connect;
 mod key;
+mod layout;
 mod recovery;
 
 /// The launcher window's size; it does not change.
@@ -60,7 +62,7 @@ struct LauncherScreen {
     caption: String,
     /// The small link above the column, if the screen has a way back.
     back: Option<Back>,
-    /// The step tag over the headline: `[02 / 03] Key`.
+    /// The step tag over the headline: `[02 / 04] Key`.
     label: String,
     /// The `<h1>`.
     headline: String,
@@ -73,7 +75,7 @@ struct LauncherScreen {
 /// The drawing on the left of `screen`.
 fn figure(screen: Screen) -> Figure {
     match screen {
-        Screen::Connect | Screen::Desk => Figure::Roll,
+        Screen::Connect | Screen::Layout | Screen::Desk => Figure::Roll,
         Screen::Unlock { .. } => Figure::Ring,
         Screen::Phrase { .. } | Screen::Recover => Figure::Card,
         Screen::Account { .. } => Figure::Pair,
@@ -109,6 +111,10 @@ pub(in crate::shell) struct LauncherLayer {
     phrase: Option<Secret>,
     /// The screen the observers last saw.
     shown: Screen,
+    /// The layout step's card picked, saved only by its Continue.
+    layout: crate::backend::Layout,
+    /// The layout step's one Tab stop (`a11y::roving`).
+    layout_stop: FocusHandle,
     _subscriptions: [Subscription; 3],
 }
 
@@ -228,6 +234,8 @@ impl LauncherLayer {
             endpoint,
             phrase: None,
             shown,
+            layout: Default::default(),
+            layout_stop: cx.focus_handle().tab_stop(true),
             _subscriptions: subscriptions,
         };
         this.phrase = this.phrase_words(cx);
@@ -460,6 +468,7 @@ impl Render for LauncherLayer {
             Screen::Phrase { quiz: Some(asked) } => self.phrase_check(asked, window, cx),
             Screen::Recover => self.recover(window, cx),
             Screen::Account { .. } => self.account_step(window, cx),
+            Screen::Layout => self.layout_step(window, cx),
             // the root draws the desk instead
             Screen::Desk => return div(),
         };

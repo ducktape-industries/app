@@ -16,7 +16,8 @@ pub(crate) const KEEP: f32 = 96.;
 const CASCADE: f32 = 28.;
 /// A new window's share of the desk, wide and high.
 const NEW_SHARE: (f32, f32) = (0.6, 0.7);
-/// The inset of a window that fills the desk.
+/// The desk's margin: a resized desk scales frames between it, and a
+/// cascade past the desk's far corner starts again inside it.
 pub(crate) const INSET: f32 = 12.;
 pub(crate) use crate::render::GRAB;
 
@@ -30,16 +31,6 @@ pub(crate) struct Frame {
 }
 
 impl Frame {
-    /// The whole desk, inset.
-    pub(crate) fn fill(desk: (f32, f32)) -> Self {
-        Self {
-            x: INSET,
-            y: INSET,
-            w: (desk.0 - 2. * INSET).max(MIN_WIDTH),
-            h: (desk.1 - 2. * INSET).max(MIN_HEIGHT),
-        }
-    }
-
     /// At least `min_w` wide (its pane's [`Pane::min_width`]) and the
     /// smallest window high, no larger than the desk, and never so far off
     /// it that its title bar can't be grabbed back. On a desk narrower than
@@ -78,8 +69,9 @@ pub(crate) struct Pane {
     pub(crate) frame: Option<Frame>,
     /// Stacking order: the highest is drawn on top.
     pub(crate) z: u64,
-    /// The frame to go back to when a filled window is filled again.
-    pub(crate) restore: Option<Frame>,
+    /// What its view named it (`host.title`), shown beside the program's
+    /// name; never `Some("")`. It travels with the pane between windows.
+    pub(crate) title: Option<String>,
 }
 
 impl Pane {
@@ -90,7 +82,7 @@ impl Pane {
             instance: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
             frame: None,
             z: 0,
-            restore: None,
+            title: None,
         }
     }
 
@@ -127,6 +119,10 @@ pub(crate) struct Layout {
     pub(crate) initialized: bool,
     /// A window the keyboard holds (⌘⇧M): the arrows move and size it.
     pub(crate) held: Option<Held>,
+    /// Fill: the window in front, whichever it is, covers the whole desk.
+    /// Frames are never rewritten for it, so turning it off puts every
+    /// window back where it was.
+    pub(crate) filled: bool,
 }
 
 /// A window the keyboard holds, and how it sat when the hold began: Escape
@@ -135,7 +131,8 @@ pub(crate) struct Layout {
 pub(crate) struct Held {
     pub(crate) instance: u64,
     frame: Frame,
-    restore: Option<Frame>,
+    /// The desk was filled: the hold turned fill off, Escape turns it on.
+    filled: bool,
 }
 
 /// What is done to one window's panes: the bar, a title bar's buttons,
@@ -162,8 +159,8 @@ pub(crate) enum PaneMessage {
     Cycle {
         forward: bool,
     },
-    /// A title bar's double press, or ⌘⇧↩.
-    Fill(usize),
+    /// A title bar's double press, ⌘⇧↩, Restore: fill on or off.
+    Fill,
     /// ⌘⇧M: the keyboard holds the window (again, and it lets go).
     Hold(usize),
     /// The keyboard lets go of the window it holds: `keep` where it is, or
@@ -179,6 +176,11 @@ impl Layout {
     /// The desk's size, or nothing yet measured.
     pub(crate) fn desk(&self) -> (f32, f32) {
         self.desk.unwrap_or_default()
+    }
+
+    /// Pane `index` fills the desk: fill is on and it is in front.
+    pub(crate) fn fills(&self, index: usize) -> bool {
+        self.filled && index == self.focused
     }
 
     /// The focused pane's program, unless it has none.
@@ -200,8 +202,7 @@ impl Layout {
     /// The desk as the shell measured it. On a desk that changed size
     /// (the window resized, filled the screen or left it) every window
     /// keeps its share of it: its edges keep their place between the
-    /// desk's insets, so windows edge to edge stay flush and a filled
-    /// window stays filled.
+    /// desk's insets, so windows edge to edge stay flush.
     pub(crate) fn measure(&mut self, desk: (f32, f32)) {
         let Some(old) = self.desk.replace(desk).filter(|old| *old != desk) else {
             return;
@@ -231,7 +232,6 @@ impl Layout {
         };
         for pane in &mut self.panes {
             pane.frame = pane.frame.map(fit);
-            pane.restore = pane.restore.map(fit);
         }
     }
 
@@ -354,10 +354,13 @@ impl Layout {
             return None;
         }
         let pane = self.panes.remove(index);
-        // the next focus is the window now on top
+        // the next focus is the window now on top (filled, if fill is on)
         self.focused = (0..self.panes.len())
             .max_by_key(|&index| self.panes[index].z)
             .unwrap_or(0);
+        if self.panes.is_empty() {
+            self.filled = false;
+        }
         Some(pane)
     }
 
@@ -367,7 +370,6 @@ impl Layout {
     /// goes when the shell next mounts, being in no layout.
     pub(crate) fn popin(&mut self, mut pane: Pane) -> Option<Pane> {
         pane.frame = None;
-        pane.restore = None;
         if self.panes.len() == MAX_PANES {
             pane.frame = self.panes[self.focused].frame;
             let displaced = std::mem::replace(&mut self.panes[self.focused], pane);
@@ -431,45 +433,41 @@ impl Layout {
         match self.panes.get_mut(index) {
             Some(pane) if valid => {
                 pane.frame = Some(frame.clamped(desk, pane.min_width()));
-                pane.restore = None;
                 true
             }
             _ => false,
         }
     }
 
-    /// Fills the desk with a window, or puts a filled one back.
-    pub(crate) fn toggle_fill(&mut self, index: usize, desk: (f32, f32)) {
-        let Some(pane) = self.panes.get_mut(index) else {
-            return;
-        };
-        match pane.restore.take() {
-            Some(restore) => pane.frame = Some(restore.clamped(desk, pane.min_width())),
-            None => {
-                pane.restore = pane.frame;
-                pane.frame = Some(Frame::fill(desk));
-            }
-        }
+    /// Fill on, or off: every window back at its frame. A desk with no
+    /// window has nothing to fill.
+    pub(crate) fn toggle_fill(&mut self) {
+        self.filled = !self.filled && !self.panes.is_empty();
     }
 
-    /// The keyboard takes hold of window `index`, once it has a frame; holding
-    /// the window it already holds lets it go.
+    /// The keyboard takes hold of window `index`, once it has a frame,
+    /// turning fill off first; holding the window it already holds lets
+    /// it go.
     pub(crate) fn hold(&mut self, index: usize) {
+        let filled = self.filled;
         let held = self.panes.get(index).and_then(|pane| {
             pane.frame.map(|frame| Held {
                 instance: pane.instance,
                 frame,
-                restore: pane.restore,
+                filled,
             })
         });
         self.held = match self.held {
             Some(_) => None,
             None => held,
         };
+        if self.held.is_some() {
+            self.filled = false;
+        }
     }
 
     /// The keyboard lets go: `keep` the window where it is, or else put it
-    /// back as it was, filled or not.
+    /// back as it was, the desk filled or not.
     pub(crate) fn release(&mut self, keep: bool, desk: (f32, f32)) {
         let Some(held) = self.held.take().filter(|_| !keep) else {
             return;
@@ -480,12 +478,31 @@ impl Layout {
             .find(|pane| pane.instance == held.instance)
         {
             pane.frame = Some(held.frame.clamped(desk, pane.min_width()));
-            pane.restore = held.restore;
+            self.filled = held.filled;
         }
     }
 
-    /// The window on top at `at` on the desk, its grips around it included.
+    /// The pane `instance`'s title, `Some("")` taken as none: whether it
+    /// changed.
+    pub(crate) fn set_title(&mut self, instance: u64, title: Option<String>) -> bool {
+        let title = title.filter(|title| !title.is_empty());
+        match self.panes.iter_mut().find(|pane| pane.instance == instance) {
+            Some(pane) if pane.title != title => {
+                pane.title = title;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The window on top at `at` on the desk, its grips around it included;
+    /// while filled, the window in front, wherever on the desk.
     pub(crate) fn under(&self, at: (f32, f32)) -> Option<usize> {
+        if self.filled {
+            let (w, h) = self.desk();
+            let on_desk = (0. ..w).contains(&at.0) && (0. ..h).contains(&at.1);
+            return (on_desk && self.focused < self.panes.len()).then_some(self.focused);
+        }
         self.stacking().into_iter().rev().find(|&index| {
             self.panes[index].frame.is_some_and(|frame| {
                 (frame.x - GRAB..frame.x + frame.w + GRAB).contains(&at.0)

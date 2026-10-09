@@ -70,16 +70,10 @@ impl Slice<Layout> {
         self.moved(|layout| _ = layout.cycle(forward), cx);
     }
 
-    /// A title bar's double press, or ⌘⇧↩: the window fills the desk, or
-    /// goes back.
-    pub(crate) fn fill(&mut self, index: usize, cx: &mut Context<Self>) {
-        self.moved(
-            |layout| {
-                let desk = layout.desk();
-                layout.toggle_fill(index, desk);
-            },
-            cx,
-        );
+    /// A title bar's double press, ⌘⇧↩, Restore: the window in front
+    /// fills the desk, or every window goes back.
+    pub(crate) fn fill(&mut self, cx: &mut Context<Self>) {
+        self.moved(Layout::toggle_fill, cx);
     }
 
     /// A drag moved or sized a window: compared, so a pointer that stays
@@ -94,7 +88,8 @@ impl Slice<Layout> {
         );
     }
 
-    /// ⌘⇧M: the keyboard holds the window (again, and it lets go).
+    /// ⌘⇧M: the keyboard holds the window (again, and it lets go), fill
+    /// turned off first.
     pub(crate) fn hold(&mut self, index: usize, cx: &mut Context<Self>) {
         self.moved(|layout| layout.hold(index), cx);
     }
@@ -122,6 +117,14 @@ impl Slice<Layout> {
     pub(crate) fn settle(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         self.edit(Layout::settle, cx);
+    }
+
+    /// What the view in the pane with this `instance` named its window
+    /// (`host.title`; empty clears it). Compared: the same name again
+    /// notifies nobody.
+    pub(crate) fn set_title(&mut self, instance: u64, title: String, cx: &mut Context<Self>) {
+        let _timed = timed();
+        self.edit(|layout| _ = layout.set_title(instance, Some(title)), cx);
     }
 
     /// The desk measured this size (the pane layer's frame callback).
@@ -160,7 +163,7 @@ impl Slice<Layout> {
             PaneMessage::Split(module) => self.split(module, cx),
             PaneMessage::Focus(index) => self.focus(index, cx),
             PaneMessage::Cycle { forward } => self.cycle(forward, cx),
-            PaneMessage::Fill(index) => self.fill(index, cx),
+            PaneMessage::Fill => self.fill(cx),
             PaneMessage::Frame(index, frame) => self.set_frame(index, frame, cx),
             PaneMessage::Hold(index) => self.hold(index, cx),
             PaneMessage::Release { keep } => self.release(keep, cx),

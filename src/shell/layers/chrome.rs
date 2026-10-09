@@ -1,22 +1,26 @@
-//! The console's chrome: the menu bar across the window's top (the
-//! network, the programs as tabs, then Search (⌘K), the bell, the node's
-//! breath, who is signed in, and Settings), and the menus hanging from its
+//! The console's chrome, in the layout the prefs pick: the menu bar across
+//! the window's top (the network, the programs as tabs, then Search (⌘K),
+//! the bell, the node's breath, who is signed in, and Settings), or the
+//! sidebar down its left (`sidebar.rs`: the same buttons, and under each
+//! program the windows it has open); and the menus hanging from its
 //! buttons (`menus.rs`, `bell.rs`). A cached view of its own over the
 //! slices it reads: a write that moves none of them leaves it alone, and a
 //! pane's tick never reaches it. It writes one thing, `DotSlot`: where the
 //! node button's 12px well was laid out, read at prepaint and committed
-//! after the frame when it moved.
+//! after the frame when it moved. What is placed against the chrome reads
+//! where it sits off `chrome_inset`.
 //!
-//! Each open menu hangs beside its bar button (`footed`), deferred and
-//! anchored to the button's corner 4px under the bar; the backdrop under it (a click on it
-//! closes the menu, and presses stay off the desk) is a deferred child of
-//! the bar drawn first. A menu's keys: the arrows step its rows; Tab past
-//! its ends, or anything else that takes the keys out of it, closes it and
-//! leaves them where they went (`keys_left`; owner, 2026-09-28).
+//! Each open menu hangs beside its button (`footed`), deferred and
+//! anchored to the button's corner 4px past the chrome; the backdrop under
+//! it (a click on it closes the menu, and presses stay off the desk) is a
+//! deferred child of the chrome drawn first. A menu's keys: the arrows step
+//! its rows; Tab past its ends, or anything else that takes the keys out of
+//! it, closes it and leaves them where they went (`keys_left`; owner,
+//! 2026-09-28).
 
 use super::super::entities::{
-    Account, Chain, DotSlot, Entities, Front, Notifications, Observed, Overlay, Overlays, Popover,
-    Prefs, Rail, Session, Slice, WindowEntities, Windows,
+    Account, Chain, DotSlot, Entities, Front, Listed, Notifications, Observed, Overlay, Overlays,
+    Popover, Prefs, Rail, Session, Slice, WindowEntities, Windows,
 };
 use super::super::ink::{Ink, mono, sans};
 use super::super::{
@@ -28,9 +32,53 @@ use gpui_kit::*;
 
 mod bell;
 mod menus;
+mod sidebar;
 
 /// The menu bar's height.
 pub(in crate::shell) const BAR: f32 = 36.;
+/// The sidebar's width.
+pub(in crate::shell) const SIDEBAR: f32 = 220.;
+/// The sidebar's footer: the bell, the node, the account, the gear.
+const FOOT: f32 = 40.;
+
+/// Where the console's chrome sits in a layout. Whatever is placed against
+/// it reads it here: the desk, a dialog's scrim and room, a menu's backdrop
+/// and room, a pop-out's place on the screen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::shell) struct Inset {
+    /// What it takes off the window's top: the bar's height, or nothing.
+    pub(in crate::shell) top: f32,
+    /// What it takes off the window's left: nothing, or the sidebar.
+    pub(in crate::shell) left: f32,
+    /// How deep it is where its menus hang from: the bar above them, the
+    /// sidebar's footer below them.
+    pub(in crate::shell) menus: f32,
+}
+
+/// The chrome's [`Inset`] in `layout`: the bar across the top, or the
+/// sidebar down the left.
+pub(in crate::shell) fn chrome_inset(layout: crate::backend::Layout) -> Inset {
+    match layout {
+        crate::backend::Layout::MenuBar => Inset {
+            top: BAR,
+            left: 0.,
+            menus: BAR,
+        },
+        crate::backend::Layout::Sidebar => Inset {
+            top: 0.,
+            left: SIDEBAR,
+            menus: FOOT,
+        },
+    }
+}
+
+/// A row of the programs' list, as the keys move along it: a program, or
+/// (in the sidebar) one window on the desk.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Row {
+    Program(&'static str),
+    Window(u64),
+}
 
 /// The menu bar and its menus, one per console window.
 pub(in crate::shell) struct Chrome {
@@ -53,9 +101,11 @@ pub(in crate::shell) struct Chrome {
     pub(in crate::shell) menu: FocusHandle,
     /// The Programs rail's one Tab stop (`a11y::roving`).
     stop: FocusHandle,
-    /// The program tab the arrows moved to while the rail has the keys:
-    /// Return opens it. Gone when the keys leave the rail.
-    rail_cursor: Option<&'static str>,
+    /// The row the arrows moved to while the rail has the keys: Return
+    /// opens it. Gone when the keys leave the rail.
+    rail_cursor: Option<Row>,
+    /// The sidebar's program row under the pointer: it shows its `+`.
+    hovered: Option<&'static str>,
     /// The bar's program tabs: how far past their strip they ran.
     rail_scroll: ScrollHandle,
     /// The window width the bar's full words need; narrower, it folds.
@@ -121,6 +171,7 @@ impl Chrome {
             menu,
             stop,
             rail_cursor: None,
+            hovered: None,
             rail_scroll: ScrollHandle::default(),
             bar_needs: 0.,
             bar_made: 0,
@@ -266,22 +317,28 @@ impl Chrome {
         )
     }
 
+    /// The chrome's [`Inset`] in the layout the prefs pick.
+    fn inset(&self, cx: &App) -> Inset {
+        chrome_inset(self.prefs.read(cx).get().layout_or_default())
+    }
+
     /// What is under an open menu: it keeps presses off the desk, and a
-    /// click on it closes the menu (as a click on the bar itself does not:
-    /// the backdrop starts under the bar). Drawn first among the deferred
+    /// click on it closes the menu (as a click on the chrome itself does
+    /// not: the backdrop starts past it). Drawn first among the deferred
     /// children, so the menu's card lies over it. Invisible, and nothing
     /// about focus or keys: the box its card hangs from holds those.
-    fn backdrop(&self, id: &'static str, closes: Overlay, window: &Window) -> AnyElement {
+    fn backdrop(&self, id: &'static str, closes: Overlay, window: &Window, cx: &App) -> AnyElement {
         let close = self.overlaying(move |overlays, cx| overlays.close(closes, cx));
         let viewport = window.viewport_size();
+        let inset = self.inset(cx);
         deferred(
             div()
                 .id(SharedString::from(format!("{id}-backdrop")))
                 .absolute()
-                .top(px(BAR))
-                .left_0()
-                .w(viewport.width)
-                .h((viewport.height - px(BAR)).max(px(0.)))
+                .top(px(inset.top))
+                .left(px(inset.left))
+                .w((viewport.width - px(inset.left)).max(px(0.)))
+                .h((viewport.height - px(inset.top)).max(px(0.)))
                 .occlude()
                 .on_click(move |_, _, cx| close(cx)),
         )
@@ -289,11 +346,14 @@ impl Chrome {
         .into_any_element()
     }
 
-    /// A menu hanging beside the bar button that opened it (`footed`): its
+    /// A menu hanging beside the button that opened it (`footed`): its
     /// card (the canvas's `border: 1.5px solid ink` and a soft shadow,
-    /// `width` wide), `anchor` (a top corner) at the same corner of the
-    /// button, 4px below the bar (`top: 40px`), shifted back inside the
-    /// window when it would run off it. Deferred over the backdrop. The box
+    /// `width` wide), on the bar `anchor` (a top corner) at the same corner
+    /// of the button, 4px below the bar (`top: 40px`); in the sidebar the
+    /// network's (`TopLeft`) 4px right of the column at its row's top, the
+    /// footer's (`TopRight`) upward from their button's left end, 4px over
+    /// the footer. Shifted back inside the window when it would run off
+    /// it. Deferred over the backdrop. The box
     /// the card hangs from holds the keys by `menu`: its rows step with the
     /// arrows and stop at its ends; Tab and Shift+Tab move on, and past its
     /// ends they close it (`keys_left`; `keys::MenuTab`, bound over the
@@ -329,13 +389,14 @@ impl Chrome {
         // the corner: a point-sized box 5px under the button's foot
         // (`Chrome::footed`, whose bottom is the bar's inside edge at 35)
         // that the anchored card hangs from, so its top lands on 40 (the
-        // canvas's menus: `top: 40px`). It holds the menu handle and hears
-        // the rows' keys (no id, no role: the card is the node assistive
-        // technology sees, and it offers no focus of its own)
+        // canvas's menus: `top: 40px`); in the sidebar 5px past the network
+        // row's right end (the column's inside edge), or 5px over the
+        // footer button's box. It holds the menu handle and hears the rows'
+        // keys (no id, no role: the card is the node assistive technology
+        // sees, and it offers no focus of its own)
         let menu = self.menu.clone();
         let corner = div()
             .absolute()
-            .bottom(px(-5.))
             .size_0()
             .track_focus(&self.menu)
             .capture_key_down(move |event: &KeyDownEvent, window, cx| {
@@ -365,9 +426,12 @@ impl Chrome {
                 window.focus_prev(cx);
                 this.keys_left(window, cx);
             }));
-        let corner = match anchor {
-            Anchor::TopLeft => corner.left_0(),
-            _ => corner.right_0(),
+        use crate::backend::Layout;
+        let (anchor, corner) = match (self.prefs.read(cx).get().layout_or_default(), anchor) {
+            (Layout::MenuBar, Anchor::TopLeft) => (anchor, corner.bottom(px(-5.)).left_0()),
+            (Layout::MenuBar, _) => (anchor, corner.bottom(px(-5.)).right_0()),
+            (Layout::Sidebar, Anchor::TopLeft) => (anchor, corner.top_0().right(px(-5.))),
+            (Layout::Sidebar, _) => (Anchor::BottomLeft, corner.top(px(-5.)).left_0()),
         };
         deferred(
             corner.child(
@@ -381,16 +445,16 @@ impl Chrome {
         .into_any_element()
     }
 
-    /// A bar button with its open menu beside it, in a box the bar's inside
-    /// height (35px above the border line). The 36px button is centred in
-    /// the box as it was in the bar, half a pixel up, so it is drawn where
-    /// it was; the menu's corner hangs from the box, whose edges lie on
-    /// whole pixels. Layout snaps each edge to the device grid where it lies
-    /// (gpui's `layout_bounds`), so a card laid out half a pixel off has
-    /// some of its rows land a pixel from where the same card on a whole
-    /// pixel has them. The corner hangs 5px under the box, so the card is
+    /// A button with its open menu beside it, in a box the chrome's inside
+    /// height (on the bar 35px above the border line). The 36px button is
+    /// centred in the box as it was in the bar, half a pixel up, so it is
+    /// drawn where it was; the menu's corner hangs from the box, whose edges
+    /// lie on whole pixels. Layout snaps each edge to the device grid where
+    /// it lies (gpui's `layout_bounds`), so a card laid out half a pixel off
+    /// has some of its rows land a pixel from where the same card on a whole
+    /// pixel has them. The corner hangs 5px past the box, so the card is
     /// laid out on a whole pixel.
-    fn footed(button: Stateful<Div>, menu: AnyElement) -> AnyElement {
+    fn footed(button: Stateful<Div>, menu: Option<AnyElement>) -> Div {
         div()
             .relative()
             .h_full()
@@ -398,12 +462,21 @@ impl Chrome {
             .flex()
             .items_center()
             .child(button)
-            .child(menu)
-            .into_any_element()
+            .children(menu)
     }
 
-    /// A menu hanging below the bar, its right edge under its button's
-    /// (`hanging`), scrolling in a short window rather than being cut off.
+    /// A button on the bar: alone, or in its box with its menu while that
+    /// is open (`footed`).
+    fn hung((button, menu): (Stateful<Div>, Option<AnyElement>)) -> AnyElement {
+        match menu {
+            Some(menu) => Self::footed(button, Some(menu)).into_any_element(),
+            None => button.into_any_element(),
+        }
+    }
+
+    /// A menu hanging below the bar, its right edge under its button's, or
+    /// up from the sidebar's footer (`hanging`), scrolling in a short
+    /// window rather than being cut off.
     fn popover(
         &self,
         which: Popover,
@@ -419,7 +492,7 @@ impl Chrome {
             Popover::Notifications => ("notifications", "Notifications"),
         };
         // (the card's 1.5px border above and below it)
-        let room = f32::from(window.viewport_size().height) - BAR - 8. - 3.;
+        let room = f32::from(window.viewport_size().height) - self.inset(cx).menus - 8. - 3.;
         let body = div()
             .id(SharedString::from(format!("{id}-body")))
             .max_h(px(room.max(0.)))
@@ -438,8 +511,10 @@ impl Chrome {
     }
 }
 
-/// What the bar is drawn from, read off the slices at the top of a render.
+/// What the chrome is drawn from, read off the slices at the top of a
+/// render.
 struct Bar {
+    layout: crate::backend::Layout,
     dark: bool,
     network: String,
     connecting: bool,
@@ -450,14 +525,387 @@ struct Bar {
     account: Option<Option<(u64, String)>>,
     open: Option<Overlay>,
     focused: Option<&'static str>,
-    on_desk: Vec<&'static str>,
+    /// The focused window.
+    front: Option<u64>,
+    /// Every window on the desk, in layout order.
+    on_desk: Vec<Listed>,
     rows: Vec<crate::runtime::RailRow>,
 }
 
+/// A chrome button: `height: 36px; padding: 0 10px; gap: 8px; font: 400
+/// 13px`, on `surface` while its menu is open and under the pointer.
+/// `popup`: what its press opens, which it says (AX-113).
+fn item(
+    id: &'static str,
+    name: SharedString,
+    open: bool,
+    popup: Option<accesskit::HasPopup>,
+    run: Box<dyn Fn(&mut App)>,
+    ink: &Ink,
+) -> Stateful<Div> {
+    let surface = ink.surface;
+    let patch = crate::a11y::Patch::default();
+    let patch = match popup {
+        Some(popup) => patch.has_popup(popup),
+        None => patch,
+    };
+    patch.on(crate::a11y::keyboard(
+        sans(400, 13.)
+            .id(id)
+            .control(Role::Button, name)
+            .h(px(BAR))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .px(px(10.))
+            .cursor_pointer()
+            .text_color(ink.ink)
+            .when(open, |item| item.bg(surface))
+            .hover(move |style| style.bg(surface))
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                run(cx);
+            }),
+        ink.ink,
+    ))
+}
+
+/// The chrome's empty stretch: on macOS, where the app draws its own title
+/// bar, the window's handle (a press moves the window, a double press is
+/// the title bar's).
+fn drag_handle(id: &'static str, titlebar: Option<f32>) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex_1()
+        .h_full()
+        .when(titlebar.is_some(), |strip| {
+            strip.on_mouse_down(MouseButton::Left, |event, window, _| {
+                match event.click_count {
+                    2 => window.titlebar_double_click(),
+                    _ => window.start_window_move(),
+                }
+            })
+        })
+}
+
+/// A program's name as assistive technology hears it: its label, the note
+/// while its view is on its way, and its unread count.
+fn program_name(row: &crate::runtime::RailRow, badge: i64) -> String {
+    let shown = tab_label(row);
+    let name = match row.note {
+        Some(note) => format!("{shown} · {note}"),
+        None => shown,
+    };
+    // the count the tab shows is in what it is called
+    match badge {
+        ..=0 => name,
+        count => format!("{name}, {count} unread"),
+    }
+}
+
+/// The parts of the chrome both layouts draw, each a button (and the menu
+/// hanging from it while that is open): the bar lays them across the top,
+/// the sidebar down its column and footer.
+impl Chrome {
+    /// What a press does: `menu` opens, or closes when it is open.
+    fn toggle(&self, menu: Overlay) -> Box<dyn Fn(&mut App)> {
+        Box::new(self.overlaying(move |overlays, cx| overlays.toggle(menu, cx)))
+    }
+
+    /// The network's name and its switcher.
+    fn network(
+        &self,
+        bar: &Bar,
+        narrow: bool,
+        ink: &Ink,
+        cx: &mut Context<Self>,
+    ) -> (Stateful<Div>, Option<AnyElement>) {
+        let open = bar.open == Some(Overlay::Network);
+        let button = item(
+            "network-switcher",
+            SharedString::from(format!("Network: {}", bar.network)),
+            open,
+            Some(accesskit::HasPopup::Menu),
+            self.toggle(Overlay::Network),
+            ink,
+        )
+        .aria_expanded(open)
+        .child(sans(500, 13.).child(bar.network.clone()))
+        .child(div().text_color(ink.muted).child("⌄"));
+        (button, open.then(|| self.network_menu(narrow, ink, cx)))
+    }
+
+    /// Search (⌘K): its word unless folded, and the chord in a box.
+    fn search(&self, narrow: bool, ink: &Ink) -> Stateful<Div> {
+        let chord = chord_label("K");
+        item(
+            "rail-search",
+            "Search".into(),
+            false,
+            Some(accesskit::HasPopup::Dialog),
+            Box::new(self.overlaying(|overlays, cx| overlays.open(Overlay::Spotlight, cx))),
+            ink,
+        )
+        .aria_keyshortcuts(chord.clone())
+        .when(!narrow, |item| {
+            item.child(div().text_color(ink.muted).child("Search"))
+        })
+        .child(
+            mono(400, 12.)
+                .text_color(ink.muted)
+                .px(px(5.))
+                .py(px(1.))
+                .border_1()
+                .border_color(ink.line)
+                .child(chord),
+        )
+    }
+
+    /// The bell, the unread count on it; its panel.
+    fn bell(
+        &self,
+        bar: &Bar,
+        ink: &Ink,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> (Stateful<Div>, Option<AnyElement>) {
+        let unread = bar.unread;
+        let open = bar.open == Some(Overlay::Menu(Popover::Notifications));
+        let button = item(
+            "rail-notifications",
+            SharedString::from(match unread {
+                0 => "Notifications".to_owned(),
+                count => format!("Notifications, {count} unread"),
+            }),
+            open,
+            Some(accesskit::HasPopup::Dialog),
+            self.toggle(Overlay::Menu(Popover::Notifications)),
+            ink,
+        )
+        .aria_expanded(open)
+        .child(
+            div()
+                .relative()
+                .child(
+                    gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Bell)
+                        .size(px(16.))
+                        .text_color(ink.muted),
+                )
+                // the count, announced as notices land
+                .when(unread > 0, |bell| {
+                    bell.child(
+                        crate::a11y::live(
+                            mono(500, 9.).id("rail-unread").role(Role::Status),
+                            accesskit::Live::Polite,
+                            format!("{unread} unread notifications"),
+                        )
+                        .absolute()
+                        .top(px(-5.))
+                        .left(px(8.))
+                        .min_w(px(14.))
+                        .h(px(14.))
+                        .px(px(3.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .bg(ink.ink)
+                        .text_color(ink.bg)
+                        .child(match unread {
+                            ..=99 => unread.to_string(),
+                            _ => "99+".to_owned(),
+                        }),
+                    )
+                }),
+        );
+        (button, open.then(|| self.bell_menu(ink, window, cx)))
+    }
+
+    /// The node's button, the 12px well its breath is drawn over; its
+    /// status menu.
+    fn node(
+        &self,
+        bar: &Bar,
+        ink: &Ink,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> (Stateful<Div>, Option<AnyElement>) {
+        // the height moves every block: it is the description, so the
+        // name holds still
+        let said = match (bar.connecting, bar.reconnecting) {
+            (true, _) => "Node: switching",
+            (_, true) => "Node: not answering",
+            (false, false) => "Node: in sync",
+        };
+        let open = bar.open == Some(Overlay::Menu(Popover::Node));
+        // the 12px well the breath sits in, empty: `layers::StatusDot`
+        // draws the breath over it. Where it is laid out is the dot's
+        // slot, read at prepaint and, when it moved, committed after the
+        // frame (a settled chrome asks for nothing)
+        let well = {
+            let dot = self.dot.entity().clone();
+            div().size(px(12.)).flex_shrink_0().relative().child(
+                canvas(
+                    move |bounds, window, cx| {
+                        if *dot.read(cx).get() != Some(bounds) {
+                            window.on_next_frame(move |_, cx| {
+                                dot.update(cx, |slot, cx| {
+                                    slot.set(Some(bounds), cx);
+                                });
+                            });
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
+        };
+        let button = item(
+            "rail-connection",
+            said.into(),
+            open,
+            Some(accesskit::HasPopup::Dialog),
+            self.toggle(Overlay::Menu(Popover::Node)),
+            ink,
+        )
+        .aria_description(format!("Block {}", bar.height))
+        .aria_expanded(open)
+        .px(px(12.))
+        .child(well);
+        (button, open.then(|| self.node_menu(ink, window, cx)))
+    }
+
+    /// Who is signed in (folded, their initials), and the account menu; or
+    /// the way in: Sign in, Create account.
+    fn who(
+        &self,
+        bar: &Bar,
+        narrow: bool,
+        ink: &Ink,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> (Stateful<Div>, Option<AnyElement>) {
+        match (&bar.account, bar.unlocked) {
+            (_, false) => (
+                item(
+                    "sign-in",
+                    "Sign in".into(),
+                    false,
+                    None,
+                    Box::new(self.on_account(Account::sign_in)),
+                    ink,
+                )
+                .child(div().underline().child("Sign in")),
+                None,
+            ),
+            // named by what it says
+            (Some(None), true) => (
+                item(
+                    "rail-account",
+                    "Create account".into(),
+                    false,
+                    None,
+                    Box::new(self.on_account(Account::create_account)),
+                    ink,
+                )
+                .child(div().underline().child("Create account")),
+                None,
+            ),
+            (account, true) => {
+                let name = match account {
+                    Some(Some((_, name))) => name.clone(),
+                    _ => "Signed in".to_owned(),
+                };
+                let shown = match narrow {
+                    true => screens::initials(&name),
+                    false => name.clone(),
+                };
+                let open = bar.open == Some(Overlay::Menu(Popover::Account));
+                let button = item(
+                    "rail-account",
+                    SharedString::from(format!("Account: {name}")),
+                    open,
+                    Some(accesskit::HasPopup::Dialog),
+                    self.toggle(Overlay::Menu(Popover::Account)),
+                    ink,
+                )
+                .aria_expanded(open)
+                .child(shown);
+                (button, open.then(|| self.account_menu(ink, window, cx)))
+            }
+        }
+    }
+
+    /// Settings are the app's, not the account's: their own spot at the
+    /// edge.
+    fn gear(&self, ink: &Ink) -> Stateful<Div> {
+        item(
+            "settings",
+            "Ducktape settings".into(),
+            false,
+            Some(accesskit::HasPopup::Dialog),
+            Box::new(self.overlaying(|overlays, cx| overlays.open_settings(cx))),
+            ink,
+        )
+        .px(px(8.))
+        .child(
+            gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Settings)
+                .size(px(16.))
+                .text_color(ink.muted),
+        )
+    }
+
+    /// The backdrop under whichever menu is open, drawn before its card.
+    fn menu_backdrop(&self, bar: &Bar, window: &Window, cx: &App) -> Option<AnyElement> {
+        match bar.open {
+            Some(Overlay::Network) => {
+                Some(self.backdrop("network-menu", Overlay::Network, window, cx))
+            }
+            Some(Overlay::Menu(which)) => {
+                let id = match which {
+                    Popover::Node => "node-status",
+                    Popover::Account => "account-menu",
+                    Popover::Notifications => "notifications",
+                };
+                Some(self.backdrop(id, Overlay::Menu(which), window, cx))
+            }
+            _ => None,
+        }
+    }
+
+    /// What a program's row does: a click opens it (into an empty focused
+    /// window, or its own); a shift-click, or Shift with Enter or Space,
+    /// shows it in the focused window instead (a press with Shift is no
+    /// click).
+    fn opening(&self, row: Stateful<Div>, module: &'static str) -> Stateful<Div> {
+        let (click, keys) = (self.window.clone(), self.window.clone());
+        row.aria_description(format!(
+            "Shift+{} shows it in this window",
+            pane_hold::keep_key()
+        ))
+        .on_click(move |event: &ClickEvent, window, cx| {
+            let _ = click.update(cx, |desk, cx| match event.modifiers().shift {
+                true => desk.pane_message(PaneMessage::Select(module), window, cx),
+                false => desk.open_view(module, window, cx),
+            });
+        })
+        .on_key_down(move |event: &KeyDownEvent, window, cx| {
+            let stroke = &event.keystroke;
+            if stroke.modifiers == Modifiers::shift()
+                && matches!(stroke.key.as_str(), "enter" | "space")
+            {
+                cx.stop_propagation();
+                let _ = keys.update(cx, |desk, cx| {
+                    desk.pane_message(PaneMessage::Select(module), window, cx)
+                });
+            }
+        })
+    }
+}
+
 impl Render for Chrome {
-    /// The menu bar (the Menubar board): `height: 36px; padding: 0 8px;
-    /// border-bottom: 1px solid line`; every item `height: 36px; padding: 0
-    /// 10px; gap: 8px; font: 400 13px`, on `surface` while its menu is open.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf::count(crate::perf::Key::Window(self.key), "renders.chrome", 1);
         let bar = {
@@ -468,6 +916,7 @@ impl Render for Chrome {
                 self.front.read(cx).get(),
             );
             Bar {
+                layout: prefs.layout_or_default(),
                 dark: prefs.dark(),
                 network: session.network.clone(),
                 connecting: session.connecting,
@@ -478,11 +927,33 @@ impl Render for Chrome {
                 account: account.account.clone(),
                 open: *self.overlays.read(cx).get(),
                 focused: front.focused,
+                front: front.front,
                 on_desk: front.open.clone(),
                 rows: self.rail.read(cx).rows().to_vec(),
             }
         };
         let ink = Ink::of(bar.dark);
+        match bar.layout {
+            crate::backend::Layout::MenuBar => self.bar(bar, &ink, window, cx),
+            crate::backend::Layout::Sidebar => self.sidebar(bar, &ink, window, cx),
+        }
+    }
+}
+
+impl Chrome {
+    /// The menu bar (the Menubar board): `height: 36px; padding: 0 8px;
+    /// border-bottom: 1px solid line`; every item `height: 36px; padding: 0
+    /// 10px; gap: 8px; font: 400 13px`, on `surface` while its menu is open.
+    fn bar(
+        &mut self,
+        bar: Bar,
+        ink: &Ink,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        // the sidebar's row under the pointer goes with the sidebar: a row
+        // no longer drawn hears no end to its hover
+        self.hovered = None;
         // Folding. The tabs show their full labels until they overflow their
         // strip; then every tab folds to its icon or initial, so none is cut.
         // `bar_needs` is the narrowest window the full labels are known to
@@ -541,10 +1012,9 @@ impl Render for Chrome {
         let active = self
             .rail_cursor
             .into_iter()
-            .chain(bar.focused)
-            .find_map(|module| listed.iter().position(|it| *it == module))
+            .chain(bar.focused.map(Row::Program))
+            .find_map(|at| listed.iter().position(|it| Row::Program(it) == at))
             .unwrap_or_default();
-        let desk_window = self.window.clone();
         let tabs: Vec<_> = rows
             .enumerate()
             .map(|(n, row)| {
@@ -552,15 +1022,7 @@ impl Render for Chrome {
                 let selected = bar.focused == Some(module);
                 let badge = self.rail.read(cx).badge(module);
                 let shown = tab_label(row);
-                let name = match row.note {
-                    Some(note) => format!("{shown} · {note}"),
-                    None => shown.clone(),
-                };
-                // the count the tab shows is in what it is called
-                let name = match badge {
-                    ..=0 => name,
-                    count => format!("{name}, {count} unread"),
-                };
+                let name = program_name(row, badge);
                 // folded: the icon its view declares, its initial when it has
                 // none, and its whole name on hover
                 let icon = narrow
@@ -581,18 +1043,13 @@ impl Render for Chrome {
                 };
                 let tip = narrow.then(|| SharedString::from(name.clone()));
                 let hover = ink.ink;
-                let (click, keys) = (desk_window.clone(), desk_window.clone());
-                crate::a11y::roving_item(
+                let tab = crate::a11y::roving_item(
                     sans(400, 13.).id(SharedString::from(format!("rail/{module}"))),
                     (n == active).then_some(&stop),
                     ink.ink,
                 )
                 .control(Role::Tab, SharedString::from(name))
                 .aria_selected(selected)
-                .aria_description(format!(
-                    "Shift+{} shows it in this window",
-                    pane_hold::keep_key()
-                ))
                 .h(px(BAR))
                 .flex_shrink_0()
                 .flex()
@@ -600,309 +1057,36 @@ impl Render for Chrome {
                 .gap(px(8.))
                 .px(px(10.))
                 .cursor_pointer()
-                .text_color(match selected || bar.on_desk.contains(&module) {
-                    true => ink.ink,
-                    false => ink.muted,
-                })
-                .hover(move |style| style.text_color(hover))
-                // a click opens it (into an empty focused window, or its
-                // own); shift-click shows it in the focused window instead
-                .on_click(move |event: &ClickEvent, window, cx| {
-                    let _ = click.update(cx, |desk, cx| match event.modifiers().shift {
-                        true => desk.pane_message(PaneMessage::Select(module), window, cx),
-                        false => desk.open_view(module, window, cx),
-                    });
-                })
-                // the keyboard's shift-click: a press with Shift is no click
-                .on_key_down(move |event: &KeyDownEvent, window, cx| {
-                    let stroke = &event.keystroke;
-                    if stroke.modifiers == Modifiers::shift()
-                        && matches!(stroke.key.as_str(), "enter" | "space")
-                    {
-                        cx.stop_propagation();
-                        let _ = keys.update(cx, |desk, cx| {
-                            desk.pane_message(PaneMessage::Select(module), window, cx)
-                        });
-                    }
-                })
-                .child(shown)
-                .when_some(tip, |tab, tip| {
-                    tab.tooltip(move |window, cx| {
-                        gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                .text_color(
+                    match selected || bar.on_desk.iter().any(|it| it.module == module) {
+                        true => ink.ink,
+                        false => ink.muted,
+                    },
+                )
+                .hover(move |style| style.text_color(hover));
+                self.opening(tab, module)
+                    .child(shown)
+                    .when_some(tip, |tab, tip| {
+                        tab.tooltip(move |window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(tip.clone())
+                                .build(window, cx)
+                        })
                     })
-                })
-                .when(row.note == Some("Failed"), |tab| {
-                    tab.child(div().size(px(5.)).rounded_full().bg(ink.danger))
-                })
-                .when(badge > 0, |tab| {
-                    tab.child(
-                        mono(400, 12.)
-                            .text_color(ink.muted)
-                            .child(badge.to_string()),
-                    )
-                })
+                    .when(row.note == Some("Failed"), |tab| {
+                        tab.child(div().size(px(5.)).rounded_full().bg(ink.danger))
+                    })
+                    .when(badge > 0, |tab| {
+                        tab.child(
+                            mono(400, 12.)
+                                .text_color(ink.muted)
+                                .child(badge.to_string()),
+                        )
+                    })
             })
             .collect();
-        // `popup`: what its press opens, which it says (AX-113)
-        let item = |id: &'static str,
-                    name: SharedString,
-                    open: bool,
-                    popup: Option<accesskit::HasPopup>,
-                    run: Box<dyn Fn(&mut App)>| {
-            let surface = ink.surface;
-            let patch = crate::a11y::Patch::default();
-            let patch = match popup {
-                Some(popup) => patch.has_popup(popup),
-                None => patch,
-            };
-            patch.on(crate::a11y::keyboard(
-                sans(400, 13.)
-                    .id(id)
-                    .control(Role::Button, name)
-                    .h(px(BAR))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .px(px(10.))
-                    .cursor_pointer()
-                    .text_color(ink.ink)
-                    .when(open, |item| item.bg(surface))
-                    .hover(move |style| style.bg(surface))
-                    .on_click(move |_, _, cx| {
-                        cx.stop_propagation();
-                        run(cx);
-                    }),
-                ink.ink,
-            ))
-        };
-        let toggle = |menu: Overlay| -> Box<dyn Fn(&mut App)> {
-            Box::new(self.overlaying(move |overlays, cx| overlays.toggle(menu, cx)))
-        };
-        use accesskit::HasPopup::{Dialog, Menu};
-        let network_open = bar.open == Some(Overlay::Network);
-        let network = item(
-            "network-switcher",
-            SharedString::from(format!("Network: {}", bar.network)),
-            network_open,
-            Some(Menu),
-            toggle(Overlay::Network),
-        )
-        .aria_expanded(network_open)
-        .child(sans(500, 13.).child(bar.network.clone()))
-        .child(div().text_color(ink.muted).child("⌄"));
-        let network = match network_open {
-            true => Self::footed(network, self.network_menu(narrow, &ink, cx)),
-            false => network.into_any_element(),
-        };
-        let chord = chord_label("K");
-        let search = item(
-            "rail-search",
-            "Search".into(),
-            false,
-            Some(Dialog),
-            Box::new(self.overlaying(|overlays, cx| overlays.open(Overlay::Spotlight, cx))),
-        )
-        .aria_keyshortcuts(chord.clone())
-        .when(!narrow, |item| {
-            item.child(div().text_color(ink.muted).child("Search"))
-        })
-        .child(
-            mono(400, 12.)
-                .text_color(ink.muted)
-                .px(px(5.))
-                .py(px(1.))
-                .border_1()
-                .border_color(ink.line)
-                .child(chord),
-        );
-        let unread = bar.unread;
-        let bell_open = bar.open == Some(Overlay::Menu(Popover::Notifications));
-        let bell = item(
-            "rail-notifications",
-            SharedString::from(match unread {
-                0 => "Notifications".to_owned(),
-                count => format!("Notifications, {count} unread"),
-            }),
-            bell_open,
-            Some(Dialog),
-            toggle(Overlay::Menu(Popover::Notifications)),
-        )
-        .aria_expanded(bell_open)
-        .child(
-            div()
-                .relative()
-                .child(
-                    gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Bell)
-                        .size(px(16.))
-                        .text_color(ink.muted),
-                )
-                // the count, announced as notices land
-                .when(unread > 0, |bell| {
-                    bell.child(
-                        crate::a11y::live(
-                            mono(500, 9.).id("rail-unread").role(Role::Status),
-                            accesskit::Live::Polite,
-                            format!("{unread} unread notifications"),
-                        )
-                        .absolute()
-                        .top(px(-5.))
-                        .left(px(8.))
-                        .min_w(px(14.))
-                        .h(px(14.))
-                        .px(px(3.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_full()
-                        .bg(ink.ink)
-                        .text_color(ink.bg)
-                        .child(match unread {
-                            ..=99 => unread.to_string(),
-                            _ => "99+".to_owned(),
-                        }),
-                    )
-                }),
-        );
-        let bell = match bell_open {
-            true => Self::footed(bell, self.bell_menu(&ink, window, cx)),
-            false => bell.into_any_element(),
-        };
-        // the height moves every block: it is the description, so the
-        // name holds still
-        let said = match (bar.connecting, bar.reconnecting) {
-            (true, _) => "Node: switching",
-            (_, true) => "Node: not answering",
-            (false, false) => "Node: in sync",
-        };
-        let node_open = bar.open == Some(Overlay::Menu(Popover::Node));
-        // the 12px well the breath sits in, empty: `layers::StatusDot`
-        // draws the breath over it. Where it is laid out is the dot's
-        // slot, read at prepaint and, when it moved, committed after the
-        // frame (a settled bar asks for nothing)
-        let well = {
-            let dot = self.dot.entity().clone();
-            div().size(px(12.)).flex_shrink_0().relative().child(
-                canvas(
-                    move |bounds, window, cx| {
-                        if *dot.read(cx).get() != Some(bounds) {
-                            window.on_next_frame(move |_, cx| {
-                                dot.update(cx, |slot, cx| {
-                                    slot.set(Some(bounds), cx);
-                                });
-                            });
-                        }
-                    },
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .inset_0(),
-            )
-        };
-        let node = item(
-            "rail-connection",
-            said.into(),
-            node_open,
-            Some(Dialog),
-            toggle(Overlay::Menu(Popover::Node)),
-        )
-        .aria_description(format!("Block {}", bar.height))
-        .aria_expanded(node_open)
-        .px(px(12.))
-        .child(well);
-        let node = match node_open {
-            true => Self::footed(node, self.node_menu(&ink, window, cx)),
-            false => node.into_any_element(),
-        };
-        let account_open = bar.open == Some(Overlay::Menu(Popover::Account));
-        let who = match (&bar.account, bar.unlocked) {
-            (_, false) => item(
-                "sign-in",
-                "Sign in".into(),
-                false,
-                None,
-                Box::new(self.on_account(Account::sign_in)),
-            )
-            .child(div().underline().child("Sign in"))
-            .into_any_element(),
-            // named by what it says
-            (Some(None), true) => item(
-                "rail-account",
-                "Create account".into(),
-                false,
-                None,
-                Box::new(self.on_account(Account::create_account)),
-            )
-            .child(div().underline().child("Create account"))
-            .into_any_element(),
-            (account, true) => {
-                let name = match account {
-                    Some(Some((_, name))) => name.clone(),
-                    _ => "Signed in".to_owned(),
-                };
-                let shown = match narrow {
-                    true => screens::initials(&name),
-                    false => name.clone(),
-                };
-                let who = item(
-                    "rail-account",
-                    SharedString::from(format!("Account: {name}")),
-                    account_open,
-                    Some(Dialog),
-                    toggle(Overlay::Menu(Popover::Account)),
-                )
-                .aria_expanded(account_open)
-                .child(shown);
-                match account_open {
-                    true => Self::footed(who, self.account_menu(&ink, window, cx)),
-                    false => who.into_any_element(),
-                }
-            }
-        };
-        // Settings are the app's, not the account's: their own spot at the
-        // edge.
-        let gear = item(
-            "settings",
-            "Ducktape settings".into(),
-            false,
-            Some(Dialog),
-            Box::new(self.overlaying(|overlays, cx| overlays.open_settings(cx))),
-        )
-        .px(px(8.))
-        .child(
-            gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Settings)
-                .size(px(16.))
-                .text_color(ink.muted),
-        );
         // macOS draws the traffic lights over the bar's left end, and the
         // bar is the window's handle: its empty middle moves the window.
         let titlebar = theme::traffic_lights(window);
-        let handle = div()
-            .id("menubar-handle")
-            .flex_1()
-            .min_w(px(8.))
-            .h_full()
-            .when(titlebar.is_some(), |strip| {
-                strip.on_mouse_down(MouseButton::Left, |event, window, _| {
-                    match event.click_count {
-                        2 => window.titlebar_double_click(),
-                        _ => window.start_window_move(),
-                    }
-                })
-            });
-        // the backdrop under whichever menu is open, drawn before its card
-        let backdrop = match bar.open {
-            Some(Overlay::Network) => Some(self.backdrop("network-menu", Overlay::Network, window)),
-            Some(Overlay::Menu(which)) => {
-                let id = match which {
-                    Popover::Node => "node-status",
-                    Popover::Account => "account-menu",
-                    Popover::Notifications => "notifications",
-                };
-                Some(self.backdrop(id, Overlay::Menu(which), window))
-            }
-            _ => None,
-        };
         let moved = cx.entity().downgrade();
         div()
             .id("menubar")
@@ -918,8 +1102,8 @@ impl Render for Chrome {
             .border_b_1()
             .border_color(ink.line)
             .bg(ink.bg)
-            .children(backdrop)
-            .child(network)
+            .children(self.menu_backdrop(&bar, window, cx))
+            .child(Self::hung(self.network(&bar, narrow, ink, cx)))
             .child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(ink.line))
             .child(
                 crate::a11y::roving(
@@ -931,7 +1115,7 @@ impl Render for Chrome {
                     move |to, _, cx| {
                         let module = listed[to];
                         let _ = moved.update(cx, |this, cx| {
-                            this.rail_cursor = Some(module);
+                            this.rail_cursor = Some(Row::Program(module));
                             cx.notify();
                         });
                     },
@@ -951,12 +1135,13 @@ impl Render for Chrome {
                     )
                 }),
             )
-            .child(handle)
-            .child(search)
-            .child(bell)
-            .child(node)
-            .child(who)
-            .child(gear)
+            .child(drag_handle("menubar-handle", titlebar).min_w(px(8.)))
+            .child(self.search(narrow, ink))
+            .child(Self::hung(self.bell(&bar, ink, window, cx)))
+            .child(Self::hung(self.node(&bar, ink, window, cx)))
+            .child(Self::hung(self.who(&bar, narrow, ink, window, cx)))
+            .child(self.gear(ink))
+            .into_any_element()
     }
 }
 

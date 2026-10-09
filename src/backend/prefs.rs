@@ -1,5 +1,5 @@
-//! `prefs.json` in the config directory. Appearance and motion are read
-//! and written here; the recent-nodes list (`endpoints`) and the
+//! `prefs.json` in the config directory. Appearance, motion and the layout
+//! are read and written here; the recent-nodes list (`endpoints`) and the
 //! notification prefs (`runtime::notify`) go through [`read_prefs`] and
 //! [`edit_prefs`] too.
 
@@ -113,6 +113,33 @@ pub(crate) fn save_appearance(mode: Appearance) -> bool {
     })
 }
 
+/// Where the programs are listed: across the top, or down the side. Per
+/// device, like the theme.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Layout {
+    #[default]
+    MenuBar,
+    Sidebar,
+}
+
+/// The layout this device picked; none until the launcher's last step
+/// asked (`Screen::Layout`).
+pub(crate) fn load_layout() -> Option<Layout> {
+    match read_prefs().unwrap_or_default()["layout"].as_str() {
+        Some("menu_bar") => Some(Layout::MenuBar),
+        Some("sidebar") => Some(Layout::Sidebar),
+        _ => None,
+    }
+}
+
+pub(crate) fn save_layout(layout: Layout) -> bool {
+    let word = match layout {
+        Layout::MenuBar => "menu_bar",
+        Layout::Sidebar => "sidebar",
+    };
+    edit_prefs(|prefs| prefs["layout"] = serde_json::json!(word))
+}
+
 /// Whether the launcher's drawings move; on unless turned off.
 pub(crate) fn load_motion() -> bool {
     read_prefs().unwrap_or_default()["motion"]
@@ -127,6 +154,19 @@ pub(crate) fn save_motion(on: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No `layout` key is "not chosen yet"; each choice reads back as
+    /// saved, under its own word.
+    #[test]
+    fn the_layout_is_none_until_chosen_and_reads_back_as_saved() {
+        assert_eq!(load_layout(), None);
+        assert!(save_layout(Layout::Sidebar));
+        assert_eq!(load_layout(), Some(Layout::Sidebar));
+        assert_eq!(read_prefs().unwrap()["layout"], "sidebar");
+        assert!(save_layout(Layout::MenuBar));
+        assert_eq!(load_layout(), Some(Layout::MenuBar));
+        assert_eq!(read_prefs().unwrap()["layout"], "menu_bar");
+    }
 
     /// A `prefs.json` cut short is set aside whole as `.bad`, the app
     /// starts with no prefs, and the next write lands whole.

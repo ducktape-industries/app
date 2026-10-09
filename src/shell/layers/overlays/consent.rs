@@ -79,6 +79,7 @@ impl OverlayLayer {
             Overlay::Consent(ask),
             self.overlays.entity(),
             &self.modal,
+            self.inset(cx),
             &ink,
             |card| {
                 card.mt(px(84.))

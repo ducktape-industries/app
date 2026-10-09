@@ -57,7 +57,7 @@ fn focus_raises_and_closing_focuses_the_window_left_on_top() {
     assert!(layout.focus(0));
     assert_eq!(layout.stacking(), vec![1, 2, 0]);
     for (index, pane) in layout.panes.iter_mut().enumerate() {
-        pane.frame = Some(Frame::fill((800., 600.)));
+        pane.frame = part(INSET, INSET, 776., 576.);
         pane.frame.as_mut().unwrap().x += index as f32 * 100.;
     }
     assert_eq!(layout.under((50., 50.)), Some(0), "the top of three");
@@ -169,22 +169,85 @@ fn a_window_is_never_narrower_than_its_view() {
     assert_eq!(Pane::new("layout-narrow-view").min_width(), MIN_WIDTH);
 }
 
+/// Fill is the desk's: on and off again, every frame is where it was.
 #[test]
-fn filling_a_window_and_filling_it_again_puts_it_back() {
-    let mut layout = Layout::default();
-    layout.split("chat");
-    layout.place(DESK);
-    let small = Frame {
-        x: 100.,
-        y: 80.,
-        w: 500.,
-        h: 400.,
+fn filling_the_desk_and_filling_it_again_leaves_every_frame_as_it_was() {
+    let mut layout = held_pair();
+    let frames = |layout: &Layout| {
+        layout
+            .panes
+            .iter()
+            .map(|pane| pane.frame)
+            .collect::<Vec<_>>()
     };
-    layout.set_frame(0, small, DESK);
-    layout.toggle_fill(0, DESK);
-    assert_eq!(layout.panes[0].frame, Some(Frame::fill(DESK)));
-    layout.toggle_fill(0, DESK);
-    assert_eq!(layout.panes[0].frame, Some(small));
+    let before = frames(&layout);
+    layout.toggle_fill();
+    assert!(layout.filled);
+    assert_eq!(frames(&layout), before, "fill rewrites no frame");
+    layout.toggle_fill();
+    assert!(!layout.filled);
+    assert_eq!(frames(&layout), before);
+    layout.clear();
+    layout.toggle_fill();
+    assert!(!layout.filled, "an empty desk has nothing to fill");
+}
+
+/// Whatever comes forward fills: a focus, a cycle, another window, one
+/// popped in, the one beneath a closed front. The last window closed
+/// turns fill off.
+#[test]
+fn fill_stays_on_as_windows_come_forward_until_the_last_one_closes() {
+    let mut layout = held_pair();
+    layout.toggle_fill();
+    assert!(layout.focus(0));
+    assert!(layout.cycle(true));
+    assert!(layout.split("calendar"));
+    assert!(layout.popin(Pane::new("files")).is_none());
+    assert!(layout.filled, "kept through focus, cycle, split, pop-in");
+    layout.close(layout.focused);
+    assert!(layout.filled, "the window beneath the front fills");
+    while layout.panes.len() > 1 {
+        layout.close(0);
+    }
+    assert!(layout.filled);
+    layout.close(0);
+    assert!(!layout.filled, "the last window closed");
+}
+
+/// A filled desk is all the window in front: a press anywhere on it is
+/// on that window, never on one covered at its frame.
+#[test]
+fn a_filled_desk_is_the_window_in_front_wherever_it_is_pressed() {
+    let mut layout = tiled(&[
+        ("chat", part(700., 430., 600., 400.)),
+        ("files", part(20., 20., 400., 300.)),
+    ]);
+    layout.measure(DESK);
+    assert_eq!(layout.under((800., 500.)), Some(0), "the window there");
+    layout.toggle_fill();
+    assert_eq!(layout.under((800., 500.)), Some(1), "the window in front");
+    assert_eq!(layout.under((DESK.0 + 5., 500.)), None, "off the desk");
+}
+
+/// A view's title is kept per pane, empty as none; only a change counts.
+#[test]
+fn a_title_is_set_once_and_empty_is_none() {
+    let mut layout = held_pair();
+    let instance = layout.panes[1].instance;
+    assert!(layout.set_title(instance, Some("#general".into())));
+    assert_eq!(layout.panes[1].title.as_deref(), Some("#general"));
+    assert_eq!(layout.panes[0].title, None, "the other pane's own");
+    assert!(
+        !layout.set_title(instance, Some("#general".into())),
+        "the same"
+    );
+    assert!(layout.set_title(instance, Some(String::new())));
+    assert_eq!(layout.panes[1].title, None, "empty is none");
+    assert!(!layout.set_title(instance, None));
+    assert!(
+        !layout.set_title(u64::MAX, Some("gone".into())),
+        "no such pane"
+    );
 }
 
 /// A frame on the desk, for windows laid edge to edge by hand.
@@ -352,15 +415,16 @@ fn letting_go_keeps_the_window_or_puts_it_back_as_it_was() {
     assert_eq!(layout.panes[1].frame, Some(moved), "put back");
 }
 
+/// A hold on a filled desk turns fill off first; Escape puts the window
+/// back and fill on again, Return keeps it off.
 #[test]
-fn escape_puts_back_a_fill_the_hold_undid_and_its_restore() {
+fn a_hold_leaves_fill_and_escape_puts_it_back() {
     let mut layout = held_pair();
-    layout.toggle_fill(1, DESK);
-    let (filled, restore) = (layout.panes[1].frame, layout.panes[1].restore);
-    assert!(restore.is_some());
+    layout.toggle_fill();
+    let frame = layout.panes[1].frame;
     layout.hold(1);
-    // moving a filled window is a drag: it is no longer filled
-    let now = layout.panes[1].frame.unwrap();
+    assert!(!layout.filled, "held: the window at its frame, to move");
+    let now = frame.unwrap();
     layout.set_frame(
         1,
         Frame {
@@ -369,12 +433,11 @@ fn escape_puts_back_a_fill_the_hold_undid_and_its_restore() {
         },
         DESK,
     );
-    assert_eq!(layout.panes[1].restore, None);
     layout.release(false, DESK);
-    assert_eq!(
-        (layout.panes[1].frame, layout.panes[1].restore),
-        (filled, restore)
-    );
+    assert_eq!((layout.panes[1].frame, layout.filled), (frame, true));
+    layout.hold(1);
+    layout.release(true, DESK);
+    assert!(!layout.filled, "kept: fill stays off");
 }
 
 #[test]

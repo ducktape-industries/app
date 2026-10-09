@@ -18,7 +18,7 @@ mod root_tests;
 pub(super) mod tests;
 mod toast;
 
-pub(super) use chrome::{BAR, Chrome, tab_label};
+pub(super) use chrome::{BAR, Chrome, Inset, SIDEBAR, chrome_inset, tab_label};
 pub(super) use dot::StatusDot;
 pub(super) use empty_pane::{CHAT_READY, CONTEXT, EmptyPane};
 pub(super) use help_pane::HelpPane;
@@ -27,7 +27,7 @@ pub(super) use launcher::{LAUNCHER_SIZE, LauncherLayer};
 pub(crate) use overlays::Kept;
 pub(super) use overlays::OverlayLayer;
 #[cfg(test)]
-pub(super) use panes::{BORDER, TITLE};
+pub(super) use panes::{BORDER, FILL_STRIP, TITLE};
 pub(super) use panes::{PaneLayer, PaneView, view_body};
 pub(super) use root::WindowRoot;
 pub(super) use toast::ToastView;

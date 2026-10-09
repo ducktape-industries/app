@@ -68,6 +68,7 @@ fn the_launcher_size_agrees_with_the_screen_drawn(cx: &mut TestAppContext) {
             },
             "link-waiting",
         ),
+        (Screen::Layout, "layout-step"),
         (Screen::Desk, "menubar"),
     ];
     let names: std::collections::BTreeSet<&str> = screens.iter().map(|(_, id)| *id).collect();

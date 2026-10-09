@@ -368,6 +368,72 @@ fn open_link_refuses_any_scheme_but_duck_and_https() {
         );
     }
 }
+
+/// `host.title` names the view's window: the host keeps no control
+/// characters, no bidi embedding, override or isolate, no line or
+/// paragraph separator, no space at either end and at most 80 chars, cut
+/// on a char boundary, and replies `()`; empty clears the name; a payload
+/// that is no string is refused.
+#[test]
+fn host_title_is_cleaned_and_anything_but_a_string_refused() {
+    let title = |payload: Vec<u8>| {
+        let mut guest = guest();
+        guest.answer(
+            wire::Request {
+                id: 3,
+                kind: "host.title".into(),
+                payload,
+            },
+            &None,
+        );
+        (guest.pending.pop(), std::mem::take(&mut guest.intents))
+    };
+    let named = |raw: &str| match title(methods::encode(&raw.to_owned())) {
+        (
+            Some(wire::Event::Response {
+                id: 3,
+                result: Ok(reply),
+                done: true,
+            }),
+            intents,
+        ) => {
+            assert_eq!(reply, methods::encode(&()), "{raw:?}: replied ()");
+            match intents.as_slice() {
+                [Intent::Title(title)] => title.clone(),
+                other => panic!("{raw:?}: {other:?}"),
+            }
+        }
+        other => panic!("{raw:?}: {other:?}"),
+    };
+    assert_eq!(named("#general"), "#general");
+    assert_eq!(named(" \t#gen\0er\nal\u{7f}\u{9b}\r "), "#general");
+    let reordered = "#\u{202a}g\u{202e}e\u{2066}n\u{2069}e\u{2028}r\u{2029}al";
+    assert_eq!(named(reordered), "#general");
+    let rtl = "#\u{200f}שלום 👩\u{200d}💻";
+    assert_eq!(named(rtl), rtl, "a mark and a joiner stay");
+    let cut = named(&"한".repeat(10_000));
+    assert_eq!(cut, "한".repeat(80), "80 chars, not 80 bytes");
+    let spaced = format!("{} tail", "a".repeat(79));
+    assert_eq!(named(&spaced), "a".repeat(79), "no space left at the cut");
+    assert_eq!(named(""), "");
+    // a length past its bytes; one byte that is no UTF-8
+    for payload in [vec![0xff; 4], methods::encode(&vec![0xffu8])] {
+        match title(payload) {
+            (
+                Some(wire::Event::Response {
+                    result: Err(refusal),
+                    ..
+                }),
+                intents,
+            ) => {
+                assert_eq!(refusal.code, refusal::MALFORMED_REQUEST);
+                assert!(intents.is_empty(), "a refused title named the window");
+            }
+            other => panic!("not refused: {other:?}"),
+        }
+    }
+}
+
 /// A `link.open` request as a view sends it.
 fn link_request(id: u64, link: &str) -> wire::Request {
     wire::Request {

@@ -12,6 +12,7 @@ mod live;
 mod names;
 mod overlays;
 mod roving;
+mod sidebar;
 mod text;
 use super::entities::{Account, AccountStep, Overlay, Popover, Screen, SettingsPage};
 use super::layers::tests::{Seed, entities, set_screen};
