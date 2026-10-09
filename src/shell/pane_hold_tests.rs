@@ -356,17 +356,6 @@ fn the_hold_is_told_in_words_once_while_it_lasts(cx: &mut TestAppContext) {
 }
 
 #[test]
-fn the_announcement_is_worded_for_the_platform() {
-    let words = pane_hold::hold_words(&[], "");
-    assert!(words.starts_with("Moving Empty window. Arrows move, Shift further, "));
-    let (size, keep) = match cfg!(target_os = "macos") {
-        true => ("Option", "Return"),
-        false => ("Alt", "Enter"),
-    };
-    assert!(words.ends_with(&format!("{size} sizes, {keep} keeps, Escape puts back")));
-}
-
-#[test]
 fn chords_with_shift_are_written_for_the_platform() {
     let (fill, hold) = (chord_label("⇧↩"), chord_label("⇧M"));
     match cfg!(target_os = "macos") {

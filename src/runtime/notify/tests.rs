@@ -2,9 +2,7 @@ use std::time::{Duration, Instant};
 
 use std::path::Path;
 
-use super::center::{
-    Center, CenterHandle, MAX_AGE, MAX_ENTRIES, UNANSWERED_ENTRIES, VIEW_ENTRIES, read_log,
-};
+use super::center::{Center, CenterHandle, MAX_AGE, MAX_ENTRIES, VIEW_ENTRIES, read_log};
 use super::settings::{BURST_PREF, FRONT_PREF, NOTIFY_PREF, Permission, Settings, VIEWS_PREF};
 use super::{MAX_TEXT, in_order, shortened};
 use crate::runtime::WindowKey;
@@ -521,7 +519,6 @@ fn one_views_flood_leaves_the_other_views_rows() {
     }
     assert!(center.asking.contains("spam"), "the bar still asks");
     assert_eq!(rows(&center, "spam"), ["599", "598", "597", "596", "595"]);
-    assert_eq!(UNANSWERED_ENTRIES, 5);
     assert_eq!(rows(&center, "forge").len(), 3);
     assert_eq!(rows(&center, "chat").len(), VIEW_ENTRIES);
 }

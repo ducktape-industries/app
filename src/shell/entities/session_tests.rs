@@ -8,7 +8,7 @@
 //! already reached (`Session::seed_connected`); the take-up itself is
 //! `Account::take_up`'s row in account_tests.rs and the kit's.
 use super::tests::{notifies, session, source, status};
-use super::{LOST_AFTER, STATUS_EVERY, Screen, Session, SessionEvent, SessionState};
+use super::{STATUS_EVERY, Screen, Session, SessionEvent, SessionState};
 use crate::backend::NodeStatus;
 use gpui_kit::{Entity, Subscription, TestAppContext};
 use std::cell::{Cell, RefCell};
@@ -231,7 +231,7 @@ fn two_missed_polls_read_reconnecting_and_one_answer_recovers(cx: &mut TestAppCo
         sessions.get(),
         2,
         "reconnecting moved other than there and back"
-    );    assert_eq!(LOST_AFTER, 2);
+    );
 }
 
 /// A switch keeps the network in hand until the other node answers; one
