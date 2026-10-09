@@ -44,11 +44,12 @@ pub(in crate::shell) fn centered(extent: Size<Pixels>, display: Bounds<Pixels>) 
 }
 
 /// Where a window leaving the desk opens: on the screen right where it sat,
-/// under the console's bar rather than over it, at least `min_w` wide
-/// ([`popout_min`]), and inside `display`. With no place on the desk to
-/// keep, it cascades.
+/// past the console's chrome (`inset`: under the bar, right of the
+/// sidebar) rather than over it, at least `min_w` wide ([`popout_min`]),
+/// and inside `display`. With no place on the desk to keep, it cascades.
 pub(in crate::shell) fn unseated(
     source: Bounds<Pixels>,
+    inset: super::layers::Inset,
     frame: Option<layout::Frame>,
     display: Option<Bounds<Pixels>>,
     min_w: f32,
@@ -58,8 +59,8 @@ pub(in crate::shell) fn unseated(
     };
     let extent = size(px(frame.w.max(min_w)), px(frame.h.max(POPOUT_MIN)));
     let origin = point(
-        source.origin.x + px(frame.x),
-        source.origin.y + px(super::layers::BAR + frame.y),
+        source.origin.x + px(inset.left + frame.x),
+        source.origin.y + px(inset.top + frame.y),
     );
     inside(origin, extent, display)
 }
@@ -112,6 +113,9 @@ mod tests {
 
     #[test]
     fn a_window_leaving_the_desk_opens_where_it_sat_under_the_bar() {
+        use crate::backend::Layout;
+        use crate::shell::layers::chrome_inset;
+        let bar = chrome_inset(Layout::MenuBar);
         let seat = layout::Frame {
             x: 100.,
             y: 50.,
@@ -121,22 +125,31 @@ mod tests {
         let display = frame(0., 0., 2560., 1440.);
         let at = unseated(
             frame(200., 100., 1280., 800.),
+            bar,
             Some(seat),
             Some(display),
             POPOUT_MIN,
         );
-        assert_eq!(
-            at,
-            frame(300., 100. + crate::shell::layers::BAR + 50., 900., 600.)
-        );
+        assert_eq!(at, frame(300., 100. + bar.top + 50., 900., 600.));
         assert!(
-            at.origin.y >= px(100. + crate::shell::layers::BAR),
+            at.origin.y >= px(100. + bar.top),
             "the console's bar stays uncovered"
         );
+        // the sidebar's layout: right of the column, at the window's top
+        let side = chrome_inset(Layout::Sidebar);
+        let at = unseated(
+            frame(200., 100., 1280., 800.),
+            side,
+            Some(seat),
+            Some(display),
+            POPOUT_MIN,
+        );
+        assert_eq!(at, frame(200. + side.left + 100., 150., 900., 600.));
         // no narrower than its view: a 500 px frame of a view laid out from 680
         let narrow = layout::Frame { w: 500., ..seat };
         let at = unseated(
             frame(200., 100., 1280., 800.),
+            bar,
             Some(narrow),
             Some(display),
             680.,

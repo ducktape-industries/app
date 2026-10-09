@@ -253,7 +253,12 @@ impl OverlayLayer {
                     ),
                 ink.ink,
             ));
-        let (top, tall) = dialog_fit(f32::from(window.viewport_size().height), 680., 74.);
+        let (top, tall) = dialog_fit(
+            f32::from(window.viewport_size().height),
+            self.inset(cx),
+            680.,
+            74.,
+        );
         scrim(
             "settings-window",
             Role::Dialog,
@@ -261,6 +266,7 @@ impl OverlayLayer {
             Overlay::Settings(shown),
             self.overlays.entity(),
             &self.modal,
+            self.inset(cx),
             &ink,
             |card| {
                 card.mt(px(top))

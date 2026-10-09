@@ -505,9 +505,11 @@ draws nothing.
   the buttons call the step's method with the field's text; what the
   entities reset without typing (a step's secrets as it goes, the address
   the session moved to) the layer writes into them from its observers. On
-  the desk: `layers::Chrome` across the top (`layers/chrome.rs`, a cached
-  view of the bar reading the entities alone, its menus hanging from
-  their buttons: `chrome/menus.rs`, `chrome/bell.rs`), `layers/panes.rs`
+  the desk: `layers::Chrome` across the top, or down the left in the
+  Sidebar layout (`layers/chrome.rs`, `chrome/sidebar.rs`: a cached view of
+  the bar or the sidebar reading the entities alone, its menus hanging
+  from their buttons: `chrome/menus.rs`, `chrome/bell.rs`; what is placed
+  against it reads `chrome_inset`), `layers/panes.rs`
   drawing each pane's seat (its tree or standin) or the app's own body
   (`layers::EmptyPane`: the bare desk's figure or an empty window's
   finder; `layers::HelpPane`) under a cached `layers::Strip`, calling the
@@ -519,7 +521,7 @@ draws nothing.
   `layers/fields.rs`) and "Add a device…" (`overlays/approve.rs`), a
   Search row's `Spot` resolved there, and the keys' handoff as anything
   opens over the desk or closes, the node's breath (`layers::StatusDot`,
-  `layers/dot.rs`, a root sibling over the bar's empty well at `DotSlot`)
+  `layers/dot.rs`, a root sibling over the chrome's empty well at `DotSlot`)
   and the footer (`layers::ToastView`, `layers/toast.rs`, cached over
   `Toast`, `Session` and `Prefs`, drawn deferred over an open menu).
   `shell/windows.rs` is the geometry of where windows open, and how one
@@ -811,7 +813,8 @@ House words, and where one word means several things.
 - **launcher** — every screen before the desk (Connect, key, phrase,
   recover, account), in the console at launcher size, while `Screen` is
   not `Desk`.
-- **desk** — the area under the menu bar where panes float
+- **desk** — the area beside the chrome (under the menu bar, or right of
+  the sidebar) where panes float
   (`ui/layout.rs`); also `Screen::Desk` and the `desk` key context.
 - **pane / window** — `layout::Pane` is one floating frame on the desk
   holding a view, the program finder or Help. User copy, GPUI actions and
@@ -823,12 +826,15 @@ House words, and where one word means several things.
 - **split / cycle / fill / measure** — pane geometry operations in
   `ui/layout.rs`. `split` adds a pane.
 - **rail / RailRow** — the roster-ordered program list the menu bar shows
-  as tabs (`Roster::rail`, read into `entities::Rail` once per change the
-  roster's channel reports). The name is from an older side rail and
-  survives in AX ids (`rail/<module>`, `rail-search`) that qa depends on.
+  as tabs and the sidebar as rows, each program's desk windows under it
+  (`Roster::rail`, read into `entities::Rail` once per change the roster's
+  channel reports). The name is from an older side rail and survives in
+  AX ids (`rail/<module>`, `rail/<module>/<instance>`, `rail-search`) that
+  qa depends on.
 - **overlay / popover / scrim** — the one thing open over the desk
   (`Overlay`: Spotlight, Approve, Settings, Network, a bar menu); a
-  **popover** hangs under a bar button; a **scrim** dims the desk and makes
+  **popover** hangs under a bar button (in the sidebar, over a footer
+  button); a **scrim** dims the desk and makes
   the overlay modal.
 - **Command** — the command line: the empty pane's program-finder field
   and its `Mode` (Module | Chat), in `shell/layers/empty_pane.rs`.

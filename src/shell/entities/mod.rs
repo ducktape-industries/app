@@ -27,7 +27,7 @@ pub(crate) use account::{Account, AccountEvent, AccountState, Secret};
 pub(crate) use chain::Chain;
 pub(crate) use desk::Desk;
 pub(crate) use dot::DotSlot;
-pub(crate) use front::Front;
+pub(crate) use front::{Front, Listed};
 pub(crate) use notifications::{Notifications, permission};
 pub(crate) use overlays::{Overlay, Overlays, Popover, SettingsPage, Spot, SpotRow};
 pub(crate) use prefs::Prefs;

@@ -1,5 +1,6 @@
 //! The root view of one OS window: thin, uncached, laying the window's
-//! layers out as siblings. On the desk: the bar (`Chrome`, console only),
+//! layers out as siblings. On the desk: the chrome (`Chrome`, console
+//! only; the bar across the top, or the sidebar down the left),
 //! the panes (`PaneLayer`), the dialog open over them (`OverlayLayer`),
 //! the node's breath (`StatusDot`) and the footer (`ToastView`). Before the
 //! desk the console draws its launcher screen (`LauncherLayer`, uncached)
@@ -15,7 +16,7 @@
 
 use super::super::entities::{Desk, Entities, Observed, Overlays, Prefs, Screen, Slice};
 use super::super::{WindowKey, WindowKind, ink, layout, theme};
-use super::{BAR, Chrome, LauncherLayer, OverlayLayer, PaneLayer, StatusDot, ToastView};
+use super::{BAR, Chrome, LauncherLayer, OverlayLayer, PaneLayer, SIDEBAR, StatusDot, ToastView};
 use crate::render::deferred::HOST_BAND;
 use gpui_kit::{
     AnyView, AppContext as _, Context, Entity, FocusHandle, IntoElement, ParentElement as _,
@@ -36,7 +37,7 @@ pub(in crate::shell) struct WindowRoot {
     /// What is open over the desk: the key context says so.
     pub(in crate::shell) overlays: Observed<Overlays>,
     prefs: Observed<Slice<Prefs>>,
-    /// The menu bar and its menus (the console only).
+    /// The menu bar or the sidebar, and its menus (the console only).
     chrome: Option<Entity<Chrome>>,
     /// The panes, drawn: one `PaneView` per pane, the keys' handoff between
     /// them, the pointer's and the keyboard's hold on one.
@@ -256,33 +257,30 @@ impl Render for WindowRoot {
                 .child(toast)
                 .into_any_element(),
             _ => {
-                // the bar: a cached view of its own, its menus hanging from it
-                let bar = self.chrome.clone().map(|chrome| {
-                    AnyView::from(chrome).cached(
-                        StyleRefinement::default()
-                            .w_full()
-                            .h(px(BAR))
-                            .flex_shrink_0(),
-                    )
+                // the chrome: a cached view of its own, its menus hanging
+                // from it; across the top, or down the left beside the desk
+                let side = self.prefs.read(cx).get().layout_or_default()
+                    == crate::backend::Layout::Sidebar;
+                let chrome = self.chrome.clone().map(|chrome| {
+                    let style = StyleRefinement::default().flex_shrink_0();
+                    AnyView::from(chrome).cached(match side {
+                        false => style.w_full().h(px(BAR)),
+                        true => style.w(px(SIDEBAR)).h_full(),
+                    })
                 });
                 let overlays = self.overlay_layer.clone().map(|layer_view| {
                     deferred(AnyView::from(layer_view).cached(layer())).with_priority(HOST_BAND)
                 });
-                div()
-                    .id("console")
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .children(bar)
+                let console = div().id("console").size_full().flex();
+                let seat = div().id("seat").flex_1();
+                let (console, seat) = match side {
+                    false => (console.flex_col(), seat.min_h_0().w_full()),
+                    true => (console.flex_row(), seat.min_w_0().h_full()),
+                };
+                console
+                    .children(chrome)
                     // the panes: a layer of their own, measuring the desk they sit on
-                    .child(
-                        div()
-                            .id("seat")
-                            .flex_1()
-                            .min_h_0()
-                            .w_full()
-                            .child(self.panes.clone()),
-                    )
+                    .child(seat.child(self.panes.clone()))
                     .children(overlays)
                     .children(self.dot.clone())
                     .child(toast)

@@ -974,6 +974,77 @@ fn a_cached_dialog_dims_the_panes(cx: &mut TestAppContext) {
     }
 }
 
+/// Settings open, the layout switched under it (its own Layout row; Review
+/// Focus 2): on the next frames the scrim starts right of the sidebar, the
+/// window high, no bar's height over it, and the dialog hangs centred on
+/// it; switched back, under the bar again. Settings stays open throughout.
+#[gpui_kit::test]
+fn a_dialog_follows_the_chrome_when_the_layout_switches(cx: &mut TestAppContext) {
+    use crate::backend::Layout;
+    let (app, _, view, mut native) = console(cx);
+    set_motion(&app, false, &mut native);
+    let settings = Overlay::Settings(Default::default());
+    super::tests::show(&view, Some(settings), &mut native);
+    // the scrim's bounds as painted, cached (no reader on), and then the
+    // dialog's as the door reads them
+    let placed = |native: &mut VisualTestContext| {
+        for _ in 0..3 {
+            frame(native);
+        }
+        let scale = native.update(|window, _| window.scale_factor());
+        let scrim = quads(native)
+            .into_iter()
+            .find(|quad| {
+                quad.background
+                    .as_solid()
+                    .is_some_and(|color| (color.a - 0.6).abs() < 0.01)
+            })
+            .expect("the scrim paints")
+            .bounds;
+        let scrim = [
+            scrim.origin.x,
+            scrim.origin.y,
+            scrim.size.width,
+            scrim.size.height,
+        ]
+        .map(|it| it.0 / scale);
+        let nodes = native.update(|window, cx| {
+            draw(window, cx);
+            serde_json::to_value(crate::ax::snapshot("console", window, true)).unwrap()
+        });
+        let card = nodes
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["id"] == "console:settings-window")
+            .expect("Settings is open");
+        let at = |n: usize| card["bounds"][n].as_f64().unwrap() as f32;
+        (scrim, [at(0), at(1)])
+    };
+    let switch = |layout, native: &mut VisualTestContext| {
+        app.prefs
+            .update(native, |prefs, cx| prefs.set_layout(layout, cx))
+    };
+    assert_eq!(
+        placed(&mut native),
+        ([0., BAR, 1280., 800. - BAR], [260., BAR + 72.]),
+        "under the bar"
+    );
+    switch(Layout::Sidebar, &mut native);
+    assert_eq!(
+        placed(&mut native),
+        ([220., 0., 1060., 800.], [220. + 150., 74.]),
+        "right of the sidebar"
+    );
+    switch(Layout::MenuBar, &mut native);
+    assert_eq!(
+        placed(&mut native),
+        ([0., BAR, 1280., 800. - BAR], [260., BAR + 72.]),
+        "under the bar again"
+    );
+    assert_eq!(super::tests::open_now(&view, &mut native), Some(settings));
+}
+
 /// A toast drawn cached (no reader on) sits at the window's foot: its layer
 /// is a layout root of its own, and says `size_full` so its `bottom` is the
 /// window's.

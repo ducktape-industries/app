@@ -75,7 +75,7 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
     // Help: its lead, a section, every paragraph, the keys table
     let mut seed = gate::desk();
     seed.active = Some(layout::HELP);
-    let (_view, mut native) = open(seed, cx);
+    let (view, mut native) = open(seed, cx);
     // tall enough that the door shows the whole page, unscrolled
     native.simulate_resize(size(px(1280.), px(2400.)));
     let nodes = native.update(draw);
@@ -102,6 +102,34 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
             .iter()
             .any(|line| line.contains("Tab switches")),
         layers::CHAT_READY
+    );
+    // the sidebar picked in Settings: Help's words follow, open as it is
+    let app = entities(&view, &mut native);
+    app.prefs.update(&mut native, |prefs, cx| {
+        prefs.set_layout(crate::backend::Layout::Sidebar, cx)
+    });
+    let nodes = native.update(draw);
+    reads(
+        &nodes,
+        &[
+            "The column on the left lists the programs",
+            "Click a program's name in the column",
+            "THE SIDEBAR",
+            "Top to bottom: the network's name",
+        ],
+    );
+    let lines = labels(&nodes);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("account menu, above your name")),
+        "{lines:?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.contains("The bar across the top")),
+        "the bar's words stayed"
     );
 
     // Settings › About

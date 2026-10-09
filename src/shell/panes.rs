@@ -43,8 +43,12 @@ impl WindowRoot {
                 let at = at.or_else(|| {
                     let layout = self.layout(cx);
                     let pane = layout.panes.get(index);
+                    let inset = super::layers::chrome_inset(
+                        self.app.prefs.read(cx).get().layout_or_default(),
+                    );
                     Some(super::windows::unseated(
                         window.bounds(),
+                        inset,
                         pane.and_then(|pane| pane.frame),
                         window.display(cx).map(|display| display.bounds()),
                         pane.map_or(super::windows::POPOUT_MIN, |pane| {

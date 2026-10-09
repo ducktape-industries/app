@@ -28,6 +28,9 @@ fn booted(screen: Screen, key: bool) -> Seed {
     // test shares: a screen state gets its own
     seed.center = Default::default();
     seed.roster = Default::default();
+    // and reads the prefs file, where a walk over a sidebar state's
+    // Settings saved the layout it probed: a screen state names its own
+    seed.prefs.layout = None;
     seed.screen = screen;
     if key {
         seed.account.signer_key = "ab".into();
@@ -69,6 +72,32 @@ fn two_programs() -> Seed {
     let mut seed = desk();
     seed.roster = crate::runtime::Roster::listing(&["gate-a", "gate-b"]);
     seed
+}
+
+/// `build`'s state in the sidebar layout.
+fn in_sidebar(build: fn() -> Seed) -> impl Fn() -> Seed {
+    move || {
+        let mut seed = build();
+        seed.prefs.layout = Some(crate::backend::Layout::Sidebar);
+        seed
+    }
+}
+
+/// A sidebar listing a titled window under its program, a program standing
+/// for its one window, Help and an empty window after the hairline. (Two
+/// windows of one program still loading would share their loading body's
+/// ids, AX-015, in either layout.)
+fn sidebar_windows() -> Seed {
+    use crate::ui::layout::{EMPTY, HELP};
+    super::sidebar::sidebar(
+        &["gate-a", "gate-b"],
+        &[
+            ("gate-a", Some("# general")),
+            ("gate-b", None),
+            (HELP, None),
+            (EMPTY, None),
+        ],
+    )
 }
 
 /// A desk with a window on it, which Search opens over: its rows for the window
@@ -305,6 +334,58 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             on_desk(Overlay::Menu(Popover::Notifications)),
         ),
         (
+            "desk-two-programs-sidebar",
+            false,
+            plain(in_sidebar(two_programs)),
+        ),
+        ("desk-windows-sidebar", false, plain(sidebar_windows)),
+        (
+            "settings-appearance-sidebar",
+            false,
+            over(
+                Overlay::Settings(SettingsPage::Appearance),
+                in_sidebar(desk),
+            ),
+        ),
+        (
+            "settings-notifications-sidebar",
+            false,
+            over(
+                Overlay::Settings(SettingsPage::Notifications),
+                in_sidebar(two_programs),
+            ),
+        ),
+        (
+            "settings-networks-sidebar",
+            false,
+            over(Overlay::Settings(SettingsPage::Networks), in_sidebar(desk)),
+        ),
+        (
+            "settings-about-sidebar",
+            false,
+            over(Overlay::Settings(SettingsPage::About), in_sidebar(desk)),
+        ),
+        (
+            "network-menu-sidebar",
+            false,
+            over(Overlay::Network, in_sidebar(desk)),
+        ),
+        (
+            "node-menu-sidebar",
+            false,
+            over(Overlay::Menu(Popover::Node), in_sidebar(desk)),
+        ),
+        (
+            "account-menu-sidebar",
+            false,
+            over(Overlay::Menu(Popover::Account), in_sidebar(desk)),
+        ),
+        (
+            "notifications-menu-sidebar",
+            false,
+            over(Overlay::Menu(Popover::Notifications), in_sidebar(desk)),
+        ),
+        (
             "desk-asking",
             false,
             plain(|| {
@@ -367,13 +448,19 @@ fn every_native_screen_state_passes_the_phase_1_audit(cx: &mut TestAppContext) {
 }
 
 /// The walk probes the shell's tab lists and radio groups as a view's
-/// (AX-107): the layout step's cards, the bar's rail, Settings' pages and
-/// each of its radio groups, once each, and each passes.
+/// (AX-107): the layout step's cards, the bar's rail and the sidebar's
+/// list, Settings' pages and each of its radio groups, once each, and each
+/// passes.
 #[gpui_kit::test]
 fn the_walk_probes_every_tab_list_and_radio_group_of_the_shell(cx: &mut TestAppContext) {
-    let wanted: [(&str, &[&str]); 4] = [
+    let wanted: [(&str, &[&str]); 6] = [
         ("layout-step", &["shell:layout-cards"]),
         ("desk-two-programs", &["shell:rail-rows"]),
+        ("desk-two-programs-sidebar", &["shell:rail-rows"]),
+        (
+            "desk-windows-sidebar",
+            &["shell:empty-window/rows", "shell:rail-rows"],
+        ),
         (
             "settings-appearance",
             &["shell:settings-nav", "shell:theme", "shell:layout"],

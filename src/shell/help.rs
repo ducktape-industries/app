@@ -1,5 +1,6 @@
 //! The app's help, in a window on the desk: how to open a program, how the
-//! windows and the bar work, the account, and the keys. A new account
+//! windows and the bar (or the sidebar) work, the account, and the keys,
+//! in the words of the layout the prefs pick. A new account
 //! opens on it, greeted; ⌘/, ⌘K's Help and the empty desk's Help bring it
 //! back.
 
@@ -26,8 +27,9 @@ pub(crate) fn chords() -> Vec<(String, String)> {
 }
 
 /// Help's page: greeted (`welcome`, a new account's first sight of the
-/// desk) or titled "Ducktape help", in the dark or light ink.
-pub(super) fn help_view(welcome: bool, dark: bool) -> gpui_kit::AnyElement {
+/// desk) or titled "Ducktape help", in the dark or light ink, the programs
+/// listed across the top or down the side (`side`).
+pub(super) fn help_view(welcome: bool, dark: bool, side: bool) -> gpui_kit::AnyElement {
     use super::ink::*;
     use gpui_kit::*;
     let ink = Ink::of(dark);
@@ -45,24 +47,35 @@ pub(super) fn help_view(welcome: bool, dark: bool) -> gpui_kit::AnyElement {
             div().pb(px(6.)).child(note(id, text, ink.ink))
         })
     };
+    let lists = match side {
+        false => {
+            "The bar across the top lists the programs your network runs; \
+             each one opens in a window on this desk."
+        }
+        true => {
+            "The column on the left lists the programs your network runs, \
+             and under each the windows it has open; each one opens in a \
+             window on this desk."
+        }
+    };
     let (heading, lead_text) = match welcome {
         true => (
             "Welcome to Ducktape",
-            "Your account is ready. The bar across the top lists the programs \
-                 your network runs; each one opens in a window on this desk.",
+            format!("Your account is ready. {lists}"),
         ),
-        false => (
-            "Ducktape help",
-            "The bar across the top lists the programs your network runs; \
-                 each one opens in a window on this desk.",
-        ),
+        false => ("Ducktape help", lists.to_owned()),
+    };
+    let (chrome, chrome_title) = match side {
+        false => ("the bar", "THE BAR"),
+        true => ("the column", "THE SIDEBAR"),
     };
     let (n, k, w) = (chord_label("N"), chord_label("K"), chord_label("W"));
     let open = [
-        "Click a program's name in the bar. It opens in the window you are \
-             in if that one is empty, brings its window to the front if it is \
-             already open, and otherwise opens a window of its own."
-            .to_owned(),
+        format!(
+            "Click a program's name in {chrome}. It opens in the window you are \
+                 in if that one is empty, brings its window to the front if it \
+                 is already open, and otherwise opens a window of its own."
+        ),
         format!(
             "{n} opens an empty window: type part of a program's name, pick it \
                  with ↑↓ and open it with ↵.{}",
@@ -98,11 +111,22 @@ pub(super) fn help_view(welcome: bool, dark: bool) -> gpui_kit::AnyElement {
         ),
     ];
     let bar = [
-        "Left to right: the network's name, to switch networks; the programs; \
-             Search; the bell, for notifications; the dot, for how your node is \
-             doing; your name, for the account menu; and the gear, for Ducktape's \
-             settings (appearance, notifications, networks)."
-            .to_owned(),
+        match side {
+            false => "Left to right: the network's name, to switch networks; the \
+                 programs; Search; the bell, for notifications; the dot, for how \
+                 your node is doing; your name, for the account menu; and the \
+                 gear, for Ducktape's settings (appearance, notifications, \
+                 networks)."
+                .to_owned(),
+            true => "Top to bottom: the network's name, to switch networks; \
+                 Search; the programs, each with its open windows under it (click \
+                 one to bring it to the front; + beside a program opens another \
+                 window of it), then Help and empty windows. Along the foot: the \
+                 bell, for notifications; the dot, for how your node is doing; \
+                 your name, for the account menu; and the gear, for Ducktape's \
+                 settings (appearance, notifications, networks)."
+                .to_owned(),
+        },
         format!(
             "Shift-click a program's name, or press Shift+{} on it, to show it \
                  in the window you are in.",
@@ -110,9 +134,14 @@ pub(super) fn help_view(welcome: bool, dark: bool) -> gpui_kit::AnyElement {
         ),
     ];
     let account = [
-        "The key that signs for you is kept by this device's system. The \
-             account menu, under your name, holds the rest:"
-            .to_owned(),
+        format!(
+            "The key that signs for you is kept by this device's system. The \
+                 account menu, {} your name, holds the rest:",
+            match side {
+                false => "under",
+                true => "above",
+            }
+        ),
         "Add a device… signs another device in to this account: type the code \
              it shows, and approve only if both show the same fingerprint."
             .to_owned(),
@@ -190,7 +219,7 @@ pub(super) fn help_view(welcome: bool, dark: bool) -> gpui_kit::AnyElement {
                 .children(lines("open", open.into()))
                 .child(section("windows", "WINDOWS"))
                 .children(lines("windows", windows.into()))
-                .child(section("bar", "THE BAR"))
+                .child(section("bar", chrome_title))
                 .children(lines("bar", bar.into()))
                 .child(section("account", "YOUR ACCOUNT"))
                 .children(lines("account", account.into()))

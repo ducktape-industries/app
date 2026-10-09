@@ -18,7 +18,7 @@ mod root_tests;
 pub(super) mod tests;
 mod toast;
 
-pub(super) use chrome::{BAR, Chrome, tab_label};
+pub(super) use chrome::{BAR, Chrome, Inset, SIDEBAR, chrome_inset, tab_label};
 pub(super) use dot::StatusDot;
 pub(super) use empty_pane::{CHAT_READY, CONTEXT, EmptyPane};
 pub(super) use help_pane::HelpPane;

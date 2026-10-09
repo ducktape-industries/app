@@ -4,7 +4,6 @@ use super::Chrome;
 use crate::a11y::Control as _;
 use crate::shell::entities::{Notifications, Overlay, Popover, SettingsPage};
 use crate::shell::ink::{Ink, mono, sans, tall};
-use crate::shell::layers::BAR;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -79,7 +78,9 @@ impl Chrome {
             .aria_label("Notifications")
             .flex()
             .flex_col()
-            .max_h(px((high - BAR - 4. - 46. - 38. - 8.).max(80.)))
+            .max_h(px(
+                (high - self.inset(cx).menus - 4. - 46. - 38. - 8.).max(80.)
+            ))
             .overflow_y_scroll();
         let mut section = None;
         for entry in &entries {
