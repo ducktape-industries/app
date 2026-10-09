@@ -364,6 +364,8 @@ pub(super) fn emitted(
 mod accessibility;
 mod dialog_focus;
 mod element_cost;
+#[cfg(target_os = "linux")]
+mod faces;
 mod gpui_activation;
 mod gpui_clip;
 mod grip;

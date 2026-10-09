@@ -331,7 +331,7 @@ impl ViewTree {
                 route: *route,
                 scroll: scroll.clone(),
             });
-        let mut style = self.styles[*style].clone();
+        let mut style = Arc::unwrap_or_clone(self.style(*style));
         let room = room(&mut style);
         *list.style() = style;
         let list = list

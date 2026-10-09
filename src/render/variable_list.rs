@@ -132,7 +132,7 @@ impl ViewTree {
             wire::ListSizingBehavior::Auto => ListSizingBehavior::Auto,
         });
         let mut native = native;
-        *native.style() = self.styles[*style].clone();
+        *native.style() = Arc::unwrap_or_clone(self.style(*style));
 
         if let Some(handler) = *scroll_handler {
             let weak = cx.entity().downgrade();

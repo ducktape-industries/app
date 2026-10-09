@@ -33,34 +33,34 @@ pub(super) fn apply<E: StatefulInteractiveElement>(
         element = element.track_focus(handle);
     }
     if let Some(style) = interactivity.focus {
-        let style = styles[style].clone();
+        let style = Arc::unwrap_or_clone(super::drawn_style(styles, style));
         element = element.focus(move |_| style);
     }
     if let Some(style) = interactivity.in_focus {
-        let style = styles[style].clone();
+        let style = Arc::unwrap_or_clone(super::drawn_style(styles, style));
         element = element.in_focus(move |_| style);
     }
     if let Some(style) = interactivity.focus_visible {
-        let style = styles[style].clone();
+        let style = Arc::unwrap_or_clone(super::drawn_style(styles, style));
         element = element.focus_visible(move |_| style);
     }
     if let Some(group) = &interactivity.group {
         element = element.group(group.clone());
     }
     if let Some(style) = interactivity.hover {
-        let style = styles[style].clone();
+        let style = Arc::unwrap_or_clone(super::drawn_style(styles, style));
         element = element.hover(move |_| style);
     }
     if let Some(style) = interactivity.active {
-        let style = styles[style].clone();
+        let style = Arc::unwrap_or_clone(super::drawn_style(styles, style));
         element = element.active(move |_| style);
     }
     if let Some(group) = &interactivity.group_hover {
-        let style = styles[group.style].clone();
+        let style = Arc::unwrap_or_clone(super::drawn_style(styles, group.style));
         element = element.group_hover(group.group.clone(), move |_| style);
     }
     if let Some(group) = &interactivity.group_active {
-        let style = styles[group.style].clone();
+        let style = Arc::unwrap_or_clone(super::drawn_style(styles, group.style));
         element = element.group_active(group.group.clone(), move |_| style);
     }
     if interactivity.occlude {
