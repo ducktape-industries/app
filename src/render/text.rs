@@ -272,7 +272,7 @@ impl ViewTree {
             host_id(format!("text-{index}"))
         });
         let mut element = div();
-        *element.style() = self.styles[*style].clone();
+        *element.style() = Arc::unwrap_or_clone(self.style(*style));
         crate::fonts::refine_fallbacks(element.style());
         let element = element
             .id(native_id)
@@ -434,13 +434,13 @@ impl ViewTree {
         .size_full();
         let content = match linked {
             Some((mut boxed, linking)) => {
-                *boxed.style() = self.styles[*style].clone();
+                *boxed.style() = Arc::unwrap_or_clone(self.style(*style));
                 let interactive = links::Linked::new(interactive, linking, cx.entity().downgrade());
                 boxed.child(selection).child(interactive).into_any_element()
             }
             None => {
                 let mut content = div().relative().child(selection).child(interactive);
-                *content.style() = self.styles[*style].clone();
+                *content.style() = Arc::unwrap_or_clone(self.style(*style));
                 content.into_any_element()
             }
         };

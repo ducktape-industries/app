@@ -138,6 +138,23 @@ pub(crate) struct Tree {
     pub(crate) styles: wire::Styles,
 }
 
+/// The style `id` names in `styles`, as the app draws it: a guest names the
+/// design crate's faces, and the app's stand in for them
+/// ([`crate::fonts::app_family`]). Every node's style is read through here.
+fn drawn_style(styles: &wire::Styles, id: wire::StyleId) -> Arc<gpui_kit::StyleRefinement> {
+    let style = styles.share(id);
+    let Some(family) = &style.text.font_family else {
+        return style;
+    };
+    let face = crate::fonts::app_family(family);
+    if face == *family {
+        return style;
+    }
+    let mut style = Arc::unwrap_or_clone(style);
+    style.text.font_family = Some(face);
+    Arc::new(style)
+}
+
 /// The gpui entity that draws one guest view's wire tree and keeps the
 /// native state that outlives a frame, keyed by [`AuthoredPath`]. `replace`
 /// adopts each new root and retains every map to the paths it still mounts.
@@ -304,7 +321,7 @@ impl ViewTree {
     /// The style `id` names in the table of the tree being drawn, shared:
     /// the walk borrows the tree for everything else.
     fn style(&self, id: wire::StyleId) -> Arc<gpui_kit::StyleRefinement> {
-        self.styles.share(id)
+        drawn_style(&self.styles, id)
     }
 
     fn node(

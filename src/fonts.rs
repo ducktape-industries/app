@@ -74,14 +74,13 @@ pub(crate) fn app_family(family: &gpui_kit::SharedString) -> gpui_kit::SharedStr
     }
 }
 
-/// Pairs the family a guest asked for with the fallback chain that carries its
-/// Hangul: code faces fall back to the monospace Hangul face, everything else
-/// to the proportional one. Wire styles arrive by assignment, so this runs at
-/// the assignment sites rather than through the Styled builder.
+/// Pairs the family a guest asked for, already the app's face (the renderer
+/// reads every style through [`app_family`]), with the fallback chain that
+/// carries its Hangul: code faces fall back to the monospace Hangul face,
+/// everything else to the proportional one. Wire styles arrive by
+/// assignment, so this runs at the assignment sites rather than through the
+/// Styled builder.
 pub(crate) fn refine_fallbacks(style: &mut gpui_kit::StyleRefinement) {
-    if let Some(family) = &mut style.text.font_family {
-        *family = app_family(family);
-    }
     let is_code_face = style
         .text
         .font_family
@@ -96,4 +95,4 @@ pub(crate) fn refine_fallbacks(style: &mut gpui_kit::StyleRefinement) {
 
 #[cfg(all(test, target_os = "linux"))]
 #[path = "tests/font_fallback.rs"]
-mod font_fallback;
+pub(crate) mod font_fallback;

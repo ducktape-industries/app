@@ -4,7 +4,7 @@ use gpui_kit::{FontRun, FontStyle, FontWeight, PlatformTextSystem, font, px};
 use gpui_wgpu::CosmicTextSystem;
 use std::borrow::Cow;
 
-fn text_system() -> CosmicTextSystem {
+pub(crate) fn text_system() -> CosmicTextSystem {
     // No installed fonts: the application must be sufficient on a fresh Linux host.
     let system = CosmicTextSystem::new_without_system_fonts(super::FAMILY_UI);
     system

@@ -139,7 +139,7 @@ impl ViewTree {
             },
         ));
         let element = div()
-            .refine_style(&self.styles[*style])
+            .refine_style(&self.style(*style))
             .id(native_id(id))
             .relative()
             .cursor(cursor)
