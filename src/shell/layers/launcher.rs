@@ -1,7 +1,8 @@
 //! The launcher: everything before the desk, in a smaller window of its
 //! own size — reaching a node, this device's key, its recovery phrase, the
-//! account on the network, and once, where the programs sit. A drawing on the left, one column to read
-//! on the right, the way a game client signs in before its main window.
+//! account on the network, and once, where the programs sit. A drawing on
+//! the left, one column to read on the right, the way a game client signs
+//! in before its main window.
 //!
 //! Two different things happen here, one after the other. The KEY is this
 //! device's: kept by the system and opened on its own; it never leaves the

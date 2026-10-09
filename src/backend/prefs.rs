@@ -1,5 +1,5 @@
-//! `prefs.json` in the config directory. Appearance and motion are read
-//! and written here; the recent-nodes list (`endpoints`) and the
+//! `prefs.json` in the config directory. Appearance, motion and the layout
+//! are read and written here; the recent-nodes list (`endpoints`) and the
 //! notification prefs (`runtime::notify`) go through [`read_prefs`] and
 //! [`edit_prefs`] too.
 

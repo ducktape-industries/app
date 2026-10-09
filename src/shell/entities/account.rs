@@ -3,9 +3,10 @@
 //! password-locked one moved into the OS), locked, and reading without
 //! it; a new recovery key's words and their quiz; the account step (a name
 //! for a new account, a passkey that makes or joins one, "From another
-//! device", a recovery key typed); and approving another device. `Account`
-//! holds what the screens draw of it (`AccountState`, compared), owns the
-//! tasks each flow runs, and writes `Screen` as a step is passed.
+//! device", a recovery key typed); approving another device; and, once
+//! per device, the layout step standing in for the desk until Continue.
+//! `Account` holds what the screens draw of it (`AccountState`, compared),
+//! owns the tasks each flow runs, and writes `Screen` as a step is passed.
 //!
 //! Secrets never enter the compared value: a typed password, phrase or
 //! word stays in the field that shows it and comes in the submit call. The
