@@ -505,6 +505,34 @@ impl Session {
         )
     }
 
+    /// `--live`: a node already reached at `origin`, whose `status` is in
+    /// hand: what `connect_answered` leaves, less the network taken up on
+    /// this device (no keyring, no recent-nodes entry; the runtime's
+    /// roster is the caller's), and the poll started.
+    #[cfg(debug_assertions)]
+    pub(crate) fn live(
+        &mut self,
+        origin: String,
+        status: &backend::NodeStatus,
+        chain: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.center.lock().set_network(&chain);
+        self.edit(
+            |state| {
+                state.endpoint = origin.clone();
+                state.connected_rpc = origin.clone();
+                state.network = status.network.clone();
+                state.chain = chain.clone();
+                state.connected = true;
+            },
+            cx,
+        );
+        self.apply_status(status, cx);
+        self.source = Some(Self::status_source(&origin));
+        self.start_poll(STATUS_EVERY, cx);
+    }
+
     /// The state a test starts from.
     #[cfg(test)]
     pub(crate) fn seed(&mut self, state: SessionState, cx: &mut Context<Self>) {

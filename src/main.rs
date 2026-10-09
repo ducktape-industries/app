@@ -20,6 +20,10 @@ fn main() {
         shell::render_tree_fixture();
         return;
     }
+    // the view developer's window: parsed before the log, so a usage
+    // error says so without an app.log
+    #[cfg(debug_assertions)]
+    let live = (std::env::args().nth(1).as_deref() == Some("--live")).then(shell::Live::parse);
     match std::env::args().nth(1).as_deref() {
         Some("--version" | "-V") => {
             let build = option_env!("DUCKTAPE_APP_BUILD").unwrap_or("unknown");
@@ -44,6 +48,10 @@ fn main() {
             println!("       ducktape-app ax <command...>  (the AX door's client)");
             #[cfg(debug_assertions)]
             println!("       ducktape-app --render-tree  (debug build: the render-tree fixture)");
+            #[cfg(debug_assertions)]
+            println!(
+                "       ducktape-app --live <endpoint> <program-id> <seed>  (debug build: one view on a node)"
+            );
             return;
         }
         _ => {}
@@ -55,6 +63,11 @@ fn main() {
     // A view developer's DUCKTAPE_VIEWS_DIR supplies files in their place,
     // and app.log says so for each one it supplies
     runtime::override_views_from(std::env::var_os("DUCKTAPE_VIEWS_DIR").map(Into::into));
+    #[cfg(debug_assertions)]
+    if let Some(live) = live {
+        shell::run_live(live);
+        return;
+    }
     shell::run();
 }
 
