@@ -134,10 +134,12 @@ fn a_connect_out_reaches_for_the_address_it_was_started_with(cx: &mut TestAppCon
     cx.run_until_parked();
     let failed = state(&session, cx);
     assert!(failed.reaching.is_empty(), "no attempt is out");
-    assert_eq!(
-        failed.error,
-        format!("Can't reach {ORIGIN}. Check the address, or that the node is running."),
-        "the failure named an address that was not tried"
+    // the sentence is backend's (`connect_error`); which address it names is
+    // the claim here
+    assert!(
+        failed.error.contains(ORIGIN) && !failed.error.contains(&typed),
+        "the failure named an address that was not tried: {}",
+        failed.error
     );
 }
 
@@ -229,8 +231,7 @@ fn two_missed_polls_read_reconnecting_and_one_answer_recovers(cx: &mut TestAppCo
         sessions.get(),
         2,
         "reconnecting moved other than there and back"
-    );
-    assert_eq!(LOST_AFTER, 2);
+    );    assert_eq!(LOST_AFTER, 2);
 }
 
 /// A switch keeps the network in hand until the other node answers; one
