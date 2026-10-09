@@ -59,19 +59,34 @@ pub(super) fn paint_canvas_commands(
             rest = after;
             continue;
         }
-        rest = &rest[1..];
-        let wire::CanvasCommand::Draw {
-            shape: wire::CanvasShape::Line { from, to },
-            stroke: Some(stroke),
-            ..
-        } = first
-        else {
+        let Some((from, to, stroke)) = line(first) else {
+            rest = &rest[1..];
             continue;
         };
         let position = |p: [f32; 2]| origin + point(px(p[0]), px(p[1]));
+        // Butt-capped lines that go on from each other's end with one
+        // stroke are one path: a subpath a line, so the triangles are the
+        // ones each line had alone (no joins), built and ordered once.
+        // A path's indices are 16 bits, four vertices a line: the wire's
+        // cap on a canvas's commands keeps any run under that (asserted below).
+        let mut run = 1;
+        let mut end = to;
+        if stroke.cap == wire::CanvasLineCap::Butt {
+            for (from, to, next) in rest[1..].iter().map_while(line) {
+                if from != end || next != stroke {
+                    break;
+                }
+                end = to;
+                run += 1;
+            }
+        }
+        let (lines, after) = rest.split_at(run);
+        rest = after;
         let mut path = gpui_kit::PathBuilder::stroke(px(stroke.width));
-        path.move_to(position(*from));
-        path.line_to(position(*to));
+        for (from, to, _) in lines.iter().filter_map(line) {
+            path.move_to(position(from));
+            path.line_to(position(to));
+        }
         if let Ok(path) = path.build() {
             window.paint_path(path, stroke.color);
         }
@@ -87,6 +102,21 @@ pub(super) fn paint_canvas_commands(
                 );
             }
         }
+    }
+}
+
+// The longest run of lines a canvas can hold builds as one path.
+const _: () = assert!(wire::MAX_CANVAS_PARTS * 4 <= u16::MAX as usize + 1);
+
+/// The line a command strokes; nothing else is one.
+fn line(command: &wire::CanvasCommand) -> Option<([f32; 2], [f32; 2], &wire::CanvasStroke)> {
+    match command {
+        wire::CanvasCommand::Draw {
+            shape: wire::CanvasShape::Line { from, to },
+            stroke: Some(stroke),
+            ..
+        } => Some((*from, *to, stroke)),
+        _ => None,
     }
 }
 
