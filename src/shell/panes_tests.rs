@@ -1,5 +1,5 @@
 //! Real pane controls exercised through the same AccessKit actions as the AX door.
-use super::entities::tests::{active, status};
+use super::entities::tests::{active, notifies, status};
 use super::entities::{Entities, Overlay, Popover, SettingsPage, Spot};
 use super::layers::tests::{
     frame, line, open_help, open_now, pane, polled, popped, run_spot, select_view, set_motion,
@@ -1292,6 +1292,83 @@ fn a_views_link_opens_its_seat_on_the_console(cx: &mut TestAppContext) {
         Some("room/7"),
         "the view was not handed its route"
     );
+}
+
+/// Two windows of one program are named by their own views (`host.title`):
+/// each title reaches the pane its seat is in, by the pane's instance, and
+/// names that window's box for assistive technology; the same title again
+/// moves nothing on the desk, an empty one clears it.
+#[gpui_kit::test]
+fn each_window_takes_the_title_its_own_view_gave(cx: &mut TestAppContext) {
+    use crate::runtime::{Intent, intent_for_test};
+    const MODULE: &str = "pane-title-view";
+    let (app, _, view, mut native) = console(cx);
+    crate::runtime::seat_for_test(MODULE, 400);
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    pane(&view, PaneMessage::Split(MODULE), &mut native);
+    // the second window's seat holds a view too
+    crate::runtime::seat_for_test(MODULE, 400);
+    let turn = |native: &mut VisualTestContext| {
+        for _ in 0..2 {
+            app.seats.update(native, |seats, cx| seats.settle(cx));
+            native.run_until_parked();
+            frame(native);
+        }
+    };
+    turn(&mut native);
+    // each pane's instance on the desk, and its seat's in the runtime
+    let seats: Vec<(u64, u64)> = native.update(|_, cx| {
+        view.read(cx)
+            .layout(cx)
+            .panes
+            .iter()
+            .map(|pane| {
+                let seat = app.seats.read(cx).seat(pane.instance).expect("seated");
+                (pane.instance, seat.read(cx).instance())
+            })
+            .collect()
+    });
+    assert_eq!(seats.len(), 2, "two windows of {MODULE}");
+    let titles = |native: &mut VisualTestContext| -> Vec<(u64, Option<String>)> {
+        native.update(|_, cx| {
+            view.read(cx)
+                .layout(cx)
+                .panes
+                .iter()
+                .map(|pane| (pane.instance, pane.title.clone()))
+                .collect()
+        })
+    };
+    for ((_, seat), title) in seats.iter().zip(["#general", "#random"]) {
+        intent_for_test(MODULE, *seat, Intent::Title(title.into()));
+    }
+    turn(&mut native);
+    assert_eq!(
+        titles(&mut native),
+        [
+            (seats[0].0, Some("#general".to_owned())),
+            (seats[1].0, Some("#random".to_owned())),
+        ]
+    );
+    let nodes = native.update(draw);
+    for (index, title) in ["#general", "#random"].into_iter().enumerate() {
+        let node = nodes
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["id"] == format!("console:pane/{index}/view"))
+            .expect("the window's box");
+        assert_eq!(node["name"], format!("{MODULE}, {title}"), "window {index}");
+    }
+    let desk = native.update(|_, cx| view.read(cx).desk.clone());
+    let (seen, _seen) = notifies(&desk, cx);
+    intent_for_test(MODULE, seats[0].1, Intent::Title("#general".into()));
+    turn(&mut native);
+    assert_eq!(seen.get(), 0, "the same title again moved the desk");
+    intent_for_test(MODULE, seats[1].1, Intent::Title(String::new()));
+    turn(&mut native);
+    assert_eq!(titles(&mut native)[1], (seats[1].0, None), "empty clears");
+    assert_eq!(seen.get(), 1);
 }
 
 /// A frame as the platform delivers one, a figure's tick after the last:

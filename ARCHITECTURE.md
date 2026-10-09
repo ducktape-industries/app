@@ -318,11 +318,11 @@ its meaning; the host and the views name the const, never the string.
    manifest did not declare it (logged once per capability).
 2. **Route.** `kernel::answer(guest, capability, operation, id, payload)`
    tries `clipboard::answer`, `notify::answer`, `store::answer`, then its own
-   arms: host methods (`host.visible`, `host.badge`, `host.route`,
-   `host.offset`, `host.id`, `link.open`, `clock.ticks`) are answered at
-   once from app state; node methods are spawned. Three kinds never reach
-   the kernel and are handled in `Guest::answer` after it returns `false`:
-   `host.widget` (the one MessagePack method: a `WidgetCommand`),
+   arms: host methods (`host.visible`, `host.badge`, `host.title`,
+   `host.route`, `host.offset`, `host.id`, `link.open`, `clock.ticks`) are
+   answered at once from app state; node methods are spawned. Three kinds
+   never reach the kernel and are handled in `Guest::answer` after it
+   returns `false`: `host.widget` (the one MessagePack method: a `WidgetCommand`),
    `host.session` (the props subscription) and `host.log`.
 3. **Relay.** `kernel/node.rs` `spawn_method`, behind `spawn_retrying`,
    `spawn_retrying_unsent` and `spawn_no_retry`, first checks in `connected`
@@ -476,7 +476,8 @@ draws nothing.
   and dropped. A pane keeps its seat when it pops out to its own OS window
   (`WindowKind::View`) and back. It observes the session, the account and
   the prefs and hands every seat its props. A seat's `Intent`s route
-  (`Seats::route`): `Badge` → `Rail::set_badge`, `Notified` →
+  (`Seats::route`): `Badge` → `Rail::set_badge`, `Title` → the desk
+  holding that pane (by its layout instance) `Desk::set_title`, `Notified` →
   `Notifications::refresh`, `Seated` → every desk holding the view
   settles (a window placed before its view came widens to it), `OpenLink`
   → `Windows::open_link`. `Seats` holds `Windows` weakly.
@@ -790,7 +791,7 @@ House words, and where one word means several things.
   queue is half full. **refusal** — a `wire::Error{code, message}` reply
   with a snake_case code.
 - **intent** — what a view asked the app itself to do: `Intent::Badge`,
-  `OpenLink`, `Notified`, `Seated`; routed by `Seats::route`
+  `Title`, `OpenLink`, `Notified`, `Seated`; routed by `Seats::route`
   (`shell/entities/seats.rs`) to `Rail`, `Windows`, `Notifications` and
   the desks.
 - **props / session** — the session facts every view gets on

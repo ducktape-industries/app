@@ -99,13 +99,16 @@ impl WindowKey {
     }
 }
 
-/// What a view asked the app itself to do: `host.badge`, `link.open`, a
-/// `notify.post` that changed the centre, or an `op.submit` waiting on the
-/// person's yes.
+/// What a view asked the app itself to do: `host.badge`, `host.title`,
+/// `link.open`, a `notify.post` that changed the centre, or an `op.submit`
+/// waiting on the person's yes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
     /// `host.badge`: its unread count on the menu bar; 0 or less clears it.
     Badge(i64),
+    /// `host.title`: the name of its window, cleaned (`kernel`); empty
+    /// clears it.
+    Title(String),
     /// `link.open`: a link it pressed.
     OpenLink(String),
     /// A notice was posted: the bell and the permission bar redraw.

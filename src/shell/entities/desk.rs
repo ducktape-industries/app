@@ -119,6 +119,14 @@ impl Slice<Layout> {
         self.edit(Layout::settle, cx);
     }
 
+    /// What the view in the pane with this `instance` named its window
+    /// (`host.title`; empty clears it). Compared: the same name again
+    /// notifies nobody.
+    pub(crate) fn set_title(&mut self, instance: u64, title: String, cx: &mut Context<Self>) {
+        let _timed = timed();
+        self.edit(|layout| _ = layout.set_title(instance, Some(title)), cx);
+    }
+
     /// The desk measured this size (the pane layer's frame callback).
     pub(crate) fn resize(&mut self, desk: (f32, f32), cx: &mut Context<Self>) {
         let _timed = timed();

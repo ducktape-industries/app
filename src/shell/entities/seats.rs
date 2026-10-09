@@ -3,9 +3,9 @@
 //! and handed the session as its props (`Session`, `Account` and the
 //! appearance, observed here; a seat turns only when the bytes moved).
 //! It follows `Windows` and every window's `Desk` (`reconcile`), and
-//! routes what a seat asks for: a badge to `Rail`, a notice to
-//! `Notifications`, a view seated to the desks holding it, a link to
-//! `Windows`.
+//! routes what a seat asks for: a badge to `Rail`, a title to the desk
+//! holding its pane, a notice to `Notifications`, a view seated to the
+//! desks holding it, a link to `Windows`.
 use super::{Account, Notifications, Rail, Session, Windows};
 use crate::runtime::{Intent, Seat, WindowKey};
 use crate::shell::layers::view_body;
@@ -185,7 +185,7 @@ impl Seats {
                 moved = true;
                 let seat = cx.new(|cx| Seat::new(module, cx));
                 let _intents = cx.subscribe(&seat, move |this, _, intent: &Intent, cx| {
-                    this.route(module, intent.clone(), cx)
+                    this.route(module, instance, intent.clone(), cx)
                 });
                 // the session as it stands, before its first turn
                 seat.update(cx, |seat, cx| seat.set_props(props.clone(), cx));
@@ -208,22 +208,51 @@ impl Seats {
             if let Some(tree) = placed.seat.read(cx).tree() {
                 tree.update(cx, |tree, cx| tree.release(cx));
             }
-            hidden.extend(intents.into_iter().map(|intent| (module, intent)));
+            hidden.extend(intents.into_iter().map(|intent| (module, instance, intent)));
         }
         if moved {
             cx.notify();
         }
-        for (module, intent) in hidden {
-            self.route(module, intent, cx);
+        for (module, instance, intent) in hidden {
+            self.route(module, instance, intent, cx);
         }
     }
 
-    /// What a view of `module` asked for, to the entity it moves.
-    fn route(&mut self, module: &'static str, intent: Intent, cx: &mut Context<Self>) {
+    /// What the view of `module` in the pane with this layout `instance`
+    /// asked for, to the entity it moves.
+    fn route(
+        &mut self,
+        module: &'static str,
+        instance: u64,
+        intent: Intent,
+        cx: &mut Context<Self>,
+    ) {
         match intent {
             Intent::Badge(count) => self
                 .rail
                 .update(cx, |rail, cx| rail.set_badge(module, count, cx)),
+            // its own window's name, wherever that pane is now (a pane
+            // gone from every desk names nothing)
+            Intent::Title(title) => {
+                let Some(windows) = self.windows.upgrade() else {
+                    return;
+                };
+                let desk = windows
+                    .read(cx)
+                    .by_window()
+                    .values()
+                    .map(|own| own.desk.clone())
+                    .find(|desk| {
+                        desk.read(cx)
+                            .get()
+                            .panes
+                            .iter()
+                            .any(|pane| pane.instance == instance)
+                    });
+                if let Some(desk) = desk {
+                    desk.update(cx, |desk, cx| desk.set_title(instance, title, cx));
+                }
+            }
             Intent::Notified => self
                 .notifications
                 .update(cx, |notifications, cx| _ = notifications.refresh(cx)),

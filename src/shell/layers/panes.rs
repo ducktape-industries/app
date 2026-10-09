@@ -700,14 +700,18 @@ impl Render for PaneView {
         let view = self.body(cx);
         // it holds the pane's keys when nothing in the view does; Tab
         // never lands on it, so it offers assistive technology no focus
-        // either (as the window's root). On the desk it names the chord
-        // that hands it the keys (`keys::FocusPane`).
+        // either (as the window's root). Its name is the program's, then
+        // what its view named the window (`host.title`). On the desk it
+        // names the chord that hands it the keys (`keys::FocusPane`).
         let view = crate::a11y::Patch::default()
             .keys_fallback()
             .on(div()
                 .id(SharedString::from(format!("pane/{index}/view")))
                 .role(Role::Group)
-                .aria_label(panes::label(&rail, pane.module))
+                .aria_label(match &pane.title {
+                    Some(title) => format!("{}, {title}", panes::label(&rail, pane.module)),
+                    None => panes::label(&rail, pane.module),
+                })
                 .when(self.kind == WindowKind::Console, |view| {
                     view.aria_keyshortcuts(chord_label(&(index + 1).to_string()))
                 })

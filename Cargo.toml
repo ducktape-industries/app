@@ -28,15 +28,15 @@ version = "0.1.0"
 
 [workspace.dependencies]
 
-# --- sdk-line: modules dev @ c27151e6 (SDK fixes S2 #257 boxed styles + node decode budget, S3 #254 view decides when it renders, S4 #258 guest API honesty, S5 #255 truthful test host + request pacing, S6 #256 typed asks / ordered principals, S9 #259 one text model, S7 #260 stable route identity, S13a #261 child entities, S10 #262 data contract, S7b #263 row scopes + an authored list id, S11 #264 wire and sanitizer honesty, S12 #265 style table + no field names on the wire, S14 #266 package ducktape-view-guest, S8 #267 viewport + list rows follow the host + host-drawn list gutter, S10b #268 Paged<T>, S15 #269 bytes cross the wire as a bin, S17 #270 a lowered node costs what it sets (optional interactivity on the node), #271 views build at opt-level 3, S18 #272 the system owns the author's plumbing (bound text field, follow, one loader, query_all, one prelude), S19 #273 a composer's draft is the one its frame drew, #274 a link control that names no view, #275 the composer lives in chat-view, #276 a view declares its icon (the manifest's eighth line), #277 a sensor tells its child's bounds through one `on_bounds`, #278 the fork's rev; gpui-pre 0.3.7 at fork da49e2b0 (gpui-pre#21 taffy 0.14.0: a layout solve keeps the sizes it already computed); goldens WIRE_ID 86af0d2c (a sensor's bounds event)), crates/sdk (abi, view-wire, program, ducklink, design, describe) ---
-abi = { git = "https://github.com/ducktape-industries/modules", rev = "bf86e6abe2a8d573f12cd67cf77abae664e826b9", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "bf86e6abe2a8d573f12cd67cf77abae664e826b9", package = "view-wire" }
+# --- sdk-line: crates/sdk of ducktape-industries/modules (abi, view-wire, program, ducklink, design, describe). Every modules crate here and below sits on ONE rev, and every view this app seats is built at that rev: its manifest's wire_id must equal `view_wire::WIRE_ID` (`runtime/guest.rs` `wire_id`). Which rev and why is in `git log -- Cargo.toml`. ---
+abi = { git = "https://github.com/ducktape-industries/modules", rev = "29a51b0204f36b2079e602c5b2f5743795c776af", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "29a51b0204f36b2079e602c5b2f5743795c776af", package = "view-wire" }
 # `program::is_name`: the one spelling of a program id
-program = { git = "https://github.com/ducktape-industries/modules", rev = "bf86e6abe2a8d573f12cd67cf77abae664e826b9", package = "program" }
-ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "bf86e6abe2a8d573f12cd67cf77abae664e826b9", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/modules", rev = "bf86e6abe2a8d573f12cd67cf77abae664e826b9", package = "design" }
+program = { git = "https://github.com/ducktape-industries/modules", rev = "29a51b0204f36b2079e602c5b2f5743795c776af", package = "program" }
+ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "29a51b0204f36b2079e602c5b2f5743795c776af", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/modules", rev = "29a51b0204f36b2079e602c5b2f5743795c776af", package = "design" }
 # `module.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/modules", rev = "bf86e6abe2a8d573f12cd67cf77abae664e826b9", package = "describe", features = ["host"] }
+describe = { git = "https://github.com/ducktape-industries/modules", rev = "29a51b0204f36b2079e602c5b2f5743795c776af", package = "describe", features = ["host"] }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -89,9 +89,9 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # pick which passkey signed and to frame its assertion), and the identity
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b", package = "keyscheme" }
-identity = { git = "https://github.com/ducktape-industries/modules", rev = "bf86e6abe2a8d573f12cd67cf77abae664e826b9", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/modules", rev = "29a51b0204f36b2079e602c5b2f5743795c776af", package = "identity" }
 # The roster's full query surface: its programs and its view-only entries.
-module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "bf86e6abe2a8d573f12cd67cf77abae664e826b9", package = "module-registry" }
+module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "29a51b0204f36b2079e602c5b2f5743795c776af", package = "module-registry" }
 base64 = "0.22"
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
