@@ -28,9 +28,6 @@ fn booted(screen: Screen, key: bool) -> Seed {
     // test shares: a screen state gets its own
     seed.center = Default::default();
     seed.roster = Default::default();
-    // and reads the prefs file, where a walk over a sidebar state's
-    // Settings saved the layout it probed: a screen state names its own
-    seed.prefs.layout = None;
     seed.screen = screen;
     if key {
         seed.account.signer_key = "ab".into();
@@ -408,14 +405,20 @@ fn snap(window: &mut Window, cx: &mut gpui_kit::App) -> Vec<crate::ax::AxNode> {
 }
 
 /// The audit of the screen `native` shows now, Tab walk included: each
-/// error-severity violation as a line.
+/// error-severity violation as a line. The walk's arrows pick Settings'
+/// choices, and a pick saves: the prefs file goes back as it was once the
+/// walk ends, as the door's does (`Kept`), so the next state boots on it
+/// as this one did. (Only the file: the screen keeps the prefs it was
+/// drawn with, which a seed may hold without the file.)
 pub(super) fn errors(native: &mut VisualTestContext, screen: &str, launcher: bool) -> Vec<String> {
     native.update(snap);
+    let prefs = crate::backend::read_prefs().expect("a test's prefs");
     let report = native.update(|window, cx| {
         let mut reading = audit::observe(window, cx, "shell", true, |_| true, snap);
         reading.chords = crate::shell::chords();
         audit::audit(&reading, launcher)
     });
+    crate::backend::edit_prefs(|now| *now = prefs);
     report
         .errors()
         .map(
@@ -445,6 +448,9 @@ fn every_native_screen_state_passes_the_phase_1_audit(cx: &mut TestAppContext) {
         failures.extend(errors(&mut native, screen, launcher));
     }
     assert!(failures.is_empty(), "\n{}\n", failures.join("\n"));
+    // every walk put back the picks it saved: each state booted on the
+    // prefs this test's thread started with
+    assert_eq!(crate::backend::read_prefs().unwrap(), serde_json::json!({}));
 }
 
 /// The walk probes the shell's tab lists and radio groups as a view's
