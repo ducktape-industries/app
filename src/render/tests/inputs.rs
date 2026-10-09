@@ -68,6 +68,13 @@ fn text_at(
     })
 }
 
+/// Undo's key: the kit binds it to cmd on a Mac and to ctrl elsewhere.
+const UNDO: &str = if cfg!(target_os = "macos") {
+    "cmd-z"
+} else {
+    "ctrl-z"
+};
+
 /// `keys`, pressed one frame apart.
 fn pressed(native: &mut gpui_kit::VisualTestContext, keys: &[&str]) {
     native.update(|window, cx| {
@@ -1091,7 +1098,7 @@ fn a_letter_typed_inside_the_words_a_send_clears_is_kept(cx: &mut gpui_kit::Test
     native.run_until_parked();
     let heard = last_change(&events);
     assert_eq!((heard.text.as_str(), heard.cursor), ("x", (1..1).into()));
-    pressed(&mut native, &["ctrl-z"]);
+    pressed(&mut native, &[UNDO]);
     assert_eq!(text(&tree, &mut native), "helxlo", "one undo step");
 }
 
@@ -1216,7 +1223,7 @@ fn undo_crosses_a_tab(cx: &mut gpui_kit::TestAppContext) {
     native.run_until_parked();
     pressed(&mut native, &["tab"]);
     assert_eq!(text(&tree, &mut native), "one  ");
-    pressed(&mut native, &["ctrl-z"]);
+    pressed(&mut native, &[UNDO]);
     assert_eq!(text(&tree, &mut native), "one");
 }
 
@@ -1257,7 +1264,7 @@ fn undo_after_the_guest_cleared_a_sent_draft_brings_the_words_back(
     });
     native.run_until_parked();
     assert_eq!(text(&tree, &mut native), "");
-    pressed(&mut native, &["ctrl-z"]);
+    pressed(&mut native, &[UNDO]);
     assert_eq!(text(&tree, &mut native), "hi");
 }
 
