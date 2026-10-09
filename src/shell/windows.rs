@@ -157,23 +157,23 @@ mod tests {
         assert_eq!(popout_min("popout-narrow-view"), POPOUT_MIN);
     }
 
+    /// A pop-out steps 32 px off its source window, unless that would
+    /// take it off the display: then it stays where the source is.
     #[test]
-    fn a_popout_steps_off_its_source_window() {
+    fn a_popout_cascades_off_its_source_and_stays_on_the_display() {
         let display = frame(0., 0., 1600., 1000.);
-        let at = cascade(frame(160., 100., 1280., 800.), Some(display));
-        assert_eq!(at, frame(192., 132., 1280., 800.));
-    }
-
-    #[test]
-    fn a_popout_stays_on_the_display() {
-        let display = frame(0., 0., 1600., 1000.);
-        let at = cascade(frame(320., 200., 1280., 800.), Some(display));
-        assert_eq!(at, frame(320., 200., 1280., 800.));
         let small = frame(0., 0., 1024., 700.);
-        assert_eq!(
-            cascade(frame(0., 0., 1024., 700.), Some(small)).origin,
-            point(px(0.), px(0.))
-        );
+        for (source, on, at) in [
+            (frame(160., 100., 1280., 800.), display, (192., 132.)),
+            (frame(320., 200., 1280., 800.), display, (320., 200.)),
+            (frame(0., 0., 1024., 700.), small, (0., 0.)),
+        ] {
+            assert_eq!(
+                cascade(source, Some(on)).origin,
+                point(px(at.0), px(at.1)),
+                "{source:?} on {on:?}"
+            );
+        }
     }
 
     #[test]

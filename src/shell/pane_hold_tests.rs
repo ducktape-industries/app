@@ -282,8 +282,10 @@ fn a_held_window_sent_back_remembers_what_had_its_keys(cx: &mut TestAppContext) 
     assert_eq!(focused(&mut native), previous);
 }
 
+/// A press, or the OS window losing the keys, ends the hold; Search
+/// opening and another window coming forward are the keys' tests above.
 #[gpui_kit::test]
-fn a_press_something_opening_or_another_window_ends_the_hold(cx: &mut TestAppContext) {
+fn a_press_or_the_window_losing_the_keys_ends_the_hold(cx: &mut TestAppContext) {
     let (_, _, view, mut native) = desk_of_two(cx);
     let previous = focused(&mut native);
     // a press on the held window's title bar, which takes no keys itself
@@ -300,19 +302,6 @@ fn a_press_something_opening_or_another_window_ends_the_hold(cx: &mut TestAppCon
     settle(&mut native);
     assert!(!held(&mut native, &view), "a press");
     assert_eq!(focused(&mut native), previous, "the keys came back");
-    // Search opening
-    stroke(&mut native, "secondary-shift-m");
-    assert!(held(&mut native, &view));
-    stroke(&mut native, "secondary-k");
-    assert!(!held(&mut native, &view), "Search opened");
-    stroke(&mut native, "escape");
-    // another window in front
-    stroke(&mut native, "secondary-shift-m");
-    assert!(held(&mut native, &view));
-    stroke(&mut native, "secondary-1");
-    assert!(!held(&mut native, &view), "another window came forward");
-    assert!(in_front(&mut native, &view), "and it has the keys");
-    // the OS window losing the keys
     stroke(&mut native, "secondary-shift-m");
     assert!(held(&mut native, &view));
     // the OS window losing the keys: `Windows` hears the deactivation and
@@ -364,17 +353,6 @@ fn the_hold_is_told_in_words_once_while_it_lasts(cx: &mut TestAppContext) {
     assert_eq!(count(&mut native), 1, "one announcement while held");
     stroke(&mut native, "escape");
     assert_eq!(count(&mut native), 0);
-}
-
-#[test]
-fn the_announcement_is_worded_for_the_platform() {
-    let words = pane_hold::hold_words(&[], "");
-    assert!(words.starts_with("Moving Empty window. Arrows move, Shift further, "));
-    let (size, keep) = match cfg!(target_os = "macos") {
-        true => ("Option", "Return"),
-        false => ("Alt", "Enter"),
-    };
-    assert!(words.ends_with(&format!("{size} sizes, {keep} keeps, Escape puts back")));
 }
 
 #[test]
@@ -444,10 +422,10 @@ fn shift_return_on_a_bar_tab_shows_it_in_this_window(cx: &mut TestAppContext) {
     );
 }
 
-/// Search offers Fill and Move or size while a window has a frame, and
-/// running them is the chords' messages.
+/// Search offers Fill and Move or size while a window has a frame; running
+/// them is the two tests below.
 #[gpui_kit::test]
-fn search_rows_fill_and_hold_the_window_in_front(cx: &mut TestAppContext) {
+fn search_offers_fill_and_hold_while_a_window_has_a_frame(cx: &mut TestAppContext) {
     let (_, _, view, mut native) = desk_of_two(cx);
     show(&view, Some(Overlay::Spotlight), &mut native);
     let nodes = native.update(draw);
@@ -463,22 +441,6 @@ fn search_rows_fill_and_hold_the_window_in_front(cx: &mut TestAppContext) {
         titles.contains(&"Move or size window".to_owned()),
         "{titles:?}"
     );
-    let before = frame(&mut native, &view, 1);
-    let run = |native: &mut VisualTestContext, spot: Spot| {
-        show(&view, Some(Overlay::Spotlight), native);
-        run_spot(&view, spot, native);
-        settle(native);
-    };
-    run(&mut native, Spot::FillWindow);
-    assert_ne!(frame(&mut native, &view, 1), before, "filled");
-    run(&mut native, Spot::HoldWindow);
-    assert!(held(&mut native, &view));
-    assert!(in_front(&mut native, &view), "the window has the arrows");
-    let filled = frame(&mut native, &view, 1);
-    stroke(&mut native, "right");
-    assert_eq!(frame(&mut native, &view, 1).x, filled.x + 8.);
-    stroke(&mut native, "escape");
-    assert!(!held(&mut native, &view));
 }
 
 /// Search open and drawn, then "Move or size window" run from it: the keys

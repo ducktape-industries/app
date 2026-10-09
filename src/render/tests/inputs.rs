@@ -936,26 +936,19 @@ fn typed_over_a_selection(
 }
 
 /// A word selected, Backspace, a letter typed: the person sees "say x now",
-/// and the guest's late frame takes nothing back.
+/// and the guest's late frame takes nothing back; the first word too (a
+/// range from 0 once stopped the view).
 #[gpui_kit::test]
 fn a_letter_typed_behind_a_claimed_backspace_replaces_what_was_selected(
     cx: &mut gpui_kit::TestAppContext,
 ) {
-    assert_eq!(
-        typed_over_a_selection("say word now", 4, 8, "x", cx),
-        "say x now"
-    );
-}
-
-/// The first word selected, Backspace, a letter: the view must not stop.
-#[gpui_kit::test]
-fn a_letter_typed_behind_a_claimed_backspace_on_the_first_word_never_stops_the_view(
-    cx: &mut gpui_kit::TestAppContext,
-) {
-    assert_eq!(
-        typed_over_a_selection("say word now", 0, 3, "x", cx),
-        "x word now"
-    );
+    for (lo, hi, then) in [(4, 8, "say x now"), (0, 3, "x word now")] {
+        assert_eq!(
+            typed_over_a_selection("say word now", lo, hi, "x", cx),
+            then,
+            "{lo}..{hi}"
+        );
+    }
 }
 
 /// Enter claimed (the composer's Send clears the draft), a letter typed

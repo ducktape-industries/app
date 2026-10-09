@@ -34,7 +34,7 @@ pub(crate) use rail::Rail;
 pub(crate) use screen::{AccountStep, Screen};
 pub(crate) use seats::Seats;
 #[cfg(test)]
-pub(crate) use session::{LOST_AFTER, STATUS_EVERY, StatusSource};
+pub(crate) use session::{STATUS_EVERY, StatusSource};
 pub(crate) use session::{Session, SessionEvent, SessionState};
 #[cfg(test)]
 mod account_tests;
