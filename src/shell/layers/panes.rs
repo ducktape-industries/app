@@ -856,7 +856,7 @@ impl PaneAction {
             Self::Restore => (
                 "restore",
                 "Put every window back".to_owned(),
-                IconName::Copy,
+                IconName::WindowRestore,
             ),
             Self::PopOut => (
                 "popout",
