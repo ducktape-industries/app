@@ -39,6 +39,11 @@ const ACCOUNT: Screen = Screen::Account {
     step: AccountStep::Name,
 };
 
+/// The layout step, asked before the desk on a device with none picked.
+pub(super) fn layout_step() -> Seed {
+    booted(Screen::Layout, true)
+}
+
 pub(super) fn desk() -> Seed {
     let mut seed = booted(Screen::Desk, true);
     seed.session.connected = true;
@@ -216,6 +221,7 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
                 seed
             }),
         ),
+        ("layout-step", true, plain(layout_step)),
         ("desk-empty", false, plain(desk)),
         (
             "desk-empty-a-program",
@@ -361,15 +367,16 @@ fn every_native_screen_state_passes_the_phase_1_audit(cx: &mut TestAppContext) {
 }
 
 /// The walk probes the shell's tab lists and radio groups as a view's
-/// (AX-107): the bar's rail, Settings' pages and each of its radio groups,
-/// once each, and each passes.
+/// (AX-107): the layout step's cards, the bar's rail, Settings' pages and
+/// each of its radio groups, once each, and each passes.
 #[gpui_kit::test]
 fn the_walk_probes_every_tab_list_and_radio_group_of_the_shell(cx: &mut TestAppContext) {
-    let wanted: [(&str, &[&str]); 3] = [
+    let wanted: [(&str, &[&str]); 4] = [
+        ("layout-step", &["shell:layout-cards"]),
         ("desk-two-programs", &["shell:rail-rows"]),
         (
             "settings-appearance",
-            &["shell:settings-nav", "shell:theme"],
+            &["shell:settings-nav", "shell:theme", "shell:layout"],
         ),
         (
             "settings-notifications",

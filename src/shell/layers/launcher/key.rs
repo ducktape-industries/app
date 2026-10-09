@@ -29,12 +29,12 @@ impl LauncherLayer {
                 None,
             ),
             (false, false, true) => (
-                "[02 / 03] Key".to_string(),
+                "[02 / 04] Key".to_string(),
                 "The key didn't open".to_string(),
                 Some("The system holds this device's key and didn't hand it over."),
             ),
             (false, false, false) => (
-                "[02 / 03] Key".to_string(),
+                "[02 / 04] Key".to_string(),
                 "Opening this device's key…".to_string(),
                 Some(
                     "It signs what you write, and the system keeps it: no password, nothing to write down.",

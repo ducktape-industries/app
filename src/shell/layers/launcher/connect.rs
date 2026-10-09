@@ -177,7 +177,7 @@ impl LauncherLayer {
                 tight: false,
                 caption: caption.into(),
                 back: None,
-                label: "[01 / 03] Network".into(),
+                label: "[01 / 04] Network".into(),
                 headline: "Connect to a network".into(),
                 lead: Some("Any node on it will do. The node serves the programs you use and keeps your account.".into()),
                 body: std::iter::once(form.into_any_element()).chain(recent).collect(),

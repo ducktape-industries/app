@@ -17,7 +17,7 @@
 //! account (`Welcome`, `Windows`), "Add a device…" closing once approved
 //! (`Approved`, `Windows`).
 
-use super::{AccountStep, Screen, Slice, on_runtime, spawn_on_runtime};
+use super::{AccountStep, Prefs, Screen, Slice, on_runtime, spawn_on_runtime};
 use crate::backend;
 use futures::StreamExt as _;
 use gpui_kit::{Context, Entity, EventEmitter, Task};
@@ -75,6 +75,8 @@ pub(crate) enum AccountEvent {
 pub(crate) struct Account {
     state: AccountState,
     screen: Entity<Slice<Screen>>,
+    /// Read for the layout the desk waits on (`show`), written by its step.
+    prefs: Entity<Slice<Prefs>>,
     /// A new recovery key's 24 words, while its screens show.
     phrase: Option<Secret>,
     /// The node and network the account is on (`Session`'s connection,
@@ -112,10 +114,11 @@ fn timed() -> Option<crate::perf::Timer> {
 }
 
 impl Account {
-    pub(crate) fn new(screen: Entity<Slice<Screen>>) -> Self {
+    pub(crate) fn new(screen: Entity<Slice<Screen>>, prefs: Entity<Slice<Prefs>>) -> Self {
         Self {
             state: AccountState::default(),
             screen,
+            prefs,
             phrase: None,
             client: backend::RpcClient::new(""),
             network: String::new(),
@@ -149,7 +152,14 @@ impl Account {
         *self.screen.read(cx).get()
     }
 
+    /// `screen` on the console. The desk waits while this device has no
+    /// layout: every way in shows the layout step instead, once
+    /// (`layout_chosen`).
     fn show(&self, screen: Screen, cx: &mut Context<Self>) {
+        let screen = match screen {
+            Screen::Desk if self.prefs.read(cx).get().layout.is_none() => Screen::Layout,
+            screen => screen,
+        };
         self.screen.update(cx, |current, cx| {
             current.set(screen, cx);
         });
@@ -958,6 +968,20 @@ impl Account {
     /// Help asked for is just help.
     pub(crate) fn help_asked(&mut self, cx: &mut Context<Self>) {
         self.edit(|state| state.welcome = false, cx);
+    }
+
+    // ---------- the layout step, before the desk ----------
+
+    /// The layout step's Continue: `layout` saved for this device, and the
+    /// desk. A press that lands after the step went (a lock) does nothing.
+    pub(crate) fn layout_chosen(&mut self, layout: backend::Layout, cx: &mut Context<Self>) {
+        let _timed = timed();
+        if self.screen(cx) != Screen::Layout {
+            return;
+        }
+        self.prefs
+            .update(cx, |prefs, cx| prefs.set_layout(layout, cx));
+        self.show(Screen::Desk, cx);
     }
 
     // ---------- "Add a device…", on the device already on the account ----------

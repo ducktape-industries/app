@@ -66,7 +66,7 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
     reads(
         &nodes,
         &[
-            "[01 / 03] Network",
+            "[01 / 04] Network",
             "Any node on it will do",
             "Node address",
         ],

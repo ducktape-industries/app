@@ -17,6 +17,9 @@ pub(crate) enum Screen {
     Account {
         step: AccountStep,
     },
+    /// Where the programs sit on this device: asked once, in place of the
+    /// desk, while no layout is chosen (`Account::show`).
+    Layout,
     Desk,
 }
 

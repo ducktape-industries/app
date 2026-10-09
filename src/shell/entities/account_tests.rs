@@ -31,6 +31,7 @@ fn step(screen: Screen) -> &'static str {
         Screen::Account {
             step: AccountStep::Passkey,
         } => "Account/passkey",
+        Screen::Layout => "Layout",
         Screen::Desk => "Desk",
     }
 }
@@ -82,6 +83,12 @@ fn desk(cx: &mut TestAppContext) -> (Entity<Account>, Entity<Slice<Screen>>) {
     let (account, screen) = awaiting(cx);
     resolved(&account, Some((7, "ada".into())), cx);
     (account, screen)
+}
+
+/// This device picked its layout before: the desk shows where it is asked
+/// for. (With none picked, the layout step shows in its place.)
+fn layout_picked() {
+    backend::save_layout(backend::Layout::MenuBar);
 }
 
 /// Every way between the screens: from a screen reached the way the app
@@ -449,11 +456,52 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
             "Desk",
         ),
     ];
-    for (name, build, call, then) in table {
-        let (account, screen) = build(cx);
-        account.update(cx, call);
-        assert_eq!(shown(&screen, cx), then, "{name}");
+    // a device with no layout picked meets the layout step wherever the
+    // desk would show; one that picked it, the desk
+    for picked in [false, true] {
+        if picked {
+            layout_picked();
+        }
+        for &(name, build, call, then) in &table {
+            let (account, screen) = build(cx);
+            account.update(cx, call);
+            let then = match then {
+                "Desk" if !picked => "Layout",
+                then => then,
+            };
+            assert_eq!(shown(&screen, cx), then, "{name}, layout picked: {picked}");
+        }
     }
+}
+
+/// The layout step stands where the desk would, until Continue saves the
+/// pick and opens the desk; no later way in (a lock, then an unlock) asks
+/// again. A Continue that lands after the step went saves nothing.
+#[gpui_kit::test]
+fn the_layout_step_shows_once_before_the_desk(cx: &mut TestAppContext) {
+    let _seat = backend::seat_serial();
+    let (account, screen) = awaiting(cx);
+    let pick = |layout, cx: &mut TestAppContext| {
+        account.update(cx, |account, cx| account.layout_chosen(layout, cx));
+    };
+    pick(backend::Layout::Sidebar, cx);
+    assert_eq!(
+        shown(&screen, cx),
+        "Unlock/awaiting",
+        "a late Continue moved"
+    );
+    assert_eq!(backend::load_layout(), None, "a late Continue saved");
+    resolved(&account, Some((7, "ada".into())), cx);
+    assert_eq!(shown(&screen, cx), "Layout");
+    pick(backend::Layout::Sidebar, cx);
+    assert_eq!(shown(&screen, cx), "Desk");
+    assert_eq!(backend::load_layout(), Some(backend::Layout::Sidebar));
+    account.update(cx, |account, cx| {
+        account.lock(cx);
+        account.unlocked("ab".into(), cx);
+    });
+    resolved(&account, Some((7, "ada".into())), cx);
+    assert_eq!(shown(&screen, cx), "Desk", "asked again after a lock");
 }
 
 /// The QR shows only while a ceremony runs, the phone is picked and its
@@ -522,6 +570,7 @@ fn a_lock_stays_locked_until_unlock_and_approving_needs_a_found_request(cx: &mut
 
 #[gpui_kit::test]
 fn the_rail_reopens_the_step_and_a_created_account_closes_it(cx: &mut TestAppContext) {
+    layout_picked();
     let (account, screen) = desk(cx);
     account.update(cx, |account, cx| account.create_account(cx));
     assert_eq!(shown(&screen, cx), "Account");
@@ -597,6 +646,7 @@ impl Drop for Dropped {
 /// other sign-in step with it.
 #[gpui_kit::test]
 fn leaving_a_step_drops_its_call_and_frees_the_next_try(cx: &mut TestAppContext) {
+    layout_picked();
     type Build = fn(&mut TestAppContext) -> (Entity<Account>, Entity<Slice<Screen>>);
     type Call = fn(&mut Account, &mut gpui_kit::Context<Account>);
     fn recover(cx: &mut TestAppContext) -> (Entity<Account>, Entity<Slice<Screen>>) {
@@ -667,6 +717,7 @@ fn leaving_a_step_drops_its_call_and_frees_the_next_try(cx: &mut TestAppContext)
 /// key, is not this one's.
 #[gpui_kit::test]
 fn taking_up_another_chain_resets_the_last_ones_state(cx: &mut TestAppContext) {
+    layout_picked();
     let _seat = backend::seat_serial();
     let (account, screen) = desk(cx);
     let keyring = |dir: &str, other_chain| backend::Keyring {
@@ -774,6 +825,7 @@ fn a_locked_toast_still_shows(cx: &mut TestAppContext) {
 /// the step, or a key that already has an account, does not.
 #[gpui_kit::test]
 fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
+    layout_picked();
     let (entities, key) = desktop(cx);
     let account = &entities.account;
     let signing_in = |entities: &Entities, cx: &mut TestAppContext| {

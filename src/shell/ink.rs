@@ -23,6 +23,10 @@ pub(super) struct Ink {
     pub(super) field: Hsla,
     /// the figure's panel, a chosen row
     pub(super) surface: Hsla,
+    /// a step above `surface`: the layout thumbnails' chosen row
+    pub(super) raised: Hsla,
+    /// quieter than `muted`: the layout thumbnails' idle rows
+    pub(super) faint: Hsla,
     /// the drawing in characters
     pub(super) figure: Hsla,
     pub(super) danger: Hsla,
@@ -54,6 +58,8 @@ impl Ink {
                 strong: rgb(0xCFCFCF),
                 field: rgb(0x8E8E8E),
                 surface: rgb(0xF5F5F3),
+                raised: rgb(0xEFEFED),
+                faint: rgb(0xA3A3A3),
                 figure: rgb(0x3A3A3A),
                 danger: rgb(0xB42318),
                 ok: rgb(0x2E7D32),
@@ -67,6 +73,8 @@ impl Ink {
                 strong: rgb(0x3A3A3A),
                 field: rgb(0x666666),
                 surface: rgb(0x1A1A1A),
+                raised: rgb(0x222222),
+                faint: rgb(0x5A5A5A),
                 figure: rgb(0xBDBDBD),
                 danger: rgb(0xF97066),
                 ok: rgb(0x6FCF97),

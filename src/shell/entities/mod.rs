@@ -3,7 +3,8 @@
 //! methods and by nothing else. `Session`, `Chain`, `Account` and
 //! `Screen` are written by `Session`'s and `Account`'s flows; `Desk`,
 //! `Windows`, `Toast`, `Prefs`, `Notifications` and `Rail` by the calls
-//! the layers, the keys, the tray and the door make.
+//! the layers, the keys, the tray and the door make (and `Prefs`' layout
+//! by the layout step's Continue, `Account::layout_chosen`).
 
 mod account;
 mod chain;
@@ -96,7 +97,8 @@ impl Entities {
     ) -> Self {
         let chain = cx.new(|_| Chain::default());
         let screen = cx.new(|_| Slice::new(Screen::Connect));
-        let account = cx.new(|_| Account::new(screen.clone()));
+        let prefs = cx.new(|_| Slice::new(Prefs::load()));
+        let account = cx.new(|_| Account::new(screen.clone(), prefs.clone()));
         let session = {
             let (chain, account, screen) = (chain.clone(), account.clone(), screen.clone());
             cx.new(|_| Session::new(chain, account, screen, center.clone()))
@@ -104,7 +106,6 @@ impl Entities {
         let rail = cx.new(|cx| Rail::new(roster, changes, &session, cx));
         let notifications = cx.new(|_| Notifications::new(center));
         let toast = cx.new(|cx| Toast::new(&session, &account, cx));
-        let prefs = cx.new(|_| Slice::new(Prefs::load()));
         let seats = cx.new(|cx| Seats::new(&session, &account, &rail, &notifications, cx));
         let shared = Shared {
             session,
@@ -156,7 +157,8 @@ pub(crate) mod tests {
     pub(crate) fn session(cx: &mut App) -> Entity<Session> {
         let chain = cx.new(|_| Chain::default());
         let screen = cx.new(|_| Slice::new(Screen::Connect));
-        let account = cx.new(|_| Account::new(screen.clone()));
+        let prefs = cx.new(|_| Slice::new(Prefs::load()));
+        let account = cx.new(|_| Account::new(screen.clone(), prefs));
         cx.new(|_| Session::new(chain, account, screen, Default::default()))
     }
 

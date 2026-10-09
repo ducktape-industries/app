@@ -31,7 +31,8 @@ pub(in crate::shell) struct Seed {
     pub(in crate::shell) phrase: Option<Secret>,
     /// The request "Add a device…" found.
     pub(in crate::shell) found: Option<crate::backend::join::Request>,
-    /// This device's prefs (a test's file starts empty: System, motion on).
+    /// This device's prefs (a test's file starts empty: System, motion on,
+    /// no layout picked).
     pub(in crate::shell) prefs: Prefs,
     /// The program in front (`Windows.active`): what an untouched desk opens.
     pub(in crate::shell) active: Option<&'static str>,

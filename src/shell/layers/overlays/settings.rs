@@ -286,10 +286,10 @@ impl OverlayLayer {
     }
 
     fn appearance_page(&mut self, ink: &Ink, cx: &gpui_kit::App) -> Vec<gpui_kit::Div> {
-        use crate::backend::Appearance;
-        let (appearance, motion) = {
+        use crate::backend::{Appearance, Layout};
+        let (appearance, layout, motion) = {
             let prefs = self.prefs.read(cx).get();
-            (prefs.appearance, prefs.motion)
+            (prefs.appearance, prefs.layout_or_default(), prefs.motion)
         };
         // one look for every choice in Settings: the segmented row
         let theme = self.segmented(
@@ -310,6 +310,19 @@ impl OverlayLayer {
             ink,
             cx,
         );
+        let layout = self.segmented(
+            "layout",
+            "Layout",
+            [("Menu bar", Layout::MenuBar), ("Sidebar", Layout::Sidebar)].map(|(label, pick)| {
+                (
+                    label.into(),
+                    layout == pick,
+                    self.on_prefs(move |prefs, cx| prefs.set_layout(pick, cx)),
+                )
+            }),
+            ink,
+            cx,
+        );
         let motion = self.switch(
             "motion",
             "Moving figures",
@@ -323,6 +336,12 @@ impl OverlayLayer {
                 "Theme",
                 "Follows the system unless you pick one.",
                 theme,
+                ink,
+            ),
+            setting(
+                "Layout",
+                "Where the programs and their open windows are listed: across the top, or down the side.",
+                layout,
                 ink,
             ),
             setting(

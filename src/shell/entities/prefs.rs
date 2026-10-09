@@ -3,7 +3,7 @@
 //! `runtime::notify::settings`) and then edits the compared value, so a
 //! choice already made notifies nobody.
 use super::Slice;
-use crate::backend::{self, Appearance};
+use crate::backend::{self, Appearance, Layout};
 use crate::runtime::notify;
 use gpui_kit::Context;
 
@@ -13,6 +13,10 @@ pub(crate) struct Prefs {
     /// The OS says dark; counts under `Appearance::System`.
     pub(crate) system_dark: bool,
     pub(crate) motion: bool,
+    /// Where the programs are listed; `None` until the launcher's last
+    /// step asked (`Account::show` asks that); drawn through
+    /// `layout_or_default`.
+    pub(crate) layout: Option<Layout>,
     /// Read off disk once, and again only after a notice setting was saved.
     pub(crate) notify: notify::Settings,
 }
@@ -25,6 +29,7 @@ impl Prefs {
             appearance: backend::load_appearance(),
             system_dark: false,
             motion: backend::load_motion(),
+            layout: backend::load_layout(),
             notify: notify::Settings::load(),
         }
     }
@@ -35,6 +40,12 @@ impl Prefs {
             Appearance::Dark => true,
             Appearance::System => self.system_dark,
         }
+    }
+
+    /// The layout to draw: not chosen yet draws the menu bar (the desk
+    /// never waits on the choice).
+    pub(crate) fn layout_or_default(&self) -> Layout {
+        self.layout.unwrap_or_default()
     }
 }
 
@@ -54,6 +65,12 @@ impl Slice<Prefs> {
         let _timed = timed();
         backend::save_motion(on);
         self.edit(|prefs| prefs.motion = on, cx);
+    }
+
+    pub(crate) fn set_layout(&mut self, layout: Layout, cx: &mut Context<Self>) {
+        let _timed = timed();
+        backend::save_layout(layout);
+        self.edit(|prefs| prefs.layout = Some(layout), cx);
     }
 
     /// What the theme says the OS is: written by whoever syncs the theme.
@@ -96,6 +113,7 @@ impl Slice<Prefs> {
             |prefs| {
                 prefs.appearance = loaded.appearance;
                 prefs.motion = loaded.motion;
+                prefs.layout = loaded.layout;
                 prefs.notify = loaded.notify;
             },
             cx,

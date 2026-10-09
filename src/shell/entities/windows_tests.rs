@@ -398,6 +398,27 @@ fn a_kept_notice_setting_put_back_reaches_the_prefs_slice(cx: &mut TestAppContex
     assert_eq!(burst(cx), before, "Prefs kept the burst the walk put back");
 }
 
+/// The door's walk puts the layout back as it found it, not picked, in
+/// `Prefs` as in the file.
+#[gpui_kit::test]
+fn a_kept_layout_put_back_reaches_the_prefs_slice(cx: &mut TestAppContext) {
+    use crate::backend::{Layout, load_layout};
+    use crate::shell::layers::Kept;
+    let (app, key) = console(cx);
+    let handle = app
+        .windows
+        .read_with(cx, |windows, _| windows.handles()[&key]);
+    let kept = cx
+        .update_window(handle, |_, window, cx| Kept::of(window, cx))
+        .unwrap()
+        .expect("the console is the shell's");
+    app.prefs
+        .update(cx, |prefs, cx| prefs.set_layout(Layout::Sidebar, cx));
+    cx.update(|cx| kept.restore(cx));
+    let layout = app.prefs.read_with(cx, |prefs, _| prefs.get().layout);
+    assert_eq!((layout, load_layout()), (None, None));
+}
+
 /// The appearance chosen reaches the theme, and what the theme says the
 /// OS is comes back into `Prefs`.
 #[gpui_kit::test]

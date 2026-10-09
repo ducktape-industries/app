@@ -68,7 +68,7 @@ impl LauncherLayer {
                     "← Back",
                     Box::new(self.on_account(Account::recover_cancel)),
                 )),
-                label: "[03 / 03] Account · recovery key".into(),
+                label: "[03 / 04] Account · recovery key".into(),
                 headline: format!("Your {} recovery key", self.session.read(cx).get().network),
                 lead: Some("The 24 words you wrote down for this account. They add this device; nothing else changes.".into()),
                 body: vec![form.into_any_element()],
