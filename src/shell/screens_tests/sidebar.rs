@@ -206,6 +206,76 @@ fn a_press_on_a_window_row_brings_that_window_forward(cx: &mut TestAppContext) {
     assert!(rows(&nodes).contains(&(random, "# random".into(), true)));
 }
 
+/// A name a view gives its window after the sidebar was drawn
+/// (`host.title`, which `Seats` hands to `Desk::set_title`) reaches the
+/// list through `Front`: the program's one window is listed under it by
+/// that name; cleared, the program is its row alone again.
+#[gpui_kit::test]
+fn a_title_given_later_lists_the_window_under_its_program(cx: &mut TestAppContext) {
+    let (view, mut native) = open(sidebar(&["side-named"], &[("side-named", None)]), cx);
+    let [instance] = instances(&view, &mut native)[..] else {
+        panic!("one window")
+    };
+    let named = |native: &mut VisualTestContext| -> Vec<(String, String)> {
+        rows(&native.update(drawn))
+            .into_iter()
+            .map(|(id, name, _)| (id, name))
+            .collect()
+    };
+    let program = || {
+        (
+            "shell:rail/side-named".to_owned(),
+            "Side named · Loading".to_owned(),
+        )
+    };
+    assert_eq!(named(&mut native), [program()]);
+    let desk = view.read_with(&native, |view, _| view.desk.clone());
+    let title = |title: &str, native: &mut VisualTestContext| {
+        desk.update(native, |desk, cx| {
+            desk.set_title(instance, title.into(), cx)
+        })
+    };
+    title("# general", &mut native);
+    assert_eq!(
+        named(&mut native),
+        [
+            program(),
+            (
+                format!("shell:rail/side-named/{instance}"),
+                "# general".into()
+            )
+        ]
+    );
+    title("", &mut native);
+    assert_eq!(named(&mut native), [program()]);
+}
+
+/// While the desk is filled, a press on a window's row brings that window
+/// forward filled: it covers the desk right of the column, its row is
+/// selected, and fill stays on.
+#[gpui_kit::test]
+fn a_press_on_a_window_row_while_filled_fills_that_window(cx: &mut TestAppContext) {
+    let mut seed = sidebar(
+        &["side-fill"],
+        &[
+            ("side-fill", Some("# general")),
+            ("side-fill", Some("# design")),
+        ],
+    );
+    seed.layout.as_mut().unwrap().toggle_fill();
+    let (view, mut native) = open(seed, cx);
+    let at = instances(&view, &mut native);
+    let nodes = native.update(drawn);
+    assert_eq!(bounds(&nodes, "shell:pane/1"), [220., 0., 1280., 800.]);
+    let general = format!("shell:rail/side-fill/{}", at[0]);
+    native.simulate_click(middle(&nodes, &general), gpui_kit::Modifiers::none());
+    assert_eq!(front(&view, &mut native), at[0], "# general came forward");
+    assert!(view.read_with(&native, |view, cx| view.layout(cx).filled));
+    let nodes = native.update(drawn);
+    assert_eq!(bounds(&nodes, "shell:pane/0"), [220., 0., 1280., 800.]);
+    assert!(rows(&nodes).contains(&(general, "# general".into(), true)));
+}
+
 /// Under the pointer a program's row shows a `+`, and a press on it opens
 /// another window of the program, in front; away from the row it is gone.
 #[gpui_kit::test]
