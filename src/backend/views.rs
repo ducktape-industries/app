@@ -267,26 +267,18 @@ mod tests {
         assert_eq!(view_section(b"\0asm\x01\0\0\0"), None);
     }
 
+    /// A cached body hashes to the framed blob's id, framed or bare; a
+    /// wasm body, which opens with a NUL, must not pass for a framed one.
     #[test]
     fn a_cached_body_hashes_like_the_framed_blob() {
         use sha2::Digest as _;
-        let body = b"hello";
-        let framed = b"blob 5\0hello";
-        let id = BlobId::Sha256(sha2::Sha256::digest(framed).into());
-        assert!(hashes_to(body, &id));
-        assert!(hashes_to(framed, &id));
-        assert!(!hashes_to(b"other", &id));
-    }
-
-    #[test]
-    fn a_cached_wasm_body_hashes_like_the_framed_blob() {
-        use sha2::Digest as _;
-        // a wasm body opens with a NUL: it must not pass for a framed blob
-        let body = b"\0asm\x01\0\0\0";
-        let mut framed = b"blob 8\0".to_vec();
-        framed.extend_from_slice(body);
-        let id = BlobId::Sha256(sha2::Sha256::digest(&framed).into());
-        assert!(hashes_to(body, &id));
-        assert!(hashes_to(&framed, &id));
+        for body in [&b"hello"[..], b"\0asm\x01\0\0\0"] {
+            let mut framed = format!("blob {}\0", body.len()).into_bytes();
+            framed.extend_from_slice(body);
+            let id = BlobId::Sha256(sha2::Sha256::digest(&framed).into());
+            assert!(hashes_to(body, &id), "{body:?}");
+            assert!(hashes_to(&framed, &id), "{body:?}");
+            assert!(!hashes_to(b"other", &id));
+        }
     }
 }

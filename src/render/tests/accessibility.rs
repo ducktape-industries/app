@@ -177,9 +177,17 @@ fn a_view_text_reads_its_words_as_its_name_through_the_door(cx: &mut gpui_kit::T
     let labels: Vec<_> = door(cx, root)
         .into_iter()
         .filter(|node| node["role"] == "Label")
-        .map(|node| node["name"].clone())
+        .map(|node| (node["name"].clone(), node["value"].clone()))
         .collect();
-    assert_eq!(labels, ["Members", "Three online"]);
+    // a Text carries its words as its value too, as gpui's own `Text` does:
+    // what a live region announces
+    assert_eq!(
+        labels,
+        [
+            ("Members".into(), "Members".into()),
+            ("Three online".into(), "Three online".into())
+        ]
+    );
 }
 
 /// AX-014 through the door: a blank text is no Label (forge's file-row glyph,
@@ -235,18 +243,6 @@ fn a_blank_text_is_no_node_and_a_heading_is_named_by_its_rich_text(
     };
     assert_eq!(of("Heading"), ["sandbox"]);
     assert_eq!(of("Label"), ["sandbox", "kept"]);
-}
-
-/// A view Text carries its words as its value, as gpui's own `Text` does:
-/// what a live region announces and what the door reads back.
-#[gpui_kit::test]
-fn a_view_text_carries_its_words_as_its_value_through_the_door(cx: &mut gpui_kit::TestAppContext) {
-    let nodes = door(cx, text("plain", "Members"));
-    let label = nodes
-        .iter()
-        .find(|node| node["role"] == "Label")
-        .expect("the text is in the tree");
-    assert_eq!(label["value"], "Members");
 }
 
 /// A field's placeholder is its placeholder, not its name: the door
