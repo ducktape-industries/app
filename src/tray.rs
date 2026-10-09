@@ -210,6 +210,11 @@ mod native {
 
     impl StatusItem {
         pub(super) fn new(send: UnboundedSender<usize>) -> Result<Self, String> {
+            // AppKit makes a menu on the main thread only, and muda panics
+            // anywhere else (a test's thread): refuse as the tray itself does
+            if unsafe { libc::pthread_main_np() } == 0 {
+                return Err("not on the main thread".into());
+            }
             let pixels: [&[u8]; 2] = [
                 include_bytes!("../assets/tray-offline.rgba"),
                 include_bytes!("../assets/tray.rgba"),
