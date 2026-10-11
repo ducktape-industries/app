@@ -43,6 +43,7 @@ mod text;
 mod tooltip_containment;
 mod uniform;
 mod variable_list;
+pub(crate) mod web;
 
 #[cfg(test)]
 mod tests;
@@ -188,6 +189,8 @@ pub struct ViewTree {
     /// A rich text with links: its Tab stop and the link its arrows picked.
     links: HashMap<AuthoredPath, text::links::Links>,
     sensors: HashMap<AuthoredPath, SensorState>,
+    /// The web pieces' pages (`web.rs`).
+    webs: web::Pages,
     /// A resize handle's press position while its drag lasts.
     drags: HashMap<AuthoredPath, Point<Pixels>>,
 
@@ -283,6 +286,7 @@ impl ViewTree {
             dialogs: HashMap::new(),
             opener: None,
             sensors: HashMap::new(),
+            webs: Default::default(),
             pictures: Default::default(),
             images: Default::default(),
             tooltips: HashMap::new(),
@@ -356,6 +360,7 @@ impl ViewTree {
             Node::Canvas { .. } => self.drawing(node, cx),
             Node::Overlay { .. } => self.overlay(node, window, cx),
             Node::Anchored { .. } => self.anchored(node, window, cx),
+            Node::Web { .. } => self.web(node, window, cx),
         };
         if entered_scope {
             self.authored_path.pop();

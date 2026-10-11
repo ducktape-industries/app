@@ -12,16 +12,10 @@ mod render;
 mod runtime;
 mod shell;
 mod tray;
-#[cfg(feature = "cef")]
-mod web;
 
 fn main() {
-    // a CEF child process (zygote, renderer, GPU, utility) is this same
-    // binary started with `--type=...`: it runs CEF and nothing of the app
-    #[cfg(feature = "cef")]
-    if let Some(code) = web::child() {
-        std::process::exit(code);
-    }
+    // a CEF child process (feature `web`) is this binary with `--type=...`
+    render::web::subprocess();
     perf::start();
     #[cfg(debug_assertions)]
     if std::env::args().nth(1).as_deref() == Some("--render-tree") {
@@ -60,15 +54,7 @@ fn main() {
             println!(
                 "       ducktape-app --live <endpoint> <program-id> <seed>  (debug build: one view on a node)"
             );
-            #[cfg(feature = "cef")]
-            println!(
-                "       ducktape-app --web-probe <url>...  (`cef` build: web pages in a gpui window)"
-            );
             return;
-        }
-        #[cfg(feature = "cef")]
-        Some("--web-probe") => {
-            std::process::exit(web::probe(std::env::args().skip(2).collect()));
         }
         _ => {}
     }
@@ -82,9 +68,11 @@ fn main() {
     #[cfg(debug_assertions)]
     if let Some(live) = live {
         shell::run_live(live);
+        render::web::shutdown();
         return;
     }
     shell::run();
+    render::web::shutdown();
 }
 
 /// macOS launches a GUI with a 256-fd soft limit; the app's stores and

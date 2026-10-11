@@ -2506,13 +2506,13 @@ dependencies = [
  "base64 0.22.1",
  "block2 0.5.1",
  "borsh",
- "cef",
  "commonware-codec",
  "commonware-cryptography",
  "describe",
  "design",
  "ducklink",
  "ducktape-home",
+ "ducktape-web",
  "futures",
  "gpui-base",
  "gpui-kit",
@@ -2557,6 +2557,17 @@ dependencies = [
 name = "ducktape-home"
 version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape?branch=feat%2Fcapable-sandbox#665907ddc65ccada5f3e3ba0a95ae955414bfb3c"
+
+[[package]]
+name = "ducktape-web"
+version = "0.1.0"
+dependencies = [
+ "cef",
+ "futures",
+ "gpui-kit",
+ "image",
+ "url",
+]
 
 [[package]]
 name = "dunce"

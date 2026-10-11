@@ -1,0 +1,26 @@
+# ducktape-web — web pages in a gpui window through CEF off-screen rendering.
+#
+# Everything CEF is here and nowhere else: the subprocess entry, startup and
+# shutdown, the message pump, one browser per `Page`, its frames as gpui
+# images, input and IME, and the one rule an address is loaded by. It knows
+# nothing of views or the wire: the app (feature `web`) maps its web piece
+# onto a `Page`. Removing the web view is removing this crate and its
+# callers (`src/render/web.rs` says which).
+
+[package]
+name = "ducktape-web"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+gpui-kit = "=0.7.0"
+futures.workspace = true
+# gpui's `RenderImage` frames are `image` frames
+image = { version = "0.25", default-features = false }
+# the WHATWG parser: an address read the way Chromium reads it
+url = "2"
+# no `build-util` (clap, cargo_metadata, plist), no `accelerated_osr` (its
+# wgpu would fight gpui's); on Linux `sandbox` is a runtime matter
+# (`Settings::no_sandbox`), the build does nothing with it
+cef = { version = "=154.5.0", default-features = false, features = ["sandbox"] }
