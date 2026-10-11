@@ -496,12 +496,16 @@ impl Layout {
     }
 
     /// The window on top at `at` on the desk, its grips around it included;
-    /// while filled, the window in front, wherever on the desk.
+    /// while filled, the window in front, wherever on the desk. Off the
+    /// desk (on the chrome beside it) is on no window: what hangs past its
+    /// edge is not drawn there.
     pub(crate) fn under(&self, at: (f32, f32)) -> Option<usize> {
+        let (w, h) = self.desk();
+        if !(0. ..w).contains(&at.0) || !(0. ..h).contains(&at.1) {
+            return None;
+        }
         if self.filled {
-            let (w, h) = self.desk();
-            let on_desk = (0. ..w).contains(&at.0) && (0. ..h).contains(&at.1);
-            return (on_desk && self.focused < self.panes.len()).then_some(self.focused);
+            return (self.focused < self.panes.len()).then_some(self.focused);
         }
         self.stacking().into_iter().rev().find(|&index| {
             self.panes[index].frame.is_some_and(|frame| {

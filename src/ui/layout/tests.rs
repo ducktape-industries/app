@@ -56,6 +56,7 @@ fn focus_raises_and_closing_focuses_the_window_left_on_top() {
     }
     assert!(layout.focus(0));
     assert_eq!(layout.stacking(), vec![1, 2, 0]);
+    layout.measure(DESK);
     for (index, pane) in layout.panes.iter_mut().enumerate() {
         pane.frame = part(INSET, INSET, 776., 576.);
         pane.frame.as_mut().unwrap().x += index as f32 * 100.;
@@ -69,6 +70,11 @@ fn focus_raises_and_closing_focuses_the_window_left_on_top() {
     );
     assert_eq!(layout.under((990., 50.)), Some(2), "just past its border");
     assert_eq!(layout.under((5., 5.)), None, "the desk's inset");
+    // a window hanging off the desk's left edge, under the sidebar
+    layout.panes[0].frame.as_mut().unwrap().x = -200.;
+    assert_eq!(layout.under((-50., 50.)), None, "off the desk");
+    assert_eq!(layout.under((50., 50.)), Some(0), "on the desk");
+    layout.panes[0].frame.as_mut().unwrap().x = INSET;
     assert!(!layout.focus(0), "already focused and on top");
     assert!(layout.close(0).is_some());
     // "calendar" (now index 1) was raised after "files"

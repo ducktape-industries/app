@@ -454,7 +454,9 @@ impl Render for PaneLayer {
         // never its `z`, which only grows: the ranks stay under `HOST_BAND`.
         // A filled desk draws the window in front alone: the ones it covers
         // stay mounted and seated, but out of the frame, so Tab, presses and
-        // assistive technology never reach a window no one can see.
+        // assistive technology never reach a window no one can see. Each is
+        // clipped to the desk: one hanging off its edge goes under the
+        // sidebar, never over it.
         let views = layout
             .stacking()
             .into_iter()
@@ -462,12 +464,16 @@ impl Render for PaneLayer {
             .enumerate()
             .filter_map(|(rank, index)| {
                 let view = self.views.get(&layout.panes[index].instance)?;
-                Some(deferred(view.clone()).with_priority(rank))
+                Some(crate::render::deferred::clipped(
+                    view.clone().into_any_element(),
+                    rank,
+                ))
             });
         div()
             .id("panes")
             .relative()
             .size_full()
+            .overflow_hidden()
             .child(canvas)
             .children(views)
             .into_any_element()
