@@ -218,7 +218,7 @@ fn open(urls: Vec<String>, views: &Views, cx: &mut App) -> Result<(), String> {
                 .timer(Duration::from_secs(secs))
                 .await;
             eprintln!("[web-probe] quit after {secs}s");
-            let _ = cx.update(|cx| cx.quit());
+            cx.update(|cx| cx.quit());
         })
         .detach();
     }
