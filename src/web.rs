@@ -890,7 +890,9 @@ mod script {
             }
             "scroll" => {
                 let (width, height) = shared.size.get();
-                for _ in 0..300 {
+                eprintln!("[web-probe] script scroll start");
+                // ~10 s of 60 px wheel steps every 16 ms
+                for _ in 0..625 {
                     if let Some(host) = shared.host() {
                         let at = cef::MouseEvent {
                             x: width / 2,
