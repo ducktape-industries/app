@@ -619,8 +619,8 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by module and by window:
    window switch (`misses` delta) ≤ 20 per window (11–14 measured; 57–67 was
    the bug); drawing time per frame p95 ≤ 6 ms, report-only (2.5–3.5
    measured).
-5. **Wall clock**: report only under Xvfb (qa's rig is Xvfb: `qa/src/rig.rs`,
-   `walk.py`), apart from an absolute hang ceiling: no single
+5. **Wall clock**: report only under Xvfb (qa's rig is Xvfb: `walk.py`),
+   apart from an absolute hang ceiling: no single
    `frame.render`, `reducer.*` or `tick.call` sample ≥ 250 ms in the steady
    phase. Proposed, to be set from recorded runs: reducer p99 ≤ 2 ms,
    `io.*` p99 ≤ 2 ms, `figure.frame` p95 ≤ 2 ms, `switch_ms` p95 ≤ 50 ms,
@@ -707,13 +707,11 @@ Design:
 
 ### 4.4 The gate
 
-- **Where**: at the end of each scenario **and** of each mission, not as a
-  new step kind. The two runners have different step-kind lists and an
-  unknown kind fails at load. Rust: end of `run_scenario` (`qa/src/steps.rs`)
-  and `run_mission` (`qa/src/mission.rs`). Python: after the step loop and
-  at the end of `Walk.run_mission` in `walk.py`.
+- **Where**: at the end of each scenario, not as a new step kind (an
+  unknown kind fails at load): after the step loop of `Walk.run_one` in
+  qa's `walk.py`.
 - **How**: `POST /perf/reset` at scenario start; at its end `GET /perf`
-  through the door client (`qa/src/door.rs` `call`), then the animations
+  through the door client (`Door.call` in `walk.py`), then the animations
   window and the idle window (§4.2 rule 3), each ended by a `GET /perf`.
   Write the three as a `perf.jsonl` line beside `transcript.jsonl`; put
   the breaches in the scenario's result.
@@ -722,9 +720,8 @@ Design:
   Oracles cannot do this: they see trees and context, not the door.
 - **Baseline**: `--perf-baseline <run-dir>` fails any D `max` above 1.25 ×
   baseline; a green run on `dev` refreshes it.
-- **Rig**: `DUCKTAPE_PERF=1` beside `DUCKTAPE_AX_DOOR=0` in `qa/src/rig.rs`
-  and `walk.py`.
-- **A mission that drives the gate**: connect to the local node, open every
+- **Rig**: `DUCKTAPE_PERF=1` beside `DUCKTAPE_AX_DOOR=0` in `walk.py`'s rig.
+- **A scenario that drives the gate** (`scenarios/perf-drive.json`): connect to the local node, open every
   program in the rail, switch panes and windows across all of them, type
   into chat, open forge with a large file, settle, then the idle window.
   This covers load (fetch/compile/init), swap (a view redeployed mid-run;
@@ -830,9 +827,9 @@ frame that found the view seated to its tree mounted; `door_draws` is
 process-wide; the registry's JSON is flat (§3.3). `kernel::node` has no
 `spawn_device`.
 
-**Phase 2 — qa.** `DUCKTAPE_PERF=1` in both rigs, `perf.jsonl`,
-`perf-budgets.json`, the end-of-scenario and end-of-mission gate with the
-idle window in both runners, the driving mission (§4.4). Report-only until
+**Phase 2 — qa.** `DUCKTAPE_PERF=1` in the rig, `perf.jsonl`,
+`perf-budgets.json`, the end-of-scenario gate with the idle window, the
+driving scenario (§4.4). Report-only until
 the owner says budgets block (§7).
 
 **Phase 3 — dev deep dives.** `DUCKTAPE_WASM_PROFILER`,
