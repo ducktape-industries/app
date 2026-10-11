@@ -1,0 +1,432 @@
+{
+  "Linear": {
+    "max_width": null,
+    "clip": false,
+    "key": "fonts",
+    "wrap": null,
+    "axis": "Column",
+    "spacing": 8,
+    "padding": {
+      "top": 24.0,
+      "right": 24.0,
+      "bottom": 24.0,
+      "left": 24.0
+    },
+    "width": "Fill",
+    "height": null,
+    "align": "Left",
+    "background": null,
+    "border": null,
+    "children": [
+      {
+        "Text": {
+          "options": {
+            "height": null,
+            "align_y": null,
+            "line_height": null,
+            "shaping": null,
+            "wrapping": null,
+            "tracking": 0.0,
+            "font": {
+              "family": {
+                "Named": "Inter"
+              },
+              "weight": "Normal",
+              "style": "Normal",
+              "stretch": "Normal"
+            }
+          },
+          "key": "font-0",
+          "content": "Inter Normal Normal: Aa 012 fi 한글",
+          "size": 24,
+          "color": null,
+          "font": {
+            "monospace": false,
+            "weight": "Normal"
+          },
+          "width": null,
+          "align_x": null,
+          "heading": null,
+          "live": null
+        }
+      },
+      {
+        "Text": {
+          "options": {
+            "height": null,
+            "align_y": null,
+            "line_height": null,
+            "shaping": null,
+            "wrapping": null,
+            "tracking": 0.0,
+            "font": {
+              "family": {
+                "Named": "Inter"
+              },
+              "weight": "Normal",
+              "style": "Italic",
+              "stretch": "Normal"
+            }
+          },
+          "key": "font-1",
+          "content": "Inter Normal Italic: Aa 012 fi 한글",
+          "size": 24,
+          "color": null,
+          "font": {
+            "monospace": false,
+            "weight": "Normal"
+          },
+          "width": null,
+          "align_x": null,
+          "heading": null,
+          "live": null
+        }
+      },
+      {
+        "Text": {
+          "options": {
+            "height": null,
+            "align_y": null,
+            "line_height": null,
+            "shaping": null,
+            "wrapping": null,
+            "tracking": 0.0,
+            "font": {
+              "family": {
+                "Named": "Inter"
+              },
+              "weight": "Bold",
+              "style": "Normal",
+              "stretch": "Normal"
+            }
+          },
+          "key": "font-2",
+          "content": "Inter Bold Normal: Aa 012 fi 한글",
+          "size": 24,
+          "color": null,
+          "font": {
+            "monospace": false,
+            "weight": "Bold"
+          },
+          "width": null,
+          "align_x": null,
+          "heading": null,
+          "live": null
+        }
+      },
+      {
+        "Text": {
+          "options": {
+            "height": null,
+            "align_y": null,
+            "line_height": null,
+            "shaping": null,
+            "wrapping": null,
+            "tracking": 0.0,
+            "font": {
+              "family": {
+                "Named": "Inter"
+              },
+              "weight": "Bold",
+              "style": "Italic",
+              "stretch": "Normal"
+            }
+          },
+          "key": "font-3",
+          "content": "Inter Bold Italic: Aa 012 fi 한글",
+          "size": 24,
+          "color": null,
+          "font": {
+            "monospace": false,
+            "weight": "Bold"
+          },
+          "width": null,
+          "align_x": null,
+          "heading": null,
+          "live": null
+        }
+      },
+      {
+        "Text": {
+          "options": {
+            "height": null,
+            "align_y": null,
+            "line_height": null,
+            "shaping": null,
+            "wrapping": null,
+            "tracking": 0.0,
+            "font": {
+              "family": {
+                "Named": "JetBrains Mono"
+              },
+              "weight": "Normal",
+              "style": "Normal",
+              "stretch": "Normal"
+            }
+          },
+          "key": "font-4",
+          "content": "JetBrains Mono Normal Normal: Aa 012 fi 한글",
+          "size": 24,
+          "color": null,
+          "font": {
+            "monospace": false,
+            "weight": "Normal"
+          },
+          "width": null,
+          "align_x": null,
+          "heading": null,
+          "live": null
+        }
+      },
+      {
+        "Text": {
+          "options": {
+            "height": null,
+            "align_y": null,
+            "line_height": null,
+            "shaping": null,
+            "wrapping": null,
+            "tracking": 0.0,
+            "font": {
+              "family": {
+                "Named": "JetBrains Mono"
+              },
+              "weight": "Normal",
+              "style": "Italic",
+              "stretch": "Normal"
+            }
+          },
+          "key": "font-5",
+          "content": "JetBrains Mono Normal Italic: Aa 012 fi 한글",
+          "size": 24,
+          "color": null,
+          "font": {
+            "monospace": false,
+            "weight": "Normal"
+          },
+          "width": null,
+          "align_x": null,
+          "heading": null,
+          "live": null
+        }
+      },
+      {
+        "Text": {
+          "options": {
+            "height": null,
+            "align_y": null,
+            "line_height": null,
+            "shaping": null,
+            "wrapping": null,
+            "tracking": 0.0,
+            "font": {
+              "family": {
+                "Named": "JetBrains Mono"
+              },
+              "weight": "Bold",
+              "style": "Normal",
+              "stretch": "Normal"
+            }
+          },
+          "key": "font-6",
+          "content": "JetBrains Mono Bold Normal: Aa 012 fi 한글",
+          "size": 24,
+          "color": null,
+          "font": {
+            "monospace": false,
+            "weight": "Bold"
+          },
+          "width": null,
+          "align_x": null,
+          "heading": null,
+          "live": null
+        }
+      },
+      {
+        "Text": {
+          "options": {
+            "height": null,
+            "align_y": null,
+            "line_height": null,
+            "shaping": null,
+            "wrapping": null,
+            "tracking": 0.0,
+            "font": {
+              "family": {
+                "Named": "JetBrains Mono"
+              },
+              "weight": "Bold",
+              "style": "Italic",
+              "stretch": "Normal"
+            }
+          },
+          "key": "font-7",
+          "content": "JetBrains Mono Bold Italic: Aa 012 fi 한글",
+          "size": 24,
+          "color": null,
+          "font": {
+            "monospace": false,
+            "weight": "Bold"
+          },
+          "width": null,
+          "align_x": null,
+          "heading": null,
+          "live": null
+        }
+      },
+      {
+        "Text": {
+          "options": {
+            "height": null,
+            "align_y": null,
+            "line_height": null,
+            "shaping": null,
+            "wrapping": null,
+            "tracking": 0.0,
+            "font": {
+              "family": {
+                "Named": "Pretendard"
+              },
+              "weight": "Normal",
+              "style": "Normal",
+              "stretch": "Normal"
+            }
+          },
+          "key": "font-8",
+          "content": "Pretendard Normal Normal: Aa 012 fi 한글",
+          "size": 24,
+          "color": null,
+          "font": {
+            "monospace": false,
+            "weight": "Normal"
+          },
+          "width": null,
+          "align_x": null,
+          "heading": null,
+          "live": null
+        }
+      },
+      {
+        "Text": {
+          "options": {
+            "height": null,
+            "align_y": null,
+            "line_height": null,
+            "shaping": null,
+            "wrapping": null,
+            "tracking": 0.0,
+            "font": {
+              "family": {
+                "Named": "Pretendard"
+              },
+              "weight": "Bold",
+              "style": "Normal",
+              "stretch": "Normal"
+            }
+          },
+          "key": "font-9",
+          "content": "Pretendard Bold Normal: Aa 012 fi 한글",
+          "size": 24,
+          "color": null,
+          "font": {
+            "monospace": false,
+            "weight": "Bold"
+          },
+          "width": null,
+          "align_x": null,
+          "heading": null,
+          "live": null
+        }
+      },
+      {
+        "Text": {
+          "options": {
+            "height": null,
+            "align_y": null,
+            "line_height": null,
+            "shaping": null,
+            "wrapping": null,
+            "tracking": 0.0,
+            "font": {
+              "family": {
+                "Named": "D2Coding"
+              },
+              "weight": "Normal",
+              "style": "Normal",
+              "stretch": "Normal"
+            }
+          },
+          "key": "font-10",
+          "content": "D2Coding Normal Normal: Aa 012 fi 한글",
+          "size": 24,
+          "color": null,
+          "font": {
+            "monospace": false,
+            "weight": "Normal"
+          },
+          "width": null,
+          "align_x": null,
+          "heading": null,
+          "live": null
+        }
+      },
+      {
+        "Text": {
+          "options": {
+            "height": null,
+            "align_y": null,
+            "line_height": null,
+            "shaping": null,
+            "wrapping": null,
+            "tracking": 0.0,
+            "font": {
+              "family": {
+                "Named": "D2Coding"
+              },
+              "weight": "Bold",
+              "style": "Normal",
+              "stretch": "Normal"
+            }
+          },
+          "key": "font-11",
+          "content": "D2Coding Bold Normal: Aa 012 fi 한글",
+          "size": 24,
+          "color": null,
+          "font": {
+            "monospace": false,
+            "weight": "Bold"
+          },
+          "width": null,
+          "align_x": null,
+          "heading": null,
+          "live": null
+        }
+      },
+      {
+        "Text": {
+          "options": {
+            "height": null,
+            "align_y": null,
+            "line_height": null,
+            "shaping": null,
+            "wrapping": null,
+            "tracking": 0.0,
+            "font": null
+          },
+          "key": "font-12",
+          "content": "Color emoji: 😀 📎 🔊 🟢",
+          "size": 40,
+          "color": null,
+          "font": {
+            "monospace": false,
+            "weight": "Normal"
+          },
+          "width": null,
+          "align_x": null,
+          "heading": null,
+          "live": null
+        }
+      }
+    ]
+  }
+}

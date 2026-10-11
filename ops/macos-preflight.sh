@@ -131,7 +131,7 @@ fi
 # an ad-hoc bundle runs on the machine that built it. It is a prerequisite for
 # a bundle that leaves this Mac, and the two halves fail far apart (Gatekeeper
 # on someone else's machine, or a notarytool rejection after the upload), so
-# both are reported here. The recipe is app/README.md "Release build".
+# both are reported here. The recipe is README.md "Release build".
 echo
 echo "release signing (only for a bundle that leaves this Mac):"
 DEVELOPER_ID="$(security find-identity -v -p codesigning 2>/dev/null | grep 'Developer ID Application' || true)"
