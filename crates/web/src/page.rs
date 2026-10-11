@@ -326,6 +326,17 @@ impl Page {
             ..Default::default()
         };
         host.send_key_event(Some(&event));
+        // Enter's character, `\r`, as a keyboard types it: the page submits a
+        // form and breaks a line on it (the keypress), and gpui hands a
+        // control key no text to come in as
+        if down && code == 0x0D {
+            host.send_key_event(Some(&cef::KeyEvent {
+                type_: cef::KeyEventType::CHAR,
+                character: 0x0D,
+                unmodified_character: 0x0D,
+                ..event
+            }));
+        }
     }
 }
 
