@@ -1,0 +1,72 @@
+# Each time `main` moves, the app is built for Linux x86_64 (GitHub's Ubuntu)
+# and macOS arm64 (the self-hosted runner mac-byeongsu) and published on the
+# prerelease bin-<commit>: the Linux binary as a tarball, the Mac app as an
+# ad-hoc signed DMG.
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: bin-${{ github.sha }}
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libclang-dev libasound2-dev \
+            libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig1-dev libfreetype6-dev \
+            mesa-vulkan-drivers libvulkan1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo build --locked --release -p ducktape-app
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET: ducktape-app-x86_64-unknown-linux-gnu.tar.gz
+        run: |
+          tar czf "$ASSET" -C target/release ducktape-app
+          # Both jobs may try to create the release; the loser finds it made.
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
+            --prerelease --latest=false --target "$GITHUB_SHA" --title "$TAG" \
+            --notes "The ducktape app built at $GITHUB_SHA." \
+            || gh release view "$TAG" >/dev/null
+          gh release upload "$TAG" "$ASSET" --clobber
+
+  macos:
+    runs-on: [self-hosted, mac-byeongsu]
+    timeout-minutes: 60
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../target
+    steps:
+      - uses: actions/checkout@v4
+      - run: ops/bundle-app-macos.sh
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET: ducktape-app-aarch64-apple-darwin.dmg
+        run: |
+          mv target/app-bundle/Ducktape-*.dmg "$ASSET"
+          # Both jobs may try to create the release; the loser finds it made.
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
+            --prerelease --latest=false --target "$GITHUB_SHA" --title "$TAG" \
+            --notes "The ducktape app built at $GITHUB_SHA." \
+            || gh release view "$TAG" >/dev/null
+          gh release upload "$TAG" "$ASSET" --clobber
