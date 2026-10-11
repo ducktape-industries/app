@@ -223,6 +223,45 @@ fn a_link_opens_the_seat_and_a_bad_one_toasts(cx: &mut TestAppContext) {
     );
 }
 
+/// An http(s) link opens in the view whose manifest declares `web`,
+/// handed the whole address as its route, in a build with a web view;
+/// without one, or for an address no page may load (plain http to another
+/// machine), the system browser takes it. The live runner shows one view,
+/// so this test is the routing's proof.
+#[gpui_kit::test]
+fn an_https_link_opens_in_the_web_view_else_in_the_system_browser(cx: &mut TestAppContext) {
+    use view_wire::methods::Capability;
+    let (app, _) = console(cx);
+    listed(&app, &["web-link-test"], cx);
+    crate::render::web::seen("web-link-test", &[Capability::Host, Capability::Web]);
+    let open = |link: &str, cx: &mut TestAppContext| {
+        app.windows
+            .update(cx, |windows, cx| windows.open_link(link, cx))
+    };
+    open("https://example.com/a?b=1", cx);
+    if cfg!(feature = "web") {
+        assert_eq!(active(&app, cx), Some("web-link-test"));
+        assert_eq!(
+            crate::runtime::take_route("web-link-test").as_deref(),
+            Some("https://example.com/a?b=1")
+        );
+        assert_eq!(cx.opened_url(), None);
+    } else {
+        assert_eq!(
+            cx.opened_url().as_deref(),
+            Some("https://example.com/a?b=1")
+        );
+        assert_eq!(crate::runtime::take_route("web-link-test"), None);
+    }
+    open("http://example.com/b", cx);
+    assert_eq!(cx.opened_url().as_deref(), Some("http://example.com/b"));
+    assert_eq!(crate::runtime::take_route("web-link-test"), None);
+    // a view whose next manifest drops `web` takes no more links
+    crate::render::web::seen("web-link-test", &[Capability::Host]);
+    open("https://example.com/c", cx);
+    assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/c"));
+}
+
 /// The same link notice while it is up is not shown again, so a view
 /// repeating a bad link cannot keep the notice up past its time.
 #[gpui_kit::test]

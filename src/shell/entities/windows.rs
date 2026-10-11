@@ -718,7 +718,14 @@ impl Windows {
                     self.notice(format!("{module} can't open that part of the link."), cx);
                 }
             }
-            Link::Web(url) => cx.open_url(&url),
+            // to the view that declares `web`, if one is listed and this
+            // build has a web view; else the system browser
+            Link::Web(url) => match crate::render::web::view_for(&url)
+                .filter(|module| self.shared.rail.read(cx).lists(module))
+            {
+                Some(module) => self.open_seat(module, Some(url), cx),
+                None => cx.open_url(&url),
+            },
             Link::Unknown => self.notice("This link is not one this app opens.".into(), cx),
         }
     }
