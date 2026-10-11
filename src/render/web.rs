@@ -306,4 +306,20 @@ mod tests {
         };
         assert!(declared(&plain, &undeclared).is_ok());
     }
+
+    /// A build without the web view draws a web piece as its line, and a
+    /// frame without the piece leaves nothing behind.
+    #[cfg(not(feature = "web"))]
+    #[gpui_kit::test]
+    fn a_build_without_the_web_view_draws_the_piece_as_a_line(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::px;
+        cx.update(gpui_kit::init);
+        let window = cx.open_window(gpui_kit::size(px(200.), px(100.)), |_, _| {
+            ViewTree::new(holder(vec![web()]))
+        });
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+        })
+        .unwrap();
+    }
 }
