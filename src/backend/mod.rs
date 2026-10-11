@@ -7,15 +7,13 @@
 //! [`loopback`]) or another key ([`join`]); a view's wasm out of its
 //! program's blob ([`views`]); prefs.json ([`prefs`]) and the recent-nodes
 //! list ([`endpoints`]); the app's own directories ([`app_dirs`]).
-//!
-//! No user program is named here. Two system programs are: `identity`
-//! (accounts and their keys) and `module-registry` (the roster).
 
 mod app_dirs;
 pub(crate) mod auth_page;
 pub(crate) mod device_key;
 mod endpoints;
 pub(crate) mod identity;
+pub(crate) mod invite;
 pub(crate) mod join;
 mod key_dir;
 mod loopback;

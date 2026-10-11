@@ -786,33 +786,16 @@ pub(super) fn invite(node: Node, ask: Vec<u8>) -> Answered {
         if ttl == 0 {
             return Err(malformed("ttl_days must be a positive integer"));
         }
-        // a node without /v1/invite answers an unenveloped 404, which the
-        // client classifies `http_error` — its "404 Not Found: no detail." is
-        // not something to show a person as-is.
-        let refusal = |error: ducktape_rpc::Error| {
-            if error.reason() == "http_error" && error.status() == Some(404) {
-                return wire::Error::new(
-                    refusal::INVITE_UNSUPPORTED,
-                    "This node doesn't mint invites.",
-                );
-            }
-            wire::Error::new(error.reason(), error.message())
-        };
-        // `/v1/invite` is JSON and not in `backend::noded`; ducktape-rpc is
-        // used for it alone
-        let client = ducktape_rpc::Client::new(node.client.endpoint()).map_err(refusal)?;
-        let minted = client.mint_invite(ttl).await.map_err(refusal)?;
-        let notes = minted
-            .notes
-            .into_iter()
-            .map(|note| wire::Error {
-                code: note.reason,
-                message: note.sentence,
-            })
-            .collect();
+        let workspace = ducktape_home::root().map_err(host_fault)?;
+        let key = backend::invite::node_key(&workspace).map_err(host_fault)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(host_fault)?
+            .as_millis() as u64;
+        let invite = backend::invite::mint(&node.client, key, ttl, now).await?;
         Ok(methods::encode(&methods::Invite {
-            invite: minted.invite,
-            notes,
+            invite,
+            notes: Vec::new(),
         }))
     })
 }

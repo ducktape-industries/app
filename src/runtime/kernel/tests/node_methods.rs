@@ -350,78 +350,103 @@ async fn blob_get_refuses_a_signed_hex_spelling() {
 }
 
 #[tokio::test]
-async fn invite_preserves_blob_notes_ttl_and_typed_refusals() {
-    // the node was asked for `ttl` days
-    let asked_ttl = |bodies: Vec<Vec<u8>>, ttl: u64| {
-        let [body] = bodies.as_slice() else {
-            panic!("one request");
-        };
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(body).unwrap(),
-            serde_json::json!({"ttl_days": ttl})
-        );
-    };
-    let (node, server) = node_server(
-        "POST /v1/invite HTTP/1.1",
-        vec![(
-            "200 OK",
-            br#"{"invite":"paste-me","notes":[{"reason":"local_only","sentence":"Use on this box"}]}"#
-                .to_vec(),
-        )],
-    );
+async fn invite_refuses_a_ttl_it_cannot_mint_before_asking_the_node() {
+    let held = fake_node(Vec::new());
     let mint = |ttl_days| methods::encode(&methods::CreateInvite { ttl_days });
-    let answer = invite(node.clone(), mint(7)).await.unwrap();
-    let decoded: methods::Invite = methods::decode(&answer).unwrap();
-    assert_eq!(
-        decoded,
-        methods::Invite {
-            invite: "paste-me".into(),
-            notes: vec![wire::Error {
-                code: "local_only".into(),
-                message: "Use on this box".into()
-            }]
-        }
-    );
-    asked_ttl(server.join().unwrap(), 7);
     for ask in [Vec::new(), mint(0), b"7".to_vec()] {
         assert_eq!(
-            invite(node.clone(), ask).await.unwrap_err().code,
+            invite(held.node.clone(), ask).await.unwrap_err().code,
             refusal::MALFORMED_REQUEST
         );
     }
-    for (http, body, reason) in [
+    assert_eq!(held.accepted.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+fn node_key(seed: u8) -> commonware_cryptography::ed25519::PrivateKey {
+    use commonware_codec::DecodeExt as _;
+    commonware_cryptography::ed25519::PrivateKey::decode([seed; 32].as_slice()).unwrap()
+}
+
+fn validator_node(identity: &[u8], validators: Vec<Vec<u8>>) -> FakeNode {
+    let status = backend::noded::Status {
+        network: "test-network".into(),
+        time: 12,
+        block_time_ms: 1000,
+        epoch_length: 64,
+        height: 9,
+        tip: [2; 32],
+        root: abi::Root([3; 32]),
+        epoch: 0,
+        identity: identity.to_vec(),
+        contract: backend::noded::NODE_CONTRACT,
+        genesis: [5; 32],
+        roles: backend::noded::test_roles(),
+    };
+    fake_node(vec![
         (
-            "403 Forbidden",
-            br#"{"reason":"invite_denied","error":"operator only"}"#.to_vec(),
-            "invite_denied",
+            backend::noded::route::STATUS,
+            Mode::Answer(abi::encode(&status)),
         ),
-        // a core built after it dropped /v1/invite answers a bare 404, not
-        // the node's own refusal envelope — that must read as "this node
-        // doesn't do invites", not the raw transport error.
-        ("404 Not Found", Vec::new(), refusal::INVITE_UNSUPPORTED),
-    ] {
-        let (node, server) = node_server("POST /v1/invite HTTP/1.1", vec![(http, body)]);
-        let refusal = invite(node, mint(1)).await.unwrap_err();
-        assert_eq!(refusal.code, reason);
-        asked_ttl(server.join().unwrap(), 1);
+        (
+            backend::noded::route::QUERY,
+            Mode::Answer(abi::encode(&abi::encode(&valset::Reply::Validators(
+                validators,
+            )))),
+        ),
+    ])
+}
+
+#[tokio::test]
+async fn an_invite_is_the_validator_nodes_signed_grant_for_its_network() {
+    use abi::role::validators::{INVITE_NAMESPACE, Invite};
+    use commonware_codec::DecodeExt as _;
+    use commonware_cryptography::{Signer as _, Verifier as _, ed25519};
+    let key = node_key(7);
+    let identity = key.public_key().as_ref().to_vec();
+    let held = validator_node(&identity, vec![vec![1; 32], identity.clone()]);
+    let now = 1_000_000;
+    let hex = backend::invite::mint(&held.node.client, Some(key.clone()), 7, now)
+        .await
+        .unwrap();
+    let invite: Invite = abi::decode(&backend::hex_decode(&hex).unwrap()).unwrap();
+    assert_eq!(invite.issuer, identity);
+    assert_eq!(invite.grant.network, b"test-network");
+    assert_eq!(invite.grant.expires, now + 7 * 24 * 60 * 60 * 1000);
+    let signature = ed25519::Signature::decode(invite.signature.as_slice()).unwrap();
+    assert!(
+        key.public_key()
+            .verify(INVITE_NAMESPACE, &invite.grant.preimage(), &signature)
+    );
+    let again = backend::invite::mint(&held.node.client, Some(key), 7, now)
+        .await
+        .unwrap();
+    let again: Invite = abi::decode(&backend::hex_decode(&again).unwrap()).unwrap();
+    assert_ne!(again.grant.nonce, invite.grant.nonce);
+}
+
+#[tokio::test]
+async fn only_the_machine_running_a_validator_node_mints_its_invites() {
+    use commonware_cryptography::Signer as _;
+    let key = node_key(7);
+    let identity = key.public_key().as_ref().to_vec();
+    let held = validator_node(&identity, vec![identity.clone()]);
+    for key in [None, Some(node_key(8))] {
+        let refusal = backend::invite::mint(&held.node.client, key, 7, 0)
+            .await
+            .unwrap_err();
+        assert_eq!(refusal.code, refusal::INVITE_UNSUPPORTED);
+        assert_eq!(
+            refusal.message,
+            "Only the machine running this node can mint its invites."
+        );
     }
-    let (node, server) = node_server(
-        "POST /v1/invite HTTP/1.1",
-        vec![("404 Not Found", Vec::new())],
-    );
+    let resident = validator_node(&identity, vec![vec![1; 32]]);
+    let refusal = backend::invite::mint(&resident.node.client, Some(key), 7, 0)
+        .await
+        .unwrap_err();
+    assert_eq!(refusal.code, refusal::INVITE_UNSUPPORTED);
     assert_eq!(
-        invite(node, mint(1)).await.unwrap_err().message,
-        "This node doesn't mint invites."
+        refusal.message,
+        "Only a validator's node can mint invites, and this node is a resident."
     );
-    asked_ttl(server.join().unwrap(), 1);
-    // an unrelated non-JSON non-2xx (a proxy's 502, say) must not be folded
-    // into the same message: only http_error + 404 gets the friendlier text.
-    let (node, server) = node_server(
-        "POST /v1/invite HTTP/1.1",
-        vec![("502 Bad Gateway", Vec::new())],
-    );
-    let refusal = invite(node, mint(1)).await.unwrap_err();
-    assert_eq!(refusal.code, "http_error");
-    assert!(refusal.message.starts_with("502"));
-    asked_ttl(server.join().unwrap(), 1);
 }
