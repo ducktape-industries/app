@@ -258,6 +258,19 @@ wrap_display_handler! {
             self.shared.state.borrow_mut().title = title.map(CefString::to_string).unwrap_or_default();
             self.shared.dirty.set(true);
         }
+
+        // off-screen, the page's box shows it: CEF has no window to set
+        fn on_cursor_change(
+            &self,
+            _browser: Option<&mut Browser>,
+            _cursor: std::os::raw::c_ulong,
+            type_: CursorType,
+            _custom_cursor_info: Option<&CursorInfo>,
+        ) -> c_int {
+            self.shared.cursor.set(crate::cursor::style(type_));
+            self.shared.dirty.set(true);
+            1
+        }
     }
 }
 

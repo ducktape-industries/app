@@ -46,6 +46,8 @@ pub(crate) struct Shared {
     pub(crate) dirty: Cell<bool>,
     /// `on_take_focus`: Tab ran off the page's end (`true`) or start.
     pub(crate) take_focus: Cell<Option<bool>>,
+    /// The pointer the page wants over its box ([`crate::cursor`]).
+    pub(crate) cursor: Cell<CursorStyle>,
     pub(crate) state: RefCell<PageState>,
     /// An address the rule refused: the page says so until it moves.
     pub(crate) refused: RefCell<Option<String>>,
@@ -155,6 +157,7 @@ impl Page {
             popup_rect: Cell::default(),
             dirty: Cell::default(),
             take_focus: Cell::default(),
+            cursor: Cell::default(),
             state: RefCell::default(),
             refused: RefCell::default(),
             redirect: RefCell::default(),
@@ -431,6 +434,7 @@ impl Render for Page {
             .relative()
             .size_full()
             .track_focus(&self.focus)
+            .cursor(self.shared.cursor.get())
             .on_mouse_down(MouseButton::Left, cx.listener(Self::press))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::press))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::press))

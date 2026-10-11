@@ -21,6 +21,7 @@
 //!   included; popups, downloads and permission prompts are refused.
 //! - [`shutdown`] after gpui returns: browsers closed, then CEF.
 
+mod cursor;
 mod handlers;
 mod page;
 
