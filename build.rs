@@ -22,6 +22,14 @@ fn main() {
     if let Some(build) = build_id() {
         println!("cargo:rustc-env=DUCKTAPE_APP_BUILD={build}");
     }
+
+    // feature `cef`: cef-dll-sys copies libcef.so and its files next to the
+    // binary; the loader looks there only when told to
+    if std::env::var_os("CARGO_FEATURE_CEF").is_some()
+        && std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux")
+    {
+        println!("cargo:rustc-link-arg-bins=-Wl,-rpath,$ORIGIN");
+    }
 }
 
 /// `<short sha>`, or `<short sha>-<digest>` when the working tree differs from

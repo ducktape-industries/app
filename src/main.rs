@@ -12,8 +12,16 @@ mod render;
 mod runtime;
 mod shell;
 mod tray;
+#[cfg(feature = "cef")]
+mod web;
 
 fn main() {
+    // a CEF child process (zygote, renderer, GPU, utility) is this same
+    // binary started with `--type=...`: it runs CEF and nothing of the app
+    #[cfg(feature = "cef")]
+    if let Some(code) = web::child() {
+        std::process::exit(code);
+    }
     perf::start();
     #[cfg(debug_assertions)]
     if std::env::args().nth(1).as_deref() == Some("--render-tree") {
@@ -52,7 +60,15 @@ fn main() {
             println!(
                 "       ducktape-app --live <endpoint> <program-id> <seed>  (debug build: one view on a node)"
             );
+            #[cfg(feature = "cef")]
+            println!(
+                "       ducktape-app --web-probe <url>...  (`cef` build: web pages in a gpui window)"
+            );
             return;
+        }
+        #[cfg(feature = "cef")]
+        Some("--web-probe") => {
+            std::process::exit(web::probe(std::env::args().skip(2).collect()));
         }
         _ => {}
     }
