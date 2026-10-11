@@ -158,10 +158,13 @@ async fn system_status_preserves_borsh_and_refusals() {
 
 #[tokio::test]
 async fn a_block_s_receipts_carry_refusals_as_errors() {
-    let tx = |seq, receipt| backend::noded::Tx {
-        hash: [seq as u8; 32],
+    let tx = |hash, receipt| backend::noded::Tx {
+        hash: [hash; 32],
         signer: vec![5; 32],
-        seq,
+        anchor: backend::noded::Tip {
+            height: 8,
+            id: [hash; 32],
+        },
         target: "chat".into(),
         payload: vec![7],
         receipt: Some(receipt),
@@ -243,7 +246,10 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
         txs: vec![backend::noded::Tx {
             hash: [4; 32],
             signer: vec![5; 32],
-            seq: 6,
+            anchor: backend::noded::Tip {
+                height: 6,
+                id: [6; 32],
+            },
             target: "chat".into(),
             payload: vec![7],
             receipt: None,
@@ -271,7 +277,10 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
             txs: vec![methods::Tx {
                 hash: [4; 32],
                 signer: vec![5; 32],
-                seq: 6,
+                anchor: methods::Tip {
+                    height: 6,
+                    id: [6; 32],
+                },
                 target: "chat".into(),
                 payload: vec![7],
                 receipt: None,

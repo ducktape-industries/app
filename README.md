@@ -35,7 +35,8 @@ DUCKTAPE_VIEWS_DIR=/path/to/views cargo run -p ducktape-app     # a view develop
   reads a payload.
 - **Sign in.** The key file under `$DUCKTAPE_USER_KEY`, else the network's
   active wallet under `<ducktape home>/remotes/<network>/`. A write is a frame
-  signed at the sequence the node says is that signer's next.
+  anchored at the tip `/v1/status` reports and salted with a random number,
+  so the node runs it once and only while that block is recent.
 
 ## Layout
 

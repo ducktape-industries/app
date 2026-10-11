@@ -227,7 +227,7 @@ pub(crate) fn on_open_url(open: fn(String)) {
 #[cfg(test)]
 mod tests {
     use super::super::loopback::read_request;
-    use super::super::noded::FRAME_NAMESPACE;
+    use super::super::noded::{FRAME_NAMESPACE, Tip};
     use super::super::passkey::{passkey_body, passkey_frame};
     use super::*;
     use keyscheme::testkit;
@@ -401,7 +401,10 @@ mod tests {
         let body = passkey_body(
             &testkit::passkey_pubkey(&testkit::passkey(3)),
             "testkit",
-            0,
+            Tip {
+                height: 0,
+                id: [0; 32],
+            },
             vec![1],
         );
         let (authenticator_data, client_data_json, signature) = testkit::passkey_assertion_parts(

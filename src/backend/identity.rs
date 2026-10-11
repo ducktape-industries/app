@@ -162,8 +162,7 @@ pub(super) async fn submit_seated(
     network: &str,
     op: &Op,
 ) -> Result<Vec<u8>, String> {
-    // the signer's turn is held until the receipt (`backend::session`)
-    let (frame, _turn) = seated_frame(client, network, identity::MODULE, abi::encode(op))
+    let frame = seated_frame(client, network, identity::MODULE, abi::encode(op))
         .await
         .map_err(|refusal| refusal.message)?;
     submit(client, frame).await

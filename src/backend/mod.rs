@@ -43,7 +43,7 @@ pub(crate) use prefs::{
 #[cfg(test)]
 pub(crate) use session::seat_serial;
 pub(crate) use session::{
-    lock_signer, next_seq, query_frame, seat_key, seated, seated_frame, seated_key, seated_sign,
+    anchor, lock_signer, query_frame, salt, seat_key, seated, seated_frame, seated_key, seated_sign,
 };
 
 use std::path::Path;
@@ -212,8 +212,7 @@ fn epoch_nanos() -> u128 {
 
 /// Only ever climbs within this process (1, then the clock's microseconds
 /// or the last value plus one, whichever is later); only [`fresh_id`] mixes
-/// it in. Not a frame sequence — that is `session::next_seq`, which the
-/// node dictates.
+/// it in.
 pub(crate) fn fresh_counter() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static LAST: AtomicU64 = AtomicU64::new(0);

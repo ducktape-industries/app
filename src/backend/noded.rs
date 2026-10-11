@@ -18,7 +18,7 @@ use futures::{Stream, StreamExt as _};
 use reqwest::StatusCode;
 use tokio_tungstenite::tungstenite::Message;
 
-pub const NODE_CONTRACT: u32 = 1;
+pub const NODE_CONTRACT: u32 = 2;
 pub const FRAME_NAMESPACE: &[u8] = b"ducktape:frame";
 
 /// The most one node answer may carry, unless the call names its own cap
@@ -53,7 +53,6 @@ pub mod route {
     pub const STATUS: &str = "/v1/status";
     pub const SUBMIT: &str = "/v1/submit";
     pub const QUERY: &str = "/v1/query";
-    pub const GET: &str = "/v1/get";
     pub const BLOB_GET: &str = "/v1/blob/get";
     pub const CHANGES: &str = "/v1/changes";
     pub const BLOCKS: &str = "/v1/blocks";
@@ -72,12 +71,19 @@ pub enum Layer {
 /// `Ed25519`, a passkey `Secp256r1` (`backend::passkey`).
 pub use keyscheme::KeyScheme;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct Tip {
+    pub height: u64,
+    pub id: [u8; 32],
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct Body {
     pub scheme: KeyScheme,
     pub signer: Vec<u8>,
     pub network: Vec<u8>,
-    pub seq: u64,
+    pub anchor: Tip,
+    pub salt: Option<u64>,
     pub target: String,
     pub payload: Vec<u8>,
 }
@@ -99,7 +105,8 @@ impl Frame {
     pub fn sign(
         key: &ed25519::PrivateKey,
         network: &[u8],
-        seq: u64,
+        anchor: Tip,
+        salt: Option<u64>,
         target: &str,
         payload: Vec<u8>,
     ) -> Frame {
@@ -107,7 +114,8 @@ impl Frame {
             scheme: KeyScheme::Ed25519,
             signer: key.public_key().as_ref().to_vec(),
             network: network.to_vec(),
-            seq,
+            anchor,
+            salt,
             target: target.to_owned(),
             payload,
         };
@@ -141,6 +149,15 @@ pub struct Status {
     pub genesis: [u8; 32],
 }
 
+impl Status {
+    pub fn anchor(&self) -> Tip {
+        Tip {
+            height: self.height,
+            id: self.tip,
+        }
+    }
+}
+
 /// Every member of the current epoch as the node sees it (`/v1/network`):
 /// its applied tip when it answered, and the members in key order. No
 /// member's `signed` exceeds `height`.
@@ -166,13 +183,6 @@ pub struct PeerStatus {
 pub struct Query {
     pub layer: Layer,
     pub frame: Vec<u8>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub struct Get {
-    pub layer: Layer,
-    pub program: ProgramId,
-    pub key: Vec<u8>,
 }
 
 /// `host::Receipt`: what a submit answers.
@@ -207,14 +217,11 @@ pub enum BlockRef {
     Id([u8; 32]),
 }
 
-/// `wire::Tx`: one applied frame; `hash` is sha256 of the frame's bytes.
-/// `receipt` is its run, where the node kept the block's receipts (none
-/// below a state-sync anchor).
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct Tx {
     pub hash: [u8; 32],
     pub signer: Vec<u8>,
-    pub seq: u64,
+    pub anchor: Tip,
     pub target: String,
     pub payload: Vec<u8>,
     pub receipt: Option<Receipt>,
@@ -319,15 +326,6 @@ impl Client {
     /// bytes the program `Respond`ed.
     pub async fn query(&self, layer: Layer, frame: Vec<u8>) -> Result<Vec<u8>> {
         self.post(route::QUERY, &Query { layer, frame }).await
-    }
-
-    pub async fn get(&self, layer: Layer, program: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let get = Get {
-            layer,
-            program: program.to_owned(),
-            key: key.to_vec(),
-        };
-        self.post(route::GET, &get).await
     }
 
     /// The framed bytes (`kind len\0body`) of a blob the node holds; an
@@ -458,7 +456,11 @@ mod tests {
     #[test]
     fn frame_signs_its_body_and_names_the_signer() {
         let key = ed25519::PrivateKey::from_seed(7);
-        let frame = Frame::sign(&key, b"net", 3, "demo", vec![1, 2]);
+        let anchor = Tip {
+            height: 3,
+            id: [4; 32],
+        };
+        let frame = Frame::sign(&key, b"net", anchor, Some(5), "demo", vec![1, 2]);
         assert_eq!(frame.body.signer, key.public_key().as_ref().to_vec());
         assert_eq!(frame.body.scheme, KeyScheme::Ed25519);
         let decoded: Frame = abi::decode(&frame.encode()).unwrap();
@@ -470,6 +472,51 @@ mod tests {
             &frame.body.preimage(),
             &frame.proof
         ));
+    }
+
+    #[test]
+    fn a_body_encodes_in_the_nodes_field_order() {
+        let body = Body {
+            scheme: KeyScheme::Ed25519,
+            signer: vec![1],
+            network: vec![2],
+            anchor: Tip {
+                height: 3,
+                id: [4; 32],
+            },
+            salt: Some(5),
+            target: "t".into(),
+            payload: vec![6],
+        };
+        let mut bytes = abi::encode(&KeyScheme::Ed25519);
+        bytes.extend([1, 0, 0, 0, 1, 1, 0, 0, 0, 2]);
+        bytes.extend(3u64.to_le_bytes());
+        bytes.extend([4; 32]);
+        bytes.push(1);
+        bytes.extend(5u64.to_le_bytes());
+        bytes.extend([1, 0, 0, 0, b't', 1, 0, 0, 0, 6]);
+        assert_eq!(body.preimage(), bytes);
+    }
+
+    #[test]
+    fn a_tx_decodes_the_nodes_field_order() {
+        let mut bytes = vec![9; 32];
+        bytes.extend([1, 0, 0, 0, 1]);
+        bytes.extend(3u64.to_le_bytes());
+        bytes.extend([4; 32]);
+        bytes.extend([1, 0, 0, 0, b't', 1, 0, 0, 0, 6, 0]);
+        let tx = Tx {
+            hash: [9; 32],
+            signer: vec![1],
+            anchor: Tip {
+                height: 3,
+                id: [4; 32],
+            },
+            target: "t".into(),
+            payload: vec![6],
+            receipt: None,
+        };
+        assert_eq!(abi::decode::<Tx>(&bytes).unwrap(), tx);
     }
 
     /// The bytes `host::Receipt` encodes a submission with one nested run

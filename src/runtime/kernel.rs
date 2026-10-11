@@ -30,7 +30,7 @@
 //!   preconfirmed layer: an op this view was just answered for is already
 //!   in what it reads.
 //! - `op.submit` `Call{target, body}` — one op, signed with the key
-//!   unlocked in this session at the signer's next sequence and submitted;
+//!   unlocked in this session and submitted;
 //!   answered with the receipt's output, or the program's refusal. The
 //!   receipt is the node's preconfirmation, not finality: the op ran over
 //!   the preconfirmed layer and waits for a block, and until one carries it
