@@ -276,6 +276,80 @@ fn a_press_on_a_window_row_while_filled_fills_that_window(cx: &mut TestAppContex
     assert!(rows(&nodes).contains(&(general, "# general".into(), true)));
 }
 
+/// A window popped out of the desk stays listed (owner, 2026-10-11): under
+/// its program, after the desk's windows, marked as in a window of its
+/// own. A press on its row brings that OS window to the front, and its row
+/// is the one selected while it is; a press on its program brings it
+/// forward too, rather than opening the program on the desk again.
+#[gpui_kit::test]
+fn a_popped_out_window_stays_listed_and_its_row_brings_it_forward(cx: &mut TestAppContext) {
+    let seed = sidebar(
+        &["side-pop", "side-stay"],
+        &[("side-stay", None), ("side-pop", None)],
+    );
+    let (app, key, view, mut native) = crate::shell::layers::tests::open_console(seed, cx);
+    let [_, popped] = instances(&view, &mut native)[..] else {
+        panic!("two windows")
+    };
+    let (_, handle, _) = crate::shell::layers::tests::pop_out(&app, key, &view, &mut native);
+    let in_front = |native: &mut VisualTestContext| {
+        native.update(|_, cx| {
+            handle
+                .update(cx, |_, window, _| window.is_window_active())
+                .unwrap()
+        })
+    };
+    activate(&mut native);
+    assert!(!in_front(&mut native), "the console is in front");
+    let nodes = native.update(drawn);
+    let row = format!("shell:rail/side-pop/{popped}");
+    let listed =
+        |id: &str, name: &str, selected: bool| (format!("shell:{id}"), name.to_owned(), selected);
+    assert_eq!(
+        rows(&nodes),
+        [
+            listed("rail/side-pop", "Side pop · Loading", false),
+            listed(&format!("rail/side-pop/{popped}"), "Side pop", false),
+            listed("rail/side-stay", "Side stay · Loading", true),
+        ]
+    );
+    assert_eq!(node(&nodes, &row)["description"], "In a window of its own");
+    let errors = super::gate::errors(&mut native, "sidebar-popped", false);
+    assert!(errors.is_empty(), "{errors:#?}");
+
+    let nodes = native.update(drawn);
+    native.simulate_click(middle(&nodes, &row), gpui_kit::Modifiers::none());
+    native.run_until_parked();
+    assert!(in_front(&mut native), "the pop-out came forward");
+    let nodes = native.update(drawn);
+    assert!(
+        rows(&nodes).contains(&(row.clone(), "Side pop".into(), true)),
+        "{:?}",
+        rows(&nodes)
+    );
+
+    activate(&mut native);
+    let nodes = native.update(drawn);
+    native.simulate_click(
+        middle(&nodes, "shell:rail/side-pop"),
+        gpui_kit::Modifiers::none(),
+    );
+    native.run_until_parked();
+    assert!(in_front(&mut native), "its program brought it forward");
+    let modules: Vec<&str> = view.read_with(&native, |view, cx| {
+        view.layout(cx)
+            .panes
+            .iter()
+            .map(|pane| pane.module)
+            .collect()
+    });
+    assert_eq!(
+        modules,
+        ["side-stay"],
+        "the program opened on the desk again"
+    );
+}
+
 /// Under the pointer a program's row shows a `+`, and a press on it opens
 /// another window of the program, in front; away from the row it is gone.
 #[gpui_kit::test]

@@ -3,10 +3,12 @@
 //! which is the console, which is in front, and the program in front
 //! (`active`: the one an untouched console desk opens). Its methods open,
 //! raise and close windows, move a pane between two desks (pop-out, pop-in),
-//! open links and programs on the console's desk, and resize the console
-//! as the launcher gives way to the desk and back. Notifies when the list,
-//! the front or the active program moved; a window's own entities notify
-//! on their own.
+//! open links and programs on the console's desk (a program in a pop-out
+//! comes forward there), and resize the console as the launcher gives way
+//! to the desk and back. Notifies when the list, the front or the active
+//! program moved; a window's own entities notify on their own, and
+//! `Popped` (the pop-outs' windows, as the console's chrome lists them)
+//! when it moved.
 //!
 //! What it hears: the session leaving its network (every desk cleared),
 //! a node answering (the console comes forward), a device approved (its
@@ -16,8 +18,8 @@
 //! told). A link a banner's click or the passkey page asks for off the
 //! window thread comes over the `Posted` channel (`posted`).
 use super::{
-    AccountEvent, Entities, Front, Overlay, Overlays, Screen, SessionEvent, Shared, Slice,
-    Spotlight, WindowEntities,
+    AccountEvent, Entities, Front, Listed, Overlay, Overlays, Popped, Screen, SessionEvent, Shared,
+    Slice, Spotlight, WindowEntities,
 };
 use crate::runtime::notify::{CenterHandle, Entry};
 use crate::runtime::{Link, WindowKey};
@@ -53,6 +55,9 @@ pub(crate) struct Windows {
     console: Option<WindowKey>,
     /// The OS window in front, when it is one of ours.
     front: Option<WindowKey>,
+    /// The pop-outs' windows, derived (`popped_moved`): the console's
+    /// chrome lists them.
+    popped: Entity<Slice<Popped>>,
     /// The program in front: the focused pane's, wherever it is, or the
     /// one just opened. An untouched console desk opens it.
     active: Option<&'static str>,
@@ -127,6 +132,7 @@ impl Windows {
             by_window: BTreeMap::new(),
             console: None,
             front: None,
+            popped: cx.new(|_| Slice::new(Popped::default())),
             active: None,
             desk_bounds: None,
             launcher,
@@ -159,6 +165,10 @@ impl Windows {
     /// Every window's own entities, by key.
     pub(crate) fn by_window(&self) -> &BTreeMap<WindowKey, WindowEntities> {
         &self.by_window
+    }
+
+    pub(crate) fn popped(&self) -> &Entity<Slice<Popped>> {
+        &self.popped
     }
 
     pub(crate) fn handles(&self) -> &BTreeMap<WindowKey, AnyWindowHandle> {
@@ -247,6 +257,9 @@ impl Windows {
                     cx.notify();
                 }
                 this.set_front(key, cx);
+                if this.console != Some(key) {
+                    this.popped_moved(cx);
+                }
             }));
         let (desk, account) = (own.desk.clone(), self.shared.account.clone());
         let mut was = None;
@@ -396,6 +409,7 @@ impl Windows {
         };
         if front != self.front {
             self.front = front;
+            self.popped_moved(cx);
             cx.notify();
         }
         if !active && let Some(own) = self.by_window.get(&key) {
@@ -419,6 +433,27 @@ impl Windows {
         self.center
             .lock()
             .set_front(key, self.front == Some(key), focused);
+    }
+
+    /// `Popped` again: every desk's windows but the console's, and the one
+    /// in front while a pop-out is.
+    fn popped_moved(&self, cx: &mut App) {
+        let mut popped = Popped::default();
+        for (key, own) in &self.by_window {
+            if self.console == Some(*key) {
+                continue;
+            }
+            let layout = own.desk.read(cx).get();
+            let panes = layout.panes.iter();
+            popped
+                .open
+                .extend(panes.map(|pane| Listed::of(pane, Some(*key))));
+            if self.front == Some(*key) {
+                popped.front = layout.panes.get(layout.focused).map(|pane| pane.instance);
+            }
+        }
+        self.popped
+            .update(cx, |slice, cx| _ = slice.set(popped, cx));
     }
 
     /// Window `key` to the front. A frame follows even when it is already
@@ -508,6 +543,7 @@ impl Windows {
         if self.front == Some(key) {
             self.front = None;
         }
+        self.popped_moved(cx);
         cx.notify();
     }
 
@@ -570,6 +606,37 @@ impl Windows {
         self.by_window[&key]
             .desk
             .update(cx, |desk, cx| desk.popin(pane, cx));
+    }
+
+    /// `module` asked for on window `key`'s desk (a tab, a pick in an empty
+    /// window, Spotlight, a link): where `Layout::open` puts it, but a
+    /// program that desk does not show and a pop-out does brings the
+    /// pop-out forward rather than opening it again (the desk's focused
+    /// empty window still takes it).
+    pub(crate) fn open_program(
+        &mut self,
+        key: WindowKey,
+        module: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        let _timed = timed();
+        let Some(desk) = self.by_window.get(&key).map(|own| own.desk.clone()) else {
+            return;
+        };
+        let layout = desk.read(cx).get();
+        let here = layout
+            .panes
+            .get(layout.focused)
+            .is_some_and(|pane| pane.is_empty())
+            || layout.panes.iter().any(|pane| pane.module == module);
+        let away = self.by_window.iter().find_map(|(other, own)| {
+            (self.console != Some(*other) && *other != key && own.desk.read(cx).holds(module))
+                .then_some(*other)
+        });
+        match away.filter(|_| !here) {
+            Some(away) => self.raise(away, cx),
+            None => desk.update(cx, |desk, cx| desk.open(module, cx)),
+        }
     }
 
     /// Pop-out `key`'s pane back onto the console's desk; its window goes.
@@ -667,7 +734,8 @@ impl Windows {
     }
 
     /// `module` beside the view in front on the console's desk, not in
-    /// place of it, handed `route` first.
+    /// place of it, or its pop-out forward (`open_program`), handed `route`
+    /// first.
     fn open_seat(&mut self, module: &'static str, route: Option<String>, cx: &mut Context<Self>) {
         if let Some(route) = route {
             crate::runtime::route_to(module, route);
@@ -676,8 +744,8 @@ impl Windows {
             self.active = Some(module);
             cx.notify();
         }
-        if let Some(own) = self.console_own() {
-            own.desk.update(cx, |desk, cx| desk.open(module, cx));
+        if let Some(console) = self.console {
+            self.open_program(console, module, cx);
         }
     }
 
