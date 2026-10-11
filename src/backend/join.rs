@@ -27,7 +27,7 @@ use super::identity::{
 };
 use super::noded::Frame;
 use super::relay::{POLL, post, slot, take};
-use super::{RpcClient, hex_decode, hex_encode, next_seq, seated_key, seated_sign};
+use super::{RpcClient, anchor, hex_decode, hex_encode, salt, seated_key, seated_sign};
 
 /// How long a new device waits for the other to approve: the relay's own
 /// hold.
@@ -242,14 +242,7 @@ pub(crate) async fn add_recovery_key(
         .await?
         .ok_or("This device's key holds no account yet.")?;
     person(&account_by_number(client, network, account).await?)?;
-    let admission = admission(
-        client,
-        network,
-        abi::Scheme::Ed25519,
-        public.clone(),
-        account,
-    )
-    .await?;
+    let admission = admission(client, network, abi::Scheme::Ed25519, public, account).await?;
     let (key, proof) = seated_sign(CONSENT_NAMESPACE, &admission.preimage())
         .await
         .map_err(|refusal| refusal.message)?;
@@ -263,13 +256,12 @@ pub(crate) async fn add_recovery_key(
             proof,
         },
     };
-    let seq = next_seq(client, &public)
-        .await
-        .map_err(|refusal| refusal.message)?;
+    let anchor = anchor(client).await.map_err(|refusal| refusal.message)?;
     let frame = Frame::sign(
         &recovery,
         network.as_bytes(),
-        seq,
+        anchor,
+        Some(salt()),
         identity::MODULE,
         abi::encode(&add),
     );

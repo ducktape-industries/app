@@ -32,11 +32,6 @@ pub(super) fn transport_failed(refusal: &wire::Error) -> bool {
     )
 }
 
-/// Only a refusal that proves no frame went out is retried (a connect
-/// failure, `backend::refused`; or a transport failure of the sequence read
-/// that comes before the frame, `submitted`). For a WRITE: a request the node
-/// may have applied is not signed and sent again — the sequence moved, so
-/// the node would apply it twice.
 fn unsent(refusal: &wire::Error) -> bool {
     refusal.code == refusal::RPC_CLIENT
 }
@@ -111,10 +106,6 @@ pub(super) fn spawn_retrying(
     );
 }
 
-/// Runs `method` on the connected node as a task, retrying for
-/// [`NODE_RETRY_BUDGET`] only while nothing reached the node: for
-/// `op.submit`, which re-signs at a fresh sequence and so must not follow
-/// an answer that went missing with a second submission.
 pub(super) fn spawn_retrying_unsent(
     guest: &mut Guest,
     id: u64,
@@ -691,11 +682,7 @@ pub(super) fn submit(node: Node, ask: Vec<u8>) -> Answered {
 
 /// The receipt's output on success, the program's refusal otherwise.
 async fn submitted(node: Node, target: String, payload: Vec<u8>) -> Answer {
-    // the sequence read comes before any frame: nothing signed, nothing
-    // sent, so its lost answer is asked again as a read's is. The signer's
-    // turn is held until the receipt: the next write reads the sequence
-    // this one moved. A retry takes a fresh turn, so others go in between.
-    let (frame, _turn) = backend::seated_frame(&node.client, &node.network, &target, payload)
+    let frame = backend::seated_frame(&node.client, &node.network, &target, payload)
         .await
         .map_err(|refusal| match transport_failed(&refusal) {
             true => wire::Error::new(refusal::RPC_CLIENT, refusal.message),
@@ -844,7 +831,10 @@ fn block_of(block: noded::Finalized) -> methods::Block {
             .map(|tx| methods::Tx {
                 hash: tx.hash,
                 signer: tx.signer,
-                seq: tx.seq,
+                anchor: methods::Tip {
+                    height: tx.anchor.height,
+                    id: tx.anchor.id,
+                },
                 target: tx.target,
                 payload: tx.payload,
                 receipt: tx.receipt.map(receipt_of),

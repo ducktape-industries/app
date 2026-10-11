@@ -32,8 +32,8 @@ use super::identity::{
     DEVICE_KEY_LABEL, account_by_number, admission, ask, create_seated, person, submit,
     submit_seated,
 };
-use super::noded::{Body, FRAME_NAMESPACE, Frame};
-use super::{RpcClient, next_seq, seated_key, seated_sign};
+use super::noded::{Body, FRAME_NAMESPACE, Frame, Tip};
+use super::{RpcClient, anchor, salt, seated_key, seated_sign};
 
 // ---------- the flows ----------
 
@@ -91,10 +91,8 @@ pub(crate) async fn create_account(
             proof,
         },
     };
-    let seq = next_seq(client, &passkey)
-        .await
-        .map_err(|refusal| refusal.message)?;
-    let body = passkey_body(&passkey, network, seq, abi::encode(&add));
+    let anchor = anchor(client).await.map_err(|refusal| refusal.message)?;
+    let body = passkey_body(&passkey, network, anchor, abi::encode(&add));
     let assertion = asserted(
         keyscheme::webauthn_challenge(FRAME_NAMESPACE, &body.preimage()),
         phone,
@@ -158,12 +156,13 @@ fn consenting_key(account: &identity::Account, preimage: &[u8], proof: &[u8]) ->
 }
 
 /// A frame body whose signer is the passkey `pubkey`.
-pub(super) fn passkey_body(pubkey: &[u8], network: &str, seq: u64, payload: Vec<u8>) -> Body {
+pub(super) fn passkey_body(pubkey: &[u8], network: &str, anchor: Tip, payload: Vec<u8>) -> Body {
     Body {
         scheme: KeyScheme::Secp256r1,
         signer: pubkey.to_vec(),
         network: network.as_bytes().to_vec(),
-        seq,
+        anchor,
+        salt: Some(salt()),
         target: identity::MODULE.to_owned(),
         payload,
     }
@@ -253,7 +252,12 @@ mod tests {
     fn a_passkey_signed_frame_verifies_as_the_node_verifies_it() {
         let sk = testkit::passkey(3);
         let pubkey = testkit::passkey_pubkey(&sk);
-        let body = passkey_body(&pubkey, "testkit", 0, vec![1, 2, 3]);
+        let anchor = Tip {
+            height: 9,
+            id: [1; 32],
+        };
+        let body = passkey_body(&pubkey, "testkit", anchor, vec![1, 2, 3]);
+        assert!(body.salt.is_some(), "a passkey's write carries a salt");
         let assertion = page_answer(&sk, FRAME_NAMESPACE, &body.preimage(), &[]);
         let frame = passkey_frame(body, &assertion).expect("its own signer");
         // the node decodes the bytes and runs `scheme.verify(signer, NS, preimage, proof)`

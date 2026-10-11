@@ -889,8 +889,8 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     let key = commonware_cryptography::ed25519::PrivateKey::decode([7u8; 32].as_slice()).unwrap();
     handle().block_on(backend::seat_key(key));
     let (node, server) = node_methods::node_server(
-        "POST /v1/get HTTP/1.1",
-        vec![("200 OK", b"not a sequence".to_vec())],
+        "GET /v1/status HTTP/1.1",
+        vec![("200 OK", b"not a status".to_vec())],
     );
     *super::super::connection().lock().unwrap() = super::super::Connection {
         client: Some(node.client.clone()),
@@ -928,8 +928,6 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
         }) => assert_eq!(refusal.code, refusal::CONSENT_REFUSED),
         other => panic!("{other:?}"),
     }
-    // Approve: the task goes on to the node (its sequence read is the
-    // fake node's one answer, which is no sequence, so the op ends there)
     // the in-flight budget spent: refused before the card goes up (the ask
     // is the request's own slot, so Approve could lead nowhere)
     let held: Vec<_> = (0..MAX_IN_FLIGHT)
@@ -982,7 +980,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     assert_eq!(
         server.join().unwrap().len(),
         1,
-        "one sequence read, after Approve"
+        "one anchor read, after Approve"
     );
     // the view torn down with an ask waiting: the ask goes with it (its
     // task, aborted, lets go of the ask on the runtime's next turn)

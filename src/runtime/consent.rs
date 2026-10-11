@@ -11,8 +11,7 @@
 //! queue in its Approve-style dialog (`shell/layers/overlays/consent.rs`),
 //! answering [`answer`] with the person's Approve or Cancel. Cancel, the
 //! dialog closed any other way, or a window to ask in missing, refuses the
-//! view `consent_refused`; nothing is signed and the sequence does not
-//! move. One ask waits per view at a time: a second while one waits is
+//! view `consent_refused`; nothing is signed. One ask waits per view at a time: a second while one waits is
 //! refused at once.
 use std::collections::VecDeque;
 use std::ops::Range;

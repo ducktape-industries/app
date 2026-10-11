@@ -8,11 +8,13 @@ use commonware_cryptography::{Signer as _, ed25519};
 use view_wire::Error;
 use view_wire::methods::refusal;
 
-use super::noded::{Frame, Layer};
+use super::noded::{Frame, Tip};
 use super::{RpcClient, hex_encode, refused};
 
-/// The host namespace that holds each signer's next sequence.
-const SIGNERS: &str = "$signers";
+const UNANCHORED: Tip = Tip {
+    height: 0,
+    id: [0; 32],
+};
 
 struct Signer {
     key: ed25519::PrivateKey,
@@ -24,33 +26,8 @@ struct Signer {
 /// await: a write takes its copy of the key and lets go before it asks the
 /// node anything, so a seat or a lock never waits on a write's ask (and a
 /// task on the shell's executor is never woken from a runtime thread for
-/// it). What a write does wait for is its signer's [`Turn`].
+/// it).
 static SIGNER: std::sync::Mutex<Option<Signer>> = std::sync::Mutex::new(None);
-
-/// A signer's writes go one at a time: the sequence is read, the frame
-/// signed and submitted, and the node's receipt is back before the next
-/// read. Two in flight at once would both read the same next sequence and
-/// the node would refuse the second frame (`reason::SEQUENCE`). Per
-/// signer, so one key's queue never waits on another's.
-// ponytail: entries are never pruned; bounded by the keys seated in one
-// process's life (a handful).
-fn turn_of(signer: &[u8]) -> std::sync::Arc<tokio::sync::Mutex<()>> {
-    type Turns = std::collections::HashMap<Vec<u8>, std::sync::Arc<tokio::sync::Mutex<()>>>;
-    static TURNS: std::sync::Mutex<Option<Turns>> = std::sync::Mutex::new(None);
-    TURNS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get_or_insert_with(Turns::new)
-        .entry(signer.to_vec())
-        .or_default()
-        .clone()
-}
-
-/// One write's hold on its signer ([`seated_frame`]): the caller keeps it
-/// until the node's receipt is back, so the next write's sequence read sees
-/// what this one moved. Dropped on the way out of a failed read, which sent
-/// nothing.
-pub(crate) struct Turn(#[allow(dead_code)] tokio::sync::OwnedMutexGuard<()>);
 
 fn seat() -> std::sync::MutexGuard<'static, Option<Signer>> {
     SIGNER
@@ -98,38 +75,34 @@ pub(crate) async fn lock_signer() -> bool {
     seat().take().is_some()
 }
 
-/// A write: signed with the seated key at the sequence the node says is
-/// that signer's next, once it is this write's [`Turn`]. The caller holds
-/// the turn through its submit.
 pub(crate) async fn seated_frame(
     client: &RpcClient,
     network: &str,
     target: &str,
     payload: Vec<u8>,
-) -> Result<(Vec<u8>, Turn), Error> {
+) -> Result<Vec<u8>, Error> {
     let key = seat()
         .as_ref()
         .map(|signer| signer.key.clone())
         .ok_or_else(locked_seat)?;
-    let signer = key.public_key();
-    let turn = Turn(turn_of(signer.as_ref()).lock_owned().await);
-    let seq = next_seq(client, signer.as_ref()).await?;
-    Ok((
-        Frame::sign(&key, network.as_bytes(), seq, target, payload).encode(),
-        turn,
-    ))
+    let anchor = anchor(client).await?;
+    Ok(Frame::sign(
+        &key,
+        network.as_bytes(),
+        anchor,
+        Some(salt()),
+        target,
+        payload,
+    )
+    .encode())
 }
 
-/// The sequence the node expects next from `signer`.
-pub(crate) async fn next_seq(client: &RpcClient, signer: &[u8]) -> Result<u64, Error> {
-    Ok(client
-        .get(Layer::Preconfirmed, SIGNERS, signer)
-        .await
-        .map_err(refused)?
-        .map(|bytes| abi::decode::<u64>(&bytes))
-        .transpose()
-        .map_err(|refusal| Error::new(view_wire::code::UNEXPECTED_REPLY, refusal.sentence))?
-        .unwrap_or(0))
+pub(crate) async fn anchor(client: &RpcClient) -> Result<Tip, Error> {
+    Ok(client.status().await.map_err(refused)?.anchor())
+}
+
+pub(crate) fn salt() -> u64 {
+    rand::random()
 }
 
 /// The seated key's public half.
@@ -153,16 +126,13 @@ pub(crate) async fn seated_sign(
     ))
 }
 
-/// A read: a query still travels as a signed frame (the program hears who
-/// asks), but the node checks no sequence on it. Signed with the seated
-/// key, or with this process's reader key while nobody is signed in.
 pub(crate) async fn query_frame(network: &str, target: &str, payload: Vec<u8>) -> Vec<u8> {
     let session = seat();
     let key = match session.as_ref() {
         Some(signer) => &signer.key,
         None => reader_key(),
     };
-    Frame::sign(key, network.as_bytes(), 0, target, payload).encode()
+    Frame::sign(key, network.as_bytes(), UNANCHORED, None, target, payload).encode()
 }
 
 fn reader_key() -> &'static ed25519::PrivateKey {
@@ -181,11 +151,12 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn a_query_frame_names_the_target_and_the_network() {
+    async fn a_query_frame_names_the_target_and_the_network_and_carries_no_salt() {
         let frame = query_frame("net", "demo", vec![1]).await;
         let decoded: Frame = abi::decode(&frame).unwrap();
         assert_eq!(decoded.body.target, "demo");
         assert_eq!(decoded.body.network, b"net");
-        assert_eq!(decoded.body.seq, 0);
+        assert_eq!(decoded.body.anchor, UNANCHORED);
+        assert_eq!(decoded.body.salt, None);
     }
 }

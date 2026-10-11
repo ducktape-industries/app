@@ -341,18 +341,21 @@ its meaning; the host and the views name the const, never the string.
    one cut there is `node_failed`, so a submit is never signed again. The
    client bounds only the connect (10 s), and reads an answer no further
    than `noded::MAX_BODY_BYTES` (a blob: its own cap), `too_large` past it.
-4. **Sign.** A read: `backend::query_frame` signs a `Frame` at seq 0 with
-   the seated key, or with the process's throwaway `reader_key` while nobody
-   is signed in; the program hears who asks, the node checks no sequence.
-   A write (`op.submit`): `backend::seated_frame` takes the signer's
-   `Turn` (one write per signer at a time), asks the node for the
-   signer's next sequence (`next_seq`: the `$signers` namespace,
-   `Layer::Preconfirmed`), then `Frame::sign` builds `Body{scheme: Ed25519,
-   signer, network, seq, target, payload}` and signs `abi::encode(body)`
-   under `FRAME_NAMESPACE`; the bytes go to `/v1/submit`, and the turn is
-   held until the receipt is back, so the next write reads the sequence
-   this one moved. With no seated key the request is refused
-   `session_locked`.
+4. **Sign.** A read: `backend::query_frame` signs a `Frame` with the
+   seated key, or with the process's throwaway `reader_key` while nobody
+   is signed in. Its anchor is the zero `Tip` and it carries no salt: the
+   program hears who asks, and the node checks neither on a query.
+   A write (`op.submit`): `backend::seated_frame` reads `/v1/status` and
+   anchors the frame at the tip it reports (`backend::anchor`:
+   `Tip{height, id: tip}`), then `Frame::sign` builds `Body{scheme: Ed25519,
+   signer, network, anchor, salt, target, payload}` with a random salt
+   (`backend::salt`) and signs `abi::encode(body)` under
+   `FRAME_NAMESPACE`; the bytes go to `/v1/submit`. The node runs a frame
+   only while its anchor is one of the 256 blocks before the block that
+   carries it (`anchor` refusal otherwise), and a block runs a frame at
+   most once (`duplicate`): the salt is what makes two identical writes
+   two frames. Writes by one signer do not wait on each other. With no
+   seated key the request is refused `session_locked`.
 5. **Reply.** The handler pushes into `kernel::Replies`, a per-view queue
    bounded by `MAX_REPLY_EVENTS` / `MAX_REPLY_BYTES`; overflow latches a
    fault that ends the view. `Seat` awaits `Replies::changes`
