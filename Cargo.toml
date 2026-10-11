@@ -80,7 +80,6 @@ design.workspace = true
 describe.workspace = true
 sha2.workspace = true
 ducktape-home.workspace = true
-ducktape-rpc = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b" }
 keystore.workspace = true
 # This device's key, kept by the OS (`backend/device_key.rs`): Keychain,
 # Credential Manager, Secret Service (over zbus, no libdbus to link).
@@ -92,6 +91,7 @@ keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9d
 identity = { git = "https://github.com/ducktape-industries/modules", rev = "47cf81bc3ef542df057f7e482d18f631e51719fb", package = "identity" }
 # The roster's full query surface: its programs and its view-only entries.
 module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "47cf81bc3ef542df057f7e482d18f631e51719fb", package = "module-registry" }
+valset = { git = "https://github.com/ducktape-industries/modules", rev = "47cf81bc3ef542df057f7e482d18f631e51719fb", package = "valset" }
 base64 = "0.22"
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -103,7 +103,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # (`render/svg_limits.rs`): gpui's own parser, already in the graph.
 usvg = { version = "0.46.0", default-features = false }
 reqwest.workspace = true
-tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "macros", "net", "rt", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zeroize.workspace = true
