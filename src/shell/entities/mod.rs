@@ -240,6 +240,7 @@ pub(crate) mod tests {
             identity: Vec::new(),
             contract: crate::backend::noded::NODE_CONTRACT,
             genesis: [0; 32],
+            roles: crate::backend::noded::test_roles(),
         }
     }
 }

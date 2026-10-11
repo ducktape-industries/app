@@ -54,6 +54,7 @@ fn status_at(anchor: noded::Tip) -> noded::Status {
         identity: Vec::new(),
         contract: noded::NODE_CONTRACT,
         genesis: [0; 32],
+        roles: noded::test_roles(),
     }
 }
 
