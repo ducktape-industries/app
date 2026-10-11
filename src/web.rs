@@ -629,7 +629,14 @@ impl EntityInputHandler for WebView {
             }
             return;
         }
-        side::commit(&host, text);
+        if composing {
+            side::commit(&host, text);
+        } else {
+            // plain typing: the character events a keyboard makes, so the
+            // text goes where the page's focus is (a commit with no
+            // composition lands in the last text field instead)
+            side::type_text(&host, text);
+        }
     }
 
     fn replace_and_mark_text_in_range(
@@ -1007,6 +1014,19 @@ mod side {
 
     pub(super) fn commit(host: &BrowserHost, text: &str) {
         host.ime_commit_text(Some(&text.into()), Some(&NO_RANGE), 0);
+    }
+
+    pub(super) fn type_text(host: &BrowserHost, text: &str) {
+        for unit in text.encode_utf16() {
+            let event = KeyEvent {
+                type_: KeyEventType::CHAR,
+                windows_key_code: unit as c_int,
+                character: unit,
+                unmodified_character: unit,
+                ..Default::default()
+            };
+            host.send_key_event(Some(&event));
+        }
     }
 
     wrap_app! {
