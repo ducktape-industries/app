@@ -29,6 +29,9 @@ mod seat;
 mod store;
 
 pub(crate) use kernel::local_offset;
+// the web view cleans a page's title as a window's (render/web.rs)
+#[cfg(feature = "web")]
+pub(crate) use kernel::shown_title;
 pub use roster::{Link, RailRow, connected, deployments_checked, props, valid_route};
 pub(crate) use roster::{Roster, changes_channel, roster};
 pub use seat::override_views_from;

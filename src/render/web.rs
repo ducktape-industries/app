@@ -37,29 +37,7 @@ pub(crate) fn shutdown() {
 /// draws a page only by saying it does. The refusal ends the view, as a
 /// frame that does not decode does: sent again, it would be refused again.
 pub(crate) fn declared(frame: &wire::Frame, capabilities: &[Capability]) -> Result<(), String> {
-    fn has_web(node: &wire::Node) -> bool {
-        matches!(node, wire::Node::Web { .. }) || node.children().iter().any(has_web)
-    }
-    if capabilities.contains(&Capability::Web) {
-        return Ok(());
-    }
-    let patched = frame.patches.iter().filter_map(|patch| match patch {
-        wire::Patch::Replace { node, .. }
-        | wire::Patch::Props { node, .. }
-        | wire::Patch::Insert { node, .. } => Some(node),
-        wire::Patch::Remove { .. } | wire::Patch::Move { .. } => None,
-    });
-    let tooltips = frame
-        .tooltip_responses
-        .iter()
-        .filter_map(|response| response.content.as_deref());
-    match frame
-        .root
-        .iter()
-        .chain(patched)
-        .chain(tooltips)
-        .any(has_web)
-    {
+    match !capabilities.contains(&Capability::Web) && wire::web::carries_web(frame) {
         true => Err("the view draws a web page, and its manifest does not declare `web`".into()),
         false => Ok(()),
     }
@@ -191,16 +169,8 @@ impl ViewTree {
             let heard = route.clone();
             let state = cx.subscribe(&page, move |_, _, state: &ducktape_web::PageState, cx| {
                 if let Some(handler) = heard.get() {
-                    cx.emit(wire::Event::Web {
-                        handler,
-                        state: wire::WebState {
-                            url: state.url.clone(),
-                            title: state.title.clone(),
-                            loading: state.loading,
-                            can_go_back: state.can_go_back,
-                            can_go_forward: state.can_go_forward,
-                        },
-                    });
+                    let state = told(state);
+                    cx.emit(wire::Event::Web { handler, state });
                 }
             });
             let piece = Piece {
@@ -228,6 +198,26 @@ impl ViewTree {
             });
         }
         piece.page.clone()
+    }
+}
+
+/// What a view hears of its page. The page writes its address and title
+/// (`history.pushState`, `document.title`), so both are bounded as
+/// `wire::WebState` says: the title cleaned as a `host.title` is, the
+/// address whole or empty (one cut short is another address): empty past
+/// `MAX_URL_BYTES` or when it is not plain ASCII without control
+/// characters, as a canonical address is.
+#[cfg(feature = "web")]
+fn told(state: &ducktape_web::PageState) -> wire::WebState {
+    let url = &state.url;
+    let plain =
+        url.len() <= wire::MAX_URL_BYTES && url.is_ascii() && !url.contains(char::is_control);
+    wire::WebState {
+        url: if plain { url.clone() } else { String::new() },
+        title: crate::runtime::shown_title(&state.title),
+        loading: state.loading,
+        can_go_back: state.can_go_back,
+        can_go_forward: state.can_go_forward,
     }
 }
 
@@ -305,6 +295,36 @@ mod tests {
             ..Default::default()
         };
         assert!(declared(&plain, &undeclared).is_ok());
+    }
+
+    /// What a page says of itself reaches its view bounded: a long or
+    /// unprintable address as none, the title as a window title.
+    #[cfg(feature = "web")]
+    #[test]
+    fn a_page_tells_its_view_a_bounded_state() {
+        let page = |url: &str, title: &str| ducktape_web::PageState {
+            url: url.into(),
+            title: title.into(),
+            loading: true,
+            ..Default::default()
+        };
+        let state = told(&page(
+            "https://example.com/a?b",
+            "  Example\u{202e}\n page  ",
+        ));
+        assert_eq!(state.url, "https://example.com/a?b");
+        assert_eq!(state.title, "Example page");
+        assert!(state.loading);
+        let long = format!("https://example.com/{}", "a".repeat(wire::MAX_URL_BYTES));
+        for url in [
+            long.as_str(),
+            "https://example.com/\u{2028}",
+            "https://example.com/\t",
+        ] {
+            assert_eq!(told(&page(url, "")).url, "", "{url:?}");
+        }
+        let title = told(&page("", &"x".repeat(500))).title;
+        assert_eq!(title.chars().count(), 80);
     }
 
     /// A build without the web view draws a web piece as its line, and a

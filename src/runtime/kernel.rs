@@ -419,7 +419,7 @@ const MAX_TITLE: usize = 80;
 /// reorders what follows it), no line or paragraph separator, no space at
 /// either end, at most [`MAX_TITLE`] chars (a cut on a char boundary).
 /// Direction marks and joiners stay: an RTL name or an emoji needs them.
-fn shown_title(title: &str) -> String {
+pub(crate) fn shown_title(title: &str) -> String {
     let shown = |c: &char| {
         !(c.is_control()
             || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
