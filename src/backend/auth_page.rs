@@ -2,8 +2,8 @@
 //! browser or on a phone: the request rides the page URL's fragment, the
 //! answer comes back as a form POST to the loopback listener, or through
 //! the relay slot the phone's page posts to. One [`ceremony`] is one touch;
-//! the flows in `passkey` chain them. The page's contract is core's
-//! `ops/auth-page/README.md` (`git -C core show b690a31bf^:ops/auth-page/README.md`).
+//! the flows in `passkey` chain them. The page and its contract live in
+//! `ducktape-industries/auth` (its README).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,19 +29,26 @@ pub(super) fn auth_page() -> String {
 pub(super) enum Request {
     /// `navigator.credentials.create()`; the challenge is pass-through.
     Create { user: [u8; 40], name: String },
-    /// `navigator.credentials.get()` with `allowCredentials: []`.
-    Get { challenge: [u8; 32] },
+    /// `navigator.credentials.get()` with `allowCredentials: []`; `step`
+    /// is its place in the flow (`"1/2"`), for the page's words.
+    Get {
+        challenge: [u8; 32],
+        step: &'static str,
+    },
 }
 
 pub(super) fn request_url(page: &str, request: &Request, callback: &str) -> String {
     let fields = match request {
+        // a passkey is always made first of two touches (`passkey`)
         Request::Create { user, name } => format!(
-            "op=create&challenge={}&user={}&name={}",
+            "op=create&challenge={}&user={}&name={}&step=1/2",
             B64.encode(rand::random::<[u8; 32]>()),
             B64.encode(user),
             url_encode(name)
         ),
-        Request::Get { challenge } => format!("op=get&challenge={}", B64.encode(challenge)),
+        Request::Get { challenge, step } => {
+            format!("op=get&challenge={}&step={step}", B64.encode(challenge))
+        }
     };
     format!("{page}#{fields}&cb={}", url_encode(callback))
 }
@@ -125,8 +132,12 @@ pub(super) async fn created(request: Request, phone: &Phone) -> Result<Vec<u8>, 
     }
 }
 
-pub(super) async fn asserted(challenge: [u8; 32], phone: &Phone) -> Result<Assertion, String> {
-    match ceremony(Request::Get { challenge }, phone).await? {
+pub(super) async fn asserted(
+    challenge: [u8; 32],
+    step: &'static str,
+    phone: &Phone,
+) -> Result<Assertion, String> {
+    match ceremony(Request::Get { challenge, step }, phone).await? {
         Outcome::Asserted(assertion) => Ok(assertion),
         Outcome::Created(_) => Err("The browser answered a different step. Try again.".into()),
     }
@@ -137,7 +148,7 @@ pub(super) async fn asserted(challenge: [u8; 32], phone: &Phone) -> Result<Asser
 /// comes first.
 async fn ceremony(request: Request, phone: &Phone) -> Result<Outcome, String> {
     let page = auth_page();
-    let listener = Listener::bind()
+    let listener = Listener::bind(&page)
         .await
         .map_err(|error| format!("Couldn't listen for the browser: {error}"))?;
     let relay = Relay::at(&page)?;
@@ -242,13 +253,14 @@ mod tests {
             AUTH_PAGE,
             &Request::Get {
                 challenge: [0xff; 32],
+                step: "2/2",
             },
             "http://127.0.0.1:1/cb/x",
         );
         assert_eq!(
             url,
             format!(
-                "{AUTH_PAGE}#op=get&challenge={}&cb=http%3A%2F%2F127.0.0.1%3A1%2Fcb%2Fx",
+                "{AUTH_PAGE}#op=get&challenge={}&step=2/2&cb=http%3A%2F%2F127.0.0.1%3A1%2Fcb%2Fx",
                 B64.encode([0xff; 32])
             )
         );
@@ -260,7 +272,7 @@ mod tests {
             },
             "cb",
         );
-        assert!(create.contains("&name=ada%20%C2%B7%20testkit&cb=cb"));
+        assert!(create.contains("&name=ada%20%C2%B7%20testkit&step=1/2&cb=cb"));
         assert!(create.contains(&format!("&user={}&", B64.encode([1; 40]))));
     }
 
@@ -337,7 +349,7 @@ mod tests {
         ])
         .await;
         let (relay, phone) = phone_relay(&page);
-        let listener = Listener::bind().await.unwrap();
+        let listener = Listener::bind(AUTH_PAGE).await.unwrap();
         let outcome = answer(listener, relay, &phone, Duration::from_secs(10)).await;
         assert_eq!(outcome, Ok(Outcome::Created(key)));
         assert_eq!(*polls.borrow(), 3);
@@ -350,7 +362,7 @@ mod tests {
         let phone = Phone::new(chosen.clone()).0;
         // never picked: the ceremony times out, the slot never asked
         let (relay, _) = phone_relay(&page);
-        let listener = Listener::bind().await.unwrap();
+        let listener = Listener::bind(AUTH_PAGE).await.unwrap();
         let outcome = answer(listener, relay, &phone, Duration::from_millis(100)).await;
         assert_eq!(
             outcome,
@@ -361,7 +373,7 @@ mod tests {
         // picked: the slot is asked
         chosen.store(true, Ordering::Relaxed);
         let (relay, _) = phone_relay(&page);
-        let listener = Listener::bind().await.unwrap();
+        let listener = Listener::bind(AUTH_PAGE).await.unwrap();
         tokio::select! {
             outcome = answer(listener, relay, &phone, Duration::from_secs(60)) => {
                 panic!("answered with nothing to answer: {outcome:?}")
@@ -376,7 +388,7 @@ mod tests {
     async fn cancelling_stops_the_polling() {
         let (page, mut polls) = fake_relay(vec![]).await;
         let (relay, phone) = phone_relay(&page);
-        let listener = Listener::bind().await.unwrap();
+        let listener = Listener::bind(AUTH_PAGE).await.unwrap();
         let waiting =
             tokio::spawn(
                 async move { answer(listener, relay, &phone, Duration::from_secs(60)).await },
@@ -424,7 +436,7 @@ mod tests {
 
         let (relay, phone) = phone_relay(&page);
         let outcome = answer(
-            Listener::bind().await.unwrap(),
+            Listener::bind(AUTH_PAGE).await.unwrap(),
             relay,
             &phone,
             Duration::from_secs(10),
@@ -437,7 +449,7 @@ mod tests {
 
         let (relay, phone) = phone_relay(&page);
         let Ok(Outcome::Asserted(assertion)) = answer(
-            Listener::bind().await.unwrap(),
+            Listener::bind(AUTH_PAGE).await.unwrap(),
             relay,
             &phone,
             Duration::from_secs(10),
@@ -454,7 +466,7 @@ mod tests {
         let (page, _) = fake_relay(vec![("404 Not Found", String::new())]).await;
         let (relay, phone) = phone_relay(&page);
         let outcome = answer(
-            Listener::bind().await.unwrap(),
+            Listener::bind(AUTH_PAGE).await.unwrap(),
             relay,
             &phone,
             Duration::from_secs(10),

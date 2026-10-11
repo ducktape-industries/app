@@ -156,7 +156,10 @@ mod tests {
         // the QR carries the slot as the page's callback
         let url = request_url(
             "https://auth.example/",
-            &Request::Get { challenge: [0; 32] },
+            &Request::Get {
+                challenge: [0; 32],
+                step: "1/2",
+            },
             &relay.url,
         );
         assert!(url.ends_with(&format!("&cb=https%3A%2F%2Fauth.example%2Fr%2F{id}")));

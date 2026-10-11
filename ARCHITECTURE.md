@@ -587,8 +587,10 @@ Connect ─► /v1/status ─► contract check ─► bind_keyring ─► devic
    - **Create**: `create_submit(name)` (`identity::create_plain_account`)
      or the passkey path: `passkey_create(name)` → `passkey::create_account`
      opens the auth page (`AUTH_PAGE`, override `DUCKTAPE_AUTH_PAGE`) in the
-     system browser with the request in the URL fragment; the result comes
-     back as a form POST to a one-shot loopback `Listener`. The identity
+     system browser with the request in the URL fragment (and the touch's
+     `step`, `1/2`); the result comes back as a form POST to a one-shot
+     loopback `Listener`, which sends the browser on to the page's `#done`
+     (the page lives in `ducktape-industries/auth`). The identity
      program assigns the account number; the passkey then `AddKey`s itself
      with the device key's consent. `Phone` offers each touch as a QR URL
      and polls the auth host's relay slot `/r/<id>` instead. **Sign in with
