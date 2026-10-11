@@ -1,16 +1,16 @@
 //! The sidebar (the Sidebar layout; the mock's `index-desk`): the chrome
 //! as a column down the console's left, `SIDEBAR` wide. Top to bottom: the
 //! network, Search, a hairline, the programs, each with the windows it has
-//! open on the desk listed under it, then after a hairline the windows no
-//! program row stands for (Help, empty windows); and a footer with the
-//! bell, the node's breath, who is signed in, and the gear. Its buttons
-//! and menus are the bar's (`Chrome`'s), its menus hung beside the column
-//! (`Chrome::hanging`). The list is one Tab stop the arrows move along
-//! (`a11y::roving`), as the bar's tabs are.
+//! open listed under it (on the desk, then in pop-outs, marked), then
+//! after a hairline the windows no program row stands for (Help, empty
+//! windows); and a footer with the bell, the node's breath, who is signed
+//! in, and the gear. Its buttons and menus are the bar's (`Chrome`'s), its
+//! menus hung beside the column (`Chrome::hanging`). The list is one Tab
+//! stop the arrows move along (`a11y::roving`), as the bar's tabs are.
 
 use super::{Bar, Chrome, FOOT, Row, drag_handle, program_name, tab_label};
 use crate::a11y::Control as _;
-use crate::runtime::RailRow;
+use crate::runtime::{RailRow, WindowKey};
 use crate::shell::entities::Listed;
 use crate::shell::ink::{Ink, mono, sans};
 use crate::shell::{PaneMessage, layout, theme};
@@ -41,6 +41,8 @@ struct Entry {
     /// What it says.
     label: String,
     kind: Kind,
+    /// The pop-out the window it stands for is in.
+    away: Option<WindowKey>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -56,10 +58,11 @@ enum Kind {
 }
 
 /// The sidebar's list: one row per program the roster lists with a view,
-/// in roster order, each followed by its windows in desk order when it has
-/// two or more, or one with a title; then the windows none of them lists,
-/// in desk order. A window's row says its title, else its program's name,
-/// counted among the program's untitled windows (`window_label`).
+/// in roster order, each followed by its windows in `open`'s order (the
+/// desk's, then the pop-outs') when it has two or more, or one with a
+/// title or in a pop-out; then the windows none of them lists, in that
+/// order. A window's row says its title, else its program's name, counted
+/// among the program's untitled windows (`window_label`).
 fn index(rows: &[RailRow], open: &[Listed]) -> Vec<Entry> {
     let mut untitled: Vec<&'static str> = Vec::new();
     let mut said = |label: &str, window: &Listed| {
@@ -74,7 +77,10 @@ fn index(rows: &[RailRow], open: &[Listed]) -> Vec<Entry> {
     for row in &rows {
         let label = tab_label(row);
         let windows: Vec<&Listed> = open.iter().filter(|it| it.module == row.module).collect();
-        let head = windows.len() > 1 || windows.iter().any(|it| it.title.is_some());
+        let head = windows.len() > 1
+            || windows
+                .iter()
+                .any(|it| it.title.is_some() || it.away.is_some());
         entries.push(Entry {
             row: Row::Program(row.module),
             module: row.module,
@@ -83,6 +89,7 @@ fn index(rows: &[RailRow], open: &[Listed]) -> Vec<Entry> {
                 head,
                 alone: windows.first().filter(|_| !head).map(|it| it.instance),
             },
+            away: None,
         });
         if head {
             for window in windows {
@@ -91,6 +98,7 @@ fn index(rows: &[RailRow], open: &[Listed]) -> Vec<Entry> {
                     module: window.module,
                     label: said(&label, window),
                     kind: Kind::Window,
+                    away: window.away,
                 });
             }
         }
@@ -109,6 +117,7 @@ fn index(rows: &[RailRow], open: &[Listed]) -> Vec<Entry> {
             module: window.module,
             label: said(label, window),
             kind: Kind::Loose,
+            away: window.away,
         });
     }
     entries
@@ -221,7 +230,7 @@ impl Chrome {
     /// the keys, else the window in front's, else the first; up and down
     /// move the keys along it, Return opens what the row stands for.
     fn list(&self, bar: &Bar, ink: &Ink, cx: &mut Context<Self>) -> Stateful<Div> {
-        let entries = index(&bar.rows, &bar.on_desk);
+        let entries = index(&bar.rows, &bar.listed);
         let keys: Vec<Row> = entries.iter().map(|entry| entry.row).collect();
         let active = self
             .rail_cursor
@@ -229,7 +238,7 @@ impl Chrome {
             .or_else(|| entries.iter().position(|entry| entry.on(bar.front)))
             .unwrap_or_default();
         // room on the desk for another window: the `+` a program's row shows
-        let room = bar.on_desk.len() < layout::MAX_PANES;
+        let room = bar.listed.iter().filter(|it| it.away.is_none()).count() < layout::MAX_PANES;
         let mut rows: Vec<AnyElement> = Vec::new();
         for (n, entry) in entries.iter().enumerate() {
             if entry.kind == Kind::Loose && n > 0 && entries[n - 1].kind != Kind::Loose {
@@ -276,7 +285,7 @@ impl Chrome {
     }
 
     /// A program's row (`.mod`: `height: 30px; padding: 0 8px 0 14px`):
-    /// muted, ink while it has a window on the desk, ink 500 over its
+    /// muted, ink while it has a window open, ink 500 over its
     /// listed windows, `raised` while it stands for the window in front;
     /// its unread count and its failed dot at the right, and under the
     /// pointer a `+` that opens another window of it. A press is the bar's
@@ -299,7 +308,7 @@ impl Chrome {
         };
         let badge = self.rail.read(cx).badge(module);
         let on = entry.on(bar.front);
-        let open = head || bar.on_desk.iter().any(|it| it.module == module);
+        let open = head || bar.listed.iter().any(|it| it.module == module);
         let hover = ink.ink;
         let tab = crate::a11y::roving_item(
             sans(if head { 500 } else { 400 }, 13.).id(entry.id()),
@@ -399,9 +408,10 @@ impl Chrome {
 
     /// A window's row: under its program (`.tb`: `height: 28px;
     /// padding-left: 28px`), or after the hairline (`.mod.open`); ink,
-    /// `raised` while it is the window in front. A press brings that window
-    /// to the front, found by its instance then (a close moves the others'
-    /// places).
+    /// `raised` while it is the window in front, a pop-out's marked at the
+    /// right. A press brings that window to the front: on the desk, found
+    /// by its instance then (a close moves the others' places); a pop-out's
+    /// OS window.
     fn window_row(
         &self,
         entry: &Entry,
@@ -413,7 +423,7 @@ impl Chrome {
             return div().into_any_element();
         };
         let under = entry.kind == Kind::Window;
-        let desk = self.window.clone();
+        let (desk, windows, away) = (self.window.clone(), self.windows.clone(), entry.away);
         crate::a11y::roving_item(sans(400, 13.).id(entry.id()), stop, ink.ink)
             .control(Role::Tab, SharedString::from(entry.label.clone()))
             .aria_selected(entry.on(bar.front))
@@ -426,7 +436,13 @@ impl Chrome {
             .cursor_pointer()
             .text_color(ink.ink)
             .when(entry.on(bar.front), |row| row.bg(ink.raised))
+            .when(away.is_some(), |row| {
+                row.aria_description("In a window of its own")
+            })
             .on_click(move |_, window, cx| {
+                if let Some(away) = away {
+                    return windows.update(cx, |windows, cx| windows.raise(away, cx));
+                }
                 let _ = desk.update(cx, |desk, cx| {
                     let at = desk
                         .layout(cx)
@@ -445,6 +461,16 @@ impl Chrome {
                     .truncate()
                     .child(entry.label.clone()),
             )
+            .when(away.is_some(), |row| {
+                row.child(
+                    div().flex_shrink_0().text_color(ink.muted).child(
+                        gpui_kit::component::Icon::new(
+                            gpui_kit::assets::IconName::SquareArrowOutUpRight,
+                        )
+                        .size(px(12.)),
+                    ),
+                )
+            })
             .into_any_element()
     }
 }
@@ -452,7 +478,7 @@ impl Chrome {
 #[cfg(test)]
 mod tests {
     use super::{Entry, Kind, Row, index, window_label};
-    use crate::runtime::RailRow;
+    use crate::runtime::{RailRow, WindowKey};
     use crate::shell::entities::Listed;
     use crate::ui::layout::{EMPTY, HELP};
 
@@ -471,6 +497,7 @@ mod tests {
             module,
             instance,
             title: title.map(Into::into),
+            away: None,
         }
     }
 
@@ -585,6 +612,50 @@ mod tests {
         assert_eq!(
             said(&index(&rows[3..4], &open)),
             [(0, "Forge", Row::Program("forge"))]
+        );
+    }
+
+    /// A window in a pop-out is listed as a desk's is, after the desk's
+    /// (`Bar::listed`), marked with its window: under its program even
+    /// when it is the program's one untitled window, counted among its
+    /// untitled ones; after the hairline when the roster does not list its
+    /// program.
+    #[test]
+    fn a_pop_out_is_listed_under_its_program_after_the_desk() {
+        let rows = [row("chat", "Chat"), row("forge", "Forge")];
+        let away = |listed: Listed, key: u64| Listed {
+            away: Some(WindowKey(key)),
+            ..listed
+        };
+        let open = [
+            window("chat", 1, None),
+            away(window("chat", 2, None), 7),
+            away(window("forge", 3, None), 8),
+            away(window("gone", 4, None), 9),
+        ];
+        let entries = index(&rows, &open);
+        assert_eq!(
+            said(&entries),
+            [
+                (0, "Chat", Row::Program("chat")),
+                (1, "Chat", Row::Window(1)),
+                (1, "Chat 2", Row::Window(2)),
+                (0, "Forge", Row::Program("forge")),
+                (1, "Forge", Row::Window(3)),
+                (2, "gone", Row::Window(4)),
+            ]
+        );
+        let marked: Vec<Option<WindowKey>> = entries.iter().map(|entry| entry.away).collect();
+        assert_eq!(
+            marked,
+            [
+                None,
+                None,
+                Some(WindowKey(7)),
+                None,
+                Some(WindowKey(8)),
+                Some(WindowKey(9)),
+            ]
         );
     }
 }

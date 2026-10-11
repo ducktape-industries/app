@@ -155,10 +155,12 @@ impl Slice<Layout> {
     }
 
     /// A `PaneMessage` that stays on this desk: the method it names.
-    /// (Close, PopOut and PopIn cross windows: `Windows` takes them.)
+    /// (Close, PopOut, PopIn and Open cross windows: `Windows` takes them.)
     pub(crate) fn moved_by(&mut self, message: PaneMessage, cx: &mut Context<Self>) {
         match message {
             PaneMessage::Select(module) => self.select(module, cx),
+            // desk-only (tests): panes.rs routes Open to
+            // `Windows::open_program`, which brings a pop-out forward
             PaneMessage::Open(module) => self.open(module, cx),
             PaneMessage::Split(module) => self.split(module, cx),
             PaneMessage::Focus(index) => self.focus(index, cx),

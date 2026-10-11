@@ -449,13 +449,18 @@ draws nothing.
   an observer — and where the bar's well is), which window is the console
   and which is in front, and the program in front (`active`: the focused
   pane's, wherever it is, from an observer of every desk, or the one a
-  pick or a link just opened). Its methods are what crosses windows:
-  `open` (an OS window, deferred) / `raise` / `forget_closed` / `quit`,
-  `close_pane`, `pop_out` and `pop_in` (a pane keeps its `instance` on
-  the way out and back), `select_view`, `open_help` / `help_asked`,
-  `open_link` (read against `Session`'s chain: this chain's link routes
-  its view, another chain's opens the seat and says why, an unlisted view
-  toasts, a web link goes to the OS), `open_notice`, `sync_appearance`
+  pick or a link just opened), and `Popped` (the pop-outs' windows and
+  the one in front, derived from the same observers, which the console's
+  chrome lists beside its own desk's). Its methods are what crosses
+  windows: `open` (an OS window, deferred) / `raise` / `forget_closed` /
+  `quit`, `close_pane`, `pop_out` and `pop_in` (a pane keeps its
+  `instance` on the way out and back), `open_program` (a tab, a pick,
+  Spotlight or a link asking for a program: a program the desk does not
+  show and a pop-out does brings the pop-out forward), `select_view`,
+  `open_help` / `help_asked`, `open_link` (read against `Session`'s
+  chain: this chain's link routes its view, another chain's opens the
+  seat and says why, an unlisted view toasts, a web link goes to the OS),
+  `open_notice`, `sync_appearance`
   (the theme, and the OS's dark word back into `Prefs`), `swap_console`
   (the launcher and the desk are one window, resized in place; from an
   observer of `Screen`). A window's activation makes it the front and
@@ -832,7 +837,8 @@ House words, and where one word means several things.
 - **split / cycle / fill / measure** — pane geometry operations in
   `ui/layout.rs`. `split` adds a pane.
 - **rail / RailRow** — the roster-ordered program list the menu bar shows
-  as tabs and the sidebar as rows, each program's desk windows under it
+  as tabs and the sidebar as rows, each program's windows under it (the
+  desk's, then its pop-outs')
   (`Roster::rail`, read into `entities::Rail` once per change the roster's
   channel reports). The name is from an older side rail and survives in
   AX ids (`rail/<module>`, `rail/<module>/<instance>`, `rail-search`) that
