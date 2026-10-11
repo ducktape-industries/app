@@ -205,9 +205,11 @@ fn answer(mut stream: std::net::TcpStream, answers: &Answers, held: &Mutex<Held>
         let query: crate::backend::noded::Query = abi::decode(&body).unwrap();
         let frame: crate::backend::noded::Frame = abi::decode(&query.frame).unwrap();
         let reply = match abi::decode(&frame.body.payload).unwrap() {
-            module_registry::Query::Views(_) => {
-                module_registry::Reply::Views(answers.views.clone())
-            }
+            module_registry::Query::Roster => module_registry::Reply::Roster {
+                height: 1,
+                programs: answers.programs.clone(),
+                views: answers.views.clone(),
+            },
             module_registry::Query::Roles => {
                 held.lock().unwrap().roles_asked += 1;
                 let Some(roles) = answers.roles.clone() else {
@@ -216,7 +218,7 @@ fn answer(mut stream: std::net::TcpStream, answers: &Answers, held: &Mutex<Held>
                 };
                 module_registry::Reply::Roles(roles)
             }
-            _ => module_registry::Reply::Programs(answers.programs.clone()),
+            other => panic!("unexpected registry query: {other:?}"),
         };
         return respond(&mut stream, "200 OK", &abi::encode(&abi::encode(&reply)));
     }
