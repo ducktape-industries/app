@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub(crate) const MAX_PANES: usize = 8;
 pub(crate) const MIN_WIDTH: f32 = 320.;
 pub(crate) const MIN_HEIGHT: f32 = 220.;
-/// What of a window must stay on the desk: enough of its title bar to grab.
+/// What of a window must stay on the desk past its right or bottom edge:
+/// enough of its title bar to grab. Its left and top edges stop at the
+/// desk's.
 pub(crate) const KEEP: f32 = 96.;
 /// A new window opens this far down and right of the one before it.
 const CASCADE: f32 = 28.;
@@ -32,8 +34,10 @@ pub(crate) struct Frame {
 
 impl Frame {
     /// At least `min_w` wide (its pane's [`Pane::min_width`]) and the
-    /// smallest window high, no larger than the desk, and never so far off
-    /// it that its title bar can't be grabbed back. On a desk narrower than
+    /// smallest window high, no larger than the desk, never past its left
+    /// or top edge (the chrome is there: the sidebar, the bar), and never
+    /// so far off its right or bottom that its title bar can't be grabbed
+    /// back. On a desk narrower than
     /// `min_w` it is the desk's width, and the view scrolls sideways in it.
     /// A frame widened to its floor moves left as far as it takes to stay
     /// on the desk.
@@ -45,7 +49,7 @@ impl Frame {
             false => self.x,
         };
         Self {
-            x: x.clamp(KEEP - w, (desk.0 - KEEP).max(0.)),
+            x: x.clamp(0., (desk.0 - KEEP).max(0.)),
             y: self.y.clamp(0., (desk.1 - KEEP / 2.).max(0.)),
             w,
             h,

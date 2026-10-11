@@ -218,7 +218,7 @@ fn a_press_on_a_window_behind_brings_it_to_the_front(cx: &mut TestAppContext) {
 }
 
 /// The pointer pressed at `from`, moved to `to` and let go, in one go.
-fn drag(native: &mut VisualTestContext, from: (f32, f32), to: (f32, f32)) {
+pub(super) fn drag(native: &mut VisualTestContext, from: (f32, f32), to: (f32, f32)) {
     use gpui_kit::{MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput};
     let (from, to) = (
         gpui_kit::point(px(from.0), px(from.1)),
