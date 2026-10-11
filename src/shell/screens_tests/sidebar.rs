@@ -467,6 +467,62 @@ fn the_desk_and_the_dot_follow_the_sidebar(cx: &mut TestAppContext) {
     );
 }
 
+/// A window dragged up and off the desk's left edge, as far as its title
+/// bar's last `KEEP` px, goes under the sidebar: nothing of it paints over
+/// the column, a press on the column where it hangs does not raise it, and
+/// a press on a row over it is the row's.
+#[gpui_kit::test]
+fn a_window_off_the_desks_edge_goes_under_the_sidebar(cx: &mut TestAppContext) {
+    use crate::ui::layout::{Frame, KEEP};
+    let seed = sidebar(
+        &["side-under", "side-front"],
+        &[("side-under", None), ("side-front", None)],
+    );
+    let (view, mut native) = open(seed, cx);
+    let at = instances(&view, &mut native);
+    let hang = |index: usize, native: &mut VisualTestContext| {
+        let frame = view.read_with(native, |view, cx| {
+            view.layout(cx).panes[index].frame.unwrap()
+        });
+        let hung = Frame {
+            x: KEEP - frame.w,
+            y: 0.,
+            ..frame
+        };
+        pane(&view, PaneMessage::Frame(index, hung), native);
+        hung
+    };
+    let hung = hang(0, &mut native);
+    native.update(drawn);
+    // the hung window's box starts left of the OS window: nothing else does
+    let scale = native.update(|window, _| window.scale_factor());
+    let hanging: Vec<_> = native
+        .update(|window, _| window.painted_quads())
+        .into_iter()
+        .filter(|quad| quad.bounds.origin.x.0 < 0.)
+        .collect();
+    assert!(!hanging.is_empty(), "the hung window paints");
+    for quad in hanging {
+        assert!(
+            quad.content_mask.bounds.origin.x.0 >= 220. * scale,
+            "painted over the sidebar: {:?}",
+            quad.content_mask
+        );
+    }
+    // the column over it, below its rows
+    let column = gpui_kit::point(px(100.), px(hung.y + hung.h / 2.));
+    native.simulate_click(column, gpui_kit::Modifiers::none());
+    assert_eq!(front(&view, &mut native), at[1], "the hung window rose");
+    // the window in front hung too: its program's row over it still works
+    let hung = hang(1, &mut native);
+    let nodes = native.update(drawn);
+    let row = middle(&nodes, "shell:rail/side-under");
+    let y = f32::from(row.y);
+    assert!((hung.y..hung.y + hung.h).contains(&y), "the row is over it");
+    native.simulate_click(row, gpui_kit::Modifiers::none());
+    assert_eq!(front(&view, &mut native), at[0], "the row took the press");
+}
+
 /// In the sidebar a menu opens beside the column: the network's 4px right
 /// of it at its row's top; the bell's, the node's and the account's upward
 /// from their buttons in the footer, their foot 4px over its hairline, and

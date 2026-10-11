@@ -140,6 +140,85 @@ impl Element for SlotDeferred {
     }
 }
 
+/// A desk window's layer (`PaneLayer`): `child` drawn after the window's
+/// other draws at `priority`, and only inside the content mask it is laid
+/// out in (the desk's), so a window dragged past the desk's edge never
+/// paints or takes a press over the chrome beside it.
+pub(crate) fn clipped(child: AnyElement, priority: usize) -> Clipped {
+    Clipped {
+        child: Some(child),
+        priority,
+    }
+}
+
+/// See [`clipped`].
+pub(crate) struct Clipped {
+    /// Held until prepaint.
+    child: Option<AnyElement>,
+    priority: usize,
+}
+
+impl IntoElement for Clipped {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for Clipped {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (
+            self.child
+                .as_mut()
+                .expect("deferred child before prepaint")
+                .request_layout(window, cx),
+            (),
+        )
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        window: &mut Window,
+        _cx: &mut App,
+    ) {
+        let child = self.child.take().expect("deferred child is drawn once");
+        let mask = window.content_mask();
+        window.defer_draw(child, window.element_offset(), self.priority, Some(mask));
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        _prepaint: &mut (),
+        _window: &mut Window,
+        _cx: &mut App,
+    ) {
+    }
+}
+
 /// A view's tree in its pane's layer: the tooltips registered and the
 /// `Deferred`s met inside it draw at [`GUEST_CEILING`] at most, fitted and
 /// clipped to the content mask the tree is drawn in (the pane's).
