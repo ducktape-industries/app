@@ -283,6 +283,7 @@ mod tests {
             identity: vec![7],
             contract: NODE_CONTRACT,
             genesis: [8; 32],
+            roles: crate::backend::noded::test_roles(),
         };
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await

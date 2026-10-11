@@ -121,6 +121,7 @@ async fn system_status_preserves_borsh_and_refusals() {
         identity: vec![4; 32],
         contract: 1,
         genesis: [5; 32],
+        roles: backend::noded::test_roles(),
     };
     let (node, server) = node_server(
         "GET /v1/status HTTP/1.1",

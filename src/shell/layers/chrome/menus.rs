@@ -559,6 +559,7 @@ mod tests {
             identity: vec![0x24; 32],
             contract: 1,
             genesis: [0; 32],
+            roles: crate::backend::noded::test_roles(),
         }
     }
 

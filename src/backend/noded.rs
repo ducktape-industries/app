@@ -18,7 +18,7 @@ use futures::{Stream, StreamExt as _};
 use reqwest::StatusCode;
 use tokio_tungstenite::tungstenite::Message;
 
-pub const NODE_CONTRACT: u32 = 2;
+pub const NODE_CONTRACT: u32 = 3;
 pub const FRAME_NAMESPACE: &[u8] = b"ducktape:frame";
 
 /// The most one node answer may carry, unless the call names its own cap
@@ -147,6 +147,16 @@ pub struct Status {
     pub contract: u32,
     /// The genesis block's digest: with the network name, the chain's id.
     pub genesis: [u8; 32],
+    pub roles: abi::Roles,
+}
+
+#[cfg(test)]
+pub fn test_roles() -> abi::Roles {
+    abi::Roles {
+        registry: "module-registry".into(),
+        validators: "valset".into(),
+        identity: "identity".into(),
+    }
 }
 
 impl Status {
@@ -517,6 +527,43 @@ mod tests {
             receipt: None,
         };
         assert_eq!(abi::decode::<Tx>(&bytes).unwrap(), tx);
+    }
+
+    #[test]
+    fn a_status_decodes_the_nodes_field_order_ending_in_the_roles() {
+        let text = |text: &str| [&(text.len() as u32).to_le_bytes()[..], text.as_bytes()].concat();
+        let mut bytes = text("n");
+        for number in [1u64, 2, 3, 4] {
+            bytes.extend(number.to_le_bytes());
+        }
+        bytes.extend([5; 32]);
+        bytes.extend([6; 32]);
+        bytes.extend(7u64.to_le_bytes());
+        bytes.extend([1, 0, 0, 0, 8]);
+        bytes.extend(NODE_CONTRACT.to_le_bytes());
+        bytes.extend([9; 32]);
+        for role in ["r", "v", "i"] {
+            bytes.extend(text(role));
+        }
+        let status = Status {
+            network: "n".into(),
+            time: 1,
+            block_time_ms: 2,
+            epoch_length: 3,
+            height: 4,
+            tip: [5; 32],
+            root: Root([6; 32]),
+            epoch: 7,
+            identity: vec![8],
+            contract: NODE_CONTRACT,
+            genesis: [9; 32],
+            roles: abi::Roles {
+                registry: "r".into(),
+                validators: "v".into(),
+                identity: "i".into(),
+            },
+        };
+        assert_eq!(abi::decode::<Status>(&bytes).unwrap(), status);
     }
 
     /// The bytes `host::Receipt` encodes a submission with one nested run
