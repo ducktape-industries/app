@@ -446,6 +446,17 @@ impl Render for Page {
                     host.send_mouse_move_event(Some(&mouse), 0);
                 }
             }))
+            // moves reach the page only inside its box: the pointer leaving
+            // it (onto the app, or out of the window) is told here, so the
+            // page's hover ends; typing in the page is no leave
+            .hover_listener_mode(HoverListenerMode::InputModalityIndependent)
+            .on_hover(cx.listener(|this, hovered: &bool, window, _| {
+                if !hovered && let Some(host) = this.shared.host() {
+                    let mouse =
+                        this.mouse(window.mouse_position(), flags(&window.modifiers(), None));
+                    host.send_mouse_move_event(Some(&mouse), 1);
+                }
+            }))
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, _| {
                 if let Some(host) = this.shared.host() {
                     let delta = event.delta.pixel_delta(px(40.));
