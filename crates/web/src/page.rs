@@ -83,21 +83,30 @@ impl Shared {
 
     /// Asks for the browser of the pending address, in its profile's
     /// request context (`context`), once; it arrives in `on_after_created`.
-    /// An address asked for before it arrived goes to it once it has.
+    /// An address asked for before it arrived goes to it once it has. The
+    /// address is held to [`crate::loadable`] here, at the call, as in
+    /// [`Page::load`]: CEF runs `LoadURL("javascript:...")` without asking
+    /// `on_before_browse`.
     pub(crate) fn create(
         self: &Rc<Self>,
         context: impl FnOnce(&Path) -> Option<cef::RequestContext>,
     ) {
+        let pending = || {
+            self.pending
+                .borrow_mut()
+                .take()
+                .filter(|url| crate::loadable(url))
+        };
         if self.made.get() {
             let frame = self.browser.borrow().as_ref().and_then(|b| b.main_frame());
             if let Some(frame) = frame
-                && let Some(url) = self.pending.borrow_mut().take()
+                && let Some(url) = pending()
             {
                 frame.load_url(Some(&url.as_str().into()));
             }
             return;
         }
-        let Some(url) = self.pending.borrow_mut().take() else {
+        let Some(url) = pending() else {
             return;
         };
         self.made

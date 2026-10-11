@@ -307,6 +307,20 @@ mod tests {
             "http://localhost.evil.com/",
             "http://127.0.0.1.nip.io/",
             "http://[::2]/",
+            // not http(s), whatever follows
+            "view-source:https://example.com/",
+            "view-source:http://localhost/",
+            // an IPv4-mapped loopback is no IPv6 loopback
+            "http://[::ffff:127.0.0.1]/",
+            // every address of this machine, and of every other
+            "http://0.0.0.0/",
+            "http://0/",
+            // Cyrillic `о`: the parser makes it punycode, not localhost
+            "http://l\u{43e}calhost/",
+            "http://xn--lcalhost-nbh/",
+            // a name under localhost is the resolver's to place
+            "http://foo.localhost/",
+            "http://localhost./",
             "file:///etc/passwd",
             "javascript:alert(1)",
             "data:text/html,hi",
