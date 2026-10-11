@@ -208,8 +208,8 @@ impl Drag {
     }
 
     /// The frame with the pointer at `to`. A side held past the window's
-    /// narrowest (or the smallest window's height) stops; the side across
-    /// from it stays put.
+    /// narrowest (or the smallest window's height), or the left or top
+    /// side past the desk's edge, stops; the side across from it stays put.
     pub(super) fn frame(&self, to: (f32, f32)) -> layout::Frame {
         let (dx, dy) = (to.0 - self.from.0, to.1 - self.from.1);
         let start = self.start;
@@ -231,11 +231,13 @@ impl Drag {
             frame.h = (start.h + dy).max(layout::MIN_HEIGHT);
         }
         if left {
-            frame.w = (start.w - dx).max(self.min_w);
+            frame.w = (start.w - dx).min(start.x + start.w).max(self.min_w);
             frame.x = start.x + start.w - frame.w;
         }
         if top {
-            frame.h = (start.h - dy).max(layout::MIN_HEIGHT);
+            frame.h = (start.h - dy)
+                .min(start.y + start.h)
+                .max(layout::MIN_HEIGHT);
             frame.y = start.y + start.h - frame.h;
         }
         frame
@@ -379,6 +381,18 @@ mod drag_tests {
         })
         .frame((0., -60.));
         assert_eq!((top.y, top.h), (40., 460.));
+        // the left and top edges past the desk's: they stop at it, the
+        // right and bottom edges stay put
+        let past = drag(Sides {
+            left: true,
+            top: true,
+            ..Sides::NONE
+        })
+        .frame((-1000., -1000.));
+        assert_eq!(
+            (past.x, past.y, past.x + past.w, past.y + past.h),
+            (0., 0., 600., 500.)
+        );
         // a window holding a view laid out from 680 stops at 682
         let wide = Frame { w: 900., ..start };
         let left = Drag {

@@ -138,6 +138,15 @@ fn frames_stay_grabbable_and_reject_invalid_input() {
     let kept = layout.panes[0].frame.unwrap();
     assert_eq!((kept.w, kept.h), (MIN_WIDTH, MIN_HEIGHT));
     assert!(kept.x <= DESK.0 - KEEP && kept.y >= 0.);
+    // the left and top edges stop at the desk's
+    let left = Frame {
+        x: -300.,
+        y: -300.,
+        ..kept
+    };
+    assert!(layout.set_frame(0, left, DESK));
+    let kept = layout.panes[0].frame.unwrap();
+    assert_eq!((kept.x, kept.y), (0., 0.));
     let nan = Frame {
         x: f32::NAN,
         ..kept
