@@ -55,6 +55,7 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 | `src/render.rs`, `render/` | the wire tree presenter, its text fields the kit's engine holds (IME, caret, clipboard, undo) |
 | `src/shell.rs`, `shell/` | the native chrome: the app's state as entities (`shell/entities/`, each written by its own methods) and each window's root with its layers (`shell/layers/`: launcher, menu bar, panes, dialogs, footer) |
 | `src/ui/layout.rs`, `src/shell/entities/{desk,windows}.rs` | panes floating on the desk, popped out into their own windows and back |
+| `crates/network` | `ducktape-network`, which founds or joins a network at the revs this workspace pins ("Run a network" below) |
 
 ## Dependency line
 
@@ -86,3 +87,69 @@ needs.
 `cargo clippy --locked --workspace --tests --no-deps -- -D warnings` (and again
 with `--features ax-door`) and `cargo test --locked --workspace --no-fail-fast`
 are what CI runs.
+
+## Run a network: `ducktape-network`
+
+`crates/network` builds `ducktape-network`, the server side for whoever runs a
+network for this app: it founds or joins one from published artifacts, with no
+checkouts and no wasm toolchain. It installs core's `ducktape` node at the core
+commit this workspace pins (Cargo.lock; core's release `bin-<commit>`) and the
+programs at the modules commit it pins (modules' release `wasm-<commit>`), so a
+network it founds is one this build of the app speaks. `ducktape-network
+--version` names both commits.
+
+Install on Linux x86_64 or macOS on Apple silicon (the targets core publishes
+the node for), with a Rust toolchain, `curl` and `tar`; it is not published as
+a binary of its own yet:
+
+```bash
+cargo install --locked --git https://github.com/ducktape-industries/app ducktape-network
+```
+
+Found a network, this server its one validator:
+
+```bash
+ducktape-network found mynet --address tcp://203.0.113.7:9000
+```
+
+It downloads the node and the programs, checks the programs, packs each view
+and describe module into its program, writes `~/.ducktape-network/founding.toml`,
+founds the network and runs the node as the systemd service `ducktape-network`:
+a system unit when run as root, else a user unit (`loginctl enable-linger`
+keeps it running after you log out). On macOS it prints the `ducktape run`
+command instead. It prints the URL the app connects to (here
+`http://203.0.113.7:8844`) and an invite with the command for a second server.
+The address takes core's forms: `tcp://host:port`, `tls://host:port`,
+`ws://host[:port]` or `wss://host[:port]` (core's README, "Reach a node").
+
+Join it from a second server:
+
+```bash
+ducktape-network join http://203.0.113.7:8844 --address tcp://198.51.100.4:9000 --invite <hex>
+```
+
+It enrolls, waits for the epoch that seats it, syncs and runs, as a resident:
+it follows the chain and does not vote. It prints the vote the founder runs on
+the first server to seat it as a validator, `ducktape-network cli vote promote <key>`.
+
+`ducktape-network status` prints the node's height, and `ducktape-network cli
+ARGS…` is the node's own CLI on this network's workspace (`invite`, `vote`,
+`logs`, `wallet`, …). `--dir` puts everything somewhere other than
+`~/.ducktape-network` (one network per directory, and one service per user).
+For testing, or for a commit not published yet, `--ducktape <binary>` and
+`--wasm <dir>` (unpacked, with its `SHA256SUMS`) stand in for the downloads.
+
+**What is public.** The node listens on every interface: on the address's port
+(the p2p socket for `tcp://`, the TLS socket for `tls://`; `ws://` and `wss://`
+ride the HTTP port) and on the HTTP API, `--http-port` (default 8844), which
+the app and joining servers reach. Anyone who reaches the HTTP port can read
+the network's state; writes are frames a key signs, and the node's own admin
+calls are signed with its identity key. Put the port behind a firewall or a
+proxy when the network must not be readable by everyone.
+
+**What is checked.** Every program, describe module and view must match its
+line in the `SHA256SUMS` inside modules' archive before it is packed; a
+mismatch stops the founding. That file travels in the same archive, so it
+catches a damaged download, not a forged release. Core publishes no checksum
+for the node at all: the trust is GitHub's TLS (`curl --proto =https`) and a
+release tag that names the commit.

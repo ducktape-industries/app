@@ -21,6 +21,8 @@ authors = ["Ducktape contributors"]
 
 [workspace]
 resolver = "2"
+# `ducktape-network`: founds a network at the revs this workspace pins.
+members = ["crates/network"]
 
 [workspace.package]
 edition = "2024"
@@ -37,6 +39,8 @@ ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "47cf
 design = { git = "https://github.com/ducktape-industries/modules", rev = "47cf81bc3ef542df057f7e482d18f631e51719fb", package = "design" }
 # `module.describe`: the runner a program's untrusted describe module goes through
 describe = { git = "https://github.com/ducktape-industries/modules", rev = "47cf81bc3ef542df057f7e482d18f631e51719fb", package = "describe", features = ["host"] }
+# forge's founding params (`Bounds`), which `ducktape-network` encodes
+forge = { git = "https://github.com/ducktape-industries/modules", rev = "47cf81bc3ef542df057f7e482d18f631e51719fb", package = "forge" }
 
 # --- node-side: ducktape-industries/ducktape. Every core crate here and below sits on ONE rev, and that rev is the node the app speaks (`backend/noded.rs` mirrors its wire and frame); core publishes that node as the release `bin-<rev>`. ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", rev = "00884abdcf72de444c856919aa007b603fc7d7b1", package = "ducktape-home" }

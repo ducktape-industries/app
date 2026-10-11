@@ -1,0 +1,21 @@
+[package]
+name = "ducktape-network"
+edition.workspace = true
+version.workspace = true
+publish = false
+description = "Found or join a Ducktape network on a server, from the node and programs published at the revs the app pins"
+
+[dependencies]
+abi.workspace = true
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+forge.workspace = true
+libc.workspace = true
+sha2.workspace = true
+# view_pack.rs, a copy of qa's view-pack
+wasm-encoder = "0.251"
+wasmparser = "0.251"
+
+[dev-dependencies]
+tempfile.workspace = true
+wat = "1"
