@@ -2,7 +2,7 @@
 //! borsh in and out, and the signed frame every write and query carries.
 //!
 //! The types here mirror `crates/noded/src/wire.rs` and
-//! `crates/kernel/node/src/frame.rs` on the kernel branch field for field.
+//! `crates/kernel/node/src/frame.rs` at the core rev Cargo.toml pins, field for field.
 //! They are copied, not linked, because the daemon's crates carry the whole
 //! kernel (host, state, consensus) and a desktop client has no use for it.
 //! ponytail: a `noded-wire` leaf crate in ducktape would end the copy; ask

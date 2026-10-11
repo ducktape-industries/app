@@ -2379,7 +2379,7 @@ dependencies = [
 [[package]]
 name = "ducktape-home"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape?branch=feat%2Fcapable-sandbox#665907ddc65ccada5f3e3ba0a95ae955414bfb3c"
+source = "git+https://github.com/ducktape-industries/ducktape?rev=00884abdcf72de444c856919aa007b603fc7d7b1#00884abdcf72de444c856919aa007b603fc7d7b1"
 
 [[package]]
 name = "dunce"
@@ -4794,7 +4794,7 @@ dependencies = [
 [[package]]
 name = "keyscheme"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape?rev=9dfffb0662bd8a16293df8c75de8817a79b0810b#9dfffb0662bd8a16293df8c75de8817a79b0810b"
+source = "git+https://github.com/ducktape-industries/ducktape?rev=00884abdcf72de444c856919aa007b603fc7d7b1#00884abdcf72de444c856919aa007b603fc7d7b1"
 dependencies = [
  "base64 0.22.1",
  "borsh",
@@ -4813,7 +4813,7 @@ dependencies = [
 [[package]]
 name = "keystore"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape?branch=feat%2Fcapable-sandbox#665907ddc65ccada5f3e3ba0a95ae955414bfb3c"
+source = "git+https://github.com/ducktape-industries/ducktape?rev=00884abdcf72de444c856919aa007b603fc7d7b1#00884abdcf72de444c856919aa007b603fc7d7b1"
 dependencies = [
  "argon2",
  "base64 0.22.1",

@@ -38,9 +38,9 @@ design = { git = "https://github.com/ducktape-industries/modules", rev = "47cf81
 # `module.describe`: the runner a program's untrusted describe module goes through
 describe = { git = "https://github.com/ducktape-industries/modules", rev = "47cf81bc3ef542df057f7e482d18f631e51719fb", package = "describe", features = ["host"] }
 
-# --- node-side: ducktape-industries/ducktape on the kernel branch ---
-ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
-keystore = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "keystore" }
+# --- node-side: ducktape-industries/ducktape. Every core crate here and below sits on ONE rev, and that rev is the node the app speaks (`backend/noded.rs` mirrors its wire and frame); core publishes that node as the release `bin-<rev>`. ---
+ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", rev = "00884abdcf72de444c856919aa007b603fc7d7b1", package = "ducktape-home" }
+keystore = { git = "https://github.com/ducktape-industries/ducktape", rev = "00884abdcf72de444c856919aa007b603fc7d7b1", package = "keystore" }
 
 # --- external ---
 borsh = { version = "1", default-features = false, features = ["derive", "std"] }
@@ -87,7 +87,7 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # The passkey lane (`backend/passkey.rs`): the verifier the node runs (to
 # pick which passkey signed and to frame its assertion), and the identity
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
-keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b", package = "keyscheme" }
+keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "00884abdcf72de444c856919aa007b603fc7d7b1", package = "keyscheme" }
 identity = { git = "https://github.com/ducktape-industries/modules", rev = "47cf81bc3ef542df057f7e482d18f631e51719fb", package = "identity" }
 # The roster's full query surface: its programs and its view-only entries.
 module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "47cf81bc3ef542df057f7e482d18f631e51719fb", package = "module-registry" }
@@ -136,7 +136,7 @@ zbus = "5"
 wat = "1"
 gpui-kit = { version = "=0.7.0", features = ["test-support"] }
 tempfile.workspace = true
-keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b", package = "keyscheme", features = ["testkit"] }
+keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "00884abdcf72de444c856919aa007b603fc7d7b1", package = "keyscheme", features = ["testkit"] }
 p256 = "0.13"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]

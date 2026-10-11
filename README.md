@@ -7,7 +7,7 @@ inside its chrome is a wasm view a program ships; the app's own screens are
 two — reach a node, unlock a key.
 
 ```bash
-# a node (ducktape-industries/ducktape, branch feat/capable-sandbox) is a
+# a node (ducktape-industries/ducktape at the rev Cargo.toml pins) is a
 # separate process this app talks to over /v1; run one, then:
 cargo run -p ducktape-app
 DUCKTAPE_RPC=http://127.0.0.1:8844 cargo run -p ducktape-app   # skip the connect screen
@@ -48,7 +48,7 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 
 | Path | What |
 |---|---|
-| `src/backend/noded.rs` | the node's `/v1` wire and the signed frame, mirrored from the kernel branch |
+| `src/backend/noded.rs` | the node's `/v1` wire and the signed frame, mirrored from the pinned core rev |
 | `src/backend/views.rs` | roster → blob → `ducktape.view` section |
 | `src/backend/session.rs` | the seated key, its frames, preferences |
 | `src/runtime.rs`, `runtime/` | the wasm view runtime: seats, loads, swaps, the kernel relay |
@@ -59,7 +59,7 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 ## Dependency line
 
 `ducktape-industries/modules` (`crates/sdk`; pinned by rev to modules `dev` until the next `dev` → `main` promotion): `abi`, `view-wire`, `ducklink`, `design`.
-`ducktape` (`feat/capable-sandbox`): `ducktape-home`, `keystore`.
+`ducktape` (one rev on `main`, the node the app speaks): `ducktape-home`, `keystore`, `keyscheme`.
 
 Out until their upstreams settle: the self-update lane (`app-update`,
 `bin/app-launcher`) — the kernel branch names `keyscheme` at an sdk revision
