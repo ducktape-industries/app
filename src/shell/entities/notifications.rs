@@ -40,6 +40,8 @@ pub(crate) struct Notifications {
     unread: u64,
     asking: BTreeSet<String>,
     state: InboxState,
+    /// The inbox's refusal of the last mutes change, for Settings.
+    refused: Option<String>,
     entries_rev: u64,
     /// What it is read off; not compared.
     center: CenterHandle,
@@ -49,25 +51,33 @@ pub(crate) struct Notifications {
 
 impl Notifications {
     pub(crate) fn new(center: CenterHandle) -> Self {
-        let (unread, asking, state, entries_rev) = Self::read(&center);
+        let (unread, asking, state, refused, entries_rev) = Self::read(&center);
         Self {
             unread,
             asking,
             state,
+            refused,
             entries_rev,
             center,
             follower: None,
         }
     }
 
-    fn read(center: &CenterHandle) -> (u64, BTreeSet<String>, InboxState, u64) {
+    #[allow(clippy::type_complexity, reason = "the compared tuple")]
+    fn read(center: &CenterHandle) -> (u64, BTreeSet<String>, InboxState, Option<String>, u64) {
         let center = center.lock();
         (
             center.unread(),
             center.asking.clone(),
             center.state.clone(),
+            center.refused.clone(),
             center.rev(),
         )
+    }
+
+    /// The inbox's one-sentence refusal of the last mutes change, if any.
+    pub(crate) fn refused(&self) -> Option<&str> {
+        self.refused.as_deref()
     }
 
     /// The session connecting (the centre has just taken up that chain)
@@ -244,14 +254,25 @@ impl Notifications {
 
     /// Read off the centre again; notifies only when something moved.
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) -> bool {
-        let (unread, asking, state, entries_rev) = Self::read(&self.center);
-        if (unread, &asking, &state, entries_rev)
-            == (self.unread, &self.asking, &self.state, self.entries_rev)
+        let (unread, asking, state, refused, entries_rev) = Self::read(&self.center);
+        if (unread, &asking, &state, &refused, entries_rev)
+            == (
+                self.unread,
+                &self.asking,
+                &self.state,
+                &self.refused,
+                self.entries_rev,
+            )
         {
             return false;
         }
-        (self.unread, self.asking, self.state, self.entries_rev) =
-            (unread, asking, state, entries_rev);
+        (
+            self.unread,
+            self.asking,
+            self.state,
+            self.refused,
+            self.entries_rev,
+        ) = (unread, asking, state, refused, entries_rev);
         cx.notify();
         true
     }

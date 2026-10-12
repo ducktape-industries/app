@@ -158,7 +158,7 @@ async fn serve(mut stream: TcpStream, state: Arc<Mutex<State>>, pushes: broadcas
     let Ok((method, path, body)) = read_request(&mut stream).await else {
         return;
     };
-    let (status, body) = answer(&method, &path, &head, &body, &state);
+    let (status, body) = answer(&method, &path, &head, &body, &state, &pushes);
     let reply = format!(
         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
@@ -186,6 +186,7 @@ fn answer(
     head: &str,
     body: &[u8],
     state: &Mutex<State>,
+    pushes: &broadcast::Sender<Push>,
 ) -> (&'static str, Vec<u8>) {
     let mut state = state.lock().unwrap_or_else(|p| p.into_inner());
     let (path, query) = path.split_once('?').unwrap_or((path, ""));
@@ -267,9 +268,21 @@ fn answer(
                 }
                 ("GET", "prefs") => ("200 OK", json(&state.mutes)),
                 ("PUT", "prefs") => {
-                    let mutes: Mutes = serde_json::from_slice(body).unwrap();
+                    let mut mutes: Mutes = serde_json::from_slice(body).unwrap();
                     state.mute_puts.push(mutes.clone());
+                    if mutes.programs.len() > inbox_api::MAX_MUTES {
+                        return (
+                            "400 Bad Request",
+                            format!("a mutes list holds at most {} names", inbox_api::MAX_MUTES)
+                                .into_bytes(),
+                        );
+                    }
+                    mutes.programs.sort();
+                    mutes.programs.dedup();
                     state.mutes = mutes.clone();
+                    let _ = pushes.send(Push::Prefs {
+                        mutes: mutes.clone(),
+                    });
                     ("200 OK", json(&mutes))
                 }
                 _ => ("404 Not Found", Vec::new()),

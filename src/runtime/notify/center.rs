@@ -8,7 +8,7 @@
 //! Nothing here knows a program: `program` and `tag` are the inbox's words.
 
 use std::collections::{BTreeSet, HashMap};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::Instant;
 
 use inbox_api::{Entry, Mutes, Read};
@@ -91,6 +91,12 @@ pub(crate) struct Center {
     /// The inbox's count, kept current by `live`.
     unread: u64,
     pub(crate) mutes: Mutes,
+    /// The inbox's one-sentence refusal of the last mutes `PUT` (over
+    /// `MAX_MUTES`); gone with the next mutes the inbox sends.
+    pub(crate) refused: Option<String>,
+    /// This centre, for the task a call upstream runs as, to write back
+    /// what the inbox answered (set by [`CenterHandle::lock`]).
+    me: Weak<Mutex<Center>>,
     /// The max `through_height` a view said it saw per `(program, tag)`.
     watermarks: HashMap<(String, String), u64>,
     buckets: HashMap<String, Bucket>,
@@ -113,9 +119,14 @@ pub(crate) struct CenterHandle(Arc<Mutex<Center>>);
 
 impl CenterHandle {
     pub(crate) fn lock(&self) -> MutexGuard<'_, Center> {
-        self.0
+        let mut center = self
+            .0
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if center.me.strong_count() == 0 {
+            center.me = Arc::downgrade(&self.0);
+        }
+        center
     }
 }
 
@@ -149,6 +160,7 @@ impl Center {
             *self = Center {
                 network: network.to_owned(),
                 front: self.front,
+                me: self.me.clone(),
                 rev: self.rev + 1,
                 ..Center::default()
             };
@@ -424,6 +436,14 @@ impl Center {
         true
     }
 
+    /// The mutes as the inbox keeps them (a `Prefs` push, or the answer
+    /// to a refused `PUT`): the last refusal is over.
+    pub(crate) fn set_mutes(&mut self, mutes: Mutes) {
+        self.mutes = mutes;
+        self.refused = None;
+        self.rev += 1;
+    }
+
     /// Whether the inbox keeps `program`'s entries out.
     pub(crate) fn muted(&self, program: &str) -> bool {
         self.mutes.programs.iter().any(|muted| muted == program)
@@ -477,11 +497,36 @@ impl Center {
         let Some(client) = self.client.clone() else {
             return;
         };
+        let me = self.me.clone();
         crate::runtime::handle().spawn(async move {
             let failed = match call {
                 Call::Read(read) => client.read(&read).await.err(),
                 Call::HideRead => client.hide_read().await.err(),
-                Call::Mutes(mutes) => client.set_mutes(&mutes).await.err(),
+                Call::Mutes(mutes) => match client.set_mutes(&mutes).await {
+                    // the stored set comes back over `live` as well
+                    Ok(_) => None,
+                    Err(crate::backend::inbox::Error::Failed {
+                        status: 400,
+                        sentence,
+                    }) => {
+                        // refused (over MAX_MUTES): said, and the mutes put
+                        // back as the inbox keeps them
+                        let kept = client.mutes().await.ok();
+                        if let Some(center) = me.upgrade() {
+                            let mut center = center
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            if let Some(kept) = kept {
+                                center.set_mutes(kept);
+                            }
+                            center.refused = Some(sentence);
+                            center.rev += 1;
+                        }
+                        super::wake();
+                        None
+                    }
+                    Err(error) => Some(error),
+                },
             };
             if let Some(error) = failed {
                 tracing::warn!(target: "ducktape::app", %error, "the inbox did not take a change");

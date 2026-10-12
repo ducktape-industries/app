@@ -544,3 +544,53 @@ fn a_views_seen_is_a_watermark_on_the_centre() {
     assert_eq!(super::center().lock().unread(), 0);
     super::center().lock().set_network("");
 }
+
+/// The inbox's `Prefs` push replaces the mutes and re-reads the page
+/// (mutes apply to stored rows); a `PUT` over `MAX_MUTES` is refused in a
+/// sentence and the mutes go back to what the inbox keeps.
+#[tokio::test]
+async fn a_prefs_push_moves_the_mutes_and_the_page_and_a_refused_put_is_said() {
+    let _seat = seated(25).await;
+    let fake = FakeInbox::start().await;
+    fake.set_entries(vec![
+        entry(2, "forge", "web", 2),
+        entry(1, "chat", "room", 1),
+    ]);
+    let center = CenterHandle::default();
+    let rpc = crate::backend::RpcClient::new(fake.origin());
+    let _follower = super::start(&rpc, "net#0", "Desktop", center.clone());
+    until(|| center.lock().state == InboxState::Ready).await;
+    assert_eq!(center.lock().rows().len(), 2);
+    // another device mutes forge: the push lands, the page is read again
+    fake.set_entries(vec![entry(1, "chat", "room", 1)]);
+    fake.push(Push::Prefs {
+        mutes: inbox_api::Mutes {
+            programs: vec!["forge".into()],
+            ..Default::default()
+        },
+    });
+    until(|| center.lock().muted("forge") && center.lock().rows().len() == 1).await;
+    // this device's own mute comes back as the inbox keeps it: sorted, deduped
+    center.lock().set_muted("chat", true);
+    until(|| center.lock().mutes.programs == vec!["chat".to_owned(), "forge".to_owned()]).await;
+    assert_eq!(center.lock().refused, None);
+    // a list over the cap is refused, said, and the mutes put back
+    {
+        let mut center = center.lock();
+        center.mutes.programs = (0..inbox_api::MAX_MUTES).map(|n| format!("p{n}")).collect();
+        center.set_muted("one-more", true);
+    }
+    until(|| center.lock().refused.is_some()).await;
+    assert!(
+        center
+            .lock()
+            .refused
+            .as_deref()
+            .unwrap()
+            .contains("at most")
+    );
+    assert_eq!(
+        center.lock().mutes.programs,
+        vec!["chat".to_owned(), "forge".to_owned()]
+    );
+}

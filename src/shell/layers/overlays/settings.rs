@@ -432,6 +432,24 @@ impl OverlayLayer {
                 programs.push((crate::runtime::intern(&program), program));
             }
         }
+        // the inbox refused the last mutes change: said once, under Programs
+        let refused = self.notifications.read(cx).refused().map(|why| {
+            div().child(
+                crate::a11y::live(
+                    div().id("notify/refused").role(Role::Alert),
+                    accesskit::Live::Assertive,
+                    format!("The inbox refused the change: {why}"),
+                )
+                .py(px(8.))
+                .border_b_1()
+                .border_color(ink.line)
+                .child(
+                    sans(400, 13.)
+                        .text_color(ink.muted)
+                        .child(format!("The inbox refused the change: {why}")),
+                ),
+            )
+        });
         let views: Vec<_> = programs
             .into_iter()
             .map(|(module, name)| {
@@ -554,6 +572,7 @@ impl OverlayLayer {
                 .child(words("views", "Programs")),
         ]
         .into_iter()
+        .chain(refused)
         .chain(views)
         .collect()
     }

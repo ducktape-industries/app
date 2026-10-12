@@ -116,6 +116,11 @@ async fn connect(client: &Arc<Client>, center: &CenterHandle) -> Result<(), Erro
                     (None, tags, unknown)
                 }
                 Push::Gone { ids } | Push::Hidden { ids } => (None, center.removed(&ids), false),
+                Push::Prefs { mutes } => {
+                    // mutes apply to stored rows: what `entries` lists moved
+                    center.set_mutes(mutes);
+                    (None, Vec::new(), true)
+                }
             }
         };
         if let Some((notice, id)) = banner {
@@ -127,7 +132,8 @@ async fn connect(client: &Arc<Client>, center: &CenterHandle) -> Result<(), Erro
             in_order("inbox", move || platform::withdraw(&tag));
         }
         if refill {
-            // an id this page did not have: the inbox's count is read again
+            // an id this page did not have, or the mutes moved: the page
+            // and the inbox's count are read again
             let page = client.entries(None, PAGE).await?;
             center.lock().replace(page.entries, page.unread);
         }
