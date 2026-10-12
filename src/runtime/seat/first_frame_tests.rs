@@ -74,7 +74,9 @@ fn open_in(
         let seat = cx.new(|cx| Seat::new(module, cx));
         let key = seat.read(cx);
         let mounted = registry().lock().unwrap()[&(key.module(), key.instance())].clone();
-        seat.update(cx, |seat, cx| seat.place(window.window_handle(), body, cx));
+        seat.update(cx, |seat, cx| {
+            seat.place(window.window_handle(), body, true, cx)
+        });
         Root {
             seat: seat.clone(),
             mounted,
@@ -169,7 +171,7 @@ fn a_views_first_tick_carries_the_hosts_facts(cx: &mut TestAppContext) {
     assert_eq!(offset, Some(crate::runtime::kernel::offset_minutes()));
 
     seat.update(&mut native, |seat, cx| {
-        seat.place(handle, Some((420., WINDOW.1)), cx)
+        seat.place(handle, Some((420., WINDOW.1)), true, cx)
     });
     native.run_until_parked();
     let ticks = ticked_with(&mounted);
@@ -203,7 +205,9 @@ fn a_view_is_not_ticked_before_its_pane_has_a_body(cx: &mut TestAppContext) {
     );
     assert!(drawn.borrow().is_empty());
 
-    seat.update(&mut native, |seat, cx| seat.place(handle, Some(WINDOW), cx));
+    seat.update(&mut native, |seat, cx| {
+        seat.place(handle, Some(WINDOW), true, cx)
+    });
     native.run_until_parked();
     let ticks = ticked_with(&mounted);
     assert_eq!(ticks.len(), 1);

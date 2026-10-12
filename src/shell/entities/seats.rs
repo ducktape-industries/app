@@ -1,5 +1,6 @@
 //! Every pane's `Seat`, by the pane's layout `instance`: one per view pane
-//! any window holds, placed in that window, told when it left every desk,
+//! any window holds, placed in that window (and told whether that window
+//! is the one in front), told when it left every desk,
 //! and handed the session as its props (`Session`, `Account` and the
 //! appearance, observed here; a seat turns only when the bytes moved).
 //! It follows `Windows` and every window's `Desk` (`reconcile`), and
@@ -136,28 +137,30 @@ impl Seats {
         let Some(windows) = self.windows.upgrade() else {
             return;
         };
-        let (layouts, handles, console): (
-            BTreeMap<WindowKey, Layout>,
-            BTreeMap<WindowKey, AnyWindowHandle>,
-            Option<WindowKey>,
-        ) = {
+        let (layouts, handles, console, front) = {
             let windows = windows.read(cx);
+            let layouts: BTreeMap<WindowKey, Layout> = windows
+                .by_window()
+                .iter()
+                .map(|(key, own)| (*key, own.desk.read(cx).get().clone()))
+                .collect();
             (
-                windows
-                    .by_window()
-                    .iter()
-                    .map(|(key, own)| (*key, own.desk.read(cx).get().clone()))
-                    .collect(),
+                layouts,
                 windows.handles().clone(),
                 windows.console(),
+                windows.front(),
             )
         };
-        type Place = (&'static str, Option<(AnyWindowHandle, Option<(f32, f32)>)>);
+        type Place = (
+            &'static str,
+            Option<(AnyWindowHandle, Option<(f32, f32)>, bool)>,
+        );
         let wanted: BTreeMap<u64, Place> = layouts
             .iter()
             .flat_map(|(key, layout)| {
                 let window = handles.get(key).copied();
                 let console = console == Some(*key);
+                let in_front = front == Some(*key);
                 layout
                     .panes
                     .iter()
@@ -167,7 +170,7 @@ impl Seats {
                         let body = view_body(console, layout, index);
                         (
                             pane.instance,
-                            (pane.module, window.map(|window| (window, body))),
+                            (pane.module, window.map(|window| (window, body, in_front))),
                         )
                     })
             })
@@ -191,10 +194,10 @@ impl Seats {
                 seat.update(cx, |seat, cx| seat.set_props(props.clone(), cx));
                 Placed { seat, _intents }
             });
-            if let Some((window, body)) = window {
+            if let Some((window, body, in_front)) = window {
                 placed
                     .seat
-                    .update(cx, |seat, cx| seat.place(window, body, cx));
+                    .update(cx, |seat, cx| seat.place(window, body, in_front, cx));
             }
         }
         let mut hidden = Vec::new();

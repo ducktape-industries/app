@@ -450,6 +450,19 @@ pub(crate) fn fault_for_test(module: &str, instance: u64) {
 /// what the view knew when it drew each frame.
 #[cfg(test)]
 pub(crate) fn ticks_for_test(module: &str) -> Vec<Vec<wire::Event>> {
+    seated_for_test(module, |guest| guest.ticked_with.clone())
+}
+
+/// Whether `module`'s seated view was last told it is on screen
+/// (`host.visible`).
+#[cfg(test)]
+pub(crate) fn visible_for_test(module: &str) -> bool {
+    seated_for_test(module, |guest| guest.visible)
+}
+
+/// `read` off the guest of `module`'s first seat; it panics unless seated.
+#[cfg(test)]
+fn seated_for_test<T>(module: &str, read: impl FnOnce(&Guest) -> T) -> T {
     let registry = registry().lock().unwrap();
     let seat = registry
         .iter()
@@ -457,7 +470,7 @@ pub(crate) fn ticks_for_test(module: &str) -> Vec<Vec<wire::Event>> {
         .map(|(_, seat)| seat.clone())
         .expect("a seat of the module");
     match &seat.lock().unwrap().slot {
-        Slot::Ready(guest) => guest.ticked_with.clone(),
+        Slot::Ready(guest) => read(guest),
         _ => panic!("{module} is not seated"),
     }
 }

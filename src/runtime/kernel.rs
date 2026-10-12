@@ -10,7 +10,8 @@
 //! holds the arms in this directory to it. Where each kind is answered:
 //!
 //! Here, in [`answer`], from app state, on the window thread:
-//! - `host.visible` — a subscription to whether the view's window shows it.
+//! - `host.visible` — a subscription to whether the person is looking at
+//!   the view: its pane is on a desk of the window in front.
 //! - `host.route` — a subscription that gets the route a `duck://` link
 //!   asked of this view (`explorer/tx/<hash>` → `tx/<hash>`), once,
 //!   DECODED: the link's `%XX` escapes read back (`chat/forge%3Aweb%3A3`
