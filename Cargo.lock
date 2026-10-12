@@ -2562,10 +2562,13 @@ source = "git+https://github.com/ducktape-industries/ducktape?branch=feat%2Fcapa
 name = "ducktape-web"
 version = "0.1.0"
 dependencies = [
+ "accesskit",
  "cef",
  "futures",
  "gpui-kit",
  "image",
+ "serde",
+ "serde_json",
  "url",
 ]
 

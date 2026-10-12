@@ -84,8 +84,8 @@ pub(crate) struct Properties {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) keyboard_shortcut: Option<String>,
     /// The door id of the focused node inside this composite: gpui moves
-    /// the tree's focus to the row that claims it, and never sets the
-    /// AccessKit property.
+    /// the tree's focus to the row that claims it, and sets the AccessKit
+    /// property only on a web page's node, for the page's own focus.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) active_descendant: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -211,6 +211,14 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
             ));
         }
     };
+    // the focused node's active descendant is the one focused, as the
+    // adapters have it (accesskit_consumer `TreeState::focus`): a web
+    // page's node names the page's own focus so
+    let focused = nodes
+        .get(&update.focus)
+        .and_then(|node| node.active_descendant())
+        .filter(|id| nodes.contains_key(id))
+        .unwrap_or(update.focus);
     // Children are pushed in reverse so this is a deterministic pre-order
     // walk in paint order; the last visible modal is the nested/tree-topmost
     // boundary, just as the last painted sibling is visually on top.
@@ -293,7 +301,7 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
             .or_else(|| node.numeric_value().map(|value| value.to_string()))
             .map(|value| if secret { MASK.to_owned() } else { value });
         let mut state = Vec::new();
-        if update.focus == id {
+        if focused == id {
             state.push("focused");
         }
         if node.is_disabled() {
