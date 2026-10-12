@@ -327,6 +327,9 @@ impl PageTree {
             let focus = self.trees.get(held).map_or(0, |held| held.focus);
             id(tree, held, focus)
         });
+        // the focus is named only on a node in the tree, not on one that
+        // was left out (ignored, invisible)
+        let focus = focus.filter(|focus| build.nodes.iter().any(|(id, _)| id == focus));
         for (id, node) in build.nodes {
             tree.push_child(id, node);
         }
@@ -334,7 +337,7 @@ impl PageTree {
         // root is its child
         let parent = tree.parent_node();
         parent.set_children(roots);
-        if let Some(focus) = focus.filter(|focus| build.seen.contains(focus)) {
+        if let Some(focus) = focus {
             parent.set_active_descendant(focus);
         }
         build.clicks
