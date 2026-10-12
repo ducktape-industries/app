@@ -541,7 +541,7 @@ impl OverlayLayer {
             ),
             setting(
                 "Burst limit",
-                "Per view. Past it, one banner says how many more are waiting.",
+                "Per program. Past it, one banner says how many more are waiting.",
                 burst,
                 &ink,
             ),
@@ -551,7 +551,7 @@ impl OverlayLayer {
                 .pb(px(8.))
                 .border_b_1()
                 .border_color(ink.line)
-                .child(words("views", "Views")),
+                .child(words("views", "Programs")),
         ]
         .into_iter()
         .chain(views)

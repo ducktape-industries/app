@@ -55,7 +55,9 @@ impl std::fmt::Display for Error {
 
 impl From<reqwest::Error> for Error {
     fn from(error: reqwest::Error) -> Self {
-        Error::Unreachable(error.to_string())
+        // the sentence is logged: never the address, which may carry a
+        // tunnel token or userinfo
+        Error::Unreachable(error.without_url().to_string())
     }
 }
 

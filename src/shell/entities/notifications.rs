@@ -137,6 +137,7 @@ impl Notifications {
             crate::backend::identity::DEVICE_KEY_LABEL,
             self.center.clone(),
         );
+        tracing::info!(target: "ducktape::app", chain = %session.chain, "inbox_follow");
         self.follower = Some((key, follower));
         self.refresh(cx);
     }

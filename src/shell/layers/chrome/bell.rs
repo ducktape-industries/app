@@ -36,17 +36,18 @@ impl Chrome {
             .map(|program| crate::runtime::intern(program))
             .collect();
         let rail = self.rail.read(cx).rows().to_vec();
-        // where the inbox stands, in the count's place
+        // where the inbox stands: no inbox in the count's place, anything
+        // else said in full on its own line under the header
         let standing = match &state {
             InboxState::NoInbox => "This address keeps no notifications.".to_owned(),
+            _ => format!("{unread} unread"),
+        };
+        let note = match &state {
             InboxState::Unreachable { since } => {
-                format!("Inbox unreachable since {}", clock(*since))
+                Some(format!("Inbox unreachable since {}", clock(*since)))
             }
-            InboxState::Denied(why) => format!("Not signed in to the inbox: {why}"),
-            InboxState::Off | InboxState::Ready => match notifications.stuck() {
-                Some(stuck) => format!("{unread} unread · {stuck}"),
-                None => format!("{unread} unread"),
-            },
+            InboxState::Denied(why) => Some(format!("Not signed in to the inbox: {why}")),
+            InboxState::NoInbox | InboxState::Off | InboxState::Ready => notifications.stuck(),
         };
         let small_link = |id: &'static str, text: &'static str, run: Box<dyn Fn(&mut App)>| {
             let hover = ink.ink;
@@ -169,6 +170,20 @@ impl Chrome {
                 )
                 .child(answer(Permission::Allow))
                 .child(answer(Permission::Silent)),
+            );
+        }
+        if let Some(note) = note {
+            list = list.child(
+                crate::a11y::live(
+                    div().id("notif-state").role(Role::Status),
+                    accesskit::Live::Polite,
+                    note.clone(),
+                )
+                .px(px(16.))
+                .py(px(8.))
+                .border_b_1()
+                .border_color(ink.line)
+                .child(mono(400, 12.).text_color(ink.muted).child(note)),
             );
         }
         let mut section = None;
