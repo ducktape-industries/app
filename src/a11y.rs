@@ -255,10 +255,7 @@ impl Patch {
                     node.set_custom_actions(
                         self.custom_actions
                             .into_iter()
-                            .map(|(id, description)| CustomAction {
-                                id,
-                                description: description.into(),
-                            })
+                            .map(|(id, description)| CustomAction { id, description })
                             .collect::<Vec<_>>(),
                     );
                 }
