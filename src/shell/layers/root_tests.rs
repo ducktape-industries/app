@@ -800,6 +800,35 @@ fn the_centre_hears_the_front_pane_without_a_frame(cx: &mut TestAppContext) {
     assert_eq!(front(&mut native), Some((key, MODULE)));
 }
 
+/// A view is on screen (`host.visible`) only while its window is in front:
+/// a pane in a window the person left (behind another, or the app left)
+/// is not being looked at, so a chat room there is not read and its
+/// mentions are notices.
+#[gpui_kit::test]
+fn a_view_is_visible_only_while_its_window_is_in_front(cx: &mut TestAppContext) {
+    const MODULE: &str = "root-visible-view";
+    let (_, _, view, mut native) = console(cx);
+    crate::runtime::seat_for_test(MODULE, 400);
+    native.update(|window, _| window.activate_window());
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    for _ in 0..4 {
+        frame(&mut native);
+    }
+    assert!(
+        crate::runtime::visible_for_test(MODULE),
+        "the window in front shows its pane"
+    );
+    native.deactivate_window();
+    settle(&mut native);
+    assert!(
+        !crate::runtime::visible_for_test(MODULE),
+        "a window the person left still read as looked at"
+    );
+    native.update(|window, _| window.activate_window());
+    settle(&mut native);
+    assert!(crate::runtime::visible_for_test(MODULE), "back in front");
+}
+
 /// A pane moved between windows (popped out, then back in) keeps its seat
 /// and its drawn tree: two roots, one `Seats`, and the seat's place
 /// follows the window whose desk holds the pane. Each root draws the pane

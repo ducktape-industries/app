@@ -70,7 +70,7 @@ fn another(
     let window = cx.open_window(size(px(400.), px(300.)), |window, cx| {
         let seat = cx.new(|cx| Seat::new(module, cx));
         seat.update(cx, |seat, cx| {
-            seat.place(window.window_handle(), Some((400., 300.)), cx)
+            seat.place(window.window_handle(), Some((400., 300.)), true, cx)
         });
         Root {
             seat: seat.clone(),
@@ -541,7 +541,7 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
         seat.update(cx, |seat, cx| {
             // the pane in front, as the pane layer would say
             seat.set_keys_free(true, cx);
-            seat.place(handle, Some((400., 300.)), cx);
+            seat.place(handle, Some((400., 300.)), true, cx);
             seat.turn(cx);
         });
         handle

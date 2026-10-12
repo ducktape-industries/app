@@ -157,6 +157,12 @@ impl Windows {
         self.active
     }
 
+    /// The OS window in front, when it is one of ours: its panes are the
+    /// ones the person is looking at (`Seats`).
+    pub(crate) fn front(&self) -> Option<WindowKey> {
+        self.front
+    }
+
     /// Window `key`'s own entities; none for a window that is not ours.
     pub(crate) fn own(&self, key: WindowKey) -> Option<&WindowEntities> {
         self.by_window.get(&key)
