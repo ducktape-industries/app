@@ -70,6 +70,7 @@ pub(crate) fn create(shared: &Rc<Shared>, url: &str, context: Option<RequestCont
         PageFocus::new(shared.clone()),
         PageLoad::new(shared.clone()),
         PageRequest::new(shared.clone()),
+        crate::menu::PageMenu::new(shared.clone()),
     );
     let mut context = context;
     browser_host_create_browser(
@@ -451,6 +452,7 @@ wrap_client! {
         focus: FocusHandler,
         load: LoadHandler,
         request: RequestHandler,
+        menu: ContextMenuHandler,
     }
 
     impl Client {
@@ -476,6 +478,10 @@ wrap_client! {
 
         fn request_handler(&self) -> Option<RequestHandler> {
             Some(self.request.clone())
+        }
+
+        fn context_menu_handler(&self) -> Option<ContextMenuHandler> {
+            Some(self.menu.clone())
         }
 
         fn download_handler(&self) -> Option<DownloadHandler> {

@@ -48,6 +48,8 @@ pub(crate) struct Shared {
     pub(crate) take_focus: Cell<Option<bool>>,
     /// The pointer the page wants over its box ([`crate::cursor`]).
     pub(crate) cursor: Cell<CursorStyle>,
+    /// A right-click's menu, not yet drawn ([`crate::menu`]).
+    pub(crate) menu: RefCell<Option<crate::menu::Asked>>,
     pub(crate) state: RefCell<PageState>,
     /// An address the rule refused: the page says so until it moves.
     pub(crate) refused: RefCell<Option<String>>,
@@ -131,6 +133,8 @@ pub struct Page {
     marked: Option<Range<usize>>,
     /// Why no page can show here (no sandbox helper, CEF did not start).
     unavailable: Option<SharedString>,
+    /// The context menu on screen.
+    menu: Option<crate::menu::Open>,
     told: PageState,
     _focus_events: [Subscription; 2],
 }
@@ -158,6 +162,7 @@ impl Page {
             dirty: Cell::default(),
             take_focus: Cell::default(),
             cursor: Cell::default(),
+            menu: RefCell::default(),
             state: RefCell::default(),
             refused: RefCell::default(),
             redirect: RefCell::default(),
@@ -172,7 +177,16 @@ impl Page {
                     host.set_focus(1);
                 }
             }),
-            cx.on_blur(&focus, window, |this: &mut Self, _, _| {
+            // the page's own menu holds the keys for the page: CEF keeps
+            // its focus, else it drops the edit command chosen there
+            cx.on_blur(&focus, window, |this: &mut Self, window, cx| {
+                if this
+                    .menu
+                    .as_ref()
+                    .is_some_and(|menu| menu.has_keys(window, cx))
+                {
+                    return;
+                }
                 if let Some(host) = this.shared.host() {
                     host.set_focus(0);
                 }
@@ -186,6 +200,7 @@ impl Page {
             origin: Rc::default(),
             marked: None,
             unavailable,
+            menu: None,
             told: PageState::default(),
             _focus_events,
         };
@@ -259,6 +274,12 @@ impl Page {
         if self.shared.dirty.replace(false) {
             cx.notify();
         }
+    }
+
+    /// The context menu closed; the kit gives the keys back to the page.
+    pub(crate) fn menu_closed(&mut self, cx: &mut Context<Self>) {
+        self.menu = None;
+        cx.notify();
     }
 
     fn mouse(&self, position: Point<Pixels>, modifiers: u32) -> cef::MouseEvent {
@@ -412,6 +433,11 @@ impl Render for Page {
         {
             let _ = window.drop_image(old);
         }
+        let asked = self.shared.menu.borrow_mut().take();
+        if let Some(asked) = asked {
+            let origin = self.origin.get();
+            self.menu = Some(crate::menu::open(asked, &self.shared, origin, window, cx));
+        }
         if let Some(next) = self.shared.take_focus.take() {
             cx.defer_in(window, move |_, window, cx| {
                 if next {
@@ -491,6 +517,7 @@ impl Render for Page {
                 )
                 .size_full(),
             )
+            .when_some(self.menu.as_ref(), |page, menu| page.child(menu.element()))
             .when_some(refused, |page, url| {
                 page.child(
                     div()

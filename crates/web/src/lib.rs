@@ -25,6 +25,7 @@ mod cursor;
 #[cfg(target_os = "linux")]
 mod glib;
 mod handlers;
+mod menu;
 mod page;
 
 pub use page::{Page, PageState};
