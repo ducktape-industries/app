@@ -455,7 +455,7 @@ impl Render for Page {
         let image = self.shown.clone();
         let popup = self.popup_shown.clone().zip(self.shared.popup_rect.get());
         let refused = self.shared.refused.borrow().clone();
-        div()
+        let page = div()
             .id("web-page")
             .relative()
             .size_full()
@@ -517,7 +517,6 @@ impl Render for Page {
                 )
                 .size_full(),
             )
-            .when_some(self.menu.as_ref(), |page, menu| page.child(menu.element()))
             .when_some(refused, |page, url| {
                 page.child(
                     div()
@@ -531,7 +530,14 @@ impl Render for Page {
                         .text_color(rgb(0x5c4400))
                         .child(format!("Only https:// pages open here; not {url}")),
                 )
-            })
+            });
+        // the menu beside the page's box, not in it: the box's accessibility
+        // children are the page's own
+        div()
+            .relative()
+            .size_full()
+            .child(page)
+            .when_some(self.menu.as_ref(), |this, menu| this.child(menu.element()))
             .into_any_element()
     }
 }
