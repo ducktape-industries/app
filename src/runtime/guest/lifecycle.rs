@@ -72,7 +72,8 @@ impl Guest {
                     before_any_candidate(Failure::Refused(format!("{shown}: {error}")))
                 })?;
                 Self::compile(&bytes, &shown).map_err(before_any_candidate)?;
-                let (name, _, min_width, _, icon) = manifest_of(&bytes);
+                let (name, capabilities, min_width, _, icon) = manifest_of(&bytes);
+                crate::render::web::seen(module, &capabilities);
                 return Ok(Loaded::Compiled {
                     name,
                     icon,
@@ -172,6 +173,7 @@ impl Guest {
                 1,
             );
             let (name, capabilities, min_width, targets, icon) = manifest_of(&view_bytes);
+            crate::render::web::seen(module, &capabilities);
             // a seat no pane holds stops here: the rail reads its name and
             // its icon off the manifest, and the pane that claims it starts it
             if instance == 0 && against.is_none() {
@@ -617,6 +619,7 @@ impl Guest {
             guest.targets,
             guest.icon,
         ) = manifest_of(bytes);
+        crate::render::web::seen(module, &guest.capabilities);
         guest.init(shown)?;
         Ok(guest)
     }

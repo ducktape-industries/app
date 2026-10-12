@@ -14,7 +14,11 @@
 //! - `host.route` — a subscription that gets the route a `duck://` link
 //!   asked of this view (`explorer/tx/<hash>` → `tx/<hash>`), once,
 //!   DECODED: the link's `%XX` escapes read back (`chat/forge%3Aweb%3A3`
-//!   → `forge:web:3`), checked by `valid_route`.
+//!   → `forge:web:3`), checked by `valid_route`. The view whose manifest
+//!   declares `web` gets an http(s) link the app opens as its whole
+//!   address instead, checked by the web piece's own rule
+//!   (`render/web.rs` `view_for`: https, or http on this machine, at most
+//!   2048 bytes, no user name or password).
 //! - `host.badge` — the tab's unread count; `host.title` — the name of the
 //!   view's window, cleaned ([`shown_title`]); `host.id` — a minted id under a
 //!   short prefix; `link.open` — the one way out: a `duck://` link, or an
@@ -424,7 +428,7 @@ const MAX_TITLE: usize = 80;
 /// A `host.title` as the window shows it, one line of the view's own text
 /// ([`plain`] chars), no space at either end, at most [`MAX_TITLE`] chars
 /// (a cut on a char boundary).
-fn shown_title(title: &str) -> String {
+pub(crate) fn shown_title(title: &str) -> String {
     let title: String = title.chars().filter(plain).collect();
     let cut: String = title.trim_start().chars().take(MAX_TITLE).collect();
     cut.trim_end().to_owned()

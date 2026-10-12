@@ -14,6 +14,8 @@ mod shell;
 mod tray;
 
 fn main() {
+    // a CEF child process (feature `web`) is this binary with `--type=...`
+    render::web::subprocess();
     perf::start();
     #[cfg(debug_assertions)]
     if std::env::args().nth(1).as_deref() == Some("--render-tree") {
@@ -66,9 +68,11 @@ fn main() {
     #[cfg(debug_assertions)]
     if let Some(live) = live {
         shell::run_live(live);
+        render::web::shutdown();
         return;
     }
     shell::run();
+    render::web::shutdown();
 }
 
 /// macOS launches a GUI with a 256-fd soft limit; the app's stores and
