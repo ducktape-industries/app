@@ -37,6 +37,10 @@ ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "80ac
 # The node's `/v1` wire types and the signed frame (`backend/noded.rs` is the
 # HTTP client over them); `frame` re-exports core's `keyscheme`, the app's one.
 node-wire = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "node-wire", features = ["frame"] }
+# What the app and a notification inbox say to each other (`backend/inbox.rs`),
+# and the notice shapes its entries carry.
+inbox-api = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "inbox-api" }
+notices = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "notices", features = ["serde"] }
 design = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "design" }
 # `module.describe`: the runner a program's untrusted describe module goes through
 describe = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "describe", features = ["host"] }
@@ -114,6 +118,8 @@ abi.workspace = true
 borsh.workspace = true
 ducklink.workspace = true
 node-wire.workspace = true
+inbox-api.workspace = true
+notices.workspace = true
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 wasmtime.workspace = true
 wasmparser = "0.251"
@@ -161,6 +167,8 @@ module-registry = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/
 valset = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/system/valset" }
 guest = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/guest" }
 node-wire = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/node-wire" }
+inbox-api = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/inbox-api" }
+notices = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/notices" }
 
 [patch.crates-io]
 gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "d5b9b8176f77343107b719c8b57bbe796c58d5c0" }

@@ -13,6 +13,7 @@ pub(crate) mod auth_page;
 pub(crate) mod device_key;
 mod endpoints;
 pub(crate) mod identity;
+pub(crate) mod inbox;
 pub(crate) mod invite;
 pub(crate) mod join;
 mod key_dir;
