@@ -70,6 +70,7 @@ pub(crate) fn create(shared: &Rc<Shared>, url: &str, context: Option<RequestCont
         PageFocus::new(shared.clone()),
         PageLoad::new(shared.clone()),
         PageRequest::new(shared.clone()),
+        crate::menu::PageMenu::new(shared.clone()),
     );
     let mut context = context;
     browser_host_create_browser(
@@ -266,6 +267,19 @@ wrap_display_handler! {
             self.shared.state.borrow_mut().title = title.map(CefString::to_string).unwrap_or_default();
             self.shared.dirty.set(true);
         }
+
+        // off-screen, the page's box shows it: CEF has no window to set
+        fn on_cursor_change(
+            &self,
+            _browser: Option<&mut Browser>,
+            _cursor: std::os::raw::c_ulong,
+            type_: CursorType,
+            _custom_cursor_info: Option<&CursorInfo>,
+        ) -> c_int {
+            self.shared.cursor.set(crate::cursor::style(type_));
+            self.shared.dirty.set(true);
+            1
+        }
     }
 }
 
@@ -446,6 +460,7 @@ wrap_client! {
         focus: FocusHandler,
         load: LoadHandler,
         request: RequestHandler,
+        menu: ContextMenuHandler,
     }
 
     impl Client {
@@ -471,6 +486,10 @@ wrap_client! {
 
         fn request_handler(&self) -> Option<RequestHandler> {
             Some(self.request.clone())
+        }
+
+        fn context_menu_handler(&self) -> Option<ContextMenuHandler> {
+            Some(self.menu.clone())
         }
 
         fn download_handler(&self) -> Option<DownloadHandler> {

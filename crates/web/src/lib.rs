@@ -22,7 +22,11 @@
 //! - [`shutdown`] after gpui returns: browsers closed, then CEF.
 
 mod a11y;
+mod cursor;
+#[cfg(target_os = "linux")]
+mod glib;
 mod handlers;
+mod menu;
 mod page;
 
 pub use page::{Page, PageState};
@@ -235,6 +239,8 @@ async fn pump(mut inbox: mpsc::UnboundedReceiver<i64>, cx: &mut AsyncApp) {
             matches!(engine.status, Status::Running).then(|| engine.pages.clone())
         });
         let Some(pages) = pages else { return };
+        #[cfg(target_os = "linux")]
+        glib::turn();
         cef::do_message_loop_work();
         due = Instant::now() + MAX_PUMP_DELAY;
         let ready = READY.load(Ordering::SeqCst);
