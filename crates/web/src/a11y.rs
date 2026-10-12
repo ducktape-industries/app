@@ -53,6 +53,9 @@ impl Accessibility {
 
 /// The page's tree as the synthetic children of the page's node (`tree`'s
 /// parent); a click lands at `shared`'s scale.
+// ponytail: every frame the page draws rebuilds every node (gpui builds its
+// own the same way); keep the built nodes per tree change if a long page
+// shows in frame times while a reader is attached
 pub(crate) fn children(shared: &Shared, tree: &mut A11ySubtreeBuilder) {
     let clicks = shared.a11y.tree.borrow().build(tree, shared.scale.get());
     shared.a11y.clicks.replace(clicks);
