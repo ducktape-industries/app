@@ -318,6 +318,32 @@ fn settings_read_the_prefs_keys() {
     );
 }
 
+/// The kept settings are the process's, not the saving thread's: the inbox
+/// runner judges entries on the kernel's thread by the word the window
+/// thread just saved. (Under a per-thread cache the other thread reads its
+/// own, stale or empty, copy.)
+#[test]
+fn the_kept_settings_are_read_on_any_thread() {
+    let _serial = crate::backend::seat_serial();
+    let mut center = Center::default();
+    super::settings::set_permission(&mut center, "kept-test", Permission::Allow);
+    Settings::load();
+    let seen = std::thread::spawn(|| Settings::kept().programs.get("kept-test").copied())
+        .join()
+        .unwrap();
+    assert_eq!(seen, Some(Permission::Allow));
+    super::settings::set_permission(&mut center, "kept-test", Permission::Silent);
+    Settings::load();
+    let seen = std::thread::spawn(|| Settings::kept().programs.get("kept-test").copied())
+        .join()
+        .unwrap();
+    assert_eq!(
+        seen,
+        Some(Permission::Silent),
+        "a save reaches the other thread"
+    );
+}
+
 /// The old log directory goes, once, at start.
 #[test]
 fn the_old_log_directory_is_deleted() {

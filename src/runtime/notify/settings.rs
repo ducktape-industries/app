@@ -4,8 +4,8 @@
 //! the settings page and the question at the top of the centre. What
 //! enters at all is the inbox's (its mutes, `Center::set_muted`).
 
-use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::sync::Mutex;
 
 use super::center::Center;
 use crate::backend::{edit_prefs, read_prefs};
@@ -55,25 +55,29 @@ pub(crate) struct Settings {
     pub(crate) programs: BTreeMap<String, Permission>,
 }
 
-thread_local! {
-    /// The settings as last read on this thread: forgotten when a notice
-    /// setting is saved here, and replaced by every [`Settings::load`].
-    static KEPT: RefCell<Option<Settings>> = const { RefCell::new(None) };
+/// The settings as last read, process-wide: the window thread saves them
+/// and the inbox runner judges entries by them on the kernel's thread.
+/// Forgotten when a notice setting is saved, replaced by every
+/// [`Settings::load`].
+static KEPT: Mutex<Option<Settings>> = Mutex::new(None);
+
+fn kept_lock() -> std::sync::MutexGuard<'static, Option<Settings>> {
+    KEPT.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl Settings {
     /// Off the prefs file, and kept for [`Settings::kept`].
     pub(crate) fn load() -> Self {
         let settings = Self::of(&read_prefs().unwrap_or_default());
-        KEPT.with(|kept| *kept.borrow_mut() = Some(settings.clone()));
+        *kept_lock() = Some(settings.clone());
         settings
     }
 
     /// As last read, or off the prefs file the first time: what each
     /// arriving entry is judged by, without a prefs read per entry.
     pub(crate) fn kept() -> Self {
-        KEPT.with(|kept| kept.borrow().clone())
-            .unwrap_or_else(Self::load)
+        let kept = kept_lock().clone();
+        kept.unwrap_or_else(Self::load)
     }
 
     pub(super) fn of(prefs: &serde_json::Value) -> Self {
@@ -99,7 +103,7 @@ impl Settings {
 /// A notice setting saved: the kept settings are read again on next use.
 fn edit(change: impl FnOnce(&mut serde_json::Value)) {
     edit_prefs(change);
-    KEPT.with(|kept| *kept.borrow_mut() = None);
+    *kept_lock() = None;
 }
 
 pub(crate) fn save_banners(on: bool) {
