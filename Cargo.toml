@@ -69,6 +69,12 @@ perf-deep = ["gpui-kit/profiler"]
 # (src/ax) and its `ducktape-app ax` client. A default build compiles none
 # of it: DUCKTAPE_AX_DOOR does nothing there.
 ax-door = []
+# The web view: a view whose manifest declares `web` draws pages through CEF
+# off-screen rendering (`src/render/web.rs`, `crates/web`), and https links
+# open in it. A default build compiles none of CEF and links no libcef: the
+# web piece says the build has no web view, and https links go to the system
+# browser.
+web = ["dep:ducktape-web", "ducktape-web/cef"]
 
 [dependencies]
 gpui-kit = "=0.7.1"
@@ -116,6 +122,8 @@ wasmtime.workspace = true
 wasmparser = "0.251"
 libc.workspace = true
 sha1 = "0.10"
+# feature `web` only: CEF and everything that names it
+ducktape-web = { path = "crates/web", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tray-icon = { version = "0.24", default-features = false }
