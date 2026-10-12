@@ -26,6 +26,7 @@ mod cursor;
 #[cfg(target_os = "linux")]
 mod glib;
 mod handlers;
+mod keys;
 mod menu;
 mod page;
 
@@ -169,6 +170,7 @@ fn start(root: &Path, cx: &mut App) -> Result<(), SharedString> {
         }
     });
     if outcome.is_ok() {
+        keys::bind(cx);
         cx.spawn(async move |cx: &mut AsyncApp| pump(inbox, cx).await)
             .detach();
     }
