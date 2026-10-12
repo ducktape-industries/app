@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "abi"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=80ac7464ae1c479dd674ad68623eecf034b3483f#80ac7464ae1c479dd674ad68623eecf034b3483f"
+source = "git+https://github.com/ducktape-industries/modules?rev=6ca2ca0bd93c51d5ede8fe0ac55610122f941f96#6ca2ca0bd93c51d5ede8fe0ac55610122f941f96"
 dependencies = [
  "borsh",
  "design",
@@ -2331,7 +2331,7 @@ dependencies = [
 [[package]]
 name = "describe"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=80ac7464ae1c479dd674ad68623eecf034b3483f#80ac7464ae1c479dd674ad68623eecf034b3483f"
+source = "git+https://github.com/ducktape-industries/modules?rev=6ca2ca0bd93c51d5ede8fe0ac55610122f941f96#6ca2ca0bd93c51d5ede8fe0ac55610122f941f96"
 dependencies = [
  "borsh",
  "serde",
@@ -2341,7 +2341,7 @@ dependencies = [
 [[package]]
 name = "design"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=80ac7464ae1c479dd674ad68623eecf034b3483f#80ac7464ae1c479dd674ad68623eecf034b3483f"
+source = "git+https://github.com/ducktape-industries/modules?rev=6ca2ca0bd93c51d5ede8fe0ac55610122f941f96#6ca2ca0bd93c51d5ede8fe0ac55610122f941f96"
 
 [[package]]
 name = "digest"
@@ -2512,7 +2512,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 [[package]]
 name = "ducklink"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=80ac7464ae1c479dd674ad68623eecf034b3483f#80ac7464ae1c479dd674ad68623eecf034b3483f"
+source = "git+https://github.com/ducktape-industries/modules?rev=6ca2ca0bd93c51d5ede8fe0ac55610122f941f96#6ca2ca0bd93c51d5ede8fe0ac55610122f941f96"
 dependencies = [
  "abi",
  "program",
@@ -2880,7 +2880,7 @@ dependencies = [
 [[package]]
 name = "error"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=80ac7464ae1c479dd674ad68623eecf034b3483f#80ac7464ae1c479dd674ad68623eecf034b3483f"
+source = "git+https://github.com/ducktape-industries/modules?rev=6ca2ca0bd93c51d5ede8fe0ac55610122f941f96#6ca2ca0bd93c51d5ede8fe0ac55610122f941f96"
 dependencies = [
  "borsh",
  "serde",
@@ -3680,7 +3680,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre"
 version = "0.3.8"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=d5b9b8176f77343107b719c8b57bbe796c58d5c0#d5b9b8176f77343107b719c8b57bbe796c58d5c0"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=69b0b541f7e517f25bd54f9fcf778be4a6b173be#69b0b541f7e517f25bd54f9fcf778be4a6b173be"
 dependencies = [
  "accesskit 0.25.1",
  "anyhow",
@@ -3828,7 +3828,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-linux"
 version = "0.3.8"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=d5b9b8176f77343107b719c8b57bbe796c58d5c0#d5b9b8176f77343107b719c8b57bbe796c58d5c0"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=69b0b541f7e517f25bd54f9fcf778be4a6b173be#69b0b541f7e517f25bd54f9fcf778be4a6b173be"
 dependencies = [
  "accesskit 0.25.1",
  "accesskit_unix",
@@ -3872,7 +3872,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-macos"
 version = "0.3.8"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=d5b9b8176f77343107b719c8b57bbe796c58d5c0#d5b9b8176f77343107b719c8b57bbe796c58d5c0"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=69b0b541f7e517f25bd54f9fcf778be4a6b173be#69b0b541f7e517f25bd54f9fcf778be4a6b173be"
 dependencies = [
  "accesskit 0.25.1",
  "accesskit_macos",
@@ -4016,7 +4016,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-scheduler"
 version = "0.3.8"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=d5b9b8176f77343107b719c8b57bbe796c58d5c0#d5b9b8176f77343107b719c8b57bbe796c58d5c0"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=69b0b541f7e517f25bd54f9fcf778be4a6b173be#69b0b541f7e517f25bd54f9fcf778be4a6b173be"
 dependencies = [
  "async-task",
  "backtrace",
@@ -4107,7 +4107,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-wgpu"
 version = "0.3.8"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=d5b9b8176f77343107b719c8b57bbe796c58d5c0#d5b9b8176f77343107b719c8b57bbe796c58d5c0"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=69b0b541f7e517f25bd54f9fcf778be4a6b173be#69b0b541f7e517f25bd54f9fcf778be4a6b173be"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -4164,7 +4164,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-zlog"
 version = "0.3.8"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=d5b9b8176f77343107b719c8b57bbe796c58d5c0#d5b9b8176f77343107b719c8b57bbe796c58d5c0"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=69b0b541f7e517f25bd54f9fcf778be4a6b173be#69b0b541f7e517f25bd54f9fcf778be4a6b173be"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4225,7 +4225,7 @@ dependencies = [
 [[package]]
 name = "guest"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=80ac7464ae1c479dd674ad68623eecf034b3483f#80ac7464ae1c479dd674ad68623eecf034b3483f"
+source = "git+https://github.com/ducktape-industries/modules?rev=6ca2ca0bd93c51d5ede8fe0ac55610122f941f96#6ca2ca0bd93c51d5ede8fe0ac55610122f941f96"
 dependencies = [
  "abi",
  "borsh",
@@ -4652,7 +4652,7 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 [[package]]
 name = "identity"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=80ac7464ae1c479dd674ad68623eecf034b3483f#80ac7464ae1c479dd674ad68623eecf034b3483f"
+source = "git+https://github.com/ducktape-industries/modules?rev=6ca2ca0bd93c51d5ede8fe0ac55610122f941f96#6ca2ca0bd93c51d5ede8fe0ac55610122f941f96"
 dependencies = [
  "abi",
  "borsh",
@@ -5586,7 +5586,7 @@ dependencies = [
 [[package]]
 name = "module-registry"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=80ac7464ae1c479dd674ad68623eecf034b3483f#80ac7464ae1c479dd674ad68623eecf034b3483f"
+source = "git+https://github.com/ducktape-industries/modules?rev=6ca2ca0bd93c51d5ede8fe0ac55610122f941f96#6ca2ca0bd93c51d5ede8fe0ac55610122f941f96"
 dependencies = [
  "abi",
  "borsh",
@@ -6984,7 +6984,7 @@ dependencies = [
 [[package]]
 name = "program"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=80ac7464ae1c479dd674ad68623eecf034b3483f#80ac7464ae1c479dd674ad68623eecf034b3483f"
+source = "git+https://github.com/ducktape-industries/modules?rev=6ca2ca0bd93c51d5ede8fe0ac55610122f941f96#6ca2ca0bd93c51d5ede8fe0ac55610122f941f96"
 dependencies = [
  "abi",
  "borsh",
@@ -6994,7 +6994,7 @@ dependencies = [
 [[package]]
 name = "program-derive"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=80ac7464ae1c479dd674ad68623eecf034b3483f#80ac7464ae1c479dd674ad68623eecf034b3483f"
+source = "git+https://github.com/ducktape-industries/modules?rev=6ca2ca0bd93c51d5ede8fe0ac55610122f941f96#6ca2ca0bd93c51d5ede8fe0ac55610122f941f96"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7660,7 +7660,7 @@ dependencies = [
 [[package]]
 name = "rmp-serde"
 version = "1.3.1"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=d5b9b8176f77343107b719c8b57bbe796c58d5c0#d5b9b8176f77343107b719c8b57bbe796c58d5c0"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=69b0b541f7e517f25bd54f9fcf778be4a6b173be#69b0b541f7e517f25bd54f9fcf778be4a6b173be"
 dependencies = [
  "rmp",
  "serde",
@@ -8537,7 +8537,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "store"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=80ac7464ae1c479dd674ad68623eecf034b3483f#80ac7464ae1c479dd674ad68623eecf034b3483f"
+source = "git+https://github.com/ducktape-industries/modules?rev=6ca2ca0bd93c51d5ede8fe0ac55610122f941f96#6ca2ca0bd93c51d5ede8fe0ac55610122f941f96"
 dependencies = [
  "abi",
  "borsh",
@@ -9729,7 +9729,7 @@ dependencies = [
 [[package]]
 name = "valset"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=80ac7464ae1c479dd674ad68623eecf034b3483f#80ac7464ae1c479dd674ad68623eecf034b3483f"
+source = "git+https://github.com/ducktape-industries/modules?rev=6ca2ca0bd93c51d5ede8fe0ac55610122f941f96#6ca2ca0bd93c51d5ede8fe0ac55610122f941f96"
 dependencies = [
  "abi",
  "borsh",
@@ -9790,7 +9790,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "view-wire"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=80ac7464ae1c479dd674ad68623eecf034b3483f#80ac7464ae1c479dd674ad68623eecf034b3483f"
+source = "git+https://github.com/ducktape-industries/modules?rev=6ca2ca0bd93c51d5ede8fe0ac55610122f941f96#6ca2ca0bd93c51d5ede8fe0ac55610122f941f96"
 dependencies = [
  "accesskit 0.25.1",
  "borsh",
@@ -11709,7 +11709,7 @@ dependencies = [
 [[package]]
 name = "zed-xim"
 version = "0.4.0-zed"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=d5b9b8176f77343107b719c8b57bbe796c58d5c0#d5b9b8176f77343107b719c8b57bbe796c58d5c0"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=69b0b541f7e517f25bd54f9fcf778be4a6b173be#69b0b541f7e517f25bd54f9fcf778be4a6b173be"
 dependencies = [
  "ahash",
  "hashbrown 0.14.5",
