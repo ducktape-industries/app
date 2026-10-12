@@ -52,7 +52,7 @@ impl Accessibility {
 }
 
 /// The page's tree as the synthetic children of the page's node (`tree`'s
-/// parent), in the window's pixels at `shared`'s scale.
+/// parent); a click lands at `shared`'s scale.
 pub(crate) fn children(shared: &Shared, tree: &mut A11ySubtreeBuilder) {
     let clicks = shared.a11y.tree.borrow().build(tree, shared.scale.get());
     shared.a11y.clicks.replace(clicks);
@@ -291,8 +291,10 @@ impl PageTree {
 
     /// Pushes the page's nodes as `tree`'s synthetic children: the top
     /// document's root becomes the parent's only child, and the page's
-    /// focus its active descendant. Page pixels are `scale` window pixels.
-    /// Returns each node a reader may Click, with the page point it clicks.
+    /// focus its active descendant. Chromium's places and scroll offsets are
+    /// device pixels, as the window's are; a page point (a click) is
+    /// `scale` of them. Returns each node a reader may Click, with the page
+    /// point it clicks.
     pub(crate) fn build(
         &self,
         tree: &mut A11ySubtreeBuilder,
@@ -346,6 +348,7 @@ struct Build<'a> {
     page: &'a PageTree,
     /// The page's node, in window pixels.
     piece: accesskit::Rect,
+    /// Window pixels per page point.
     scale: f64,
     nodes: Vec<(NodeId, accesskit::Node)>,
     seen: HashSet<NodeId>,
@@ -398,14 +401,15 @@ impl Build<'_> {
         let centre = (place.x + place.width / 2., place.y + place.height / 2.);
         if data.attributes.default_action_verb.is_some() && self.shows(centre) {
             converted.add_action(Action::Click);
-            self.clicks.push((id, centre));
+            self.clicks
+                .push((id, (centre.0 / self.scale, centre.1 / self.scale)));
         }
         converted.set_bounds(shown);
         self.nodes.push((id, converted));
         vec![id]
     }
 
-    /// Where `data` is on the page, in page pixels: its location, plus
+    /// Where `data` is on the page, in device pixels: its location, plus
     /// each offset container's, less what each has scrolled.
     fn place(&self, document: &Tree, data: &Data, top: bool, origin: (f64, f64)) -> Location {
         let (mut x, mut y) = (data.location.x + origin.0, data.location.y + origin.1);
@@ -439,10 +443,10 @@ impl Build<'_> {
         }
     }
 
-    /// Whether page point `(x, y)` is on the page's node.
+    /// Whether page place `(x, y)` is on the page's node.
     fn shows(&self, (x, y): (f64, f64)) -> bool {
         let piece = self.piece;
-        let (x, y) = (piece.x0 + x * self.scale, piece.y0 + y * self.scale);
+        let (x, y) = (piece.x0 + x, piece.y0 + y);
         (piece.x0..piece.x1).contains(&x) && (piece.y0..piece.y1).contains(&y)
     }
 
@@ -450,8 +454,8 @@ impl Build<'_> {
     /// scrolled out of the page is an empty box at its edge.
     fn bounds(&self, place: Location) -> accesskit::Rect {
         let piece = self.piece;
-        let clamp_x = |x: f64| (piece.x0 + x * self.scale).clamp(piece.x0, piece.x1);
-        let clamp_y = |y: f64| (piece.y0 + y * self.scale).clamp(piece.y0, piece.y1);
+        let clamp_x = |x: f64| (piece.x0 + x).clamp(piece.x0, piece.x1);
+        let clamp_y = |y: f64| (piece.y0 + y).clamp(piece.y0, piece.y1);
         accesskit::Rect {
             x0: clamp_x(place.x),
             y0: clamp_y(place.y),
@@ -638,31 +642,20 @@ mod tests {
         }
     }
 
-    /// The window's tree with `page` in it, its bounds in logical pixels.
-    fn tree(page: &Rc<RefCell<PageTree>>, cx: &mut TestAppContext) -> TreeUpdate {
+    /// The window's tree with `page` in it, and the window's scale.
+    fn tree(page: &Rc<RefCell<PageTree>>, cx: &mut TestAppContext) -> (TreeUpdate, f64) {
         cx.update(gpui_kit::init);
         let page = page.clone();
         let window = cx.open_window(size(px(1100.), px(760.)), move |_, _| Piece(page));
         let mut native = VisualTestContext::from_window(window.into(), cx);
-        let (mut update, scale) = native.update(|window, cx| {
+        native.update(|window, cx| {
             window.activate_a11y();
             window.render_frame(cx);
             (
                 window.a11y_tree().unwrap().clone(),
                 f64::from(window.scale_factor()),
             )
-        });
-        for (_, node) in &mut update.nodes {
-            if let Some(b) = node.bounds() {
-                node.set_bounds(accesskit::Rect {
-                    x0: b.x0 / scale,
-                    y0: b.y0 / scale,
-                    x1: b.x1 / scale,
-                    y1: b.y1 / scale,
-                });
-            }
-        }
-        update
+        })
     }
 
     fn node<'a>(update: &'a TreeUpdate, role: Role, label: &str) -> (NodeId, &'a accesskit::Node) {
@@ -684,15 +677,24 @@ mod tests {
         let lines: Vec<&str> = PAGE.lines().collect();
         let page = Rc::new(RefCell::new(PageTree::default()));
         feed(&mut page.borrow_mut(), lines[..1].iter().copied());
-        let update = tree(&page, cx);
+        // the recording's device pixels were logical ones (scale 1); the
+        // piece's top is 21 logical pixels down a window of any scale
+        let (update, scale) = tree(&page, cx);
+        let top = 21. * scale;
 
         let (_, piece) = node(&update, Role::Group, "page");
         let (root, document) = node(&update, Role::RootWebArea, "A11y test page");
         assert_eq!(piece.children(), [root]);
-        assert_eq!(document.bounds().map(|b| (b.y0, b.y1)), Some((21., 721.)));
+        assert_eq!(
+            document.bounds().map(|b| (b.y0, b.y1)),
+            Some((top, top + 700.))
+        );
         let (_, heading) = node(&update, Role::Heading, "Ducktape page heading");
         assert_eq!(heading.level(), Some(1));
-        assert_eq!(heading.bounds().map(|b| (b.x0, b.y0)), Some((24., 45.)));
+        assert_eq!(
+            heading.bounds().map(|b| (b.x0, b.y0)),
+            Some((24., top + 24.))
+        );
         let (_, link) = node(&update, Role::Link, "a link to the second page");
         assert!(link.supports_action(Action::Click));
         assert_eq!(link.url(), Some("http://127.0.0.1:8783/second.html"));
@@ -729,24 +731,25 @@ mod tests {
         assert!(piece.active_descendant().is_some_and(|focus| focus == root));
 
         feed(&mut page.borrow_mut(), lines[1..].iter().copied());
-        let update = tree(&page, cx);
+        let (update, _) = tree(&page, cx);
         let (_, piece) = node(&update, Role::Group, "page");
         let (user, field) = node(&update, Role::TextInput, "User name");
         assert_eq!(piece.active_descendant(), Some(user));
         assert_eq!(field.value(), Some("a"));
 
-        // scrolled 100 px: the heading leaves the top as an empty box
+        // scrolled 100 device pixels: the heading leaves the top as an
+        // empty box; the link's centre is off the page, so is its Click
         page.borrow_mut().scrolled(0., 100.);
-        let update = tree(&page, cx);
+        let (update, _) = tree(&page, cx);
         let (_, heading) = node(&update, Role::Heading, "Ducktape page heading");
-        assert_eq!(heading.bounds().map(|b| (b.y0, b.y1)), Some((21., 21.)));
+        assert_eq!(heading.bounds().map(|b| (b.y0, b.y1)), Some((top, top)));
         assert!(
             !node(&update, Role::Link, "a link to the second page")
                 .1
                 .supports_action(Action::Click)
         );
         let (_, form) = node(&update, Role::Heading, "Sign-in form");
-        assert_eq!(form.bounds().map(|b| b.y0), Some(21. + 122.34375 - 100.));
+        assert_eq!(form.bounds().map(|b| b.y0), Some(top + 122.34375 - 100.));
     }
 
     /// An iframe's document sits under its iframe, placed where the iframe
@@ -755,7 +758,7 @@ mod tests {
     fn an_iframes_document_sits_under_its_iframe(cx: &mut TestAppContext) {
         let page = Rc::new(RefCell::new(PageTree::default()));
         feed(&mut page.borrow_mut(), IFRAME.lines());
-        let update = tree(&page, cx);
+        let (update, _) = tree(&page, cx);
         let (inner, document) = node(&update, Role::RootWebArea, "Second page");
         let (_, iframe) = update
             .nodes
