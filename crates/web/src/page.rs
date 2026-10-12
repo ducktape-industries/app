@@ -460,6 +460,13 @@ impl Render for Page {
             .relative()
             .size_full()
             .track_focus(&self.focus)
+            .key_context(crate::keys::CONTEXT)
+            .on_action(cx.listener(|this, _: &crate::keys::Tab, _, _| {
+                this.key(&crate::keys::tab(false), true)
+            }))
+            .on_action(cx.listener(|this, _: &crate::keys::TabPrev, _, _| {
+                this.key(&crate::keys::tab(true), true)
+            }))
             .cursor(self.shared.cursor.get())
             .on_mouse_down(MouseButton::Left, cx.listener(Self::press))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::press))
