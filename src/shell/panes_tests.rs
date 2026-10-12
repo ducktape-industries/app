@@ -1119,6 +1119,77 @@ fn a_hidden_seats_intents_still_arrive(cx: &mut TestAppContext) {
     );
 }
 
+/// A view that posts notices runs on while no pane holds it: a seat of its
+/// own in no window, not on screen, its intents routed as a pane's. The
+/// pane that opens on it takes that very seat over, and closing the pane
+/// hands it back, the view running all along. A view that posts none has
+/// no seat without a pane.
+#[gpui_kit::test]
+fn a_view_that_notifies_runs_on_with_no_pane(cx: &mut TestAppContext) {
+    use view_wire::methods::Capability;
+    const NOTIFIES: &str = "pane-unseen-notify-view";
+    const QUIET: &str = "pane-unseen-quiet-view";
+    let (app, _, view, mut native) = console(cx);
+    for module in [NOTIFIES, QUIET] {
+        crate::runtime::seat_for_test(module, 400);
+    }
+    crate::runtime::capabilities_for_test(NOTIFIES, vec![Capability::Notify]);
+    let roster = crate::runtime::Roster::listing(&[NOTIFIES, QUIET]);
+    app.rail
+        .update(&mut native, |rail, cx| rail.read_off(roster, cx));
+    settle(&mut native);
+    let unseen = |native: &mut VisualTestContext, module: &str| {
+        native.update(|_, cx| app.seats.read(cx).unseen(module))
+    };
+    let running = unseen(&mut native, NOTIFIES).expect("nothing ran the view no pane holds");
+    assert!(
+        unseen(&mut native, QUIET).is_none(),
+        "a view that posts nothing ran with no pane"
+    );
+    assert!(
+        !crate::runtime::ticks_for_test(NOTIFIES).is_empty(),
+        "the view no pane holds never ticked"
+    );
+    assert!(
+        !crate::runtime::visible_for_test(NOTIFIES),
+        "a view no pane holds read as on screen"
+    );
+    // what it asks for still arrives: a badge on the rail
+    let instance = native.update(|_, cx| running.read(cx).instance());
+    crate::runtime::intent_for_test(NOTIFIES, instance, crate::runtime::Intent::Badge(2));
+    app.seats.update(&mut native, |seats, cx| seats.settle(cx));
+    native.run_until_parked();
+    assert_eq!(native.update(|_, cx| app.rail.read(cx).badge(NOTIFIES)), 2);
+
+    // a pane opens on it: that very seat, not a second view
+    pane(&view, PaneMessage::Select(NOTIFIES), &mut native);
+    settle(&mut native);
+    let (index, held) = native.update(|_, cx| {
+        let layout = view.read(cx).layout(cx);
+        let index = layout
+            .panes
+            .iter()
+            .position(|pane| pane.module == NOTIFIES)
+            .expect("the pane opened");
+        (index, app.seats.read(cx).seat(layout.panes[index].instance))
+    });
+    assert_eq!(
+        held,
+        Some(running.clone()),
+        "the pane started a second view"
+    );
+    assert!(unseen(&mut native, NOTIFIES).is_none());
+
+    // its pane closes: the same seat runs on unseen
+    pane(&view, PaneMessage::Close(index), &mut native);
+    settle(&mut native);
+    assert_eq!(
+        unseen(&mut native, NOTIFIES),
+        Some(running),
+        "closing the pane stopped the view"
+    );
+}
+
 /// Closing a pane drops its seat, and the pictures its view drew leave
 /// the window's GPU atlas with it.
 #[gpui_kit::test]

@@ -336,6 +336,7 @@ fn a_view_says_its_min_width_once_it_is_drawn() {
         name: String::new(),
         icon: String::new(),
         min_width: 640,
+        notifies: false,
     };
     assert_eq!(min_width("min-width-seat"), Some(640.), "its manifest's");
     let mut guest = wat_view("unreachable", "unreachable", None);

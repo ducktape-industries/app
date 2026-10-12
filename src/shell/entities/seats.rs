@@ -7,12 +7,26 @@
 //! routes what a seat asks for: a badge to `Rail`, a title to the desk
 //! holding its pane, a notice to `Notifications`, a view seated to the
 //! desks holding it, a link to `Windows`.
+//!
+//! A view that posts notices (`notify` in its manifest) runs on while no
+//! pane holds it: a seat in no window, laid out unseen, so a mention that
+//! lands with its window closed is still noticed. The pane that opens on
+//! it takes that very seat over, and the last of its panes to close hands
+//! it back.
 use super::{Account, Notifications, Rail, Session, Windows};
 use crate::runtime::{Intent, Seat, WindowKey};
 use crate::shell::layers::view_body;
 use crate::ui::layout::Layout;
 use gpui_kit::{AnyWindowHandle, App, AppContext as _, Context, Entity, Subscription, WeakEntity};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// The pane instance a seat no pane holds routes its intents under: none,
+/// since a layout's instances start at 1.
+const UNSEEN: u64 = 0;
+
+/// The body a view no pane holds is laid out in, never drawn: the size a
+/// new window opens at.
+const UNSEEN_BODY: (f32, f32) = crate::shell::windows::WINDOW_SIZE;
 
 /// A pane's seat and the routes out of it.
 struct Placed {
@@ -23,6 +37,9 @@ struct Placed {
 
 pub(crate) struct Seats {
     map: BTreeMap<u64, Placed>,
+    /// The seats of views that post notices and no pane holds, by module,
+    /// run on unseen (`Seat::run_unseen`).
+    unseen: BTreeMap<&'static str, Placed>,
     session: Entity<Session>,
     account: Entity<Account>,
     rail: Entity<Rail>,
@@ -47,10 +64,14 @@ impl Seats {
     ) -> Self {
         let mut this = Self {
             map: BTreeMap::new(),
+            unseen: BTreeMap::new(),
             props: Vec::new(),
             _observing: vec![
                 cx.observe(session, |this, _, cx| this.props_moved(cx)),
                 cx.observe(account, |this, _, cx| this.props_moved(cx)),
+                // a program listed, or its view read far enough to say it
+                // posts notices
+                cx.observe(rail, |this, _, cx| this.reconcile(cx)),
             ],
             session: session.clone(),
             account: account.clone(),
@@ -116,7 +137,7 @@ impl Seats {
             return;
         }
         self.props = props;
-        for placed in self.map.values() {
+        for placed in self.map.values().chain(self.unseen.values()) {
             let props = self.props.clone();
             placed.seat.update(cx, |seat, cx| seat.set_props(props, cx));
         }
@@ -127,12 +148,22 @@ impl Seats {
         self.map.get(&instance).map(|placed| placed.seat.clone())
     }
 
+    /// The seat `module`'s view runs unseen in, while no pane holds it.
+    #[cfg(test)]
+    pub(crate) fn unseen(&self, module: &str) -> Option<Entity<Seat>> {
+        self.unseen.get(module).map(|placed| placed.seat.clone())
+    }
+
     /// A seat for every view pane the windows' desks hold, placed in the
     /// window whose desk holds it, and none for a pane they no longer
     /// hold: that one is told it is hidden first, its pictures leave the
-    /// windows' atlases, and the intents its last update produced are routed (its subscription is dropped here, so an
-    /// emit would be lost). Notifies when a seat came or went, never when
-    /// one moved: a pane's view observes its own seat.
+    /// windows' atlases, and the intents its last update produced are
+    /// routed (its subscription is dropped here, so an emit would be lost).
+    /// A view that posts notices and that no pane holds keeps one seat,
+    /// run on unseen: the last of its panes to close hands its seat over,
+    /// and the next pane to open on it takes that seat back. Notifies when
+    /// a seat came or went, never when one moved: a pane's view observes
+    /// its own seat.
     fn reconcile(&mut self, cx: &mut Context<Self>) {
         let Some(windows) = self.windows.upgrade() else {
             return;
@@ -175,6 +206,21 @@ impl Seats {
                     })
             })
             .collect();
+        // the listed views that no pane holds and that post notices: one
+        // that runs unseen already stays while its load is on its way
+        let held: BTreeSet<&'static str> = wanted.values().map(|(module, _)| *module).collect();
+        let unseen: BTreeSet<&'static str> = self
+            .rail
+            .read(cx)
+            .rows()
+            .iter()
+            .filter(|row| !row.empty && !held.contains(row.module))
+            .map(|row| row.module)
+            .filter(|module| match crate::runtime::notifies(module) {
+                Some(notifies) => notifies,
+                None => self.unseen.contains_key(module),
+            })
+            .collect();
         let gone: Vec<u64> = self
             .map
             .keys()
@@ -182,20 +228,24 @@ impl Seats {
             .copied()
             .collect();
         let mut moved = !gone.is_empty();
+        let mut titled = Vec::new();
         for (instance, (module, window)) in wanted {
-            let props = &self.props;
-            let placed = self.map.entry(instance).or_insert_with(|| {
+            if !self.map.contains_key(&instance) {
                 moved = true;
-                let seat = cx.new(|cx| Seat::new(module, cx));
-                let _intents = cx.subscribe(&seat, move |this, _, intent: &Intent, cx| {
-                    this.route(module, instance, intent.clone(), cx)
-                });
-                // the session as it stands, before its first turn
-                seat.update(cx, |seat, cx| seat.set_props(props.clone(), cx));
-                Placed { seat, _intents }
-            });
+                // the seat that ran unseen, its view as it stands, or a new one
+                let seat = match self.unseen.remove(module) {
+                    Some(placed) => {
+                        let title = placed.seat.read(cx).title().map(str::to_owned);
+                        titled.extend(title.map(|title| (module, instance, title)));
+                        placed.seat
+                    }
+                    None => self.new_seat(module, cx),
+                };
+                let placed = self.routed(module, instance, seat, cx);
+                self.map.insert(instance, placed);
+            }
             if let Some((window, body, in_front)) = window {
-                placed
+                self.map[&instance]
                     .seat
                     .update(cx, |seat, cx| seat.place(window, body, in_front, cx));
             }
@@ -206,12 +256,42 @@ impl Seats {
                 continue;
             };
             let module = placed.seat.read(cx).module();
-            let intents = placed.seat.update(cx, |seat, _| seat.hide());
-            // the seat drops with this entry: its images leave the atlas
-            if let Some(tree) = placed.seat.read(cx).tree() {
-                tree.update(cx, |tree, cx| tree.release(cx));
+            // the last pane on a view that posts notices: it runs on unseen
+            if unseen.contains(module) && !self.unseen.contains_key(module) {
+                let body = placed.seat.read(cx).body().unwrap_or(UNSEEN_BODY);
+                placed.seat.update(cx, |seat, cx| seat.run_unseen(body, cx));
+                // no window draws it now: its images leave the atlases until
+                // a pane draws it again
+                if let Some(tree) = placed.seat.read(cx).tree() {
+                    tree.update(cx, |tree, cx| tree.release(cx));
+                }
+                let placed = self.routed(module, UNSEEN, placed.seat, cx);
+                self.unseen.insert(module, placed);
+                continue;
             }
-            hidden.extend(intents.into_iter().map(|intent| (module, instance, intent)));
+            hidden.extend(Self::hide(placed, cx).map(|intent| (module, instance, intent)));
+        }
+        // one seat for each view to run unseen, none for any other
+        let stale: Vec<&'static str> = self
+            .unseen
+            .keys()
+            .filter(|module| !unseen.contains(*module))
+            .copied()
+            .collect();
+        for module in stale {
+            if let Some(placed) = self.unseen.remove(module) {
+                moved = true;
+                hidden.extend(Self::hide(placed, cx).map(|intent| (module, UNSEEN, intent)));
+            }
+        }
+        for module in unseen {
+            if !self.unseen.contains_key(module) {
+                moved = true;
+                let seat = self.new_seat(module, cx);
+                seat.update(cx, |seat, cx| seat.run_unseen(UNSEEN_BODY, cx));
+                let placed = self.routed(module, UNSEEN, seat, cx);
+                self.unseen.insert(module, placed);
+            }
         }
         if moved {
             cx.notify();
@@ -219,6 +299,47 @@ impl Seats {
         for (module, instance, intent) in hidden {
             self.route(module, instance, intent, cx);
         }
+        // a pane that took over a seat no pane held names its window as
+        // that view last asked
+        for (module, instance, title) in titled {
+            self.route(module, instance, Intent::Title(title), cx);
+        }
+    }
+
+    /// A new seat of `module`, handed the session as it stands before its
+    /// first turn.
+    fn new_seat(&self, module: &'static str, cx: &mut Context<Self>) -> Entity<Seat> {
+        let seat = cx.new(|cx| Seat::new(module, cx));
+        let props = self.props.clone();
+        seat.update(cx, |seat, cx| seat.set_props(props, cx));
+        seat
+    }
+
+    /// `seat`, its intents routed as the pane `instance`'s ([`UNSEEN`]:
+    /// none's).
+    fn routed(
+        &self,
+        module: &'static str,
+        instance: u64,
+        seat: Entity<Seat>,
+        cx: &mut Context<Self>,
+    ) -> Placed {
+        let _intents = cx.subscribe(&seat, move |this, _, intent: &Intent, cx| {
+            this.route(module, instance, intent.clone(), cx)
+        });
+        Placed { seat, _intents }
+    }
+
+    /// `placed` let go: its view told it is hidden, its last update's
+    /// intents handed back for the caller to route, its pictures out of the
+    /// windows' atlases.
+    fn hide(placed: Placed, cx: &mut Context<Self>) -> impl Iterator<Item = Intent> {
+        let intents = placed.seat.update(cx, |seat, _| seat.hide());
+        // the seat drops with this entry: its images leave the atlas
+        if let Some(tree) = placed.seat.read(cx).tree() {
+            tree.update(cx, |tree, cx| tree.release(cx));
+        }
+        intents.into_iter()
     }
 
     /// What the view of `module` in the pane with this layout `instance`
@@ -297,7 +418,7 @@ impl Seats {
     /// have not run yet.
     #[cfg(any(test, feature = "ax-door"))]
     pub(crate) fn settle(&self, cx: &mut Context<Self>) {
-        for placed in self.map.values() {
+        for placed in self.map.values().chain(self.unseen.values()) {
             placed.seat.update(cx, |seat, cx| seat.turn(cx));
         }
     }

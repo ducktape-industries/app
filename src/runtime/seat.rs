@@ -163,12 +163,14 @@ pub(super) enum Slot {
     Compiling,
     /// Compiled, and not started: a seat no pane has claimed keeps only
     /// what its view's manifest says, the name the rail lists it by, the
-    /// icon its tab draws folded (empty: it declares none) and the
-    /// narrowest it is laid out. The pane that claims it starts it.
+    /// icon its tab draws folded (empty: it declares none), the narrowest
+    /// it is laid out, and whether it posts notices (`notify`), which
+    /// `Seats` keeps running with no pane. The pane that claims it starts it.
     Compiled {
         name: String,
         icon: String,
         min_width: u32,
+        notifies: bool,
     },
     Ready(Box<Guest>),
     /// The active deployment verified, and it ships no view.
@@ -584,11 +586,13 @@ fn install(
             name,
             icon,
             min_width,
+            notifies,
         } => {
             *slot = Slot::Compiled {
                 name,
                 icon,
                 min_width,
+                notifies,
             };
             return true;
         }
@@ -684,6 +688,7 @@ pub(super) enum Loaded {
         name: String,
         icon: String,
         min_width: u32,
+        notifies: bool,
     },
 }
 

@@ -36,6 +36,9 @@ pub(crate) struct Seat {
     /// is on screen (`host.visible`) only then. A pane in a window behind
     /// another, or in an app the person left, is not being looked at.
     in_front: bool,
+    /// The window name its view last asked for (`host.title`): a pane that
+    /// takes over a seat no pane held names its window by it (`Seats`).
+    title: Option<String>,
     tree: Option<Entity<crate::render::ViewTree>>,
     _tree_events: Option<Subscription>,
     _tree_drawn: Option<Subscription>,
@@ -115,6 +118,7 @@ impl Seat {
             window: None,
             body: None,
             in_front: false,
+            title: None,
             tree: None,
             _tree_events: None,
             _tree_drawn: None,
@@ -199,6 +203,19 @@ impl Seat {
         }
     }
 
+    /// No pane holds the view and it runs on unseen (`Seats`' background
+    /// seats, a view that posts notices): laid out in `body`, in no window,
+    /// not on screen. Nothing draws its tree, so a draw it waited for is
+    /// not waited for any more.
+    pub(crate) fn run_unseen(&mut self, body: (f32, f32), cx: &mut Context<Self>) {
+        self.window = None;
+        self.body = Some(body);
+        self.in_front = false;
+        self.holding = false;
+        self.set_keys_free(false, cx);
+        self.wake(cx);
+    }
+
     /// `PaneLayer` says whether a guest here may move the keys (see
     /// `keys_free`); the tree hears it too. Nothing draws from it, so no
     /// notify.
@@ -214,10 +231,14 @@ impl Seat {
         self.keys_free
     }
 
-    /// The body its view is laid out in (`place`).
-    #[cfg(test)]
+    /// The body its view is laid out in (`place`, `run_unseen`).
     pub(crate) fn body(&self) -> Option<(f32, f32)> {
         self.body
+    }
+
+    /// The window name its view last asked for, if it ever did.
+    pub(crate) fn title(&self) -> Option<&str> {
+        self.title.as_deref()
     }
 
     /// Session, Account and the theme land here as encoded props: a turn
@@ -414,6 +435,9 @@ impl Seat {
             self.run_widget_commands(generation, cx);
         }
         for intent in intents {
+            if let Intent::Title(title) = &intent {
+                self.title = Some(title.clone());
+            }
             cx.emit(intent);
         }
         self.arm_clock(next_tick, cx);

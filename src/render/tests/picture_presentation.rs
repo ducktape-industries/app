@@ -316,6 +316,29 @@ fn a_released_tree_drops_its_atlas_tiles_and_a_hot_swap_keeps_them(
     );
 }
 
+/// A tree no window draws lets its tiles go (a seat run unseen); drawn
+/// again, it decodes its pictures anew.
+#[gpui_kit::test]
+fn a_released_tree_draws_its_pictures_again(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let (host, mut native) = drawn(ViewTree::new(pictures(true)), cx);
+    let tree = host.read_with(&native, |host, _| host.tree.clone());
+    native
+        .cx
+        .update(|cx| tree.update(cx, |tree, cx| tree.release(cx)));
+    assert!(tree.read_with(&native, |tree, _| tree.image_for_test(11).is_none()));
+
+    native.update(|window, cx| {
+        tree.update(cx, |_, cx| cx.notify());
+        window.render_frame(cx);
+    });
+    native.run_until_parked();
+    let image = tree
+        .read_with(&native, |tree, _| tree.image_for_test(11))
+        .expect("decoded again");
+    assert!(native.update(|window, _| window.has_image_atlas_entry(&image)));
+}
+
 /// The raster cache's cost, measured: a seat drawing 64 pictures of 1 MiB
 /// decoded (the byte cap, every one drawn), then 64 fresh ones that
 /// displace them. The seat's raw bytes (P16's store) are built before the

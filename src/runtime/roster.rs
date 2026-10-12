@@ -663,6 +663,7 @@ mod rail_tests {
             name: "Compiled view".into(),
             icon: String::new(),
             min_width: 320,
+            notifies: false,
         };
         lock(registry()).insert((module, 0), seat);
         let row = Roster::listing(&[module])

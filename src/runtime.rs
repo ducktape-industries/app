@@ -235,6 +235,22 @@ pub(crate) fn min_width(module: &str) -> Option<f32> {
         })
 }
 
+/// Whether `module`'s view posts notices (`notify` in its manifest), as
+/// a seat of it read it, compiled or drawn; `None` while none has (a load
+/// on its way, a failure, no seat): `Seats` keeps such a view running while
+/// no pane holds it, so what it would notice is noticed.
+pub(crate) fn notifies(module: &str) -> Option<bool> {
+    let registry = lock(registry());
+    registry
+        .iter()
+        .filter(|((name, _), _)| *name == module)
+        .find_map(|(_, seat)| match &lock(seat).slot {
+            Slot::Ready(guest) => Some(guest.capabilities.contains(&Capability::Notify)),
+            Slot::Compiled { notifies, .. } => Some(*notifies),
+            _ => None,
+        })
+}
+
 /// Every seat of `module` holds a drawn view whose manifest says
 /// `min_width`, or, with none yet, one is preloaded for its first pane: a
 /// WAT view with the five exports whose every tick draws an empty tree.
@@ -252,6 +268,7 @@ pub(crate) fn seat_compiled_for_test(module: &'static str, name: &str, icon: &st
         name: name.into(),
         icon: icon.into(),
         min_width: 320,
+        notifies: false,
     };
     lock(registry()).insert((module, 0), seat);
 }
@@ -429,6 +446,19 @@ pub(crate) fn name_for_test(module: &str, name: &str) {
             && let Slot::Ready(guest) = &mut lock(seat).slot
         {
             guest.name = name.into();
+        }
+    }
+}
+
+/// Every drawn view of `module` declares `capabilities`, as its manifest
+/// would.
+#[cfg(test)]
+pub(crate) fn capabilities_for_test(module: &str, capabilities: Vec<Capability>) {
+    for ((seated, _), seat) in lock(registry()).iter() {
+        if *seated == module
+            && let Slot::Ready(guest) = &mut lock(seat).slot
+        {
+            guest.capabilities = capabilities.clone();
         }
     }
 }

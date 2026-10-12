@@ -350,8 +350,10 @@ impl ViewTree {
         self.images.borrow().get(hash)
     }
 
-    /// The seat is dropping this tree: its rasters leave every window's
-    /// atlas. Never on a hot swap, whose next tree carries them.
+    /// The seat is dropping this tree, or no window draws it any more: its
+    /// rasters leave every window's atlas, and a later draw decodes them
+    /// again from the seat's bytes. Never on a hot swap, whose next tree
+    /// carries them.
     pub(crate) fn release(&mut self, cx: &mut App) {
         self.images.borrow_mut().release(cx);
     }

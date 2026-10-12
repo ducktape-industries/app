@@ -72,11 +72,12 @@ impl Guest {
                     before_any_candidate(Failure::Refused(format!("{shown}: {error}")))
                 })?;
                 Self::compile(&bytes, &shown).map_err(before_any_candidate)?;
-                let (name, _, min_width, _, icon) = manifest_of(&bytes);
+                let (name, capabilities, min_width, _, icon) = manifest_of(&bytes);
                 return Ok(Loaded::Compiled {
                     name,
                     icon,
                     min_width,
+                    notifies: capabilities.contains(&Capability::Notify),
                 });
             }
             return Self::load_from(module, &path)
@@ -179,6 +180,7 @@ impl Guest {
                     name,
                     icon,
                     min_width,
+                    notifies: capabilities.contains(&Capability::Notify),
                 });
             }
             let instantiated = Instant::now();

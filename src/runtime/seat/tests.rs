@@ -589,7 +589,7 @@ fn an_unopened_program_runs_no_init() {
     assert!(
         matches!(
             &lock(&seat).slot,
-            Slot::Compiled { name, icon, min_width: 320 } if name == "Lazy" && icon.is_empty()
+            Slot::Compiled { name, icon, min_width: 320, notifies: false } if name == "Lazy" && icon.is_empty()
         ),
         "the unopened view did not land compiled and unstarted"
     );
@@ -692,6 +692,7 @@ fn a_pane_starts_the_view_its_seat_compiled() {
         name: "Claimed".into(),
         icon: String::new(),
         min_width: 320,
+        notifies: false,
     };
     lock(registry()).insert((MODULE, 0), preloaded);
     let seat = mounted(MODULE, 7001);
@@ -723,6 +724,7 @@ fn a_seat_claimed_during_its_preload_is_started() {
             name: "Claimed".into(),
             icon: String::new(),
             min_width: 320,
+            notifies: false,
         })
     });
     eventually("the claiming pane's own load ran", || {
@@ -742,6 +744,7 @@ fn a_stale_preload_does_not_supersede_the_panes_load() {
         name: "Stale".into(),
         icon: String::new(),
         min_width: 320,
+        notifies: false,
     };
     let reload = lock(&seat).start();
     let pane = {
@@ -761,6 +764,7 @@ fn a_stale_preload_does_not_supersede_the_panes_load() {
             name: "Stale".into(),
             icon: String::new(),
             min_width: 320,
+            notifies: false,
         })
     });
     assert_eq!(
@@ -781,6 +785,7 @@ fn a_load_from_a_node_the_app_left_starts_no_other() {
         name: "Left".into(),
         icon: String::new(),
         min_width: 320,
+        notifies: false,
     };
     let generation = {
         let mut locked = lock(&seat);
@@ -803,6 +808,7 @@ fn a_load_from_a_node_the_app_left_starts_no_other() {
             name: "Left".into(),
             icon: String::new(),
             min_width: 320,
+            notifies: false,
         })
     });
     assert_eq!(
