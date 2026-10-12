@@ -1,19 +1,32 @@
 use std::time::{Duration, Instant};
 
-use std::path::Path;
+use inbox_api::{Entry, Push, Read};
+use notices::{Kind, Link};
 
-use super::center::{Center, CenterHandle, MAX_AGE, MAX_ENTRIES, VIEW_ENTRIES, read_log};
-use super::settings::{BURST_PREF, FRONT_PREF, NOTIFY_PREF, Permission, Settings, VIEWS_PREF};
-use super::{MAX_TEXT, in_order, shortened};
+use super::center::{Center, CenterHandle, InboxState};
+use super::settings::{BURST_PREF, FRONT_PREF, NOTIFY_PREF, PROGRAMS_PREF, Permission, Settings};
+use crate::backend::inbox::fake::FakeInbox;
 use crate::runtime::WindowKey;
-use view_wire::methods::{self, Delivery, Notification};
 
-fn post(title: &str, tag: &str) -> Notification {
-    Notification {
-        title: title.into(),
+pub(crate) fn entry(id: i64, program: &str, tag: &str, height: u64) -> Entry {
+    Entry {
+        id,
+        program: program.into(),
+        key: format!("{tag}/{id}"),
+        kind: Kind::Mention,
+        from: Some(1),
+        title: format!("title {id}"),
         body: "b".into(),
         tag: tag.into(),
-        link: String::new(),
+        link: Link {
+            program: program.into(),
+            segments: vec![tag.into(), id.to_string()],
+        },
+        height,
+        tx: "ab".into(),
+        path: "/0#0".into(),
+        at_ms: 1_790_000_000_000 + id as u64 * 1000,
+        read: false,
     }
 }
 
@@ -22,541 +35,486 @@ fn settings(permission: Option<Permission>) -> Settings {
         banners: true,
         in_front: false,
         burst: 3,
-        views: permission
+        programs: permission
             .map(|permission| ("chat".to_owned(), permission))
             .into_iter()
             .collect(),
     }
 }
 
-/// The person's word decides first: none yet logs and asks, Block drops
-/// without a trace, Silent logs, Allow raises a banner.
-#[test]
-fn a_views_permission_decides_log_bar_or_banner() {
-    let now = Instant::now();
+fn ready() -> Center {
     let mut center = Center::default();
-    let (posted, banner) = center.post(&settings(None), "chat", "Chat", post("a", ""), now, 0);
-    assert_eq!((posted, banner.is_none()), (Delivery::Logged, true));
-    assert!(center.asking.contains("chat") && center.entries().count() == 1);
+    center.set_network("net#0a0b0c0d");
+    center.set_state(InboxState::Ready);
+    center
+}
 
-    let blocked = settings(Some(Permission::Block));
-    let (posted, banner) = center.post(&blocked, "chat", "Chat", post("b", ""), now, 0);
-    assert_eq!((posted, banner), (Delivery::Blocked, None));
-    assert_eq!(
-        center.entries().count(),
-        1,
-        "a blocked notice is not logged"
+/// Rows fold by `(program, tag)` with a count and the newest height;
+/// another program's same tag is its own row, and an entry with no tag
+/// is never folded.
+#[test]
+fn rows_fold_by_program_and_tag() {
+    let mut center = ready();
+    center.replace(
+        vec![
+            entry(5, "chat", "design", 50),
+            entry(4, "forge", "design", 40),
+            entry(3, "chat", "", 30),
+            entry(2, "chat", "", 20),
+            entry(1, "chat", "design", 10),
+        ],
+        5,
     );
-
-    let silent = settings(Some(Permission::Silent));
-    let (posted, banner) = center.post(&silent, "chat", "Chat", post("c", ""), now, 0);
-    assert_eq!((posted, banner), (Delivery::Logged, None));
-
-    let allowed = settings(Some(Permission::Allow));
-    let (posted, banner) = center.post(&allowed, "chat", "Chat", post("d", "#room"), now, 0);
-    assert_eq!(posted, Delivery::Banner);
+    let rows = center.rows();
+    let folded: Vec<_> = rows
+        .iter()
+        .map(|row| (row.id, row.program.as_str(), row.count, row.through_height))
+        .collect();
     assert_eq!(
-        banner.unwrap().tag,
-        "chat/#room",
-        "a view's tags are its own"
+        folded,
+        vec![
+            (5, "chat", 2, 50),
+            (4, "forge", 1, 40),
+            (3, "chat", 1, 30),
+            (2, "chat", 1, 20)
+        ]
+    );
+    assert_eq!(rows[0].title, "title 5", "the newest entry names the row");
+    assert_eq!(center.unread(), 5);
+}
+
+/// The person's word decides first: none yet counts and asks in the
+/// centre, Silent counts, Allow raises a banner tagged by the program.
+#[test]
+fn a_programs_permission_decides_ask_count_or_banner() {
+    let now = Instant::now();
+    let mut center = ready();
+    assert!(
+        center
+            .arrived(&settings(None), entry(1, "chat", "", 1), now)
+            .is_none()
+    );
+    assert!(center.asking.contains("chat") && center.rows().len() == 1);
+    assert!(
+        center
+            .arrived(
+                &settings(Some(Permission::Silent)),
+                entry(2, "chat", "", 2),
+                now
+            )
+            .is_none()
+    );
+    let banner = center
+        .arrived(
+            &settings(Some(Permission::Allow)),
+            entry(3, "chat", "room", 3),
+            now,
+        )
+        .unwrap();
+    assert_eq!(
+        (banner.title.as_str(), banner.tag.as_str()),
+        ("title 3", "chat/room")
     );
     assert_eq!(center.unread(), 3);
-
-    let mut off = allowed.clone();
+    let mut off = settings(Some(Permission::Allow));
     off.banners = false;
-    assert_eq!(
-        center.post(&off, "chat", "Chat", post("e", ""), now, 0).0,
-        Delivery::Logged
-    );
-
-    // "Not now" keeps the bar away for the run
-    center.asking.clear();
-    center.not_now.insert("chat".into());
-    center.post(&settings(None), "chat", "Chat", post("f", ""), now, 0);
-    assert!(!center.asking.contains("chat"));
+    assert!(center.arrived(&off, entry(4, "chat", "", 4), now).is_none());
+    // the same entry pushed twice counts once
+    assert!(center.arrived(&off, entry(4, "chat", "", 4), now).is_none());
+    assert_eq!(center.unread(), 4);
 }
 
 /// The window in front gets no banner unless the person asked for it.
 #[test]
 fn the_focused_view_is_not_bannered_unless_show_is_set() {
     let now = Instant::now();
-    let mut center = Center::default();
+    let mut center = ready();
     let window = WindowKey::unique();
     let mut allowed = settings(Some(Permission::Allow));
     center.set_front(window, true, "chat");
-    assert_eq!(
-        center.post(&allowed, "chat", "Chat", post("a", ""), now, 0),
-        (Delivery::Logged, None)
+    assert!(
+        center
+            .arrived(&allowed, entry(1, "chat", "", 1), now)
+            .is_none()
     );
     allowed.in_front = true;
-    assert_eq!(
+    assert!(
         center
-            .post(&allowed, "chat", "Chat", post("b", ""), now, 0)
-            .0,
-        Delivery::Banner
+            .arrived(&allowed, entry(2, "chat", "", 2), now)
+            .is_some()
     );
     allowed.in_front = false;
-    // another window losing focus leaves the front alone; this one's clears it
     center.set_front(WindowKey::unique(), false, "");
     assert!(center.front.is_some());
     center.set_front(window, false, "");
-    assert_eq!(
+    assert!(
         center
-            .post(&allowed, "chat", "Chat", post("c", ""), now, 0)
-            .0,
-        Delivery::Banner
+            .arrived(&allowed, entry(3, "chat", "", 3), now)
+            .is_some()
     );
 }
 
-/// A burst of three a minute: the fourth is logged and raises one "more"
-/// banner keyed by the view, counting up; a token back, a banner again.
+/// A burst of three a minute: the fourth is counted and raises one "more"
+/// banner keyed by the program, counting up; a token back, a banner again.
 #[test]
 fn a_burst_past_the_limit_coalesces_into_one_more_banner() {
     let start = Instant::now();
-    let mut center = Center::default();
+    let mut center = ready();
     let allowed = settings(Some(Permission::Allow));
-    for nth in 0..3 {
-        let (posted, _) = center.post(&allowed, "chat", "Chat", post("m", ""), start, nth);
-        assert_eq!(posted, Delivery::Banner);
+    for id in 1..=3 {
+        let banner = center
+            .arrived(&allowed, entry(id, "chat", "", 1), start)
+            .unwrap();
+        assert_eq!(banner.title, format!("title {id}"));
     }
-    let (posted, more) = center.post(&allowed, "chat", "Chat", post("m", ""), start, 3);
-    let more = more.unwrap();
-    assert_eq!(posted, Delivery::Logged);
+    let more = center
+        .arrived(&allowed, entry(4, "chat", "", 1), start)
+        .unwrap();
     assert_eq!(
         (more.title.as_str(), more.tag.as_str()),
-        ("1 more from Chat", "more/chat")
+        ("1 more from chat", "more/chat")
     );
-    let (_, more) = center.post(&allowed, "chat", "Chat", post("m", ""), start, 4);
-    assert_eq!(more.unwrap().title, "2 more from Chat");
-    assert_eq!(center.entries().count(), 5, "everything is still logged");
-    // another view has its own bucket
-    let mut forge = allowed.clone();
-    forge.views.insert("forge".into(), Permission::Allow);
-    assert_eq!(
-        center
-            .post(&forge, "forge", "Forge", post("f", ""), start, 5)
-            .0,
-        Delivery::Banner
-    );
-    // twenty seconds refill one token at three a minute
-    let later = start + Duration::from_secs(20);
-    assert_eq!(
-        center
-            .post(&allowed, "chat", "Chat", post("m", ""), later, 6)
-            .0,
-        Delivery::Banner
-    );
-    assert_eq!(
-        center
-            .post(&allowed, "chat", "Chat", post("m", ""), later, 7)
-            .1
-            .unwrap()
-            .title,
-        "1 more from Chat",
-        "the count starts over after a banner"
-    );
+    let more = center
+        .arrived(&allowed, entry(5, "chat", "", 1), start)
+        .unwrap();
+    assert_eq!(more.title, "2 more from chat");
+    let later = start + Duration::from_secs(21);
+    let banner = center
+        .arrived(&allowed, entry(6, "chat", "", 1), later)
+        .unwrap();
+    assert_eq!(banner.title, "title 6");
+    assert_eq!(center.unread(), 6);
 }
 
-/// One tag, one row: it counts what folded into it, comes back to the
-/// top unread, and carries the latest words.
+/// A `gone` takes the entry off the page, its count down, and names the
+/// banner tag to take down; a `read` elsewhere does the same for the
+/// count, and says when it names an entry this page does not have.
 #[test]
-fn notices_under_one_tag_fold_into_one_row() {
-    let now = Instant::now();
-    let mut center = Center::default();
-    let silent = settings(Some(Permission::Silent));
-    center.post(&silent, "chat", "Chat", post("first", "#room"), now, 1);
-    center.post(&silent, "chat", "Chat", post("other", ""), now, 2);
-    let id = center.entries().last().unwrap().id;
-    center.open(id);
-    center.post(&silent, "chat", "Chat", post("second", "#room"), now, 3);
-    center.post(&silent, "forge", "Forge", post("theirs", "#room"), now, 4);
-    let rows: Vec<_> = center
-        .entries()
-        .map(|entry| (entry.title.as_str(), entry.count, entry.read))
-        .collect();
-    assert_eq!(
-        rows,
-        [
-            ("theirs", 1, false),
-            ("second", 2, false),
-            ("other", 1, false)
-        ]
+fn gone_and_read_elsewhere_move_the_page_and_name_the_banner() {
+    let mut center = ready();
+    center.replace(
+        vec![entry(2, "chat", "room", 2), entry(1, "chat", "room", 1)],
+        2,
     );
-    center.mark_all_read();
+    assert_eq!(center.removed(&[2]), vec!["chat/room".to_owned()]);
+    assert_eq!(
+        (center.rows().len(), center.rows()[0].count, center.unread()),
+        (1, 1, 1)
+    );
+    assert_eq!(
+        center.read_elsewhere(&[1]),
+        (false, vec!["chat/room".to_owned()])
+    );
     assert_eq!(center.unread(), 0);
-    center.post(&silent, "chat", "Chat", post("new", ""), now, 5);
-    center.clear_read();
-    assert_eq!(center.entries().count(), 1);
+    assert!(center.rows()[0].read);
+    assert_eq!(center.read_elsewhere(&[9]), (true, Vec::new()));
 }
 
-/// A view reading a tag reads its own rows under it: another tag, an
-/// untagged row and another view's row under the same tag stay unread.
+/// Opening a row reads its entries through the row's newest height and
+/// mints the notice's link for the chain in hand; a link that does not
+/// mint opens nothing.
 #[test]
-fn reading_a_tag_reads_only_the_views_own_rows_under_it() {
-    let now = Instant::now();
-    let mut center = Center::default();
-    let silent = settings(Some(Permission::Silent));
-    center.post(&silent, "chat", "Chat", post("a", "#design"), now, 1);
-    center.post(&silent, "chat", "Chat", post("b", "#design"), now, 2);
-    center.post(&silent, "chat", "Chat", post("c", "@alice"), now, 3);
-    center.post(&silent, "chat", "Chat", post("d", ""), now, 4);
-    center.post(&silent, "forge", "Forge", post("theirs", "#design"), now, 5);
-    assert!(center.read_tag("chat", "#design"));
-    let unread: Vec<_> = center
-        .entries()
-        .filter(|entry| !entry.read)
-        .map(|entry| entry.title.as_str())
-        .collect();
-    assert_eq!(unread, ["theirs", "d", "c"]);
-    assert!(!center.read_tag("chat", "#design"), "nothing left to read");
-    assert!(!center.read_tag("chat", ""), "an empty tag reads nothing");
-    assert_eq!(center.unread(), 3);
-}
-
-/// The log keeps 500 rows and thirty days, whichever is fewer.
-#[test]
-fn the_log_is_capped_by_count_and_age() {
-    let now = Instant::now();
-    let mut center = Center::default();
-    // six views, each under its own share of the log
-    let views: Vec<String> = (0..6).map(|nth| format!("view{nth}")).collect();
-    let mut silent = settings(None);
-    for view in &views {
-        silent.views.insert(view.clone(), Permission::Silent);
-    }
-    for nth in 0..(MAX_ENTRIES as i64 + 20) {
-        let view = &views[nth as usize % views.len()];
-        center.post(&silent, view, "View", post(&nth.to_string(), ""), now, nth);
-    }
-    assert_eq!(center.entries().count(), MAX_ENTRIES);
-    assert_eq!(center.entries().last().unwrap().title, "20");
-    // thirty days on from the row at 100: everything before it ages out
-    center.post(
-        &silent,
-        "view0",
-        "View",
-        post("late", ""),
-        now,
-        100 + MAX_AGE,
+fn opening_a_row_reads_through_its_newest_height_and_mints_the_link() {
+    let mut center = ready();
+    center.replace(
+        vec![entry(2, "chat", "room", 20), entry(1, "chat", "room", 10)],
+        2,
     );
-    assert_eq!(center.entries().count(), 520 - 100 + 1);
-    assert_eq!(center.entries().last().unwrap().title, "100");
-}
-
-#[test]
-fn prefs_read_back_as_settings() {
-    let read = Settings::of(&serde_json::json!({}));
-    assert_eq!((read.banners, read.in_front, read.burst), (true, false, 6));
-    let read = Settings::of(&serde_json::json!({
-        NOTIFY_PREF: false, FRONT_PREF: "show", BURST_PREF: 12,
-        VIEWS_PREF: { "chat": "Silent", "forge": "nonsense" },
-    }));
-    assert_eq!((read.banners, read.in_front, read.burst), (false, true, 12));
-    assert_eq!(read.views.len(), 1);
-    assert_eq!(Settings::of(&serde_json::json!({ BURST_PREF: 7 })).burst, 6);
-}
-
-/// A post round-trips as borsh and trailing bytes are refused; a post
-/// with no words, or a link that is not `duck://`, is refused; long text
-/// is cut on a char boundary, and a cut link is dropped.
-#[test]
-fn a_post_is_words_a_tag_and_a_duck_link() {
-    let full = Notification {
-        title: "a".into(),
-        body: "b".into(),
-        tag: "t".into(),
-        link: "duck://chat/room".into(),
-    };
-    let mut bytes = methods::encode(&full);
-    assert_eq!(methods::decode::<Notification>(&bytes).unwrap(), full);
-    bytes.extend_from_slice(b"icon");
-    assert!(methods::decode::<Notification>(&bytes).is_err());
-    assert!(shortened(Notification::default()).is_err());
-    assert!(
-        shortened(Notification {
-            link: "https://example.com".into(),
-            ..full.clone()
-        })
-        .is_err()
-    );
-    let long = shortened(Notification {
-        title: "가".repeat(MAX_TEXT),
-        body: "b".repeat(MAX_TEXT * 2),
-        link: format!("duck://{}", "x".repeat(MAX_TEXT)),
-        ..full
-    })
-    .unwrap();
-    assert!(long.title.len() <= MAX_TEXT && long.title.chars().all(|c| c == '가'));
-    assert_eq!(long.body.len(), MAX_TEXT);
-    assert!(long.link.is_empty(), "a cut link goes nowhere");
-}
-
-/// The cut is what clears a link, not its length after: a link of exactly
-/// MAX_TEXT bytes was not cut and stays; a multibyte link cut short of
-/// MAX_TEXT on a character boundary was, and goes.
-#[test]
-fn a_link_is_cleared_when_cut_not_when_long() {
-    let with_link = |link: String| {
-        shortened(Notification {
-            title: "t".into(),
-            link,
-            ..Notification::default()
-        })
-        .unwrap()
-        .link
-    };
-    let exact = format!("duck://{}", "x".repeat(MAX_TEXT - "duck://".len()));
-    assert_eq!(exact.len(), MAX_TEXT);
+    let opened = center.open(2).unwrap();
+    assert!(opened.link.is_some());
     assert_eq!(
-        with_link(exact.clone()),
-        exact,
-        "uncut, so it still goes somewhere"
+        opened.link,
+        ducklink::mint("net#0a0b0c0d", "chat", &["room", "2"]),
     );
-    // 7 + 3 * 169 = 514 bytes; the boundary cut lands at 511
-    let cut = format!("duck://{}", "가".repeat(169));
-    assert!(cut.len() > MAX_TEXT);
+    assert!(center.rows()[0].read);
+    assert_eq!(center.unread(), 0);
+    assert_eq!(center.open(9), None);
+    let mut bad = entry(3, "chat", "", 30);
+    bad.link.segments = vec!["a/b".into()];
+    center.replace(vec![bad], 1);
+    assert_eq!(
+        center.open(3).unwrap().link,
+        None,
+        "a link that does not mint"
+    );
+}
+
+/// A view's watermark marks the tag's rows at or below it read and moves
+/// once: the same or a lower height is not a move, a higher one is.
+#[test]
+fn a_watermark_marks_read_and_moves_once() {
+    let mut center = ready();
+    center.replace(
+        vec![
+            entry(3, "chat", "room", 30),
+            entry(2, "chat", "room", 20),
+            entry(1, "chat", "other", 10),
+        ],
+        3,
+    );
+    assert!(center.watermark("chat", "room", 20));
+    assert_eq!(center.unread(), 2);
+    assert!(!center.watermark("chat", "room", 20));
+    assert!(!center.watermark("chat", "room", 15));
+    assert!(center.watermark("chat", "room", 30));
+    assert_eq!(center.unread(), 1, "another tag's row stands");
+    // an entry arriving under the watermark is read on arrival
     assert!(
-        with_link(cut).is_empty(),
-        "cut short of MAX_TEXT, still cut"
-    );
-}
-
-/// A view's banners leave in the order they came, however long each
-/// takes: the first one holds until every other is queued behind it.
-#[test]
-fn a_views_banners_leave_in_order() {
-    let (tell, told) = std::sync::mpsc::channel();
-    let (open, gate) = std::sync::mpsc::channel::<()>();
-    let mut gate = Some(gate);
-    for nth in 0..10u64 {
-        let tell = tell.clone();
-        let gate = gate.take();
-        in_order("order-test", move || {
-            if let Some(gate) = gate {
-                // held until all ten are queued: nothing may pass it
-                let _ = gate.recv();
-            }
-            tell.send(nth).unwrap();
-        });
-    }
-    drop(open);
-    drop(tell);
-    assert_eq!(told.iter().collect::<Vec<_>>(), (0..10).collect::<Vec<_>>());
-}
-
-/// A log cut short is set aside whole as `.bad`, the centre starts with
-/// no rows, and the next post is saved as a fresh log, not over the old one.
-#[test]
-fn a_log_cut_short_is_set_aside_and_the_next_post_writes_a_fresh_one() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("dev.json");
-    let silent = settings(Some(Permission::Silent));
-    let _off = crate::perf::off_for_test();
-    let mut center = Center::default();
-    center.open_log("dev", Some(path.clone()));
-    center.post(&silent, "chat", "Chat", post("old", ""), Instant::now(), 1);
-    flushed(&mut center, &path);
-    let whole = std::fs::read(&path).unwrap();
-    let cut = &whole[..whole.len() - 3];
-    std::fs::write(&path, cut).unwrap();
-
-    assert!(read_log(&path).unwrap().is_empty());
-    assert_eq!(std::fs::read(dir.path().join("dev.json.bad")).unwrap(), cut);
-
-    let mut reopened = Center::default();
-    reopened.open_log("dev", Some(path.clone()));
-    reopened.post(&silent, "chat", "Chat", post("new", ""), Instant::now(), 2);
-    flushed(&mut reopened, &path);
-    let kept = read_log(&path).unwrap();
-    assert_eq!(kept.len(), 1);
-    assert_eq!(kept[0].title, "new");
-}
-
-/// A log this device cannot read is not taken for an empty one: the centre
-/// starts empty, and the next post does not save over the old rows.
-#[test]
-fn an_unreadable_log_is_not_saved_over() {
-    use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("dev.json");
-    let silent = settings(Some(Permission::Silent));
-    let _off = crate::perf::off_for_test();
-    let mut center = Center::default();
-    center.open_log("dev", Some(path.clone()));
-    center.post(&silent, "chat", "Chat", post("old", ""), Instant::now(), 1);
-    flushed(&mut center, &path);
-    if !crate::backend::unreadable_for_test(&path) {
-        return;
-    }
-
-    let mut reopened = Center::default();
-    reopened.open_log("dev", Some(path.clone()));
-    reopened.post(&silent, "chat", "Chat", post("new", ""), Instant::now(), 2);
-    flushed(&mut reopened, &path);
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-
-    assert_eq!(reopened.entries().count(), 1);
-    let kept = read_log(&path).unwrap();
-    assert_eq!(kept.len(), 1);
-    assert_eq!(kept[0].title, "old");
-}
-
-/// `center`'s turn over: its log handed to the disk, and landed.
-fn flushed(center: &mut Center, path: &Path) {
-    center.flush();
-    settled(path);
-}
-
-/// Every write queued for the log at `path` has landed: they run one after
-/// another, so a job queued behind them runs last.
-fn settled(path: &Path) {
-    let (tell, told) = std::sync::mpsc::channel();
-    in_order(&path.to_string_lossy(), move || tell.send(()).unwrap());
-    told.recv_timeout(Duration::from_secs(10)).unwrap();
-}
-
-/// A log the centre handed over is on disk once the quit drain is done,
-/// though the write was still queued behind another job when it began.
-#[test]
-fn the_quit_drain_waits_for_a_queued_log_write() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("dev.json");
-    let _off = crate::perf::off_for_test();
-    let mut center = Center::default();
-    center.open_log("dev", Some(path.clone()));
-    let release = crate::runtime::kernel::tests::held(&path.to_string_lossy());
-    let silent = settings(Some(Permission::Silent));
-    center.post(&silent, "chat", "Chat", post("last", ""), Instant::now(), 1);
-    center.flush();
-    assert!(!path.exists(), "the write waits behind the held job");
-
-    let mut drained = std::pin::pin!(crate::runtime::kernel::drain());
-    assert!(
-        crate::runtime::kernel::tests::waiting(drained.as_mut()),
-        "the drain is done while the log write is still queued"
-    );
-    release.send(()).unwrap();
-    futures::executor::block_on(drained);
-    let kept = read_log(&path).unwrap();
-    assert_eq!(kept.len(), 1);
-    assert_eq!(kept[0].title, "last");
-}
-
-/// The quit hook's order: the centre's rows are handed over before the
-/// drain begins, so the drain waits for them too.
-#[test]
-fn quitting_hands_the_log_over_before_it_drains() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("dev.json");
-    let _off = crate::perf::off_for_test();
-    let center = CenterHandle::default();
-    center.lock().open_log("dev", Some(path.clone()));
-    let silent = settings(Some(Permission::Silent));
-    center
-        .lock()
-        .post(&silent, "chat", "Chat", post("last", ""), Instant::now(), 1);
-    let release = crate::runtime::kernel::tests::held(&path.to_string_lossy());
-
-    let mut drained = std::pin::pin!(crate::runtime::quitting(&center, ()));
-    assert!(crate::runtime::kernel::tests::waiting(drained.as_mut()));
-    release.send(()).unwrap();
-    futures::executor::block_on(drained);
-    let kept = read_log(&path).unwrap();
-    assert_eq!(kept.len(), 1, "the redraw's row is on disk when quit ends");
-    assert_eq!(kept[0].title, "last");
-}
-
-/// A view posting 600 notices keeps its newest 100 rows and leaves the
-/// other views' rows where they were; a view the person has not answered
-/// keeps its newest five, however much it posts.
-#[test]
-fn one_views_flood_leaves_the_other_views_rows() {
-    let now = Instant::now();
-    let mut center = Center::default();
-    let mut answered = settings(Some(Permission::Silent));
-    answered.views.insert("forge".into(), Permission::Allow);
-    for nth in 0..3 {
-        center.post(
-            &answered,
-            "forge",
-            "Forge",
-            post(&format!("forge {nth}"), ""),
-            now,
-            nth,
-        );
-    }
-    for nth in 0..600 {
-        center.post(
-            &answered,
-            "chat",
-            "Chat",
-            post(&nth.to_string(), ""),
-            now,
-            10 + nth,
-        );
-    }
-    let rows = |center: &Center, module: &str| {
         center
-            .entries()
-            .filter(|entry| entry.module == module)
-            .map(|entry| entry.title.clone())
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(rows(&center, "forge"), ["forge 2", "forge 1", "forge 0"]);
-    let chat = rows(&center, "chat");
-    assert_eq!(chat.len(), VIEW_ENTRIES);
-    assert_eq!((chat[0].as_str(), chat[99].as_str()), ("599", "500"));
-
-    for nth in 0..600 {
-        center.post(
-            &answered,
-            "spam",
-            "Spam",
-            post(&nth.to_string(), ""),
-            now,
-            700 + nth,
-        );
-    }
-    assert!(center.asking.contains("spam"), "the bar still asks");
-    assert_eq!(rows(&center, "spam"), ["599", "598", "597", "596", "595"]);
-    assert_eq!(rows(&center, "forge").len(), 3);
-    assert_eq!(rows(&center, "chat").len(), VIEW_ENTRIES);
+            .arrived(
+                &settings(Some(Permission::Allow)),
+                entry(4, "chat", "room", 25),
+                Instant::now()
+            )
+            .is_none()
+    );
+    assert_eq!(center.unread(), 1);
 }
 
-/// 256 posts in one redraw: the prefs are read once, not per post, and
-/// the log is written once, at the end of the redraw and off the window
-/// thread, not per post.
+/// Without an inbox the bell shows no count, whatever the page holds.
 #[test]
-fn a_redraws_posts_read_the_prefs_once_and_write_the_log_once() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("dev.json");
-    let center = CenterHandle::default();
-    center.lock().open_log("dev", Some(path.clone()));
-    crate::backend::edit_prefs(|prefs| {
-        prefs[VIEWS_PREF] = serde_json::json!({ "request-test": "Silent" });
+fn no_inbox_shows_no_count() {
+    let mut center = ready();
+    center.replace(vec![entry(1, "chat", "", 1)], 1);
+    assert_eq!(center.unread(), 1);
+    center.set_state(InboxState::NoInbox);
+    assert_eq!(center.unread(), 0);
+}
+
+/// A mute replaces the account's mutes with the program in (or out) and
+/// takes the program's question down.
+#[test]
+fn a_mute_moves_the_mutes_and_the_question() {
+    let mut center = ready();
+    center.ask_for_test("chat");
+    center.set_muted("chat", true);
+    assert!(center.muted("chat") && !center.asking.contains("chat"));
+    center.set_muted("chat", false);
+    assert!(!center.muted("chat"));
+}
+
+/// The settings read the prefs keys, with `"Block"` (the old word) no
+/// longer one: it reads as no word.
+#[test]
+fn settings_read_the_prefs_keys() {
+    let prefs = serde_json::json!({
+        NOTIFY_PREF: false,
+        FRONT_PREF: "show",
+        BURST_PREF: 12,
+        PROGRAMS_PREF: {"chat": "Allow", "forge": "Silent", "old": "Block"},
     });
-    let mut guest = crate::runtime::kernel::tests::guest();
-    let _on = crate::perf::on_for_test();
-    let reads = crate::backend::prefs_reads();
-    for id in 0..256 {
-        let notice = methods::encode(&post(&id.to_string(), ""));
-        super::post(&mut guest, &center, id, &notice);
-    }
+    let settings = Settings::of(&prefs);
     assert_eq!(
-        crate::backend::prefs_reads() - reads,
+        (settings.banners, settings.in_front, settings.burst),
+        (false, true, 12)
+    );
+    assert_eq!(settings.programs.get("chat"), Some(&Permission::Allow));
+    assert_eq!(settings.programs.get("forge"), Some(&Permission::Silent));
+    assert_eq!(settings.programs.get("old"), None);
+    let defaults = Settings::of(&serde_json::json!({BURST_PREF: 7}));
+    assert_eq!(
+        (defaults.banners, defaults.in_front, defaults.burst),
+        (true, false, 6)
+    );
+}
+
+/// The old log directory goes, once, at start.
+#[test]
+fn the_old_log_directory_is_deleted() {
+    let config = tempfile::tempdir().unwrap();
+    let old = config.path().join("notifications");
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::write(old.join("net.json"), b"[]").unwrap();
+    super::remove_old_log(config.path());
+    assert!(!old.exists());
+    super::remove_old_log(config.path());
+}
+
+// ---------- the runner against a fake inbox ----------
+
+async fn until(what: impl Fn() -> bool) {
+    for _ in 0..400 {
+        if what() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("the centre never got there");
+}
+
+async fn seated(seed: u64) -> crate::backend::SeatSerial {
+    use commonware_cryptography::Signer as _;
+    let serial = crate::backend::seat_serial();
+    crate::backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(
+        seed,
+    ))
+    .await;
+    serial
+}
+
+/// A connect reads the first page and the mutes; a `live` entry moves the
+/// bell's count; a `gone` takes its row down.
+#[tokio::test]
+async fn the_runner_fills_the_centre_and_follows_live() {
+    let _seat = seated(21).await;
+    let fake = FakeInbox::start().await;
+    fake.set_entries(vec![entry(1, "chat", "room", 1)]);
+    fake.set_mutes(inbox_api::Mutes {
+        programs: vec!["forge".into()],
+        ..Default::default()
+    });
+    let center = CenterHandle::default();
+    center.lock().set_network("net#0");
+    let rpc = crate::backend::RpcClient::new(fake.origin());
+    let _follower = super::start(&rpc, "net#0", "Desktop", center.clone());
+    until(|| center.lock().state == InboxState::Ready).await;
+    assert_eq!(center.lock().unread(), 1);
+    assert!(center.lock().muted("forge"));
+    fake.arrive(entry(2, "chat", "room", 2));
+    until(|| center.lock().unread() == 2).await;
+    assert_eq!(center.lock().rows()[0].count, 2);
+    fake.push(Push::Gone { ids: vec![2] });
+    until(|| center.lock().unread() == 1).await;
+    assert_eq!(center.lock().rows()[0].count, 1);
+    // a read elsewhere of an entry off this page reads the count again
+    let mut read = entry(1, "chat", "room", 1);
+    read.read = true;
+    fake.set_entries(vec![read]);
+    fake.push(Push::Read { ids: vec![77] });
+    until(|| center.lock().unread() == 0).await;
+    // the person's open goes upstream through the runner's client
+    center.lock().open(1);
+    until(|| !fake.reads().is_empty()).await;
+    assert_eq!(
+        fake.reads()[0],
+        Read::Tag {
+            program: "chat".into(),
+            tag: "room".into(),
+            through_height: 1
+        }
+    );
+    // a view's watermark goes upstream once per move
+    center.lock().watermark("chat", "room", 1);
+    center.lock().watermark("chat", "room", 1);
+    center.lock().watermark("chat", "room", 3);
+    until(|| fake.reads().len() == 3).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(fake.reads().len(), 3, "an unmoved watermark sent nothing");
+}
+
+/// A 404 says this address keeps no inbox; a refused login is shown and
+/// not retried.
+#[tokio::test]
+async fn no_inbox_and_a_refused_login_are_stated_not_retried() {
+    let _seat = seated(22).await;
+    let fake = FakeInbox::start().await;
+    fake.set_no_inbox(true);
+    let center = CenterHandle::default();
+    let rpc = crate::backend::RpcClient::new(fake.origin());
+    let _follower = super::start(&rpc, "net#0", "Desktop", center.clone());
+    until(|| center.lock().state == InboxState::NoInbox).await;
+    assert_eq!(center.lock().unread(), 0);
+    drop(_follower);
+    assert_eq!(center.lock().state, InboxState::Off);
+
+    fake.set_no_inbox(false);
+    fake.deny_logins(true);
+    let _follower = super::start(&rpc, "net#0", "Desktop", center.clone());
+    until(|| matches!(center.lock().state, InboxState::Denied(_))).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(fake.logins(), 1, "a refused login is not retried");
+}
+
+/// The inbox going away keeps the page and says since when; nothing
+/// arrives meanwhile; back, `entries` fills the gap.
+#[tokio::test]
+async fn unreachable_keeps_the_page_says_since_when_then_refills() {
+    let _seat = seated(23).await;
+    let fake = FakeInbox::start().await;
+    fake.set_entries(vec![entry(1, "chat", "room", 1)]);
+    let center = CenterHandle::default();
+    let rpc = crate::backend::RpcClient::new(fake.origin());
+    let _follower = super::start(&rpc, "net#0", "Desktop", center.clone());
+    until(|| center.lock().state == InboxState::Ready).await;
+    fake.set_down(true);
+    until(|| matches!(center.lock().state, InboxState::Unreachable { .. })).await;
+    let InboxState::Unreachable { since } = center.lock().state.clone() else {
+        unreachable!()
+    };
+    assert!(since > 0);
+    assert_eq!(
+        center.lock().rows().len(),
         1,
-        "prefs read per post"
+        "the page read this session stands"
     );
-    assert!(
-        !path.exists(),
-        "the log was written before the redraw ended"
+    fake.arrive(entry(2, "chat", "room", 2));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(center.lock().unread(), 1, "nothing lands while unreachable");
+    fake.set_down(false);
+    until(|| center.lock().state == InboxState::Ready).await;
+    assert_eq!(center.lock().unread(), 2, "entries filled the gap");
+    assert_eq!(center.lock().rows()[0].count, 2);
+}
+
+/// Mute goes upstream as the account's mutes with the program in; Clear
+/// read hides upstream; a stopped follower is shown beside the count.
+#[tokio::test]
+async fn a_mute_and_a_clear_go_upstream_and_a_stopped_follower_is_shown() {
+    let _seat = seated(24).await;
+    let fake = FakeInbox::start().await;
+    fake.set_stopped(Some(inbox_api::Stopped {
+        height: 1200,
+        reason: "a hole".into(),
+    }));
+    let center = CenterHandle::default();
+    let rpc = crate::backend::RpcClient::new(fake.origin());
+    let _follower = super::start(&rpc, "net#0", "Desktop", center.clone());
+    until(|| center.lock().state == InboxState::Ready).await;
+    assert_eq!(
+        center.lock().stuck.as_ref().map(|stuck| stuck.height),
+        Some(1200)
     );
-    // the end of the redraw (`Guest::redraw`)
-    center.lock().flush();
-    settled(&path);
-    let saves = &crate::perf::snapshot(false)["shell"]["io.notify_save"]["n"];
-    assert_eq!(saves.as_u64(), Some(1), "one write for the redraw's posts");
-    let kept = read_log(&path).unwrap();
-    assert_eq!(kept.len(), VIEW_ENTRIES);
-    assert_eq!(kept.last().unwrap().title, "255");
+    center.lock().set_muted("chat", true);
+    until(|| !fake.mute_puts().is_empty()).await;
+    assert_eq!(fake.mute_puts()[0].programs, vec!["chat".to_owned()]);
+    assert!(fake.mute_puts()[0].kinds.is_empty());
+    center.lock().clear_read();
+    until(|| fake.hides() == 1).await;
+}
+
+/// `notify.seen` from a view is a watermark: the program's rows under the
+/// tag through the height are read and the centre redraws once; the same
+/// watermark again moves nothing.
+#[test]
+fn a_views_seen_is_a_watermark_on_the_centre() {
+    use crate::runtime::Intent;
+    use view_wire::methods::{self, Seen};
+    let mut guest = crate::runtime::kernel::tests::guest();
+    let program = guest.module;
+    {
+        let mut center = super::center().lock();
+        center.set_network("seen-test#1");
+        center.set_state(InboxState::Ready);
+        center.replace(
+            vec![entry(2, program, "room", 20), entry(1, program, "room", 10)],
+            2,
+        );
+    }
+    let seen = |id: u64, height: u64| view_wire::Request {
+        id,
+        kind: "notify.seen".into(),
+        payload: methods::encode(&Seen {
+            tag: "room".into(),
+            through_height: height,
+        }),
+    };
+    guest.answer(seen(1, 10), &None);
+    assert_eq!(super::center().lock().unread(), 1);
+    assert!(guest.intents.contains(&Intent::Notified));
+    guest.intents.clear();
+    guest.answer(seen(2, 10), &None);
+    assert!(guest.intents.is_empty(), "the same watermark moved nothing");
+    guest.answer(seen(3, 20), &None);
+    assert_eq!(super::center().lock().unread(), 0);
+    super::center().lock().set_network("");
 }

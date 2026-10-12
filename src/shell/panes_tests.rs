@@ -1049,24 +1049,21 @@ fn a_bell_row_opens_the_notices_program(cx: &mut TestAppContext) {
     let roster = crate::runtime::Roster::listing(&[MODULE]);
     app.rail
         .update(&mut native, |rail, cx| rail.read_off(roster, cx));
+    // the notice's link is minted for the chain in hand
+    app.session.update(&mut native, |session, cx| {
+        let mut state = crate::shell::entities::SessionState::booted();
+        state.chain = "testkit#0a1b2c3d".into();
+        session.seed(state, cx);
+    });
     let id = native.update(|_, cx| {
         let notifications = app.notifications.read(cx);
-        let settings = app.prefs.read(cx).get().notify.clone();
-        let post = view_wire::methods::Notification {
-            title: "Ping".into(),
-            body: "From the bell".into(),
-            tag: String::new(),
-            link: String::new(),
-        };
-        let _ = notifications.center().lock().post(
-            &settings,
-            MODULE,
-            "Bell",
-            post,
-            std::time::Instant::now(),
-            0,
-        );
-        notifications.entries()[0].id
+        let mut center = notifications.center().lock();
+        center.set_network("testkit#0a1b2c3d");
+        center.set_state(crate::runtime::notify::InboxState::Ready);
+        let mut entry = crate::runtime::notify::tests::entry(1, MODULE, "", 1);
+        entry.link.segments.clear();
+        center.replace(vec![entry], 1);
+        center.rows()[0].id
     });
     app.notifications.update(&mut native, |notifications, cx| {
         _ = notifications.refresh(cx)

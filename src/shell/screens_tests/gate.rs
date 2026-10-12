@@ -368,9 +368,9 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             over(Overlay::Menu(Popover::Notifications), in_sidebar(desk)),
         ),
         (
-            "desk-asking",
+            "notifications-menu-asking",
             false,
-            plain(|| {
+            over(Overlay::Menu(Popover::Notifications), || {
                 let mut seed = desk();
                 seed.center.lock().ask_for_test("gate-asking");
                 seed.active = Some("gate-asking");
@@ -556,8 +556,8 @@ async fn a_door_walk_leaves_the_prefs_as_it_found_them(cx: &mut TestAppContext) 
         report["applicable"]
     );
     assert_eq!(crate::backend::read_prefs().unwrap(), prefs);
-    assert!(crate::runtime::notify::Settings::load().views.is_empty());
-    assert!(center.lock().asking("gate-a"));
+    assert!(crate::runtime::notify::Settings::load().programs.is_empty());
+    assert!(center.lock().asking.contains("gate-a"));
 }
 
 /// Search over a window offers Fill and Move or size for it, each saying

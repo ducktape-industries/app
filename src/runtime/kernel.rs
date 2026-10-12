@@ -64,7 +64,7 @@
 //! In a sibling module [`answer`] asks first:
 //! - `clipboard.read`, `clipboard.write` — `clipboard`, run on the window
 //!   thread after the tick.
-//! - `notify.post`, `notify.seen` — `notify`, the notification centre.
+//! - `notify.seen` — `notify`, the notification centre (a view of the inbox).
 //! - `store.get`, `store.set` — `store`, the view's file on this device.
 //!
 //! Not the kernel's — `Guest::answer` (`guest/requests.rs`) takes them once
@@ -163,11 +163,11 @@ pub(super) fn handle() -> tokio::runtime::Handle {
 }
 
 /// Jobs under one name run one after another, in the order they were
-/// queued, each on the blocking pool (an OS call or a file): a view's
-/// banners (`notify`, under its module), so a burst's "N more" never lands
-/// before the banners it counts, a view's store file (`store`, under its
-/// path), so a `get` reads the `set` before it, and the notification log
-/// (under its path). One task per name on [`handle`] runs them; [`drain`]
+/// queued, each on the blocking pool (an OS call or a file): the inbox's
+/// banners (under `inbox`), so a burst's "N more" never lands before the
+/// banners it counts, and a view's store file (`store`, under its path),
+/// so a `get` reads the `set` before it. One task per name on [`handle`]
+/// runs them; [`drain`]
 /// waits on every one of them as the app quits.
 pub(super) fn in_order(name: &str, job: impl FnOnce() + Send + 'static) {
     let mut queues = queues();

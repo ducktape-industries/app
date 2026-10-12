@@ -49,14 +49,10 @@ pub(crate) fn handle() -> tokio::runtime::Handle {
 }
 
 /// The app's quit hook (`shell::launch`, the one every quit path reaches):
-/// the notification log handed over, then a wait on every in-order queue
-/// (store files, the log, banners), then `kept` dropped. The returned
-/// future is the wait; gpui gives it `SHUTDOWN_TIMEOUT` (200 ms).
-pub(crate) fn quitting(
-    center: &notify::CenterHandle,
-    kept: impl Sized,
-) -> impl Future<Output = ()> {
-    center.lock().flush();
+/// a wait on every in-order queue (store files, banners), then `kept`
+/// dropped. The returned future is the wait; gpui gives it
+/// `SHUTDOWN_TIMEOUT` (200 ms).
+pub(crate) fn quitting(kept: impl Sized) -> impl Future<Output = ()> {
     let drained = kernel::drain();
     drop(kept);
     drained
@@ -100,7 +96,7 @@ impl WindowKey {
 }
 
 /// What a view asked the app itself to do: `host.badge`, `host.title`,
-/// `link.open`, or a `notify.post` that changed the centre. An `op.submit`
+/// `link.open`, or a `notify.seen` that changed the centre. An `op.submit`
 /// waiting on the person's yes wakes the shell itself (`consent`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {

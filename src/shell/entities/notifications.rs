@@ -1,11 +1,16 @@
 //! The notification centre as the bar and the panes draw it: the unread
-//! count, the views asking for permission, and the log's revision, so a
-//! change that leaves the count alone (clearing read rows) still moves it.
-//! Read off the centre by `refresh`: after each of the centre's methods
-//! here, on a view's `Intent::Notified` (`Seats`), after a banner's click
-//! (`Windows`), and as the session connects (`follow`).
-use super::{Prefs, Session, SessionEvent, Slice};
-use crate::runtime::notify::{self, CenterHandle, Entry, Permission};
+//! count, the inbox's state, the programs asking for a word on their
+//! banners, and the page's revision, so a change that leaves the count
+//! alone (clearing read rows) still moves it. Read off the centre by
+//! `refresh`: after each of the centre's methods here, on the inbox
+//! runner's wake (`Windows::posted`), on a view's `Intent::Notified`
+//! (`Seats`), and as the session connects (`follow`).
+//!
+//! The inbox runner is started here, once the network is in hand and the
+//! seated key holds an account (the login signs with it), and dropped when
+//! the network is left or the key goes.
+use super::{Account, Prefs, Session, SessionEvent, Slice};
+use crate::runtime::notify::{self, CenterHandle, Follower, InboxState, Opened, Permission, Row};
 use gpui_kit::{App, Context, Entity};
 use std::collections::BTreeSet;
 
@@ -14,56 +19,132 @@ fn timed() -> Option<crate::perf::Timer> {
     crate::perf::time(crate::perf::Key::Shell, "reducer.notify")
 }
 
-/// The person answered `module`'s ask: the word is saved and its bar goes.
-/// Two entities move: the centre (`Notifications`) and the saved settings
-/// (`Prefs`, read off disk again), so the answer is one call here.
+/// The person answered `program`'s question: the word is saved and its
+/// question goes. Two entities move: the centre (`Notifications`) and the
+/// saved settings (`Prefs`, read off disk again), so the answer is one
+/// call here.
 pub(crate) fn permission(
     notifications: &Entity<Notifications>,
     prefs: &Entity<Slice<Prefs>>,
-    module: &str,
+    program: &str,
     permission: Permission,
     cx: &mut App,
 ) {
     notifications.update(cx, |notifications, cx| {
-        notifications.permission(module, permission, cx)
+        notifications.permission(program, permission, cx)
     });
     prefs.update(cx, |prefs, cx| prefs.reload_notify(cx));
 }
 
 pub(crate) struct Notifications {
-    unread: usize,
+    unread: u64,
     asking: BTreeSet<String>,
+    state: InboxState,
     entries_rev: u64,
     /// What it is read off; not compared.
     center: CenterHandle,
+    /// The inbox runner of the connection in hand, and what it runs for.
+    follower: Option<(String, Follower)>,
 }
 
 impl Notifications {
     pub(crate) fn new(center: CenterHandle) -> Self {
-        let (unread, asking, entries_rev) = Self::read(&center);
+        let (unread, asking, state, entries_rev) = Self::read(&center);
         Self {
             unread,
             asking,
+            state,
             entries_rev,
             center,
+            follower: None,
         }
     }
 
-    fn read(center: &CenterHandle) -> (usize, BTreeSet<String>, u64) {
+    fn read(center: &CenterHandle) -> (u64, BTreeSet<String>, InboxState, u64) {
         let center = center.lock();
-        (center.unread(), center.asking.clone(), center.rev())
+        (
+            center.unread(),
+            center.asking.clone(),
+            center.state.clone(),
+            center.rev(),
+        )
     }
 
-    /// Read again each time the session connects: the centre has just
-    /// taken up that chain's log off disk (`Session`, `set_network`), and
-    /// no view has posted to say so.
-    pub(crate) fn follow(&self, session: &Entity<Session>, cx: &mut Context<Self>) {
-        cx.subscribe(session, |this, _, event: &SessionEvent, cx| {
-            if let SessionEvent::Connected = event {
-                this.refresh(cx);
-            }
+    /// The session connecting (the centre has just taken up that chain)
+    /// and the account resolving (the key the login signs with): the
+    /// runner starts once both are in hand, and stops with the network.
+    pub(crate) fn follow(
+        &self,
+        session: &Entity<Session>,
+        account: &Entity<Account>,
+        cx: &mut Context<Self>,
+    ) {
+        let (watched_session, watched_account) = (session.clone(), account.clone());
+        cx.subscribe(
+            session,
+            move |this, _, event: &SessionEvent, cx| match event {
+                SessionEvent::Connected => {
+                    this.sync_follower(&watched_session, &watched_account, cx);
+                    this.refresh(cx);
+                }
+                SessionEvent::LeftNetwork => this.stop(cx),
+                SessionEvent::Toast(_) => {}
+            },
+        )
+        .detach();
+        let (watched_session, watched_account) = (session.clone(), account.clone());
+        cx.observe(account, move |this, _, cx| {
+            this.sync_follower(&watched_session, &watched_account, cx)
         })
         .detach();
+    }
+
+    /// The runner for the connection in hand, started when the network is
+    /// in hand and the seated key holds an account, left alone while it
+    /// already runs for that address, dropped when either goes.
+    fn sync_follower(
+        &mut self,
+        session: &Entity<Session>,
+        account: &Entity<Account>,
+        cx: &mut Context<Self>,
+    ) {
+        let session = session.read(cx).get();
+        let account = account.read(cx).get();
+        let ready = session.connected
+            && !session.connected_rpc.is_empty()
+            && !account.signer_key.is_empty()
+            && matches!(account.account, Some(Some(_)));
+        let key = format!(
+            "{}|{}|{}",
+            session.connected_rpc, session.chain, account.signer_key
+        );
+        if !ready {
+            self.stop(cx);
+            return;
+        }
+        if self
+            .follower
+            .as_ref()
+            .is_some_and(|(running, _)| *running == key)
+        {
+            return;
+        }
+        self.follower = None;
+        let rpc = crate::backend::RpcClient::new(session.connected_rpc.clone());
+        let follower = notify::start(
+            &rpc,
+            &session.chain,
+            crate::backend::identity::DEVICE_KEY_LABEL,
+            self.center.clone(),
+        );
+        self.follower = Some((key, follower));
+        self.refresh(cx);
+    }
+
+    fn stop(&mut self, cx: &mut Context<Self>) {
+        if self.follower.take().is_some() {
+            self.refresh(cx);
+        }
     }
 
     /// The centre itself, for whoever tells it which window is in front.
@@ -71,33 +152,58 @@ impl Notifications {
         &self.center
     }
 
-    pub(crate) fn unread(&self) -> usize {
+    pub(crate) fn unread(&self) -> u64 {
         self.unread
     }
 
-    /// The views waiting for a word on their notices.
-    pub(crate) fn asking(&self, module: &str) -> bool {
-        self.asking.contains(module)
+    /// Where the inbox stands, as the bell says it.
+    pub(crate) fn state(&self) -> &InboxState {
+        &self.state
     }
 
-    /// The log's rows, newest first, as the bell lists them.
-    pub(crate) fn entries(&self) -> Vec<crate::runtime::notify::Entry> {
-        self.center.lock().entries().cloned().collect()
+    /// The inbox's follower stopped or stalled: "inbox stuck at 1200: a hole".
+    pub(crate) fn stuck(&self) -> Option<String> {
+        self.center
+            .lock()
+            .stuck
+            .as_ref()
+            .map(|stuck| format!("inbox stuck at {}: {}", stuck.height, stuck.reason))
     }
 
-    /// How many notices `module` posted this week, as of the wall second
+    /// The programs waiting for a word on their banners.
+    pub(crate) fn asking(&self) -> &BTreeSet<String> {
+        &self.asking
+    }
+
+    /// The page's rows, folded, newest first, as the bell lists them.
+    pub(crate) fn entries(&self) -> Vec<Row> {
+        self.center.lock().rows()
+    }
+
+    /// Whether the inbox keeps `program` out (Settings' Notifications page).
+    pub(crate) fn muted(&self, program: &str) -> bool {
+        self.center.lock().muted(program)
+    }
+
+    /// The programs the inbox keeps out.
+    pub(crate) fn muted_programs(&self) -> Vec<String> {
+        self.center.lock().mutes.programs.clone()
+    }
+
+    /// How many entries `program` had this week, as of the wall second
     /// `wall` (Settings' Notifications page).
-    pub(crate) fn this_week(&self, module: &str, wall: i64) -> u32 {
-        self.center.lock().this_week(module, wall)
+    pub(crate) fn this_week(&self, program: &str, wall: i64) -> u32 {
+        self.center.lock().this_week(program, wall)
     }
 
-    /// A row picked in the bell: read, and handed back for the link or
-    /// the seat it is about to open (`Windows::open_notice`).
-    pub(crate) fn open(&mut self, id: u64, cx: &mut Context<Self>) -> Option<Entry> {
+    /// A row picked in the bell: read through its newest height, here and
+    /// upstream, and handed back with its link minted
+    /// (`Windows::open_notice`).
+    pub(crate) fn open(&mut self, id: i64, cx: &mut Context<Self>) -> Option<Opened> {
         let _timed = timed();
-        let entry = self.center.lock().open(id);
+        let opened = self.center.lock().open(id);
         self.refresh(cx);
-        entry
+        opened
     }
 
     pub(crate) fn mark_all_read(&mut self, cx: &mut Context<Self>) {
@@ -112,21 +218,22 @@ impl Notifications {
         self.refresh(cx);
     }
 
-    /// The person's word on `module`'s notices, saved (see [`permission`]).
-    fn permission(&mut self, module: &str, permission: Permission, cx: &mut Context<Self>) {
+    /// The person's word on `program`'s banners, saved (see [`permission`]).
+    fn permission(&mut self, program: &str, permission: Permission, cx: &mut Context<Self>) {
         let _timed = timed();
-        notify::set_permission(&mut self.center.lock(), module, permission);
+        notify::set_permission(&mut self.center.lock(), program, permission);
         self.refresh(cx);
     }
 
-    /// "Not now": the bar goes for this run; the view asks again next launch.
-    pub(crate) fn not_now(&mut self, module: &str, cx: &mut Context<Self>) {
+    /// `program` kept out of the inbox, or let back in: the account's
+    /// mutes, on every device.
+    pub(crate) fn set_muted(&mut self, program: &str, muted: bool, cx: &mut Context<Self>) {
         let _timed = timed();
-        notify::not_now(&mut self.center.lock(), module);
+        self.center.lock().set_muted(program, muted);
         self.refresh(cx);
     }
 
-    /// The views asking, put back as they stood (the door's walk,
+    /// The programs asking, put back as they stood (the door's walk,
     /// `layers::Kept::restore`).
     #[cfg(any(test, feature = "ax-door"))]
     pub(crate) fn restore_asking(&mut self, asking: BTreeSet<String>, cx: &mut Context<Self>) {
@@ -136,11 +243,14 @@ impl Notifications {
 
     /// Read off the centre again; notifies only when something moved.
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) -> bool {
-        let (unread, asking, entries_rev) = Self::read(&self.center);
-        if (unread, &asking, entries_rev) == (self.unread, &self.asking, self.entries_rev) {
+        let (unread, asking, state, entries_rev) = Self::read(&self.center);
+        if (unread, &asking, &state, entries_rev)
+            == (self.unread, &self.asking, &self.state, self.entries_rev)
+        {
             return false;
         }
-        (self.unread, self.asking, self.entries_rev) = (unread, asking, entries_rev);
+        (self.unread, self.asking, self.state, self.entries_rev) =
+            (unread, asking, state, entries_rev);
         cx.notify();
         true
     }
@@ -149,31 +259,14 @@ impl Notifications {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::notify::Settings;
+    use crate::runtime::notify::tests::entry;
     use gpui_kit::{AppContext as _, TestAppContext};
-
-    /// One notice from chat into `center`, logged unread.
-    fn post(center: &CenterHandle) {
-        let settings = Settings {
-            banners: true,
-            in_front: false,
-            burst: 3,
-            views: Default::default(),
-        };
-        let post = view_wire::methods::Notification {
-            title: "a".into(),
-            body: "b".into(),
-            tag: String::new(),
-            link: String::new(),
-        };
-        let now = std::time::Instant::now();
-        let _ = center.lock().post(&settings, "chat", "Chat", post, now, 0);
-    }
 
     #[gpui_kit::test]
     fn clear_read_moves_the_notifications_slice(cx: &mut TestAppContext) {
         let center = CenterHandle::default();
-        post(&center);
+        center.lock().set_state(InboxState::Ready);
+        center.lock().replace(vec![entry(1, "chat", "", 1)], 1);
         center.lock().mark_all_read();
         let slice = cx.new(|_| Notifications::new(center.clone()));
         let (seen, _observing) = crate::shell::entities::tests::notifies(&slice, cx);
@@ -187,18 +280,17 @@ mod tests {
         assert_eq!(slice.read_with(cx, |slice, _| slice.unread), 0);
     }
 
-    /// A connect takes up the chain's log off disk (`set_network`) and no
-    /// view posts to say so: the bell reads its count again as the session
-    /// says it connected, not at the next notice.
+    /// A connect reads the centre again as the session says it connected,
+    /// not at the next entry; the runner waits for a key with an account.
     #[gpui_kit::test]
-    fn a_connect_reads_the_log_it_took_up(cx: &mut TestAppContext) {
+    fn a_connect_reads_the_centre_it_took_up(cx: &mut TestAppContext) {
         let center = CenterHandle::default();
         let app = cx.update(|cx| {
             gpui_kit::init(cx);
             crate::shell::entities::Entities::for_test(Default::default(), center.clone(), cx)
         });
-        // as `set_network` leaves the centre: a row off disk, unread
-        post(&center);
+        center.lock().set_state(InboxState::Ready);
+        center.lock().replace(vec![entry(1, "chat", "", 1)], 1);
         let unread = |cx: &mut TestAppContext| {
             app.notifications
                 .read_with(cx, |notifications, _| notifications.unread())
@@ -210,6 +302,11 @@ mod tests {
             unread(cx),
             1,
             "the bell kept the count from before the connect"
+        );
+        assert!(
+            app.notifications
+                .read_with(cx, |notifications, _| notifications.follower.is_none()),
+            "no key with an account: no runner"
         );
     }
 }

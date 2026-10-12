@@ -1,17 +1,21 @@
-//! The notification centre: the log of the chain in hand (one JSON file
-//! per chain under `<config>/notifications`) and the banner policy —
-//! permission, focus, the per-view token bucket — that decides what a
-//! posted notice becomes. The app keeps one, reached through [`center`];
-//! a test builds its own.
+//! The notification centre: a view of the inbox at the RPC address. It
+//! keeps the page of entries read this session (memory only), the inbox's
+//! unread count, the account's mutes, and the banner policy — permission,
+//! focus, the per-program token bucket — that decides what an arriving
+//! entry becomes on this device. The app keeps one, reached through
+//! [`center`]; a test builds its own.
+//!
+//! Nothing here knows a program: `program` and `tag` are the inbox's words.
 
 use std::collections::{BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
 
+use inbox_api::{Entry, Mutes, Read};
+
 use super::settings::{Permission, Settings};
+use crate::backend::inbox::Client;
 use crate::runtime::WindowKey;
-use view_wire::methods::{Delivery, Notification};
 
 /// One banner as the host words it; a later one under the same non-empty
 /// `tag` replaces the standing one.
@@ -22,32 +26,49 @@ pub(crate) struct Notice {
     pub tag: String,
 }
 
-/// The centre keeps this many rows, and none older than this.
-pub(super) const MAX_ENTRIES: usize = 500;
-pub(super) const MAX_AGE: i64 = 30 * 86_400;
-/// The rows one view keeps: a fifth of the log, so one view's flood
-/// leaves the other views' rows. A view the person has not answered yet
-/// (no word, or "Not now") keeps a few, enough to show what it posts.
-pub(super) const VIEW_ENTRIES: usize = 100;
-pub(super) const UNANSWERED_ENTRIES: usize = 5;
-
-/// One row of the centre.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Entry {
-    pub(crate) id: u64,
-    /// The program whose view posted (its roster name).
-    pub(crate) module: String,
-    /// That view's own name when it posted.
-    pub(crate) view: String,
+/// One row of the centre: the inbox's entries under one `(program, tag)`,
+/// folded at display time; an entry with no tag is a row of its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Row {
+    /// The newest entry's id: what names the row.
+    pub(crate) id: i64,
+    pub(crate) program: String,
+    pub(crate) tag: String,
     pub(crate) title: String,
     pub(crate) body: String,
-    pub(crate) tag: String,
-    pub(crate) link: String,
-    /// Unix seconds of the latest notice folded into the row.
+    pub(crate) link: notices::Link,
+    /// Unix seconds of the newest entry folded in.
     pub(crate) at: i64,
-    /// Notices folded into the row under its tag.
     pub(crate) count: u32,
+    /// Every entry folded in is read.
     pub(crate) read: bool,
+    /// The newest height folded in: what opening the row reads through.
+    pub(crate) through_height: u64,
+}
+
+/// Where the inbox stands, as the bell says it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum InboxState {
+    /// No network in hand, or the client not started yet.
+    #[default]
+    Off,
+    Ready,
+    /// `status` answered 404: this address keeps no notifications.
+    NoInbox,
+    /// The inbox did not answer; the page read this session stands. Unix
+    /// seconds since.
+    Unreachable {
+        since: i64,
+    },
+    /// The inbox refused the login: shown, not retried.
+    Denied(String),
+}
+
+/// What a row's pick or a banner's click does: the read sent upstream,
+/// and the link minted, or none when the notice's link does not mint.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Opened {
+    pub(crate) link: Option<String>,
 }
 
 struct Bucket {
@@ -55,33 +76,37 @@ struct Bucket {
     at: Instant,
 }
 
-/// The notification centre: the log of the network in hand, and what the
-/// policy remembers between notices.
 #[derive(Default)]
 pub(crate) struct Center {
-    /// The chain id (`<network>#<salt>`) the log is for.
+    /// The chain id (`<network>#<salt>`) the page is for.
     network: String,
-    /// Where the log is saved: none with no network in hand, or when its
-    /// file could not be read (nothing then writes over it).
-    log: Option<PathBuf>,
+    /// The inbox client of the connection, once the runner made one.
+    client: Option<Arc<Client>>,
+    pub(crate) state: InboxState,
+    /// The inbox's follower stopped or stalled at a height: nothing past
+    /// it arrives until its operator acts. Shown beside the count.
+    pub(crate) stuck: Option<inbox_api::Stopped>,
+    /// Newest first, as the inbox lists them.
     entries: Vec<Entry>,
-    next: u64,
+    /// The inbox's count, kept current by `live`.
+    unread: u64,
+    pub(crate) mutes: Mutes,
+    /// The max `through_height` a view said it saw per `(program, tag)`.
+    watermarks: HashMap<(String, String), u64>,
     buckets: HashMap<String, Bucket>,
-    /// Notices past the burst limit since the view's last banner.
+    /// Entries past the burst limit since the program's last banner.
     more: HashMap<String, u32>,
     /// The window in front and the view focused in it.
     pub(crate) front: Option<(WindowKey, &'static str)>,
-    /// Views that posted before the person said anything about them.
+    /// Programs whose entries arrived before the person said a word on
+    /// their banners: the question at the top of the centre.
     pub(crate) asking: BTreeSet<String>,
-    pub(super) not_now: BTreeSet<String>,
-    /// Moves with every change to the log: the bell's list is read again.
+    /// Moves with every change: the bell's list is read again.
     rev: u64,
-    /// The `rev` last handed to the disk ([`Center::flush`]).
-    saved: u64,
 }
 
 /// A notification centre, shared by whoever holds a clone: the app's one
-/// ([`center`]), which its views post into and its windows draw, or a
+/// ([`center`]), which the inbox runner fills and its windows draw, or a
 /// test's own.
 #[derive(Clone, Default)]
 pub(crate) struct CenterHandle(Arc<Mutex<Center>>);
@@ -107,53 +132,115 @@ pub(crate) fn wall() -> i64 {
         .map_or(0, |since| since.as_secs() as i64)
 }
 
+/// The standing banner's tag for an entry: a program's tags are its own,
+/// so two programs never replace each other's banner.
+pub(super) fn banner_tag(program: &str, tag: &str) -> String {
+    match tag.is_empty() {
+        true => String::new(),
+        false => format!("{program}/{tag}"),
+    }
+}
+
 impl Center {
-    /// What to do with one notice from `module` (named `view`): the answer
-    /// for the view, and the banner to raise, if any — the notice's own, or
-    /// the view's "N more" once it is past its burst.
-    pub(crate) fn post(
+    /// The network in hand: the last one's page goes, the policy starts
+    /// over. The runner fills it again once it connects.
+    pub(crate) fn set_network(&mut self, network: &str) {
+        if self.network != network {
+            *self = Center {
+                network: network.to_owned(),
+                front: self.front,
+                rev: self.rev + 1,
+                ..Center::default()
+            };
+        }
+    }
+
+    /// The runner's client, for the calls the person's actions send.
+    pub(crate) fn set_client(&mut self, client: Option<Arc<Client>>) {
+        self.client = client;
+    }
+
+    /// What `status` said of the follower: stopped or stalled, or neither.
+    pub(crate) fn set_stuck(&mut self, stuck: Option<inbox_api::Stopped>) {
+        if self.stuck != stuck {
+            self.stuck = stuck;
+            self.rev += 1;
+        }
+    }
+
+    pub(crate) fn set_state(&mut self, state: InboxState) {
+        if self.state != state {
+            self.state = state;
+            self.rev += 1;
+        }
+    }
+
+    /// The page the inbox listed (newest first) and its unread count.
+    pub(crate) fn replace(&mut self, entries: Vec<Entry>, unread: u64) {
+        self.entries = entries;
+        self.unread = unread;
+        for entry in &mut self.entries {
+            let key = (entry.program.clone(), entry.tag.clone());
+            if self
+                .watermarks
+                .get(&key)
+                .is_some_and(|seen| entry.height <= *seen)
+            {
+                entry.read = true;
+            }
+        }
+        self.rev += 1;
+    }
+
+    /// A `live` entry: into the page, counted, and judged by the device's
+    /// settings. The banner to raise, if any — the entry's own, or the
+    /// program's "N more" once it is past its burst. An entry under a
+    /// view's watermark is already read and raises nothing.
+    pub(crate) fn arrived(
         &mut self,
         settings: &Settings,
-        module: &str,
-        view: &str,
-        post: Notification,
+        mut entry: Entry,
         now: Instant,
-        wall: i64,
-    ) -> (Delivery, Option<Notice>) {
-        let permission = settings.views.get(module).copied();
-        if permission == Some(Permission::Block) {
-            return (Delivery::Blocked, None);
+    ) -> Option<Notice> {
+        let key = (entry.program.clone(), entry.tag.clone());
+        if self
+            .watermarks
+            .get(&key)
+            .is_some_and(|seen| entry.height <= *seen)
+        {
+            entry.read = true;
         }
-        // a view's tags are its own: two views never replace each other's
+        if self.entries.iter().any(|known| known.id == entry.id) {
+            return None;
+        }
+        self.unread += u64::from(!entry.read);
+        self.rev += 1;
+        let program = entry.program.clone();
+        let read = entry.read;
         let notice = Notice {
-            title: post.title.clone(),
-            body: post.body.clone(),
-            tag: match post.tag.is_empty() {
-                true => String::new(),
-                false => format!("{module}/{}", post.tag),
-            },
+            title: entry.title.clone(),
+            body: entry.body.clone(),
+            tag: banner_tag(&entry.program, &entry.tag),
         };
-        let share = match permission {
-            None => UNANSWERED_ENTRIES,
-            Some(_) => VIEW_ENTRIES,
-        };
-        self.log(module, view, post, wall, share);
+        self.entries.insert(0, entry);
+        if read {
+            return None;
+        }
+        let permission = settings.programs.get(&program).copied();
         match permission {
             None => {
-                if !self.not_now.contains(module) {
-                    self.asking.insert(module.to_owned());
-                }
-                return (Delivery::Logged, None);
+                self.asking.insert(program);
+                return None;
             }
-            Some(Permission::Silent) => return (Delivery::Logged, None),
-            _ => {}
+            Some(Permission::Silent) => return None,
+            Some(Permission::Allow) => {}
         }
-        let in_front = self.front.is_some_and(|(_, focused)| focused == module);
+        let in_front = self.front.is_some_and(|(_, focused)| focused == program);
         if !settings.banners || (in_front && !settings.in_front) {
-            return (Delivery::Logged, None);
+            return None;
         }
         let burst = f64::from(settings.burst.max(1));
-        let bucket = self.buckets.entry(module.to_owned()).or_insert(Bucket {
+        let bucket = self.buckets.entry(program.clone()).or_insert(Bucket {
             tokens: burst,
             at: now,
         });
@@ -162,157 +249,207 @@ impl Center {
         bucket.at = now;
         if bucket.tokens >= 1. {
             bucket.tokens -= 1.;
-            self.more.remove(module);
-            return (Delivery::Banner, Some(notice));
+            self.more.remove(&program);
+            return Some(notice);
         }
-        let more = self.more.entry(module.to_owned()).or_default();
+        let more = self.more.entry(program.clone()).or_default();
         *more += 1;
-        let more = Notice {
-            title: format!("{more} more from {view}"),
+        Some(Notice {
+            title: format!("{more} more from {program}"),
             body: "They're waiting in Notifications.".into(),
-            tag: format!("more/{module}"),
-        };
-        (Delivery::Logged, Some(more))
+            tag: format!("more/{program}"),
+        })
     }
 
-    /// Into the log: a notice under a tag the view already has a row for
-    /// folds into that row and brings it back to the top, unread. Past the
-    /// view's `share` of rows its own oldest go, never another view's.
-    /// Written at the end of the view's redraw ([`Center::flush`]).
-    fn log(&mut self, module: &str, view: &str, post: Notification, wall: i64, share: usize) {
-        let folded = (!post.tag.is_empty())
-            .then(|| {
-                self.entries
-                    .iter()
-                    .position(|entry| entry.module == module && entry.tag == post.tag)
-            })
-            .flatten();
-        let entry = match folded {
-            Some(index) => {
-                let mut entry = self.entries.remove(index);
-                entry.count += 1;
-                entry.read = false;
-                entry.title = post.title;
-                entry.body = post.body;
-                entry.link = post.link;
-                entry.view = view.to_owned();
-                entry.at = wall;
-                entry
-            }
-            None => {
-                self.next += 1;
-                Entry {
-                    id: self.next,
-                    module: module.to_owned(),
-                    view: view.to_owned(),
-                    title: post.title,
-                    body: post.body,
-                    tag: post.tag,
-                    link: post.link,
-                    at: wall,
-                    count: 1,
-                    read: false,
+    /// Entries marked read elsewhere (`live` `read`): the page follows.
+    /// Whether an id is not on this page, in which case the inbox's count
+    /// is read again (`entries`), and the banner tags to take down.
+    pub(crate) fn read_elsewhere(&mut self, ids: &[i64]) -> (bool, Vec<String>) {
+        let mut unknown = false;
+        let mut tags = Vec::new();
+        for id in ids {
+            match self.entries.iter_mut().find(|entry| entry.id == *id) {
+                Some(entry) => {
+                    if !entry.read {
+                        entry.read = true;
+                        self.unread = self.unread.saturating_sub(1);
+                        tags.push(banner_tag(&entry.program, &entry.tag));
+                    }
                 }
+                None => unknown = true,
             }
-        };
-        self.entries.push(entry);
-        let mut over = self
-            .entries
-            .iter()
-            .filter(|entry| entry.module == module)
-            .count()
-            .saturating_sub(share);
+        }
+        self.rev += 1;
+        (unknown, tags)
+    }
+
+    /// Entries retracted by their program (`gone`) or hidden on another
+    /// device (`hidden`): off the page. The banner tags to take down.
+    pub(crate) fn removed(&mut self, ids: &[i64]) -> Vec<String> {
+        let mut tags = Vec::new();
         self.entries.retain(|entry| {
-            let gone = over > 0 && entry.module == module;
-            over -= usize::from(gone);
+            let gone = ids.contains(&entry.id);
+            if gone {
+                if !entry.read {
+                    self.unread = self.unread.saturating_sub(1);
+                }
+                tags.push(banner_tag(&entry.program, &entry.tag));
+            }
             !gone
         });
-        self.prune(wall);
         self.rev += 1;
+        tags
     }
 
-    /// At most [`MAX_ENTRIES`] rows, none older than [`MAX_AGE`].
-    fn prune(&mut self, wall: i64) {
-        self.entries.retain(|entry| wall - entry.at <= MAX_AGE);
-        let over = self.entries.len().saturating_sub(MAX_ENTRIES);
-        self.entries.drain(..over);
+    /// The page folded by `(program, tag)`, newest first.
+    pub(crate) fn rows(&self) -> Vec<Row> {
+        let mut rows: Vec<Row> = Vec::new();
+        for entry in &self.entries {
+            let folded = (!entry.tag.is_empty())
+                .then(|| {
+                    rows.iter_mut()
+                        .find(|row| row.program == entry.program && row.tag == entry.tag)
+                })
+                .flatten();
+            match folded {
+                Some(row) => {
+                    row.count += 1;
+                    row.read &= entry.read;
+                    row.through_height = row.through_height.max(entry.height);
+                }
+                None => rows.push(Row {
+                    id: entry.id,
+                    program: entry.program.clone(),
+                    tag: entry.tag.clone(),
+                    title: entry.title.clone(),
+                    body: entry.body.clone(),
+                    link: entry.link.clone(),
+                    at: (entry.at_ms / 1000) as i64,
+                    count: 1,
+                    read: entry.read,
+                    through_height: entry.height,
+                }),
+            }
+        }
+        rows
     }
 
-    /// Newest first.
-    pub(crate) fn entries(&self) -> impl Iterator<Item = &Entry> {
-        self.entries.iter().rev()
+    /// The inbox's unread count; none without an inbox.
+    pub(crate) fn unread(&self) -> u64 {
+        match self.state {
+            InboxState::Off | InboxState::NoInbox | InboxState::Denied(_) => 0,
+            _ => self.unread,
+        }
     }
 
-    pub(crate) fn unread(&self) -> usize {
-        self.entries.iter().filter(|entry| !entry.read).count()
-    }
-
-    /// How many times the log changed: equal, it lists what it listed.
+    /// How many times the page or its state changed: equal, it lists
+    /// what it listed.
     pub(crate) fn rev(&self) -> u64 {
         self.rev
     }
 
-    /// A row picked: read now, and handed back to open.
-    pub(crate) fn open(&mut self, id: u64) -> Option<Entry> {
-        let entry = self.entries.iter_mut().find(|entry| entry.id == id)?;
-        entry.read = true;
-        let entry = entry.clone();
-        self.rev += 1;
-        self.flush();
-        Some(entry)
+    /// A row picked (in the bell, or its banner clicked): its entries read
+    /// through the row's newest height, here and upstream, and the link
+    /// minted for this chain; `None` for an id no row has.
+    pub(crate) fn open(&mut self, id: i64) -> Option<Opened> {
+        let row = self.rows().into_iter().find(|row| row.id == id)?;
+        self.mark_read(|entry| {
+            entry.program == row.program
+                && entry.tag == row.tag
+                && entry.height <= row.through_height
+        });
+        self.send(Call::Read(Read::Tag {
+            program: row.program.clone(),
+            tag: row.tag.clone(),
+            through_height: row.through_height,
+        }));
+        let segments: Vec<&str> = row.link.segments.iter().map(String::as_str).collect();
+        let link = ducklink::mint(&self.network, &row.link.program, &segments);
+        Some(Opened { link })
     }
 
-    /// `module` says the reader has seen what it posted under `tag`: its
-    /// rows under it are read, and no other view's. Whether any changed.
-    /// Written at the end of the view's redraw ([`Center::flush`]).
-    pub(crate) fn read_tag(&mut self, module: &str, tag: &str) -> bool {
-        let mut changed = false;
+    /// The row a banner's click names: the one its entry folds into.
+    pub(crate) fn row_of(&self, entry: i64) -> Option<i64> {
+        let entry = self.entries.iter().find(|known| known.id == entry)?;
+        self.rows()
+            .into_iter()
+            .find(|row| row.program == entry.program && row.tag == entry.tag)
+            .map(|row| row.id)
+    }
+
+    fn mark_read(&mut self, which: impl Fn(&Entry) -> bool) {
         for entry in &mut self.entries {
-            if !tag.is_empty() && entry.module == module && entry.tag == tag && !entry.read {
+            if !entry.read && which(entry) {
                 entry.read = true;
-                changed = true;
+                self.unread = self.unread.saturating_sub(1);
             }
         }
-        if changed {
-            self.rev += 1;
-        }
-        changed
+        self.rev += 1;
     }
 
     pub(crate) fn mark_all_read(&mut self) {
-        for entry in &mut self.entries {
-            entry.read = true;
-        }
-        self.rev += 1;
-        self.flush();
+        self.mark_read(|_| true);
+        self.unread = 0;
+        self.send(Call::Read(Read::All { all: true }));
     }
 
+    /// Read rows off the page, and hidden on every device.
     pub(crate) fn clear_read(&mut self) {
         self.entries.retain(|entry| !entry.read);
         self.rev += 1;
-        self.flush();
+        self.send(Call::HideRead);
     }
 
-    /// Whether `module`'s window shows the permission bar.
-    #[cfg(test)]
-    pub(crate) fn asking(&self, module: &str) -> bool {
-        self.asking.contains(module)
+    /// A view says the reader has seen `tag`'s rows through `height`: the
+    /// max per `(program, tag)` is kept; the page's entries at or below it
+    /// are read, and the read goes upstream, only when the max moved.
+    pub(crate) fn watermark(&mut self, program: &str, tag: &str, height: u64) -> bool {
+        let key = (program.to_owned(), tag.to_owned());
+        if self
+            .watermarks
+            .get(&key)
+            .is_some_and(|seen| height <= *seen)
+        {
+            return false;
+        }
+        self.watermarks.insert(key, height);
+        self.mark_read(|entry| {
+            entry.program == program && entry.tag == tag && entry.height <= height
+        });
+        self.send(Call::Read(Read::Tag {
+            program: program.to_owned(),
+            tag: tag.to_owned(),
+            through_height: height,
+        }));
+        true
     }
 
-    /// `module`'s window asks, with nothing logged: the permission bar
-    /// drawn without an unread count on the bell.
-    #[cfg(test)]
-    pub(crate) fn ask_for_test(&mut self, module: &str) {
-        self.asking.insert(module.to_owned());
+    /// Whether the inbox keeps `program`'s entries out.
+    pub(crate) fn muted(&self, program: &str) -> bool {
+        self.mutes.programs.iter().any(|muted| muted == program)
     }
 
-    /// Notices from `module` this past week, folded ones counted.
-    pub(crate) fn this_week(&self, module: &str, wall: i64) -> u32 {
+    /// `program` kept out of the inbox (or let back in): the account's
+    /// mutes replaced upstream. One race across devices is accepted: the
+    /// last `PUT` wins.
+    pub(crate) fn set_muted(&mut self, program: &str, muted: bool) {
+        self.mutes.programs.retain(|known| known != program);
+        if muted {
+            self.mutes.programs.push(program.to_owned());
+        }
+        self.asking.remove(program);
+        self.rev += 1;
+        self.send(Call::Mutes(self.mutes.clone()));
+    }
+
+    /// Entries from `program` this past week, folded ones counted.
+    pub(crate) fn this_week(&self, program: &str, wall: i64) -> u32 {
         self.entries
             .iter()
-            .filter(|entry| entry.module == module && wall - entry.at <= 7 * 86_400)
-            .map(|entry| entry.count)
-            .sum()
+            .filter(|entry| {
+                entry.program == program && wall - (entry.at_ms / 1000) as i64 <= 7 * 86_400
+            })
+            .count() as u32
     }
 
     /// A window came to the front or left it, or its panes moved
@@ -326,87 +463,35 @@ impl Center {
         }
     }
 
-    /// The network in hand: its log comes off disk, the policy starts over.
-    pub(crate) fn set_network(&mut self, network: &str) {
-        if self.network != network {
-            // the last network's rows go to its own file first
-            self.flush();
-            self.open_log(network, log_path(network));
-        }
+    /// `program`'s question at the top of the centre, with nothing on the
+    /// page: drawn without an unread count on the bell.
+    #[cfg(test)]
+    pub(crate) fn ask_for_test(&mut self, program: &str) {
+        self.asking.insert(program.to_owned());
     }
 
-    /// `network` in hand with its log at `path`. A log that cannot be read
-    /// leaves the centre empty and with no `log`, so no save replaces it.
-    pub(super) fn open_log(&mut self, network: &str, path: Option<PathBuf>) {
-        *self = Center {
-            network: network.to_owned(),
-            front: self.front,
-            rev: self.rev + 1,
-            saved: self.rev + 1,
-            ..Center::default()
-        };
-        if let Some(path) = path {
-            match read_log(&path) {
-                Ok(entries) => (self.entries, self.log) = (entries, Some(path)),
-                Err(error) => {
-                    tracing::warn!(target: "ducktape::app", path = %path.display(), %error, "notification log unreadable, not saving over it");
-                }
-            }
-        }
-        self.next = self.entries.iter().map(|entry| entry.id).max().unwrap_or(0);
-        self.prune(wall());
-    }
-
-    /// The log handed to the disk if it moved since it last was: once per
-    /// person's action here (open, mark all read, clear read), and once at
-    /// the end of each view redraw for whatever its requests logged
-    /// (`Guest::redraw`), never per post. Written whole through
-    /// `backend::atomic_write` on the blocking pool, one write after
-    /// another (`kernel::in_order` under the log's path).
-    pub(crate) fn flush(&mut self) {
-        if self.saved == self.rev {
-            return;
-        }
-        self.saved = self.rev;
-        let Some(path) = self.log.clone() else {
+    /// A call upstream, on the runtime, after this lock is released; a
+    /// failure is logged, the page stands as the person left it. Nothing
+    /// is sent without a client (no inbox, or none yet).
+    fn send(&self, call: Call) {
+        let Some(client) = self.client.clone() else {
             return;
         };
-        let entries = self.entries.clone();
-        let name = path.to_string_lossy().into_owned();
-        crate::runtime::kernel::in_order(&name, move || {
-            let _timed = crate::perf::time(crate::perf::Key::Shell, "io.notify_save");
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Ok(bytes) = serde_json::to_vec(&entries) {
-                let _ = crate::backend::atomic_write(&path, &bytes, false);
+        crate::runtime::handle().spawn(async move {
+            let failed = match call {
+                Call::Read(read) => client.read(&read).await.err(),
+                Call::HideRead => client.hide_read().await.err(),
+                Call::Mutes(mutes) => client.set_mutes(&mutes).await.err(),
+            };
+            if let Some(error) = failed {
+                tracing::warn!(target: "ducktape::app", %error, "the inbox did not take a change");
             }
         });
     }
 }
 
-/// The log at `path`; empty when it is missing. One that will not parse is
-/// set aside as `.bad`, so the next save does not overwrite it. Any other
-/// read error stays an error.
-pub(super) fn read_log(path: &Path) -> std::io::Result<Vec<Entry>> {
-    crate::backend::read_or_set_aside(path, |bytes| serde_json::from_slice(bytes))
-        .map(Option::unwrap_or_default)
-}
-
-/// `<config>/notifications/<chain>.json`, device-local beside the prefs.
-fn log_path(network: &str) -> Option<PathBuf> {
-    if network.is_empty() {
-        return None;
-    }
-    let file: String = network
-        .chars()
-        .map(
-            |letter| match letter.is_ascii_alphanumeric() || "-_.".contains(letter) {
-                true => letter,
-                false => '_',
-            },
-        )
-        .collect();
-    let dir = crate::backend::config_dir().ok()?.join("notifications");
-    Some(dir.join(format!("{file}.json")))
+enum Call {
+    Read(Read),
+    HideRead,
+    Mutes(Mutes),
 }

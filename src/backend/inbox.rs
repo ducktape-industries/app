@@ -125,6 +125,7 @@ impl Client {
             pubkey: abi::hex(&pubkey),
             signature: abi::hex(&signature),
             nonce: challenge.nonce,
+            expires: challenge.expires,
             label: self.label.clone(),
         };
         let reply: LoginReply =

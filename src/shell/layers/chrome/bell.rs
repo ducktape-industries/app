@@ -2,6 +2,7 @@
 
 use super::Chrome;
 use crate::a11y::Control as _;
+use crate::runtime::notify::{InboxState, Permission};
 use crate::shell::entities::{Notifications, Overlay, Popover, SettingsPage};
 use crate::shell::ink::{Ink, mono, sans, tall};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -28,6 +29,25 @@ impl Chrome {
         let notifications = self.notifications.read(cx);
         let unread = notifications.unread();
         let entries = notifications.entries();
+        let state = notifications.state().clone();
+        let asking: Vec<&'static str> = notifications
+            .asking()
+            .iter()
+            .map(|program| crate::runtime::intern(program))
+            .collect();
+        let rail = self.rail.read(cx).rows().to_vec();
+        // where the inbox stands, in the count's place
+        let standing = match &state {
+            InboxState::NoInbox => "This address keeps no notifications.".to_owned(),
+            InboxState::Unreachable { since } => {
+                format!("Inbox unreachable since {}", clock(*since))
+            }
+            InboxState::Denied(why) => format!("Not signed in to the inbox: {why}"),
+            InboxState::Off | InboxState::Ready => match notifications.stuck() {
+                Some(stuck) => format!("{unread} unread · {stuck}"),
+                None => format!("{unread} unread"),
+            },
+        };
         let small_link = |id: &'static str, text: &'static str, run: Box<dyn Fn(&mut App)>| {
             let hover = ink.ink;
             crate::a11y::keyboard(
@@ -57,8 +77,10 @@ impl Chrome {
             .child(
                 mono(400, 12.)
                     .flex_1()
+                    .min_w_0()
+                    .truncate()
                     .text_color(ink.muted)
-                    .child(format!("{unread} unread")),
+                    .child(standing),
             )
             .when(unread > 0, |header| {
                 header.child(
@@ -82,6 +104,73 @@ impl Chrome {
                 (high - self.inset(cx).menus - 4. - 46. - 38. - 8.).max(80.)
             ))
             .overflow_y_scroll();
+        // the question for a program whose first entry arrived before the
+        // person said a word on its banners
+        for module in asking {
+            let name = crate::shell::panes::label(&rail, module);
+            let answer = |word: Permission| {
+                let (notifications, prefs) = (
+                    self.notifications.entity().clone(),
+                    self.prefs.entity().clone(),
+                );
+                crate::a11y::keyboard(
+                    sans(500, 13.)
+                        .id(SharedString::from(format!(
+                            "notify-ask/{module}/{}",
+                            word.word()
+                        )))
+                        .control(Role::Button, word.word())
+                        .px(px(10.))
+                        .h(px(tall(26.)))
+                        .flex()
+                        .items_center()
+                        .cursor_pointer()
+                        .border_1()
+                        .border_color(ink.ink)
+                        .when(word == Permission::Allow, |button| {
+                            button.bg(ink.ink).text_color(ink.bg)
+                        })
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            crate::shell::entities::permission(
+                                &notifications,
+                                &prefs,
+                                module,
+                                word,
+                                cx,
+                            )
+                        })
+                        .child(word.word()),
+                    ink.ring(word == Permission::Allow),
+                )
+            };
+            list = list.child(
+                crate::a11y::live(
+                    div()
+                        .id(SharedString::from(format!("notify-ask/{module}")))
+                        .role(Role::Group),
+                    accesskit::Live::Polite,
+                    format!("Show banners from {name}?"),
+                )
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .px(px(16.))
+                .py(px(10.))
+                .bg(ink.surface)
+                .border_b_1()
+                .border_color(ink.line)
+                .child(
+                    sans(500, 13.)
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(format!("Show banners from {name}?")),
+                )
+                .child(answer(Permission::Allow))
+                .child(answer(Permission::Silent)),
+            );
+        }
         let mut section = None;
         for entry in &entries {
             let today = entry.at >= midnight;
@@ -113,8 +202,8 @@ impl Chrome {
                 .flat_map(char::to_uppercase)
                 .collect();
             let source = match entry.tag.is_empty() {
-                true => entry.module.clone(),
-                false => format!("{} · {}", entry.module, entry.tag),
+                true => entry.program.clone(),
+                false => format!("{} · {}", entry.program, entry.tag),
             };
             let said = format!(
                 "{}{}: {}",
@@ -151,10 +240,10 @@ impl Chrome {
                         overlays.update(cx, |overlays, cx| {
                             overlays.close(Overlay::Menu(Popover::Notifications), cx)
                         });
-                        let entry = notifications
+                        let opened = notifications
                             .update(cx, |notifications, cx| notifications.open(id, cx));
-                        if let Some(entry) = entry {
-                            windows.update(cx, |windows, cx| windows.open_notice(&entry, cx));
+                        if let Some(opened) = opened {
+                            windows.update(cx, |windows, cx| windows.open_notice(&opened, cx));
                         }
                     })
                     .child(
@@ -235,23 +324,29 @@ impl Chrome {
             ));
         }
         if entries.is_empty() {
+            let (said, more) = match &state {
+                InboxState::NoInbox => (
+                    "No notifications here",
+                    "This address keeps no inbox, so nothing is kept for you.",
+                ),
+                _ => (
+                    "You\u{2019}re all caught up",
+                    "Notices from your programs land here.",
+                ),
+            };
             list = list.child(
                 crate::a11y::live(
                     div().id("notif-empty").role(Role::Status),
                     accesskit::Live::Polite,
-                    "You\u{2019}re all caught up",
+                    said,
                 )
                 .flex()
                 .flex_col()
                 .items_center()
                 .gap(px(6.))
                 .py(px(44.))
-                .child(sans(500, 14.).child("You\u{2019}re all caught up"))
-                .child(
-                    sans(400, 13.)
-                        .text_color(ink.muted)
-                        .child("Notices from your programs land here."),
-                ),
+                .child(sans(500, 14.).child(said))
+                .child(sans(400, 13.).text_color(ink.muted).child(more)),
             );
         }
         let footer = div()
@@ -301,6 +396,12 @@ impl Chrome {
             .child(footer);
         self.popover(Popover::Notifications, width, body, ink, window, cx)
     }
+}
+
+/// "14:02": the local clock at the wall second `wall`.
+fn clock(wall: i64) -> String {
+    let local = (wall + crate::runtime::local_offset(wall)).rem_euclid(86_400);
+    format!("{:02}:{:02}", local / 3_600, (local % 3_600) / 60)
 }
 
 /// Unix seconds at the start of the local day `wall` falls in.

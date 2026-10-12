@@ -33,14 +33,12 @@ pub(crate) use endpoints::{
 };
 pub(crate) use key_dir::{Keyring, bind_keyring, key_exists, keystore_root, session_key_path};
 pub(crate) use noded::{Client as RpcClient, Layer, Status as NodeStatus};
-#[cfg(test)]
-pub(crate) use prefs::prefs_reads;
 pub(crate) use prefs::{
     Appearance, Layout, edit_prefs, load_appearance, load_layout, load_motion, read_prefs,
     save_appearance, save_layout, save_motion,
 };
 #[cfg(test)]
-pub(crate) use session::seat_serial;
+pub(crate) use session::{SeatSerial, seat_serial};
 pub(crate) use session::{
     anchor, lock_signer, query_frame, salt, seat_key, seated, seated_frame, seated_key, seated_sign,
 };

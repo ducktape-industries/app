@@ -14,8 +14,7 @@
 //! the window (`WindowRoot::pane_message`).
 
 use super::super::entities::{
-    Desk, Entities, Notifications, Observed, Overlays, Prefs, Rail, Seats, Slice, WindowEntities,
-    Windows,
+    Desk, Entities, Observed, Overlays, Prefs, Rail, Seats, Slice, WindowEntities, Windows,
 };
 use super::super::{
     PaneMessage, WindowKey, WindowKind, WindowRoot, chord_label, layout, pane_drag, pane_hold,
@@ -237,12 +236,7 @@ impl PaneLayer {
                 .0
                 .clone();
             let (app, key, kind, desk) = (self.app.clone(), self.key, self.kind, self.desk.clone());
-            let (rail, notifications, prefs, account) = (
-                app.rail.clone(),
-                app.notifications.clone(),
-                app.prefs.clone(),
-                app.account.clone(),
-            );
+            let (rail, prefs, account) = (app.rail.clone(), app.prefs.clone(), app.account.clone());
             let (layer, desk_window) = (cx.weak_entity(), self.window.clone());
             let (module, instance) = (pane.module, pane.instance);
             let view = cx.new(|cx| {
@@ -253,7 +247,6 @@ impl PaneLayer {
                         instance,
                         &desk,
                         &rail,
-                        &notifications,
                         &prefs,
                         layer.clone(),
                         desk_window.clone(),
@@ -280,7 +273,6 @@ impl PaneLayer {
                 };
                 PaneView {
                     rail: Observed::new(&rail, cx),
-                    notifications: Observed::new(&notifications, cx),
                     prefs: Observed::new(&prefs, cx),
                     strip,
                     key,
@@ -508,7 +500,6 @@ pub(in crate::shell) struct PaneView {
     rail: Observed<Rail>,
     /// Its view asks to notify: the strip grows a bar, and is not cached
     /// meanwhile (the bar's height is its words').
-    notifications: Observed<Notifications>,
     /// Dark or light, for the frame's ink.
     prefs: Observed<Slice<Prefs>>,
     /// Its title bar and permission bar, cached.
@@ -747,22 +738,17 @@ impl Render for PaneView {
             .child(view);
         // Every window has a title bar, so a view owns all of its
         // rectangle: nothing floats over its corners. The strip is cached
-        // at the title bar's height; while its view asks to notify it
-        // grows a bar of its words' height, and draws uncached
-        let asking = pane.is_view() && self.notifications.read(cx).asking(pane.module);
+        // at the title bar's height.
         let filled =
             self.kind == WindowKind::Console && pane.frame.is_some() && layout.fills(index);
-        let strip = match asking {
-            true => self.strip.clone().into_any_element(),
-            false => AnyView::from(self.strip.clone())
-                .cached(
-                    StyleRefinement::default()
-                        .w_full()
-                        .h(px(if filled { FILL_STRIP } else { TITLE }))
-                        .flex_shrink_0(),
-                )
-                .into_any_element(),
-        };
+        let strip = AnyView::from(self.strip.clone())
+            .cached(
+                StyleRefinement::default()
+                    .w_full()
+                    .h(px(if filled { FILL_STRIP } else { TITLE }))
+                    .flex_shrink_0(),
+            )
+            .into_any_element();
         self.place(
             index,
             &layout,
@@ -820,18 +806,15 @@ impl Shown {
 }
 
 /// A pane's strip: its title bar (the handle it is held by on the desk,
-/// its name, its buttons at the right end) and, while its view asks to
-/// notify, the permission bar. A cached view: it observes the rail (its
-/// name), the notifications (the ask), the prefs (dark, the burst) and
-/// reads its desk through a compared `Shown`. In a window of its own it
-/// names the OS window too.
+/// its name, its buttons at the right end). A cached view: it observes the
+/// rail (its name), the prefs (dark) and reads its desk through a compared
+/// `Shown`. In a window of its own it names the OS window too.
 pub(in crate::shell) struct Strip {
     key: WindowKey,
     kind: WindowKind,
     layer: WeakEntity<PaneLayer>,
     window: WeakEntity<WindowRoot>,
     rail: Observed<Rail>,
-    notifications: Observed<Notifications>,
     prefs: Observed<Slice<Prefs>>,
     shown: Shown,
     /// The name it last gave its OS window (a window of its own only).
@@ -894,7 +877,6 @@ impl Strip {
         instance: u64,
         desk: &Entity<Desk>,
         rail: &Entity<Rail>,
-        notifications: &Entity<Notifications>,
         prefs: &Entity<Slice<Prefs>>,
         layer: WeakEntity<PaneLayer>,
         window: WeakEntity<WindowRoot>,
@@ -914,7 +896,6 @@ impl Strip {
             layer,
             window,
             rail: Observed::new(rail, cx),
-            notifications: Observed::new(notifications, cx),
             prefs: Observed::new(prefs, cx),
             os_title: String::new(),
             _desk: observing,
@@ -1075,110 +1056,6 @@ impl Strip {
             .child(controls)
             .into_any_element()
     }
-
-    /// The NotifPermission board: a view posted before the person said
-    /// anything about its notices, so its window asks, at the top. Until
-    /// they answer its notices wait in Notifications, silently.
-    fn permission_bar(
-        &self,
-        module: &'static str,
-        ink: &super::super::ink::Ink,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        use super::super::ink::*;
-        use crate::runtime::notify::Permission;
-        let name = panes::label(self.rail.read(cx).rows(), module);
-        let burst = self.prefs.read(cx).get().notify.burst;
-        let (notifications, prefs) = (
-            self.notifications.entity().clone(),
-            self.prefs.entity().clone(),
-        );
-        let button =
-            |id: &'static str, text: &'static str, filled: bool, answer: Box<dyn Fn(&mut App)>| {
-                crate::a11y::keyboard(
-                    sans(500, 14.)
-                        .id(SharedString::from(format!("notify-ask/{module}/{id}")))
-                        .control(Role::Button, text)
-                        .h(px(tall(30.)))
-                        .px(px(12.))
-                        .flex()
-                        .flex_shrink_0()
-                        .items_center()
-                        .cursor_pointer()
-                        .border(px(1.5))
-                        .border_color(ink.ink)
-                        .when(filled, |button| button.bg(ink.ink).text_color(ink.bg))
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(move |_, _, cx| {
-                            cx.stop_propagation();
-                            answer(cx);
-                        })
-                        .child(text),
-                    ink.ring(filled),
-                )
-            };
-        // announced as it appears: nothing else says a view is waiting
-        crate::a11y::live(
-            div()
-                .id(SharedString::from(format!("notify-ask/{module}")))
-                .role(Role::Group),
-            accesskit::Live::Polite,
-            format!("{name} wants to show desktop notifications"),
-        )
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .gap(px(12.))
-        .px(px(14.))
-        .py(px(10.))
-        .bg(ink.surface)
-        .border_b_1()
-        .border_color(ink.line)
-        .child(
-            gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Bell)
-                .size(px(14.))
-                .text_color(ink.ink),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(px(1.))
-                .child(
-                    sans(500, 14.)
-                        .text_color(ink.ink)
-                        .child(format!("{name} wants to show desktop notifications")),
-                )
-                .child(note(
-                    "burst",
-                    format!("At most {burst} banners a minute; the rest wait in Notifications."),
-                    ink.muted,
-                )),
-        )
-        .child(button("allow", "Allow", true, {
-            let notifications = notifications.clone();
-            Box::new(move |cx| {
-                super::super::entities::permission(
-                    &notifications,
-                    &prefs,
-                    module,
-                    Permission::Allow,
-                    cx,
-                )
-            })
-        }))
-        .child(button(
-            "not-now",
-            "Not now",
-            false,
-            Box::new(move |cx| {
-                notifications.update(cx, |notifications, cx| notifications.not_now(module, cx))
-            }),
-        ))
-        .into_any_element()
-    }
 }
 
 impl Render for Strip {
@@ -1187,7 +1064,6 @@ impl Render for Strip {
             here,
             index,
             module,
-            is_view,
             ..
         } = self.shown;
         if !here {
@@ -1216,15 +1092,12 @@ impl Render for Strip {
         }
         let ink = super::super::ink::Ink::of(self.prefs.read(cx).get().dark());
         let title = self.title_bar(&ink, window, cx);
-        let asking = (is_view && self.notifications.read(cx).asking(module))
-            .then(|| self.permission_bar(module, &ink, cx));
         div()
             .w_full()
             .flex_shrink_0()
             .flex()
             .flex_col()
             .child(title)
-            .children(asking)
             .into_any_element()
     }
 }

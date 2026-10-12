@@ -111,8 +111,6 @@ impl Guest {
         for request in std::mem::take(&mut self.frame.requests) {
             self.answer(request, props);
         }
-        // what those requests logged reaches the disk once, off this thread
-        notify::center().lock().flush();
         for id in std::mem::take(&mut self.frame.cancels) {
             self.clipboard.cancel(id);
             self.widget_commands.retain(|(request, _)| *request != id);

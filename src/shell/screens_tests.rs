@@ -658,7 +658,7 @@ fn the_network_switcher_names_the_network_and_its_menu_marks_the_current_one(
 /// in the header.
 #[gpui_kit::test]
 fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
-    use crate::runtime::notify::{CenterHandle, Permission, Settings};
+    use crate::runtime::notify::CenterHandle;
     let mut seed = Seed::boot();
     // its own centre and roster, not the app's ones every test shares
     let center = CenterHandle::default();
@@ -675,45 +675,26 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     find(&nodes, "Dialog", "Notifications");
     find(&nodes, "Status", "You’re all caught up");
 
-    let silent = Settings {
-        banners: true,
-        in_front: false,
-        burst: 6,
-        views: [("chat".to_owned(), Permission::Silent)].into(),
-    };
     let now = crate::runtime::notify::wall();
-    let post = |title: &str, tag: &str| view_wire::methods::Notification {
-        title: title.into(),
-        body: "@grace look".into(),
-        tag: tag.into(),
-        link: "duck://chat/design".into(),
+    let entry = |id: i64, title: &str, tag: &str, at: i64| {
+        let mut entry = crate::runtime::notify::tests::entry(id, "chat", tag, id as u64);
+        entry.title = title.into();
+        entry.body = "@grace look".into();
+        entry.at_ms = at as u64 * 1000;
+        entry
     };
     {
         let mut center = center.lock();
-        let at = std::time::Instant::now();
-        center.post(
-            &silent,
-            "chat",
-            "Chat",
-            post("Ada mentioned you", "#design"),
-            at,
-            now,
-        );
-        center.post(
-            &silent,
-            "chat",
-            "Chat",
-            post("Ada mentioned you", "#design"),
-            at,
-            now,
-        );
-        center.post(
-            &silent,
-            "chat",
-            "Chat",
-            post("Lin", "direct"),
-            at,
-            now - 3 * 86_400,
+        center.set_state(crate::runtime::notify::InboxState::Ready);
+        let mut older = entry(2, "Ada mentioned you", "#design", now);
+        older.read = true;
+        center.replace(
+            vec![
+                entry(3, "Ada mentioned you", "#design", now),
+                older,
+                entry(1, "Lin", "direct", now - 3 * 86_400),
+            ],
+            2,
         );
     }
     // the bell reads the centre through its slice: as a seat's notice would

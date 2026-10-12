@@ -21,7 +21,7 @@ use super::{
     AccountEvent, Entities, Front, Listed, Overlay, Overlays, Popped, Screen, SessionEvent, Shared,
     Slice, Spotlight, WindowEntities,
 };
-use crate::runtime::notify::{CenterHandle, Entry};
+use crate::runtime::notify::{CenterHandle, Opened};
 use crate::runtime::{Link, WindowKey};
 use crate::shell::layers::{self, WindowRoot};
 use crate::shell::windows::{release_window_input, remove};
@@ -729,13 +729,12 @@ impl Windows {
         }
     }
 
-    /// A notification centre row picked: its link opened, else its view's
-    /// seat brought forward.
-    pub(crate) fn open_notice(&mut self, entry: &Entry, cx: &mut Context<Self>) {
-        if !entry.link.is_empty() {
-            self.open_link(&entry.link, cx);
-        } else if self.shared.rail.read(cx).lists(&entry.module) {
-            self.open_seat(crate::runtime::intern(&entry.module), None, cx);
+    /// A notification centre row picked: its minted link opened; a notice
+    /// whose link does not mint opens nothing and says so.
+    pub(crate) fn open_notice(&mut self, opened: &Opened, cx: &mut Context<Self>) {
+        match &opened.link {
+            Some(link) => self.open_link(link, cx),
+            None => self.notice("This notice has no link this app opens.".into(), cx),
         }
     }
 
@@ -796,6 +795,10 @@ impl Windows {
                 self.open_link(&url, cx);
             }
             Posted::Url(url) => cx.open_url(&url),
+            Posted::Notified => self
+                .shared
+                .notifications
+                .update(cx, |notifications, cx| _ = notifications.refresh(cx)),
         }
     }
 
@@ -982,6 +985,8 @@ pub(crate) enum Posted {
     Link(String),
     /// A web page, for the system browser.
     Url(String),
+    /// The inbox moved the notification centre: the bell reads it again.
+    Notified,
 }
 
 fn poster() -> &'static Mutex<Option<UnboundedSender<Posted>>> {
@@ -998,6 +1003,7 @@ pub(crate) fn posted() -> UnboundedReceiver<Posted> {
     // runtime::notify and backend::auth_page cannot depend on shell: they
     // call these hooks instead
     crate::runtime::notify::on_open_link(|url| post(Posted::Link(url)));
+    crate::runtime::notify::on_wake(|| post(Posted::Notified));
     crate::backend::auth_page::on_open_url(|url| post(Posted::Url(url)));
     *current = Some(send);
     receive

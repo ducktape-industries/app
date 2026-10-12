@@ -1,7 +1,8 @@
-//! The person's word on notices: this device's settings in the prefs file
+//! The person's word on banners: this device's settings in the prefs file
 //! (banners at all, banners in front, the burst limit) and their
-//! per-view [`Permission`], read off disk once and kept, and saved by the
-//! settings and permission-bar screens.
+//! per-program [`Permission`], read off disk once and kept, and saved by
+//! the settings page and the question at the top of the centre. What
+//! enters at all is the inbox's (its mutes, `Center::set_muted`).
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -13,28 +14,27 @@ use crate::backend::{edit_prefs, read_prefs};
 pub(super) const NOTIFY_PREF: &str = "desktop_notifications";
 pub(super) const FRONT_PREF: &str = "notify_in_front";
 pub(super) const BURST_PREF: &str = "notify_burst";
-pub(super) const VIEWS_PREF: &str = "notify_views";
+pub(super) const PROGRAMS_PREF: &str = "notify_programs";
 
-/// The burst limits a person picks from, banners a minute per view.
+/// The burst limits a person picks from, banners a minute per program.
 pub(crate) const BURSTS: [u32; 3] = [3, 6, 12];
 const DEFAULT_BURST: u32 = 6;
 
-/// The person's word on one view's notices; no word yet is `None`.
+/// The person's word on one program's banners on this device; no word
+/// yet is `None`. Keeping a program out altogether is the inbox's mute.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Permission {
     Allow,
     Silent,
-    Block,
 }
 
 impl Permission {
-    pub(crate) const ALL: [Self; 3] = [Self::Allow, Self::Silent, Self::Block];
+    pub(crate) const ALL: [Self; 2] = [Self::Allow, Self::Silent];
 
     pub(crate) fn word(self) -> &'static str {
         match self {
             Self::Allow => "Allow",
             Self::Silent => "Silent",
-            Self::Block => "Block",
         }
     }
 
@@ -50,15 +50,14 @@ pub(crate) struct Settings {
     pub(crate) banners: bool,
     /// Banners for the window in front, too. Default off.
     pub(crate) in_front: bool,
-    /// Banners a minute, per view.
+    /// Banners a minute, per program.
     pub(crate) burst: u32,
-    pub(crate) views: BTreeMap<String, Permission>,
+    pub(crate) programs: BTreeMap<String, Permission>,
 }
 
 thread_local! {
-    /// The settings as last read on this thread, the window thread, where
-    /// views post and the shell saves: forgotten when a notice setting is
-    /// saved here, and replaced by every [`Settings::load`].
+    /// The settings as last read on this thread: forgotten when a notice
+    /// setting is saved here, and replaced by every [`Settings::load`].
     static KEPT: RefCell<Option<Settings>> = const { RefCell::new(None) };
 }
 
@@ -70,8 +69,8 @@ impl Settings {
         settings
     }
 
-    /// As last read, or off the prefs file the first time: what each post
-    /// is judged by, without a prefs read per post.
+    /// As last read, or off the prefs file the first time: what each
+    /// arriving entry is judged by, without a prefs read per entry.
     pub(crate) fn kept() -> Self {
         KEPT.with(|kept| kept.borrow().clone())
             .unwrap_or_else(Self::load)
@@ -82,17 +81,17 @@ impl Settings {
             .as_u64()
             .and_then(|burst| BURSTS.into_iter().find(|it| u64::from(*it) == burst))
             .unwrap_or(DEFAULT_BURST);
-        let views = prefs[VIEWS_PREF]
+        let programs = prefs[PROGRAMS_PREF]
             .as_object()
             .into_iter()
             .flatten()
-            .filter_map(|(module, word)| Some((module.clone(), Permission::of(word.as_str()?)?)))
+            .filter_map(|(program, word)| Some((program.clone(), Permission::of(word.as_str()?)?)))
             .collect();
         Self {
             banners: prefs[NOTIFY_PREF].as_bool().unwrap_or(true),
             in_front: prefs[FRONT_PREF].as_str() == Some("show"),
             burst,
-            views,
+            programs,
         }
     }
 }
@@ -115,20 +114,14 @@ pub(crate) fn save_burst(burst: u32) {
     edit(|prefs| prefs[BURST_PREF] = serde_json::json!(burst));
 }
 
-/// The person answered a view: its bar goes, and the word is kept.
-pub(crate) fn set_permission(center: &mut Center, module: &str, permission: Permission) {
+/// The person answered for a program: its question goes, and the word is
+/// kept on this device.
+pub(crate) fn set_permission(center: &mut Center, program: &str, permission: Permission) {
     edit(|prefs| {
-        if !prefs[VIEWS_PREF].is_object() {
-            prefs[VIEWS_PREF] = serde_json::json!({});
+        if !prefs[PROGRAMS_PREF].is_object() {
+            prefs[PROGRAMS_PREF] = serde_json::json!({});
         }
-        prefs[VIEWS_PREF][module] = serde_json::json!(permission.word());
+        prefs[PROGRAMS_PREF][program] = serde_json::json!(permission.word());
     });
-    center.asking.remove(module);
-}
-
-/// "Not now": the bar goes for this run; the view's notices stay logged
-/// silently, and the bar asks again next launch.
-pub(crate) fn not_now(center: &mut Center, module: &str) {
-    center.asking.remove(module);
-    center.not_now.insert(module.to_owned());
+    center.asking.remove(program);
 }

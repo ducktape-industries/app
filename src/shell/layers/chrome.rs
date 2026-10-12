@@ -523,7 +523,7 @@ struct Bar {
     connecting: bool,
     reconnecting: bool,
     height: i64,
-    unread: usize,
+    unread: u64,
     unlocked: bool,
     account: Option<Option<(u64, String)>>,
     open: Option<Overlay>,

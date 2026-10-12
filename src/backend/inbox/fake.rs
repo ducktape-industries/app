@@ -201,6 +201,7 @@ fn answer(
                 indexed_height: 9,
                 tip: 10,
                 stopped: state.stopped.clone(),
+                stalled: None,
             }),
         ),
         ("POST", "challenge") => {
@@ -218,12 +219,14 @@ fn answer(
         ("POST", "login") => {
             state.logins += 1;
             let request: LoginRequest = serde_json::from_slice(body).unwrap();
-            let Some(expires) = state.challenges.remove(&request.nonce) else {
+            // stateless on the real inbox: the login hands the expiry back
+            if state.challenges.remove(&request.nonce).is_none() {
                 return (
                     "401 Unauthorized",
                     b"this challenge is unknown or used".to_vec(),
                 );
-            };
+            }
+            let expires = request.expires;
             if state.deny_logins {
                 return ("401 Unauthorized", b"this key acts as no account".to_vec());
             }
@@ -283,26 +286,31 @@ async fn live(
 ) {
     let authorized =
         bearer(&head).is_some_and(|token| state.lock().unwrap().tokens.contains(&token));
-    let Ok(mut socket) = tokio_tungstenite::accept_hdr_async(
-        stream,
-        |_: &tokio_tungstenite::tungstenite::handshake::server::Request,
-         response: tokio_tungstenite::tungstenite::handshake::server::Response| {
-            match authorized {
-                true => Ok(response),
-                false => {
-                    let mut denied =
-                        tokio_tungstenite::tungstenite::handshake::server::ErrorResponse::new(
-                            Some("sign in first".into()),
-                        );
-                    *denied.status_mut() =
-                        tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED;
-                    Err(denied)
-                }
+    // the handshake's refusal is a boxed response: clippy's large-Err rule
+    #[allow(clippy::result_large_err)]
+    fn gate(
+        authorized: bool,
+    ) -> impl FnOnce(
+        &tokio_tungstenite::tungstenite::handshake::server::Request,
+        tokio_tungstenite::tungstenite::handshake::server::Response,
+    ) -> Result<
+        tokio_tungstenite::tungstenite::handshake::server::Response,
+        tokio_tungstenite::tungstenite::handshake::server::ErrorResponse,
+    > {
+        move |_, response| match authorized {
+            true => Ok(response),
+            false => {
+                let mut denied =
+                    tokio_tungstenite::tungstenite::handshake::server::ErrorResponse::new(Some(
+                        "sign in first".into(),
+                    ));
+                *denied.status_mut() =
+                    tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED;
+                Err(denied)
             }
-        },
-    )
-    .await
-    else {
+        }
+    }
+    let Ok(mut socket) = tokio_tungstenite::accept_hdr_async(stream, gate(authorized)).await else {
         return;
     };
     let mut pushes = pushes.subscribe();
@@ -317,7 +325,7 @@ async fn live(
         }
         let text = serde_json::to_string(&push).unwrap();
         if socket
-            .send(tokio_tungstenite::tungstenite::Message::Text(text.into()))
+            .send(tokio_tungstenite::tungstenite::Message::Text(text))
             .await
             .is_err()
         {

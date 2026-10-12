@@ -43,9 +43,12 @@ fn start(boot: Boot) {
         initialize_rendering(cx);
         crate::perf::mark("fonts");
         let mut posted = entities::posted();
-        // the app's two stores: the notification centre (its log read
-        // off disk) and the roster the node's reads fill
+        // the app's two stores: the notification centre (a view of the
+        // inbox, filled on connect) and the roster the node's reads fill
         let center = crate::runtime::notify::center().clone();
+        if let Ok(config) = crate::backend::config_dir() {
+            crate::runtime::notify::remove_old_log(&config);
+        }
         let roster = crate::runtime::roster().clone();
         crate::perf::mark("boot");
         let changes = crate::runtime::changes_channel();
@@ -174,7 +177,7 @@ fn start(boot: Boot) {
         let mut kept = Some((tray, entities));
         cx.on_app_quit(move |_| {
             // the one hook every quit path reaches
-            let drained = crate::runtime::quitting(crate::runtime::notify::center(), kept.take());
+            let drained = crate::runtime::quitting(kept.take());
             crate::perf::summary();
             drained
         })

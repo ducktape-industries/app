@@ -54,7 +54,11 @@ fn every_shell_status_and_alert_is_live_with_its_words_as_name_and_value(cx: &mu
         ),
         ("desk-toast", Role::Status, "Copied"),
         ("desk-reconnecting", Role::Status, "testkit isn't answering"),
-        ("desk-asking", Role::Group, "gate-asking wants to show"),
+        (
+            "notifications-menu-asking",
+            Role::Group,
+            "Show banners from gate-asking",
+        ),
     ];
     let mut failures = Vec::new();
     let mut found = vec![false; expected.len()];

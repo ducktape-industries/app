@@ -25,7 +25,7 @@ pub(super) struct Page {
 }
 
 /// What Settings' picks change, as it stood: the prefs, and what they
-/// drive in memory (the theme, which views are asking). The door's walk
+/// drive in memory (the theme, which programs are asking). The door's walk
 /// keeps it before its arrows pick a radio group's choices, and a pick
 /// saves, and puts it back after (docs/ax.md §1.1).
 #[cfg(any(test, feature = "ax-door"))]
@@ -56,7 +56,7 @@ impl Kept {
     }
 
     /// Back as it stood: the file written only where it differs, then read
-    /// again into `Prefs` (the theme follows), and the views asking put back.
+    /// again into `Prefs` (the theme follows), and the programs asking put back.
     pub(crate) fn restore(self, cx: &mut gpui_kit::App) {
         if let Some(prefs) = self.prefs {
             crate::backend::edit_prefs(|now| *now = prefs);
@@ -420,40 +420,77 @@ impl OverlayLayer {
             .filter(|row| !row.empty)
             .cloned()
             .collect();
-        let views: Vec<_> = listed
+        // the roster's programs, then any the inbox keeps out that the
+        // roster does not list (muted on another device, or gone)
+        let muted = self.notifications.read(cx).muted_programs();
+        let mut programs: Vec<(&'static str, String)> = listed
             .into_iter()
-            .map(|row| {
-                let module = row.module;
-                let name = super::super::tab_label(&row);
-                let chosen = settings.views.get(module).copied();
+            .map(|row| (row.module, super::super::tab_label(&row)))
+            .collect();
+        for program in muted {
+            if !programs.iter().any(|(module, _)| *module == program) {
+                programs.push((crate::runtime::intern(&program), program));
+            }
+        }
+        let views: Vec<_> = programs
+            .into_iter()
+            .map(|(module, name)| {
+                let muted = self.notifications.read(cx).muted(module);
+                let chosen = settings.programs.get(module).copied();
                 let week = self.notifications.read(cx).this_week(module, now);
-                let hint = match week {
-                    0 => "None yet".to_owned(),
-                    week => format!("{week} this week"),
+                let hint = match (muted, week) {
+                    (true, _) => "Muted: the inbox keeps it out, on every device".to_owned(),
+                    (false, 0) => "None yet".to_owned(),
+                    (false, week) => format!("{week} this week"),
+                };
+                // Allow and Silent are this device's word on banners; Mute
+                // is the inbox's, synced: picking a word unmutes
+                let (notifications, prefs) = (
+                    self.notifications.entity().clone(),
+                    self.prefs.entity().clone(),
+                );
+                let word = |permission: Permission| -> (SharedString, bool, Pick) {
+                    let (notifications, prefs) = (notifications.clone(), prefs.clone());
+                    let pick: Pick = Rc::new(move |cx| {
+                        if notifications.read(cx).muted(module) {
+                            notifications.update(cx, |notifications, cx| {
+                                notifications.set_muted(module, false, cx)
+                            });
+                        }
+                        crate::shell::entities::permission(
+                            &notifications,
+                            &prefs,
+                            module,
+                            permission,
+                            cx,
+                        )
+                    });
+                    (
+                        permission.word().into(),
+                        !muted && chosen == Some(permission),
+                        pick,
+                    )
+                };
+                let mute: (SharedString, bool, Pick) = {
+                    let notifications = notifications.clone();
+                    (
+                        "Mute".into(),
+                        muted,
+                        Rc::new(move |cx| {
+                            notifications.update(cx, |notifications, cx| {
+                                notifications.set_muted(module, true, cx)
+                            })
+                        }),
+                    )
                 };
                 let control = self.segmented(
                     &format!("notify/view/{module}"),
                     &format!("{name} notifications"),
-                    Permission::ALL.map(|permission| {
-                        let (notifications, prefs) = (
-                            self.notifications.entity().clone(),
-                            self.prefs.entity().clone(),
-                        );
-                        let pick: Pick = Rc::new(move |cx| {
-                            crate::shell::entities::permission(
-                                &notifications,
-                                &prefs,
-                                module,
-                                permission,
-                                cx,
-                            )
-                        });
-                        (permission.word().into(), chosen == Some(permission), pick)
-                    }),
+                    [word(Permission::Allow), word(Permission::Silent), mute],
                     &ink,
                     cx,
                 );
-                // one line a view, so the whole roster fits under the fold
+                // one line a program, so the whole roster fits under the fold
                 div()
                     .flex()
                     .items_center()
@@ -484,7 +521,7 @@ impl OverlayLayer {
             heading("Notifications", &ink),
             ink::note(
                 "notifications-intro",
-                "On this device. Views ask; Ducktape decides what reaches the screen.",
+                "Banners are this device's call; what enters at all is the inbox's, the same on every device.",
                 ink.muted,
             )
             .pb(px(12.))

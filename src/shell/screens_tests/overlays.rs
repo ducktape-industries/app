@@ -210,7 +210,7 @@ fn a_click_outside_a_menu_closes_it(cx: &mut TestAppContext) {
 /// The bell's panel still hands off to Settings, the keys in it.
 #[gpui_kit::test]
 fn a_menu_keeps_the_keys_that_move_inside_it(cx: &mut TestAppContext) {
-    use crate::runtime::notify::{CenterHandle, Permission, Settings};
+    use crate::runtime::notify::CenterHandle;
     // Account, then a click on the bell
     let (view, mut native) = open(gate::desk(), cx);
     native.update(draw);
@@ -233,25 +233,14 @@ fn a_menu_keeps_the_keys_that_move_inside_it(cx: &mut TestAppContext) {
     let mut seed = gate::desk();
     let center = CenterHandle::default();
     seed.center = center.clone();
-    let silent = Settings {
-        banners: true,
-        in_front: false,
-        burst: 6,
-        views: [("chat".to_owned(), Permission::Silent)].into(),
-    };
-    center.lock().post(
-        &silent,
-        "chat",
-        "Chat",
-        view_wire::methods::Notification {
-            title: "Ada".into(),
-            body: "look".into(),
-            tag: String::new(),
-            link: String::new(),
-        },
-        std::time::Instant::now(),
-        crate::runtime::notify::wall(),
-    );
+    {
+        let mut center = center.lock();
+        center.set_state(crate::runtime::notify::InboxState::Ready);
+        let mut entry = crate::runtime::notify::tests::entry(1, "chat", "", 1);
+        entry.title = "Ada".into();
+        entry.at_ms = crate::runtime::notify::wall() as u64 * 1000;
+        center.replace(vec![entry], 1);
+    }
     let (view, mut native) = open((seed, bell), cx);
     native.update(draw);
     native.update(draw);
