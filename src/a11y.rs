@@ -369,10 +369,11 @@ fn typed(
 pub const AX_PRIVATE: &str = "ax_private";
 
 /// Class name of a node whose name the AX tree gives whole, past its
-/// length cap: a URL an agent must read back in full.
+/// length cap: a code an agent must read back in full.
 pub const AX_WHOLE: &str = "ax_whole";
 
-/// Marks the element's accessible node [`AX_WHOLE`]: the passkey QR's URL.
+/// Marks the element's accessible node [`AX_WHOLE`]: a code or fingerprint
+/// compared by eye.
 pub fn whole<E: InteractiveElement>(element: E) -> E {
     Patch::default().class_name(AX_WHOLE).on(element)
 }
