@@ -190,13 +190,7 @@ pub(super) fn needed(
     body: &[u8],
     own: Option<u64>,
 ) -> Option<Words> {
-    let bound = |name: &str| {
-        roles.is_some_and(|roles| {
-            [&roles.registry, &roles.validators, &roles.identity]
-                .iter()
-                .any(|role| role.as_str() == name)
-        })
-    };
+    let bound = |name: &str| bound(name, roles);
     const PROGRAM: &str = "Program ";
     let (by, id) = match bound(program) {
         true => ("System".to_owned(), None),
@@ -215,10 +209,16 @@ pub(super) fn needed(
     };
     if target == identity::MODULE {
         let Ok(op) = abi::decode::<identity::Op>(body) else {
-            return Some(words(
-                format!("{by} asks your key to sign an identity operation this app cannot read."),
-                None,
-            ));
+            // the deployed identity may know it: its own words, if it does
+            return Some(Words {
+                described: true,
+                ..words(
+                    format!(
+                        "{by} asks your key to sign an identity operation this app cannot read."
+                    ),
+                    None,
+                )
+            });
         };
         let asked = match op {
             identity::Op::RemoveKey { account, key } if own == Some(account) => Some(words(
@@ -278,10 +278,21 @@ pub(super) fn needed(
     })
 }
 
+/// Whether genesis bound `program` to a role the kernel calls (`roles`, as
+/// the node's registry answers them): never while no bindings are known.
+pub(super) fn bound(program: &str, roles: Option<&abi::Roles>) -> bool {
+    roles.is_some_and(|roles| {
+        [&roles.registry, &roles.validators, &roles.identity]
+            .iter()
+            .any(|role| role.as_str() == program)
+    })
+}
+
 /// What the card shows for an op its target describes: the program's own
 /// title, then its fields, `label value`, on one line; the op's size where
 /// it describes nothing (no describe module, bytes it cannot read, the
-/// node not reached). The op is the view's: every value is clipped.
+/// node not reached). The op is the view's: every title, label and value
+/// is [`clip`]ped.
 pub(crate) fn shown(description: Option<&describe::Description>, len: usize) -> String {
     let Some(description) = description else {
         return format!("{len} bytes this app cannot read");
@@ -293,7 +304,7 @@ pub(crate) fn shown(description: Option<&describe::Description>, len: usize) -> 
     let fields: Vec<String> = description
         .fields
         .iter()
-        .map(|field| format!("{} {}", field.label, clip(&value(&field.value))))
+        .map(|field| format!("{} {}", clip(&field.label), clip(&value(&field.value))))
         .collect();
     format!("{title}\n{}", fields.join(" · "))
 }
@@ -301,10 +312,14 @@ pub(crate) fn shown(description: Option<&describe::Description>, len: usize) -> 
 /// The longest a title or a value runs on the card before it is clipped.
 const MAX_VALUE: usize = 160;
 
+/// `text` as one line of the card: its plain chars (`kernel::plain`: no
+/// line break to fake a fields line, no bidi control to reorder one), at
+/// most [`MAX_VALUE`] of them.
 fn clip(text: &str) -> String {
+    let text: String = text.chars().filter(super::kernel::plain).collect();
     match text.char_indices().nth(MAX_VALUE) {
         Some((at, _)) => format!("{}…", &text[..at]),
-        None => text.to_owned(),
+        None => text,
     }
 }
 
@@ -340,25 +355,11 @@ fn value(shown: &describe::Value) -> String {
 
 /// Milliseconds since the epoch as a UTC date: `12 Oct 2026, 14:03 UTC`.
 fn date(millis: u64) -> String {
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
     let seconds = millis / 1000;
-    let (days, of_day) = (seconds / 86_400, seconds % 86_400);
-    // days since 1970-01-01 to a civil date (Howard Hinnant's algorithm),
-    // as the views' `design::date` reads it
-    let z = days as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
+    let of_day = seconds % 86_400;
     format!(
-        "{day} {} {year}, {:02}:{:02} UTC",
-        MONTHS[(month - 1) as usize],
+        "{}, {:02}:{:02} UTC",
+        super::day(seconds),
         of_day / 3_600,
         of_day % 3_600 / 60,
     )
@@ -465,7 +466,8 @@ mod tests {
         }
         let unread = needed("chat", None, identity::MODULE, &[0xff, 0xff], Some(7)).unwrap();
         assert!(unread.said.contains("cannot read"), "{unread:?}");
-        assert_eq!(unread.shown, None);
+        // the deployed identity's own words, read in by the request's task
+        assert_eq!((unread.shown, unread.described), (None, true));
         assert_eq!(needed("chat", None, "chat", &[0xff, 0xff], Some(7)), None);
     }
 
@@ -669,6 +671,15 @@ mod tests {
         };
         assert_eq!(shown(Some(&long), 9), format!("{}…", "x".repeat(MAX_VALUE)));
         assert_eq!(shown(None, 3), "3 bytes this app cannot read");
+        // the op's own text fakes no line and reorders nothing: a line
+        // break, a bidi override, a paragraph separator go, in the title, a
+        // label and a value alike
+        let forged = "a\nb\u{202e}c\u{2029}";
+        let forged = describe::Description {
+            title: format!("Set name · {forged}"),
+            fields: vec![field(forged, Value::text(forged))],
+        };
+        assert_eq!(shown(Some(&forged), 9), "Set name · abc\nabc abc");
     }
 
     /// Claim: an ask is in the queue exactly as long as its request holds

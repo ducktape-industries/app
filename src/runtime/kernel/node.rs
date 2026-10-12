@@ -174,6 +174,12 @@ pub(super) fn spawn_consented(
     );
 }
 
+/// How long a consented op's card waits on the target's description before
+/// it goes up with the op's size instead: the press it answers is the
+/// person's of a moment ago, not of minutes ago. The code blob is normally
+/// on disk already (the role's own view loaded from it).
+const DESCRIBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// A consented op's ask, made by its task: the card goes up only once its
 /// words are whole, and goes with the task (aborted with its view, the ask
 /// is never queued or is withdrawn).
@@ -203,7 +209,7 @@ impl Asking {
         if words.described {
             let len = call.body.len();
             let described = tokio::time::timeout(
-                noded::ANSWER_DEADLINE,
+                DESCRIBE_DEADLINE,
                 super::describe::described(node, &call.target, call.body),
             )
             .await;

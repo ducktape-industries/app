@@ -54,7 +54,8 @@ pub(crate) struct Roster {
 
 /// The roles as the registry answered them, and the connection (`rev`)
 /// that was asked: they are asked once per connection, and again when the
-/// roster moved (a registry upgrade is a move), never each block.
+/// roster moved (a registry upgrade is a move), never each block; no
+/// bindings answered pins nothing, and the next read asks again.
 #[derive(Default)]
 struct Bound {
     asked_of: Option<u64>,
@@ -352,9 +353,12 @@ pub(super) fn read_roster(asked_of: Connection, roster: &Roster, registry: &Regi
         if node_since_left {
             return;
         }
+        // no bindings (an old registry, or a refusal: one 400 reads the
+        // same) are asked again on the next read: a `None` kept for the
+        // connection would keep the consent card off all that time
         if let Some(roles) = roles {
             *roster.bound() = Bound {
-                asked_of: Some(asked_of.rev),
+                asked_of: roles.is_some().then_some(asked_of.rev),
                 roles,
             };
         }

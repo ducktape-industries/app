@@ -2,10 +2,19 @@
 //! front of the queue, in the dialog "Add a device…" asks its yes with.
 
 use super::super::super::ink::*;
-use super::{OverlayLayer, scrim};
+use super::{OverlayLayer, dialog_fit, scrim};
 use crate::runtime::consent;
 use crate::shell::entities::Overlay;
 use gpui_kit::*;
+
+/// How long Approve takes no press after the card opens: a second press
+/// the view asked for ("press twice") lands on the card before anyone
+/// read it.
+pub(in crate::shell) const SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The card's usual height, a few lines of description in it: where it
+/// hangs in a short window (`dialog_fit`).
+const TALL: f32 = 360.;
 
 impl OverlayLayer {
     /// The card for ask `ask`: its title (a change to the person's account
@@ -16,8 +25,10 @@ impl OverlayLayer {
     /// words. Approve lets the op go on to be signed; Cancel, or the dialog
     /// closed any other way (`Windows`), refuses it. The card is the ask's
     /// own (its id is in the dialog's): it shows no other ask's words, and
-    /// a press that began on another card is not one on it.
-    pub(super) fn consent(&self, ask: u64, cx: &App) -> AnyElement {
+    /// a press that began on another card is not one on it, nor one in the
+    /// first [`SETTLE`] after it opened. In a short window the description
+    /// scrolls and Approve stays on screen.
+    pub(super) fn consent(&self, ask: u64, window: &Window, cx: &App) -> AnyElement {
         let ink = Ink::of(self.prefs.read(cx).get().dark());
         let Some((_, words)) = consent::front().filter(|(front, _)| *front == ask) else {
             // answered or withdrawn already; the layer redraws without it
@@ -32,11 +43,22 @@ impl OverlayLayer {
         };
         let approve = {
             let answer = answer.clone();
+            let overlays = self.overlays.entity().clone();
             button(
                 "consent-approve",
                 "Approve",
                 Kind::Primary,
-                move |cx| answer(true, cx),
+                move |cx| {
+                    let opened = overlays.read(cx).opened();
+                    if cx
+                        .background_executor()
+                        .now()
+                        .saturating_duration_since(opened)
+                        >= SETTLE
+                    {
+                        answer(true, cx);
+                    }
+                },
                 false,
                 &ink,
             )
@@ -82,9 +104,20 @@ impl OverlayLayer {
                     .border_color(ink.line),
                 false => label,
             };
-            crate::a11y::whole(label.child(shown))
+            // the description scrolls before the card outgrows the window
+            div()
+                .id("consent-shown-scroll")
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(crate::a11y::whole(label.child(shown)))
         });
         let title = words.title;
+        let (top, tall) = dialog_fit(
+            f32::from(window.viewport_size().height),
+            self.inset(cx),
+            TALL,
+            84.,
+        );
         scrim(
             format!("consent-{ask}"),
             Role::Dialog,
@@ -95,7 +128,8 @@ impl OverlayLayer {
             self.inset(cx),
             &ink,
             |card| {
-                card.mt(px(84.))
+                card.mt(px(top))
+                    .max_h(px(tall))
                     .w(px(440.))
                     .max_w_full()
                     .self_start()
@@ -107,6 +141,7 @@ impl OverlayLayer {
                         div()
                             .flex()
                             .flex_col()
+                            .min_h_0()
                             .gap(px(16.))
                             .children(shown)
                             .child(div().flex().child(approve)),

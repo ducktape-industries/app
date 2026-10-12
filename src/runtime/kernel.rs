@@ -279,7 +279,17 @@ pub(super) fn answer(
         (Capability::Chain, "block") => {
             spawn_retrying(guest, id, payload, block, "host_call.chain.block")
         }
+        // the node's key signs an invite: only a role's own view asks
+        // for one (a view no vote reviewed could hand it to its program)
         (Capability::Invite, "create") => {
+            if !super::consent::bound(guest.module, super::roster().roles().as_ref()) {
+                guest.refuse(
+                    id,
+                    refusal::UNDECLARED_CAPABILITY,
+                    "`invite.create` is a role's own view's: this view's program is bound to no role",
+                );
+                return true;
+            }
             spawn_no_retry(guest, id, payload, invite, "host_call.invite.create")
         }
         // a write: to a declared target, and after the person's native
@@ -411,20 +421,23 @@ pub(super) fn answer(
 /// The most of a `host.title` the host shows, in chars.
 const MAX_TITLE: usize = 80;
 
-/// A `host.title` as the window shows it, one line of the view's own text:
-/// no control characters, no bidi embedding, override or isolate (each
-/// reorders what follows it), no line or paragraph separator, no space at
-/// either end, at most [`MAX_TITLE`] chars (a cut on a char boundary).
-/// Direction marks and joiners stay: an RTL name or an emoji needs them.
+/// A `host.title` as the window shows it, one line of the view's own text
+/// ([`plain`] chars), no space at either end, at most [`MAX_TITLE`] chars
+/// (a cut on a char boundary).
 fn shown_title(title: &str) -> String {
-    let shown = |c: &char| {
-        !(c.is_control()
-            || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
-            || matches!(c, '\u{2028}' | '\u{2029}'))
-    };
-    let title: String = title.chars().filter(shown).collect();
+    let title: String = title.chars().filter(plain).collect();
     let cut: String = title.trim_start().chars().take(MAX_TITLE).collect();
     cut.trim_end().to_owned()
+}
+
+/// Whether the host shows a char of a view's text as it is, on one line: no
+/// control character, no bidi embedding, override or isolate (each
+/// reorders what follows it), no line or paragraph separator. Direction
+/// marks and joiners stay: an RTL name or an emoji needs them.
+pub(crate) fn plain(c: &char) -> bool {
+    !(c.is_control()
+        || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        || matches!(c, '\u{2028}' | '\u{2029}'))
 }
 
 /// Whether `link.open` may open `link`: `duck://` or `https://` with
@@ -448,6 +461,24 @@ pub(crate) fn local_offset(wall: i64) -> i64 {
             false => tm.tm_gmtoff as i64,
         }
     }
+}
+
+/// Unix second `seconds` as its UTC day: `27 Sep 2026`.
+pub(crate) fn day(seconds: u64) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    // days since 1970-01-01 to a civil date (Howard Hinnant's algorithm)
+    let z = (seconds / 86_400) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{day} {} {year}", MONTHS[(month - 1) as usize])
 }
 
 /// The reader's UTC offset in minutes now, as `Event::Offset` carries it
