@@ -495,3 +495,142 @@ fn a_field_in_a_list_row_crosses_a_new_generation(cx: &mut gpui_kit::TestAppCont
     });
     assert_eq!(selected, [7..7, 2..5]);
 }
+
+const LIST_HEIGHT: f32 = 600.;
+
+fn chat_list(
+    range_start: usize,
+    rows: Vec<wire::Node>,
+    overdraw: f32,
+    revision: u64,
+    commands: Vec<wire::ListCommand>,
+) -> wire::Node {
+    let mut node = variable_list_node(256, wire::ListAlignment::Bottom, range_start, rows);
+    if let wire::Node::List {
+        overdraw: drawn,
+        revision: carried,
+        commands: queued,
+        ..
+    } = &mut node
+    {
+        *drawn = overdraw;
+        *carried = revision;
+        *queued = commands;
+    }
+    node
+}
+
+fn keyed_rows(keys: std::ops::Range<u64>, height: f32) -> Vec<wire::Node> {
+    keys.map(|key| fixed_row(key, height, 0x111111)).collect()
+}
+
+fn seated(
+    cx: &mut gpui_kit::TestAppContext,
+    root: wire::Node,
+) -> (Entity<ViewTree>, gpui_kit::VisualTestContext) {
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(400.), px(LIST_HEIGHT)), |_, cx| {
+        Seat(cx.new(|_| ViewTree::new(root)))
+    });
+    let tree = window
+        .root(cx)
+        .unwrap()
+        .read_with(cx, |seat, _| seat.0.clone());
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+    });
+    native.run_until_parked();
+    (tree, native)
+}
+
+fn scroll_top(
+    tree: &Entity<ViewTree>,
+    native: &mut gpui_kit::VisualTestContext,
+) -> gpui_kit::ListOffset {
+    tree.read_with(native, |tree, _| {
+        tree.variable_lists
+            .values()
+            .next()
+            .expect("the list is mounted")
+            .state
+            .logical_scroll_top()
+    })
+}
+
+fn wheel_frame(native: &mut gpui_kit::VisualTestContext, up: &[f32]) {
+    native.update(|window, cx| {
+        for up in up {
+            window.dispatch_event(
+                gpui_kit::ScrollWheelEvent {
+                    position: point(px(200.), px(LIST_HEIGHT / 2.)),
+                    delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(*up))),
+                    ..Default::default()
+                }
+                .to_platform_input(),
+                cx,
+            );
+        }
+    });
+    native.update(|window, cx| window.render_frame(cx));
+    native.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn one_frame_of_the_wheel_moves_a_list_as_far_as_its_overdraw(cx: &mut gpui_kit::TestAppContext) {
+    let mut moved = |overdraw: f32| {
+        let root = chat_list(192, keyed_rows(192..256, 100.), overdraw, 0, vec![]);
+        let (tree, mut native) = seated(cx, root);
+        let top = 256. - LIST_HEIGHT / 100.;
+        wheel_frame(&mut native, &[2_000.]);
+        let after = scroll_top(&tree, &mut native);
+        (top - after.item_ix as f32) * 100. - f32::from(after.offset_in_item)
+    };
+    assert_eq!(moved(160.), 200., "two rows: the overdraw, to a row");
+    assert_eq!(moved(600.), 600., "chat's overdraw");
+}
+
+#[gpui_kit::test]
+fn a_window_slid_by_two_splices_keeps_a_scrolled_reader_on_their_row(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let root = chat_list(192, keyed_rows(192..256, 60.), 600., 0, vec![]);
+    let (tree, mut native) = seated(cx, root);
+    for _ in 0..6 {
+        wheel_frame(&mut native, &[125.]);
+    }
+    let scrolled = scroll_top(&tree, &mut native);
+    assert!(
+        scrolled.item_ix < 250 && scrolled.offset_in_item > px(0.),
+        "{scrolled:?}"
+    );
+    let slid = chat_list(
+        191,
+        keyed_rows(192..257, 60.),
+        600.,
+        1,
+        vec![
+            wire::ListCommand::Splice {
+                start: 256,
+                end: 256,
+                count: 1,
+            },
+            wire::ListCommand::Splice {
+                start: 0,
+                end: 1,
+                count: 0,
+            },
+        ],
+    );
+    tree.update(&mut native, |tree, cx| tree.replace(slid, &[], cx));
+    native.update(|window, cx| window.render_frame(cx));
+    native.run_until_parked();
+    let after = scroll_top(&tree, &mut native);
+    assert_eq!(
+        after.item_ix,
+        scrolled.item_ix - 1,
+        "the same row, one place up"
+    );
+    assert_eq!(after.offset_in_item, scrolled.offset_in_item);
+}
