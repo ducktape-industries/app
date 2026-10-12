@@ -6,7 +6,6 @@ use super::super::super::entities::Account;
 use super::super::super::ink::{self, *};
 use super::super::fields::TextField;
 use super::{LauncherLayer, LauncherScreen, buttons, closing};
-use crate::a11y::Control as _;
 use gpui_kit::*;
 
 /// What the device that waits for approval is told: a security instruction,
@@ -158,109 +157,17 @@ impl LauncherLayer {
         )
     }
 
-    /// Passkey: the ceremony is in the browser, or on a phone through the QR.
+    /// Passkey: the ceremony is in the browser.
     fn passkey_waiting(&self, window: &mut Window, cx: &App) -> AnyElement {
-        let account = self.account.read(cx).get();
         let ink = Ink::of(self.prefs.read(cx).get().dark());
-        let (title, hint) = match account.passkey_qr {
-            Some(_) => (
-                "Scan with your phone",
-                "Point its camera at the code. Show the code and its link only to your own phone. It asks for your passkey twice; this screen moves on by itself.",
-            ),
-            None => (
-                "Continue in your browser",
-                "Your browser asks for your passkey twice. This screen moves on by itself.",
-            ),
-        };
-        let row = account.passkey_qr.as_ref().map(|url| {
-            let copy = {
-                let url = url.clone();
-                crate::a11y::keyboard(
-                    sans(400, 14.)
-                        .id("passkey-qr-copy")
-                        .control(Role::Button, "Copy the link instead")
-                        .underline()
-                        .cursor_pointer()
-                        .on_click(move |_, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
-                        })
-                        .child("Copy the link instead"),
-                    ink.ink,
-                )
-            };
-            div()
-                .flex()
-                .items_start()
-                .gap(px(20.))
-                .child(
-                    div()
-                        .id("passkey-qr")
-                        .role(Role::Image)
-                        .aria_label("Passkey QR code")
-                        .size(px(168.))
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .border(px(1.5))
-                        .border_color(ink.ink)
-                        .bg(gpui_kit::white())
-                        .child(crate::render::qr(&view_wire::Qr {
-                            payload: Some(url.clone().into_bytes()),
-                            size: Some(view_wire::QrSize::Total(150.)),
-                            ..Default::default()
-                        })),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .items_start()
-                        .gap(px(10.))
-                        // a tag's look; its word is the live region's own
-                        .child(
-                            crate::a11y::live(
-                                mono(400, 12.)
-                                    .text_color(ink.muted)
-                                    .id("passkey-waiting-status")
-                                    .role(Role::Status),
-                                accesskit::Live::Polite,
-                                "Waiting",
-                            )
-                            .child("Waiting"),
-                        )
-                        .child(sans(500, 16.).child(words("passkey-twice", "Your passkey, twice")))
-                        .child(ink::note(
-                            "passkey-second",
-                            "A new code appears here for the second time.",
-                            ink.muted,
-                        ))
-                        .child(copy),
-                )
-                .into_any_element()
-        });
         let links = closing(
-            [
-                match account.passkey_qr {
-                    Some(_) => None,
-                    None => Some(link_running(
-                        "passkey-use-phone",
-                        "Use a phone instead",
-                        self.on_account(Account::passkey_use_phone),
-                        false,
-                        &ink,
-                    )),
-                },
-                Some(link_running(
-                    "passkey-cancel",
-                    "Cancel",
-                    self.on_account(Account::passkey_cancel),
-                    false,
-                    &ink,
-                )),
-            ]
-            .into_iter()
-            .flatten(),
+            [link_running(
+                "passkey-cancel",
+                "Cancel",
+                self.on_account(Account::passkey_cancel),
+                false,
+                &ink,
+            )],
             &ink,
         );
         self.frame(
@@ -270,9 +177,12 @@ impl LauncherLayer {
                 caption: self.node_caption(cx),
                 back: None,
                 label: "[03 / 04] Account · passkey".into(),
-                headline: title.into(),
-                lead: Some(hint.into()),
-                body: row.into_iter().chain([links.into_any_element()]).collect(),
+                headline: "Continue in your browser".into(),
+                lead: Some(
+                    "Your browser asks for your passkey twice. If it is on your phone, choose the phone in that window. This screen moves on by itself."
+                        .into(),
+                ),
+                body: vec![links.into_any_element()],
             },
             window,
             cx,

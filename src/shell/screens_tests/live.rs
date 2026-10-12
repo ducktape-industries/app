@@ -46,7 +46,6 @@ fn every_shell_status_and_alert_is_live_with_its_words_as_name_and_value(cx: &mu
         ),
         ("connect-error-and-recent", Role::Alert, "no route to host"),
         ("sign-in-old-password-error", Role::Alert, "wrong password"),
-        ("account-passkey-qr", Role::Status, "Waiting"),
         (
             "link-waiting",
             Role::Status,

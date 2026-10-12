@@ -1,12 +1,10 @@
 //! The WebAuthn ceremony, run for the app by the auth page in the system
-//! browser or on a phone: the request rides the page URL's fragment, the
-//! answer comes back as a form POST to the loopback listener, or through
-//! the relay slot the phone's page posts to. One [`ceremony`] is one touch;
-//! the flows in `passkey` chain them. The page and its contract live in
-//! `ducktape-industries/auth` (its README).
+//! browser: the request rides the page URL's fragment, the answer comes
+//! back as a form POST to the loopback listener (the only place the page
+//! sends it). One [`ceremony`] is one touch; the flows in `passkey` chain
+//! them. The page and its contract live in `ducktape-industries/auth` (its
+//! README).
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -14,7 +12,6 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use keyscheme::KeyScheme;
 
 use super::loopback::{Listener, url_encode};
-use super::relay::Relay;
 
 /// The live page. Its host IS the RP ID every passkey is scoped to.
 const AUTH_PAGE: &str = "https://auth.ducktape.industries/";
@@ -125,83 +122,31 @@ fn ceremony_error(name: &str) -> String {
     }
 }
 
-pub(super) async fn created(request: Request, phone: &Phone) -> Result<Vec<u8>, String> {
-    match ceremony(request, phone).await? {
+pub(super) async fn created(request: Request) -> Result<Vec<u8>, String> {
+    match ceremony(request).await? {
         Outcome::Created(key) => Ok(key),
         Outcome::Asserted(_) => Err("The browser answered a different step. Try again.".into()),
     }
 }
 
-pub(super) async fn asserted(
-    challenge: [u8; 32],
-    step: &'static str,
-    phone: &Phone,
-) -> Result<Assertion, String> {
-    match ceremony(Request::Get { challenge, step }, phone).await? {
+pub(super) async fn asserted(challenge: [u8; 32], step: &'static str) -> Result<Assertion, String> {
+    match ceremony(Request::Get { challenge, step }).await? {
         Outcome::Asserted(assertion) => Ok(assertion),
         Outcome::Created(_) => Err("The browser answered a different step. Try again.".into()),
     }
 }
 
-/// One touch: offer `request` as a QR for a phone, open it in this
-/// device's browser unless the phone was picked, and take whichever answer
-/// comes first.
-async fn ceremony(request: Request, phone: &Phone) -> Result<Outcome, String> {
+/// One touch: open `request` in this device's browser and take the page's
+/// answer on loopback.
+async fn ceremony(request: Request) -> Result<Outcome, String> {
     let page = auth_page();
     let listener = Listener::bind(&page)
         .await
         .map_err(|error| format!("Couldn't listen for the browser: {error}"))?;
-    let relay = Relay::at(&page)?;
-    phone.show(request_url(&page, &request, &relay.url));
-    if !phone.chosen() {
-        open_browser(&request_url(&page, &request, &listener.callback_url()))?;
-    }
-    answer(listener, relay, phone, CEREMONY_TIMEOUT).await
-}
-
-/// The first answer, from this device's browser or the phone's relay slot.
-async fn answer(
-    listener: Listener,
-    relay: Relay,
-    phone: &Phone,
-    within: Duration,
-) -> Result<Outcome, String> {
-    let either = async {
-        tokio::select! {
-            outcome = listener.wait() => outcome,
-            outcome = relay.wait(&phone.chosen) => outcome,
-        }
-    };
-    tokio::time::timeout(within, either)
+    open_browser(&request_url(&page, &request, &listener.callback_url()))?;
+    tokio::time::timeout(CEREMONY_TIMEOUT, listener.wait())
         .await
         .map_err(|_| "Nothing came back from the passkey. Try again.".to_string())?
-}
-
-/// The phone path of one flow's touches: each touch's QR URL goes out on
-/// `shown`; the screen sets `chosen` once the person picks "Use a phone
-/// instead". The flow holds the only sender, so the URLs end with it.
-pub(crate) struct Phone {
-    chosen: Arc<AtomicBool>,
-    shown: futures::channel::mpsc::UnboundedSender<String>,
-}
-
-impl Phone {
-    /// A phone path the screen picks through `chosen`, and the stream of QR
-    /// URLs its touches show.
-    pub(crate) fn new(
-        chosen: Arc<AtomicBool>,
-    ) -> (Phone, futures::channel::mpsc::UnboundedReceiver<String>) {
-        let (shown, urls) = futures::channel::mpsc::unbounded();
-        (Phone { chosen, shown }, urls)
-    }
-
-    fn chosen(&self) -> bool {
-        self.chosen.load(Ordering::Relaxed)
-    }
-
-    fn show(&self, url: String) {
-        let _ = self.shown.unbounded_send(url);
-    }
 }
 
 /// The system browser, or `DUCKTAPE_BROWSER <url>` when set (a test's
@@ -237,13 +182,10 @@ pub(crate) fn on_open_url(open: fn(String)) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::loopback::read_request;
     use super::super::noded::{FRAME_NAMESPACE, Tip};
     use super::super::passkey::{passkey_body, passkey_frame};
     use super::*;
     use keyscheme::testkit;
-    use tokio::io::AsyncWriteExt as _;
-    use tokio::net::TcpListener;
 
     const RP: &str = "auth.ducktape.industries";
 
@@ -284,129 +226,8 @@ mod tests {
         assert!(parse_result(&short_key).is_err());
     }
 
-    /// A fake auth host: each GET of `/r/<id>` takes the next of `answers`
-    /// (then 204s); `polls` counts them. It answers one request at a time,
-    /// in the order they connected, so [`barrier`] is served only after
-    /// every poll already on the wire has been counted.
-    async fn fake_relay(
-        answers: Vec<(&'static str, String)>,
-    ) -> (String, tokio::sync::watch::Receiver<usize>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let page = format!("http://{}/.duck/auth", listener.local_addr().unwrap());
-        let (count, polls) = tokio::sync::watch::channel(0);
-        tokio::spawn(async move {
-            let mut answers = answers.into_iter();
-            loop {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                // a poll cut off by a cancel sends nothing whole
-                let Ok((method, path, _)) = read_request(&mut stream).await else {
-                    continue;
-                };
-                assert_eq!(method, "GET");
-                let (status, body) = match path.as_str() {
-                    "/barrier" => ("204 No Content", String::new()),
-                    _ => {
-                        assert!(path.starts_with("/r/") && path.len() == 46, "{path}");
-                        count.send_modify(|polls| *polls += 1);
-                        answers.next().unwrap_or(("204 No Content", String::new()))
-                    }
-                };
-                let reply = format!(
-                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n\
-                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                let _ = stream.write_all(reply.as_bytes()).await;
-            }
-        });
-        (page, polls)
-    }
-
-    /// Returns once the fake host has answered every request that reached
-    /// it before this one.
-    async fn barrier(page: &str) {
-        let origin = page.trim_end_matches("/.duck/auth");
-        reqwest::get(format!("{origin}/barrier")).await.unwrap();
-    }
-
-    /// A relay polling every 10 ms, and a phone already picked.
-    fn phone_relay(page: &str) -> (Relay, Phone) {
-        let relay = Relay {
-            every: Duration::from_millis(10),
-            ..Relay::at(page).unwrap()
-        };
-        (relay, Phone::new(Arc::new(AtomicBool::new(true))).0)
-    }
-
-    #[tokio::test]
-    async fn the_relay_polls_through_204s_to_the_phones_answer() {
-        let key = testkit::passkey_pubkey(&testkit::passkey(2));
-        let created = format!(r#"{{"op":"create","publicKey":"{}"}}"#, B64.encode(&key));
-        let (page, polls) = fake_relay(vec![
-            ("204 No Content", String::new()),
-            ("204 No Content", String::new()),
-            ("200 OK", created),
-        ])
-        .await;
-        let (relay, phone) = phone_relay(&page);
-        let listener = Listener::bind(AUTH_PAGE).await.unwrap();
-        let outcome = answer(listener, relay, &phone, Duration::from_secs(10)).await;
-        assert_eq!(outcome, Ok(Outcome::Created(key)));
-        assert_eq!(*polls.borrow(), 3);
-    }
-
-    #[tokio::test]
-    async fn the_relay_is_not_polled_until_the_phone_is_picked_and_then_times_out() {
-        let (page, mut polls) = fake_relay(vec![]).await;
-        let chosen = Arc::new(AtomicBool::new(false));
-        let phone = Phone::new(chosen.clone()).0;
-        // never picked: the ceremony times out, the slot never asked
-        let (relay, _) = phone_relay(&page);
-        let listener = Listener::bind(AUTH_PAGE).await.unwrap();
-        let outcome = answer(listener, relay, &phone, Duration::from_millis(100)).await;
-        assert_eq!(
-            outcome,
-            Err("Nothing came back from the passkey. Try again.".into())
-        );
-        barrier(&page).await;
-        assert_eq!(*polls.borrow(), 0);
-        // picked: the slot is asked
-        chosen.store(true, Ordering::Relaxed);
-        let (relay, _) = phone_relay(&page);
-        let listener = Listener::bind(AUTH_PAGE).await.unwrap();
-        tokio::select! {
-            outcome = answer(listener, relay, &phone, Duration::from_secs(60)) => {
-                panic!("answered with nothing to answer: {outcome:?}")
-            }
-            polled = polls.wait_for(|polls| *polls > 0) => {
-                polled.unwrap();
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn cancelling_stops_the_polling() {
-        let (page, mut polls) = fake_relay(vec![]).await;
-        let (relay, phone) = phone_relay(&page);
-        let listener = Listener::bind(AUTH_PAGE).await.unwrap();
-        let waiting =
-            tokio::spawn(
-                async move { answer(listener, relay, &phone, Duration::from_secs(60)).await },
-            );
-        polls.wait_for(|polls| *polls > 0).await.unwrap();
-        waiting.abort();
-        assert!(waiting.await.unwrap_err().is_cancelled());
-        barrier(&page).await;
-        let stopped = *polls.borrow();
-        // ten of the relay's periods: a poll here would be one after the
-        // cancel (a pause can only hide one, never invent one)
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        barrier(&page).await;
-        assert_eq!(*polls.borrow(), stopped);
-    }
-
-    #[tokio::test]
-    async fn a_relayed_answer_that_fails_verification_is_refused() {
+    #[test]
+    fn an_answer_that_fails_verification_is_refused() {
         // a key no P-256 verifier accepts
         let bad_key = format!(r#"{{"op":"create","publicKey":"{}"}}"#, B64.encode([2; 32]));
         // an assertion by another passkey than the frame's signer
@@ -432,46 +253,13 @@ mod tests {
             "signature": B64.encode(signature),
         })
         .to_string();
-        let (page, _) = fake_relay(vec![("200 OK", bad_key), ("200 OK", stranger)]).await;
-
-        let (relay, phone) = phone_relay(&page);
-        let outcome = answer(
-            Listener::bind(AUTH_PAGE).await.unwrap(),
-            relay,
-            &phone,
-            Duration::from_secs(10),
-        )
-        .await;
         assert_eq!(
-            outcome,
+            parse_result(&bad_key),
             Err("The browser returned a key Ducktape can't use.".into())
         );
-
-        let (relay, phone) = phone_relay(&page);
-        let Ok(Outcome::Asserted(assertion)) = answer(
-            Listener::bind(AUTH_PAGE).await.unwrap(),
-            relay,
-            &phone,
-            Duration::from_secs(10),
-        )
-        .await
-        else {
+        let Ok(Outcome::Asserted(assertion)) = parse_result(&stranger) else {
             panic!("an assertion");
         };
         assert!(passkey_frame(body, &assertion).is_none());
-    }
-
-    #[tokio::test]
-    async fn a_relay_refusal_reads_as_a_sentence() {
-        let (page, _) = fake_relay(vec![("404 Not Found", String::new())]).await;
-        let (relay, phone) = phone_relay(&page);
-        let outcome = answer(
-            Listener::bind(AUTH_PAGE).await.unwrap(),
-            relay,
-            &phone,
-            Duration::from_secs(10),
-        )
-        .await;
-        assert!(outcome.unwrap_err().starts_with("The auth host refused"));
     }
 }

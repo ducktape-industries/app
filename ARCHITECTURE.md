@@ -592,9 +592,9 @@ Connect ─► /v1/status ─► contract check ─► bind_keyring ─► devic
      loopback `Listener`, which sends the browser on to the page's `#done`
      (the page lives in `ducktape-industries/auth`). The identity
      program assigns the account number; the passkey then `AddKey`s itself
-     with the device key's consent. `Phone` offers each touch as a QR URL
-     and polls the auth host's relay slot `/r/<id>` instead. **Sign in with
-     a passkey** (`passkey_sign_in` → `passkey::sign_in`): an existing
+     with the device key's consent. The page answers only to loopback; a
+     passkey on a phone joins through the browser's own cross-device
+     sign-in. **Sign in with a passkey** (`passkey_sign_in` → `passkey::sign_in`): an existing
      passkey asserts, then `AddKey`s this device's key to its account.
    - **Join from another device** (`backend/join.rs`): `link_start` shows
      a Crockford code (`new_code`); `join_from_device` posts the request to
@@ -881,10 +881,10 @@ House words, and where one word means several things.
   per-network ed25519 key in the OS store; the one loaded into `SIGNER`;
   the throwaway key that signs queries while locked; a password-locked
   keystore file from before keys moved into the OS.
-- **passkey / touch / ceremony / auth page / relay slot / Phone** — an
-  account key held by an authenticator; one WebAuthn step; the browser
-  page that runs it (`AUTH_PAGE`); the auth host's one-shot mailbox
-  `/r/<id>`; the phone path that polls it.
+- **passkey / touch / ceremony / auth page / relay slot** — an account
+  key held by an authenticator; one WebAuthn step; the browser page that
+  runs it (`AUTH_PAGE`); the auth host's one-shot mailbox `/r/<id>`, which
+  two devices joining by code pass messages through.
 - **notice / banner / centre / tag / burst / permission / in front** —
   what a view posts (`notify.post`); the OS banner the host may raise; the
   per-chain log (`notify::Center`); a view-chosen fold key; the per-view

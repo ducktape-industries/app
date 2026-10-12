@@ -219,21 +219,6 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             }),
         ),
         (
-            "account-passkey-qr",
-            true,
-            plain(move || {
-                let mut seed = booted(
-                    Screen::Account {
-                        step: AccountStep::Passkey,
-                    },
-                    true,
-                );
-                seed.account.passkey_waiting = true;
-                seed.account.passkey_qr = Some("https://example.test/passkey".into());
-                seed
-            }),
-        ),
-        (
             "link-waiting",
             true,
             plain(|| {
