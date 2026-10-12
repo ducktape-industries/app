@@ -179,6 +179,14 @@ wrap_render_handler! {
     }
 
     impl RenderHandler {
+        fn accessibility_handler(&self) -> Option<AccessibilityHandler> {
+            Some(crate::a11y::handler(self.shared.clone()))
+        }
+
+        fn on_scroll_offset_changed(&self, _browser: Option<&mut Browser>, x: f64, y: f64) {
+            self.shared.a11y.tree.borrow_mut().scrolled(x, y);
+        }
+
         fn view_rect(&self, _browser: Option<&mut Browser>, rect: Option<&mut Rect>) {
             if let Some(rect) = rect {
                 let (width, height) = self.shared.size.get();

@@ -51,6 +51,8 @@ pub(crate) struct Shared {
     pub(crate) refused: RefCell<Option<String>>,
     /// A popup's or a new tab's address, opened here instead.
     pub(crate) redirect: RefCell<Option<String>>,
+    /// The page's accessibility tree, while the app's accessibility is on.
+    pub(crate) a11y: crate::a11y::Accessibility,
 }
 
 impl Shared {
@@ -158,6 +160,7 @@ impl Page {
             state: RefCell::default(),
             refused: RefCell::default(),
             redirect: RefCell::default(),
+            a11y: Default::default(),
         });
         if unavailable.is_none() {
             crate::register(cx.weak_entity(), shared.clone());
@@ -430,6 +433,9 @@ impl Render for Page {
             });
         }
 
+        self.shared
+            .a11y
+            .follow(self.shared.host(), window.is_a11y_active());
         let entity = cx.entity();
         let focus = self.focus.clone();
         let shared = self.shared.clone();
@@ -437,8 +443,17 @@ impl Render for Page {
         let image = self.shown.clone();
         let popup = self.popup_shown.clone().zip(self.shared.popup_rect.get());
         let refused = self.shared.refused.borrow().clone();
+        let title = self.shared.state.borrow().title.clone();
         div()
             .id("web-page")
+            // the page to assistive technology: named by its title, with
+            // the page's own tree inside
+            .role(Role::Group)
+            .aria_label(title)
+            .a11y_synthetic_children({
+                let shared = self.shared.clone();
+                move |tree| crate::a11y::children(&shared, tree)
+            })
             .relative()
             .size_full()
             .track_focus(&self.focus)
@@ -481,6 +496,7 @@ impl Render for Page {
                     |_, _, _| {},
                     move |bounds, (), window, cx| {
                         window.handle_input(&focus, ElementInputHandler::new(bounds, entity), cx);
+                        crate::a11y::actions(&shared, &focus, window);
                         origin.set(bounds.origin);
                         paint(&shared, bounds, image, popup, window);
                     },
