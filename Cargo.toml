@@ -29,21 +29,21 @@ version = "0.1.0"
 [workspace.dependencies]
 
 # --- sdk-line: crates/sdk of ducktape-industries/modules (abi, view-wire, program, ducklink, design, describe). Every modules crate here and below sits on ONE rev, and every view this app seats is built at that rev: its manifest's wire_id must equal `view_wire::WIRE_ID` (`runtime/guest.rs` `wire_id`). Which rev and why is in `git log -- Cargo.toml`. ---
-abi = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "view-wire" }
+abi = { git = "https://github.com/ducktape-industries/modules", rev = "e728e3cf28eafcbb556d54ef236dbbf363ba9b0b", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "e728e3cf28eafcbb556d54ef236dbbf363ba9b0b", package = "view-wire" }
 # `program::is_name`: the one spelling of a program id
-program = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "program" }
-ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "ducklink" }
+program = { git = "https://github.com/ducktape-industries/modules", rev = "e728e3cf28eafcbb556d54ef236dbbf363ba9b0b", package = "program" }
+ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "e728e3cf28eafcbb556d54ef236dbbf363ba9b0b", package = "ducklink" }
 # The node's `/v1` wire types and the signed frame (`backend/noded.rs` is the
 # HTTP client over them); `frame` re-exports core's `keyscheme`, the app's one.
-node-wire = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "node-wire", features = ["frame"] }
+node-wire = { git = "https://github.com/ducktape-industries/modules", rev = "e728e3cf28eafcbb556d54ef236dbbf363ba9b0b", package = "node-wire", features = ["frame"] }
 # What the app and a notification inbox say to each other (`backend/inbox.rs`),
 # and the notice shapes its entries carry.
-inbox-api = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "inbox-api" }
-notices = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "notices", features = ["serde"] }
-design = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "design" }
+inbox-api = { git = "https://github.com/ducktape-industries/modules", rev = "e728e3cf28eafcbb556d54ef236dbbf363ba9b0b", package = "inbox-api" }
+notices = { git = "https://github.com/ducktape-industries/modules", rev = "e728e3cf28eafcbb556d54ef236dbbf363ba9b0b", package = "notices", features = ["serde"] }
+design = { git = "https://github.com/ducktape-industries/modules", rev = "e728e3cf28eafcbb556d54ef236dbbf363ba9b0b", package = "design" }
 # `module.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "describe", features = ["host"] }
+describe = { git = "https://github.com/ducktape-industries/modules", rev = "e728e3cf28eafcbb556d54ef236dbbf363ba9b0b", package = "describe", features = ["host"] }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -76,6 +76,12 @@ perf-deep = ["gpui-kit/profiler"]
 # (src/ax) and its `ducktape-app ax` client. A default build compiles none
 # of it: DUCKTAPE_AX_DOOR does nothing there.
 ax-door = []
+# The web view: a view whose manifest declares `web` draws pages through CEF
+# off-screen rendering (`src/render/web.rs`, `crates/web`), and https links
+# open in it. A default build compiles none of CEF and links no libcef: the
+# web piece says the build has no web view, and https links go to the system
+# browser.
+web = ["dep:ducktape-web", "ducktape-web/cef"]
 
 [dependencies]
 gpui-kit = "=0.7.1"
@@ -93,10 +99,10 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # The passkey lane (`backend/passkey.rs`): the identity program's own types,
 # so a Create/AddKey/Consent is the program's bytes (the verifier the node
 # runs is `node_wire::keyscheme`).
-identity = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/modules", rev = "e728e3cf28eafcbb556d54ef236dbbf363ba9b0b", package = "identity" }
 # The roster's full query surface: its programs and its view-only entries.
-module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "module-registry" }
-valset = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "valset" }
+module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "e728e3cf28eafcbb556d54ef236dbbf363ba9b0b", package = "module-registry" }
+valset = { git = "https://github.com/ducktape-industries/modules", rev = "e728e3cf28eafcbb556d54ef236dbbf363ba9b0b", package = "valset" }
 base64 = "0.22"
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -125,6 +131,8 @@ wasmtime.workspace = true
 wasmparser = "0.251"
 libc.workspace = true
 sha1 = "0.10"
+# feature `web` only: CEF and everything that names it
+ducktape-web = { path = "crates/web", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tray-icon = { version = "0.24", default-features = false }
@@ -147,41 +155,26 @@ tempfile.workspace = true
 # keyscheme's test-only signing helpers, through node-wire's re-export
 node-wire = { workspace = true, features = ["testkit"] }
 p256 = "0.13"
-guest = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "guest" }
+guest = { git = "https://github.com/ducktape-industries/modules", rev = "e728e3cf28eafcbb556d54ef236dbbf363ba9b0b", package = "guest" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # test-support: its headless renderer, which `render/tests/picture_pixels.rs`
 # reads pixels back from.
 gpui-wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8", features = ["test-support"] }
 
-[patch."https://github.com/ducktape-industries/modules"]
-# chief: replace with the pushed rev
-abi = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/abi" }
-view-wire = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/view-wire" }
-program = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/program" }
-ducklink = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/ducklink" }
-design = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/design" }
-describe = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/describe" }
-identity = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/system/identity" }
-module-registry = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/system/module-registry" }
-valset = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/system/valset" }
-guest = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/guest" }
-node-wire = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/node-wire" }
-inbox-api = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/inbox-api" }
-notices = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/notices" }
-
 [patch.crates-io]
-gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "d5b9b8176f77343107b719c8b57bbe796c58d5c0" }
-rmp-serde = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "d5b9b8176f77343107b719c8b57bbe796c58d5c0" }
-gpui-pre-scheduler = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "d5b9b8176f77343107b719c8b57bbe796c58d5c0" }
-gpui-pre-zlog = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "d5b9b8176f77343107b719c8b57bbe796c58d5c0" }
-gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "d5b9b8176f77343107b719c8b57bbe796c58d5c0" }
-# Window::set_bounds: the X11 and macOS backends, vendored in the fork
-gpui-pre-linux = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "d5b9b8176f77343107b719c8b57bbe796c58d5c0" }
-gpui-pre-macos = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "d5b9b8176f77343107b719c8b57bbe796c58d5c0" }
+gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "69b0b541f7e517f25bd54f9fcf778be4a6b173be" }
+rmp-serde = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "69b0b541f7e517f25bd54f9fcf778be4a6b173be" }
+gpui-pre-scheduler = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "69b0b541f7e517f25bd54f9fcf778be4a6b173be" }
+gpui-pre-zlog = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "69b0b541f7e517f25bd54f9fcf778be4a6b173be" }
+gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "69b0b541f7e517f25bd54f9fcf778be4a6b173be" }
+# Window::set_bounds (X11, macOS) and the Linux clipboard reads' wait hook
+# (`crates/web`): the backends, vendored in the fork
+gpui-pre-linux = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "69b0b541f7e517f25bd54f9fcf778be4a6b173be" }
+gpui-pre-macos = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "69b0b541f7e517f25bd54f9fcf778be4a6b173be" }
 # the X11 input-method client gpui-pre-linux uses, vendored in the fork: it decodes
 # Hangul and Chinese from ibus and drops (does not panic on) text it cannot decode
-zed-xim = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "d5b9b8176f77343107b719c8b57bbe796c58d5c0" }
+zed-xim = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "69b0b541f7e517f25bd54f9fcf778be4a6b173be" }
 
 # dev/test builds compile wasm guests through cranelift (module-owned view
 # fixtures); unoptimized cranelift is 10-30x slower, so the code generator

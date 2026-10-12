@@ -202,6 +202,7 @@ impl ViewTree {
             open
         });
         self.sensors.retain(|key, _| sensors.contains(key));
+        self.webs.retain(&root);
         self.root = root;
         self.styles = styles;
         cx.notify();

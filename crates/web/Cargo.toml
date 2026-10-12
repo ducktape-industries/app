@@ -1,0 +1,66 @@
+# ducktape-web — web pages in a gpui window through CEF off-screen rendering.
+#
+# Everything CEF is here and nowhere else: the subprocess entry, startup and
+# shutdown, the message pump, one browser per `Page`, its frames as gpui
+# images, input and IME, and the one rule an address is loaded by. It knows
+# nothing of views or the wire: the app (feature `web`) maps its web piece
+# onto a `Page`. Removing the web view is removing this crate and its
+# callers (`src/render/web.rs` says which).
+#
+# A workspace member, so every `--workspace` command builds it. Without
+# feature `cef` it is empty and has no dependencies: a default build
+# compiles none of CEF and downloads nothing. The app's `web` feature turns
+# `cef` on. With it, from the workspace root:
+#   cargo fmt --all --check
+#   cargo clippy --locked --workspace --all-targets --no-deps --features web -- -D warnings
+#   cargo test --locked --workspace --features web
+#   cargo build --locked --features web
+# The first build downloads CEF (about 300 MiB). Without the setuid sandbox
+# helper beside the binary, run with DUCKTAPE_WEB_NO_SANDBOX=1.
+
+[package]
+name = "ducktape-web"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+[features]
+cef = [
+    "dep:cef",
+    "dep:gpui-kit",
+    "dep:futures",
+    "dep:image",
+    "dep:url",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:accesskit",
+    "dep:gpui_linux",
+]
+
+[dependencies]
+gpui-kit = { version = "=0.7.1", optional = true }
+futures = { workspace = true, optional = true }
+# gpui's `RenderImage` frames are `image` frames
+image = { version = "0.25", default-features = false, optional = true }
+# the WHATWG parser: an address read the way Chromium reads it
+url = { version = "2", optional = true }
+# Chromium's accessibility tree arrives as a CEF value, read as JSON
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+# its roles are accesskit's by name (camelCase, from Chromium's): gpui's
+# accesskit, so the roles are gpui's own
+accesskit = { version = "0.25", features = ["serde"], optional = true }
+# no `build-util` (clap, cargo_metadata, plist), no `accelerated_osr` (its
+# wgpu would fight gpui's); on Linux `sandbox` is a runtime matter
+# (`Settings::no_sandbox`), the build does nothing with it
+cef = { version = "=154.5.0", default-features = false, features = ["sandbox"], optional = true }
+
+# Linux: gpui's X11 and Wayland clipboard reads turn glib while they wait
+# (`glib.rs`); the workspace's `[patch.crates-io]` gives the fork that has
+# the hook
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_linux = { package = "gpui-pre-linux", version = "=0.3.8", default-features = false, optional = true }
+
+[dev-dependencies]
+# a page's tree built into a test window
+gpui-kit = { version = "=0.7.1", features = ["test-support"] }
