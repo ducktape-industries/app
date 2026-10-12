@@ -30,6 +30,8 @@ use std::collections::HashMap;
 
 mod approve;
 mod consent;
+#[cfg(test)]
+pub(in crate::shell) use consent::SETTLE;
 mod settings;
 mod spotlight;
 
@@ -351,7 +353,7 @@ impl Render for OverlayLayer {
             Some(Overlay::Spotlight) => Some(self.spotlight(window, cx)),
             Some(Overlay::Settings(page)) => Some(self.settings(page, window, cx)),
             Some(Overlay::Approve) => Some(self.approve(window, cx)),
-            Some(Overlay::Consent(ask)) => Some(self.consent(ask, cx)),
+            Some(Overlay::Consent(ask)) => Some(self.consent(ask, window, cx)),
             _ => None,
         };
         // `size_full` too: cached, this view is a layout root of its own,

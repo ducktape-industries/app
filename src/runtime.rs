@@ -28,7 +28,7 @@ mod roster;
 mod seat;
 mod store;
 
-pub(crate) use kernel::local_offset;
+pub(crate) use kernel::{day, local_offset};
 pub use roster::{Link, RailRow, connected, deployments_checked, props, valid_route};
 pub(crate) use roster::{Roster, changes_channel, roster};
 pub use seat::override_views_from;
@@ -100,8 +100,8 @@ impl WindowKey {
 }
 
 /// What a view asked the app itself to do: `host.badge`, `host.title`,
-/// `link.open`, a `notify.post` that changed the centre, or an `op.submit`
-/// waiting on the person's yes.
+/// `link.open`, or a `notify.post` that changed the centre. An `op.submit`
+/// waiting on the person's yes wakes the shell itself (`consent`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
     /// `host.badge`: its unread count on the menu bar; 0 or less clears it.
@@ -116,9 +116,6 @@ pub enum Intent {
     /// A view was seated in its tab, first or after a new deployment: its
     /// minimum width is known, and the desk widens a window under it.
     Seated,
-    /// An `op.submit` waits on the person's confirmation (`consent`): the
-    /// console shows the front of the queue.
-    Consent,
 }
 
 /// Instruction budget for one call into a view: a ceiling that ends a

@@ -529,9 +529,11 @@ fn a_views_ask_never_replaces_an_open_dialog(cx: &mut TestAppContext) {
         .read_with(cx, |windows, _| windows.own(key).unwrap().overlays.clone());
     let open = |cx: &TestAppContext| overlays.read_with(cx, |it, _| *it.get());
     let words = consent::Words {
+        title: consent::ACCOUNT,
         said: "chat asks to suspend agent #3.".into(),
         id: None,
         shown: Some("#3".into()),
+        described: false,
     };
     overlays.update(cx, |it, cx| it.open(Overlay::Approve, cx));
     let _told = consent::queue("chat", 0, words.clone()).expect("queued");
@@ -578,9 +580,11 @@ fn a_card_follows_its_request_off(cx: &mut TestAppContext) {
         "chat",
         0,
         consent::Words {
+            title: consent::ACCOUNT,
             said: "chat asks to suspend agent #3.".into(),
             id: None,
             shown: Some("#3".into()),
+            described: false,
         },
     )
     .expect("queued");

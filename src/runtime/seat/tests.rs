@@ -453,6 +453,23 @@ fn the_roles_come_with_the_roster_and_are_asked_once() {
     assert_eq!(roster.lock().len(), 1, "the roster is listed all the same");
 }
 
+/// Claim: a roles answer with no bindings (a registry that refuses the
+/// question: an old one, or a node's 400 that reads the same) pins nothing
+/// for the connection: the next read, the roster unmoved, asks again.
+#[test]
+fn a_refused_roles_answer_is_asked_again_on_the_next_read() {
+    let old = FakeNode::new(
+        vec![listed("roles-refused", "roles")],
+        Vec::new(),
+        Vec::new(),
+    );
+    let (roster, registry) = (Roster::default(), Registry::default());
+    read_roster(old.asked_of.clone(), &roster, &registry);
+    read_roster(old.asked_of.clone(), &roster, &registry);
+    assert_eq!(old.held.lock().unwrap().roles_asked, 2);
+    assert_eq!(roster.roles(), None);
+}
+
 /// Claim: the roster takes a chain id only in its one spelling
 /// (`program::is_name`): a newline, a space or a capital in a program's or
 /// a view-only entry's id leaves it off the roster, the rail and the seats;

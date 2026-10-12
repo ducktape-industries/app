@@ -188,10 +188,13 @@ fn serve(
     }
 }
 
-/// The reason `kind` is refused for, asked by a guest declaring `declared`;
-/// `None` if it is not refused at once.
+/// The reason `kind` is refused for, asked by a guest declaring `declared`,
+/// the view of the program bound to the registry role (`invite.create` is
+/// a role's own view's) while [`acl_roles`] are bound; `None` if it is not
+/// refused at once.
 fn refused_with(declared: &[Capability], kind: &str) -> Option<String> {
     let mut guest = guest();
+    guest.module = "acl-registry";
     guest.capabilities = declared.to_vec();
     let payload = methods::encode(&methods::Call {
         target: "registry".into(),
@@ -232,6 +235,8 @@ fn refusal_code(guest: &mut Guest) -> Option<String> {
 /// only one declared.
 #[test]
 fn a_method_is_reached_only_through_its_declared_capability() {
+    let _connection = connection_serial();
+    let _roles = acl_roles();
     for kind in methods::ALL {
         let family = Capability::of_kind(kind).unwrap().0;
         let others: Vec<Capability> = Capability::ALL
@@ -306,11 +311,76 @@ fn connection_serial() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// The app's roster bound to roles named `acl-*`, which no other test's
+/// view or target takes; unbound again when dropped, a panic too.
+struct AclRoles;
+
+impl Drop for AclRoles {
+    fn drop(&mut self) {
+        super::super::roster().bind(None);
+    }
+}
+
+fn acl_roles() -> AclRoles {
+    super::super::roster().bind(Some(abi::Roles {
+        registry: "acl-registry".into(),
+        validators: "acl-valset".into(),
+        identity: "acl-identity".into(),
+    }));
+    AclRoles
+}
+
+/// `invite.create`, which the node's key signs, is a role's own view's: a
+/// view whose program is bound to no role is refused before the node is
+/// reached, and so is every view while no bindings are known; a role's
+/// view goes on to the node (here, none connected).
+#[test]
+fn invite_create_is_a_role_views_own() {
+    let _connection = connection_serial();
+    let mint = methods::encode(&methods::CreateInvite { ttl_days: 7 });
+    let refused = |module: &'static str| {
+        let mut guest = guest();
+        guest.module = module;
+        assert!(answer(
+            &mut guest,
+            Capability::Invite,
+            "create",
+            7,
+            &mint,
+            &None
+        ));
+        refusal_code(&mut guest)
+    };
+    let unbound = refused("acl-registry");
+    assert_eq!(unbound.as_deref(), Some(refusal::UNDECLARED_CAPABILITY));
+    let _roles = acl_roles();
+    // a manifest name is the view's own word: the roster's program decides
+    let mut named = guest();
+    named.name = "acl-registry".into();
+    assert!(answer(
+        &mut named,
+        Capability::Invite,
+        "create",
+        7,
+        &mint,
+        &None
+    ));
+    assert_eq!(
+        refusal_code(&mut named).as_deref(),
+        Some(refusal::UNDECLARED_CAPABILITY)
+    );
+    assert_eq!(
+        refused("acl-registry").as_deref(),
+        Some(refusal::NOT_CONNECTED)
+    );
+}
+
 /// A node method routes to the node handler, which answers for the missing
-/// node before it reads the request; chain and invite kinds route there
-/// too. What the request says is judged by `query` itself, below. The one
-/// exception is the envelope's target, read first (`targeted`): the
-/// manifest gate comes before the node, as the capability gate does.
+/// node before it reads the request; chain kinds route there too, and
+/// invite's past its role gate (`invite_create_is_a_role_views_own`). What
+/// the request says is judged by `query` itself, below. The one exception
+/// is the envelope's target, read first (`targeted`): the manifest gate
+/// comes before the node, as the capability gate does.
 #[test]
 fn node_methods_answer_for_the_missing_node_first() {
     let _connection = connection_serial();
@@ -321,7 +391,6 @@ fn node_methods_answer_for_the_missing_node_first() {
     for (capability, operation, payload) in [
         (Capability::Module, "query", to_registry.as_slice()),
         (Capability::Chain, "status", b"not borsh"),
-        (Capability::Invite, "create", b"not borsh"),
     ] {
         let mut guest = guest();
         assert!(answer(&mut guest, capability, operation, 7, payload, &None));
@@ -843,10 +912,22 @@ fn awaited(guest: &mut Guest) -> Option<wire::Event> {
     None
 }
 
+/// The front ask, waited for (the request's task queues it); `None` after
+/// two seconds.
+fn asked() -> Option<(u64, super::super::consent::Words)> {
+    (0..200).find_map(|_| {
+        let front = super::super::consent::front();
+        if front.is_none() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        front
+    })
+}
+
 /// An `op.submit` of an identity op that removes a key waits for the
 /// person: nothing is signed or sent until they approve on the console,
 /// Cancel refuses it `consent_refused`, a second ask while one waits is
-/// refused at once, and with no key seated it is refused `session_locked`
+/// refused, and with no key seated it is refused `session_locked`
 /// before anyone is asked.
 #[test]
 fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
@@ -888,13 +969,19 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     // seated and connected: the ask waits, nothing reaches the node
     let key = commonware_cryptography::ed25519::PrivateKey::decode([7u8; 32].as_slice()).unwrap();
     handle().block_on(backend::seat_key(key));
-    let (node, server) = node_methods::node_server(
-        "GET /v1/status HTTP/1.1",
-        vec![("200 OK", b"not a status".to_vec())],
-    );
+    // garbage for the frame's anchor read; a closed connection for the
+    // shell's own roster reads, should a shell test move the chain meanwhile
+    let node = fake_node(vec![
+        (
+            backend::noded::route::STATUS,
+            Mode::Answer(b"not a status".to_vec()),
+        ),
+        (backend::noded::route::QUERY, Mode::Close),
+        (backend::noded::route::BLOB_GET, Mode::Close),
+    ]);
     *super::super::connection().lock().unwrap() = super::super::Connection {
-        client: Some(node.client.clone()),
-        network: node.network.clone(),
+        client: Some(node.node.client.clone()),
+        network: node.node.network.clone(),
         chain: "test-network#1".into(),
         rev: guest.connection_rev,
     };
@@ -903,21 +990,24 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     guest.activation = Some(Instant::now());
     guest.answer(request(2), &props);
     assert_eq!(refusal_code(&mut guest), None, "the request waits");
-    let (first, words) = consent::front().expect("an ask waits");
+    let (first, words) = asked().expect("an ask waits");
     assert!(
         words
             .said
             .starts_with("Program request-test asks to remove a key from your account"),
         "{words:?}"
     );
-    assert!(guest.intents.contains(&Intent::Consent));
     // a second ask while the first waits
     guest.activation = Some(Instant::now());
     guest.answer(request(3), &None);
-    assert_eq!(
-        refusal_code(&mut guest).as_deref(),
-        Some(refusal::CONSENT_REFUSED)
-    );
+    match awaited(&mut guest) {
+        Some(wire::Event::Response {
+            id: 3,
+            result: Err(refusal),
+            ..
+        }) => assert_eq!(refusal.code, refusal::CONSENT_REFUSED),
+        other => panic!("{other:?}"),
+    }
     // Cancel: refused, and the node was never asked
     assert!(!consent::answer(first, false), "nothing waits behind it");
     match awaited(&mut guest) {
@@ -942,18 +1032,16 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     assert!(consent::front().is_none(), "nothing asked");
     drop(held);
     // resubmitted after Cancel with no new press: no second card
-    guest.intents.clear();
     guest.answer(request(5), &None);
     assert_eq!(
         refusal_code(&mut guest).as_deref(),
         Some(refusal::NEEDS_GESTURE)
     );
     assert!(consent::front().is_none(), "nothing asked");
-    assert!(!guest.intents.contains(&Intent::Consent));
     // with no account resolved the card does not call it the person's own
     guest.activation = Some(Instant::now());
     guest.answer(request(4), &None);
-    let (second, words) = consent::front().expect("an ask waits");
+    let (second, words) = asked().expect("an ask waits");
     assert_ne!(first, second);
     assert!(
         words
@@ -974,25 +1062,130 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
             id: 4,
             result: Err(refusal),
             ..
-        }) => assert_ne!(refusal.code, refusal::CONSENT_REFUSED, "{refusal:?}"),
+        // the node's garbage status, read: asked after Approve
+        }) => assert_eq!(refusal.code, "unexpected_reply", "{refusal:?}"),
         other => panic!("{other:?}"),
     }
-    assert_eq!(
-        server.join().unwrap().len(),
-        1,
-        "one anchor read, after Approve"
-    );
     // the view torn down with an ask waiting: the ask goes with it (its
     // task, aborted, lets go of the ask on the runtime's next turn)
     guest.activation = Some(Instant::now());
     guest.answer(request(7), &None);
-    assert!(consent::front().is_some(), "an ask waits");
+    assert!(asked().is_some(), "an ask waits");
     drop(guest);
     let gone = (0..200).any(|_| {
         std::thread::sleep(std::time::Duration::from_millis(10));
         consent::front().is_none()
     });
     assert!(gone, "the ask is withdrawn with its view");
+    *super::super::connection().lock().unwrap() = Default::default();
+    handle().block_on(backend::lock_signer());
+}
+
+/// A view whose program is bound to no role asks the person before its op
+/// to a role's program, whatever its manifest calls it, and the card goes
+/// up only once the target has described the op: in the validators'
+/// program's own words, or as the op's size where the registry's code
+/// carries no describe module. Cancel refuses it and the node is never
+/// asked; Approve, and only then, sends it on (the frame's anchor read,
+/// which this node answers with garbage). The node closes on the shell's
+/// own roster reads, should a shell test move the chain meanwhile.
+#[test]
+fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
+    use super::super::consent;
+    use super::describe::tests::{HI, list_program};
+    use commonware_codec::DecodeExt as _;
+    let _seat = backend::seat_serial();
+    let _connection = connection_serial();
+    let _roles = acl_roles();
+    list_program("acl-valset", 0xa1, false, Some(HI));
+    // listed, its code carrying no describe module
+    list_program("acl-registry", 0xa2, false, None);
+    let key = commonware_cryptography::ed25519::PrivateKey::decode([7u8; 32].as_slice()).unwrap();
+    handle().block_on(backend::seat_key(key));
+    let mut guest = guest();
+    // a manifest name that reads as a role's: the card asks all the same,
+    // naming the roster's program
+    guest.name = "acl-valset".into();
+    guest.targets = vec!["acl-valset".into(), "acl-registry".into()];
+    let node = fake_node(vec![
+        (
+            backend::noded::route::STATUS,
+            Mode::Answer(b"not a status".to_vec()),
+        ),
+        (backend::noded::route::QUERY, Mode::Close),
+        (backend::noded::route::BLOB_GET, Mode::Close),
+    ]);
+    *super::super::connection().lock().unwrap() = super::super::Connection {
+        client: Some(node.node.client.clone()),
+        network: node.node.network.clone(),
+        chain: "test-network#1".into(),
+        rev: guest.connection_rev,
+    };
+    let submit = |guest: &mut Guest, id: u64, target: &str| {
+        guest.activation = Some(Instant::now());
+        guest.answer(
+            wire::Request {
+                id,
+                kind: "op.submit".into(),
+                payload: methods::encode(&methods::Call {
+                    target: target.into(),
+                    body: vec![1, 2, 3],
+                }),
+            },
+            &None,
+        );
+        assert_eq!(refusal_code(guest), None, "the request waits");
+    };
+    for (id, target, title, what, shown) in [
+        (
+            1,
+            "acl-valset",
+            consent::NETWORK,
+            "vote in the validators' program",
+            "hi",
+        ),
+        (
+            2,
+            "acl-registry",
+            consent::NETWORK,
+            "sign an op on the module registry",
+            "3 bytes this app cannot read",
+        ),
+    ] {
+        submit(&mut guest, id, target);
+        let (ask, words) = asked().expect("an ask waits");
+        assert_eq!(words.title, title);
+        assert_eq!(
+            words.said,
+            format!("Program request-test asks your key to {what}. Approve only if you meant to.")
+        );
+        assert_eq!(words.shown.as_deref(), Some(shown));
+        assert!(!consent::answer(ask, false));
+        match awaited(&mut guest) {
+            Some(wire::Event::Response {
+                id: answered,
+                result: Err(refusal),
+                ..
+            }) => assert_eq!(
+                (answered, refusal.code.as_str()),
+                (id, refusal::CONSENT_REFUSED)
+            ),
+            other => panic!("{other:?}"),
+        }
+    }
+    // Approve: the op goes on to be signed, its frame's anchor read first
+    submit(&mut guest, 3, "acl-valset");
+    let (ask, _) = asked().expect("an ask waits");
+    assert!(!consent::answer(ask, true));
+    match awaited(&mut guest) {
+        Some(wire::Event::Response {
+            id: 3,
+            result: Err(refusal),
+            ..
+        // the node's garbage status, read: the node was asked
+        }) => assert_eq!(refusal.code, "unexpected_reply", "{refusal:?}"),
+        other => panic!("{other:?}"),
+    }
     *super::super::connection().lock().unwrap() = Default::default();
     handle().block_on(backend::lock_signer());
 }

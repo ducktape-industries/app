@@ -4,6 +4,7 @@
 //! transport failures are retried for [`NODE_RETRY_BUDGET`]. A subscription
 //! (`module.changes`, `chain.heads`) is one long task writing items. Every
 //! task is a [`NodeTask`] in `guest.tasks`, aborted when dropped.
+use super::super::consent;
 use super::*;
 use crate::backend::noded;
 
@@ -117,18 +118,19 @@ pub(super) fn spawn_retrying_unsent(
 }
 
 /// `op.submit` of an op the person confirms first (`consent::needed`):
-/// only the person's activation opens the dialog, taken by the ask as
-/// `link.open` takes it (a view resubmitting after Cancel, or asking on a
-/// clock, gets `needs_gesture` and no second card); refused
+/// only the person's activation opens the dialog, taken here at the press
+/// as `link.open` takes it (a view resubmitting after Cancel, or asking on
+/// a clock, gets `needs_gesture` and no second card); refused
 /// `session_locked` at once with no key to sign it (no dialog that cannot
-/// lead to a signature); else queued for the person and run as
-/// [`spawn_retrying_unsent`] once they approve, refused `consent_refused`
-/// otherwise.
+/// lead to a signature); else its task asks the person ([`Asking`]) and
+/// runs it as [`spawn_retrying_unsent`] once they approve, refused
+/// `consent_refused` otherwise.
 pub(super) fn spawn_consented(
     guest: &mut Guest,
     id: u64,
     payload: &[u8],
-    words: super::super::consent::Words,
+    call: methods::Call,
+    words: consent::Words,
 ) {
     if !guest.take_activation() {
         guest.refuse(
@@ -154,8 +156,12 @@ pub(super) fn spawn_consented(
     let Some(slot) = admit(guest, id) else {
         return;
     };
-    let Some(told) = super::super::consent::ask(guest, id, words) else {
-        return;
+    let asking = Asking {
+        waiting: consent::waiting(),
+        module: guest.module,
+        instance: guest.instance,
+        words,
+        call,
     };
     spawn_method(
         guest,
@@ -164,8 +170,64 @@ pub(super) fn spawn_consented(
         submit,
         Some(unsent),
         "host_call.op.submit",
-        Some((slot, told)),
+        Some((slot, asking)),
     );
+}
+
+/// How long a consented op's card waits on the target's description before
+/// it goes up with the op's size instead: the press it answers is the
+/// person's of a moment ago, not of minutes ago. The code blob is normally
+/// on disk already (the role's own view loaded from it).
+const DESCRIBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A consented op's ask, made by its task: the card goes up only once its
+/// words are whole, and goes with the task (aborted with its view, the ask
+/// is never queued or is withdrawn).
+struct Asking {
+    /// the queue the request came in on (`consent::queue_in`)
+    waiting: &'static std::sync::Mutex<std::collections::VecDeque<consent::Ask>>,
+    module: &'static str,
+    instance: u64,
+    words: consent::Words,
+    call: methods::Call,
+}
+
+impl Asking {
+    /// The person's yes: the op described into the words where they show
+    /// the target's own description (its size when the target's describe
+    /// module reads nothing or does not answer in time), the ask queued and
+    /// the shell woken, and its answer. `consent_refused` for anything but
+    /// Approve, and while another ask of this view waits.
+    async fn yes(self, node: &Node) -> Result<(), wire::Error> {
+        let Asking {
+            waiting,
+            module,
+            instance,
+            mut words,
+            call,
+        } = self;
+        if words.described {
+            let len = call.body.len();
+            let described = tokio::time::timeout(
+                DESCRIBE_DEADLINE,
+                super::describe::described(node, &call.target, call.body),
+            )
+            .await;
+            let described = described.ok().and_then(Result::ok).flatten();
+            words.shown = Some(consent::shown(described.as_ref(), len));
+        }
+        let refused = |message: &str| wire::Error::new(refusal::CONSENT_REFUSED, message);
+        let Some(mut told) = consent::queue_in(waiting, module, instance, words) else {
+            return Err(refused(
+                "another confirmation for this view is still waiting",
+            ));
+        };
+        consent::moved();
+        match told.answer().await {
+            Some(true) => Ok(()),
+            _ => Err(refused("the person did not confirm")),
+        }
+    }
 }
 
 /// Runs `method` on the connected node as a task, asking exactly once: a
@@ -182,8 +244,8 @@ pub(super) fn spawn_no_retry(
 
 /// `stage` names the call in the perf registry (`host_call.<kind>`): its
 /// latency from here to the reply, and the attempts it took. `consent`,
-/// when given, is the person's answer the task waits on before it asks
-/// the node at all: anything but `true` is `consent_refused`.
+/// when given, is the person's yes the task asks for before it asks the
+/// node at all ([`Asking::yes`]).
 #[allow(clippy::too_many_arguments, reason = "one spawn, every node method")]
 fn spawn_method(
     guest: &mut Guest,
@@ -192,14 +254,14 @@ fn spawn_method(
     method: NodeMethod,
     retry_on: Option<fn(&wire::Error) -> bool>,
     stage: &'static str,
-    consent: Option<(InFlight, super::super::consent::Told)>,
+    consent: Option<(InFlight, Asking)>,
 ) {
     let ask = payload.to_vec();
     let Some(node) = connected(guest, id) else {
         return;
     };
-    let (slot, told) = match consent {
-        Some((slot, told)) => (slot, Some(told)),
+    let (slot, asking) = match consent {
+        Some((slot, asking)) => (slot, Some(asking)),
         None => match admit(guest, id) {
             Some(slot) => (slot, None),
             None => return,
@@ -212,17 +274,10 @@ fn spawn_method(
     let asked = crate::perf::on().then(std::time::Instant::now);
     let attempts_stage = crate::perf::suffixed(stage, ".attempts");
     run(guest, id, slot, None, async move {
-        if let Some(mut told) = told
-            && told.answer().await != Some(true)
+        if let Some(asking) = asking
+            && let Err(refused) = asking.yes(&node).await
         {
-            replies.item(
-                id,
-                Err(wire::Error::new(
-                    refusal::CONSENT_REFUSED,
-                    "the person did not confirm",
-                )),
-                true,
-            );
+            replies.item(id, Err(refused), true);
             return;
         }
         let (result, attempts) = match retry_on {

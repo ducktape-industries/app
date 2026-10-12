@@ -280,12 +280,6 @@ impl Seats {
                     windows.update(cx, |windows, cx| windows.open_link(&link, cx));
                 }
             }
-            // the person is asked on the console, whichever window the
-            // view is in
-            Intent::Consent => match self.windows.upgrade() {
-                Some(windows) => windows.update(cx, |windows, cx| windows.sync_consent(cx)),
-                None => crate::runtime::consent::refuse_all(),
-            },
         }
     }
 
