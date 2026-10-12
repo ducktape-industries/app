@@ -95,6 +95,7 @@ pub(crate) async fn create_account(
     let body = passkey_body(&passkey, network, anchor, abi::encode(&add));
     let assertion = asserted(
         keyscheme::webauthn_challenge(FRAME_NAMESPACE, &body.preimage()),
+        "2/2",
         phone,
     )
     .await?;
@@ -109,7 +110,7 @@ pub(crate) async fn sign_in(
     network: &str,
     phone: &Phone,
 ) -> Result<(), String> {
-    let hint = asserted(rand::random(), phone).await?;
+    let hint = asserted(rand::random(), "1/2", phone).await?;
     let number = account_of_handle(network, hint.user_handle.as_deref())?;
     let account = account_by_number(client, network, number).await?;
     person(&account)?;
@@ -125,6 +126,7 @@ pub(crate) async fn sign_in(
     let preimage = admission.preimage();
     let consent = asserted(
         keyscheme::webauthn_challenge(CONSENT_NAMESPACE, &preimage),
+        "2/2",
         phone,
     )
     .await?;

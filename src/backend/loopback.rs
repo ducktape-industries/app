@@ -21,17 +21,22 @@ const MAX_LINE: u64 = 8 * 1024;
 
 /// One-shot, on an ephemeral 127.0.0.1 port. The port is no secret, so the
 /// callback path carries 32 random bytes and only a POST to that path ends
-/// the wait.
+/// the wait. Its answer sends the browser back to `page`'s last screen.
 pub(super) struct Listener {
     listener: TcpListener,
     path: String,
+    page: String,
 }
 
 impl Listener {
-    pub(super) async fn bind() -> std::io::Result<Listener> {
+    pub(super) async fn bind(page: &str) -> std::io::Result<Listener> {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
         let path = format!("/cb/{}", B64.encode(rand::random::<[u8; 32]>()));
-        Ok(Listener { listener, path })
+        Ok(Listener {
+            listener,
+            path,
+            page: page.to_owned(),
+        })
     }
 
     pub(super) fn callback_url(&self) -> String {
@@ -58,15 +63,16 @@ impl Listener {
                 .then(|| form_field(&body, "result"))
                 .flatten();
             let Some(result) = result else {
-                respond(&mut stream, "404 Not Found", "Not found.").await;
+                reply(&mut stream, "404 Not Found").await;
                 continue;
             };
             let outcome = parse_result(&result);
-            let said = match outcome {
-                Ok(_) => "Done. You can return to Ducktape.",
-                Err(_) => "That didn't finish. Ducktape has the details.",
+            let screen = match outcome {
+                Ok(_) => "done",
+                Err(_) => "failed",
             };
-            respond(&mut stream, "200 OK", said).await;
+            let back = format!("303 See Other\r\nLocation: {}#{screen}", self.page);
+            reply(&mut stream, &back).await;
             return outcome;
         }
     }
@@ -114,18 +120,11 @@ async fn read_line(
     Ok(read)
 }
 
-async fn respond(stream: &mut TcpStream, status: &str, said: &str) {
-    let html = format!(
-        "<!doctype html><meta charset=utf-8><title>Ducktape</title>\
-         <body style=\"font:16px system-ui;display:grid;place-items:center;min-height:90vh\">\
-         <p>{said}</p>"
-    );
-    let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n\
-         Content-Length: {}\r\nConnection: close\r\n\r\n{html}",
-        html.len()
-    );
-    let _ = stream.write_all(response.as_bytes()).await;
+/// One reply with no body, `status` and its headers; then the connection
+/// closes.
+async fn reply(stream: &mut TcpStream, head: &str) {
+    let reply = format!("HTTP/1.1 {head}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    let _ = stream.write_all(reply.as_bytes()).await;
     let _ = stream.flush().await;
 }
 
@@ -184,10 +183,10 @@ mod tests {
 
     #[tokio::test]
     async fn the_listener_takes_one_post_on_its_path() {
-        let listener = Listener::bind().await.unwrap();
+        let listener = Listener::bind("https://auth.example/").await.unwrap();
         let callback = listener.callback_url();
         let waiting = tokio::spawn(listener.wait());
-        let http = reqwest::Client::new();
+        let http = no_redirects();
         let wrong = callback.rsplit_once('/').unwrap().0.to_owned() + "/nope";
         assert_eq!(
             http.post(&wrong).body("").send().await.unwrap().status(),
@@ -203,8 +202,17 @@ mod tests {
             .send()
             .await
             .unwrap();
-        assert_eq!(answer.status(), 200);
+        assert_eq!(answer.status(), 303);
+        assert_eq!(answer.headers()["location"], "https://auth.example/#done");
         assert_eq!(waiting.await.unwrap(), Ok(Outcome::Created(key)));
+    }
+
+    /// The page's own last screen takes the browser, not the listener.
+    fn no_redirects() -> reqwest::Client {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap()
     }
 
     /// A local client that connects first and says nothing (a browser's
@@ -213,7 +221,7 @@ mod tests {
     /// the ceremony's five minutes.
     #[tokio::test]
     async fn a_stalled_local_client_does_not_hold_up_the_answer() {
-        let listener = Listener::bind().await.unwrap();
+        let listener = Listener::bind("https://auth.example/").await.unwrap();
         let callback = listener.callback_url();
         let port = callback
             .split(':')
@@ -229,7 +237,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let key = testkit::passkey_pubkey(&testkit::passkey(3));
         let result = format!(r#"{{"op":"create","publicKey":"{}"}}"#, B64.encode(&key));
-        let answer = reqwest::Client::new()
+        let answer = no_redirects()
             .post(&callback)
             .header("content-type", "application/x-www-form-urlencoded")
             .body(format!("result={}", url_encode(&result)))
@@ -239,7 +247,7 @@ mod tests {
             .await
             .expect("the POST waits behind the stalled client")
             .unwrap();
-        assert_eq!(answer.status(), 200);
+        assert_eq!(answer.status(), 303);
         assert_eq!(waiting.await.unwrap(), Ok(Outcome::Created(key)));
     }
 
