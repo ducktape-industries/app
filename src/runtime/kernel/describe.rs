@@ -49,7 +49,11 @@ pub(super) fn describe(node: Node, ask: Vec<u8>) -> Answered {
     })
 }
 
-async fn described(node: &Node, program: &str, op: Vec<u8>) -> Result<Description, wire::Error> {
+pub(super) async fn described(
+    node: &Node,
+    program: &str,
+    op: Vec<u8>,
+) -> Result<Description, wire::Error> {
     // a view-only entry is no program: it runs no ops
     let Some((code, false)) = super::super::roster::roster().code(program) else {
         return Ok(None);
@@ -118,7 +122,7 @@ async fn module(node: &Node, code: abi::BlobId) -> Result<Option<Arc<Module>>, w
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     fn node() -> Node {
@@ -130,7 +134,7 @@ mod tests {
 
     /// `program` listed at code `[seed; 32]`, whose describe module is `wat`
     /// (already compiled, so nothing is fetched).
-    fn list_program(program: &str, seed: u8, bare: bool, wat: Option<&str>) {
+    pub(in crate::runtime) fn list_program(program: &str, seed: u8, bare: bool, wat: Option<&str>) {
         let code = abi::BlobId::Sha256([seed; 32]);
         super::super::super::roster::roster()
             .lock()
@@ -157,7 +161,7 @@ mod tests {
     }
 
     /// Answers `Description { title: "hi", fields: [] }` for any op.
-    const HI: &str = r#"(module
+    pub(in crate::runtime) const HI: &str = r#"(module
         (memory (export "memory") 1)
         (data (i32.const 1024) "\02\00\00\00hi\00\00\00\00")
         (func (export "alloc") (param i32) (result i32) i32.const 0)

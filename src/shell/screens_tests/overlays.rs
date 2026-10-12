@@ -2,6 +2,7 @@
 //! back as it closes (docs/ax.md §4 gap 5): the dialogs on a scrim and the
 //! menus hanging from the bar alike, and one giving way to the next. A menu
 //! the keys leave closes, and leaves them where they went.
+use super::super::layers::SETTLE;
 use super::super::layers::tests::open_now;
 use super::*;
 use crate::runtime::consent;
@@ -517,9 +518,11 @@ fn ask(
     said: &str,
 ) -> consent::Told {
     let words = consent::Words {
+        title: consent::ACCOUNT,
         said: said.into(),
         id: None,
         shown: None,
+        described: false,
     };
     let told = consent::queue(module, 0, words).expect("queued");
     sync(view, native);
@@ -527,8 +530,16 @@ fn ask(
 }
 
 /// The console's card synced to the consent queue (`Windows::sync_consent`),
-/// then the draw that shows it and the one after the keys enter it.
+/// then the draw that shows it and the one after the keys enter it, and
+/// the card's first moment passed (`SETTLE`): a press from here on is the
+/// person's own on it.
 fn sync(view: &Entity<WindowRoot>, native: &mut VisualTestContext) {
+    up(view, native);
+    native.executor().advance_clock(SETTLE);
+}
+
+/// [`sync`], the card's first moment not passed yet.
+fn up(view: &Entity<WindowRoot>, native: &mut VisualTestContext) {
     let app = super::super::layers::tests::entities(view, native);
     app.windows
         .update(native, |windows, cx| windows.sync_consent(cx));
@@ -599,6 +610,98 @@ fn enter_held_from_before_the_card_opened_does_not_approve_it(cx: &mut TestAppCo
     key(&mut native, true, false);
     key(&mut native, false, false);
     assert!(approved(&mut told), "a press on the card approves it");
+}
+
+/// Approve takes no press in the card's first moment: a second press the
+/// view asked for ("press twice") would land on the card before anyone
+/// read it. A click and Enter then do nothing; after it, a click approves.
+#[gpui_kit::test]
+fn approve_takes_no_press_in_the_cards_first_moment(cx: &mut TestAppContext) {
+    let (view, mut native) = open(gate::desk(), cx);
+    super::activate(&mut native);
+    let said = "Program chat asks your key to vote in the validators' program.";
+    let mut told = consent::queue(
+        "chat",
+        0,
+        consent::Words {
+            title: consent::NETWORK,
+            said: said.into(),
+            id: None,
+            shown: None,
+            described: true,
+        },
+    )
+    .expect("queued");
+    up(&view, &mut native);
+    assert!(shows(&mut native, said));
+    let at = bar_button(&mut native, "consent-approve");
+    let none = gpui_kit::Modifiers::none();
+    native.simulate_click(at, none);
+    key(&mut native, true, false);
+    key(&mut native, false, false);
+    assert!(
+        consent::front().is_some(),
+        "a press in the first moment approved it"
+    );
+    native.executor().advance_clock(SETTLE);
+    native.simulate_click(at, none);
+    assert!(approved(&mut told), "a click after it approves it");
+}
+
+/// In a short window a long description scrolls inside the card, and
+/// Approve stays on screen (`dialog_fit`).
+#[gpui_kit::test]
+fn approve_stays_on_screen_under_a_long_description(cx: &mut TestAppContext) {
+    let (view, mut native) = open(gate::desk(), cx);
+    native.simulate_resize(size(px(1280.), px(400.)));
+    super::activate(&mut native);
+    let fields: Vec<String> = (0..6)
+        .map(|n| format!("field{n} {}", "x".repeat(150)))
+        .collect();
+    let _told = consent::queue(
+        "chat",
+        0,
+        consent::Words {
+            title: consent::ACCOUNT,
+            said: "Program chat asks your key to sign an identity operation.".into(),
+            id: None,
+            shown: Some(format!("Add key\n{}", fields.join(" · "))),
+            described: true,
+        },
+    )
+    .expect("queued");
+    sync(&view, &mut native);
+    let at = bar_button(&mut native, "consent-approve");
+    assert!(at.y < px(400. - 22.), "Approve below the window: {at:?}");
+}
+
+/// A card for an op to the network says so in its title, and shows the
+/// target program's description of the op as the request's task read it.
+#[gpui_kit::test]
+fn a_card_for_the_network_says_so_and_shows_the_description(cx: &mut TestAppContext) {
+    let (view, mut native) = open(gate::desk(), cx);
+    super::activate(&mut native);
+    let shown = "Schedule · chat\nchange Set · height 2442";
+    let told = consent::queue(
+        "explorer",
+        0,
+        consent::Words {
+            title: consent::NETWORK,
+            said: "Program explorer asks your key to sign an op on the module registry. \
+                   Approve only if you meant to."
+                .into(),
+            id: Some(8..16),
+            shown: Some(shown.into()),
+            described: true,
+        },
+    )
+    .expect("queued");
+    sync(&view, &mut native);
+    assert!(shows(&mut native, consent::NETWORK), "the network's title");
+    assert!(!shows(&mut native, consent::ACCOUNT));
+    assert!(shows(&mut native, shown), "the description");
+    drop(told);
+    sync(&view, &mut native);
 }
 
 /// A mouse press that began before the card opened (down on the desk where
