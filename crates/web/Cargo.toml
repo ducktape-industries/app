@@ -29,3 +29,7 @@ accesskit = { version = "0.24", features = ["serde"] }
 # wgpu would fight gpui's); on Linux `sandbox` is a runtime matter
 # (`Settings::no_sandbox`), the build does nothing with it
 cef = { version = "=154.5.0", default-features = false, features = ["sandbox"] }
+
+[dev-dependencies]
+# a page's tree built into a test window
+gpui-kit = { version = "=0.7.0", features = ["test-support"] }

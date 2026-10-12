@@ -876,3 +876,60 @@ mod offer_tests {
         assert_eq!(*done.borrow(), performed);
     }
 }
+#[cfg(test)]
+mod active_descendant_tests {
+    //! A node can name its focused descendant, as a web page's node names
+    //! the page's own focus.
+    use super::*;
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{
+        Context, FocusHandle, InteractiveElement as _, IntoElement, Render,
+        StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
+    };
+
+    /// A focused box whose synthetic child, a field, is its active
+    /// descendant.
+    struct Page(FocusHandle);
+
+    impl Render for Page {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .id("page")
+                .size(px(100.))
+                .role(Role::Group)
+                .aria_label("Page")
+                .track_focus(&self.0)
+                .a11y_synthetic_children(|tree| {
+                    let field = tree.synthetic_node_id("field");
+                    let mut node = gpui_kit::accesskit::Node::new(Role::TextInput);
+                    node.set_label("User name");
+                    tree.push_child(field, node);
+                    tree.parent_node().set_active_descendant(field);
+                })
+        }
+    }
+
+    /// The door reports the focus where the adapters do: on the focused
+    /// node's active descendant, not on the node.
+    #[gpui_kit::test]
+    fn the_focused_nodes_active_descendant_is_focused(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let handle = cx.update(|cx| cx.focus_handle());
+        let tracked = handle.clone();
+        let window = cx.open_window(size(px(200.), px(200.)), move |_, _| Page(tracked));
+        let mut native = VisualTestContext::from_window(window.into(), cx);
+        let nodes = native.update(|window, cx| {
+            window.activate_a11y();
+            window.focus(&handle, cx);
+            window.render_frame(cx);
+            window.render_frame(cx);
+            snapshot("t", window, false)
+        });
+        let state = |name: &str| {
+            let node = nodes.iter().find(|node| node.name == name).expect(name);
+            node.state.clone()
+        };
+        assert_eq!(state("User name"), ["focused"]);
+        assert!(state("Page").is_empty());
+    }
+}

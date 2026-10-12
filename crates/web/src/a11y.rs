@@ -393,10 +393,11 @@ impl Build<'_> {
         let mut converted = convert(data);
         converted.set_children(children);
         let shown = self.bounds(place);
-        // a default action is a click on the node, while it is on the page
-        if data.attributes.default_action_verb.is_some() && shown.area() > 0. {
+        // a default action is a click at the node's centre, while that is
+        // on the page
+        let centre = (place.x + place.width / 2., place.y + place.height / 2.);
+        if data.attributes.default_action_verb.is_some() && self.shows(centre) {
             converted.add_action(Action::Click);
-            let centre = (place.x + place.width / 2., place.y + place.height / 2.);
             self.clicks.push((id, centre));
         }
         converted.set_bounds(shown);
@@ -436,6 +437,13 @@ impl Build<'_> {
             y,
             ..data.location
         }
+    }
+
+    /// Whether page point `(x, y)` is on the page's node.
+    fn shows(&self, (x, y): (f64, f64)) -> bool {
+        let piece = self.piece;
+        let (x, y) = (piece.x0 + x * self.scale, piece.y0 + y * self.scale);
+        (piece.x0..piece.x1).contains(&x) && (piece.y0..piece.y1).contains(&y)
     }
 
     /// A page place in window pixels, clipped to the page's node: a node
@@ -575,5 +583,259 @@ mod cef_side {
                 self.shared.dirty.set(true);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Chromium's own updates, recorded from this crate's handler
+    //! (`testdata/`), read and built into a gpui window: no CEF.
+    use super::*;
+    use gpui_kit::accesskit::TreeUpdate;
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{
+        Context, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+        StatefulInteractiveElement as _, Styled as _, TestAppContext, VisualTestContext, div, px,
+        size,
+    };
+
+    /// The local test page: loaded; a click into "User name"; "a" typed.
+    const PAGE: &str = include_str!("../testdata/page.jsonl");
+    /// A page holding an iframe: the top document, then the iframe's.
+    const IFRAME: &str = include_str!("../testdata/iframe.jsonl");
+
+    /// Feeds `records` (one `{"kind", "value"}` per line) to `page`.
+    fn feed<'a>(page: &mut PageTree, records: impl IntoIterator<Item = &'a str>) {
+        for line in records {
+            let record: serde_json::Value = serde_json::from_str(line).unwrap();
+            let value = record["value"].to_string();
+            match record["kind"].as_str() {
+                Some("tree") => page.changed(&value),
+                _ => page.moved(&value),
+            }
+        }
+    }
+
+    /// The page's node, 21 px below the window's top, as the render-tree
+    /// fixture draws it under its title line.
+    struct Piece(Rc<RefCell<PageTree>>);
+
+    impl Render for Piece {
+        fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let page = self.0.clone();
+            let scale = window.scale_factor();
+            div().pt(px(21.)).child(
+                div()
+                    .id("piece")
+                    .w(px(1060.))
+                    .h(px(700.))
+                    .role(Role::Group)
+                    .aria_label("page")
+                    .a11y_synthetic_children(move |tree| {
+                        page.borrow().build(tree, scale);
+                    }),
+            )
+        }
+    }
+
+    /// The window's tree with `page` in it, its bounds in logical pixels.
+    fn tree(page: &Rc<RefCell<PageTree>>, cx: &mut TestAppContext) -> TreeUpdate {
+        cx.update(gpui_kit::init);
+        let page = page.clone();
+        let window = cx.open_window(size(px(1100.), px(760.)), move |_, _| Piece(page));
+        let mut native = VisualTestContext::from_window(window.into(), cx);
+        let (mut update, scale) = native.update(|window, cx| {
+            window.activate_a11y();
+            window.render_frame(cx);
+            (
+                window.a11y_tree().unwrap().clone(),
+                f64::from(window.scale_factor()),
+            )
+        });
+        for (_, node) in &mut update.nodes {
+            if let Some(b) = node.bounds() {
+                node.set_bounds(accesskit::Rect {
+                    x0: b.x0 / scale,
+                    y0: b.y0 / scale,
+                    x1: b.x1 / scale,
+                    y1: b.y1 / scale,
+                });
+            }
+        }
+        update
+    }
+
+    fn node<'a>(update: &'a TreeUpdate, role: Role, label: &str) -> (NodeId, &'a accesskit::Node) {
+        let (id, node) = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == role && node.label() == Some(label))
+            .unwrap_or_else(|| panic!("{role:?} {label:?}"));
+        (*id, node)
+    }
+
+    /// The recorded page reads as it shows: its headings, links and fields
+    /// named, with their states, under the page's node (its root that
+    /// node's one child), each node listed under one parent, in window
+    /// pixels; the page's focus is the node's active descendant, and what
+    /// is typed is the field's value.
+    #[gpui_kit::test]
+    fn a_recorded_page_reads_under_the_pages_node(cx: &mut TestAppContext) {
+        let lines: Vec<&str> = PAGE.lines().collect();
+        let page = Rc::new(RefCell::new(PageTree::default()));
+        feed(&mut page.borrow_mut(), lines[..1].iter().copied());
+        let update = tree(&page, cx);
+
+        let (_, piece) = node(&update, Role::Group, "page");
+        let (root, document) = node(&update, Role::RootWebArea, "A11y test page");
+        assert_eq!(piece.children(), [root]);
+        assert_eq!(document.bounds().map(|b| (b.y0, b.y1)), Some((21., 721.)));
+        let (_, heading) = node(&update, Role::Heading, "Ducktape page heading");
+        assert_eq!(heading.level(), Some(1));
+        assert_eq!(heading.bounds().map(|b| (b.x0, b.y0)), Some((24., 45.)));
+        let (_, link) = node(&update, Role::Link, "a link to the second page");
+        assert!(link.supports_action(Action::Click));
+        assert_eq!(link.url(), Some("http://127.0.0.1:8783/second.html"));
+        let (_, field) = node(&update, Role::TextInput, "User name");
+        assert_eq!(field.placeholder(), Some("your name"));
+        let (_, password) = node(&update, Role::PasswordInput, "Password");
+        assert_eq!(password.value(), Some("•••••••"));
+        let (_, keep) = node(&update, Role::CheckBox, "Keep me signed in");
+        assert_eq!(keep.toggled(), Some(Toggled::True));
+        assert!(
+            node(&update, Role::Button, "Disabled button")
+                .1
+                .is_disabled()
+        );
+        assert!(!node(&update, Role::Button, "Sign in").1.is_disabled());
+        node(&update, Role::Link, "Example domain");
+        node(&update, Role::Heading, "Far heading");
+        // ignored containers give their children to the nearest kept node;
+        // inline text boxes stay out
+        assert!(
+            update
+                .nodes
+                .iter()
+                .all(|(_, node)| node.role() != Role::TextRun)
+        );
+        let mut parents: HashMap<NodeId, usize> = HashMap::new();
+        for (_, node) in &update.nodes {
+            for child in node.children() {
+                *parents.entry(*child).or_default() += 1;
+            }
+        }
+        assert!(parents.values().all(|&count| count == 1));
+        assert_eq!(parents.get(&root), Some(&1));
+        assert!(piece.active_descendant().is_some_and(|focus| focus == root));
+
+        feed(&mut page.borrow_mut(), lines[1..].iter().copied());
+        let update = tree(&page, cx);
+        let (_, piece) = node(&update, Role::Group, "page");
+        let (user, field) = node(&update, Role::TextInput, "User name");
+        assert_eq!(piece.active_descendant(), Some(user));
+        assert_eq!(field.value(), Some("a"));
+
+        // scrolled 100 px: the heading leaves the top as an empty box
+        page.borrow_mut().scrolled(0., 100.);
+        let update = tree(&page, cx);
+        let (_, heading) = node(&update, Role::Heading, "Ducktape page heading");
+        assert_eq!(heading.bounds().map(|b| (b.y0, b.y1)), Some((21., 21.)));
+        assert!(
+            !node(&update, Role::Link, "a link to the second page")
+                .1
+                .supports_action(Action::Click)
+        );
+        let (_, form) = node(&update, Role::Heading, "Sign-in form");
+        assert_eq!(form.bounds().map(|b| b.y0), Some(21. + 122.34375 - 100.));
+    }
+
+    /// An iframe's document sits under its iframe, placed where the iframe
+    /// is on the page.
+    #[gpui_kit::test]
+    fn an_iframes_document_sits_under_its_iframe(cx: &mut TestAppContext) {
+        let page = Rc::new(RefCell::new(PageTree::default()));
+        feed(&mut page.borrow_mut(), IFRAME.lines());
+        let update = tree(&page, cx);
+        let (inner, document) = node(&update, Role::RootWebArea, "Second page");
+        let (_, iframe) = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == Role::Iframe)
+            .expect("the iframe");
+        assert_eq!(iframe.children(), [inner]);
+        assert_eq!(
+            document.bounds().map(|b| (b.x0, b.y0)),
+            iframe.bounds().map(|b| (b.x0, b.y0))
+        );
+        node(&update, Role::Heading, "Second");
+        node(&update, Role::Link, "Back home");
+    }
+
+    fn change(tree: &str, update: serde_json::Value) -> String {
+        serde_json::json!({ "ax_tree_id": tree, "updates": [update] }).to_string()
+    }
+
+    fn leaf(id: i32, children: &[i32]) -> serde_json::Value {
+        serde_json::json!({ "id": id, "role": "genericContainer", "child_ids": children })
+    }
+
+    fn top(focus: i32) -> serde_json::Value {
+        serde_json::json!({ "focus_id": focus })
+    }
+
+    /// Chromium's applier: a child left out of its parent's new list goes,
+    /// with its own; a cleared node loses its children; a new top
+    /// document replaces every tree before it; a moved node takes its new
+    /// place.
+    #[test]
+    fn updates_change_the_tree_as_chromium_does() {
+        let mut page = PageTree::default();
+        page.changed(&change(
+            "a",
+            serde_json::json!({
+                "root_id": 1, "tree_data": top(1),
+                "nodes": [leaf(1, &[2, 3]), leaf(2, &[]), leaf(3, &[4]), leaf(4, &[])],
+            }),
+        ));
+        let ids = |page: &PageTree, tree: &str| {
+            let mut ids: Vec<i32> = page.trees[tree].nodes.keys().copied().collect();
+            ids.sort();
+            ids
+        };
+        assert_eq!(ids(&page, "a"), [1, 2, 3, 4]);
+        page.changed(&change(
+            "a",
+            serde_json::json!({ "nodes": [leaf(1, &[2])] }),
+        ));
+        assert_eq!(ids(&page, "a"), [1, 2]);
+        page.changed(&change(
+            "a",
+            serde_json::json!({ "node_id_to_clear": 1, "nodes": [leaf(1, &[5]), leaf(5, &[])] }),
+        ));
+        assert_eq!(ids(&page, "a"), [1, 5]);
+        page.moved(
+            &serde_json::json!([{
+                "ax_tree_id": "a", "id": 5,
+                "new_location": { "bounds": { "x": 1., "y": 2., "width": 3., "height": 4. }, "offset_container_id": 1 },
+            }])
+            .to_string(),
+        );
+        assert_eq!(page.trees["a"].nodes[&5].location.y, 2.);
+        // an iframe's document joins; a new top document replaces both
+        page.changed(&change(
+            "b",
+            serde_json::json!({ "root_id": 1, "tree_data": { "parent_tree_id": "a" }, "nodes": [leaf(1, &[])] }),
+        ));
+        assert_eq!(page.trees.len(), 2);
+        page.changed(&change(
+            "c",
+            serde_json::json!({ "root_id": 7, "tree_data": top(7), "nodes": [leaf(7, &[])] }),
+        ));
+        assert_eq!(page.top.as_deref(), Some("c"));
+        assert_eq!(page.trees.keys().collect::<Vec<_>>(), ["c"]);
+        // what is not a notification changes nothing
+        page.changed("not json");
+        page.moved("{}");
+        assert_eq!(ids(&page, "c"), [7]);
     }
 }
