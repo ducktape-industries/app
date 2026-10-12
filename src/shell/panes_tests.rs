@@ -1134,6 +1134,13 @@ fn a_view_that_notifies_runs_on_with_no_pane(cx: &mut TestAppContext) {
         crate::runtime::seat_for_test(module, 400);
     }
     crate::runtime::capabilities_for_test(NOTIFIES, vec![Capability::Notify]);
+    // on a network: a view runs unseen only for the network in hand
+    app.session.update(&mut native, |session, cx| {
+        let mut state = session.get().clone();
+        state.connected = true;
+        state.network = "unseen-net".into();
+        session.seed(state, cx);
+    });
     let roster = crate::runtime::Roster::listing(&[NOTIFIES, QUIET]);
     app.rail
         .update(&mut native, |rail, cx| rail.read_off(roster, cx));
@@ -1187,6 +1194,15 @@ fn a_view_that_notifies_runs_on_with_no_pane(cx: &mut TestAppContext) {
         unseen(&mut native, NOTIFIES),
         Some(running),
         "closing the pane stopped the view"
+    );
+
+    // the network is left, its programs still listed: nothing of it runs on
+    app.session
+        .update(&mut native, |session, cx| session.disconnect(cx));
+    settle(&mut native);
+    assert!(
+        unseen(&mut native, NOTIFIES).is_none(),
+        "a view ran on past the network it belongs to"
     );
 }
 

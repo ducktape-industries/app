@@ -9,8 +9,9 @@
 //! desks holding it, a link to `Windows`.
 //!
 //! A view that posts notices (`notify` in its manifest) runs on while no
-//! pane holds it: a seat in no window, laid out unseen, so a mention that
-//! lands with its window closed is still noticed. The pane that opens on
+//! pane holds it and a network is in hand: a seat in no window, laid out
+//! unseen, so a mention that lands with its window closed is still
+//! noticed. The pane that opens on
 //! it takes that very seat over, and the last of its panes to close hands
 //! it back.
 use super::{Account, Notifications, Rail, Session, Windows};
@@ -67,7 +68,11 @@ impl Seats {
             unseen: BTreeMap::new(),
             props: Vec::new(),
             _observing: vec![
-                cx.observe(session, |this, _, cx| this.props_moved(cx)),
+                // a network left takes its unseen seats with it
+                cx.observe(session, |this, _, cx| {
+                    this.props_moved(cx);
+                    this.reconcile(cx);
+                }),
                 cx.observe(account, |this, _, cx| this.props_moved(cx)),
                 // a program listed, or its view read far enough to say it
                 // posts notices
@@ -206,14 +211,17 @@ impl Seats {
                     })
             })
             .collect();
-        // the listed views that no pane holds and that post notices: one
+        // the listed views that no pane holds and that post notices, while
+        // a network is in hand (the rail lists the last one's still): one
         // that runs unseen already stays while its load is on its way
         let held: BTreeSet<&'static str> = wanted.values().map(|(module, _)| *module).collect();
+        let connected = self.session.read(cx).get().connected;
         let unseen: BTreeSet<&'static str> = self
             .rail
             .read(cx)
             .rows()
             .iter()
+            .filter(|_| connected)
             .filter(|row| !row.empty && !held.contains(row.module))
             .map(|row| row.module)
             .filter(|module| match crate::runtime::notifies(module) {
