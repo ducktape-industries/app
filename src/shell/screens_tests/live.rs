@@ -1,6 +1,7 @@
 //! Live regions (docs/ax.md §4 gap 3): every shell Status is announced
 //! politely and every Alert at once, each carrying its words as its name
-//! and its value — AT-SPI and UIA speak the name, macOS the value. These
+//! and its value: every platform speaks the name, and a `Label`-role node
+//! takes its name from its value (accesskit_macos 0.27). These
 //! read the AccessKit nodes the window built, as the platform adapters do;
 //! the gate reads the same through the door (AX-102).
 use super::*;

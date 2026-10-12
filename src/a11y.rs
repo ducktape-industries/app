@@ -276,7 +276,8 @@ pub fn modal<E: InteractiveElement>(element: E) -> E {
 }
 
 /// Words assistive technology announces as they appear and change: the
-/// element's name and its value (AT-SPI and UIA speak the name, macOS the
+/// element's name and its value (AT-SPI, UIA and, since accesskit_macos
+/// 0.27, macOS speak the name; a `Label`-role node takes its name from its
 /// value), in a live region. The caller draws the words as bare text, so
 /// they are read once.
 pub fn live<E: StatefulInteractiveElement>(
