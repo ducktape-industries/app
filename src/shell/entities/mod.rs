@@ -105,6 +105,7 @@ impl Entities {
         };
         let rail = cx.new(|cx| Rail::new(roster, changes, &session, cx));
         let notifications = cx.new(|_| Notifications::new(center));
+        notifications.update(cx, |notifications, cx| notifications.follow(&session, cx));
         let toast = cx.new(|cx| Toast::new(&session, &account, cx));
         let seats = cx.new(|cx| Seats::new(&session, &account, &rail, &notifications, cx));
         let shared = Shared {
