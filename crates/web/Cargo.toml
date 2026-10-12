@@ -30,6 +30,11 @@ accesskit = { version = "0.24", features = ["serde"] }
 # (`Settings::no_sandbox`), the build does nothing with it
 cef = { version = "=154.5.0", default-features = false, features = ["sandbox"] }
 
+# Linux: gpui's X11 clipboard read turns glib while it waits (`glib.rs`);
+# the workspace's `[patch.crates-io]` gives the fork that has the hook
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_linux = { package = "gpui-pre-linux", version = "=0.3.7", default-features = false }
+
 [dev-dependencies]
 # a page's tree built into a test window
 gpui-kit = { version = "=0.7.0", features = ["test-support"] }

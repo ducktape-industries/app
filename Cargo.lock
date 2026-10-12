@@ -2566,6 +2566,7 @@ dependencies = [
  "cef",
  "futures",
  "gpui-kit",
+ "gpui-pre-linux",
  "image",
  "serde",
  "serde_json",

@@ -171,6 +171,8 @@ fn start(root: &Path, cx: &mut App) -> Result<(), SharedString> {
     });
     if outcome.is_ok() {
         keys::bind(cx);
+        #[cfg(target_os = "linux")]
+        gpui_linux::set_clipboard_wait(glib::turn);
         cx.spawn(async move |cx: &mut AsyncApp| pump(inbox, cx).await)
             .detach();
     }

@@ -2,7 +2,11 @@
 //! context. With CEF's external pump nothing else runs that context (gpui's
 //! loop is calloop), so Chromium never heard its X events: another program
 //! asking for the clipboard it owns waited forever. The pump turns the
-//! context, as cefclient's Linux pump does.
+//! context, as cefclient's Linux pump does. So does gpui's X11 clipboard
+//! read while it waits on this thread for an answer
+//! (`gpui_linux::set_clipboard_wait`): else a page's copy pasted into an
+//! app field froze the app (4 s per format asked). Safe inside gpui: CEF's
+//! callbacks only write into a page's `Shared` and never call gpui.
 
 use std::os::raw::{c_int, c_void};
 
