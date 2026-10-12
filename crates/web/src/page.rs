@@ -473,7 +473,11 @@ impl Render for Page {
         let popup = self.popup_shown.clone().zip(self.shared.popup_rect.get());
         let refused = self.shared.refused.borrow().clone();
         let title = self.shared.state.borrow().title.clone();
-        div()
+        // the context menu sits beside the page, not in it: the page's node
+        // lists only the page's own tree to assistive technology, and keys
+        // pressed in the menu do not bubble into the page
+        let menu = self.menu.as_ref().map(|menu| menu.element());
+        let page = div()
             .id("web-page")
             // the page to assistive technology: named by its title, with
             // the page's own tree inside
@@ -544,7 +548,6 @@ impl Render for Page {
                 )
                 .size_full(),
             )
-            .when_some(self.menu.as_ref(), |page, menu| page.child(menu.element()))
             .when_some(refused, |page, url| {
                 page.child(
                     div()
@@ -558,7 +561,11 @@ impl Render for Page {
                         .text_color(rgb(0x5c4400))
                         .child(format!("Only https:// pages open here; not {url}")),
                 )
-            })
+            });
+        div()
+            .size_full()
+            .child(page)
+            .children(menu)
             .into_any_element()
     }
 }
