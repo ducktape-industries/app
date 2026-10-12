@@ -54,6 +54,16 @@ static READY: AtomicBool = AtomicBool::new(false);
 /// Longest wait between two `do_message_loop_work` calls (cefclient's 30 fps).
 const MAX_PUMP_DELAY: Duration = Duration::from_millis(33);
 
+/// `address`'s origin as an address (`https://host:port/`), when it has
+/// one (not `data:` or `about:`): what a page's address is cut back to when
+/// the whole one cannot be told, as it names the same site.
+pub fn origin(address: &str) -> Option<String> {
+    let origin = url::Url::parse(address).ok()?.origin();
+    origin
+        .is_tuple()
+        .then(|| format!("{}/", origin.ascii_serialization()))
+}
+
 /// Whether a page may load `address`: `https://` with a host, or `http://`
 /// on this machine (`localhost`, a loopback address), never with a user
 /// name or password, at most [`MAX_URL_BYTES`], no control characters.
@@ -284,7 +294,34 @@ fn register(page: WeakEntity<Page>, shared: Rc<page::Shared>) {
 
 #[cfg(test)]
 mod tests {
-    use super::loadable;
+    use super::{loadable, origin};
+
+    #[test]
+    fn an_origin_names_the_site_and_nothing_else() {
+        let long = format!("https://example.com/{}", "a".repeat(super::MAX_URL_BYTES));
+        for (address, expected) in [
+            (long.as_str(), Some("https://example.com/")),
+            (
+                "https://example.com:8443/a?b#c",
+                Some("https://example.com:8443/"),
+            ),
+            ("https://example.com:443/a", Some("https://example.com/")),
+            (
+                "https://user:secret@example.com/a",
+                Some("https://example.com/"),
+            ),
+            (
+                "https://한글.example/",
+                Some("https://xn--bj0bj06e.example/"),
+            ),
+            ("http://[::1]:8000/x", Some("http://[::1]:8000/")),
+            ("data:text/plain,hello", None),
+            ("about:blank", None),
+            ("", None),
+        ] {
+            assert_eq!(origin(address).as_deref(), expected, "{address}");
+        }
+    }
 
     #[test]
     fn only_https_and_this_machines_http_load() {
