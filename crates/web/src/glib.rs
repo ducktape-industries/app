@@ -2,11 +2,19 @@
 //! context. With CEF's external pump nothing else runs that context (gpui's
 //! loop is calloop), so Chromium never heard its X events: another program
 //! asking for the clipboard it owns waited forever. The pump turns the
-//! context, as cefclient's Linux pump does. So does gpui's X11 clipboard
-//! read while it waits on this thread for an answer
+//! context, as cefclient's Linux pump does. So does gpui's clipboard read
+//! (X11 and Wayland) while it waits on this thread for an answer
 //! (`gpui_linux::set_clipboard_wait`): else a page's copy pasted into an
-//! app field froze the app (4 s per format asked). Safe inside gpui: CEF's
-//! callbacks only write into a page's `Shared` and never call gpui.
+//! app field froze the app (4 s per format asked).
+//!
+//! Why a turn is safe inside a gpui read: it runs no Chromium task. CEF's
+//! external pump never enters `MessagePumpGlib::Run`, so the pump's own
+//! glib work source never dispatches (read in Chromium's source, not
+//! re-checked at CEF 154); only Chromium's X event and fd sources run, so
+//! no page handler is called. What can run is
+//! `on_schedule_message_pump_work`, which only sends on a thread-safe
+//! channel. Nothing in this crate reads the clipboard, so no `Shared`
+//! borrow is live during a read.
 
 use std::os::raw::{c_int, c_void};
 
