@@ -179,7 +179,7 @@ pub(super) fn url_encode(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keyscheme::testkit;
+    use node_wire::keyscheme::testkit;
 
     #[tokio::test]
     async fn the_listener_takes_one_post_on_its_path() {

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
-use keyscheme::KeyScheme;
+use node_wire::keyscheme::{self, KeyScheme};
 
 use super::loopback::{Listener, url_encode};
 
@@ -185,7 +185,7 @@ mod tests {
     use super::super::noded::{FRAME_NAMESPACE, Tip};
     use super::super::passkey::{passkey_body, passkey_frame};
     use super::*;
-    use keyscheme::testkit;
+    use node_wire::keyscheme::testkit;
 
     const RP: &str = "auth.ducktape.industries";
 

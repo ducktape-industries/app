@@ -34,6 +34,9 @@ view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "80a
 # `program::is_name`: the one spelling of a program id
 program = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "program" }
 ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "ducklink" }
+# The node's `/v1` wire types and the signed frame (`backend/noded.rs` is the
+# HTTP client over them); `frame` re-exports core's `keyscheme`, the app's one.
+node-wire = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "node-wire", features = ["frame"] }
 design = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "design" }
 # `module.describe`: the runner a program's untrusted describe module goes through
 describe = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "describe", features = ["host"] }
@@ -83,10 +86,9 @@ keystore.workspace = true
 # This device's key, kept by the OS (`backend/device_key.rs`): Keychain,
 # Credential Manager, Secret Service (over zbus, no libdbus to link).
 keyring = { version = "3", features = ["apple-native", "windows-native", "async-secret-service", "async-io", "crypto-rust"] }
-# The passkey lane (`backend/passkey.rs`): the verifier the node runs (to
-# pick which passkey signed and to frame its assertion), and the identity
-# program's own types, so a Create/AddKey/Consent is the program's bytes.
-keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b", package = "keyscheme" }
+# The passkey lane (`backend/passkey.rs`): the identity program's own types,
+# so a Create/AddKey/Consent is the program's bytes (the verifier the node
+# runs is `node_wire::keyscheme`).
 identity = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "identity" }
 # The roster's full query surface: its programs and its view-only entries.
 module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "module-registry" }
@@ -111,6 +113,7 @@ program.workspace = true
 abi.workspace = true
 borsh.workspace = true
 ducklink.workspace = true
+node-wire.workspace = true
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 wasmtime.workspace = true
 wasmparser = "0.251"
@@ -135,7 +138,8 @@ zbus = "5"
 wat = "1"
 gpui-kit = { version = "=0.7.1", features = ["test-support"] }
 tempfile.workspace = true
-keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b", package = "keyscheme", features = ["testkit"] }
+# keyscheme's test-only signing helpers, through node-wire's re-export
+node-wire = { workspace = true, features = ["testkit"] }
 p256 = "0.13"
 guest = { git = "https://github.com/ducktape-industries/modules", rev = "80ac7464ae1c479dd674ad68623eecf034b3483f", package = "guest" }
 
@@ -143,6 +147,20 @@ guest = { git = "https://github.com/ducktape-industries/modules", rev = "80ac746
 # test-support: its headless renderer, which `render/tests/picture_pixels.rs`
 # reads pixels back from.
 gpui-wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8", features = ["test-support"] }
+
+[patch."https://github.com/ducktape-industries/modules"]
+# chief: replace with the pushed rev
+abi = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/abi" }
+view-wire = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/view-wire" }
+program = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/program" }
+ducklink = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/ducklink" }
+design = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/design" }
+describe = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/describe" }
+identity = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/system/identity" }
+module-registry = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/system/module-registry" }
+valset = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/system/valset" }
+guest = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/guest" }
+node-wire = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/node-wire" }
 
 [patch.crates-io]
 gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "d5b9b8176f77343107b719c8b57bbe796c58d5c0" }

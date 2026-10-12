@@ -1,25 +1,22 @@
 //! The app's client of a node's daemon: the `/v1` surface `noded` serves,
-//! borsh in and out, and the signed frame every write and query carries.
-//!
-//! The types here mirror `crates/noded/src/wire.rs` and
-//! `crates/kernel/node/src/frame.rs` on the kernel branch field for field.
-//! They are copied, not linked, because the daemon's crates carry the whole
-//! kernel (host, state, consensus) and a desktop client has no use for it.
-//! ponytail: a `noded-wire` leaf crate in ducktape would end the copy; ask
-//! for one when a field moves.
+//! borsh in and out, over `node_wire`'s types (the one copy of the node's
+//! wire every client reads; the signed frame is `node_wire::Frame`).
 //!
 //! Nothing here knows a program. A target is whatever string the caller
 //! hands over.
 
-use abi::{BlobId, ProgramId, Refusal, Root};
+use abi::{BlobId, Refusal};
 use borsh::{BorshDeserialize, BorshSerialize};
-use commonware_cryptography::{Signer as _, ed25519};
 use futures::{Stream, StreamExt as _};
 use reqwest::StatusCode;
 use tokio_tungstenite::tungstenite::Message;
 
-pub const NODE_CONTRACT: u32 = 3;
-pub const FRAME_NAMESPACE: &[u8] = b"ducktape:frame";
+#[cfg(test)]
+pub use node_wire::Tx;
+pub use node_wire::{
+    BlockRef, Blocks, Body, Change, FRAME_NAMESPACE, Finalized, Frame, Layer, NODE_CONTRACT,
+    Network, Query, Receipt, Status, Tip, route,
+};
 
 /// The most one node answer may carry, unless the call names its own cap
 /// (a blob's): a view's reply budget holds no more, so a bigger body is
@@ -49,107 +46,6 @@ pub(crate) fn http() -> reqwest::Client {
         .expect("the HTTP client")
 }
 
-pub mod route {
-    pub const STATUS: &str = "/v1/status";
-    pub const SUBMIT: &str = "/v1/submit";
-    pub const QUERY: &str = "/v1/query";
-    pub const BLOB_GET: &str = "/v1/blob/get";
-    pub const CHANGES: &str = "/v1/changes";
-    pub const BLOCKS: &str = "/v1/blocks";
-    pub const BLOCK: &str = "/v1/block";
-    pub const NETWORK: &str = "/v1/network";
-}
-
-/// `host::Layer`: which state a read sees.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub enum Layer {
-    Confirmed,
-    Preconfirmed,
-}
-
-/// The signer's scheme, as a frame body encodes it: the device key is
-/// `Ed25519`, a passkey `Secp256r1` (`backend::passkey`).
-pub use keyscheme::KeyScheme;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub struct Tip {
-    pub height: u64,
-    pub id: [u8; 32],
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub struct Body {
-    pub scheme: KeyScheme,
-    pub signer: Vec<u8>,
-    pub network: Vec<u8>,
-    pub anchor: Tip,
-    pub salt: Option<u64>,
-    pub target: String,
-    pub payload: Vec<u8>,
-}
-
-impl Body {
-    /// What the signer signs under [`FRAME_NAMESPACE`].
-    pub fn preimage(&self) -> Vec<u8> {
-        abi::encode(self)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub struct Frame {
-    pub body: Body,
-    pub proof: Vec<u8>,
-}
-
-impl Frame {
-    pub fn sign(
-        key: &ed25519::PrivateKey,
-        network: &[u8],
-        anchor: Tip,
-        salt: Option<u64>,
-        target: &str,
-        payload: Vec<u8>,
-    ) -> Frame {
-        let body = Body {
-            scheme: KeyScheme::Ed25519,
-            signer: key.public_key().as_ref().to_vec(),
-            network: network.to_vec(),
-            anchor,
-            salt,
-            target: target.to_owned(),
-            payload,
-        };
-        let proof = key
-            .sign(FRAME_NAMESPACE, &body.preimage())
-            .as_ref()
-            .to_vec();
-        Frame { body, proof }
-    }
-
-    pub fn encode(&self) -> Vec<u8> {
-        abi::encode(self)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub struct Status {
-    pub network: String,
-    /// The chain's founding time (its genesis block's), unix ms — not now.
-    /// With `network`, what `key_dir::bind_keyring` tells two chains apart by.
-    pub time: u64,
-    pub block_time_ms: u64,
-    pub epoch_length: u64,
-    pub height: u64,
-    pub tip: [u8; 32],
-    pub root: Root,
-    pub epoch: u64,
-    pub identity: Vec<u8>,
-    pub contract: u32,
-    /// The genesis block's digest: with the network name, the chain's id.
-    pub genesis: [u8; 32],
-    pub roles: abi::Roles,
-}
-
 #[cfg(test)]
 pub fn test_roles() -> abi::Roles {
     abi::Roles {
@@ -157,96 +53,6 @@ pub fn test_roles() -> abi::Roles {
         validators: "valset".into(),
         identity: "identity".into(),
     }
-}
-
-impl Status {
-    pub fn anchor(&self) -> Tip {
-        Tip {
-            height: self.height,
-            id: self.tip,
-        }
-    }
-}
-
-/// Every member of the current epoch as the node sees it (`/v1/network`):
-/// its applied tip when it answered, and the members in key order. No
-/// member's `signed` exceeds `height`.
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub struct Network {
-    pub height: u64,
-    pub members: Vec<PeerStatus>,
-}
-
-/// One member: the newest block the node applied that this key sent a
-/// finalize vote for, as the node's consensus engine heard it. A vote for a
-/// block not applied yet counts once it is. `None` for a resident, for a
-/// validator not heard since the node started or began validating, and for
-/// every member while the node is not itself seated as a validator: it runs
-/// no engine, so it hears no votes.
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub struct PeerStatus {
-    pub key: Vec<u8>,
-    pub signed: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub struct Query {
-    pub layer: Layer,
-    pub frame: Vec<u8>,
-}
-
-/// `host::Receipt`: what a submit answers.
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub struct Receipt {
-    pub program: ProgramId,
-    pub outcome: abi::Outcome,
-    pub events: Vec<Vec<u8>>,
-    /// The runs this one's messages caused, in order.
-    pub nested: Vec<Receipt>,
-}
-
-/// One block's writes to one program, as `/v1/changes/<program>` streams them.
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub struct Change {
-    pub height: u64,
-    pub root: Root,
-    pub writes: Vec<(Vec<u8>, Option<Vec<u8>>)>,
-}
-
-/// `wire::Blocks`: a page of finalized blocks, newest first.
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub struct Blocks {
-    pub before: Option<u64>,
-    pub limit: u32,
-}
-
-/// `wire::BlockRef`: a finalized block by height or by id.
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub enum BlockRef {
-    Height(u64),
-    Id([u8; 32]),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub struct Tx {
-    pub hash: [u8; 32],
-    pub signer: Vec<u8>,
-    pub anchor: Tip,
-    pub target: String,
-    pub payload: Vec<u8>,
-    pub receipt: Option<Receipt>,
-}
-
-/// `wire::Finalized`: a block as the node's marshal archive keeps it.
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub struct Finalized {
-    pub height: u64,
-    pub id: [u8; 32],
-    pub parent: [u8; 32],
-    pub time: u64,
-    pub epoch: u64,
-    pub proposer: Option<Vec<u8>>,
-    pub txs: Vec<Tx>,
 }
 
 #[derive(Debug)]
@@ -461,154 +267,6 @@ mod tests {
             ),
             "{error}"
         );
-    }
-
-    #[test]
-    fn frame_signs_its_body_and_names_the_signer() {
-        let key = ed25519::PrivateKey::from_seed(7);
-        let anchor = Tip {
-            height: 3,
-            id: [4; 32],
-        };
-        let frame = Frame::sign(&key, b"net", anchor, Some(5), "demo", vec![1, 2]);
-        assert_eq!(frame.body.signer, key.public_key().as_ref().to_vec());
-        assert_eq!(frame.body.scheme, KeyScheme::Ed25519);
-        let decoded: Frame = abi::decode(&frame.encode()).unwrap();
-        assert_eq!(decoded, frame);
-        assert_eq!(frame.proof.len(), 64);
-        assert!(KeyScheme::Ed25519.verify(
-            &frame.body.signer,
-            FRAME_NAMESPACE,
-            &frame.body.preimage(),
-            &frame.proof
-        ));
-    }
-
-    #[test]
-    fn a_body_encodes_in_the_nodes_field_order() {
-        let body = Body {
-            scheme: KeyScheme::Ed25519,
-            signer: vec![1],
-            network: vec![2],
-            anchor: Tip {
-                height: 3,
-                id: [4; 32],
-            },
-            salt: Some(5),
-            target: "t".into(),
-            payload: vec![6],
-        };
-        let mut bytes = abi::encode(&KeyScheme::Ed25519);
-        bytes.extend([1, 0, 0, 0, 1, 1, 0, 0, 0, 2]);
-        bytes.extend(3u64.to_le_bytes());
-        bytes.extend([4; 32]);
-        bytes.push(1);
-        bytes.extend(5u64.to_le_bytes());
-        bytes.extend([1, 0, 0, 0, b't', 1, 0, 0, 0, 6]);
-        assert_eq!(body.preimage(), bytes);
-    }
-
-    #[test]
-    fn a_tx_decodes_the_nodes_field_order() {
-        let mut bytes = vec![9; 32];
-        bytes.extend([1, 0, 0, 0, 1]);
-        bytes.extend(3u64.to_le_bytes());
-        bytes.extend([4; 32]);
-        bytes.extend([1, 0, 0, 0, b't', 1, 0, 0, 0, 6, 0]);
-        let tx = Tx {
-            hash: [9; 32],
-            signer: vec![1],
-            anchor: Tip {
-                height: 3,
-                id: [4; 32],
-            },
-            target: "t".into(),
-            payload: vec![6],
-            receipt: None,
-        };
-        assert_eq!(abi::decode::<Tx>(&bytes).unwrap(), tx);
-    }
-
-    #[test]
-    fn a_status_decodes_the_nodes_field_order_ending_in_the_roles() {
-        let text = |text: &str| [&(text.len() as u32).to_le_bytes()[..], text.as_bytes()].concat();
-        let mut bytes = text("n");
-        for number in [1u64, 2, 3, 4] {
-            bytes.extend(number.to_le_bytes());
-        }
-        bytes.extend([5; 32]);
-        bytes.extend([6; 32]);
-        bytes.extend(7u64.to_le_bytes());
-        bytes.extend([1, 0, 0, 0, 8]);
-        bytes.extend(NODE_CONTRACT.to_le_bytes());
-        bytes.extend([9; 32]);
-        for role in ["r", "v", "i"] {
-            bytes.extend(text(role));
-        }
-        let status = Status {
-            network: "n".into(),
-            time: 1,
-            block_time_ms: 2,
-            epoch_length: 3,
-            height: 4,
-            tip: [5; 32],
-            root: Root([6; 32]),
-            epoch: 7,
-            identity: vec![8],
-            contract: NODE_CONTRACT,
-            genesis: [9; 32],
-            roles: abi::Roles {
-                registry: "r".into(),
-                validators: "v".into(),
-                identity: "i".into(),
-            },
-        };
-        assert_eq!(abi::decode::<Status>(&bytes).unwrap(), status);
-    }
-
-    /// The bytes `host::Receipt` encodes a submission with one nested run
-    /// to: program "a", Applied [7], no events, nested [program "b",
-    /// Applied [], no events, nested []].
-    #[test]
-    fn receipt_decodes_the_hosts_nested_runs() {
-        let bytes = [
-            1, 0, 0, 0, b'a', 0, 1, 0, 0, 0, 7, 0, 0, 0, 0, 1, 0, 0, 0, //
-            1, 0, 0, 0, b'b', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        ];
-        let receipt: Receipt = abi::decode(&bytes).unwrap();
-        assert_eq!(receipt.program, "a");
-        assert_eq!(receipt.outcome, abi::Outcome::Applied { output: vec![7] });
-        assert_eq!(receipt.nested.len(), 1);
-        assert_eq!(receipt.nested[0].program, "b");
-    }
-
-    /// The bytes noded's own test pins `Network` to (noded/src/network.rs,
-    /// `the_route_is_borsh_in_declaration_order`, core 4c12e1eac).
-    #[test]
-    fn network_decodes_the_nodes_bytes() {
-        let mut bytes = Vec::new();
-        bytes.extend(2u64.to_le_bytes());
-        bytes.extend(2u32.to_le_bytes());
-        bytes.extend(1u32.to_le_bytes());
-        bytes.extend([9, 1]);
-        bytes.extend(1u64.to_le_bytes());
-        bytes.extend(1u32.to_le_bytes());
-        bytes.extend([7, 0]);
-        let network = Network {
-            height: 2,
-            members: vec![
-                PeerStatus {
-                    key: vec![9],
-                    signed: Some(1),
-                },
-                PeerStatus {
-                    key: vec![7],
-                    signed: None,
-                },
-            ],
-        };
-        assert_eq!(abi::decode::<Network>(&bytes).unwrap(), network);
-        assert_eq!(abi::encode(&network), bytes);
     }
 
     #[test]

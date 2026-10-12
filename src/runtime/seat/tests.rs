@@ -332,6 +332,7 @@ fn registry_swapping(program: &str, at: u64) -> (::guest::MockHost, abi::BlobId,
     let genesis = Genesis {
         programs: vec![entry(running)],
         views: Vec::new(),
+        hooks: Vec::new(),
     };
     Modules::init(
         &store.exec(registry_env(0, Origin::Root)),

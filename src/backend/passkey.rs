@@ -25,7 +25,7 @@
 //! gather a consent over a challenge they chose.
 
 use identity::{CONSENT_NAMESPACE, Consent, Op, Query, Reply};
-use keyscheme::KeyScheme;
+use node_wire::keyscheme::{self, KeyScheme};
 use sha2::{Digest as _, Sha256};
 
 use super::auth_page::{Assertion, Request, asserted, created};
@@ -213,7 +213,7 @@ mod tests {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
     use identity::Admission;
     use identity::Control;
-    use keyscheme::testkit;
+    use node_wire::keyscheme::testkit;
 
     const RP: &str = "auth.ducktape.industries";
 
