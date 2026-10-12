@@ -282,8 +282,9 @@ pub(super) fn answer(
         (Capability::Invite, "create") => {
             spawn_no_retry(guest, id, payload, invite, "host_call.invite.create")
         }
-        // a write: to a declared target, and where the op removes or
-        // suspends a key or an agent, after the person's native yes
+        // a write: to a declared target, and after the person's native
+        // yes where the op removes or suspends a key or an agent, or is a
+        // view no vote reviewed writing to a role (`consent::needed`)
         (Capability::Op, "submit") => {
             let Some(call) = node::targeted(guest, id, payload, "op.submit") else {
                 return true;
@@ -304,7 +305,7 @@ pub(super) fn answer(
                 own,
             ) {
                 None => spawn_retrying_unsent(guest, id, payload, submit, "host_call.op.submit"),
-                Some(words) => node::spawn_consented(guest, id, payload, words),
+                Some(words) => node::spawn_consented(guest, id, payload, call, words),
             }
         }
         (Capability::Blob, "get") => {

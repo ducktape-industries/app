@@ -517,9 +517,11 @@ fn ask(
     said: &str,
 ) -> consent::Told {
     let words = consent::Words {
+        title: consent::ACCOUNT,
         said: said.into(),
         id: None,
         shown: None,
+        described: false,
     };
     let told = consent::queue(module, 0, words).expect("queued");
     sync(view, native);
@@ -599,6 +601,35 @@ fn enter_held_from_before_the_card_opened_does_not_approve_it(cx: &mut TestAppCo
     key(&mut native, true, false);
     key(&mut native, false, false);
     assert!(approved(&mut told), "a press on the card approves it");
+}
+
+/// A card for an op to the network says so in its title, and shows the
+/// target program's description of the op as the request's task read it.
+#[gpui_kit::test]
+fn a_card_for_the_network_says_so_and_shows_the_description(cx: &mut TestAppContext) {
+    let (view, mut native) = open(gate::desk(), cx);
+    super::activate(&mut native);
+    let shown = "Schedule · chat\nchange Set · height 2442";
+    let told = consent::queue(
+        "explorer",
+        0,
+        consent::Words {
+            title: consent::NETWORK,
+            said: "Program explorer asks your key to sign an op on the module registry. \
+                   Approve only if you meant to."
+                .into(),
+            id: Some(8..16),
+            shown: Some(shown.into()),
+            described: true,
+        },
+    )
+    .expect("queued");
+    sync(&view, &mut native);
+    assert!(shows(&mut native, consent::NETWORK), "the network's title");
+    assert!(!shows(&mut native, consent::ACCOUNT));
+    assert!(shows(&mut native, shown), "the description");
+    drop(told);
+    sync(&view, &mut native);
 }
 
 /// A mouse press that began before the card opened (down on the desk where

@@ -843,10 +843,22 @@ fn awaited(guest: &mut Guest) -> Option<wire::Event> {
     None
 }
 
+/// The front ask, waited for (the request's task queues it); `None` after
+/// two seconds.
+fn asked() -> Option<(u64, super::super::consent::Words)> {
+    (0..200).find_map(|_| {
+        let front = super::super::consent::front();
+        if front.is_none() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        front
+    })
+}
+
 /// An `op.submit` of an identity op that removes a key waits for the
 /// person: nothing is signed or sent until they approve on the console,
 /// Cancel refuses it `consent_refused`, a second ask while one waits is
-/// refused at once, and with no key seated it is refused `session_locked`
+/// refused, and with no key seated it is refused `session_locked`
 /// before anyone is asked.
 #[test]
 fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
@@ -903,21 +915,24 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     guest.activation = Some(Instant::now());
     guest.answer(request(2), &props);
     assert_eq!(refusal_code(&mut guest), None, "the request waits");
-    let (first, words) = consent::front().expect("an ask waits");
+    let (first, words) = asked().expect("an ask waits");
     assert!(
         words
             .said
             .starts_with("Program request-test asks to remove a key from your account"),
         "{words:?}"
     );
-    assert!(guest.intents.contains(&Intent::Consent));
     // a second ask while the first waits
     guest.activation = Some(Instant::now());
     guest.answer(request(3), &None);
-    assert_eq!(
-        refusal_code(&mut guest).as_deref(),
-        Some(refusal::CONSENT_REFUSED)
-    );
+    match awaited(&mut guest) {
+        Some(wire::Event::Response {
+            id: 3,
+            result: Err(refusal),
+            ..
+        }) => assert_eq!(refusal.code, refusal::CONSENT_REFUSED),
+        other => panic!("{other:?}"),
+    }
     // Cancel: refused, and the node was never asked
     assert!(!consent::answer(first, false), "nothing waits behind it");
     match awaited(&mut guest) {
@@ -942,18 +957,16 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     assert!(consent::front().is_none(), "nothing asked");
     drop(held);
     // resubmitted after Cancel with no new press: no second card
-    guest.intents.clear();
     guest.answer(request(5), &None);
     assert_eq!(
         refusal_code(&mut guest).as_deref(),
         Some(refusal::NEEDS_GESTURE)
     );
     assert!(consent::front().is_none(), "nothing asked");
-    assert!(!guest.intents.contains(&Intent::Consent));
     // with no account resolved the card does not call it the person's own
     guest.activation = Some(Instant::now());
     guest.answer(request(4), &None);
-    let (second, words) = consent::front().expect("an ask waits");
+    let (second, words) = asked().expect("an ask waits");
     assert_ne!(first, second);
     assert!(
         words
@@ -986,13 +999,96 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     // task, aborted, lets go of the ask on the runtime's next turn)
     guest.activation = Some(Instant::now());
     guest.answer(request(7), &None);
-    assert!(consent::front().is_some(), "an ask waits");
+    assert!(asked().is_some(), "an ask waits");
     drop(guest);
     let gone = (0..200).any(|_| {
         std::thread::sleep(std::time::Duration::from_millis(10));
         consent::front().is_none()
     });
     assert!(gone, "the ask is withdrawn with its view");
+    *super::super::connection().lock().unwrap() = Default::default();
+    handle().block_on(backend::lock_signer());
+}
+
+/// A view whose program is bound to no role asks the person before its op
+/// to a role's program, and the card goes up only once the target has
+/// described the op: in the validators' program's own words, or as the
+/// op's size where the registry's code carries no describe module. Cancel
+/// refuses it; the node is never asked.
+#[test]
+fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
+    use super::super::consent;
+    use super::describe::tests::{HI, list_program};
+    use commonware_codec::DecodeExt as _;
+    let _seat = backend::seat_serial();
+    let _connection = connection_serial();
+    // role names no other test's view or target takes
+    super::super::roster().bind(Some(abi::Roles {
+        registry: "acl-registry".into(),
+        validators: "acl-valset".into(),
+        identity: "acl-identity".into(),
+    }));
+    list_program("acl-valset", 0xa1, false, Some(HI));
+    let key = commonware_cryptography::ed25519::PrivateKey::decode([7u8; 32].as_slice()).unwrap();
+    handle().block_on(backend::seat_key(key));
+    let mut guest = guest();
+    guest.targets = vec!["acl-valset".into(), "acl-registry".into()];
+    *super::super::connection().lock().unwrap() = super::super::Connection {
+        client: Some(RpcClient::new("http://127.0.0.1:9")),
+        network: "test-network".into(),
+        chain: "test-network#1".into(),
+        rev: guest.connection_rev,
+    };
+    for (id, target, title, what, shown) in [
+        (
+            1,
+            "acl-valset",
+            consent::NETWORK,
+            "vote in the validators' program",
+            "hi",
+        ),
+        (
+            2,
+            "acl-registry",
+            consent::NETWORK,
+            "sign an op on the module registry",
+            "3 bytes this app cannot read",
+        ),
+    ] {
+        guest.activation = Some(Instant::now());
+        guest.answer(
+            wire::Request {
+                id,
+                kind: "op.submit".into(),
+                payload: methods::encode(&methods::Call {
+                    target: target.into(),
+                    body: vec![1, 2, 3],
+                }),
+            },
+            &None,
+        );
+        assert_eq!(refusal_code(&mut guest), None, "the request waits");
+        let (ask, words) = asked().expect("an ask waits");
+        assert_eq!(words.title, title);
+        assert_eq!(
+            words.said,
+            format!("Program request-test asks your key to {what}. Approve only if you meant to.")
+        );
+        assert_eq!(words.shown.as_deref(), Some(shown));
+        assert!(!consent::answer(ask, false));
+        match awaited(&mut guest) {
+            Some(wire::Event::Response {
+                id: answered,
+                result: Err(refusal),
+                ..
+            }) => assert_eq!(
+                (answered, refusal.code.as_str()),
+                (id, refusal::CONSENT_REFUSED)
+            ),
+            other => panic!("{other:?}"),
+        }
+    }
+    super::super::roster().bind(None);
     *super::super::connection().lock().unwrap() = Default::default();
     handle().block_on(backend::lock_signer());
 }

@@ -8,9 +8,11 @@ use crate::shell::entities::Overlay;
 use gpui_kit::*;
 
 impl OverlayLayer {
-    /// The card for ask `ask`: what the view asks, the thing it names on a
-    /// line of its own (a key's fingerprint, an agent's number), Approve
-    /// and Cancel: the pieces of `approve`'s second screen, with these
+    /// The card for ask `ask`: its title (a change to the person's account
+    /// or to the network), what the view asks, the thing it names on a
+    /// line of its own (a key's fingerprint, an agent's number) or the
+    /// target program's description of the op in a box, Approve and
+    /// Cancel: the pieces of `approve`'s second screen, with these
     /// words. Approve lets the op go on to be signed; Cancel, or the dialog
     /// closed any other way (`Windows`), refuses it. The card is the ask's
     /// own (its id is in the dialog's): it shows no other ask's words, and
@@ -63,19 +65,30 @@ impl OverlayLayer {
                         id.map(|id| (id, SharedString::from(crate::shell::theme::FAMILY_MONO))),
                     ),
             );
+        let described = words.described;
         let shown = words.shown.map(|shown| {
-            crate::a11y::whole(
-                mono(400, 28.)
-                    .id("consent-shown")
-                    .role(Role::Label)
-                    .aria_label(shown.clone())
-                    .child(shown),
-            )
+            let label = mono(400, if described { 12. } else { 28. })
+                .id("consent-shown")
+                .role(Role::Label)
+                .aria_label(shown.clone());
+            // a description: lines in a box, as the design's `.shown`
+            let label = match described {
+                true => label
+                    .line_height(px(12. * 1.5))
+                    .py(px(8.))
+                    .px(px(10.))
+                    .bg(ink.surface)
+                    .border_1()
+                    .border_color(ink.line),
+                false => label,
+            };
+            crate::a11y::whole(label.child(shown))
         });
+        let title = words.title;
         scrim(
             format!("consent-{ask}"),
             Role::Dialog,
-            "Confirm a change to your account",
+            title,
             Overlay::Consent(ask),
             self.overlays.entity(),
             &self.modal,
@@ -88,11 +101,7 @@ impl OverlayLayer {
                     .self_start()
                     .gap(px(18.))
                     .p(px(24.))
-                    .child(tag(
-                        "consent-title",
-                        "Confirm a change to your account",
-                        &ink,
-                    ))
+                    .child(tag("consent-title", title, &ink))
                     .child(instruction)
                     .child(
                         div()

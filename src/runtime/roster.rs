@@ -82,6 +82,12 @@ impl Roster {
         self.bound().roles.clone()
     }
 
+    /// The role bindings as if the registry had answered `roles`.
+    #[cfg(test)]
+    pub(crate) fn bind(&self, roles: Option<abi::Roles>) {
+        self.bound().roles = roles;
+    }
+
     /// A roster of its own that lists `modules`, for a test to draw or
     /// open.
     #[cfg(test)]
