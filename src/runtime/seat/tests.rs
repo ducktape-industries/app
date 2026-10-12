@@ -201,6 +201,9 @@ impl Drop for FakeNode {
 fn answer(mut stream: std::net::TcpStream, answers: &Answers, held: &Mutex<Held>) {
     use super::super::kernel::tests::{read_request, respond};
     let (line, body) = read_request(&mut stream);
+    if line.starts_with("GET /v1/status ") {
+        return respond(&mut stream, "200 OK", &abi::encode(&status(0)));
+    }
     if line.starts_with("POST /v1/query ") {
         let query: crate::backend::noded::Query = abi::decode(&body).unwrap();
         let frame: crate::backend::noded::Frame = abi::decode(&query.frame).unwrap();
@@ -234,6 +237,155 @@ fn answer(mut stream: std::net::TcpStream, answers: &Answers, held: &Mutex<Held>
     }
     held.lock().unwrap().now -= 1;
     respond(&mut stream, "404 Not Found", b"gone");
+}
+
+fn status(height: u64) -> crate::backend::noded::Status {
+    use crate::backend::noded;
+    noded::Status {
+        network: "fake-network".into(),
+        time: 1,
+        block_time_ms: 1_000,
+        epoch_length: 100,
+        height,
+        tip: [0; 32],
+        root: abi::Root([0; 32]),
+        epoch: 0,
+        identity: Vec::new(),
+        contract: noded::NODE_CONTRACT,
+        genesis: [0; 32],
+        roles: noded::test_roles(),
+    }
+}
+
+struct RegistryNode {
+    asked_of: Connection,
+    tip: Arc<std::sync::atomic::AtomicU64>,
+    running: abi::BlobId,
+    scheduled: abi::BlobId,
+}
+
+impl RegistryNode {
+    fn swapping(program: &'static str, at: u64) -> Self {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let tip = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let height = tip.clone();
+        let (founded, codes) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (registry, running, scheduled) = registry_swapping(program, at);
+            founded.send((running, scheduled)).unwrap();
+            for mut stream in listener.incoming().flatten() {
+                let tip = height.load(std::sync::atomic::Ordering::SeqCst);
+                serve_registry(&mut stream, &registry, tip);
+            }
+        });
+        let (running, scheduled) = codes.recv().unwrap();
+        RegistryNode {
+            asked_of: Connection {
+                client: Some(crate::backend::RpcClient::new(format!("http://{address}"))),
+                network: "fake-network".into(),
+                chain: "fake-network#0".into(),
+                rev: connection().lock().unwrap().rev,
+            },
+            tip,
+            running,
+            scheduled,
+        }
+    }
+
+    fn code_at(
+        &self,
+        tip: u64,
+        program: &str,
+        roster: &Roster,
+        registry: &Registry,
+    ) -> Option<abi::BlobId> {
+        self.tip.store(tip, std::sync::atomic::Ordering::SeqCst);
+        read_roster(self.asked_of.clone(), roster, registry);
+        let listed = roster.lock();
+        listed
+            .iter()
+            .find(|entry| entry.name == program)
+            .map(|entry| entry.code)
+    }
+}
+
+fn registry_env(height: u64, origin: ::guest::Origin) -> ::guest::Env {
+    ::guest::Env {
+        height,
+        origin,
+        sender: None,
+        ..::guest::MockHost::env(module_registry::MODULE)
+    }
+}
+
+fn registry_swapping(program: &str, at: u64) -> (::guest::MockHost, abi::BlobId, abi::BlobId) {
+    use ::guest::{MockHost, Module as _, Origin};
+    use module_registry::{Change, Entry, Genesis, Modules, Op, Scheduled};
+    let store = MockHost::default();
+    let entry = |code| Entry {
+        program: program.into(),
+        code,
+        params: Vec::new(),
+    };
+    let running = blob_id(b"running code");
+    let genesis = Genesis {
+        programs: vec![entry(running)],
+        views: Vec::new(),
+    };
+    Modules::init(
+        &store.exec(registry_env(0, Origin::Root)),
+        &abi::encode(&genesis),
+    )
+    .unwrap();
+    let publish = Op::Publish {
+        body: b"scheduled code".to_vec(),
+    };
+    Modules::execute(
+        &store.exec(registry_env(1, Origin::Signed(vec![1; 32]))),
+        publish,
+    )
+    .unwrap();
+    let scheduled: abi::BlobId = abi::decode(&store.take_output()).unwrap();
+    let swap = Op::Schedule(Scheduled {
+        height: at,
+        change: Change::Set(entry(scheduled)),
+    });
+    let validators = Origin::Module(MockHost::roles().validators);
+    Modules::execute(&store.exec(registry_env(1, validators)), swap).unwrap();
+    (store, running, scheduled)
+}
+
+fn serve_registry(stream: &mut std::net::TcpStream, registry: &::guest::MockHost, tip: u64) {
+    use super::super::kernel::tests::{read_request, respond};
+    use ::guest::Module as _;
+    let (line, body) = read_request(stream);
+    if line.starts_with("GET /v1/status ") {
+        return respond(stream, "200 OK", &abi::encode(&status(tip)));
+    }
+    if !line.starts_with("POST /v1/query ") {
+        return respond(stream, "200 OK", &abi::encode(&None::<Vec<u8>>));
+    }
+    let query: crate::backend::noded::Query = abi::decode(&body).unwrap();
+    let frame: crate::backend::noded::Frame = abi::decode(&query.frame).unwrap();
+    let asked = abi::decode(&frame.body.payload).unwrap();
+    let env = registry_env(tip + 1, ::guest::Origin::Signed(frame.body.signer));
+    let reply = module_registry::Modules::query(&registry.query(env), asked).unwrap();
+    respond(stream, "200 OK", &abi::encode(&abi::encode(&reply)));
+}
+
+#[test]
+fn a_scheduled_swap_is_read_once_the_tip_reaches_its_height() {
+    let node = RegistryNode::swapping("scheduled-swap", 5);
+    let (roster, registry) = (Roster::default(), Registry::default());
+    let code_at = |tip| node.code_at(tip, "scheduled-swap", &roster, &registry);
+    assert_eq!(code_at(4), Some(node.running), "below its height");
+    assert_eq!(code_at(5), Some(node.scheduled), "at its height");
+    assert_eq!(
+        code_at(9),
+        Some(node.scheduled),
+        "past it, no registry op since"
+    );
 }
 
 /// A blob body as the node stores it: `blob <len>\0<body>`.

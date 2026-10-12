@@ -137,6 +137,7 @@ gpui-kit = { version = "=0.7.1", features = ["test-support"] }
 tempfile.workspace = true
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b", package = "keyscheme", features = ["testkit"] }
 p256 = "0.13"
+guest = { git = "https://github.com/ducktape-industries/modules", rev = "6643d804c01a8bd68fb21b445e8787f5a42bb427", package = "guest" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # test-support: its headless renderer, which `render/tests/picture_pixels.rs`

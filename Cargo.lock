@@ -2340,6 +2340,7 @@ dependencies = [
  "gpui-base",
  "gpui-kit",
  "gpui-pre-wgpu",
+ "guest",
  "identity",
  "image",
  "keyring",

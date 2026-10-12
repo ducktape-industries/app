@@ -69,11 +69,12 @@ impl std::fmt::Display for Fetch {
 /// once while the same ids are.
 pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>, Fetch> {
     use module_registry::{Query, Reply};
-    let Reply::Programs(entries) = ask(client, network, Query::At(0)).await? else {
+    let tip = client.status().await.map_err(fetch_error)?.height;
+    let Reply::Programs(entries) = ask(client, network, Query::At(tip)).await? else {
         return Err(Fetch::Refused("the registry answered no programs".into()));
     };
     // a registry from before view-only entries refuses the question: no views
-    let views = match ask(client, network, Query::Views(0)).await {
+    let views = match ask(client, network, Query::Views(tip)).await {
         Ok(Reply::Views(views)) => views,
         Ok(_) | Err(Fetch::Refused(_)) => Vec::new(),
         Err(error) => return Err(error),
