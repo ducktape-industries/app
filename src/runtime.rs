@@ -29,8 +29,9 @@ mod seat;
 mod store;
 
 pub(crate) use kernel::{day, local_offset};
-// the web view cleans a page's title as a window's (render/web.rs)
-#[cfg(feature = "web")]
+// the web view cleans a page's title as a window's (render/web.rs), the
+// av pieces a device's name (render/av.rs)
+#[cfg(any(feature = "web", feature = "av"))]
 pub(crate) use kernel::shown_title;
 pub use roster::{Link, RailRow, connected, deployments_checked, props, valid_route};
 pub(crate) use roster::{Roster, changes_channel, roster};

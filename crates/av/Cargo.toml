@@ -1,0 +1,50 @@
+# ducktape-av — the camera and the microphone in a gpui window.
+#
+# Everything that touches a capture or playback device is here and nowhere
+# else: the cameras and microphones listed, a camera's pictures painted as
+# gpui images, a microphone's level drawn as a meter, a recording played
+# back, the live monitor. It knows nothing of views or the wire: the app
+# (feature `av`) maps its camera and microphone pieces onto a `Camera` and
+# a `Meter`. Removing it is removing this crate and its callers
+# (`src/render/av.rs` says which).
+#
+# The device code is one file, `src/backend.rs` (nokhwa for cameras, cpal
+# for audio): the seam another backend replaces. The gpui side
+# (`camera.rs`, `meter.rs`) reads only what it leaves in a feed.
+#
+# A workspace member, so every `--workspace` command builds it. Without
+# feature `capture` it is empty and has no dependencies: a default build
+# compiles no capture code. The app's `av` feature turns `capture` on. From
+# the workspace root:
+#   cargo clippy --locked --workspace --all-targets --no-deps --features av -- -D warnings
+#   cargo test --locked -p ducktape-av --features capture
+#   cargo build --locked --features av
+# Linux needs ALSA's headers (libasound2-dev) and libclang (v4l's bindgen).
+
+[package]
+name = "ducktape-av"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+[features]
+capture = ["dep:gpui-kit", "dep:nokhwa", "dep:cpal", "dep:image", "dep:objc2", "dep:block2", "dep:objc2-foundation"]
+
+[dependencies]
+gpui-kit = { version = "=0.7.3", optional = true }
+# cameras: V4L2 on Linux, AVFoundation on macOS, Media Foundation on
+# Windows. No `decoding` (mozjpeg, a C build): a MJPEG frame is decoded
+# by `image`'s pure-Rust JPEG decoder
+nokhwa = { version = "=0.10.11", default-features = false, features = ["input-native"], optional = true }
+# microphones and speakers: ALSA on Linux, Core Audio on macOS
+cpal = { version = "=0.18.2", optional = true }
+image = { version = "0.25", default-features = false, features = ["jpeg"], optional = true }
+
+# macOS: the microphone's permission, asked as nokhwa asks the camera's
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+block2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"], optional = true }
+
+[dev-dependencies]
+gpui-kit = { version = "=0.7.3", features = ["test-support"] }

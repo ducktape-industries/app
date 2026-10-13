@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- An unbundled build's own Info.plist (feature av, macOS): build.rs links it
+     into the binary's __TEXT,__info_plist section, where the system reads the
+     usage strings its camera and microphone prompts need. The bundle's is
+     Info.plist. -->
+<plist version="1.0"><dict>
+<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+<key>NSCameraUsageDescription</key><string>Ducktape shows your camera in the views you open that use it.</string>
+<key>NSMicrophoneUsageDescription</key><string>Ducktape listens to your microphone in the views you open that use it.</string>
+</dict></plist>
