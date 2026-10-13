@@ -32,6 +32,10 @@ pub(crate) struct Seat {
     /// first frame is laid out to its pane. None until the pane's desk is
     /// drawn, and the view is not ticked until then (`turn`).
     body: Option<(f32, f32)>,
+    /// Whether the pane's window is the one in front (`place`): the view
+    /// is on screen (`host.visible`) only then. A pane in a window behind
+    /// another, or in an app the person left, is not being looked at.
+    in_front: bool,
     tree: Option<Entity<crate::render::ViewTree>>,
     _tree_events: Option<Subscription>,
     _tree_drawn: Option<Subscription>,
@@ -91,9 +95,9 @@ pub(super) fn native_root(tree: crate::render::Tree) -> crate::render::Tree {
 }
 
 impl Seat {
-    pub(crate) fn new(module: &'static str, cx: &mut Context<Self>) -> Self {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let instance = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    /// The seat of the pane with this layout `instance`, which is its key
+    /// in the registry: a link's route waits for it by that key.
+    pub(crate) fn new(module: &'static str, instance: u64, cx: &mut Context<Self>) -> Self {
         let theme = cx.observe_global::<gpui_kit::component::Theme>(|this, cx| this.turn(cx));
         let mounted = mounted(module, instance);
         let mut woken = lock(&mounted).wake.subscribe();
@@ -110,6 +114,7 @@ impl Seat {
             mounted,
             window: None,
             body: None,
+            in_front: false,
             tree: None,
             _tree_events: None,
             _tree_drawn: None,
@@ -136,7 +141,7 @@ impl Seat {
         self.module
     }
 
-    /// The seat's own instance number (its perf key), not the pane's.
+    /// Its pane's layout instance (its perf key).
     pub(crate) fn instance(&self) -> u64 {
         self.instance
     }
@@ -177,16 +182,19 @@ impl Seat {
     }
 
     /// `Seats::reconcile` places the pane: the window its commands run in,
-    /// and the body its view is laid out in (none until the desk is drawn).
+    /// the body its view is laid out in (none until the desk is drawn), and
+    /// whether that window is in front.
     pub(crate) fn place(
         &mut self,
         window: AnyWindowHandle,
         body: Option<(f32, f32)>,
+        in_front: bool,
         cx: &mut Context<Self>,
     ) {
-        if self.window != Some(window) || self.body != body {
+        if self.window != Some(window) || self.body != body || self.in_front != in_front {
             self.window = Some(window);
             self.body = body;
+            self.in_front = in_front;
             self.wake(cx);
         }
     }
@@ -240,7 +248,9 @@ impl Seat {
                 .alive
                 .as_ref()
                 .is_some_and(|alive| Arc::ptr_eq(alive, &guest.alive));
-        if !owns || !guest.visible {
+        // a view never stepped here has nothing to hand over; one that was
+        // gets its last update whether or not its window was in front
+        if !owns || guest.ticks == 0 {
             return Vec::new();
         }
         guest.set_visible(false);
@@ -311,7 +321,7 @@ impl Seat {
         }
         *props = self.props.clone();
         let ticks = guest.ticks;
-        guest.set_visible(true);
+        guest.set_visible(self.in_front);
         guest.sync_theme(gpui_kit::component::Theme::global(cx).is_dark());
         // the view is never laid out narrower than its own minimum
         // (`layers/panes.rs` gives its body `min_w`)
@@ -580,6 +590,8 @@ impl Seat {
 impl Drop for Seat {
     fn drop(&mut self) {
         lock(registry()).remove(&(self.module, self.instance));
+        // a route its view never read goes with it: no seat takes its key again
+        _ = take_route(self.module, self.instance);
         // the module's row may now be read off another seat, or say Loading
         rail_moved();
     }

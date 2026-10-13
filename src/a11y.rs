@@ -255,10 +255,7 @@ impl Patch {
                     node.set_custom_actions(
                         self.custom_actions
                             .into_iter()
-                            .map(|(id, description)| CustomAction {
-                                id,
-                                description: description.into(),
-                            })
+                            .map(|(id, description)| CustomAction { id, description })
                             .collect::<Vec<_>>(),
                     );
                 }
@@ -279,7 +276,8 @@ pub fn modal<E: InteractiveElement>(element: E) -> E {
 }
 
 /// Words assistive technology announces as they appear and change: the
-/// element's name and its value (AT-SPI and UIA speak the name, macOS the
+/// element's name and its value (AT-SPI, UIA and, since accesskit_macos
+/// 0.27, macOS speak the name; a `Label`-role node takes its name from its
 /// value), in a live region. The caller draws the words as bare text, so
 /// they are read once.
 pub fn live<E: StatefulInteractiveElement>(
@@ -369,10 +367,11 @@ fn typed(
 pub const AX_PRIVATE: &str = "ax_private";
 
 /// Class name of a node whose name the AX tree gives whole, past its
-/// length cap: a URL an agent must read back in full.
+/// length cap: a code an agent must read back in full.
 pub const AX_WHOLE: &str = "ax_whole";
 
-/// Marks the element's accessible node [`AX_WHOLE`]: the passkey QR's URL.
+/// Marks the element's accessible node [`AX_WHOLE`]: a code or fingerprint
+/// compared by eye.
 pub fn whole<E: InteractiveElement>(element: E) -> E {
     Patch::default().class_name(AX_WHOLE).on(element)
 }

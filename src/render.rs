@@ -43,6 +43,7 @@ mod text;
 mod tooltip_containment;
 mod uniform;
 mod variable_list;
+pub(crate) mod web;
 
 #[cfg(test)]
 mod tests;
@@ -54,8 +55,8 @@ pub(crate) use accessibility::{Accessible, announce};
 use canvas::{canvas_svg, native_canvas_commands, paint_canvas_commands};
 pub(crate) use commands::dialog_entry;
 use inputs::Field;
+pub(crate) use pictures::PictureBytes;
 use pictures::SharedRasters;
-pub(crate) use pictures::{PictureBytes, qr};
 use sensors::SensorState;
 use style::{has_named_overlay, named_overlay, native_cursor};
 use svg_limits::{SvgPaintSource, guarded_svg_paint, svg_data_allowed};
@@ -188,6 +189,8 @@ pub struct ViewTree {
     /// A rich text with links: its Tab stop and the link its arrows picked.
     links: HashMap<AuthoredPath, text::links::Links>,
     sensors: HashMap<AuthoredPath, SensorState>,
+    /// The web pieces' pages (`web.rs`).
+    webs: web::Pages,
     /// A resize handle's press position while its drag lasts.
     drags: HashMap<AuthoredPath, Point<Pixels>>,
 
@@ -283,6 +286,7 @@ impl ViewTree {
             dialogs: HashMap::new(),
             opener: None,
             sensors: HashMap::new(),
+            webs: Default::default(),
             pictures: Default::default(),
             images: Default::default(),
             tooltips: HashMap::new(),
@@ -344,7 +348,7 @@ impl ViewTree {
             Node::Text(view_wire::TextNode { .. }) => self.text(node),
             Node::Space => div().into_any_element(),
             Node::UniformList { .. } => self.uniform_list(node, window, cx),
-            Node::List { .. } => self.variable_list(node, cx),
+            Node::List { .. } => self.variable_list(node, window, cx),
             Node::Container(view_wire::ContainerNode { .. }) => self.container(node, window, cx),
             Node::Field { .. } => self.field(node, window, cx),
             Node::Deferred { .. } => self.deferred(node, window, cx),
@@ -356,6 +360,7 @@ impl ViewTree {
             Node::Canvas { .. } => self.drawing(node, cx),
             Node::Overlay { .. } => self.overlay(node, window, cx),
             Node::Anchored { .. } => self.anchored(node, window, cx),
+            Node::Web { .. } => self.web(node, window, cx),
         };
         if entered_scope {
             self.authored_path.pop();

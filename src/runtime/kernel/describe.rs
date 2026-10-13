@@ -49,7 +49,11 @@ pub(super) fn describe(node: Node, ask: Vec<u8>) -> Answered {
     })
 }
 
-async fn described(node: &Node, program: &str, op: Vec<u8>) -> Result<Description, wire::Error> {
+pub(super) async fn described(
+    node: &Node,
+    program: &str,
+    op: Vec<u8>,
+) -> Result<Description, wire::Error> {
     // a view-only entry is no program: it runs no ops
     let Some((code, false)) = super::super::roster::roster().code(program) else {
         return Ok(None);
@@ -118,7 +122,7 @@ async fn module(node: &Node, code: abi::BlobId) -> Result<Option<Arc<Module>>, w
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     fn node() -> Node {
@@ -130,7 +134,7 @@ mod tests {
 
     /// `program` listed at code `[seed; 32]`, whose describe module is `wat`
     /// (already compiled, so nothing is fetched).
-    fn list_program(program: &str, seed: u8, bare: bool, wat: Option<&str>) {
+    pub(in crate::runtime) fn list_program(program: &str, seed: u8, bare: bool, wat: Option<&str>) {
         let code = abi::BlobId::Sha256([seed; 32]);
         super::super::super::roster::roster()
             .lock()
@@ -157,7 +161,7 @@ mod tests {
     }
 
     /// Answers `Description { title: "hi", fields: [] }` for any op.
-    const HI: &str = r#"(module
+    pub(in crate::runtime) const HI: &str = r#"(module
         (memory (export "memory") 1)
         (data (i32.const 1024) "\02\00\00\00hi\00\00\00\00")
         (func (export "alloc") (param i32) (result i32) i32.const 0)
@@ -265,7 +269,7 @@ mod tests {
 #[cfg(test)]
 mod stage {
     use super::*;
-    use crate::backend::noded::Blocks;
+    use crate::backend::noded::{Blocks, TxAsk, TxRef};
 
     #[tokio::test]
     #[ignore = "reads a running stage: DESCRIBE_STAGE=http://<listen>"]
@@ -285,16 +289,35 @@ mod stage {
                 .client
                 .blocks(&Blocks { before, limit: 100 })
                 .await
-                .expect("a page of blocks");
+                .expect("a page of blocks")
+                .blocks;
             let Some(last) = page.last().map(|block| block.height) else {
                 break;
             };
-            for tx in page.into_iter().flat_map(|block| block.txs) {
-                let described = described(&node, &tx.target, tx.payload).await.unwrap();
-                let count = counts.entry(tx.target).or_default();
-                match described {
-                    Some(_) => count.0 += 1,
-                    None => count.1 += 1,
+            for block in page {
+                for (position, tx) in block.txs.into_iter().enumerate() {
+                    let payload = match tx.payload {
+                        Some(payload) => payload,
+                        None => {
+                            let whole = TxAsk {
+                                tx: TxRef::At {
+                                    height: block.height,
+                                    position: position as u32,
+                                },
+                                most: u32::MAX,
+                            };
+                            let located = node.client.tx(&whole).await.expect("a transaction");
+                            located
+                                .and_then(|located| located.tx.payload)
+                                .expect("its payload")
+                        }
+                    };
+                    let described = described(&node, &tx.target, payload).await.unwrap();
+                    let count = counts.entry(tx.target).or_default();
+                    match described {
+                        Some(_) => count.0 += 1,
+                        None => count.1 += 1,
+                    }
                 }
             }
             if last == 0 {

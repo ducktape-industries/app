@@ -422,7 +422,7 @@ fn a_reconnect_opens_a_views_subscriptions_again_on_the_new_node() {
     assert!(spawn_reply(&mut guest, 2, std::future::pending::<Answer>()));
     follow_heads(&mut guest, 3, changes_node(&[]));
     let new = changes_node(&[7]);
-    let rev = guest.connection_rev + 1;
+    let rev = guest.connection.rev + 1;
     guest.reconnect(&crate::runtime::Connection {
         client: Some(new.client),
         network: new.network,

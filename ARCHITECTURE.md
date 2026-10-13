@@ -75,6 +75,7 @@ view's tree lowers onto GPUI elements one to one.
 | `ui.rs`, `ui/` | the pure pane geometry (`ui/layout.rs`: `Layout`, `Pane`, `PaneMessage`), which each window's `Desk` holds | window thread |
 | `runtime.rs`, `runtime/` | seats, guests (wasmtime), the kernel relay, replies, notify, store, clipboard, roster, `Seat` | ticks on the window thread, off the draw path; loads on loader threads; node calls on `views-kernel` |
 | `render.rs`, `render/` | `ViewTree`: one wire tree drawn as GPUI elements, retained native state keyed by `AuthoredPath`, `wire::Event` out, accessibility mapping | window thread |
+| `render/web.rs`, `crates/web` | the web piece. With feature `web`, a page per `Node::Web` through CEF off-screen rendering (`crates/web` holds every CEF name; `render/web.rs` maps the piece onto it and picks the view that declares `web` for an https link); without it the piece draws a line and links go to the system browser | window thread (CEF's pump turns there) |
 | `backend/` | everything that crosses the process boundary: `noded` client and signed `Frame`, `session` (seated key, prefs, recent nodes), `device_key`, `passkey`, `join`, `views`, `app_dirs` | async, polled where the caller polls (see below) |
 | `a11y.rs` | role/name/keyboard/state helpers for shell and renderer, plus the class markers the AX door reads | window thread |
 | `ax.rs`, `ax/` | the AX test door: loopback HTTP over the AccessKit tree, its CLI client; built with the `ax-door` feature only | `ax-door` accept thread; answers on the window thread |
@@ -326,8 +327,10 @@ its meaning; the host and the views name the const, never the string.
    `host.session` (the props subscription) and `host.log`.
 3. **Relay.** `kernel/node.rs` `spawn_method`, behind `spawn_retrying`,
    `spawn_retrying_unsent` and `spawn_no_retry`, first checks in `connected`
-   that the guest still belongs to the current `roster::connection()` (else
-   `stale_connection`, or `not_connected` with no node); then `start` admits
+   that the guest's own connection (`Guest.connection`, taken at start and
+   at each reconnect) is still the current `roster::connection()`'s `rev`
+   (else `stale_connection`), and asks the node that connection names (else
+   `not_connected`); then `start` admits
    the call against `MAX_IN_FLIGHT` (`in_flight_limit`) and runs the handler
    as a tokio task on `views-kernel`, owned by `guest.tasks` as a `NodeTask`
    that aborts on drop (cancel, swap, teardown). A read (`spawn_retrying`)
@@ -449,13 +452,21 @@ draws nothing.
   an observer — and where the bar's well is), which window is the console
   and which is in front, and the program in front (`active`: the focused
   pane's, wherever it is, from an observer of every desk, or the one a
-  pick or a link just opened). Its methods are what crosses windows:
-  `open` (an OS window, deferred) / `raise` / `forget_closed` / `quit`,
-  `close_pane`, `pop_out` and `pop_in` (a pane keeps its `instance` on
-  the way out and back), `select_view`, `open_help` / `help_asked`,
-  `open_link` (read against `Session`'s chain: this chain's link routes
-  its view, another chain's opens the seat and says why, an unlisted view
-  toasts, a web link goes to the OS), `open_notice`, `sync_appearance`
+  pick or a link just opened), and `Popped` (the pop-outs' windows and
+  the one in front, derived from the same observers, which the console's
+  chrome lists beside its own desk's). Its methods are what crosses
+  windows: `open` (an OS window, deferred) / `raise` / `forget_closed` /
+  `quit`, `close_pane`, `pop_out` and `pop_in` (a pane keeps its
+  `instance` on the way out and back), `open_program` (a tab, a pick,
+  Spotlight or a link asking for a program: a program the desk does not
+  show and a pop-out does brings the pop-out forward), `select_view`,
+  `open_help` / `help_asked`, `open_link` (read against `Session`'s
+  chain: this chain's link routes its view, another chain's opens the
+  seat and says why, an unlisted view toasts, a web link goes to the OS;
+  the route is for one seat: the one `open_program` brings forward, or,
+  for a view's link into its own program, that view's own, with nothing
+  brought forward),
+  `open_notice`, `sync_appearance`
   (the theme, and the OS's dark word back into `Prefs`), `swap_console`
   (the launcher and the desk are one window, resized in place; from an
   observer of `Screen`). A window's activation makes it the front and
@@ -485,7 +496,7 @@ draws nothing.
   <title>", compared before it sets it), `Notified` →
   `Notifications::refresh`, `Seated` → every desk holding the view
   settles (a window placed before its view came widens to it), `OpenLink`
-  → `Windows::open_link`. `Seats` holds `Windows` weakly.
+  → `Windows::open_link`, from that pane. `Seats` holds `Windows` weakly.
 - **Start** (`shell/launch.rs::run`). Makes the entities over the app's
   roster and notification centre (`Entities::new`), the tray (`tray.rs`:
   an entity observing `Session`, `Chain` and `Prefs`, drawn once at start;
@@ -582,12 +593,14 @@ Connect ─► /v1/status ─► contract check ─► bind_keyring ─► devic
    - **Create**: `create_submit(name)` (`identity::create_plain_account`)
      or the passkey path: `passkey_create(name)` → `passkey::create_account`
      opens the auth page (`AUTH_PAGE`, override `DUCKTAPE_AUTH_PAGE`) in the
-     system browser with the request in the URL fragment; the result comes
-     back as a form POST to a one-shot loopback `Listener`. The identity
+     system browser with the request in the URL fragment (and the touch's
+     `step`, `1/2`); the result comes back as a form POST to a one-shot
+     loopback `Listener`, which sends the browser on to the page's `#done`
+     (the page lives in `ducktape-industries/auth`). The identity
      program assigns the account number; the passkey then `AddKey`s itself
-     with the device key's consent. `Phone` offers each touch as a QR URL
-     and polls the auth host's relay slot `/r/<id>` instead. **Sign in with
-     a passkey** (`passkey_sign_in` → `passkey::sign_in`): an existing
+     with the device key's consent. The page answers only to loopback; a
+     passkey on a phone joins through the browser's own cross-device
+     sign-in. **Sign in with a passkey** (`passkey_sign_in` → `passkey::sign_in`): an existing
      passkey asserts, then `AddKey`s this device's key to its account.
    - **Join from another device** (`backend/join.rs`): `link_start` shows
      a Crockford code (`new_code`); `join_from_device` posts the request to
@@ -802,8 +815,8 @@ House words, and where one word means several things.
 - **props / session** — the session facts every view gets on
   `host.session` (`wire::methods::Session`, built by `runtime::props`).
 - **route** — two meanings. (1) the path part of a `duck://<view>/<route>`
-  link, held in `runtime::route_to` until the view's first `host.route`
-  subscriber (`take_route`). (2) a closure-local name for a cloned
+  link, held for one seat by `runtime::route_to` until that seat's view
+  first subscribes to `host.route` (`take_route`). (2) a closure-local name for a cloned
   authored path in `render/`.
 - **link** — a `duck://` URL (`Roster::parse_link`, `Link`), or, in
   sign-in, "link from another device" (`join_from_device`). Unrelated.
@@ -828,11 +841,13 @@ House words, and where one word means several things.
   two things: an OS window (`WindowRoot`, `WindowKey`, `WindowKind`) and
   a pane.
 - **instance** — a pane's unique u64 (`Pane.instance`), the key for
-  `Seats`; `Seat.instance` is its own counter.
+  `Seats`; its seat keeps it (`Seat.instance`), the seat's key in the
+  runtime registry and the one a link's route waits under.
 - **split / cycle / fill / measure** — pane geometry operations in
   `ui/layout.rs`. `split` adds a pane.
 - **rail / RailRow** — the roster-ordered program list the menu bar shows
-  as tabs and the sidebar as rows, each program's desk windows under it
+  as tabs and the sidebar as rows, each program's windows under it (the
+  desk's, then its pop-outs')
   (`Roster::rail`, read into `entities::Rail` once per change the roster's
   channel reports). The name is from an older side rail and survives in
   AX ids (`rail/<module>`, `rail/<module>/<instance>`, `rail-search`) that
@@ -873,10 +888,10 @@ House words, and where one word means several things.
   per-network ed25519 key in the OS store; the one loaded into `SIGNER`;
   the throwaway key that signs queries while locked; a password-locked
   keystore file from before keys moved into the OS.
-- **passkey / touch / ceremony / auth page / relay slot / Phone** — an
-  account key held by an authenticator; one WebAuthn step; the browser
-  page that runs it (`AUTH_PAGE`); the auth host's one-shot mailbox
-  `/r/<id>`; the phone path that polls it.
+- **passkey / touch / ceremony / auth page / relay slot** — an account
+  key held by an authenticator; one WebAuthn step; the browser page that
+  runs it (`AUTH_PAGE`); the auth host's one-shot mailbox `/r/<id>`, which
+  two devices joining by code pass messages through.
 - **notice / banner / centre / tag / burst / permission / in front** —
   what a view posts (`notify.post`); the OS banner the host may raise; the
   per-chain log (`notify::Center`); a view-chosen fold key; the per-view

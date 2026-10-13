@@ -18,16 +18,17 @@
 //! A new device is two touches too: touch 1 asks the passkey which account
 //! it holds, touch 2 consents to this device's key joining that account.
 //!
-//! A passkey on a phone: every touch also offers its request as a QR
-//! ([`Phone`]) whose callback is the auth host's relay slot `/r/<id>`
-//! ([`relay`](super::relay)). Once the person picks the phone, touches stop
-//! opening this device's browser and the app polls the slot.
+//! A passkey on a phone takes part through the browser's own cross-device
+//! sign-in (a QR the browser shows, with a Bluetooth proximity check). The
+//! page sends its answer only to this device's loopback, never through the
+//! auth host: an answer anyone could collect would let a stranger's link
+//! gather a consent over a challenge they chose.
 
 use identity::{CONSENT_NAMESPACE, Consent, Op, Query, Reply};
 use keyscheme::KeyScheme;
 use sha2::{Digest as _, Sha256};
 
-use super::auth_page::{Assertion, Phone, Request, asserted, created};
+use super::auth_page::{Assertion, Request, asserted, created};
 use super::identity::{
     DEVICE_KEY_LABEL, account_by_number, admission, ask, create_seated, person, submit,
     submit_seated,
@@ -44,7 +45,6 @@ pub(crate) async fn create_account(
     client: &RpcClient,
     network: &str,
     name: &str,
-    phone: &Phone,
 ) -> Result<(), String> {
     let device = seated_key().await.map_err(|refusal| refusal.message)?;
     let number = match ask(
@@ -62,13 +62,10 @@ pub(crate) async fn create_account(
         }
         _ => create_seated(client, network, name).await?,
     };
-    let passkey = created(
-        Request::Create {
-            user: user_handle(network, number),
-            name: format!("{name} · {network}"),
-        },
-        phone,
-    )
+    let passkey = created(Request::Create {
+        user: user_handle(network, number),
+        name: format!("{name} · {network}"),
+    })
     .await?;
     let admission = admission(
         client,
@@ -95,7 +92,7 @@ pub(crate) async fn create_account(
     let body = passkey_body(&passkey, network, anchor, abi::encode(&add));
     let assertion = asserted(
         keyscheme::webauthn_challenge(FRAME_NAMESPACE, &body.preimage()),
-        phone,
+        "2/2",
     )
     .await?;
     let frame = passkey_frame(body, &assertion)
@@ -104,12 +101,8 @@ pub(crate) async fn create_account(
 }
 
 /// This device's (seated) key joins the account a passkey holds.
-pub(crate) async fn sign_in(
-    client: &RpcClient,
-    network: &str,
-    phone: &Phone,
-) -> Result<(), String> {
-    let hint = asserted(rand::random(), phone).await?;
+pub(crate) async fn sign_in(client: &RpcClient, network: &str) -> Result<(), String> {
+    let hint = asserted(rand::random(), "1/2").await?;
     let number = account_of_handle(network, hint.user_handle.as_deref())?;
     let account = account_by_number(client, network, number).await?;
     person(&account)?;
@@ -125,7 +118,7 @@ pub(crate) async fn sign_in(
     let preimage = admission.preimage();
     let consent = asserted(
         keyscheme::webauthn_challenge(CONSENT_NAMESPACE, &preimage),
-        phone,
+        "2/2",
     )
     .await?;
     let proof = consent.proof();

@@ -82,9 +82,11 @@ impl Figure {
         let half = unit([light[0], light[1], light[2] - 1.]);
         let ux = SPAN / (COLS as f32 / 2.);
         let uy = ux * SIZE / ADVANCE;
+        let dots = self.dots();
         let mut depth = [f32::INFINITY; COLS * ROWS];
-        let mut cells = [0u8; COLS * ROWS];
-        for dot in self.dots() {
+        // the dot nearest the eye in each cell: only it is lit
+        let mut nearest = [u32::MAX; COLS * ROWS];
+        for (i, dot) in dots.iter().enumerate() {
             let at = match dot.moon {
                 true => add(dot.at, moon),
                 false => turn.apply(dot.at),
@@ -99,6 +101,13 @@ impl Figure {
                 continue;
             }
             depth[cell] = at[2];
+            nearest[cell] = i as u32;
+        }
+        let mut cells = [0u8; COLS * ROWS];
+        for (cell, &i) in nearest.iter().enumerate() {
+            let Some(dot) = dots.get(i as usize) else {
+                continue;
+            };
             let mut normal = match dot.moon {
                 true => dot.normal,
                 false => turn.apply(dot.normal),

@@ -1,9 +1,11 @@
-//! What one window's desk shows, as the chrome reads it: the focused pane's
-//! program, and every window on the desk in layout order (its program, its
-//! instance, its title), which the sidebar lists. Never a frame: a drag
-//! moves the `Desk` and leaves this still.
+//! What the chrome lists. `Front`, what one window's desk shows: the
+//! focused pane's program, and every window on the desk in layout order
+//! (its program, its instance, its title). Never a frame: a drag moves the
+//! `Desk` and leaves this still. `Popped`, the pop-outs' windows beside it
+//! (`Windows` derives it): the console's sidebar lists both.
 use super::{Desk, Slice};
-use crate::ui::layout::Layout;
+use crate::runtime::WindowKey;
+use crate::ui::layout::{Layout, Pane};
 use gpui_kit::{App, AppContext as _, Entity};
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -15,12 +17,35 @@ pub(crate) struct Front {
     pub(crate) open: Vec<Listed>,
 }
 
-/// A window on the desk, as the chrome lists it.
+/// A window, as the chrome lists it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Listed {
     pub(crate) module: &'static str,
     pub(crate) instance: u64,
     pub(crate) title: Option<String>,
+    /// The pop-out it is alone in; `None` on the desk the list is read off.
+    pub(crate) away: Option<WindowKey>,
+}
+
+impl Listed {
+    pub(crate) fn of(pane: &Pane, away: Option<WindowKey>) -> Self {
+        Self {
+            module: pane.module,
+            instance: pane.instance,
+            title: pane.title.clone(),
+            away,
+        }
+    }
+}
+
+/// The pop-outs' windows, as the console's chrome lists them beside its
+/// own desk's.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Popped {
+    /// Each pop-out's window, in the order the pop-outs opened.
+    pub(crate) open: Vec<Listed>,
+    /// Its instance, while the OS window in front is a pop-out.
+    pub(crate) front: Option<u64>,
 }
 
 impl Front {
@@ -32,11 +57,7 @@ impl Front {
             open: layout
                 .panes
                 .iter()
-                .map(|pane| Listed {
-                    module: pane.module,
-                    instance: pane.instance,
-                    title: pane.title.clone(),
-                })
+                .map(|pane| Listed::of(pane, None))
                 .collect(),
         }
     }

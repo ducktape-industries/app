@@ -36,17 +36,18 @@ pub(in crate::shell) const FILL_STRIP: f32 = 36.;
 pub(in crate::shell) const BORDER: f32 = 1.;
 
 /// The body the view of `layout`'s pane `index` is laid out in, as
-/// [`PaneView::place`] draws it: on the console a pane's frame less its
-/// border and title bar, or filling the desk the desk less its strip; in a
-/// window of its own the window less the title bar; none until the desk is
-/// drawn. The seat widens it to the view's own minimum (`Pane::min_width`).
+/// [`PaneView::place`] draws it: `on_desk` (the console, where a pane is
+/// framed) a pane's frame less its border and title bar, or filling the
+/// desk the desk less its strip; in a window one view fills (a pop-out,
+/// `--live`) the window less the title bar, whatever frame the layout
+/// keeps for it; none until the desk is drawn. The seat widens it to the view's own minimum (`Pane::min_width`).
 pub(in crate::shell) fn view_body(
-    console: bool,
+    on_desk: bool,
     layout: &layout::Layout,
     index: usize,
 ) -> Option<(f32, f32)> {
     let desk = layout.desk;
-    match layout.panes[index].frame.filter(|_| console) {
+    match layout.panes[index].frame.filter(|_| on_desk) {
         Some(_) if layout.fills(index) => desk.map(|(width, height)| (width, height - FILL_STRIP)),
         Some(frame) => Some((frame.w - 2. * BORDER, frame.h - 2. * BORDER - TITLE)),
         None => desk.map(|(width, height)| (width, height - TITLE)),
@@ -454,7 +455,9 @@ impl Render for PaneLayer {
         // never its `z`, which only grows: the ranks stay under `HOST_BAND`.
         // A filled desk draws the window in front alone: the ones it covers
         // stay mounted and seated, but out of the frame, so Tab, presses and
-        // assistive technology never reach a window no one can see.
+        // assistive technology never reach a window no one can see. Each is
+        // clipped to the desk: one hanging off its edge goes under the
+        // sidebar, never over it.
         let views = layout
             .stacking()
             .into_iter()
@@ -462,12 +465,16 @@ impl Render for PaneLayer {
             .enumerate()
             .filter_map(|(rank, index)| {
                 let view = self.views.get(&layout.panes[index].instance)?;
-                Some(deferred(view.clone()).with_priority(rank))
+                Some(crate::render::deferred::clipped(
+                    view.clone().into_any_element(),
+                    rank,
+                ))
             });
         div()
             .id("panes")
             .relative()
             .size_full()
+            .overflow_hidden()
             .child(canvas)
             .children(views)
             .into_any_element()

@@ -1,33 +1,49 @@
-//! The person's native yes before the device key signs an identity op that
-//! removes or suspends a key or an agent: `RemoveKey`, `Revoke`, `Suspend`,
-//! and any `identity` op this app cannot read (the deployed program may
-//! know one this build does not). The app is a blind host, but it already
-//! names `identity` (`backend/identity.rs`, `passkey.rs`, `join.rs`): this
-//! is the one more place, and the one place these ops are named.
+//! The person's native yes before the device key signs an op a view asks
+//! for, in two cases. An identity op that removes or suspends a key or an
+//! agent: `RemoveKey`, `Revoke`, `Suspend`, and any `identity` op this app
+//! cannot read (the deployed program may know one this build does not).
+//! And every op to a program bound to a role (the registry, the
+//! validators, identity) from a view whose own program is not: an account
+//! with a grant may change that view's code (no vote reviews it), and the
+//! card says what the op does in the target program's own words
+//! (`module.describe`). The app is a blind host, but it already names
+//! `identity` (`backend/identity.rs`, `passkey.rs`, `join.rs`): this is the
+//! one more place, and the one place these ops are named; every other
+//! program it knows only by its role (`roles`).
 //!
-//! The ask waits here, as a notice waits in `notify::center`: the kernel
-//! queues an [`Ask`] with the request's `op.submit` task parked on its
-//! answer, says `Intent::Consent`, and the shell shows the front of the
-//! queue in its Approve-style dialog (`shell/layers/overlays/consent.rs`),
-//! answering [`answer`] with the person's Approve or Cancel. Cancel, the
-//! dialog closed any other way, or a window to ask in missing, refuses the
-//! view `consent_refused`; nothing is signed. One ask waits per view at a time: a second while one waits is
-//! refused at once.
+//! The ask waits here, as a notice waits in `notify::center`: the
+//! request's `op.submit` task queues an [`Ask`] once its words are whole
+//! (the target's description read), parks on its answer, and wakes the
+//! shell ([`changes_channel`]), which shows the front of the queue in its
+//! Approve-style dialog (`shell/layers/overlays/consent.rs`), answering
+//! [`answer`] with the person's Approve or Cancel. Cancel, the dialog
+//! closed any other way, or a window to ask in missing, refuses the view
+//! `consent_refused`; nothing is signed. One ask waits per view at a time:
+//! a second while one waits is refused as it would be queued.
 use std::collections::VecDeque;
 use std::ops::Range;
 use std::sync::{Mutex, OnceLock};
 
-use super::Guest;
+/// The card's title for an op to the person's account (identity's).
+pub(crate) const ACCOUNT: &str = "Confirm a change to your account";
+/// The card's title for an op to the network: to the registry, or to the
+/// validators' program.
+pub(crate) const NETWORK: &str = "Confirm a change to the network";
 
-/// What the dialog says for one op: the sentence, the asking program's id
-/// in it (its bytes, which the card sets in mono; `None` when System asks),
-/// and the thing it names (a key's fingerprint, an agent's number) on its
-/// own line.
+/// What the dialog says for one op: its title ([`ACCOUNT`] or
+/// [`NETWORK`]), the sentence, the asking program's id in it (its bytes,
+/// which the card sets in mono; `None` when System asks), and what it
+/// shows on its own: the thing the op names (a key's fingerprint, an
+/// agent's number), or, `described`, the target program's own description
+/// of the op ([`shown`]), which the request's task reads in before it
+/// queues the ask.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Words {
+    pub(crate) title: &'static str,
     pub(crate) said: String,
     pub(crate) id: Option<Range<usize>>,
     pub(crate) shown: Option<String>,
+    pub(crate) described: bool,
 }
 
 /// The request's end of its ask: what its task waits on for the person's
@@ -51,8 +67,8 @@ impl Drop for Told {
     }
 }
 
-/// The shell's wake: one message each time an ask's request let go of it,
-/// from whichever thread did. Installing it replaces the one before; the
+/// The shell's wake: one message each time a request queued its ask or
+/// let go of it, from whichever thread did. Installing it replaces the one before; the
 /// app installs one (`launch`); a test syncs by hand.
 pub(crate) fn changes_channel() -> futures::channel::mpsc::UnboundedReceiver<()> {
     let (send, receive) = futures::channel::mpsc::unbounded();
@@ -68,7 +84,7 @@ fn changes() -> &'static Mutex<Option<futures::channel::mpsc::UnboundedSender<()
     CHANGES.get_or_init(Mutex::default)
 }
 
-fn moved() {
+pub(super) fn moved() {
     if let Some(send) = &*changes()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -107,7 +123,13 @@ pub(crate) fn waiting() -> &'static Mutex<VecDeque<Ask>> {
 
 /// The queue, less every ask whose request let go of it (`Told`).
 fn lock() -> std::sync::MutexGuard<'static, VecDeque<Ask>> {
-    let mut waiting = waiting()
+    lock_in(waiting())
+}
+
+fn lock_in(
+    waiting: &'static Mutex<VecDeque<Ask>>,
+) -> std::sync::MutexGuard<'static, VecDeque<Ask>> {
+    let mut waiting = waiting
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     waiting.retain(|ask| !ask.tell.is_closed());
@@ -154,6 +176,13 @@ pub(crate) fn refuse_all() {
 /// named `system` asks as "Program system". `own` is the account the seated key holds as the app
 /// resolved it, `None` until it has: a `RemoveKey` names the account it
 /// strips, which a manager may make an agent's, and the card says which.
+///
+/// The identity ops that remove or suspend are asked in this app's own
+/// words, whoever asks. Any other op to a role's program is asked when the
+/// requesting program is bound to no role, in a sentence that names the
+/// role and the target's own description of the op (`described`, read by
+/// the request's task). With no bindings known (a registry from before
+/// the question) no program is a role's and only the first rule asks.
 pub(super) fn needed(
     program: &str,
     roles: Option<&abi::Roles>,
@@ -161,16 +190,9 @@ pub(super) fn needed(
     body: &[u8],
     own: Option<u64>,
 ) -> Option<Words> {
-    if target != identity::MODULE {
-        return None;
-    }
-    let bound = roles.is_some_and(|roles| {
-        [&roles.registry, &roles.validators, &roles.identity]
-            .iter()
-            .any(|role| role.as_str() == program)
-    });
+    let bound = |name: &str| bound(name, roles);
     const PROGRAM: &str = "Program ";
-    let (by, id) = match bound {
+    let (by, id) = match bound(program) {
         true => ("System".to_owned(), None),
         false => (
             format!("{PROGRAM}{program}"),
@@ -179,69 +201,184 @@ pub(super) fn needed(
     };
     // every sentence begins with `by`, so `id` is where the id is in it
     let words = |said: String, shown: Option<String>| Words {
+        title: ACCOUNT,
         said,
         id: id.clone(),
         shown,
+        described: false,
     };
-    let Ok(op) = abi::decode::<identity::Op>(body) else {
-        return Some(words(
-            format!("{by} asks your key to sign an identity operation this app cannot read."),
-            None,
-        ));
-    };
-    match op {
-        identity::Op::RemoveKey { account, key } if own == Some(account) => Some(words(
-            format!("{by} asks to remove a key from your account. Approve only if you meant to."),
-            Some(crate::backend::join::fingerprint(&key)),
-        )),
-        identity::Op::RemoveKey { account, key } => Some(words(
-            format!(
-                "{by} asks to remove a key from agent #{account}. Approve only if you meant to."
-            ),
-            Some(format!(
-                "#{account} · {}",
-                crate::backend::join::fingerprint(&key)
+    if target == identity::MODULE {
+        let Ok(op) = abi::decode::<identity::Op>(body) else {
+            // the deployed identity may know it: its own words, if it does
+            return Some(Words {
+                described: true,
+                ..words(
+                    format!(
+                        "{by} asks your key to sign an identity operation this app cannot read."
+                    ),
+                    None,
+                )
+            });
+        };
+        let asked = match op {
+            identity::Op::RemoveKey { account, key } if own == Some(account) => Some(words(
+                format!(
+                    "{by} asks to remove a key from your account. Approve only if you meant to."
+                ),
+                Some(crate::backend::join::fingerprint(&key)),
             )),
-        )),
-        identity::Op::Revoke { account } => Some(words(
-            format!("{by} asks to revoke agent #{account}. Its keys stop working for good."),
-            Some(format!("#{account}")),
-        )),
-        identity::Op::Suspend { account } => Some(words(
-            format!("{by} asks to suspend agent #{account}. It stops acting until it is resumed."),
-            Some(format!("#{account}")),
-        )),
-        identity::Op::RegisterModule { .. }
-        | identity::Op::Create { .. }
-        | identity::Op::CreateAgent { .. }
-        | identity::Op::AddKey { .. }
-        | identity::Op::SetName { .. }
-        | identity::Op::SetProfile { .. }
-        | identity::Op::Resume { .. } => None,
+            identity::Op::RemoveKey { account, key } => Some(words(
+                format!(
+                    "{by} asks to remove a key from agent #{account}. Approve only if you meant to."
+                ),
+                Some(format!(
+                    "#{account} · {}",
+                    crate::backend::join::fingerprint(&key)
+                )),
+            )),
+            identity::Op::Revoke { account } => Some(words(
+                format!("{by} asks to revoke agent #{account}. Its keys stop working for good."),
+                Some(format!("#{account}")),
+            )),
+            identity::Op::Suspend { account } => Some(words(
+                format!(
+                    "{by} asks to suspend agent #{account}. It stops acting until it is resumed."
+                ),
+                Some(format!("#{account}")),
+            )),
+            identity::Op::RegisterModule { .. }
+            | identity::Op::Create { .. }
+            | identity::Op::CreateAgent { .. }
+            | identity::Op::AddKey { .. }
+            | identity::Op::SetName { .. }
+            | identity::Op::SetProfile { .. }
+            | identity::Op::Resume { .. }
+            | identity::Op::SetAudience { .. } => None,
+        };
+        if asked.is_some() {
+            return asked;
+        }
+    }
+    // a view no vote reviewed, writing to a role
+    let roles = roles.filter(|_| !bound(program))?;
+    let (title, what) = if target == roles.registry {
+        (NETWORK, "sign an op on the module registry")
+    } else if target == roles.validators {
+        (NETWORK, "vote in the validators' program")
+    } else if target == roles.identity {
+        (ACCOUNT, "sign an identity operation")
+    } else {
+        return None;
+    };
+    Some(Words {
+        title,
+        said: format!("{by} asks your key to {what}. Approve only if you meant to."),
+        id,
+        shown: None,
+        described: true,
+    })
+}
+
+/// Whether genesis bound `program` to a role the kernel calls (`roles`, as
+/// the node's registry answers them): never while no bindings are known.
+pub(super) fn bound(program: &str, roles: Option<&abi::Roles>) -> bool {
+    roles.is_some_and(|roles| {
+        [&roles.registry, &roles.validators, &roles.identity]
+            .iter()
+            .any(|role| role.as_str() == program)
+    })
+}
+
+/// What the card shows for an op its target describes: the program's own
+/// title, then its fields, `label value`, on one line; the op's size where
+/// it describes nothing (no describe module, bytes it cannot read, the
+/// node not reached). The op is the view's: every title, label and value
+/// is [`clip`]ped.
+pub(crate) fn shown(description: Option<&describe::Description>, len: usize) -> String {
+    let Some(description) = description else {
+        return format!("{len} bytes this app cannot read");
+    };
+    let title = clip(&description.title);
+    if description.fields.is_empty() {
+        return title;
+    }
+    let fields: Vec<String> = description
+        .fields
+        .iter()
+        .map(|field| format!("{} {}", clip(&field.label), clip(&value(&field.value))))
+        .collect();
+    format!("{title}\n{}", fields.join(" · "))
+}
+
+/// The longest a title or a value runs on the card before it is clipped.
+const MAX_VALUE: usize = 160;
+
+/// `text` as one line of the card: its plain chars (`kernel::plain`: no
+/// line break to fake a fields line, no bidi control to reorder one), at
+/// most [`MAX_VALUE`] of them.
+fn clip(text: &str) -> String {
+    let text: String = text.chars().filter(super::kernel::plain).collect();
+    match text.char_indices().nth(MAX_VALUE) {
+        Some((at, _)) => format!("{}…", &text[..at]),
+        None => text,
     }
 }
 
-/// Queues the ask for `guest`'s request and tells the shell; the `Told`
-/// is what the request's task waits on, and holds the ask in the queue.
-/// `None`, with the request refused, while another ask of this view waits.
-pub(super) fn ask(guest: &mut Guest, id: u64, words: Words) -> Option<Told> {
-    let told = queue(guest.module, guest.instance, words);
-    match told {
-        Some(_) => guest.intents.push(super::Intent::Consent),
-        None => guest.refuse(
-            id,
-            super::wire::methods::refusal::CONSENT_REFUSED,
-            "another confirmation for this view is still waiting",
-        ),
+/// One described value as text: an account by its number, a key by its
+/// fingerprint (as the card shows a key it names), a hash or bytes short.
+fn value(shown: &describe::Value) -> String {
+    use describe::Value;
+    let short = |bytes: &[u8]| design::short_hex(&abi::hex(bytes));
+    match shown {
+        Value::Text(text) | Value::Module(text) => text.clone(),
+        Value::Account(number) => format!("#{number}"),
+        Value::Key(key) => crate::backend::join::fingerprint(key),
+        Value::Hash(bytes) => short(bytes),
+        Value::Amount { value, decimals } => match 10u128.checked_pow(u32::from(*decimals)) {
+            Some(scale) if *decimals > 0 => format!(
+                "{}.{:0width$}",
+                value / scale,
+                value % scale,
+                width = usize::from(*decimals)
+            ),
+            _ => value.to_string(),
+        },
+        Value::Time(millis) => date(*millis),
+        Value::Bytes { len: 0, .. } => "0 bytes".into(),
+        Value::Bytes {
+            len: 1..=32,
+            preview,
+        } => short(preview),
+        Value::Bytes { len, preview } => format!("{len} bytes · {}", short(preview)),
+        Value::List(items) => items.iter().map(value).collect::<Vec<_>>().join(", "),
     }
-    told
 }
 
-/// The ask itself, queued for view (`module`, `instance`); `None` while
-/// another of that view's waits. The shell is not told here (`ask` is).
-pub(crate) fn queue(module: &'static str, instance: u64, words: Words) -> Option<Told> {
+/// Milliseconds since the epoch as a UTC date: `12 Oct 2026, 14:03 UTC`.
+fn date(millis: u64) -> String {
+    let seconds = millis / 1000;
+    let of_day = seconds % 86_400;
+    format!(
+        "{}, {:02}:{:02} UTC",
+        super::day(seconds),
+        of_day / 3_600,
+        of_day % 3_600 / 60,
+    )
+}
+
+/// The ask for view (`module`, `instance`), queued in `waiting`; `None`
+/// while another of that view's waits. The shell is not told here
+/// ([`moved`] is). `waiting` is the queue the request came in on, taken at
+/// its press: the request's task queues the ask from the runtime's thread,
+/// and under test each test thread has its own.
+pub(super) fn queue_in(
+    waiting: &'static Mutex<VecDeque<Ask>>,
+    module: &'static str,
+    instance: u64,
+    words: Words,
+) -> Option<Told> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let mut waiting = lock();
+    let mut waiting = lock_in(waiting);
     if waiting
         .iter()
         .any(|ask| ask.module == module && ask.instance == instance)
@@ -257,6 +394,12 @@ pub(crate) fn queue(module: &'static str, instance: u64, words: Words) -> Option
         tell,
     });
     Some(Told(told))
+}
+
+/// [`queue_in`] this thread's queue.
+#[cfg(test)]
+pub(crate) fn queue(module: &'static str, instance: u64, words: Words) -> Option<Told> {
+    queue_in(waiting(), module, instance, words)
 }
 
 #[cfg(test)]
@@ -324,7 +467,8 @@ mod tests {
         }
         let unread = needed("chat", None, identity::MODULE, &[0xff, 0xff], Some(7)).unwrap();
         assert!(unread.said.contains("cannot read"), "{unread:?}");
-        assert_eq!(unread.shown, None);
+        // the deployed identity's own words, read in by the request's task
+        assert_eq!((unread.shown, unread.described), (None, true));
         assert_eq!(needed("chat", None, "chat", &[0xff, 0xff], Some(7)), None);
     }
 
@@ -394,6 +538,151 @@ mod tests {
         );
     }
 
+    /// Claim: a view whose program is bound to no role asks for every op to
+    /// a role's program, the network's title for the registry and the
+    /// validators, the account's for identity, and leaves the words to the
+    /// target's description; its op to any other program, any op from a
+    /// role's own program, and every op while no bindings are known ask
+    /// nothing new. The identity ops that remove or suspend keep their own
+    /// words for both.
+    #[test]
+    fn a_view_no_vote_reviewed_asks_for_every_op_to_a_role() {
+        let roles = abi::Roles {
+            registry: "module-registry".into(),
+            validators: "valset".into(),
+            identity: identity::MODULE.into(),
+        };
+        let op = [1, 2, 3];
+        let add_key = abi::encode(&identity::Op::AddKey {
+            scheme: abi::Scheme::Ed25519,
+            label: None,
+            consent: identity::Consent {
+                account: 7,
+                key: vec![1, 2, 3],
+                expires_at: 0,
+                proof: vec![],
+            },
+        });
+        let asked = |program: &str, target: &str, body: &[u8]| {
+            needed(program, Some(&roles), target, body, Some(7))
+        };
+        for (target, body, title, what) in [
+            (
+                "valset",
+                &op[..],
+                NETWORK,
+                "vote in the validators' program",
+            ),
+            (
+                "module-registry",
+                &op[..],
+                NETWORK,
+                "sign an op on the module registry",
+            ),
+            (
+                identity::MODULE,
+                &add_key[..],
+                ACCOUNT,
+                "sign an identity operation",
+            ),
+        ] {
+            let words = asked("chat", target, body).expect(target);
+            assert_eq!(
+                words,
+                Words {
+                    title,
+                    said: format!(
+                        "Program chat asks your key to {what}. Approve only if you meant to."
+                    ),
+                    id: Some(8..12),
+                    shown: None,
+                    described: true,
+                },
+                "{target}"
+            );
+            for own in ["valset", "module-registry", identity::MODULE] {
+                assert_eq!(asked(own, target, body), None, "{own} to {target}");
+            }
+            assert_eq!(
+                needed("chat", None, target, body, Some(7)),
+                None,
+                "{target}"
+            );
+        }
+        for target in ["chat", "forge"] {
+            assert_eq!(asked("chat", target, &op), None, "{target}");
+        }
+        let remove = abi::encode(&identity::Op::RemoveKey {
+            account: 7,
+            key: vec![1, 2, 3],
+        });
+        for (program, by) in [("chat", "Program chat"), ("module-registry", "System")] {
+            let words = asked(program, identity::MODULE, &remove).unwrap();
+            assert_eq!(
+                words.said,
+                format!(
+                    "{by} asks to remove a key from your account. Approve only if you meant to."
+                )
+            );
+            assert_eq!((words.title, words.described), (ACCOUNT, false));
+        }
+    }
+
+    /// Claim: the card shows a description as the program's title, then
+    /// its fields as `label value` on one line, each value as what it is;
+    /// a long value clipped; and the op's size where nothing describes it.
+    #[test]
+    fn a_description_reads_as_its_title_then_its_fields() {
+        use describe::{Value, field};
+        let description = describe::Description {
+            title: "Schedule · chat".into(),
+            fields: vec![
+                field("change", Value::text("Set")),
+                field("program", Value::Module("chat".into())),
+                field("code", Value::Hash(vec![0xab; 32])),
+                field("account", Value::Account(7)),
+                field(
+                    "amount",
+                    Value::Amount {
+                        value: 12_345,
+                        decimals: 2,
+                    },
+                ),
+                field("count", Value::count(3)),
+                field("expires at", Value::Time(1_791_900_000_000)),
+                field("leap", Value::Time(951_782_400_000)),
+                field("params", Value::bytes(&[0xcd; 40])),
+                field("empty", Value::bytes(&[])),
+                field(
+                    "both",
+                    Value::List(vec![Value::Account(1), Value::Account(2)]),
+                ),
+            ],
+        };
+        assert_eq!(
+            shown(Some(&description), 99),
+            "Schedule · chat\nchange Set · program chat · code abababab…abab · account #7 · \
+             amount 123.45 · count 3 · expires at 13 Oct 2026, 14:00 UTC · \
+             leap 29 Feb 2000, 00:00 UTC · params 40 bytes · cdcdcdcd…cdcd · empty 0 bytes · \
+             both #1, #2"
+        );
+        let long = describe::Description {
+            title: "x".repeat(400),
+            fields: vec![],
+        };
+        assert_eq!(shown(Some(&long), 9), format!("{}…", "x".repeat(MAX_VALUE)));
+        assert_eq!(shown(None, 3), "3 bytes this app cannot read");
+        // the op's own text fakes no line and reorders nothing: a line
+        // break, a bidi override, a paragraph separator go, in the title, a
+        // label and a value alike
+        let forged = "a\nb\u{202e}c\u{2029}";
+        let forged = describe::Description {
+            title: format!("Set name · {forged}"),
+            fields: vec![field(forged, Value::text(forged))],
+        };
+        assert_eq!(shown(Some(&forged), 9), "Set name · abc\nabc abc");
+    }
+
     /// Claim: an ask is in the queue exactly as long as its request holds
     /// its `Told`; let go of unanswered, it is gone from the front, it no
     /// longer blocks the view's next ask, and the shell is woken to sync.
@@ -401,9 +690,11 @@ mod tests {
     fn an_ask_lives_only_as_long_as_its_request() {
         let mut woken = changes_channel();
         let words = Words {
+            title: ACCOUNT,
             said: "x".into(),
             id: None,
             shown: None,
+            described: false,
         };
         let told = queue("t", 1, words.clone()).expect("queued");
         let (id, _) = front().expect("waits");

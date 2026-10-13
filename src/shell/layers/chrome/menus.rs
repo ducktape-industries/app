@@ -510,24 +510,10 @@ fn ago(seconds: i64) -> String {
 /// The chain's founding time as a day: `27 Sep 2026`. The node's clock
 /// reads in milliseconds; a value that small is taken as seconds.
 fn founded(time: u64) -> String {
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let seconds = match time > 100_000_000_000 {
+    crate::runtime::day(match time > 100_000_000_000 {
         true => time / 1000,
         false => time,
-    };
-    // days since 1970-01-01 → civil date (Howard Hinnant's algorithm)
-    let z = (seconds / 86_400) as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!("{day} {} {year}", MONTHS[(month - 1) as usize])
+    })
 }
 
 #[cfg(test)]

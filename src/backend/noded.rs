@@ -18,7 +18,7 @@ use futures::{Stream, StreamExt as _};
 use reqwest::StatusCode;
 use tokio_tungstenite::tungstenite::Message;
 
-pub const NODE_CONTRACT: u32 = 3;
+pub const NODE_CONTRACT: u32 = 4;
 pub const FRAME_NAMESPACE: &[u8] = b"ducktape:frame";
 
 /// The most one node answer may carry, unless the call names its own cap
@@ -57,6 +57,7 @@ pub mod route {
     pub const CHANGES: &str = "/v1/changes";
     pub const BLOCKS: &str = "/v1/blocks";
     pub const BLOCK: &str = "/v1/block";
+    pub const TX: &str = "/v1/tx";
     pub const NETWORK: &str = "/v1/network";
 }
 
@@ -233,7 +234,8 @@ pub struct Tx {
     pub signer: Vec<u8>,
     pub anchor: Tip,
     pub target: String,
-    pub payload: Vec<u8>,
+    pub size: u32,
+    pub payload: Option<Vec<u8>>,
     pub receipt: Option<Receipt>,
 }
 
@@ -247,6 +249,32 @@ pub struct Finalized {
     pub epoch: u64,
     pub proposer: Option<Vec<u8>>,
     pub txs: Vec<Tx>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct Page {
+    pub blocks: Vec<Finalized>,
+    pub listed_from: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum TxRef {
+    At { height: u64, position: u32 },
+    Hash([u8; 32]),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct TxAsk {
+    pub tx: TxRef,
+    pub most: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct Located {
+    pub height: u64,
+    pub position: u32,
+    pub time: u64,
+    pub tx: Tx,
 }
 
 #[derive(Debug)]
@@ -352,12 +380,16 @@ impl Client {
 
     /// Finalized blocks, newest first: below `before` (the tip when
     /// `None`), at most `limit` (the node caps it).
-    pub async fn blocks(&self, page: &Blocks) -> Result<Vec<Finalized>> {
+    pub async fn blocks(&self, page: &Blocks) -> Result<Page> {
         self.post(route::BLOCKS, page).await
     }
 
     pub async fn block(&self, by: &BlockRef) -> Result<Option<Finalized>> {
         self.post(route::BLOCK, by).await
+    }
+
+    pub async fn tx(&self, ask: &TxAsk) -> Result<Option<Located>> {
+        self.post(route::TX, ask).await
     }
 
     pub async fn changes(
@@ -509,12 +541,12 @@ mod tests {
     }
 
     #[test]
-    fn a_tx_decodes_the_nodes_field_order() {
+    fn a_tx_and_its_reads_follow_the_nodes_field_order() {
         let mut bytes = vec![9; 32];
         bytes.extend([1, 0, 0, 0, 1]);
         bytes.extend(3u64.to_le_bytes());
         bytes.extend([4; 32]);
-        bytes.extend([1, 0, 0, 0, b't', 1, 0, 0, 0, 6, 0]);
+        bytes.extend([1, 0, 0, 0, b't', 1, 0, 0, 0, 1, 1, 0, 0, 0, 6, 0]);
         let tx = Tx {
             hash: [9; 32],
             signer: vec![1],
@@ -523,10 +555,41 @@ mod tests {
                 id: [4; 32],
             },
             target: "t".into(),
-            payload: vec![6],
+            size: 1,
+            payload: Some(vec![6]),
             receipt: None,
         };
         assert_eq!(abi::decode::<Tx>(&bytes).unwrap(), tx);
+        let mut located = 7u64.to_le_bytes().to_vec();
+        located.extend(2u32.to_le_bytes());
+        located.extend(8u64.to_le_bytes());
+        located.extend(&bytes);
+        let at = Located {
+            height: 7,
+            position: 2,
+            time: 8,
+            tx,
+        };
+        assert_eq!(abi::decode::<Located>(&located).unwrap(), at);
+        let mut ask = vec![0];
+        ask.extend(7u64.to_le_bytes());
+        ask.extend(2u32.to_le_bytes());
+        ask.extend(9u32.to_le_bytes());
+        let by_place = TxAsk {
+            tx: TxRef::At {
+                height: 7,
+                position: 2,
+            },
+            most: 9,
+        };
+        assert_eq!(abi::encode(&by_place), ask);
+        let page = Page {
+            blocks: Vec::new(),
+            listed_from: Some(3),
+        };
+        let mut listed = vec![0, 0, 0, 0, 1];
+        listed.extend(3u64.to_le_bytes());
+        assert_eq!(abi::decode::<Page>(&listed).unwrap(), page);
     }
 
     #[test]

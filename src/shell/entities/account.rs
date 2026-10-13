@@ -18,12 +18,9 @@
 //! account (`Welcome`, `Windows`), "Add a device…" closing once approved
 //! (`Approved`, `Windows`).
 
-use super::{AccountStep, Prefs, Screen, Slice, on_runtime, spawn_on_runtime};
+use super::{AccountStep, Prefs, Screen, Slice, spawn_on_runtime};
 use crate::backend;
-use futures::StreamExt as _;
 use gpui_kit::{Context, Entity, EventEmitter, Task};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A typed secret or a recovery phrase: wiped when it drops, so leaving a
 /// step wipes what it held.
@@ -56,8 +53,6 @@ pub(crate) struct AccountState {
     pub(crate) link_code: String,
     /// A passkey ceremony is in the browser.
     pub(crate) passkey_waiting: bool,
-    /// The passkey QR URL, once the person picked the phone.
-    pub(crate) passkey_qr: Option<String>,
     /// Help greets a new account rather than titling itself.
     pub(crate) welcome: bool,
 }
@@ -92,10 +87,6 @@ pub(crate) struct Account {
     /// "Add a device…": the code typed, and the request it found.
     approve_code: String,
     approve_found: Option<backend::join::Request>,
-    /// Set once the person picks "Use a phone instead"; the ceremony reads it.
-    passkey_phone: Arc<AtomicBool>,
-    /// The QR URL of the touch in flight.
-    passkey_url: String,
     /// The key being opened or made (`open_device_key`).
     seating: Option<Task<()>>,
     /// The sign-in call out: an unlock, a phrase check, a recovery, an
@@ -126,8 +117,6 @@ impl Account {
             keyring: String::new(),
             approve_code: String::new(),
             approve_found: None,
-            passkey_phone: Arc::default(),
-            passkey_url: String::new(),
             seating: None,
             call: None,
             link: None,
@@ -243,7 +232,6 @@ impl Account {
         self.keyring.clear();
         self.approve_code.clear();
         self.approve_found = None;
-        self.passkey_url.clear();
         let welcome = self.state.welcome;
         self.edit(
             |state| {
@@ -769,14 +757,11 @@ impl Account {
             self.network.clone(),
             self.state.signer_key.clone(),
         );
-        self.passkey_phone = Arc::default();
-        self.passkey_url.clear();
         self.edit(
             |state| {
                 state.busy = true;
                 state.error.clear();
                 state.passkey_waiting = true;
-                state.passkey_qr = None;
             },
             cx,
         );
@@ -786,56 +771,21 @@ impl Account {
             },
             cx,
         );
-        let (phone, urls) = backend::auth_page::Phone::new(self.passkey_phone.clone());
-        let flow = async move {
-            let joined = match &name {
-                Some(name) => {
-                    backend::passkey::create_account(&client, &network, name, &phone).await
-                }
-                None => backend::passkey::sign_in(&client, &network, &phone).await,
-            };
-            match joined {
-                Ok(()) => Ok(pubkey),
-                Err(error) => Err(error),
+        let work = async move {
+            match &name {
+                Some(name) => backend::passkey::create_account(&client, &network, name).await,
+                None => backend::passkey::sign_in(&client, &network).await,
             }
+            .map(|()| pubkey)
         };
-        // the flow owns the only URL sender: the QR updates end with it
-        let events = futures::stream::select(urls.map(Ok), futures::stream::once(flow).map(Err));
-        self.passkey = Some(cx.spawn(async move |this, cx| {
-            let mut events = std::pin::pin!(events);
-            while let Some(event) = on_runtime(events.next()).await {
-                let landed = this.update(cx, |this, cx| match event {
-                    Ok(url) => this.passkey_qr(url, cx),
-                    Err(Ok(pubkey)) => this.passkey_done(pubkey, cx),
-                    Err(Err(error)) => this.passkey_failed(error, cx),
-                });
-                if landed.is_err() {
-                    break;
-                }
-            }
-        }));
-    }
-
-    /// "Use a phone instead": the QR shows once its URL is known.
-    pub(crate) fn passkey_use_phone(&mut self, cx: &mut Context<Self>) {
-        let _timed = timed();
-        self.passkey_phone.store(true, Ordering::Relaxed);
-        self.show_passkey_qr(cx);
-    }
-
-    pub(crate) fn passkey_qr(&mut self, url: String, cx: &mut Context<Self>) {
-        let _timed = timed();
-        self.passkey_url = url;
-        self.show_passkey_qr(cx);
-    }
-
-    /// The QR URL, while a ceremony runs and the person picked the phone.
-    fn show_passkey_qr(&mut self, cx: &mut Context<Self>) {
-        let shown = (self.passkey.is_some()
-            && self.passkey_phone.load(Ordering::Relaxed)
-            && !self.passkey_url.is_empty())
-        .then(|| self.passkey_url.clone());
-        self.edit(|state| state.passkey_qr = shown, cx);
+        self.passkey = Some(spawn_on_runtime(
+            cx,
+            work,
+            |this, joined, cx| match joined {
+                Ok(pubkey) => this.passkey_done(pubkey, cx),
+                Err(error) => this.passkey_failed(error, cx),
+            },
+        ));
     }
 
     pub(crate) fn passkey_cancel(&mut self, cx: &mut Context<Self>) {
@@ -871,7 +821,6 @@ impl Account {
             |state| {
                 state.busy = false;
                 state.passkey_waiting = false;
-                state.passkey_qr = None;
             },
             cx,
         );

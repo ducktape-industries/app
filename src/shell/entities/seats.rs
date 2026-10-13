@@ -1,5 +1,6 @@
 //! Every pane's `Seat`, by the pane's layout `instance`: one per view pane
-//! any window holds, placed in that window, told when it left every desk,
+//! any window holds, placed in that window (and told whether that window
+//! is the one in front), told when it left every desk,
 //! and handed the session as its props (`Session`, `Account` and the
 //! appearance, observed here; a seat turns only when the bytes moved).
 //! It follows `Windows` and every window's `Desk` (`reconcile`), and
@@ -8,6 +9,7 @@
 //! desks holding it, a link to `Windows`.
 use super::{Account, Notifications, Rail, Session, Windows};
 use crate::runtime::{Intent, Seat, WindowKey};
+use crate::shell::WindowKind;
 use crate::shell::layers::view_body;
 use crate::ui::layout::Layout;
 use gpui_kit::{AnyWindowHandle, App, AppContext as _, Context, Entity, Subscription, WeakEntity};
@@ -136,38 +138,41 @@ impl Seats {
         let Some(windows) = self.windows.upgrade() else {
             return;
         };
-        let (layouts, handles, console): (
-            BTreeMap<WindowKey, Layout>,
-            BTreeMap<WindowKey, AnyWindowHandle>,
-            Option<WindowKey>,
-        ) = {
+        let (layouts, handles, front) = {
             let windows = windows.read(cx);
-            (
-                windows
-                    .by_window()
-                    .iter()
-                    .map(|(key, own)| (*key, own.desk.read(cx).get().clone()))
-                    .collect(),
-                windows.handles().clone(),
-                windows.console(),
-            )
+            // the body is the frame's on a console's desk, where the pane
+            // is drawn framed; a window one view fills (a pop-out, `--live`)
+            // lays its pane out edge to edge, whatever frame the layout keeps
+            let layouts: BTreeMap<WindowKey, (Layout, bool)> = windows
+                .by_window()
+                .iter()
+                .map(|(key, own)| {
+                    let on_desk = own.kind == WindowKind::Console;
+                    (*key, (own.desk.read(cx).get().clone(), on_desk))
+                })
+                .collect();
+            (layouts, windows.handles().clone(), windows.front())
         };
-        type Place = (&'static str, Option<(AnyWindowHandle, Option<(f32, f32)>)>);
+        type Place = (
+            &'static str,
+            Option<(AnyWindowHandle, Option<(f32, f32)>, bool)>,
+        );
         let wanted: BTreeMap<u64, Place> = layouts
             .iter()
-            .flat_map(|(key, layout)| {
+            .flat_map(|(key, (layout, on_desk))| {
                 let window = handles.get(key).copied();
-                let console = console == Some(*key);
+                let on_desk = *on_desk;
+                let in_front = front == Some(*key);
                 layout
                     .panes
                     .iter()
                     .enumerate()
                     .filter(|(_, pane)| pane.is_view())
                     .map(move |(index, pane)| {
-                        let body = view_body(console, layout, index);
+                        let body = view_body(on_desk, layout, index);
                         (
                             pane.instance,
-                            (pane.module, window.map(|window| (window, body))),
+                            (pane.module, window.map(|window| (window, body, in_front))),
                         )
                     })
             })
@@ -183,7 +188,7 @@ impl Seats {
             let props = &self.props;
             let placed = self.map.entry(instance).or_insert_with(|| {
                 moved = true;
-                let seat = cx.new(|cx| Seat::new(module, cx));
+                let seat = cx.new(|cx| Seat::new(module, instance, cx));
                 let _intents = cx.subscribe(&seat, move |this, _, intent: &Intent, cx| {
                     this.route(module, instance, intent.clone(), cx)
                 });
@@ -191,10 +196,10 @@ impl Seats {
                 seat.update(cx, |seat, cx| seat.set_props(props.clone(), cx));
                 Placed { seat, _intents }
             });
-            if let Some((window, body)) = window {
+            if let Some((window, body, in_front)) = window {
                 placed
                     .seat
-                    .update(cx, |seat, cx| seat.place(window, body, cx));
+                    .update(cx, |seat, cx| seat.place(window, body, in_front, cx));
             }
         }
         let mut hidden = Vec::new();
@@ -272,17 +277,14 @@ impl Seats {
                     desk.update(cx, |desk, cx| desk.settle(cx));
                 }
             }
+            // from this pane: a link into its own program stays in it
             Intent::OpenLink(link) => {
                 if let Some(windows) = self.windows.upgrade() {
-                    windows.update(cx, |windows, cx| windows.open_link(&link, cx));
+                    windows.update(cx, |windows, cx| {
+                        windows.open_link(&link, Some((module, instance)), cx)
+                    });
                 }
             }
-            // the person is asked on the console, whichever window the
-            // view is in
-            Intent::Consent => match self.windows.upgrade() {
-                Some(windows) => windows.update(cx, |windows, cx| windows.sync_consent(cx)),
-                None => crate::runtime::consent::refuse_all(),
-            },
         }
     }
 

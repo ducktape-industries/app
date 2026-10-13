@@ -167,7 +167,8 @@ async fn a_block_s_receipts_carry_refusals_as_errors() {
             id: [hash; 32],
         },
         target: "chat".into(),
-        payload: vec![7],
+        size: 1,
+        payload: Some(vec![7]),
         receipt: Some(receipt),
     };
     let rejected = backend::noded::Receipt {
@@ -235,6 +236,36 @@ async fn a_block_s_receipts_carry_refusals_as_errors() {
     );
 }
 
+fn listed_tx(payload: Option<Vec<u8>>) -> backend::noded::Tx {
+    backend::noded::Tx {
+        hash: [4; 32],
+        signer: vec![5; 32],
+        anchor: backend::noded::Tip {
+            height: 6,
+            id: [6; 32],
+        },
+        target: "chat".into(),
+        size: 5_000,
+        payload,
+        receipt: None,
+    }
+}
+
+fn method_tx(payload: Option<Vec<u8>>) -> methods::Tx {
+    methods::Tx {
+        hash: [4; 32],
+        signer: vec![5; 32],
+        anchor: methods::Tip {
+            height: 6,
+            id: [6; 32],
+        },
+        target: "chat".into(),
+        size: 5_000,
+        payload,
+        receipt: None,
+    }
+}
+
 #[tokio::test]
 async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
     let finalized = backend::noded::Finalized {
@@ -244,51 +275,71 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
         time: 1_000,
         epoch: 0,
         proposer: Some(vec![3; 32]),
-        txs: vec![backend::noded::Tx {
-            hash: [4; 32],
-            signer: vec![5; 32],
-            anchor: backend::noded::Tip {
-                height: 6,
-                id: [6; 32],
-            },
-            target: "chat".into(),
-            payload: vec![7],
-            receipt: None,
-        }],
+        txs: vec![listed_tx(None)],
+    };
+    let listed = backend::noded::Page {
+        blocks: vec![finalized.clone()],
+        listed_from: Some(4),
     };
     let (node, server) = node_server(
         "POST /v1/blocks HTTP/1.1",
-        vec![("200 OK", abi::encode(&vec![finalized.clone()]))],
+        vec![("200 OK", abi::encode(&listed))],
     );
     let page = methods::encode(&methods::BlockPage {
         before: Some(10),
         limit: 1,
     });
     let answer = blocks(node, page).await.unwrap();
-    let decoded: Vec<methods::Block> = methods::decode(&answer).unwrap();
+    let decoded: methods::BlockList = methods::decode(&answer).unwrap();
     assert_eq!(
         decoded,
-        vec![methods::Block {
-            height: 9,
-            id: [1; 32],
-            parent: [2; 32],
-            time: 1_000,
-            epoch: 0,
-            proposer: Some(vec![3; 32]),
-            txs: vec![methods::Tx {
-                hash: [4; 32],
-                signer: vec![5; 32],
-                anchor: methods::Tip {
-                    height: 6,
-                    id: [6; 32],
-                },
-                target: "chat".into(),
-                payload: vec![7],
-                receipt: None,
+        methods::BlockList {
+            blocks: vec![methods::Block {
+                height: 9,
+                id: [1; 32],
+                parent: [2; 32],
+                time: 1_000,
+                epoch: 0,
+                proposer: Some(vec![3; 32]),
+                txs: vec![method_tx(None)],
             }],
-        }]
+            listed_from: Some(4),
+        }
     );
     server.join().unwrap();
+
+    let located = backend::noded::Located {
+        height: 9,
+        position: 0,
+        time: 1_000,
+        tx: listed_tx(Some(vec![7; 5_000])),
+    };
+    let (node, server) = node_server(
+        "POST /v1/tx HTTP/1.1",
+        vec![("200 OK", abi::encode(&Some(located)))],
+    );
+    let ask = methods::encode(&methods::TxAsk {
+        tx: methods::TxRef::At {
+            height: 9,
+            position: 0,
+        },
+        most: u32::MAX,
+    });
+    let answer = tx(node.clone(), ask).await.unwrap();
+    assert_eq!(
+        methods::decode::<Option<methods::Located>>(&answer).unwrap(),
+        Some(methods::Located {
+            height: 9,
+            position: 0,
+            time: 1_000,
+            tx: method_tx(Some(vec![7; 5_000])),
+        })
+    );
+    server.join().unwrap();
+    assert_eq!(
+        tx(node, b"x".to_vec()).await.unwrap_err().code,
+        refusal::MALFORMED_REQUEST
+    );
 
     let (node, server) = node_server(
         "POST /v1/block HTTP/1.1",

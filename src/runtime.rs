@@ -28,7 +28,10 @@ mod roster;
 mod seat;
 mod store;
 
-pub(crate) use kernel::local_offset;
+pub(crate) use kernel::{day, local_offset};
+// the web view cleans a page's title as a window's (render/web.rs)
+#[cfg(feature = "web")]
+pub(crate) use kernel::shown_title;
 pub use roster::{Link, RailRow, connected, deployments_checked, props, valid_route};
 pub(crate) use roster::{Roster, changes_channel, roster};
 pub use seat::override_views_from;
@@ -100,8 +103,8 @@ impl WindowKey {
 }
 
 /// What a view asked the app itself to do: `host.badge`, `host.title`,
-/// `link.open`, a `notify.post` that changed the centre, or an `op.submit`
-/// waiting on the person's yes.
+/// `link.open`, or a `notify.post` that changed the centre. An `op.submit`
+/// waiting on the person's yes wakes the shell itself (`consent`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
     /// `host.badge`: its unread count on the menu bar; 0 or less clears it.
@@ -116,9 +119,6 @@ pub enum Intent {
     /// A view was seated in its tab, first or after a new deployment: its
     /// minimum width is known, and the desk widens a window under it.
     Seated,
-    /// An `op.submit` waits on the person's confirmation (`consent`): the
-    /// console shows the front of the queue.
-    Consent,
 }
 
 /// Instruction budget for one call into a view: a ceiling that ends a
@@ -148,40 +148,37 @@ const RETRY_MAX: Duration = Duration::from_secs(60);
 /// behind these rather than forking a thread per program.
 const LOADERS: usize = 4;
 
-/// The route a link asked of each module's view, waiting for that view's
-/// first `host.route` subscriber. One per module: a newer link replaces an
-/// older one no view has read yet.
-fn pending_routes() -> &'static Mutex<std::collections::BTreeMap<&'static str, String>> {
-    static ROUTES: OnceLock<Mutex<std::collections::BTreeMap<&'static str, String>>> =
-        OnceLock::new();
+type Routes = Mutex<std::collections::BTreeMap<(&'static str, u64), String>>;
+
+/// The route a link asked of one seat's view, by the seat's registry key
+/// (`module`, its pane's instance), waiting for that view's first
+/// `host.route` subscriber. One per seat: a newer link replaces an older
+/// one the view has not read yet.
+fn pending_routes() -> &'static Routes {
+    static ROUTES: OnceLock<Routes> = OnceLock::new();
     ROUTES.get_or_init(Mutex::default)
 }
 
-/// Hold `route` for `module`'s view until it asks, and wake the seats
-/// already open on it: a view that is up reads the route in its next
-/// turn, and nothing else about it moves.
-pub(crate) fn route_to(module: &'static str, route: String) {
+/// Hold `route` for seat `instance` of `module` until its view asks, and
+/// wake that seat if it is open: its view reads the route in its next
+/// turn, and no other seat of the module hears of it.
+pub(crate) fn route_to(module: &'static str, instance: u64, route: String) {
     pending_routes()
         .lock()
         .expect("pending routes")
-        .insert(module, route);
+        .insert((module, instance), route);
     // registry, then seat: the order `retry` takes them in
-    let registry = lock(registry());
-    for seat in registry
-        .iter()
-        .filter(|((name, _), _)| *name == module)
-        .map(|(_, seat)| seat)
-    {
+    if let Some(seat) = lock(registry()).get(&(module, instance)) {
         lock(seat).wake.send_replace(());
     }
 }
 
-/// The route waiting for `module`, handed out once.
-pub(crate) fn take_route(module: &str) -> Option<String> {
+/// The route waiting for seat `instance` of `module`, handed out once.
+pub(crate) fn take_route(module: &'static str, instance: u64) -> Option<String> {
     pending_routes()
         .lock()
         .expect("pending routes")
-        .remove(module)
+        .remove(&(module, instance))
 }
 
 /// Leaks one copy of each distinct module name, so a name can be the
@@ -420,6 +417,40 @@ pub(crate) fn intent_for_test(module: &str, instance: u64, intent: Intent) {
     guest.intents.push(intent);
 }
 
+/// `module`'s seat `instance` listens for routes, as its view's
+/// `host.route` subscription (request 99) would.
+#[cfg(test)]
+pub(crate) fn listen_for_routes_for_test(module: &str, instance: u64) {
+    let registry = registry().lock().unwrap();
+    let Slot::Ready(guest) = &mut registry[&(module, instance)].lock().unwrap().slot else {
+        panic!("{module} is not seated");
+    };
+    guest.route_subscriptions.push(99);
+}
+
+/// The routes `module`'s seat `instance` was handed, in order.
+#[cfg(test)]
+pub(crate) fn routes_for_test(module: &str, instance: u64) -> Vec<String> {
+    let registry = registry().lock().unwrap();
+    let Slot::Ready(guest) = &registry[&(module, instance)].lock().unwrap().slot else {
+        panic!("{module} is not seated");
+    };
+    let routed = |event: &wire::Event| match event {
+        wire::Event::Response {
+            id,
+            result: Ok(item),
+            ..
+        } if guest.route_subscriptions.contains(id) => wire::methods::decode(item).ok(),
+        _ => None,
+    };
+    guest
+        .ticked_with
+        .iter()
+        .flatten()
+        .filter_map(routed)
+        .collect()
+}
+
 /// Every drawn view of `module` gives itself `name`, as its manifest
 /// would: the rail reads it on its next refresh.
 #[cfg(test)]
@@ -450,6 +481,19 @@ pub(crate) fn fault_for_test(module: &str, instance: u64) {
 /// what the view knew when it drew each frame.
 #[cfg(test)]
 pub(crate) fn ticks_for_test(module: &str) -> Vec<Vec<wire::Event>> {
+    seated_for_test(module, |guest| guest.ticked_with.clone())
+}
+
+/// Whether `module`'s seated view was last told it is on screen
+/// (`host.visible`).
+#[cfg(test)]
+pub(crate) fn visible_for_test(module: &str) -> bool {
+    seated_for_test(module, |guest| guest.visible)
+}
+
+/// `read` off the guest of `module`'s first seat; it panics unless seated.
+#[cfg(test)]
+fn seated_for_test<T>(module: &str, read: impl FnOnce(&Guest) -> T) -> T {
     let registry = registry().lock().unwrap();
     let seat = registry
         .iter()
@@ -457,7 +501,7 @@ pub(crate) fn ticks_for_test(module: &str) -> Vec<Vec<wire::Event>> {
         .map(|(_, seat)| seat.clone())
         .expect("a seat of the module");
     match &seat.lock().unwrap().slot {
-        Slot::Ready(guest) => guest.ticked_with.clone(),
+        Slot::Ready(guest) => read(guest),
         _ => panic!("{module} is not seated"),
     }
 }

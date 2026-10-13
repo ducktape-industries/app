@@ -86,3 +86,7 @@ needs.
 `cargo clippy --locked --workspace --tests --no-deps -- -D warnings` (and again
 with `--features ax-door`) and `cargo test --locked --workspace --no-fail-fast`
 are what CI runs.
+
+Each commit on `main` also has a built app: the prerelease `bin-<commit>`
+carries `ducktape-app-x86_64-unknown-linux-gnu.tar.gz` and an ad-hoc signed
+`ducktape-app-aarch64-apple-darwin.dmg` (`.github/workflows/release.yml`).

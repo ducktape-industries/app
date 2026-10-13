@@ -276,6 +276,80 @@ fn a_press_on_a_window_row_while_filled_fills_that_window(cx: &mut TestAppContex
     assert!(rows(&nodes).contains(&(general, "# general".into(), true)));
 }
 
+/// A window popped out of the desk stays listed (owner, 2026-10-11): under
+/// its program, after the desk's windows, marked as in a window of its
+/// own. A press on its row brings that OS window to the front, and its row
+/// is the one selected while it is; a press on its program brings it
+/// forward too, rather than opening the program on the desk again.
+#[gpui_kit::test]
+fn a_popped_out_window_stays_listed_and_its_row_brings_it_forward(cx: &mut TestAppContext) {
+    let seed = sidebar(
+        &["side-pop", "side-stay"],
+        &[("side-stay", None), ("side-pop", None)],
+    );
+    let (app, key, view, mut native) = crate::shell::layers::tests::open_console(seed, cx);
+    let [_, popped] = instances(&view, &mut native)[..] else {
+        panic!("two windows")
+    };
+    let (_, handle, _) = crate::shell::layers::tests::pop_out(&app, key, &view, &mut native);
+    let in_front = |native: &mut VisualTestContext| {
+        native.update(|_, cx| {
+            handle
+                .update(cx, |_, window, _| window.is_window_active())
+                .unwrap()
+        })
+    };
+    activate(&mut native);
+    assert!(!in_front(&mut native), "the console is in front");
+    let nodes = native.update(drawn);
+    let row = format!("shell:rail/side-pop/{popped}");
+    let listed =
+        |id: &str, name: &str, selected: bool| (format!("shell:{id}"), name.to_owned(), selected);
+    assert_eq!(
+        rows(&nodes),
+        [
+            listed("rail/side-pop", "Side pop · Loading", false),
+            listed(&format!("rail/side-pop/{popped}"), "Side pop", false),
+            listed("rail/side-stay", "Side stay · Loading", true),
+        ]
+    );
+    assert_eq!(node(&nodes, &row)["description"], "In a window of its own");
+    let errors = super::gate::errors(&mut native, "sidebar-popped", false);
+    assert!(errors.is_empty(), "{errors:#?}");
+
+    let nodes = native.update(drawn);
+    native.simulate_click(middle(&nodes, &row), gpui_kit::Modifiers::none());
+    native.run_until_parked();
+    assert!(in_front(&mut native), "the pop-out came forward");
+    let nodes = native.update(drawn);
+    assert!(
+        rows(&nodes).contains(&(row.clone(), "Side pop".into(), true)),
+        "{:?}",
+        rows(&nodes)
+    );
+
+    activate(&mut native);
+    let nodes = native.update(drawn);
+    native.simulate_click(
+        middle(&nodes, "shell:rail/side-pop"),
+        gpui_kit::Modifiers::none(),
+    );
+    native.run_until_parked();
+    assert!(in_front(&mut native), "its program brought it forward");
+    let modules: Vec<&str> = view.read_with(&native, |view, cx| {
+        view.layout(cx)
+            .panes
+            .iter()
+            .map(|pane| pane.module)
+            .collect()
+    });
+    assert_eq!(
+        modules,
+        ["side-stay"],
+        "the program opened on the desk again"
+    );
+}
+
 /// Under the pointer a program's row shows a `+`, and a press on it opens
 /// another window of the program, in front; away from the row it is gone.
 #[gpui_kit::test]
@@ -391,6 +465,46 @@ fn the_desk_and_the_dot_follow_the_sidebar(cx: &mut TestAppContext) {
         f32::from(dot.origin.y) < 36. && f32::from(dot.origin.x) > 220.,
         "the dot at {dot:?}"
     );
+}
+
+/// A window dragged left by its title bar stops at the sidebar's edge
+/// (owner, 2026-10-11): nothing of it goes over or under the column. A
+/// press on the column at that edge, within reach of the window's grip, is
+/// the column's: it neither raises the window nor takes hold of its edge.
+#[gpui_kit::test]
+fn a_window_dragged_left_stops_at_the_sidebar(cx: &mut TestAppContext) {
+    use crate::shell::panes_tests::drag;
+    let seed = sidebar(
+        &["side-left", "side-front"],
+        &[("side-left", None), ("side-front", None)],
+    );
+    let (view, mut native) = open(seed, cx);
+    let at = instances(&view, &mut native);
+    let frame = |native: &mut VisualTestContext| {
+        view.read_with(native, |view, cx| view.layout(cx).panes[0].frame.unwrap())
+    };
+    let start = frame(&mut native);
+    // its title bar, above the window in front, dragged far past the column
+    let title = (220. + start.x + 100., start.y + 15.);
+    drag(&mut native, title, (-500., title.1));
+    let stopped = frame(&mut native);
+    assert_eq!((stopped.x, stopped.y, stopped.w), (0., start.y, start.w));
+    let nodes = native.update(drawn);
+    assert_eq!(
+        bounds(&nodes, "shell:pane/0")[0],
+        220.,
+        "at the column's edge"
+    );
+    // the other window in front, then the column pressed over the left grip
+    pane(&view, PaneMessage::Focus(1), &mut native);
+    let column = (218., stopped.y + stopped.h / 2.);
+    drag(&mut native, column, (column.0 + 80., column.1));
+    assert_eq!(
+        frame(&mut native),
+        stopped,
+        "the column took hold of its edge"
+    );
+    assert_eq!(front(&view, &mut native), at[1], "the column raised it");
 }
 
 /// In the sidebar a menu opens beside the column: the network's 4px right

@@ -10,11 +10,16 @@
 //! holds the arms in this directory to it. Where each kind is answered:
 //!
 //! Here, in [`answer`], from app state, on the window thread:
-//! - `host.visible` — a subscription to whether the view's window shows it.
+//! - `host.visible` — a subscription to whether the person is looking at
+//!   the view: its pane is on a desk of the window in front.
 //! - `host.route` — a subscription that gets the route a `duck://` link
 //!   asked of this view (`explorer/tx/<hash>` → `tx/<hash>`), once,
 //!   DECODED: the link's `%XX` escapes read back (`chat/forge%3Aweb%3A3`
-//!   → `forge:web:3`), checked by `valid_route`.
+//!   → `forge:web:3`), checked by `valid_route`. The view whose manifest
+//!   declares `web` gets an http(s) link the app opens as its whole
+//!   address instead, checked by the web piece's own rule
+//!   (`render/web.rs` `view_for`: https, or http on this machine, at most
+//!   2048 bytes, no user name or password).
 //! - `host.badge` — the tab's unread count; `host.title` — the name of the
 //!   view's window, cleaned ([`shown_title`]); `host.id` — a minted id under a
 //!   short prefix; `link.open` — the one way out: a `duck://` link, or an
@@ -40,9 +45,12 @@
 //!   lost answer is reported ([`refusal::NODE_FAILED`]), never followed by
 //!   a second submission.
 //! - `chain.status` — node status as `NodeStatus`.
-//! - `chain.blocks` `BlockPage` — finalized blocks, newest first, from the
-//!   node's block archive (`/v1/blocks`); `chain.block` `BlockRef` — one by
-//!   height or id (`/v1/block`).
+//! - `chain.blocks` `BlockPage` — finalized blocks, newest first, as the
+//!   node lists them (`/v1/blocks`): each transaction's size, its payload
+//!   only when short, and the lowest height the node lists; `chain.block`
+//!   `BlockRef` — one by height or id (`/v1/block`); `chain.tx` `TxAsk` —
+//!   one transaction by its place or hash, its payload when at most `most`
+//!   bytes (`/v1/tx`).
 //! - `blob.get` `<id>` — a blob by `sha256:<hex>` or `sha1:<hex>` id, unframed.
 //! - `module.describe` `(program, op)` — the op as the program's own
 //!   describe module reads it, or `None` (`describe`).
@@ -129,7 +137,7 @@ mod replies;
 pub(super) use node::{NodeTask, reconnected, spawn_reply};
 use node::{
     blob_get, block, blocks, changes, heads, invite, network, query, spawn_no_retry,
-    spawn_retrying, spawn_retrying_unsent, status, submit,
+    spawn_retrying, spawn_retrying_unsent, status, submit, tx,
 };
 use replies::InFlight;
 pub(super) use replies::Replies;
@@ -279,11 +287,23 @@ pub(super) fn answer(
         (Capability::Chain, "block") => {
             spawn_retrying(guest, id, payload, block, "host_call.chain.block")
         }
+        (Capability::Chain, "tx") => spawn_retrying(guest, id, payload, tx, "host_call.chain.tx"),
+        // the node's key signs an invite: only a role's own view asks
+        // for one (a view no vote reviewed could hand it to its program)
         (Capability::Invite, "create") => {
+            if !super::consent::bound(guest.module, super::roster().roles().as_ref()) {
+                guest.refuse(
+                    id,
+                    refusal::UNDECLARED_CAPABILITY,
+                    "`invite.create` is a role's own view's: this view's program is bound to no role",
+                );
+                return true;
+            }
             spawn_no_retry(guest, id, payload, invite, "host_call.invite.create")
         }
-        // a write: to a declared target, and where the op removes or
-        // suspends a key or an agent, after the person's native yes
+        // a write: to a declared target, and after the person's native
+        // yes where the op removes or suspends a key or an agent, or is a
+        // view no vote reviewed writing to a role (`consent::needed`)
         (Capability::Op, "submit") => {
             let Some(call) = node::targeted(guest, id, payload, "op.submit") else {
                 return true;
@@ -304,7 +324,7 @@ pub(super) fn answer(
                 own,
             ) {
                 None => spawn_retrying_unsent(guest, id, payload, submit, "host_call.op.submit"),
-                Some(words) => node::spawn_consented(guest, id, payload, words),
+                Some(words) => node::spawn_consented(guest, id, payload, call, words),
             }
         }
         (Capability::Blob, "get") => {
@@ -410,20 +430,23 @@ pub(super) fn answer(
 /// The most of a `host.title` the host shows, in chars.
 const MAX_TITLE: usize = 80;
 
-/// A `host.title` as the window shows it, one line of the view's own text:
-/// no control characters, no bidi embedding, override or isolate (each
-/// reorders what follows it), no line or paragraph separator, no space at
-/// either end, at most [`MAX_TITLE`] chars (a cut on a char boundary).
-/// Direction marks and joiners stay: an RTL name or an emoji needs them.
-fn shown_title(title: &str) -> String {
-    let shown = |c: &char| {
-        !(c.is_control()
-            || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
-            || matches!(c, '\u{2028}' | '\u{2029}'))
-    };
-    let title: String = title.chars().filter(shown).collect();
+/// A `host.title` as the window shows it, one line of the view's own text
+/// ([`plain`] chars), no space at either end, at most [`MAX_TITLE`] chars
+/// (a cut on a char boundary).
+pub(crate) fn shown_title(title: &str) -> String {
+    let title: String = title.chars().filter(plain).collect();
     let cut: String = title.trim_start().chars().take(MAX_TITLE).collect();
     cut.trim_end().to_owned()
+}
+
+/// Whether the host shows a char of a view's text as it is, on one line: no
+/// control character, no bidi embedding, override or isolate (each
+/// reorders what follows it), no line or paragraph separator. Direction
+/// marks and joiners stay: an RTL name or an emoji needs them.
+pub(crate) fn plain(c: &char) -> bool {
+    !(c.is_control()
+        || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        || matches!(c, '\u{2028}' | '\u{2029}'))
 }
 
 /// Whether `link.open` may open `link`: `duck://` or `https://` with
@@ -447,6 +470,24 @@ pub(crate) fn local_offset(wall: i64) -> i64 {
             false => tm.tm_gmtoff as i64,
         }
     }
+}
+
+/// Unix second `seconds` as its UTC day: `27 Sep 2026`.
+pub(crate) fn day(seconds: u64) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    // days since 1970-01-01 to a civil date (Howard Hinnant's algorithm)
+    let z = (seconds / 86_400) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{day} {} {year}", MONTHS[(month - 1) as usize])
 }
 
 /// The reader's UTC offset in minutes now, as `Event::Offset` carries it

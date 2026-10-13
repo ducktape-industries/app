@@ -27,7 +27,7 @@ pub(crate) use account::{Account, AccountEvent, AccountState, Secret};
 pub(crate) use chain::Chain;
 pub(crate) use desk::Desk;
 pub(crate) use dot::DotSlot;
-pub(crate) use front::{Front, Listed};
+pub(crate) use front::{Front, Listed, Popped};
 pub(crate) use notifications::{Notifications, permission};
 pub(crate) use overlays::{Overlay, Overlays, Popover, SettingsPage, Spot, SpotRow};
 pub(crate) use prefs::Prefs;
@@ -105,6 +105,7 @@ impl Entities {
         };
         let rail = cx.new(|cx| Rail::new(roster, changes, &session, cx));
         let notifications = cx.new(|_| Notifications::new(center));
+        notifications.update(cx, |notifications, cx| notifications.follow(&session, cx));
         let toast = cx.new(|cx| Toast::new(&session, &account, cx));
         let seats = cx.new(|cx| Seats::new(&session, &account, &rail, &notifications, cx));
         let shared = Shared {
@@ -135,6 +136,10 @@ impl Entities {
 /// One OS window's own entities.
 #[derive(Clone)]
 pub(crate) struct WindowEntities {
+    /// The console (a desk of framed windows under a bar) or a window one
+    /// view fills: what its panes' bodies are measured from (`Seats`), as
+    /// its layer draws them.
+    pub(crate) kind: crate::shell::WindowKind,
     pub(crate) desk: Entity<Desk>,
     /// What is open over it (only the console's opens anything), and ⌘K's
     /// text: their methods write them.

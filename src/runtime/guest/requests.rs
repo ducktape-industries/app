@@ -386,6 +386,9 @@ impl Guest {
             let _decoded = perf::time(key, "tick.decode");
             shape(&frame, &mut self.styles)
         });
+        let outcome = outcome.and_then(|shaped| {
+            crate::render::web::declared(&shaped.0, &self.capabilities).map(|()| shaped)
+        });
         match outcome {
             Ok((mut frame, mut reports)) => {
                 let kind = match (frame.root.is_some(), frame.unchanged) {

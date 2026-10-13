@@ -2,13 +2,13 @@
 //! the window's top (the network, the programs as tabs, then Search (⌘K),
 //! the bell, the node's breath, who is signed in, and Settings), or the
 //! sidebar down its left (`sidebar.rs`: the same buttons, and under each
-//! program the windows it has open); and the menus hanging from its
-//! buttons (`menus.rs`, `bell.rs`). A cached view of its own over the
-//! slices it reads: a write that moves none of them leaves it alone, and a
-//! pane's tick never reaches it. It writes one thing, `DotSlot`: where the
-//! node button's 12px well was laid out, read at prepaint and committed
-//! after the frame when it moved. What is placed against the chrome reads
-//! where it sits off `chrome_inset`.
+//! program the windows it has open, its pop-outs too); and the menus
+//! hanging from its buttons (`menus.rs`, `bell.rs`). A cached view of its
+//! own over the slices it reads: a write that moves none of them leaves it
+//! alone, and a pane's tick never reaches it. It writes one thing,
+//! `DotSlot`: where the node button's 12px well was laid out, read at
+//! prepaint and committed after the frame when it moved. What is placed
+//! against the chrome reads where it sits off `chrome_inset`.
 //!
 //! Each open menu hangs beside its button (`footed`), deferred and
 //! anchored to the button's corner 4px past the chrome; the backdrop under
@@ -20,7 +20,7 @@
 
 use super::super::entities::{
     Account, Chain, DotSlot, Entities, Front, Listed, Notifications, Observed, Overlay, Overlays,
-    Popover, Prefs, Rail, Session, Slice, WindowEntities, Windows,
+    Popover, Popped, Prefs, Rail, Session, Slice, WindowEntities, Windows,
 };
 use super::super::ink::{Ink, mono, sans};
 use super::super::{
@@ -94,6 +94,7 @@ pub(in crate::shell) struct Chrome {
     notifications: Observed<Notifications>,
     overlays: Observed<Overlays>,
     front: Observed<Slice<Front>>,
+    popped: Observed<Slice<Popped>>,
     prefs: Observed<Slice<Prefs>>,
     dot: Observed<DotSlot>,
     /// The box the open menu's card hangs from holds the keys by this; the
@@ -138,6 +139,7 @@ impl Chrome {
             app.notifications.clone(),
             app.prefs.clone(),
         );
+        let popped = app.windows.read(cx).popped().clone();
         let (stop, menu) = (cx.focus_handle().tab_stop(true), cx.focus_handle());
         let subscriptions = [
             // the rail's cursor lasts as long as the rail has the keys
@@ -165,6 +167,7 @@ impl Chrome {
             notifications: Observed::new(&notifications, cx),
             overlays: Observed::new(&own.overlays, cx),
             front: Observed::new(&own.front, cx),
+            popped: Observed::new(&popped, cx),
             prefs: Observed::new(&prefs, cx),
             dot: Observed::new(&own.dot, cx),
             windows: app.windows,
@@ -525,10 +528,11 @@ struct Bar {
     account: Option<Option<(u64, String)>>,
     open: Option<Overlay>,
     focused: Option<&'static str>,
-    /// The focused window.
+    /// The window in front: a pop-out's while it is the OS window in
+    /// front, else the desk's focused one.
     front: Option<u64>,
-    /// Every window on the desk, in layout order.
-    on_desk: Vec<Listed>,
+    /// Every window: the desk's in layout order, then the pop-outs'.
+    listed: Vec<Listed>,
     rows: Vec<crate::runtime::RailRow>,
 }
 
@@ -909,11 +913,12 @@ impl Render for Chrome {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf::count(crate::perf::Key::Window(self.key), "renders.chrome", 1);
         let bar = {
-            let (session, account, prefs, front) = (
+            let (session, account, prefs, front, popped) = (
                 self.session.read(cx).get(),
                 self.account.read(cx).get(),
                 self.prefs.read(cx).get(),
                 self.front.read(cx).get(),
+                self.popped.read(cx).get(),
             );
             Bar {
                 layout: prefs.layout_or_default(),
@@ -927,8 +932,8 @@ impl Render for Chrome {
                 account: account.account.clone(),
                 open: *self.overlays.read(cx).get(),
                 focused: front.focused,
-                front: front.front,
-                on_desk: front.open.clone(),
+                front: popped.front.or(front.front),
+                listed: [&front.open[..], &popped.open[..]].concat(),
                 rows: self.rail.read(cx).rows().to_vec(),
             }
         };
@@ -1058,7 +1063,7 @@ impl Chrome {
                 .px(px(10.))
                 .cursor_pointer()
                 .text_color(
-                    match selected || bar.on_desk.iter().any(|it| it.module == module) {
+                    match selected || bar.listed.iter().any(|it| it.module == module) {
                         true => ink.ink,
                         false => ink.muted,
                     },

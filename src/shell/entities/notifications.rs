@@ -2,9 +2,9 @@
 //! count, the views asking for permission, and the log's revision, so a
 //! change that leaves the count alone (clearing read rows) still moves it.
 //! Read off the centre by `refresh`: after each of the centre's methods
-//! here, on a view's `Intent::Notified` (`Seats`), and after a banner's
-//! click (`Windows`).
-use super::{Prefs, Slice};
+//! here, on a view's `Intent::Notified` (`Seats`), after a banner's click
+//! (`Windows`), and as the session connects (`follow`).
+use super::{Prefs, Session, SessionEvent, Slice};
 use crate::runtime::notify::{self, CenterHandle, Entry, Permission};
 use gpui_kit::{App, Context, Entity};
 use std::collections::BTreeSet;
@@ -52,6 +52,18 @@ impl Notifications {
     fn read(center: &CenterHandle) -> (usize, BTreeSet<String>, u64) {
         let center = center.lock();
         (center.unread(), center.asking.clone(), center.rev())
+    }
+
+    /// Read again each time the session connects: the centre has just
+    /// taken up that chain's log off disk (`Session`, `set_network`), and
+    /// no view has posted to say so.
+    pub(crate) fn follow(&self, session: &Entity<Session>, cx: &mut Context<Self>) {
+        cx.subscribe(session, |this, _, event: &SessionEvent, cx| {
+            if let SessionEvent::Connected = event {
+                this.refresh(cx);
+            }
+        })
+        .detach();
     }
 
     /// The centre itself, for whoever tells it which window is in front.
@@ -140,9 +152,8 @@ mod tests {
     use crate::runtime::notify::Settings;
     use gpui_kit::{AppContext as _, TestAppContext};
 
-    #[gpui_kit::test]
-    fn clear_read_moves_the_notifications_slice(cx: &mut TestAppContext) {
-        let center = CenterHandle::default();
+    /// One notice from chat into `center`, logged unread.
+    fn post(center: &CenterHandle) {
         let settings = Settings {
             banners: true,
             in_front: false,
@@ -157,6 +168,12 @@ mod tests {
         };
         let now = std::time::Instant::now();
         let _ = center.lock().post(&settings, "chat", "Chat", post, now, 0);
+    }
+
+    #[gpui_kit::test]
+    fn clear_read_moves_the_notifications_slice(cx: &mut TestAppContext) {
+        let center = CenterHandle::default();
+        post(&center);
         center.lock().mark_all_read();
         let slice = cx.new(|_| Notifications::new(center.clone()));
         let (seen, _observing) = crate::shell::entities::tests::notifies(&slice, cx);
@@ -168,5 +185,31 @@ mod tests {
         assert!(slice.update(cx, |slice, cx| slice.refresh(cx)));
         assert_eq!(seen.get(), 1, "the bell's list lost a row and said nothing");
         assert_eq!(slice.read_with(cx, |slice, _| slice.unread), 0);
+    }
+
+    /// A connect takes up the chain's log off disk (`set_network`) and no
+    /// view posts to say so: the bell reads its count again as the session
+    /// says it connected, not at the next notice.
+    #[gpui_kit::test]
+    fn a_connect_reads_the_log_it_took_up(cx: &mut TestAppContext) {
+        let center = CenterHandle::default();
+        let app = cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::shell::entities::Entities::for_test(Default::default(), center.clone(), cx)
+        });
+        // as `set_network` leaves the centre: a row off disk, unread
+        post(&center);
+        let unread = |cx: &mut TestAppContext| {
+            app.notifications
+                .read_with(cx, |notifications, _| notifications.unread())
+        };
+        assert_eq!(unread(cx), 0);
+        app.session
+            .update(cx, |_, cx| cx.emit(SessionEvent::Connected));
+        assert_eq!(
+            unread(cx),
+            1,
+            "the bell kept the count from before the connect"
+        );
     }
 }

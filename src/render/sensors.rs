@@ -17,7 +17,7 @@ pub(super) struct SensorState {
 /// [`crate::render::GRAB`] px on both sides of the axis it resizes (both axes
 /// for other cursors), the same reach desk window borders have, so a press
 /// just beside a 1px divider still starts a resize. Absolutely positioned
-/// over the neighbouring panes and occluding them.
+/// over the neighbouring panes.
 pub(super) fn grip(cursor: CursorStyle) -> gpui_kit::Stateful<Div> {
     let (x, y) = grip_reach(cursor);
     div()
@@ -28,7 +28,7 @@ pub(super) fn grip(cursor: CursorStyle) -> gpui_kit::Stateful<Div> {
         .top(px(-y))
         .bottom(px(-y))
         .cursor(cursor)
-        .occlude()
+        .block_mouse_except_scroll()
 }
 
 /// How far a grip reaches past its handle, across and along.

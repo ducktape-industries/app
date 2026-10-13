@@ -900,3 +900,38 @@ fn a_seat_at_its_picture_budget() {
 fn a_seat_drawing_the_same_trees_with_one_byte_pictures() {
     resident_at_the_picture_budget(1);
 }
+
+/// A frame with a web piece ends a view whose manifest does not declare
+/// `web`, as a frame the host cannot take does; a view that declares it
+/// draws it.
+#[test]
+fn a_web_piece_from_a_view_without_the_web_capability_ends_the_view() {
+    let page = || wire::Node::Web {
+        id: wire::ElementIdWire::Name("page".into()),
+        url: "https://example.com/".into(),
+        style: crate::render::plain_style(),
+        revision: 0,
+        commands: Vec::new(),
+        on_state: None,
+    };
+    let mut declaring = scripted_view();
+    declaring.capabilities = vec![Capability::Web];
+    draw(&mut declaring, vec![page()]);
+
+    let mut guest = scripted_view();
+    answer(
+        &mut guest,
+        &crate::render::sent(wire::Frame {
+            root: Some(page()),
+            ..Default::default()
+        }),
+    );
+    assert!(
+        guest
+            .fault
+            .as_deref()
+            .is_some_and(|fault| fault.contains("`web`")),
+        "{:?}",
+        guest.fault
+    );
+}

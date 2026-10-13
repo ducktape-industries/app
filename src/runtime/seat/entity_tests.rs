@@ -2,6 +2,7 @@
 //! `layers::PaneView` does: its tree, cached, or its standin.
 use super::tests::eventually;
 use super::*;
+use crate::ui::layout::Pane;
 use gpui_kit::{
     Entity, IntoElement, ParentElement as _, Render, Styled as _, Subscription, TestAppContext,
     VisualTestContext, div, px, size,
@@ -68,9 +69,9 @@ fn another(
     selection_layer: bool,
 ) -> (Entity<Seat>, Entity<Root>, VisualTestContext) {
     let window = cx.open_window(size(px(400.), px(300.)), |window, cx| {
-        let seat = cx.new(|cx| Seat::new(module, cx));
+        let seat = cx.new(|cx| Seat::new(module, Pane::new(module).instance, cx));
         seat.update(cx, |seat, cx| {
-            seat.place(window.window_handle(), Some((400., 300.)), cx)
+            seat.place(window.window_handle(), Some((400., 300.)), true, cx)
         });
         Root {
             seat: seat.clone(),
@@ -344,7 +345,7 @@ fn a_busy_frame_turns_once_per_frame(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_seat_turns_when_its_props_move_and_not_otherwise(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
-    let seat = cx.new(|cx| Seat::new("props-turn-test", cx));
+    let seat = cx.new(|cx| Seat::new("props-turn-test", Pane::new("props-turn-test").instance, cx));
     seat.update(cx, |seat, cx| seat.set_props(b"one".to_vec(), cx));
     cx.run_until_parked();
     assert_eq!(turns_of(&seat, cx), 1);
@@ -526,7 +527,7 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
     // the focus itself, not the reply.
     cx.update(gpui_kit::init);
     let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
-        let seat = cx.new(|cx| Seat::new(MODULE, cx));
+        let seat = cx.new(|cx| Seat::new(MODULE, Pane::new(MODULE).instance, cx));
         Root {
             seat: seat.clone(),
             selection_layer: false,
@@ -541,7 +542,7 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
         seat.update(cx, |seat, cx| {
             // the pane in front, as the pane layer would say
             seat.set_keys_free(true, cx);
-            seat.place(handle, Some((400., 300.)), cx);
+            seat.place(handle, Some((400., 300.)), true, cx);
             seat.turn(cx);
         });
         handle
@@ -915,7 +916,8 @@ fn a_route_reaches_an_open_view(cx: &mut TestAppContext) {
         };
         guest.route_subscriptions.push(99);
     }
-    crate::runtime::route_to(MODULE, "somewhere".into());
+    let instance = seat.read_with(&native, |seat, _| seat.instance());
+    crate::runtime::route_to(MODULE, instance, "somewhere".into());
     native.run_until_parked();
     assert_eq!(
         ticks_of(&seat, &native),
@@ -990,8 +992,9 @@ fn a_seat_ticks_once_per_draw_of_its_tree(cx: &mut TestAppContext) {
     let routed = seat.clone();
     native.update(|_, cx| {
         seat.update(cx, |seat, cx| seat.set_props(b"moved".to_vec(), cx));
+        let instance = routed.read(cx).instance();
         cx.defer(move |cx| {
-            crate::runtime::route_to(MODULE, "somewhere".into());
+            crate::runtime::route_to(MODULE, instance, "somewhere".into());
             routed.update(cx, |seat, cx| seat.turn(cx));
         });
     });
@@ -1168,7 +1171,7 @@ fn a_seat_claimed_or_dropped_wakes_the_rail(cx: &mut TestAppContext) {
         }
         n
     };
-    let seat = cx.new(|cx| Seat::new("rail-wake-seat", cx));
+    let seat = cx.new(|cx| Seat::new("rail-wake-seat", Pane::new("rail-wake-seat").instance, cx));
     assert!(woken() > 0, "a claimed seat told the rail nothing");
     let key = seat.read_with(cx, |seat, _| (seat.module(), seat.instance()));
     // a retry (Loading again) and the load it starts (no node: a failure

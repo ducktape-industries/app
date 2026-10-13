@@ -54,7 +54,8 @@ pub(crate) struct Roster {
 
 /// The roles as the registry answered them, and the connection (`rev`)
 /// that was asked: they are asked once per connection, and again when the
-/// roster moved (a registry upgrade is a move), never each block.
+/// roster moved (a registry upgrade is a move), never each block; no
+/// bindings answered pins nothing, and the next read asks again.
 #[derive(Default)]
 struct Bound {
     asked_of: Option<u64>,
@@ -80,6 +81,12 @@ impl Roster {
     /// question (one from before it).
     pub(crate) fn roles(&self) -> Option<abi::Roles> {
         self.bound().roles.clone()
+    }
+
+    /// The role bindings as if the registry had answered `roles`.
+    #[cfg(test)]
+    pub(crate) fn bind(&self, roles: Option<abi::Roles>) {
+        self.bound().roles = roles;
     }
 
     /// A roster of its own that lists `modules`, for a test to draw or
@@ -184,6 +191,19 @@ pub struct RailRow {
     pub empty: bool,
 }
 
+/// How far a seat's view has come, readiest first: the rail names a
+/// program by its readiest seat.
+fn readiness(slot: &Slot) -> u8 {
+    match slot {
+        Slot::Ready(guest) if !guest.name.is_empty() => 0,
+        Slot::Compiled { name, .. } if !name.is_empty() => 1,
+        Slot::Ready(_) | Slot::Compiled { .. } => 2,
+        Slot::Empty => 3,
+        Slot::Failed(_) => 4,
+        Slot::Loading | Slot::Fetching { .. } | Slot::Compiling => 5,
+    }
+}
+
 impl Roster {
     pub(crate) fn rail(&self) -> Vec<RailRow> {
         let _timed = crate::perf::time(crate::perf::Key::Shell, "rail");
@@ -199,10 +219,14 @@ impl Roster {
         programs
             .into_iter()
             .map(|module| {
+                // one seat a pane: the row is the readiest one's, so two
+                // panes of a program, one still loading, never flip the row
+                // between their names as the map's order happens to fall
                 let seat = registry
                     .iter()
-                    .find_map(|((name, _), seat)| (*name == module).then_some(seat))
-                    .map(|seat| lock(seat));
+                    .filter(|((name, _), _)| *name == module)
+                    .min_by_key(|((_, instance), seat)| (readiness(&lock(seat).slot), *instance))
+                    .map(|(_, seat)| lock(seat));
                 let (label, note, empty) = match seat.as_ref().map(|seat| &seat.slot) {
                     Some(Slot::Ready(guest)) if !guest.name.is_empty() => {
                         (guest.name.clone(), None, false)
@@ -346,9 +370,12 @@ pub(super) fn read_roster(asked_of: Connection, roster: &Roster, registry: &Regi
         if node_since_left {
             return;
         }
+        // no bindings (an old registry, or a refusal: one 400 reads the
+        // same) are asked again on the next read: a `None` kept for the
+        // connection would keep the consent card off all that time
         if let Some(roles) = roles {
             *roster.bound() = Bound {
-                asked_of: Some(asked_of.rev),
+                asked_of: roles.is_some().then_some(asked_of.rev),
                 roles,
             };
         }
@@ -673,6 +700,44 @@ mod rail_tests {
         lock(registry()).remove(&(module, 0));
         assert_eq!((row.label.as_str(), row.note), ("Compiled view", None));
         assert!(!row.empty);
+    }
+
+    /// Two panes of one program hold a seat each; while one is still on
+    /// its way the row keeps the name the other's view gives itself, on
+    /// every read, whatever order the seats are kept in: it flipped
+    /// between "Nodes" and "Valset · Loading" as the map's order fell.
+    #[test]
+    fn a_program_with_two_seats_is_named_by_its_readiest() {
+        let module = "rail-tests-two-seats";
+        let named = Mounted::seat();
+        lock(&named).slot = Slot::Compiled {
+            name: "Nodes".into(),
+            icon: String::new(),
+            min_width: 320,
+        };
+        let instances = 1..=16u64;
+        {
+            let mut registry = lock(registry());
+            for instance in instances.clone() {
+                registry.insert((module, instance), Mounted::seat());
+            }
+            registry.insert((module, 9), named);
+        }
+        let roster = Roster::listing(&[module]);
+        let rows: Vec<RailRow> = (0..8)
+            .flat_map(|_| roster.rail())
+            .filter(|row| row.module == module)
+            .collect();
+        {
+            let mut registry = lock(registry());
+            for instance in instances {
+                registry.remove(&(module, instance));
+            }
+        }
+        assert_eq!(rows.len(), 8);
+        for row in rows {
+            assert_eq!((row.label.as_str(), row.note), ("Nodes", None));
+        }
     }
 
     /// A view-only entry (no program behind it) is a rail row like any

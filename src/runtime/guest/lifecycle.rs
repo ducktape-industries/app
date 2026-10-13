@@ -23,10 +23,10 @@ impl Guest {
     /// go on, opened on it, and the rest of the work started on the old one
     /// is retired (`kernel::reconnected`).
     pub(crate) fn reconnect(&mut self, connection: &Connection) {
-        if self.connection_rev == connection.rev {
+        if self.connection.rev == connection.rev {
             return;
         }
-        self.connection_rev = connection.rev;
+        self.connection = connection.clone();
         self.clipboard = Default::default();
         kernel::reconnected(self, connection);
     }
@@ -72,7 +72,8 @@ impl Guest {
                     before_any_candidate(Failure::Refused(format!("{shown}: {error}")))
                 })?;
                 Self::compile(&bytes, &shown).map_err(before_any_candidate)?;
-                let (name, _, min_width, _, icon) = manifest_of(&bytes);
+                let (name, capabilities, min_width, _, icon) = manifest_of(&bytes);
+                crate::render::web::seen(module, &capabilities);
                 return Ok(Loaded::Compiled {
                     name,
                     icon,
@@ -172,6 +173,7 @@ impl Guest {
                 1,
             );
             let (name, capabilities, min_width, targets, icon) = manifest_of(&view_bytes);
+            crate::render::web::seen(module, &capabilities);
             // a seat no pane holds stops here: the rail reads its name and
             // its icon off the manifest, and the pane that claims it starts it
             if instance == 0 && against.is_none() {
@@ -423,7 +425,7 @@ impl Guest {
             targets,
             min_width,
             hash,
-            connection_rev: _,
+            connection: _,
             activation: _,
             links: _,
             undeclared_logged: _,
@@ -617,6 +619,7 @@ impl Guest {
             guest.targets,
             guest.icon,
         ) = manifest_of(bytes);
+        crate::render::web::seen(module, &guest.capabilities);
         guest.init(shown)?;
         Ok(guest)
     }
@@ -697,7 +700,7 @@ impl Guest {
         let exports =
             Exports::bind(&mut store, &instance).map_err(|error| format!("{shown}: {error}"))?;
         Ok(Self {
-            connection_rev: connection().lock().expect("views rpc").rev,
+            connection: connection().lock().expect("views rpc").clone(),
             activation: None,
             links: Vec::new(),
             module,
@@ -767,13 +770,13 @@ impl Guest {
         self.visibility_change = Some(visible);
     }
 
-    /// A route a link left for this module goes to its first route
+    /// A route a link left for this seat goes to its first route
     /// subscriber, once; with no subscriber it waits.
     pub(crate) fn sync_route(&mut self) {
         let Some(&id) = self.route_subscriptions.first() else {
             return;
         };
-        if let Some(route) = crate::runtime::take_route(self.module) {
+        if let Some(route) = crate::runtime::take_route(self.module, self.instance) {
             self.stream_item(id, wire::methods::encode(&route));
         }
     }

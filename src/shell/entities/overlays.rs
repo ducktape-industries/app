@@ -83,6 +83,10 @@ pub(crate) struct Overlays {
     /// compared; the overlay layer's handoff reads and clears it, and
     /// anything opening clears it.
     left_by_keys: bool,
+    /// When what is open now opened, by the app's clock (a test's fake
+    /// one): the consent card's Approve waits a moment after it. Not
+    /// compared.
+    opened: std::time::Instant,
     _session: Subscription,
 }
 
@@ -111,12 +115,18 @@ impl Overlays {
             open: None,
             page: SettingsPage::default(),
             left_by_keys: false,
+            opened: cx.background_executor().now(),
             _session: observing,
         }
     }
 
     pub(crate) fn get(&self) -> &Option<Overlay> {
         &self.open
+    }
+
+    /// When what is open now opened.
+    pub(crate) fn opened(&self) -> std::time::Instant {
+        self.opened
     }
 
     /// Takes `open`; notifies when it moved. Anything opening forgets that
@@ -132,6 +142,7 @@ impl Overlays {
             self.page = page;
         }
         self.open = open;
+        self.opened = cx.background_executor().now();
         cx.notify();
     }
 

@@ -3,10 +3,12 @@
 //! which is the console, which is in front, and the program in front
 //! (`active`: the one an untouched console desk opens). Its methods open,
 //! raise and close windows, move a pane between two desks (pop-out, pop-in),
-//! open links and programs on the console's desk, and resize the console
-//! as the launcher gives way to the desk and back. Notifies when the list,
-//! the front or the active program moved; a window's own entities notify
-//! on their own.
+//! open links and programs on the console's desk (a program in a pop-out
+//! comes forward there), and resize the console as the launcher gives way
+//! to the desk and back. Notifies when the list, the front or the active
+//! program moved; a window's own entities notify on their own, and
+//! `Popped` (the pop-outs' windows, as the console's chrome lists them)
+//! when it moved.
 //!
 //! What it hears: the session leaving its network (every desk cleared),
 //! a node answering (the console comes forward), a device approved (its
@@ -16,8 +18,8 @@
 //! told). A link a banner's click or the passkey page asks for off the
 //! window thread comes over the `Posted` channel (`posted`).
 use super::{
-    AccountEvent, Entities, Front, Overlay, Overlays, Screen, SessionEvent, Shared, Slice,
-    Spotlight, WindowEntities,
+    AccountEvent, Entities, Front, Listed, Overlay, Overlays, Popped, Screen, SessionEvent, Shared,
+    Slice, Spotlight, WindowEntities,
 };
 use crate::runtime::notify::{CenterHandle, Entry};
 use crate::runtime::{Link, WindowKey};
@@ -53,6 +55,9 @@ pub(crate) struct Windows {
     console: Option<WindowKey>,
     /// The OS window in front, when it is one of ours.
     front: Option<WindowKey>,
+    /// The pop-outs' windows, derived (`popped_moved`): the console's
+    /// chrome lists them.
+    popped: Entity<Slice<Popped>>,
     /// The program in front: the focused pane's, wherever it is, or the
     /// one just opened. An untouched console desk opens it.
     active: Option<&'static str>,
@@ -127,6 +132,7 @@ impl Windows {
             by_window: BTreeMap::new(),
             console: None,
             front: None,
+            popped: cx.new(|_| Slice::new(Popped::default())),
             active: None,
             desk_bounds: None,
             launcher,
@@ -151,6 +157,12 @@ impl Windows {
         self.active
     }
 
+    /// The OS window in front, when it is one of ours: its panes are the
+    /// ones the person is looking at (`Seats`).
+    pub(crate) fn front(&self) -> Option<WindowKey> {
+        self.front
+    }
+
     /// Window `key`'s own entities; none for a window that is not ours.
     pub(crate) fn own(&self, key: WindowKey) -> Option<&WindowEntities> {
         self.by_window.get(&key)
@@ -159,6 +171,10 @@ impl Windows {
     /// Every window's own entities, by key.
     pub(crate) fn by_window(&self) -> &BTreeMap<WindowKey, WindowEntities> {
         &self.by_window
+    }
+
+    pub(crate) fn popped(&self) -> &Entity<Slice<Popped>> {
+        &self.popped
     }
 
     pub(crate) fn handles(&self) -> &BTreeMap<WindowKey, AnyWindowHandle> {
@@ -201,7 +217,7 @@ impl Windows {
     ) -> WindowKey {
         let _timed = timed();
         let key = WindowKey::unique();
-        self.make_own(key, cx);
+        self.make_own(key, kind, cx);
         if kind == WindowKind::Console {
             self.console = Some(key);
         }
@@ -226,10 +242,11 @@ impl Windows {
     /// program in front and the notification centre follow its desk;
     /// anything opening over the desk lets go of the keyboard's hold, and
     /// "Add a device…" closing, however it did, forgets what it found.
-    fn make_own(&mut self, key: WindowKey, cx: &mut Context<Self>) {
+    fn make_own(&mut self, key: WindowKey, kind: WindowKind, cx: &mut Context<Self>) {
         let desk = cx.new(|_| Slice::new(Layout::default()));
         let session = self.shared.session.clone();
         let own = WindowEntities {
+            kind,
             front: Front::of_desk(&desk, cx),
             overlays: cx.new(|cx| Overlays::new(&session, cx)),
             spotlight: cx.new(|_| Slice::new(Spotlight::default())),
@@ -247,6 +264,9 @@ impl Windows {
                     cx.notify();
                 }
                 this.set_front(key, cx);
+                if this.console != Some(key) {
+                    this.popped_moved(cx);
+                }
             }));
         let (desk, account) = (own.desk.clone(), self.shared.account.clone());
         let mut was = None;
@@ -311,8 +331,15 @@ impl Windows {
             titlebar: Some(TitlebarOptions {
                 title: Some(title.into()),
                 appears_transparent: cfg!(target_os = "macos"),
-                // the buttons are 14px tall: centred in the 36px bar
-                traffic_light_position: Some(point(px(11.), px(11.))),
+                // the buttons are 14px tall, centred on the bar they sit
+                // over: the console's, or a pop-out's strip above its 1px rule
+                traffic_light_position: Some(point(
+                    px(11.),
+                    px(match kind {
+                        WindowKind::Console => (layers::BAR - 14.) / 2.,
+                        WindowKind::View { .. } => (layers::TITLE - 1. - 14.) / 2.,
+                    }),
+                )),
             }),
             // one window serves the launcher and the desk, so it resizes;
             // a pop-out goes down to its view's minimum, as it stands when
@@ -396,6 +423,7 @@ impl Windows {
         };
         if front != self.front {
             self.front = front;
+            self.popped_moved(cx);
             cx.notify();
         }
         if !active && let Some(own) = self.by_window.get(&key) {
@@ -419,6 +447,27 @@ impl Windows {
         self.center
             .lock()
             .set_front(key, self.front == Some(key), focused);
+    }
+
+    /// `Popped` again: every desk's windows but the console's, and the one
+    /// in front while a pop-out is.
+    fn popped_moved(&self, cx: &mut App) {
+        let mut popped = Popped::default();
+        for (key, own) in &self.by_window {
+            if self.console == Some(*key) {
+                continue;
+            }
+            let layout = own.desk.read(cx).get();
+            let panes = layout.panes.iter();
+            popped
+                .open
+                .extend(panes.map(|pane| Listed::of(pane, Some(*key))));
+            if self.front == Some(*key) {
+                popped.front = layout.panes.get(layout.focused).map(|pane| pane.instance);
+            }
+        }
+        self.popped
+            .update(cx, |slice, cx| _ = slice.set(popped, cx));
     }
 
     /// Window `key` to the front. A frame follows even when it is already
@@ -508,6 +557,7 @@ impl Windows {
         if self.front == Some(key) {
             self.front = None;
         }
+        self.popped_moved(cx);
         cx.notify();
     }
 
@@ -572,6 +622,50 @@ impl Windows {
             .update(cx, |desk, cx| desk.popin(pane, cx));
     }
 
+    /// `module` asked for on window `key`'s desk (a tab, a pick in an empty
+    /// window, Spotlight, a link): where `Layout::open` puts it, but a
+    /// program that desk does not show and a pop-out does brings the
+    /// pop-out forward rather than opening it again (the desk's focused
+    /// empty window still takes it). The instance of the one pane brought
+    /// forward: a link's route is for its seat alone.
+    pub(crate) fn open_program(
+        &mut self,
+        key: WindowKey,
+        module: &'static str,
+        cx: &mut Context<Self>,
+    ) -> Option<u64> {
+        let _timed = timed();
+        let desk = self.by_window.get(&key).map(|own| own.desk.clone())?;
+        let pane_of = |layout: &Layout| {
+            let pane = layout.panes.iter().find(|pane| pane.module == module);
+            pane.map(|pane| pane.instance)
+        };
+        let layout = desk.read(cx).get();
+        let here = layout
+            .panes
+            .get(layout.focused)
+            .is_some_and(|pane| pane.is_empty())
+            || pane_of(layout).is_some();
+        let away = self
+            .by_window
+            .iter()
+            .filter(|(other, _)| self.console != Some(**other) && **other != key)
+            .find_map(|(other, own)| Some((*other, pane_of(own.desk.read(cx).get())?)));
+        match away.filter(|_| !here) {
+            Some((away, instance)) => {
+                self.raise(away, cx);
+                Some(instance)
+            }
+            None => {
+                desk.update(cx, |desk, cx| desk.open(module, cx));
+                // `Layout::open` leaves the pane it opened or found focused
+                let layout = desk.read(cx).get();
+                let pane = layout.panes.get(layout.focused)?;
+                (pane.module == module).then_some(pane.instance)
+            }
+        }
+    }
+
     /// Pop-out `key`'s pane back onto the console's desk; its window goes.
     pub(crate) fn pop_in(&mut self, key: WindowKey, cx: &mut Context<Self>) {
         let _timed = timed();
@@ -595,7 +689,7 @@ impl Windows {
     /// one of its own.
     pub(crate) fn select_view(&mut self, module: &'static str, cx: &mut Context<Self>) {
         let _timed = timed();
-        self.open_seat(module, None, cx);
+        self.open_seat(module, None, None, cx);
     }
 
     /// Help on the desk: into the focused window if it is empty, else
@@ -621,12 +715,18 @@ impl Windows {
     /// `duck://<chain>/<program>/<tail>` on this chain, or the short
     /// `duck://<view>/<route>`: the seat opens and its view is handed the
     /// route. The window coming forward is the answer; a notice only says
-    /// what there is nothing to see of.
-    pub(crate) fn open_link(&mut self, link: &str, cx: &mut Context<Self>) {
+    /// what there is nothing to see of. `from` is the pane (its module and
+    /// instance) whose view opened the link, `None` from anywhere else.
+    pub(crate) fn open_link(
+        &mut self,
+        link: &str,
+        from: Option<(&'static str, u64)>,
+        cx: &mut Context<Self>,
+    ) {
         let _timed = timed();
         let parsed = self.shared.rail.read(cx).parse_link(link);
         match parsed {
-            Link::View { module, route } => self.open_seat(module, route, cx),
+            Link::View { module, route } => self.open_seat(module, route, from, cx),
             Link::Chain(parsed) if !self.shared.rail.read(cx).lists(&parsed.program) => {
                 self.notice(format!("No view here opens {} links.", parsed.program), cx);
             }
@@ -636,7 +736,7 @@ impl Windows {
                 let chain = self.shared.session.read(cx).get().chain.clone();
                 if parsed.chain.to_string() != chain {
                     // another chain's page is not this chain's to show
-                    self.open_seat(module, None, cx);
+                    self.open_seat(module, None, from, cx);
                     self.notice(
                         format!(
                             "That link is to {}, not this network; opened {module}.",
@@ -645,13 +745,20 @@ impl Windows {
                         cx,
                     );
                 } else if route.is_empty() || crate::runtime::valid_route(&route) {
-                    self.open_seat(module, (!route.is_empty()).then_some(route), cx);
+                    self.open_seat(module, (!route.is_empty()).then_some(route), from, cx);
                 } else {
-                    self.open_seat(module, None, cx);
+                    self.open_seat(module, None, from, cx);
                     self.notice(format!("{module} can't open that part of the link."), cx);
                 }
             }
-            Link::Web(url) => cx.open_url(&url),
+            // to the view that declares `web`, if one is listed and this
+            // build has a web view; else the system browser
+            Link::Web(url) => match crate::render::web::view_for(&url)
+                .filter(|module| self.shared.rail.read(cx).lists(module))
+            {
+                Some(module) => self.open_seat(module, Some(url), from, cx),
+                None => cx.open_url(&url),
+            },
             Link::Unknown => self.notice("This link is not one this app opens.".into(), cx),
         }
     }
@@ -660,24 +767,38 @@ impl Windows {
     /// seat brought forward.
     pub(crate) fn open_notice(&mut self, entry: &Entry, cx: &mut Context<Self>) {
         if !entry.link.is_empty() {
-            self.open_link(&entry.link, cx);
+            self.open_link(&entry.link, None, cx);
         } else if self.shared.rail.read(cx).lists(&entry.module) {
-            self.open_seat(crate::runtime::intern(&entry.module), None, cx);
+            self.open_seat(crate::runtime::intern(&entry.module), None, None, cx);
         }
     }
 
     /// `module` beside the view in front on the console's desk, not in
-    /// place of it, handed `route` first.
-    fn open_seat(&mut self, module: &'static str, route: Option<String>, cx: &mut Context<Self>) {
-        if let Some(route) = route {
-            crate::runtime::route_to(module, route);
+    /// place of it, or its pop-out forward (`open_program`), and that one
+    /// seat handed `route`. A view's link into its own program (`from`)
+    /// goes to its own seat, and nothing comes forward or moves.
+    fn open_seat(
+        &mut self,
+        module: &'static str,
+        route: Option<String>,
+        from: Option<(&'static str, u64)>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((_, instance)) = from.filter(|(from, _)| *from == module) {
+            if let Some(route) = route {
+                crate::runtime::route_to(module, instance, route);
+            }
+            return;
         }
         if self.active != Some(module) {
             self.active = Some(module);
             cx.notify();
         }
-        if let Some(own) = self.console_own() {
-            own.desk.update(cx, |desk, cx| desk.open(module, cx));
+        let seat = self
+            .console
+            .and_then(|console| self.open_program(console, module, cx));
+        if let Some((route, instance)) = route.zip(seat) {
+            crate::runtime::route_to(module, instance, route);
         }
     }
 
@@ -719,7 +840,7 @@ impl Windows {
                 self.shared
                     .notifications
                     .update(cx, |notifications, cx| _ = notifications.refresh(cx));
-                self.open_link(&url, cx);
+                self.open_link(&url, None, cx);
             }
             Posted::Url(url) => cx.open_url(&url),
         }

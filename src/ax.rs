@@ -939,7 +939,10 @@ mod tests {
         cx.update(gpui_kit::init);
         let seat = cx.update(|cx| {
             use gpui_kit::AppContext as _;
-            cx.new(|cx| crate::runtime::Seat::new(MODULE, cx))
+            cx.new(|cx| {
+                let instance = crate::ui::layout::Pane::new(MODULE).instance;
+                crate::runtime::Seat::new(MODULE, instance, cx)
+            })
         });
         let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let _heard = cx.update(|cx| {
@@ -972,7 +975,7 @@ mod tests {
             gpui_kit::size(gpui_kit::px(400.), gpui_kit::px(300.)),
             |window, cx| {
                 seat.update(cx, |seat, cx| {
-                    seat.place(window.window_handle(), Some((400., 300.)), cx)
+                    seat.place(window.window_handle(), Some((400., 300.)), true, cx)
                 });
                 Pane {
                     seat: seat.clone(),

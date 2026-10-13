@@ -1,8 +1,7 @@
 //! Image, Svg and Canvas nodes. A picture's bytes cross the wire once;
 //! later frames name it by the guest's content hash, and the tree draws
 //! that hash from the seat's [`PictureBytes`]. Rasters decoded from them
-//! are cached in [`Rasters`]. `qr` is the shell's (sign-in); no wire node
-//! draws one.
+//! are cached in [`Rasters`].
 use super::picture_resources::{cache_fits, decode_image};
 use super::*;
 use crate::render::native_id;
@@ -211,64 +210,6 @@ impl Element for CurrentColor {
             cx,
         );
     }
-}
-
-pub(crate) fn qr(code: &wire::Qr) -> AnyElement {
-    let Some(payload) = &code.payload else {
-        return div().into_any_element();
-    };
-    let correction = match code.correction {
-        Some(wire::QrCorrection::Low) => qrcode::EcLevel::L,
-        Some(wire::QrCorrection::Quartile) => qrcode::EcLevel::Q,
-        Some(wire::QrCorrection::High) => qrcode::EcLevel::H,
-        Some(wire::QrCorrection::Medium) | None => qrcode::EcLevel::M,
-    };
-    let result = match code.version {
-        Some(wire::QrVersion::Normal(value)) => qrcode::QrCode::with_version(
-            payload,
-            qrcode::Version::Normal(i16::from(value)),
-            correction,
-        ),
-        Some(wire::QrVersion::Micro(value)) => qrcode::QrCode::with_version(
-            payload,
-            qrcode::Version::Micro(i16::from(value)),
-            correction,
-        ),
-        None => qrcode::QrCode::with_error_correction_level(payload, correction),
-    };
-    let Ok(matrix) = result else {
-        return div()
-            .child("QR payload exceeds the selected code capacity")
-            .into_any_element();
-    };
-    let modules = matrix.width() + 8;
-    let total = match code.size {
-        Some(wire::QrSize::Total(size)) => size,
-        Some(wire::QrSize::Cell(size)) => size * modules as f32,
-        None => 4.0 * modules as f32,
-    };
-    let cell = code.cell.unwrap_or_else(|| rgb(0).into());
-    let background = code.background.unwrap_or_else(|| rgb(0xffffff).into());
-    canvas(
-        |_, _, _| (),
-        move |bounds, _, window, _| {
-            window.paint_quad(fill(bounds, background));
-            let unit = f32::from(bounds.size.width.min(bounds.size.height)) / modules as f32;
-            for y in 0..matrix.width() {
-                for x in 0..matrix.width() {
-                    if matrix[(x, y)] == qrcode::Color::Dark {
-                        let origin = bounds.origin
-                            + point(px((x + 4) as f32 * unit), px((y + 4) as f32 * unit));
-                        window
-                            .paint_quad(fill(Bounds::new(origin, size(px(unit), px(unit))), cell));
-                    }
-                }
-            }
-        },
-    )
-    .w(px(total))
-    .h(px(total))
-    .into_any_element()
 }
 
 impl ViewTree {

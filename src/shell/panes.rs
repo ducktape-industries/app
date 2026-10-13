@@ -23,8 +23,8 @@ pub(in crate::shell) fn label(rail: &[crate::runtime::RailRow], module: &str) ->
 impl WindowRoot {
     /// Something done to this window's panes: its `Desk` moves them (or
     /// `Windows`, for what crosses windows: a close that takes a pop-out
-    /// with it, a pop-out, a pop-in), and the keys go to the focused one
-    /// (`PaneLayer::drawn`).
+    /// with it, a pop-out, a pop-in, a program that may be in a pop-out),
+    /// and the keys go to the focused one (`PaneLayer::drawn`).
     pub(super) fn pane_message(
         &mut self,
         message: PaneMessage,
@@ -59,6 +59,9 @@ impl WindowRoot {
                 windows.update(cx, |windows, cx| windows.pop_out(key, index, at, cx))
             }
             PaneMessage::PopIn => windows.update(cx, |windows, cx| windows.pop_in(key, cx)),
+            PaneMessage::Open(module) => {
+                _ = windows.update(cx, |windows, cx| windows.open_program(key, module, cx))
+            }
             message => self.desk.update(cx, |desk, cx| desk.moved_by(message, cx)),
         }
         // never from inside the layer's own update: its listeners send

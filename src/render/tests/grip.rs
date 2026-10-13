@@ -41,6 +41,9 @@ fn drag_from(x: f32, cx: &mut gpui_kit::TestAppContext) -> (f64, bool) {
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
     native.update(|window, cx| window.render_frame(cx));
+    // the list's first settled report is the mount's, not the wheel's
+    native.update(|window, cx| _ = window.simulate_next_frame(cx));
+    events.borrow_mut().clear();
     let at = point(px(x), px(40.));
     native.simulate_mouse_move(at, None, Default::default());
     native.simulate_mouse_down(at, MouseButton::Left, Default::default());
@@ -170,4 +173,78 @@ fn a_grip_reaches_along_the_axis_it_sizes() {
         (0., grab)
     );
     assert_eq!(super::sensors::grip_reach(CursorStyle::Arrow), (grab, grab));
+}
+
+fn scrolled_beside_the_divider(x: f32, cx: &mut gpui_kit::TestAppContext) -> usize {
+    let mut root = split();
+    let wire::Node::Container(view_wire::ContainerNode { children, .. }) = &mut root else {
+        unreachable!()
+    };
+    let rows = (0..40)
+        .map(|key| {
+            container_with_style(
+                &format!("row-{key}"),
+                div().h(px(20.)).w_full().style().clone(),
+                [],
+            )
+        })
+        .collect();
+    children[0] = wire::Node::List {
+        id: named_id("rows"),
+        path: vec![named_id("split"), named_id("rows")],
+        item_count: 40,
+        alignment: wire::ListAlignment::Bottom,
+        // two rows measured above the fold: what a wheel can move into
+        // (unmeasured rows have no height to scroll through)
+        overdraw: 40.,
+        sizing: wire::ListSizingBehavior::Auto,
+        following_tail: true,
+        revision: 0,
+        commands: Vec::new(),
+        request_handler: 41,
+        scroll_handler: Some(42),
+        range_start: 0,
+        style: crate::render::test_style(div().w(px(100.)).h_full().style().clone()),
+        interactivity: Default::default(),
+        children: rows,
+    };
+    let window = cx.open_window(size(px(300.), px(80.)), |_, _| ViewTree::new(root));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    native.update(|window, cx| window.render_frame(cx));
+    // the list's first settled report is the mount's, not the wheel's
+    native.update(|window, cx| _ = window.simulate_next_frame(cx));
+    events.borrow_mut().clear();
+    let at = point(px(x), px(40.));
+    native.simulate_mouse_move(at, None, Default::default());
+    native.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: at,
+        delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(60.))),
+        ..Default::default()
+    });
+    native.update(|window, cx| window.render_frame(cx));
+    native.update(|window, cx| _ = window.simulate_next_frame(cx));
+    native.run_until_parked();
+    events
+        .borrow()
+        .iter()
+        .filter(|event| matches!(event, wire::Event::ListScroll { handler: 42, .. }))
+        .count()
+}
+
+#[gpui_kit::test]
+fn the_wheel_under_a_grip_scrolls_the_pane_beneath(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    assert_eq!(scrolled_beside_the_divider(50., cx), 1, "over the pane");
+    assert_eq!(
+        scrolled_beside_the_divider(97., cx),
+        1,
+        "over the pane, under the grip"
+    );
+    assert_eq!(
+        drag_from(97., cx),
+        (30., false),
+        "the press is still the divider's"
+    );
 }
