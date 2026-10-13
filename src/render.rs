@@ -198,7 +198,8 @@ pub struct ViewTree {
     /// The path of the node `node()` is drawing; pushed and popped on the way.
     authored_path: AuthoredPath,
     /// Counts the nodes of a render the view gave no id, each by its place
-    /// in the walk: the number of the host id one takes (`container-N`,
+    /// under its nearest identified node (`node` restarts the count inside
+    /// each one): the number of the host id one takes (`container-N`,
     /// `text-N`, `rich-N`, `primitive-N`). A container that makes no id
     /// (`container`) is counted too, so a number never depends on what an
     /// earlier node sets.
