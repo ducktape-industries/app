@@ -240,6 +240,7 @@ pub(super) fn collect(releases_dir: &Path, keep: &[Sha]) {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     use std::os::unix::fs::PermissionsExt as _;
 
     /// A `.tar.gz` from a list of entries.

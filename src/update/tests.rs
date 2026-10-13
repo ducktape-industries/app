@@ -936,6 +936,8 @@ mod macos {
             "{:?}",
             state(&layout)
         );
+        assert_eq!(running.phase(), &state(&layout));
+        assert!(running.shown().restart, "Settings offers the restart");
 
         // the next start: A qualifies B, swaps it in, hands over
         assert_eq!(
