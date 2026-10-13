@@ -15,10 +15,12 @@
 //!
 //! ON or OFF is an answer on disk: the update machine owns this copy when
 //! `state.json` exists AND the running executable is the installed one
-//! ([`Layout::owns`]). `cargo run`, a bare binary out of the tarball, and a
-//! copy launched from anywhere else run with the updater off and touch
-//! nothing. Of the processes an install runs at once, one is its updater:
-//! the one holding `<updates>/lock` ([`hold_install`]).
+//! ([`Layout::owns`]). On macOS a bundle running from the install dir with
+//! no state describing it adopts itself at its start ([`install::adopt`]).
+//! `cargo run`, a bare binary out of the tarball, and a copy launched from
+//! anywhere else (a translocated one too) run with the updater off and
+//! touch nothing. Of the processes an install runs at once, one is its
+//! updater: the one holding `<updates>/lock` ([`hold_install`]).
 //!
 //! ```text
 //! Linux  (<data> = $XDG_DATA_HOME, else ~/.local/share):

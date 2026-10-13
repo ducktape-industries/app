@@ -11,6 +11,9 @@
 //! state this leaves. So an install never refuses for what is already there:
 //! running it again is how a machine gets back to a known set.
 //!
+//! On macOS a bundle dragged into the install dir from the DMG is adopted
+//! at its first start instead ([`adopt`]): the same state, and no copy.
+//!
 //! A release installed this way has no archive, so its identity is the
 //! sha256 of its executable, and its pin is the sequence it was published at
 //! ([`super::own_sequence`]): the channel publishing that same sequence reads
@@ -64,14 +67,34 @@ pub(super) fn install(layout: &Layout, own: &Path) -> Result<Sha, Refusal> {
         true => install_macos(layout, own, sha)?,
         false => install_linux(layout, own, sha)?,
     }
+    fresh(layout, sha)?;
+    info!(target: TARGET, event = "app_update_installed", release = %sha);
+    Ok(sha)
+}
+
+/// macOS: the bundle that runs from the install dir (`own` is its
+/// executable), adopted as `install` would have laid it, minus the copy: it
+/// is in place already. The boot step's, when no state describes it.
+pub(super) fn adopt(layout: &Layout, own: &Path) -> Result<Phase, Refusal> {
+    super::require_writable(&layout.install)?;
+    super::refuse_symlink(&layout.installed_bundle())?;
+    let sha = super::digest_file(own)?;
+    keep_nothing_macos(layout)?;
+    let adopted = fresh(layout, sha)?;
+    info!(target: TARGET, event = "app_update_adopted", release = %sha);
+    Ok(adopted)
+}
+
+/// The state an install starts from: what runs, nothing to go back to,
+/// pinned at the sequence this binary was published at.
+fn fresh(layout: &Layout, sha: Sha) -> Result<Phase, Refusal> {
     let fresh = Phase::Idle(Idle {
         current: sha,
         previous: None,
         pinned_sequence: super::own_sequence(),
     });
     super::persist_phase(layout, &fresh)?;
-    info!(target: TARGET, event = "app_update_installed", release = %sha);
-    Ok(sha)
+    Ok(fresh)
 }
 
 fn install_linux(layout: &Layout, own: &Path, sha: Sha) -> Result<(), Refusal> {
@@ -143,6 +166,12 @@ fn install_macos(layout: &Layout, own: &Path, sha: Sha) -> Result<(), Refusal> {
     }
     super::move_tree(&staged, &installed)?;
     super::remove_leftover(&aside)?;
+    keep_nothing_macos(layout)
+}
+
+/// macOS: no release beside the installed bundle, no `previous`, no swap
+/// journal.
+fn keep_nothing_macos(layout: &Layout) -> Result<(), Refusal> {
     super::remove_leftover(&layout.previous_link())?;
     super::remove_leftover(&layout.journal_path())?;
     keep_only(&layout.releases_dir(), None)

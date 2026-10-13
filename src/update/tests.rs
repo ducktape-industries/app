@@ -703,6 +703,24 @@ mod linux {
         assert_eq!(current(&layout), Layout::link_target(a));
     }
 
+    /// Adoption is macOS's: on Linux a binary inside the install with no
+    /// state boots with the updater off and writes nothing.
+    #[test]
+    fn an_install_without_state_is_not_adopted_on_linux() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use crate::update::boot::{Boot, boot_at};
+        let (_root, layout) = rig();
+        let a = Sha::digest(b"a");
+        let exe = layout.release_exe(a);
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, script("a")).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::update::replace_symlink(&layout.current_link(), &Layout::link_target(a)).unwrap();
+        assert_eq!(boot_at(&layout, &exe).unwrap(), Boot::Off);
+        assert!(!layout.updates.exists(), "nothing written");
+    }
+
     /// Another process of this install holds its lock (on Linux each
     /// `duck://` link starts one): this start flips nothing, even with a
     /// release staged, and runs with the updater off; an install is refused
@@ -1070,6 +1088,38 @@ mod macos {
         bucket.put("stable.json", json);
         bucket.put("stable.json.sig", signature.into_bytes());
         sha
+    }
+
+    /// What a start adopts: the bundle that runs, nothing to go back to,
+    /// pinned at this build's own sequence.
+    fn adopted(own: &Path) -> Phase {
+        Phase::Idle(Idle {
+            current: crate::update::digest_file(own).unwrap(),
+            previous: None,
+            pinned_sequence: crate::update::own_sequence(),
+        })
+    }
+
+    /// A bundle dragged into the install dir from the DMG has no update
+    /// state: its first start adopts it as `install` would have laid it. The
+    /// same bundle run from anywhere else (the mounted DMG, a translocated
+    /// copy) stays off and writes nothing.
+    #[test]
+    fn a_bundle_dragged_into_the_install_dir_adopts_itself() {
+        let (root, layout) = rig();
+        let elsewhere = root.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let away = bundle_exe(&bundle(&elsewhere, "a"));
+        assert_eq!(boot_at(&layout, &away).unwrap(), Boot::Off);
+        assert!(!layout.updates.exists(), "nothing written");
+
+        std::fs::create_dir_all(&layout.install).unwrap();
+        bundle(&layout.install, "a");
+        let own = layout.app_exe();
+        assert_eq!(boot_at(&layout, &own).unwrap(), Boot::Run(adopted(&own)));
+        assert_eq!(state(&layout), adopted(&own));
+        // the next start reads what this one wrote
+        assert_eq!(boot_at(&layout, &own).unwrap(), Boot::Run(adopted(&own)));
     }
 
     /// The headline on macOS: install, stage a newer signed bundle, the next

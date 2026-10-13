@@ -69,7 +69,7 @@ pub(crate) fn boot() {
 /// the running executable.
 pub(super) fn boot_at(layout: &Layout, own: &Path) -> Result<Boot, Refusal> {
     let has_state = std::fs::symlink_metadata(layout.state_path()).is_ok();
-    if !(has_state && layout.owns(own)) {
+    if !(layout.owns(own) && (has_state || cfg!(target_os = "macos"))) {
         return Ok(Boot::Off);
     }
     if !super::hold_install(layout)? {
@@ -79,12 +79,21 @@ pub(super) fn boot_at(layout: &Layout, own: &Path) -> Result<Boot, Refusal> {
     // taken before anything moves: on macOS the swap puts another bundle
     // at this very path
     let own_id = super::file_id(own)?;
-    let phase = super::read_state(&layout.state_path())?.ok_or_else(|| {
-        Refusal::new(
-            "state_missing",
-            format!("{} does not exist", layout.state_path().display()),
-        )
-    })?;
+    let phase = super::read_state(&layout.state_path())?;
+    // macOS adopts the bundle that runs from the install dir when there is
+    // no state ([`super::install::adopt`]), as for a bundle dragged in from
+    // the DMG. On Linux a bare binary runs from anywhere, and `install` is
+    // the way in.
+    let phase = match (phase, cfg!(target_os = "macos")) {
+        (Some(phase), _) => phase,
+        (None, true) => super::install::adopt(layout, own)?,
+        (None, false) => {
+            return Err(Refusal::new(
+                "state_missing",
+                format!("{} does not exist", layout.state_path().display()),
+            ));
+        }
+    };
     let phase = drive(layout, phase)?;
     if cfg!(not(target_os = "macos")) {
         let points_at = super::read_link(&layout.current_link())?;
