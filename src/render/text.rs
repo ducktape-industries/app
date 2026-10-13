@@ -27,15 +27,30 @@ thread_local! {
     /// the drag started in — take part, so a pointer that wanders into the
     /// thread or the sidebar cannot pull their text into the selection.
     static DRAG_CLIP: std::cell::Cell<Option<Bounds<Pixels>>> = const { std::cell::Cell::new(None) };
+    /// Where the last left press on a paragraph went down: a link's click
+    /// says which range it was, not where the press began.
+    static PRESS: std::cell::Cell<Option<Point<Pixels>>> = const { std::cell::Cell::new(None) };
 }
 
-/// Whether the pointer gesture that just ended selected words: a release
-/// then pressed nothing, whatever box it landed on. Measured by the
-/// characters selected, not by the endpoints, so a press that drifted a
-/// fraction of a pixel (a trackpad click's `mouseDragged`, fractional
-/// coordinates on macOS) is still a click.
-pub(super) fn selected_words(window: &mut Window, cx: &mut App) -> bool {
-    !gpui_kit::base::TextSelection::selected_text(window, cx).is_empty()
+/// How far a press may travel and still be a click: gpui's own threshold
+/// for a drag (`DRAG_THRESHOLD`, private to its `div.rs`).
+const DRAG_THRESHOLD: f64 = 2.;
+
+/// Whether a press at `down` released at `up` was a drag that selected
+/// words: then the release pressed nothing, whatever box it landed on.
+/// Both halves count. A press that drifted no farther than a drag goes (a
+/// trackpad click's `mouseDragged`, fractional coordinates on macOS) is a
+/// click whatever the selection holds: until the next frame paints, a
+/// paragraph the selection just took in copies its whole text, however
+/// little of it the drift covered. A drag over no words is a click too.
+pub(super) fn dragged_over_words(
+    down: Point<Pixels>,
+    up: Point<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
+    (up - down).magnitude() > DRAG_THRESHOLD
+        && !gpui_kit::base::TextSelection::selected_text(window, cx).is_empty()
 }
 
 /// Whether a paragraph painted in `clip` takes part in the selection while
@@ -180,6 +195,7 @@ impl Element for RichParagraph {
                 && hitbox.is_hovered(window)
             {
                 DRAG_CLIP.set(Some(clip));
+                PRESS.set(Some(event.position));
             }
         });
         window.on_mouse_event(|event: &MouseUpEvent, phase, window, _| {
@@ -415,7 +431,9 @@ impl ViewTree {
                 // a click that ended a drag selected words; it pressed nothing
                 interactive =
                     interactive.on_click(clickable_ranges.clone(), move |index, window, cx| {
-                        if !selected_words(window, cx) {
+                        let up = window.mouse_position();
+                        let down = PRESS.get().unwrap_or(up);
+                        if !dragged_over_words(down, up, window, cx) {
                             press(index, cx)
                         }
                     });

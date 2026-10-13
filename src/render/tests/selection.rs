@@ -387,6 +387,76 @@ fn a_drag_selecting_words_in_a_clickable_box_is_not_its_click(cx: &mut gpui_kit:
         2,
         "a press that drifted half a pixel is a click"
     );
+    // the same drift with no frame between it and the release (a trackpad
+    // lifts within a frame of its last move): until it paints again, a
+    // paragraph the selection took in copies its whole text, however
+    // little of it the drift covered
+    press_drift_and_lift(&mut native, from, drifted);
+    assert_eq!(
+        clicks(&events),
+        3,
+        "a drift released before the next frame is a click"
+    );
+}
+
+/// A press at `from`, then a move to `to` and the release there in one
+/// dispatch: no frame paints between the last move and the lift, as on a
+/// platform whose release lands before the next display refresh (the test
+/// window otherwise draws after every simulated event).
+fn press_drift_and_lift(
+    native: &mut gpui_kit::VisualTestContext,
+    from: Point<Pixels>,
+    to: Point<Pixels>,
+) {
+    native.simulate_mouse_move(from, None, Default::default());
+    native.simulate_mouse_down(from, MouseButton::Left, Default::default());
+    native.update(|window, cx| {
+        let moved = MouseMoveEvent {
+            position: to,
+            pressed_button: Some(MouseButton::Left),
+            modifiers: Default::default(),
+        };
+        let lifted = MouseUpEvent {
+            button: MouseButton::Left,
+            position: to,
+            modifiers: Default::default(),
+            click_count: 1,
+        };
+        window.dispatch_event(moved.to_platform_input(), cx);
+        window.dispatch_event(lifted.to_platform_input(), cx);
+    });
+    native.update(|window, cx| window.render_frame(cx));
+}
+
+/// A press on a link that drifts half a pixel and lifts before the next
+/// frame is the link's press, as the same press on a clickable box is.
+#[gpui_kit::test]
+fn a_press_on_a_link_that_drifts_is_its_press(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let root = container_with_style(
+        "pane",
+        div().w(px(150.)).h_full().flex().flex_col().style().clone(),
+        [linked("alpha", "alpha beta"), paragraph("gamma", "gamma")],
+    );
+    let window = cx.open_window(size(px(300.), px(100.)), |_, cx| Window2 {
+        tree: cx.new(|_| ViewTree::new(root)),
+    });
+    let tree = window
+        .root(cx)
+        .unwrap()
+        .read_with(cx, |window, _| window.tree.clone());
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    native.update(|window, cx| window.render_frame(cx));
+    let (from, drifted) = (point(px(5.), px(10.)), point(px(5.5), px(10.)));
+    press_drift_and_lift(&mut native, from, drifted);
+    assert_eq!(
+        events.borrow().as_slice(),
+        [wire::Event::Select {
+            handler: 9,
+            index: 0
+        }]
+    );
 }
 
 #[test]

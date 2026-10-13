@@ -397,8 +397,13 @@ impl ViewTree {
                     // click however far the pointer went between them; a
                     // release that ended a drag selecting words pressed
                     // nothing (as the links in a paragraph say)
-                    if matches!(event, gpui_kit::ClickEvent::Mouse(_))
-                        && super::text::selected_words(window, cx)
+                    if let gpui_kit::ClickEvent::Mouse(click) = event
+                        && super::text::dragged_over_words(
+                            click.down.position,
+                            click.up.position,
+                            window,
+                            cx,
+                        )
                     {
                         return;
                     }
