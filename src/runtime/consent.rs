@@ -252,7 +252,8 @@ pub(super) fn needed(
             | identity::Op::AddKey { .. }
             | identity::Op::SetName { .. }
             | identity::Op::SetProfile { .. }
-            | identity::Op::Resume { .. } => None,
+            | identity::Op::Resume { .. }
+            | identity::Op::SetAudience { .. } => None,
         };
         if asked.is_some() {
             return asked;
