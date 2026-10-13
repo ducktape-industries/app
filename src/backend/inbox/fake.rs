@@ -1,12 +1,13 @@
 //! A fake inbox for the tests: `inbox_api`'s shapes over a bare TCP
 //! listener (the loopback page's request reader) and a tungstenite server
 //! socket for `live`. No dependency on the inbox crate. What it was asked
-//! is kept for the test to read; what it answers is set by the test.
+//! is kept for the test to read; what it answers is set by the test. A
+//! read moves its entries and its count and is pushed, as the inbox does.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use futures::SinkExt as _;
+use futures::{SinkExt as _, StreamExt as _};
 use inbox_api::{
     Challenge, Changed, Entries, Entry, LoginReply, LoginRequest, Mutes, Push, Read, Status,
 };
@@ -23,6 +24,7 @@ struct State {
     down: bool,
     deny_logins: bool,
     logins: usize,
+    logouts: usize,
     challenges: HashMap<String, u64>,
     tokens: Vec<String>,
     last_login: Option<(LoginRequest, [u8; 32], u64)>,
@@ -33,10 +35,17 @@ struct State {
     hides: usize,
     mute_puts: Vec<Mutes>,
     stopped: Option<inbox_api::Stopped>,
-    /// Every `read` waits this long before it is answered.
-    read_delay_ms: u64,
+    /// Every call whose path starts so waits this long before its answer
+    /// is sent (the answer is made first: an arrival meanwhile is not in it).
+    hold: Option<(String, u64)>,
     /// The next `n` authed calls answer 429.
     pace_refusals: usize,
+    /// Live sockets open now, and how many were open when the page was
+    /// last answered.
+    live_sockets: usize,
+    sockets_at_page: Option<usize>,
+    /// The live sockets stop reading and sending: a dead connection.
+    quiet: bool,
 }
 
 pub(crate) struct FakeInbox {
@@ -88,6 +97,11 @@ impl FakeInbox {
         }
     }
 
+    /// The live sockets go dead: nothing read (no pong), nothing sent.
+    pub(crate) fn set_quiet(&self, quiet: bool) {
+        self.state().quiet = quiet;
+    }
+
     pub(crate) fn deny_logins(&self, deny: bool) {
         self.state().deny_logins = deny;
     }
@@ -100,6 +114,10 @@ impl FakeInbox {
         self.state().logins
     }
 
+    pub(crate) fn logouts(&self) -> usize {
+        self.state().logouts
+    }
+
     pub(crate) fn last_login(&self) -> (LoginRequest, [u8; 32], u64) {
         self.state().last_login.clone().expect("a login")
     }
@@ -110,8 +128,17 @@ impl FakeInbox {
         state.entries = entries;
     }
 
+    pub(crate) fn unread(&self) -> u64 {
+        self.state().unread
+    }
+
+    /// Every call at `<path>` waits `ms` before its answer goes out.
+    pub(crate) fn hold(&self, path: &str, ms: u64) {
+        self.state().hold = (ms > 0).then(|| (format!("/inbox/v1/{path}"), ms));
+    }
+
     pub(crate) fn hold_reads(&self, ms: u64) {
-        self.state().read_delay_ms = ms;
+        self.hold("read", ms);
     }
 
     /// The next `n` calls under a token answer 429.
@@ -137,6 +164,11 @@ impl FakeInbox {
 
     pub(crate) fn mute_puts(&self) -> Vec<Mutes> {
         self.state().mute_puts.clone()
+    }
+
+    /// How many live sockets were open when `entries` was last answered.
+    pub(crate) fn sockets_at_page(&self) -> Option<usize> {
+        self.state().sockets_at_page
     }
 
     /// To every live socket.
@@ -171,11 +203,17 @@ async fn serve(mut stream: TcpStream, state: Arc<Mutex<State>>, pushes: broadcas
     let Ok((method, path, body)) = read_request(&mut stream).await else {
         return;
     };
-    let delay = state.lock().unwrap().read_delay_ms;
-    if delay > 0 && path.starts_with("/inbox/v1/read") {
-        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-    }
     let (status, body) = answer(&method, &path, &head, &body, &state, &pushes);
+    let held = state
+        .lock()
+        .unwrap()
+        .hold
+        .clone()
+        .filter(|(at, _)| path.starts_with(at.as_str()))
+        .map(|(_, ms)| ms);
+    if let Some(ms) = held {
+        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+    }
     let reply = format!(
         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
@@ -195,6 +233,25 @@ fn bearer(head: &str) -> Option<String> {
 
 fn json<T: serde::Serialize>(value: &T) -> Vec<u8> {
     serde_json::to_vec(value).unwrap()
+}
+
+/// The ids `read` names among the entries, as the inbox's `UPDATE` finds
+/// them: unread ones only.
+fn read_ids(entries: &[Entry], read: &Read) -> Vec<i64> {
+    entries
+        .iter()
+        .filter(|entry| !entry.read)
+        .filter(|entry| match read {
+            Read::Ids { ids } => ids.contains(&entry.id),
+            Read::Tag {
+                program,
+                tag,
+                through_height,
+            } => entry.program == *program && entry.tag == *tag && entry.height <= *through_height,
+            Read::All { all } => *all,
+        })
+        .map(|entry| entry.id)
+        .collect()
 }
 
 fn answer(
@@ -256,14 +313,19 @@ fn answer(
         }
         _ => {
             let token = bearer(head);
-            if !token.is_some_and(|token| state.tokens.contains(&token)) {
+            let Some(token) = token.filter(|token| state.tokens.contains(token)) else {
                 return ("401 Unauthorized", b"sign in first".to_vec());
-            }
+            };
             if state.pace_refusals > 0 {
                 state.pace_refusals -= 1;
                 return ("429 Too Many Requests", b"one call every 200 ms".to_vec());
             }
             match (method, call) {
+                ("POST", "logout") => {
+                    state.logouts += 1;
+                    state.tokens.retain(|kept| *kept != token);
+                    ("204 No Content", Vec::new())
+                }
                 ("GET", "entries") => {
                     let before: Option<i64> = query
                         .split('&')
@@ -276,16 +338,35 @@ fn answer(
                         .cloned()
                         .collect();
                     let unread = state.unread;
+                    state.sockets_at_page = Some(state.live_sockets);
                     ("200 OK", json(&Entries { entries, unread }))
                 }
                 ("POST", "read") => {
                     let read: Read = serde_json::from_slice(body).unwrap();
+                    let ids = read_ids(&state.entries, &read);
+                    for entry in &mut state.entries {
+                        entry.read |= ids.contains(&entry.id);
+                    }
+                    state.unread -= ids.len() as u64;
                     state.reads.push(read);
-                    ("200 OK", json(&Changed { ids: Vec::new() }))
+                    if !ids.is_empty() {
+                        let _ = pushes.send(Push::Read { ids: ids.clone() });
+                    }
+                    ("200 OK", json(&Changed { ids }))
                 }
                 ("POST", "hide") => {
                     state.hides += 1;
-                    ("200 OK", json(&Changed { ids: Vec::new() }))
+                    let ids: Vec<i64> = state
+                        .entries
+                        .iter()
+                        .filter(|entry| entry.read)
+                        .map(|entry| entry.id)
+                        .collect();
+                    state.entries.retain(|entry| !entry.read);
+                    if !ids.is_empty() {
+                        let _ = pushes.send(Push::Hidden { ids: ids.clone() });
+                    }
+                    ("200 OK", json(&Changed { ids }))
                 }
                 ("GET", "prefs") => ("200 OK", json(&state.mutes)),
                 ("PUT", "prefs") => {
@@ -348,23 +429,39 @@ async fn live(
         return;
     };
     let mut pushes = pushes.subscribe();
-    while let Ok(push) = pushes.recv().await {
-        // `set_down` closes every socket with this sentinel
-        if push
-            == (Push::Hidden {
-                ids: vec![i64::MIN],
-            })
-        {
-            break;
+    state.lock().unwrap().live_sockets += 1;
+    let quiet = || state.lock().unwrap().quiet;
+    loop {
+        if quiet() {
+            // dead: neither read (so no pong) nor written, until the
+            // client gives up on it
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            continue;
         }
-        let text = serde_json::to_string(&push).unwrap();
-        if socket
-            .send(tokio_tungstenite::tungstenite::Message::Text(text))
-            .await
-            .is_err()
-        {
-            break;
+        tokio::select! {
+            push = pushes.recv() => {
+                let Ok(push) = push else { break };
+                // `set_down` closes every socket with this sentinel
+                if push == (Push::Hidden { ids: vec![i64::MIN] }) {
+                    break;
+                }
+                let text = serde_json::to_string(&push).unwrap();
+                if socket
+                    .send(tokio_tungstenite::tungstenite::Message::Text(text))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            // reading is what answers a ping with a pong
+            frame = socket.next() => {
+                if !matches!(frame, Some(Ok(_))) {
+                    break;
+                }
+            }
         }
     }
+    state.lock().unwrap().live_sockets -= 1;
     let _ = socket.close(None).await;
 }

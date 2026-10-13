@@ -97,6 +97,12 @@ fn raise_open_file_limit() {
     }
 }
 
+/// `RUST_LOG` on top of `info`, with tungstenite capped at debug after
+/// it: its trace logs the whole `live` handshake, bearer token included.
+fn log_directives(env: &str) -> String {
+    format!("info,{env},tungstenite=debug,tokio_tungstenite=debug")
+}
+
 /// The app's sink is `app.log` in its platform state directory, plus a
 /// panic hook that lands in it. `RUST_LOG` ADDS to `info`; no home, no
 /// file: the events go nowhere rather than a GUI refusing to start.
@@ -107,7 +113,7 @@ fn install_log() {
 
     let env = std::env::var("RUST_LOG").unwrap_or_default();
     let filter = EnvFilter::builder()
-        .parse(format!("info,{env}"))
+        .parse(log_directives(&env))
         .unwrap_or_else(|_| EnvFilter::new("info"));
     let file = backend::app_log_path().ok().and_then(|path| {
         if let Some(parent) = path.parent() {
@@ -149,4 +155,16 @@ fn install_panic_hook() {
         );
         default(info);
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    /// tungstenite's trace, which logs the `live` handshake with the
+    /// bearer token in it, is capped after whatever `RUST_LOG` asks.
+    #[test]
+    fn the_log_filter_caps_tungstenite_below_trace() {
+        let directives = super::log_directives("trace");
+        assert!(directives.starts_with("info,trace,"));
+        assert!(directives.ends_with("tungstenite=debug,tokio_tungstenite=debug"));
+    }
 }

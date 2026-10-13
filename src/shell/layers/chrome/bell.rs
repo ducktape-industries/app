@@ -30,6 +30,9 @@ impl Chrome {
         let unread = notifications.unread();
         let entries = notifications.entries();
         let state = notifications.state().clone();
+        // a change upstream (all read, clear) is offered only with the
+        // inbox in hand: it would be local alone otherwise
+        let ready = state == InboxState::Ready;
         let asking: Vec<&'static str> = notifications
             .asking()
             .iter()
@@ -83,7 +86,7 @@ impl Chrome {
                     .text_color(ink.muted)
                     .child(standing),
             )
-            .when(unread > 0, |header| {
+            .when(unread > 0 && ready, |header| {
                 header.child(
                     small_link(
                         "notif-mark-all",
@@ -371,7 +374,7 @@ impl Chrome {
             .border_t_1()
             .border_color(ink.line)
             // only while something read is there to clear
-            .when(entries.iter().any(|entry| entry.read), |footer| {
+            .when(ready && entries.iter().any(|entry| entry.read), |footer| {
                 footer.child(
                     small_link(
                         "notif-clear-read",

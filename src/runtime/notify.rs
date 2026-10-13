@@ -40,6 +40,8 @@ mod settings;
 pub(crate) mod tests;
 
 pub(crate) use center::{CenterHandle, InboxState, Notice, Opened, Row, center, wall};
+#[cfg(test)]
+pub(crate) use follow::start_with;
 pub(crate) use follow::{Follower, start};
 pub(crate) use settings::{
     BURSTS, Permission, Settings, save_banners, save_burst, save_in_front, set_permission,
@@ -61,8 +63,7 @@ pub(super) fn answer(
 
 /// `notify.seen`: a watermark. The program's rows under the tag at or
 /// below the height are read, the read goes upstream when the max moved,
-/// and the standing banner under the tag goes down, queued behind the
-/// banners already raised.
+/// and the banner standing for an entry among them goes down.
 fn seen(guest: &mut Guest, id: u64, payload: &[u8]) {
     let seen = match methods::decode::<Seen>(payload) {
         Ok(seen) => seen,
@@ -78,11 +79,13 @@ fn seen(guest: &mut Guest, id: u64, payload: &[u8]) {
         // the bell and the centre redraw
         guest.intents.push(Intent::Notified);
     }
-    if !seen.tag.is_empty() {
-        let tag = center::banner_tag(guest.module, &seen.tag);
-        in_order("inbox", move || platform::withdraw(&tag));
-    }
     guest.reply(id, Ok(methods::encode(&())));
+}
+
+/// The banner under `tag` comes down, queued behind the banners already
+/// raised (the centre, as the entry it stands for is read or gone).
+pub(super) fn withdraw(tag: String) {
+    in_order("inbox", move || platform::withdraw(&tag));
 }
 
 /// What opens a clicked banner's link: the shell's, handed over at startup

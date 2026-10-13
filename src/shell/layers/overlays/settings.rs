@@ -424,6 +424,8 @@ impl OverlayLayer {
         // the roster's programs, then any the inbox keeps out that the
         // roster does not list (muted on another device, or gone)
         let muted = self.notifications.read(cx).muted_programs();
+        // a mute is the inbox's: offered only with the inbox in hand
+        let ready = self.notifications.read(cx).ready();
         let mut programs: Vec<(&'static str, String)> = listed
             .into_iter()
             .map(|row| (row.module, super::super::tab_label(&row)))
@@ -503,13 +505,22 @@ impl OverlayLayer {
                         }),
                     )
                 };
-                let control = self.segmented(
-                    &format!("notify/view/{module}"),
-                    &format!("{name} notifications"),
-                    [word(Permission::Allow), word(Permission::Silent), mute],
-                    &ink,
-                    cx,
-                );
+                let control = match ready {
+                    true => self.segmented(
+                        &format!("notify/view/{module}"),
+                        &format!("{name} notifications"),
+                        [word(Permission::Allow), word(Permission::Silent), mute],
+                        &ink,
+                        cx,
+                    ),
+                    false => self.segmented(
+                        &format!("notify/view/{module}"),
+                        &format!("{name} notifications"),
+                        [word(Permission::Allow), word(Permission::Silent)],
+                        &ink,
+                        cx,
+                    ),
+                };
                 // one line a program, so the whole roster fits under the fold
                 div()
                     .flex()

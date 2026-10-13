@@ -5,6 +5,20 @@
 //! entry becomes on this device. The app keeps one, reached through
 //! [`center`]; a test builds its own.
 //!
+//! What is read: one truth, the watermark. Per `(program, tag)` the centre
+//! keeps the height the reader has seen through (a view's `notify.seen`,
+//! a row opened); the page's entries at or below it are read and the
+//! count moves with them here, and the same height goes upstream as one
+//! tag read, so the inbox's `read` push finds nothing left to move. An
+//! entry arriving under it is read on arrival and the tag is read upstream
+//! again, so every device agrees.
+//!
+//! Lock order: a seat's mutex, then the centre, then the kernel's in-order
+//! queues, then `KEPT` (the settings). The window thread holds a seat while
+//! a view's `notify.seen` takes the centre, so the inbox runner must never
+//! take a seat (the roster) or read the prefs file while it holds the
+//! centre: it looks the label and the settings up first.
+//!
 //! Nothing here knows a program: `program` and `tag` are the inbox's words.
 
 use std::collections::{BTreeSet, HashMap};
@@ -14,16 +28,18 @@ use std::time::Instant;
 use inbox_api::{Entry, Mutes, Read};
 
 use super::settings::{Permission, Settings};
-use crate::backend::inbox::Client;
+use crate::backend::inbox::{Client, Error};
 use crate::runtime::WindowKey;
 
 /// One banner as the host words it; a later one under the same non-empty
-/// `tag` replaces the standing one.
+/// `tag` replaces the standing one. `opens` names the entry whose row a
+/// click opens; a "N more" banner opens nothing.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Notice {
     pub title: String,
     pub body: String,
     pub tag: String,
+    pub opens: Option<i64>,
 }
 
 /// One row of the centre: the inbox's entries under one `(program, tag)`,
@@ -76,12 +92,17 @@ struct Bucket {
     at: Instant,
 }
 
+type Key = (String, String);
+
 #[derive(Default)]
 pub(crate) struct Center {
     /// The chain id (`<network>#<salt>`) the page is for.
     network: String,
     /// The inbox client of the connection, once the runner made one.
     client: Option<Arc<Client>>,
+    /// The runner the centre is filled by: a late write from a runner that
+    /// was dropped is refused (`stamped`).
+    stamp: u64,
     pub(crate) state: InboxState,
     /// The inbox's follower stopped or stalled at a height: nothing past
     /// it arrives until its operator acts. Shown beside the count.
@@ -97,13 +118,23 @@ pub(crate) struct Center {
     /// This centre, for the task a call upstream runs as, to write back
     /// what the inbox answered (set by [`CenterHandle::lock`]).
     me: Weak<Mutex<Center>>,
-    /// The max `through_height` a view said it saw per `(program, tag)`.
-    watermarks: HashMap<(String, String), u64>,
+    /// The max `through_height` the reader saw per `(program, tag)`: the
+    /// one truth of what is read.
+    watermarks: HashMap<Key, u64>,
+    /// The height the inbox confirmed per `(program, tag)`: a watermark at
+    /// or below it is not sent again.
+    confirmed: HashMap<Key, u64>,
     /// Tag reads upstream: at most one in flight per `(program, tag)`
     /// (the inbox paces an account), and the latest height waiting
     /// behind it, replacing any earlier one.
-    in_flight: std::collections::HashSet<(String, String)>,
-    queued: HashMap<(String, String), u64>,
+    in_flight: std::collections::HashSet<Key>,
+    queued: HashMap<Key, u64>,
+    /// Calls the person made while the inbox was not in hand (Mark all
+    /// read, Clear read, a mute): sent when it is.
+    pending: Vec<Call>,
+    /// The banner standing per banner tag, by the entry it is for: it
+    /// comes down when that entry is read or gone, and for no other.
+    pub(super) standing: HashMap<String, i64>,
     buckets: HashMap<String, Bucket>,
     /// Entries past the burst limit since the program's last banner.
     more: HashMap<String, u32>,
@@ -162,14 +193,35 @@ impl Center {
     /// over. The runner fills it again once it connects.
     pub(crate) fn set_network(&mut self, network: &str) {
         if self.network != network {
-            *self = Center {
-                network: network.to_owned(),
-                front: self.front,
-                me: self.me.clone(),
-                rev: self.rev + 1,
-                ..Center::default()
-            };
+            self.network = network.to_owned();
+            self.forget_account();
         }
+    }
+
+    /// The account's runner stopped (the key locked, the network left, a
+    /// new address or key): its page, count, mutes, watermarks, questions
+    /// and banners go with it. The chain and the window in front stay.
+    pub(crate) fn forget_account(&mut self) {
+        *self = Center {
+            network: std::mem::take(&mut self.network),
+            front: self.front,
+            me: self.me.clone(),
+            stamp: self.stamp,
+            rev: self.rev + 1,
+            ..Center::default()
+        };
+    }
+
+    /// A runner takes the centre up: the stamp it writes under. The last
+    /// runner's writes are refused from now on.
+    pub(crate) fn claim(&mut self) -> u64 {
+        self.stamp += 1;
+        self.stamp
+    }
+
+    /// Whether `stamp` is the runner the centre is filled by.
+    pub(crate) fn stamped(&self, stamp: u64) -> bool {
+        self.stamp == stamp
     }
 
     /// The runner's client, for the calls the person's actions send.
@@ -192,27 +244,27 @@ impl Center {
         }
     }
 
-    /// The page the inbox listed (newest first) and its unread count.
+    fn under_watermark(&self, entry: &Entry) -> bool {
+        self.watermarks
+            .get(&(entry.program.clone(), entry.tag.clone()))
+            .is_some_and(|seen| entry.height <= *seen)
+    }
+
+    /// The page the inbox listed (newest first) and its unread count. The
+    /// entries under a kept watermark are read, and counted off, here.
     pub(crate) fn replace(&mut self, entries: Vec<Entry>, unread: u64) {
         self.entries = entries;
         self.unread = unread;
-        for entry in &mut self.entries {
-            let key = (entry.program.clone(), entry.tag.clone());
-            if self
-                .watermarks
-                .get(&key)
-                .is_some_and(|seen| entry.height <= *seen)
-            {
-                entry.read = true;
-            }
-        }
-        self.rev += 1;
+        let listed: Vec<i64> = self.entries.iter().map(|entry| entry.id).collect();
+        self.standing.retain(|_, id| listed.contains(id));
+        self.mark_read(|center, entry| center.under_watermark(entry));
     }
 
     /// A `live` entry: into the page, counted, and judged by the device's
     /// settings. The banner to raise, if any — the entry's own, or the
     /// program's "N more" once it is past its burst. An entry under a
-    /// view's watermark is already read and raises nothing.
+    /// view's watermark is read on arrival, raises nothing, and the tag is
+    /// read upstream again so the inbox agrees.
     pub(crate) fn arrived(
         &mut self,
         settings: &Settings,
@@ -220,16 +272,15 @@ impl Center {
         now: Instant,
         label: &str,
     ) -> Option<Notice> {
-        let key = (entry.program.clone(), entry.tag.clone());
-        if self
-            .watermarks
-            .get(&key)
-            .is_some_and(|seen| entry.height <= *seen)
-        {
-            entry.read = true;
-        }
         if self.entries.iter().any(|known| known.id == entry.id) {
             return None;
+        }
+        if !entry.read && self.under_watermark(&entry) {
+            entry.read = true;
+            let key = (entry.program.clone(), entry.tag.clone());
+            let seen = self.watermarks[&key];
+            self.confirmed.remove(&key);
+            self.read_tag(&entry.program, &entry.tag, seen);
         }
         self.unread += u64::from(!entry.read);
         self.rev += 1;
@@ -239,7 +290,11 @@ impl Center {
             title: entry.title.clone(),
             body: entry.body.clone(),
             tag: banner_tag(&entry.program, &entry.tag),
+            opens: Some(entry.id),
         };
+        let in_front = self
+            .front
+            .is_some_and(|(_, focused)| focused == program || focused == entry.link.program);
         self.entries.insert(0, entry);
         if read {
             return None;
@@ -253,7 +308,6 @@ impl Center {
             Some(Permission::Silent) => return None,
             Some(Permission::Allow) => {}
         }
-        let in_front = self.front.is_some_and(|(_, focused)| focused == program);
         if !settings.banners || (in_front && !settings.in_front) {
             return None;
         }
@@ -268,6 +322,10 @@ impl Center {
         if bucket.tokens >= 1. {
             bucket.tokens -= 1.;
             self.more.remove(&program);
+            if !notice.tag.is_empty() {
+                self.standing
+                    .insert(notice.tag.clone(), notice.opens.unwrap_or_default());
+            }
             return Some(notice);
         }
         let more = self.more.entry(program.clone()).or_default();
@@ -276,47 +334,50 @@ impl Center {
             title: format!("{more} more from {label}"),
             body: "They're waiting in Notifications.".into(),
             tag: format!("more/{program}"),
+            opens: None,
         })
     }
 
     /// Entries marked read elsewhere (`live` `read`): the page follows.
     /// Whether an id is not on this page, in which case the inbox's count
-    /// is read again (`entries`), and the banner tags to take down.
-    pub(crate) fn read_elsewhere(&mut self, ids: &[i64]) -> (bool, Vec<String>) {
-        let mut unknown = false;
-        let mut tags = Vec::new();
-        for id in ids {
-            match self.entries.iter_mut().find(|entry| entry.id == *id) {
-                Some(entry) => {
-                    if !entry.read {
-                        entry.read = true;
-                        self.unread = self.unread.saturating_sub(1);
-                        tags.push(banner_tag(&entry.program, &entry.tag));
-                    }
-                }
-                None => unknown = true,
-            }
-        }
-        self.rev += 1;
-        (unknown, tags)
+    /// is read again (`entries`).
+    pub(crate) fn read_elsewhere(&mut self, ids: &[i64]) -> bool {
+        let unknown = ids
+            .iter()
+            .any(|id| !self.entries.iter().any(|entry| entry.id == *id));
+        self.mark_read(|_, entry| ids.contains(&entry.id));
+        unknown
     }
 
     /// Entries retracted by their program (`gone`) or hidden on another
-    /// device (`hidden`): off the page. The banner tags to take down.
-    pub(crate) fn removed(&mut self, ids: &[i64]) -> Vec<String> {
-        let mut tags = Vec::new();
+    /// device (`hidden`): off the page, and their banners down.
+    pub(crate) fn removed(&mut self, ids: &[i64]) {
+        let mut unread = self.unread;
         self.entries.retain(|entry| {
             let gone = ids.contains(&entry.id);
-            if gone {
-                if !entry.read {
-                    self.unread = self.unread.saturating_sub(1);
-                }
-                tags.push(banner_tag(&entry.program, &entry.tag));
+            if gone && !entry.read {
+                unread = unread.saturating_sub(1);
             }
             !gone
         });
+        self.unread = unread;
+        for id in ids {
+            self.take_down(*id);
+        }
         self.rev += 1;
-        tags
+    }
+
+    /// The banner standing for `id`, if any, comes down.
+    fn take_down(&mut self, id: i64) {
+        let Some(tag) = self
+            .standing
+            .iter()
+            .find_map(|(tag, standing)| (*standing == id).then(|| tag.clone()))
+        else {
+            return;
+        };
+        self.standing.remove(&tag);
+        super::withdraw(tag);
     }
 
     /// The page folded by `(program, tag)`, newest first.
@@ -366,17 +427,13 @@ impl Center {
         self.rev
     }
 
-    /// A row picked (in the bell, or its banner clicked): its entries read
-    /// through the row's newest height, here and upstream, and the link
-    /// minted for this chain; `None` for an id no row has.
+    /// A row picked (in the bell, or its banner clicked): a watermark at
+    /// the row's newest height, so its entries are read here and upstream
+    /// (kept until the inbox has it), and the link minted for this chain;
+    /// `None` for an id no row has.
     pub(crate) fn open(&mut self, id: i64) -> Option<Opened> {
         let row = self.rows().into_iter().find(|row| row.id == id)?;
-        self.mark_read(|entry| {
-            entry.program == row.program
-                && entry.tag == row.tag
-                && entry.height <= row.through_height
-        });
-        self.read_tag(&row.program, &row.tag, row.through_height);
+        self.watermark(&row.program, &row.tag, row.through_height);
         let segments: Vec<&str> = row.link.segments.iter().map(String::as_str).collect();
         let link = ducklink::mint(&self.network, &row.link.program, &segments);
         Some(Opened { link })
@@ -391,18 +448,29 @@ impl Center {
             .map(|row| row.id)
     }
 
-    fn mark_read(&mut self, which: impl Fn(&Entry) -> bool) {
+    /// The unread entries `which` picks become read: the count moves with
+    /// each, and the banner standing for it comes down.
+    fn mark_read(&mut self, which: impl Fn(&Center, &Entry) -> bool) {
+        let flipped: Vec<i64> = self
+            .entries
+            .iter()
+            .filter(|entry| !entry.read && which(self, entry))
+            .map(|entry| entry.id)
+            .collect();
         for entry in &mut self.entries {
-            if !entry.read && which(entry) {
+            if flipped.contains(&entry.id) {
                 entry.read = true;
                 self.unread = self.unread.saturating_sub(1);
             }
+        }
+        for id in flipped {
+            self.take_down(id);
         }
         self.rev += 1;
     }
 
     pub(crate) fn mark_all_read(&mut self) {
-        self.mark_read(|_| true);
+        self.mark_read(|_, _| true);
         self.unread = 0;
         self.send(Call::Read(Read::All { all: true }));
     }
@@ -414,9 +482,9 @@ impl Center {
         self.send(Call::HideRead);
     }
 
-    /// A view says the reader has seen `tag`'s rows through `height`: the
-    /// max per `(program, tag)` is kept; the page's entries at or below it
-    /// are read, and the read goes upstream, only when the max moved.
+    /// The reader has seen `tag`'s rows through `height`: the max per
+    /// `(program, tag)` is kept; the page's entries at or below it are
+    /// read, and the read goes upstream, only when the max moved.
     pub(crate) fn watermark(&mut self, program: &str, tag: &str, height: u64) -> bool {
         let key = (program.to_owned(), tag.to_owned());
         if self
@@ -427,7 +495,7 @@ impl Center {
             return false;
         }
         self.watermarks.insert(key, height);
-        self.mark_read(|entry| {
+        self.mark_read(|_, entry| {
             entry.program == program && entry.tag == tag && entry.height <= height
         });
         self.read_tag(program, tag, height);
@@ -455,27 +523,35 @@ impl Center {
         // goes out on the next connect (`resend_watermarks`)
     }
 
-    /// A connection made (or made again): every watermark the session
-    /// kept goes upstream once more, one in flight per tag. Covers a
-    /// view's `notify.seen` before the first page, a read lost while the
-    /// inbox was away, and a request that never answered; the inbox's
-    /// read-through-height is idempotent.
+    /// A connection made (or made again): every watermark the inbox has
+    /// not confirmed goes upstream once more, one in flight per tag.
+    /// Covers a view's `notify.seen` before the first page, a row opened
+    /// while the inbox was away, and a request that never answered.
     pub(crate) fn resend_watermarks(&mut self) {
         self.in_flight.clear();
         self.queued.clear();
-        let kept: Vec<((String, String), u64)> = self
+        let kept: Vec<(Key, u64)> = self
             .watermarks
             .iter()
+            .filter(|(key, height)| self.confirmed.get(*key).is_none_or(|done| done < height))
             .map(|(key, height)| (key.clone(), *height))
             .collect();
         for ((program, tag), height) in kept {
             self.read_tag(&program, &tag, height);
         }
+        for call in std::mem::take(&mut self.pending) {
+            self.send(call);
+        }
     }
 
-    /// A tag read answered (or failed): the next queued height goes out.
-    fn read_tag_done(&mut self, program: &str, tag: &str) {
+    /// A tag read answered (`confirmed` through the height) or failed:
+    /// the next queued height goes out.
+    fn read_tag_done(&mut self, program: &str, tag: &str, confirmed: Option<u64>) {
         let key = (program.to_owned(), tag.to_owned());
+        if let Some(height) = confirmed {
+            let done = self.confirmed.entry(key.clone()).or_default();
+            *done = (*done).max(height);
+        }
         self.in_flight.remove(&key);
         if let Some(height) = self.queued.remove(&key) {
             self.read_tag(program, tag, height);
@@ -545,33 +621,49 @@ impl Center {
         self.asking.insert(program.to_owned());
     }
 
+    /// The calls waiting for the inbox, for a test.
+    #[cfg(test)]
+    pub(crate) fn pending_for_test(&self) -> usize {
+        self.pending.len()
+    }
+
     /// A call upstream, on the runtime, after this lock is released; a
-    /// failure is logged, the page stands as the person left it. Nothing
-    /// is sent without a client (no inbox, or none yet): `false` then.
-    fn send(&self, call: Call) -> bool {
-        let Some(client) = self.client.clone() else {
-            return false;
+    /// failure is logged by kind. Without the inbox in hand (none yet, or
+    /// away) nothing is sent, `false`: a tag read is covered by its kept
+    /// watermark, any other call waits for the next connect. A call the
+    /// inbox did not take waits too.
+    fn send(&mut self, call: Call) -> bool {
+        let client = match (&self.client, &self.state) {
+            (Some(client), InboxState::Ready) => client.clone(),
+            _ => {
+                self.keep(call);
+                return false;
+            }
         };
         let me = self.me.clone();
         crate::runtime::handle().spawn(async move {
-            let failed = match call {
+            let failed = match &call {
                 Call::Read(read) => {
-                    let failed = client.read(&read).await.err();
-                    if let Read::Tag { program, tag, .. } = &read
+                    let answer = client.read(read).await;
+                    if let Read::Tag {
+                        program,
+                        tag,
+                        through_height,
+                    } = read
                         && let Some(center) = me.upgrade()
                     {
                         center
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .read_tag_done(program, tag);
+                            .read_tag_done(program, tag, answer.is_ok().then_some(*through_height));
                     }
-                    failed
+                    answer.err()
                 }
                 Call::HideRead => client.hide_read().await.err(),
-                Call::Mutes(mutes) => match client.set_mutes(&mutes).await {
+                Call::Mutes(mutes) => match client.set_mutes(mutes).await {
                     // the stored set comes back over `live` as well
                     Ok(_) => None,
-                    Err(crate::backend::inbox::Error::Failed {
+                    Err(Error::Failed {
                         status: 400,
                         sentence,
                     }) => {
@@ -595,10 +687,33 @@ impl Center {
                 },
             };
             if let Some(error) = failed {
-                tracing::warn!(target: "ducktape::app", %error, "the inbox did not take a change");
+                tracing::warn!(target: "ducktape::app", kind = %error.kind(), "the inbox did not take a change");
+                if matches!(error, Error::Unreachable(_))
+                    && let Some(center) = me.upgrade()
+                {
+                    // the inbox went away under the call: it goes again
+                    // with the next connect
+                    center
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .keep(call);
+                }
             }
         });
         true
+    }
+
+    /// `call` waits for the next connect; a tag read does not (its
+    /// watermark is kept), and one mutes set replaces another.
+    fn keep(&mut self, call: Call) {
+        match call {
+            Call::Read(Read::Tag { .. }) => {}
+            Call::Mutes(_) => {
+                self.pending.retain(|kept| !matches!(kept, Call::Mutes(_)));
+                self.pending.push(call);
+            }
+            call => self.pending.push(call),
+        }
     }
 }
 

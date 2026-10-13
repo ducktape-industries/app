@@ -135,7 +135,7 @@ impl Notifications {
         if self
             .follower
             .as_ref()
-            .is_some_and(|(running, _)| *running == key)
+            .is_some_and(|(running, follower)| *running == key && !follower.ended())
         {
             return;
         }
@@ -170,6 +170,12 @@ impl Notifications {
     /// Where the inbox stands, as the bell says it.
     pub(crate) fn state(&self) -> &InboxState {
         &self.state
+    }
+
+    /// Whether the inbox is in hand: what a change upstream (a mute, a
+    /// clear) is offered on.
+    pub(crate) fn ready(&self) -> bool {
+        self.state == InboxState::Ready
     }
 
     /// The inbox's follower stopped or stalled: "inbox stuck at 1200: a hole".
@@ -232,7 +238,8 @@ impl Notifications {
     /// The person's word on `program`'s banners, saved (see [`permission`]).
     fn permission(&mut self, program: &str, permission: Permission, cx: &mut Context<Self>) {
         let _timed = timed();
-        notify::set_permission(&mut self.center.lock(), program, permission);
+        notify::set_permission(program, permission);
+        self.center.lock().asking.remove(program);
         self.refresh(cx);
     }
 
@@ -330,5 +337,59 @@ mod tests {
                 .read_with(cx, |notifications, _| notifications.follower.is_none()),
             "no key with an account: no runner"
         );
+    }
+
+    /// A runner that ended (a refused login) is started again by the next
+    /// connect to the same address, not kept as it is.
+    #[gpui_kit::test]
+    fn a_connect_restarts_a_runner_that_ended(cx: &mut TestAppContext) {
+        let handle = crate::runtime::handle();
+        let _seat = handle.block_on(crate::runtime::notify::tests::seated(32));
+        let fake = handle.block_on(crate::backend::inbox::fake::FakeInbox::start());
+        fake.deny_logins(true);
+        let center = CenterHandle::default();
+        let app = cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::shell::entities::Entities::for_test(Default::default(), center.clone(), cx)
+        });
+        app.session.update(cx, |session, cx| {
+            let mut state = crate::shell::entities::SessionState::booted();
+            state.connected = true;
+            state.connected_rpc = fake.origin();
+            state.chain = "net#0".into();
+            session.seed(state, cx);
+        });
+        app.account.update(cx, |account, cx| {
+            let state = crate::shell::entities::AccountState {
+                signer_key: "ab".into(),
+                account: Some(Some((7, "grace".into()))),
+                ..Default::default()
+            };
+            account.seed(state, None, None, cx);
+        });
+        let wait = |what: &dyn Fn() -> bool| {
+            for _ in 0..400 {
+                if what() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            panic!("the runner never got there");
+        };
+        app.session
+            .update(cx, |_, cx| cx.emit(SessionEvent::Connected));
+        wait(&|| fake.logins() == 1);
+        let ended = || {
+            app.notifications.read_with(cx, |notifications, _| {
+                notifications
+                    .follower
+                    .as_ref()
+                    .is_some_and(|(_, follower)| follower.ended())
+            })
+        };
+        wait(&|| ended());
+        app.session
+            .update(cx, |_, cx| cx.emit(SessionEvent::Connected));
+        wait(&|| fake.logins() == 2);
     }
 }

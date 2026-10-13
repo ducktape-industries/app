@@ -162,6 +162,11 @@ fn the_focused_view_is_not_bannered_unless_show_is_set() {
             .arrived(&allowed, entry(3, "chat", "", 3), now, "Chat")
             .is_some()
     );
+    // a notice whose link opens the view in front is in front too
+    center.set_front(window, true, "forge");
+    let mut on_forge = entry(4, "chat", "", 4);
+    on_forge.link.program = "forge".into();
+    assert!(center.arrived(&allowed, on_forge, now, "Chat").is_none());
 }
 
 /// A burst of three a minute: the fourth is counted and raises one "more"
@@ -181,9 +186,19 @@ fn a_burst_past_the_limit_coalesces_into_one_more_banner() {
         .arrived(&allowed, entry(4, "chat", "", 1), start, "Chat")
         .unwrap();
     assert_eq!(
-        (more.title.as_str(), more.tag.as_str()),
-        ("1 more from Chat", "more/chat")
+        (more.title.as_str(), more.tag.as_str(), more.opens),
+        ("1 more from Chat", "more/chat", None)
     );
+    // a program named `more` is told apart from the "more" banner by the
+    // field, not by its tag
+    let mut allowed_more = allowed.clone();
+    allowed_more
+        .programs
+        .insert("more".into(), Permission::Allow);
+    let own = center
+        .arrived(&allowed_more, entry(40, "more", "chat", 1), start, "More")
+        .unwrap();
+    assert_eq!((own.tag.as_str(), own.opens), ("more/chat", Some(40)));
     let more = center
         .arrived(&allowed, entry(5, "chat", "", 1), start, "Chat")
         .unwrap();
@@ -193,31 +208,77 @@ fn a_burst_past_the_limit_coalesces_into_one_more_banner() {
         .arrived(&allowed, entry(6, "chat", "", 1), later, "Chat")
         .unwrap();
     assert_eq!(banner.title, "title 6");
-    assert_eq!(center.unread(), 6);
+    assert_eq!(center.unread(), 7, "the six, and `more`'s one");
 }
 
-/// A `gone` takes the entry off the page, its count down, and names the
-/// banner tag to take down; a `read` elsewhere does the same for the
-/// count, and says when it names an entry this page does not have.
+/// A `gone` takes the entry off the page and its count down; a `read`
+/// elsewhere does the same for the count, and says when it names an
+/// entry this page does not have.
 #[test]
-fn gone_and_read_elsewhere_move_the_page_and_name_the_banner() {
+fn gone_and_read_elsewhere_move_the_page() {
     let mut center = ready();
     center.replace(
         vec![entry(2, "chat", "room", 2), entry(1, "chat", "room", 1)],
         2,
     );
-    assert_eq!(center.removed(&[2]), vec!["chat/room".to_owned()]);
+    center.removed(&[2]);
     assert_eq!(
         (center.rows().len(), center.rows()[0].count, center.unread()),
         (1, 1, 1)
     );
-    assert_eq!(
-        center.read_elsewhere(&[1]),
-        (false, vec!["chat/room".to_owned()])
-    );
+    assert!(!center.read_elsewhere(&[1]));
     assert_eq!(center.unread(), 0);
     assert!(center.rows()[0].read);
-    assert_eq!(center.read_elsewhere(&[9]), (true, Vec::new()));
+    assert!(center.read_elsewhere(&[9]), "an id off the page");
+}
+
+/// A banner stands for one entry: it comes down when that entry is read
+/// on this device (a row opened, Mark all read) or elsewhere, or gone;
+/// an older entry under the same tag going takes no newer banner down.
+#[test]
+fn a_banner_stands_for_its_entry_until_that_entry_is_read_or_gone() {
+    let now = Instant::now();
+    let mut center = ready();
+    let allowed = settings(Some(Permission::Allow));
+    assert!(
+        center
+            .arrived(&allowed, entry(1, "chat", "room", 1), now, "Chat")
+            .is_some()
+    );
+    assert!(
+        center
+            .arrived(&allowed, entry(2, "chat", "room", 2), now, "Chat")
+            .is_some()
+    );
+    assert_eq!(center.standing.get("chat/room"), Some(&2));
+    // the older entry hidden elsewhere: the newer one's banner stands
+    center.removed(&[1]);
+    assert_eq!(center.standing.get("chat/room"), Some(&2));
+    // read on this device: down
+    center.open(2);
+    assert!(center.standing.is_empty());
+    assert!(
+        center
+            .arrived(&allowed, entry(3, "chat", "room", 3), now, "Chat")
+            .is_some()
+    );
+    center.mark_all_read();
+    assert!(center.standing.is_empty(), "Mark all read took it down");
+    assert!(
+        center
+            .arrived(&allowed, entry(5, "chat", "room", 5), now, "Chat")
+            .is_some()
+    );
+    center.read_elsewhere(&[5]);
+    assert!(center.standing.is_empty(), "read elsewhere took it down");
+    // gone takes it down too
+    assert!(
+        center
+            .arrived(&allowed, entry(6, "chat", "room", 6), now, "Chat")
+            .is_some()
+    );
+    center.removed(&[6]);
+    assert!(center.standing.is_empty());
 }
 
 /// Opening a row reads its entries through the row's newest height and
@@ -250,7 +311,10 @@ fn opening_a_row_reads_through_its_newest_height_and_mints_the_link() {
 }
 
 /// A view's watermark marks the tag's rows at or below it read and moves
-/// once: the same or a lower height is not a move, a higher one is.
+/// once: the same or a lower height is not a move, a higher one is. The
+/// count follows the watermark wherever it is applied: a page listed
+/// under a kept watermark counts its entries off, and an entry arriving
+/// under it is read and not counted.
 #[test]
 fn a_watermark_marks_read_and_moves_once() {
     let mut center = ready();
@@ -280,6 +344,47 @@ fn a_watermark_marks_read_and_moves_once() {
             .is_none()
     );
     assert_eq!(center.unread(), 1);
+    // the page listed again under the kept watermark: the inbox still
+    // counts the three (its read is on the way); here they are read, and
+    // the count says so
+    center.replace(
+        vec![
+            entry(3, "chat", "room", 30),
+            entry(2, "chat", "room", 20),
+            entry(1, "chat", "other", 10),
+        ],
+        3,
+    );
+    assert!(center.rows().iter().filter(|row| row.read).count() == 1);
+    assert_eq!(center.unread(), 1, "rows shown read are not counted");
+}
+
+/// A runner writes under its stamp: once the centre was claimed again
+/// (the runner dropped, a new one started), the old stamp is refused.
+#[test]
+fn a_dropped_runners_stamp_is_refused() {
+    let mut center = ready();
+    let first = center.claim();
+    assert!(center.stamped(first));
+    let next = center.claim();
+    assert!(!center.stamped(first) && center.stamped(next));
+    center.set_network("other#1");
+    assert!(center.stamped(next), "the stamp outlives a network change");
+}
+
+/// Without the inbox in hand, Mark all read, Clear read and a mute wait
+/// for the next connect (the last mutes set alone); a tag read does not,
+/// its watermark is kept.
+#[test]
+fn calls_without_the_inbox_wait_for_the_connect() {
+    let mut center = Center::default();
+    center.set_network("net#0");
+    center.mark_all_read();
+    center.clear_read();
+    center.set_muted("chat", true);
+    center.set_muted("forge", true);
+    center.watermark("chat", "room", 3);
+    assert_eq!(center.pending_for_test(), 3, "all read, clear, one mutes");
 }
 
 /// Without an inbox the bell shows no count, whatever the page holds.
@@ -329,23 +434,27 @@ fn settings_read_the_prefs_keys() {
     );
 }
 
-/// The kept settings are the process's, not the saving thread's: the inbox
-/// runner judges entries on the kernel's thread by the word the window
-/// thread just saved. Under a per-thread cache the other thread reads its
-/// own copy, which in a test is its own empty prefs: never the word. Other
-/// tests load their own prefs into the shared cache meanwhile, so the read
-/// is tried a few times: one that sees the word proves the cache is shared.
+/// A save stores what it wrote: the kept settings hold the word at once,
+/// with no read in between for a load in flight to put the old settings
+/// back over. Other tests load their own prefs into the shared cache
+/// meanwhile, so the read is tried a few times: one that sees the word
+/// proves the save stored it (a save that only forgets never does).
 #[test]
-fn the_kept_settings_are_read_on_any_thread() {
-    let mut center = Center::default();
+fn a_save_stores_the_kept_settings() {
     let seen = (0..20).find_map(|_| {
-        super::settings::set_permission(&mut center, "kept-test", Permission::Allow);
-        Settings::load();
+        super::settings::set_permission("kept-test", Permission::Allow);
+        Settings::kept_now()?.programs.get("kept-test").copied()
+    });
+    assert_eq!(seen, Some(Permission::Allow));
+    // and the inbox runner, on another thread, reads the same cache
+    let seen = (0..20).find_map(|_| {
+        super::settings::set_permission("kept-test", Permission::Silent);
         std::thread::spawn(|| Settings::kept().programs.get("kept-test").copied())
             .join()
             .unwrap()
+            .filter(|word| *word == Permission::Silent)
     });
-    assert_eq!(seen, Some(Permission::Allow));
+    assert_eq!(seen, Some(Permission::Silent));
 }
 
 /// The old log directory goes, once, at start.
@@ -372,7 +481,7 @@ async fn until(what: impl Fn() -> bool) {
     panic!("the centre never got there");
 }
 
-async fn seated(seed: u64) -> crate::backend::SeatSerial {
+pub(crate) async fn seated(seed: u64) -> crate::backend::SeatSerial {
     use commonware_cryptography::Signer as _;
     let serial = crate::backend::seat_serial();
     crate::backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(
@@ -382,8 +491,18 @@ async fn seated(seed: u64) -> crate::backend::SeatSerial {
     serial
 }
 
+fn tag(height: u64) -> Read {
+    Read::Tag {
+        program: "chat".into(),
+        tag: "room".into(),
+        through_height: height,
+    }
+}
+
 /// A connect reads the first page and the mutes; a `live` entry moves the
-/// bell's count; a `gone` takes its row down.
+/// bell's count; a `gone` takes its row down; a row opened reads upstream
+/// and the count agrees with the inbox's; dropping the runner forgets the
+/// page and logs out.
 #[tokio::test]
 async fn the_runner_fills_the_centre_and_follows_live() {
     let _seat = seated(21).await;
@@ -412,24 +531,112 @@ async fn the_runner_fills_the_centre_and_follows_live() {
     fake.set_entries(vec![read]);
     fake.push(Push::Read { ids: vec![77] });
     until(|| center.lock().unread() == 0).await;
-    // the person's open goes upstream through the runner's client
+    // the person's open goes upstream through the runner's client, and
+    // the inbox's count comes to agree
+    fake.set_entries(vec![entry(1, "chat", "room", 1)]);
+    fake.push(Push::Read { ids: vec![77] });
+    until(|| center.lock().unread() == 1).await;
     center.lock().open(1);
     until(|| !fake.reads().is_empty()).await;
-    assert_eq!(
-        fake.reads()[0],
-        Read::Tag {
-            program: "chat".into(),
-            tag: "room".into(),
-            through_height: 1
-        }
-    );
-    // a view's watermark goes upstream once per move
-    center.lock().watermark("chat", "room", 1);
+    assert_eq!(fake.reads()[0], tag(1));
+    until(|| fake.unread() == 0).await;
+    assert_eq!(center.lock().unread(), 0);
+    // a view's watermark goes upstream once per move: the open's height is
+    // kept, so the same height sends nothing
     center.lock().watermark("chat", "room", 1);
     center.lock().watermark("chat", "room", 3);
-    until(|| fake.reads().len() == 3).await;
+    until(|| fake.reads().len() == 2).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(fake.reads().len(), 3, "an unmoved watermark sent nothing");
+    assert_eq!(fake.reads(), vec![tag(1), tag(3)]);
+    // dropped: the page goes, the session is logged out
+    drop(_follower);
+    assert!(center.lock().rows().is_empty() && center.lock().state == InboxState::Off);
+    until(|| fake.logouts() == 1).await;
+}
+
+/// The socket is open before the page is read, so an entry pushed between
+/// the two is not lost: the fake counts the sockets at the page.
+#[tokio::test]
+async fn live_is_subscribed_before_the_page_is_read() {
+    let _seat = seated(28).await;
+    let fake = FakeInbox::start().await;
+    let center = CenterHandle::default();
+    let rpc = crate::backend::RpcClient::new(fake.origin());
+    let _follower = super::start(&rpc, "net#0", "Desktop", center.clone());
+    until(|| center.lock().state == InboxState::Ready).await;
+    assert_eq!(fake.sockets_at_page(), Some(1));
+}
+
+/// The label for a "N more" banner is looked up before the centre is
+/// taken: a lookup that takes the centre itself (as the roster takes the
+/// seats, which a view's `seen` holds while it takes the centre) does not
+/// stop the runner.
+#[tokio::test]
+async fn the_label_is_looked_up_before_the_centre_is_locked() {
+    let _seat = seated(29).await;
+    let fake = FakeInbox::start().await;
+    fake.set_entries(vec![entry(1, "chat", "room", 1)]);
+    let center = CenterHandle::default();
+    center.lock().set_network("net#0");
+    center.lock().watermark("chat", "room", 10);
+    let rpc = crate::backend::RpcClient::new(fake.origin());
+    let client = std::sync::Arc::new(crate::backend::inbox::Client::new(&rpc, "net#0", "d"));
+    let locking = center.clone();
+    let _follower = super::start_with(
+        client,
+        center.clone(),
+        std::sync::Arc::new(move |program: &str| {
+            let _taken = locking.lock();
+            program.to_owned()
+        }),
+    );
+    until(|| fake.reads().contains(&tag(10))).await;
+    // an arrival under the watermark: looked up, then read upstream again
+    fake.arrive(entry(2, "chat", "room", 5));
+    until(|| fake.reads().len() == 2).await;
+    assert_eq!(fake.reads()[1], tag(10));
+    assert_eq!((center.lock().unread(), fake.unread()), (0, 0));
+}
+
+/// A row opened while the inbox is away is kept as a watermark and sent
+/// when the inbox is back; the count agrees once it is.
+#[tokio::test]
+async fn a_row_opened_while_the_inbox_is_away_is_read_when_it_is_back() {
+    let _seat = seated(30).await;
+    let fake = FakeInbox::start().await;
+    fake.set_entries(vec![entry(1, "chat", "room", 1)]);
+    let center = CenterHandle::default();
+    center.lock().set_network("net#0");
+    let rpc = crate::backend::RpcClient::new(fake.origin());
+    let _follower = super::start(&rpc, "net#0", "Desktop", center.clone());
+    until(|| center.lock().state == InboxState::Ready).await;
+    fake.set_down(true);
+    until(|| matches!(center.lock().state, InboxState::Unreachable { .. })).await;
+    center.lock().open(1);
+    assert_eq!(center.lock().unread(), 0);
+    assert!(fake.reads().is_empty());
+    fake.set_down(false);
+    until(|| fake.reads().contains(&tag(1))).await;
+    until(|| fake.unread() == 0 && center.lock().unread() == 0).await;
+}
+
+/// Mark all read, Clear read and a mute made without the inbox in hand go
+/// out on the connect.
+#[tokio::test]
+async fn calls_made_without_the_inbox_go_out_on_the_connect() {
+    let _seat = seated(31).await;
+    let fake = FakeInbox::start().await;
+    let center = CenterHandle::default();
+    center.lock().set_network("net#0");
+    center.lock().mark_all_read();
+    center.lock().clear_read();
+    center.lock().set_muted("chat", true);
+    let rpc = crate::backend::RpcClient::new(fake.origin());
+    let _follower = super::start(&rpc, "net#0", "Desktop", center.clone());
+    until(|| fake.reads().contains(&Read::All { all: true })).await;
+    until(|| fake.hides() == 1).await;
+    until(|| fake.mute_puts().len() == 1).await;
+    assert_eq!(fake.mute_puts()[0].programs, vec!["chat".to_owned()]);
 }
 
 /// A 404 says this address keeps no inbox; a refused login is shown and
@@ -444,6 +651,7 @@ async fn no_inbox_and_a_refused_login_are_stated_not_retried() {
     let _follower = super::start(&rpc, "net#0", "Desktop", center.clone());
     until(|| center.lock().state == InboxState::NoInbox).await;
     assert_eq!(center.lock().unread(), 0);
+    until(|| _follower.ended()).await;
     drop(_follower);
     assert_eq!(center.lock().state, InboxState::Off);
 
@@ -484,6 +692,16 @@ async fn unreachable_keeps_the_page_says_since_when_then_refills() {
     until(|| center.lock().state == InboxState::Ready).await;
     assert_eq!(center.lock().unread(), 2, "entries filled the gap");
     assert_eq!(center.lock().rows()[0].count, 2);
+    // the backoff starts over after a healthy connection: the third
+    // return takes a second, not four
+    for _ in 0..2 {
+        fake.set_down(true);
+        until(|| matches!(center.lock().state, InboxState::Unreachable { .. })).await;
+        let started = Instant::now();
+        fake.set_down(false);
+        until(|| center.lock().state == InboxState::Ready).await;
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
 }
 
 /// Mute goes upstream as the account's mutes with the program in; Clear
@@ -510,6 +728,15 @@ async fn a_mute_and_a_clear_go_upstream_and_a_stopped_follower_is_shown() {
     assert!(fake.mute_puts()[0].kinds.is_empty());
     center.lock().clear_read();
     until(|| fake.hides() == 1).await;
+    // the follower recovering while connected: the pushed status
+    fake.push(Push::Status(inbox_api::Status {
+        chain: "net#0".into(),
+        indexed_height: 1300,
+        tip: 1300,
+        stopped: None,
+        stalled: None,
+    }));
+    until(|| center.lock().stuck.is_none()).await;
 }
 
 /// `notify.seen` from a view is a watermark: the program's rows under the
@@ -663,11 +890,6 @@ async fn a_watermark_before_the_connect_goes_out_on_it() {
     let rpc = crate::backend::RpcClient::new(fake.origin());
     let _follower = super::start(&rpc, "net#0", "Desktop", center.clone());
     until(|| center.lock().state == InboxState::Ready).await;
-    let tag = |height| Read::Tag {
-        program: "chat".into(),
-        tag: "room".into(),
-        through_height: height,
-    };
     until(|| fake.reads().contains(&tag(7))).await;
     assert!(center.lock().watermark("chat", "room", 9));
     until(|| fake.reads().contains(&tag(9))).await;

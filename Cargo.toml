@@ -162,6 +162,23 @@ guest = { git = "https://github.com/ducktape-industries/modules", rev = "e728e3c
 # reads pixels back from.
 gpui-wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8", features = ["test-support"] }
 
+[patch."https://github.com/ducktape-industries/modules"]
+# chief: app-base is a scratch merge of e728e3cf and cbbb224a (inbox-api's
+# origin rule, pace constants and Push::Status); the final sha comes later
+abi = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/abi" }
+view-wire = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/view-wire" }
+program = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/program" }
+ducklink = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/ducklink" }
+design = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/design" }
+describe = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/describe" }
+identity = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/system/identity" }
+module-registry = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/system/module-registry" }
+valset = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/system/valset" }
+guest = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/guest" }
+node-wire = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/node-wire" }
+inbox-api = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/inbox-api" }
+notices = { path = "/home/eddy/dev/ducktape/modules/.wt/app-base/crates/sdk/notices" }
+
 [patch.crates-io]
 gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "69b0b541f7e517f25bd54f9fcf778be4a6b173be" }
 rmp-serde = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "69b0b541f7e517f25bd54f9fcf778be4a6b173be" }
