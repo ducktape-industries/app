@@ -137,7 +137,9 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    follower is told to re-read first), and its other tasks of the previous
    connection are refused `stale_connection`.
 2. **Blob → section.** `backend::views::view_of` fetches the program's code
-   blob (`/v1/blob/get`, a disk cache under `cache_dir()/programs/`),
+   blob (`/v1/blob/get`, a disk cache under `cache_dir()/programs/` that
+   keeps it framed as the node does, `program <len>\0<body>`, since its id
+   hashes the frame and the id alone cannot give the kind back),
    checks the hash, strips the git-style header (`unframe`) and returns the
    `ducktape.view` custom section (`views::VIEW_SECTION`) — or the whole
    blob for a **bare** entry (a view with no program behind it).
@@ -164,12 +166,16 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    pane. `Seat::new` claims
    seat `(module, 0)` or makes a new one and subscribes to its `wake`.
    A preloaded seat (instance 0, no pane) stops at the compiled code:
-   `Compiled` keeps the manifest's name, icon and minimum width, which the
-   rail and the layout read, and no instance exists and no `init` runs for a
-   program nobody opened. The pane that claims it loads it again (the
-   blob and the code come from the caches), past that point; a seat
-   claimed while its preload is on the way gets that load once the
-   preload lands.
+   `Compiled(ViewCode)` keeps the code, the blob it came out of and the
+   manifest (name, icon and minimum width, which the rail and the layout
+   read), and no instance exists and no `init` runs for a program nobody
+   opened. The pane that claims it starts that code (`Guest::start`:
+   instantiate and `init`, nothing fetched or compiled again) right in
+   `seat::mounted` on the window thread, where every tick runs on the same
+   fuel, when the blob is still the one the roster lists; any other claim
+   is queued as a load. A seat claimed while its preload is on the way gets
+   its load once the preload lands, and that load starts the code the same
+   way.
    `Guest::instantiate` builds a store with `StoreLimits` (`MEMORY_LIMIT`)
    and binds `Exports` (`memory`, `alloc`, `init`, `tick`, `snapshot`,
    `restore`); `Guest::load` then runs `init` on a fresh view, or `restore`

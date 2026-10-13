@@ -399,9 +399,9 @@ fn a_scheduled_swap_is_read_once_the_block_being_built_reaches_its_height() {
     );
 }
 
-/// A blob body as the node stores it: `blob <len>\0<body>`.
+/// A blob body as the node stores a program's code: `program <len>\0<body>`.
 fn framed(body: &[u8]) -> Vec<u8> {
-    let mut framed = format!("blob {}\0", body.len()).into_bytes();
+    let mut framed = format!("program {}\0", body.len()).into_bytes();
     framed.extend_from_slice(body);
     framed
 }
@@ -617,9 +617,24 @@ fn an_unopened_program_runs_no_init() {
     assert!(
         matches!(
             &lock(&seat).slot,
-            Slot::Compiled { name, icon, min_width: 320 } if name == "Lazy" && icon.is_empty()
+            Slot::Compiled(view) if view.name == "Lazy" && view.icon.is_empty() && view.min_width == 320
         ),
         "the unopened view did not land compiled and unstarted"
+    );
+    // asked again (the seat not yet asked of this node, as on a reconnect):
+    // compiled again, still unstarted, though the seat holds its code
+    let landed = {
+        let mut locked = lock(&seat);
+        locked.rev = locked.rev.wrapping_add(1);
+        locked.wake.subscribe()
+    };
+    read_roster(node.asked_of.clone(), &roster, &registry);
+    eventually("the second preload landed", || {
+        landed.has_changed().unwrap_or(false)
+    });
+    assert!(
+        matches!(&lock(&seat).slot, Slot::Compiled(_)),
+        "a preload over the compiled seat started the view"
     );
     // a pane claims the seat: its load starts the view
     let generation = {
@@ -709,6 +724,167 @@ fn a_rail_row_carries_the_icon_its_views_manifest_declares() {
     }
 }
 
+/// A program's code read once is read off the disk after: the cache keeps
+/// the blob as the node framed it (`program`, not `blob`), so it hashes to
+/// its id. Re-framed as a `blob`, no program ever did, and every view load
+/// fetched its whole program from the node again.
+#[test]
+fn a_program_read_once_is_read_off_the_disk() {
+    let body = b"\0asm\x01\0\0\0 a program read once".to_vec();
+    let code = blob_id(&body);
+    let kept = crate::backend::cache_dir()
+        .unwrap()
+        .join("programs")
+        .join(abi::hex(code.digest()));
+    let _ = std::fs::remove_file(&kept);
+    let node = FakeNode::new(Vec::new(), Vec::new(), vec![body.clone()]);
+    let client = node.asked_of.client.clone().unwrap();
+    let read = || handle().block_on(crate::backend::views::program_bytes(&client, &code));
+    let first = read();
+    let again = read();
+    let _ = std::fs::remove_file(&kept);
+    assert_eq!(first.unwrap(), (body.clone(), "node"));
+    assert_eq!(again.unwrap(), (body, "disk"), "the node was asked again");
+}
+
+/// A pane that claims a seat compiled out of the blob the roster lists
+/// starts that code: its view is up when the claim returns, with nothing
+/// fetched or compiled again. Here the node is gone and the blob is off
+/// the disk by then, so a load that fetched would fail.
+#[test]
+fn a_claimed_seat_starts_the_code_it_compiled() {
+    let view = view_declaring("Quick", "", "");
+    let code = blob_id(&view);
+    let listed = module_registry::View {
+        name: "quick-view".into(),
+        view: code,
+    };
+    let node = FakeNode::new(Vec::new(), vec![listed], vec![view]);
+    let (roster, registry) = (Roster::default(), Registry::default());
+    read_roster(node.asked_of.clone(), &roster, &registry);
+    let seat = lock(&registry)[&("quick-view", 0)].clone();
+    eventually("the preload landed", || !lock(&seat).slot.loading());
+    let _ = std::fs::remove_file(
+        crate::backend::cache_dir()
+            .unwrap()
+            .join("programs")
+            .join(abi::hex(code.digest())),
+    );
+    let gone = Connection {
+        client: Some(crate::backend::RpcClient::new("http://127.0.0.1:9")),
+        ..node.asked_of.clone()
+    };
+    drop(node);
+    let preloaded = match &lock(&seat).slot {
+        Slot::Compiled(view) => view.clone(),
+        _ => panic!("the preload did not land compiled"),
+    };
+    assert!(lock(&seat).slot.startable(Some((code, true))));
+    let claim = |instance| {
+        let mut locked = lock(&seat);
+        locked.instance = instance;
+        Load {
+            module: "quick-view",
+            seat: seat.clone(),
+            generation: locked.start(),
+            asked_of: gone.clone(),
+            code: Some((code, true)),
+        }
+    };
+    // as `mounted` starts it, on the claiming thread
+    claim(7).land(|load, timing| {
+        Guest::start(load.module, load.code, load.generation, &load.seat, timing)
+    });
+    assert!(
+        matches!(&lock(&seat).slot, Slot::Ready(guest) if guest.name == "Quick" && guest.instance == 7),
+        "the claim did not start the compiled view"
+    );
+    // as a loader starts a seat claimed while its preload was on the way
+    lock(&seat).slot = Slot::Compiled(preloaded);
+    queue(claim(8));
+    eventually(
+        "the loader started the compiled view",
+        || matches!(&lock(&seat).slot, Slot::Ready(guest) if guest.instance == 8),
+    );
+}
+
+/// A pane that opens a program whose seat compiled out of the blob the
+/// roster lists has its view up when `mounted` returns: started on the
+/// thread that claimed it, with no loader and no stand-in between. The
+/// node is gone and the blob off the disk by then, so a load would fail.
+#[test]
+fn a_pane_opens_its_compiled_view_at_once() {
+    const MODULE: &str = "opened-at-once";
+    let view = view_declaring("At once", "", "");
+    let code = blob_id(&view);
+    let listed = module_registry::View {
+        name: MODULE.into(),
+        view: code,
+    };
+    let node = FakeNode::new(Vec::new(), vec![listed], vec![view]);
+    let (roster, seats) = (Roster::default(), Registry::default());
+    read_roster(node.asked_of.clone(), &roster, &seats);
+    let seat = lock(&seats)[&(MODULE, 0)].clone();
+    eventually("the preload landed", || !lock(&seat).slot.loading());
+    drop(node);
+    let _ = std::fs::remove_file(
+        crate::backend::cache_dir()
+            .unwrap()
+            .join("programs")
+            .join(abi::hex(code.digest())),
+    );
+    // the app's roster lists it, and its seat is the app's
+    super::super::roster::roster()
+        .lock()
+        .push(crate::backend::views::Program {
+            name: MODULE.into(),
+            code,
+            bare: true,
+        });
+    lock(registry()).insert((MODULE, 0), seat);
+    let opened = mounted(MODULE, 7101);
+    let started = matches!(&lock(&opened).slot, Slot::Ready(guest) if guest.name == "At once");
+    lock(registry()).remove(&(MODULE, 7101));
+    super::super::roster::roster()
+        .lock()
+        .retain(|program| program.name != MODULE);
+    assert!(
+        started,
+        "the view was not up when the pane's claim returned"
+    );
+}
+
+/// Only a compiled seat out of the very blob a pane asks for is started as
+/// it is; anything else is loaded.
+#[test]
+fn a_seat_is_startable_only_compiled_out_of_the_blob_asked_for() {
+    let (one, other) = (blob_id(b"one"), blob_id(b"other"));
+    let compiled = |blob| {
+        Slot::Compiled(Box::new(ViewCode {
+            blob,
+            ..*ViewCode::for_test("View", "", 320)
+        }))
+    };
+    assert!(compiled(Some(one)).startable(Some((one, false))));
+    assert!(
+        !compiled(Some(one)).startable(Some((other, false))),
+        "another blob"
+    );
+    assert!(
+        !compiled(Some(one)).startable(None),
+        "a blob the roster no longer lists"
+    );
+    assert!(!compiled(None).startable(None), "the developer's override");
+    assert!(
+        !compiled(None).startable(Some((one, false))),
+        "the developer's override"
+    );
+    assert!(
+        !Slot::Loading.startable(Some((one, false))),
+        "not compiled yet"
+    );
+}
+
 /// A pane that claims a seat preloaded only as far as compiled starts its
 /// view: the seat leaves `Compiled` for a load of its own (with no node in
 /// a test, a failure offering Retry), where its pane said "Loading" for good.
@@ -716,11 +892,7 @@ fn a_rail_row_carries_the_icon_its_views_manifest_declares() {
 fn a_pane_starts_the_view_its_seat_compiled() {
     const MODULE: &str = "claimed-compiled-seat";
     let preloaded = Mounted::seat();
-    lock(&preloaded).slot = Slot::Compiled {
-        name: "Claimed".into(),
-        icon: String::new(),
-        min_width: 320,
-    };
+    lock(&preloaded).slot = Slot::Compiled(ViewCode::for_test("Claimed", "", 320));
     lock(registry()).insert((MODULE, 0), preloaded);
     let seat = mounted(MODULE, 7001);
     eventually("the claiming pane's load ran", || {
@@ -746,13 +918,7 @@ fn a_seat_claimed_during_its_preload_is_started() {
         asked_of: Connection::default(),
         code: None,
     };
-    preload.land(|_, _| {
-        Ok(Loaded::Compiled {
-            name: "Claimed".into(),
-            icon: String::new(),
-            min_width: 320,
-        })
-    });
+    preload.land(|_, _| Ok(Loaded::Compiled(ViewCode::for_test("Claimed", "", 320))));
     eventually("the claiming pane's own load ran", || {
         matches!(lock(&seat).slot, Slot::Failed(_))
     });
@@ -766,11 +932,7 @@ fn a_seat_claimed_during_its_preload_is_started() {
 #[test]
 fn a_stale_preload_does_not_supersede_the_panes_load() {
     let seat = Mounted::seat();
-    lock(&seat).slot = Slot::Compiled {
-        name: "Stale".into(),
-        icon: String::new(),
-        min_width: 320,
-    };
+    lock(&seat).slot = Slot::Compiled(ViewCode::for_test("Stale", "", 320));
     let reload = lock(&seat).start();
     let pane = {
         let mut locked = lock(&seat);
@@ -784,13 +946,7 @@ fn a_stale_preload_does_not_supersede_the_panes_load() {
         asked_of: Connection::default(),
         code: None,
     }
-    .land(|_, _| {
-        Ok(Loaded::Compiled {
-            name: "Stale".into(),
-            icon: String::new(),
-            min_width: 320,
-        })
-    });
+    .land(|_, _| Ok(Loaded::Compiled(ViewCode::for_test("Stale", "", 320))));
     assert_eq!(
         lock(&seat).generation,
         pane,
@@ -805,11 +961,7 @@ fn a_stale_preload_does_not_supersede_the_panes_load() {
 #[test]
 fn a_load_from_a_node_the_app_left_starts_no_other() {
     let seat = Mounted::seat();
-    lock(&seat).slot = Slot::Compiled {
-        name: "Left".into(),
-        icon: String::new(),
-        min_width: 320,
-    };
+    lock(&seat).slot = Slot::Compiled(ViewCode::for_test("Left", "", 320));
     let generation = {
         let mut locked = lock(&seat);
         locked.instance = 7;
@@ -826,13 +978,7 @@ fn a_load_from_a_node_the_app_left_starts_no_other() {
         asked_of: left,
         code: None,
     }
-    .land(|_, _| {
-        Ok(Loaded::Compiled {
-            name: "Left".into(),
-            icon: String::new(),
-            min_width: 320,
-        })
-    });
+    .land(|_, _| Ok(Loaded::Compiled(ViewCode::for_test("Left", "", 320))));
     assert_eq!(
         lock(&seat).generation,
         generation,
