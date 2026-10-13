@@ -322,7 +322,9 @@ fn note_refused(
         }
         into.push(Refused {
             kept: kept_name(*id),
-            element: format!("{element:?}"),
+            // the id path alone: what gpui keeps beside the ids (a cached
+            // hash since gpui-pre 0.3.9) is not part of the element's name
+            element: format!("GlobalElementId({:?})", &**element),
             nth: list[..n]
                 .iter()
                 .filter(|before| **before == list[n])

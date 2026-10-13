@@ -1541,6 +1541,16 @@ mod refused_scope {
         assert!(kept(Some("a"), &[SHELL]).is_empty());
         assert_eq!(kept(None, &[A, B, SHELL]).len(), 3);
     }
+
+    /// A refused element is named by its id path, in the words the door has
+    /// always used, whatever else gpui's `GlobalElementId` holds.
+    #[test]
+    fn a_refused_element_is_printed_as_its_id_path() {
+        assert_eq!(
+            kept(None, &[SHELL]),
+            [r#"GlobalElementId([Name("menu"), Name("save")])"#]
+        );
+    }
 }
 
 mod phase_two {
