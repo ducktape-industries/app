@@ -652,10 +652,21 @@ impl Center {
                     } = read
                         && let Some(center) = me.upgrade()
                     {
-                        center
+                        let mut center = center
                             .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .read_tag_done(program, tag, answer.is_ok().then_some(*through_height));
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        // not for a later runner's account
+                        if center
+                            .client
+                            .as_ref()
+                            .is_some_and(|now| Arc::ptr_eq(now, &client))
+                        {
+                            center.read_tag_done(
+                                program,
+                                tag,
+                                answer.is_ok().then_some(*through_height),
+                            );
+                        }
                     }
                     answer.err()
                 }

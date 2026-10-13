@@ -113,7 +113,7 @@ async fn run(client: Arc<Client>, center: CenterHandle, stamp: u64, label_of: La
             return;
         }
         match connected {
-            Ok(()) => {}
+            Ok(()) => return,
             Err(Error::NoInbox) => {
                 center.lock().set_state(InboxState::NoInbox);
                 wake();
@@ -133,7 +133,9 @@ async fn run(client: Arc<Client>, center: CenterHandle, stamp: u64, label_of: La
 }
 
 /// One connection: status, `live` (logging in on the way), the mutes and
-/// the first page, then the socket until it ends. `Ok` when it closed.
+/// the first page, then the socket until it ends, which is a loss like
+/// any other: the connection is unknown until `status` answers again.
+/// `Ok` only when the runner was dropped meanwhile.
 async fn connect(
     client: &Arc<Client>,
     center: &CenterHandle,
@@ -209,5 +211,5 @@ async fn connect(
         }
         wake();
     }
-    Ok(())
+    Err(Error::Unreachable("the live socket ended".into()))
 }

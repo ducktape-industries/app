@@ -604,7 +604,10 @@ async fn the_label_is_looked_up_before_the_centre_is_locked() {
 async fn a_row_opened_while_the_inbox_is_away_is_read_when_it_is_back() {
     let _seat = seated(30).await;
     let fake = FakeInbox::start().await;
-    fake.set_entries(vec![entry(1, "chat", "room", 1)]);
+    fake.set_entries(vec![
+        entry(2, "chat", "room", 20),
+        entry(1, "chat", "room", 1),
+    ]);
     let center = CenterHandle::default();
     center.lock().set_network("net#0");
     let rpc = crate::backend::RpcClient::new(fake.origin());
@@ -612,11 +615,12 @@ async fn a_row_opened_while_the_inbox_is_away_is_read_when_it_is_back() {
     until(|| center.lock().state == InboxState::Ready).await;
     fake.set_down(true);
     until(|| matches!(center.lock().state, InboxState::Unreachable { .. })).await;
-    center.lock().open(1);
+    // the fold's newest height is what the open reads through
+    center.lock().open(2);
     assert_eq!(center.lock().unread(), 0);
     assert!(fake.reads().is_empty());
     fake.set_down(false);
-    until(|| fake.reads().contains(&tag(1))).await;
+    until(|| fake.reads().contains(&tag(20))).await;
     until(|| fake.unread() == 0 && center.lock().unread() == 0).await;
 }
 
