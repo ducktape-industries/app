@@ -57,7 +57,7 @@ impl Drop for Follower {
             let mut center = self.center.lock();
             // a write the task still makes is refused from here on
             center.claim();
-            center.set_client(None);
+            center.set_client(None, None);
             center.forget_account();
         }
         let client = self.client.clone();
@@ -131,6 +131,7 @@ pub(super) fn fill(
     center: &CenterHandle,
     stamp: u64,
     client: &Arc<Client>,
+    lost: &Arc<tokio::sync::Notify>,
     status: inbox_api::Status,
     mutes: inbox_api::Mutes,
     page: inbox_api::Entries,
@@ -139,9 +140,9 @@ pub(super) fn fill(
     if !center.stamped(stamp) {
         return false;
     }
-    center.set_client(Some(client.clone()));
+    center.set_client(Some(client.clone()), Some(lost.clone()));
     center.set_stuck(status.stopped.or(status.stalled));
-    center.mutes = mutes;
+    center.mutes_read(mutes);
     center.replace(page.entries, page.unread);
     center.set_state(InboxState::Ready);
     center.resend_watermarks();
@@ -177,12 +178,21 @@ async fn connect(
     let mut live = client.live().await?;
     let mutes = client.mutes().await?;
     let page = client.entries(None, PAGE).await?;
-    if !fill(center, stamp, client, status, mutes, page) {
+    let lost = Arc::new(tokio::sync::Notify::new());
+    if !fill(center, stamp, client, &lost, status, mutes, page) {
         return Ok(());
     }
     *backoff = FIRST_BACKOFF;
     wake();
-    while let Some(push) = live.next().await? {
+    loop {
+        let push = tokio::select! {
+            push = live.next() => push?,
+            // a call did not answer while the socket held: lost all the same
+            _ = lost.notified() => {
+                return Err(Error::Unreachable("a call did not answer".into()));
+            }
+        };
+        let Some(push) = push else { break };
         // the settings and the label first: neither under the centre
         // (lock order: a seat, then the centre; the prefs file off it)
         let settings = Settings::kept();

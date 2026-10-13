@@ -130,8 +130,12 @@ pub(crate) struct Center {
     in_flight: std::collections::HashSet<Key>,
     queued: HashMap<Key, u64>,
     /// Calls the person made while the inbox was not in hand (Mark all
-    /// read, Clear read, a mute): sent when it is.
+    /// read, Clear read, a mute): sent when it is, in order; a mutes call
+    /// carries the mutes as they stand then.
     pending: Vec<Call>,
+    /// The runner's ear for a call that did not answer while the inbox
+    /// seemed in hand: the connection is lost, it connects again.
+    lost: Option<Arc<tokio::sync::Notify>>,
     /// The banner standing per banner tag, by the entry it is for: it
     /// comes down when that entry is read or gone, and for no other.
     pub(super) standing: HashMap<String, i64>,
@@ -181,10 +185,12 @@ pub(crate) fn wall() -> i64 {
 
 /// The standing banner's tag for an entry: a program's tags are its own,
 /// so two programs never replace each other's banner, and under a prefix
-/// the "N more" banner (`more/<program>`) cannot share with any pair.
-pub(super) fn banner_tag(program: &str, tag: &str) -> String {
+/// the "N more" banner (`more/<program>`) cannot share with any pair. An
+/// untagged entry's banner is its own (`id/<entry id>`): it replaces none
+/// and comes down with its entry like any other.
+pub(super) fn banner_tag(program: &str, tag: &str, id: i64) -> String {
     match tag.is_empty() {
-        true => String::new(),
+        true => format!("id/{id}"),
         false => format!("entry/{program}/{tag}"),
     }
 }
@@ -205,6 +211,9 @@ impl Center {
     pub(crate) fn forget_account(&mut self) {
         for tag in self.standing.keys().cloned().collect::<Vec<_>>() {
             self.forget_banner(&tag);
+        }
+        for program in self.more.keys() {
+            super::withdraw(format!("more/{program}"));
         }
         *self = Center {
             network: std::mem::take(&mut self.network),
@@ -228,9 +237,15 @@ impl Center {
         self.stamp == stamp
     }
 
-    /// The runner's client, for the calls the person's actions send.
-    pub(crate) fn set_client(&mut self, client: Option<Arc<Client>>) {
+    /// The runner's client, for the calls the person's actions send, and
+    /// its ear for a lost connection.
+    pub(crate) fn set_client(
+        &mut self,
+        client: Option<Arc<Client>>,
+        lost: Option<Arc<tokio::sync::Notify>>,
+    ) {
         self.client = client;
+        self.lost = lost;
     }
 
     /// What `status` said of the follower: stopped or stalled, or neither.
@@ -314,7 +329,7 @@ impl Center {
         let notice = Notice {
             title: entry.title.clone(),
             body: entry.body.clone(),
-            tag: banner_tag(&entry.program, &entry.tag),
+            tag: banner_tag(&entry.program, &entry.tag, entry.id),
             opens: Some(entry.id),
         };
         let in_front = self
@@ -347,10 +362,8 @@ impl Center {
         if bucket.tokens >= 1. {
             bucket.tokens -= 1.;
             self.more.remove(&program);
-            if !notice.tag.is_empty() {
-                self.standing
-                    .insert(notice.tag.clone(), notice.opens.unwrap_or_default());
-            }
+            self.standing
+                .insert(notice.tag.clone(), notice.opens.unwrap_or_default());
             return Some(notice);
         }
         let more = self.more.entry(program.clone()).or_default();
@@ -579,7 +592,15 @@ impl Center {
         }
         // the kept calls, in the order they were made (Clear read never
         // lands before Mark all read), one task
-        let pending = std::mem::take(&mut self.pending);
+        let pending: Vec<Call> = std::mem::take(&mut self.pending)
+            .into_iter()
+            .map(|call| match call {
+                // the mutes as they stand now, never a stale set over a
+                // newer one
+                Call::Mutes(_) => Call::Mutes(self.mutes.clone()),
+                call => call,
+            })
+            .collect();
         if let Some(client) = self.client_ready() {
             let me = self.me.clone();
             crate::runtime::handle().spawn(async move {
@@ -603,6 +624,18 @@ impl Center {
         self.in_flight.remove(&key);
         if let Some(height) = self.queued.remove(&key) {
             self.read_tag(program, tag, height);
+        }
+    }
+
+    /// The mutes read at a connect: the inbox's set, unless a mutes call
+    /// made meanwhile waits to go out, which carries the newer set.
+    pub(crate) fn mutes_read(&mut self, mutes: Mutes) {
+        if !self
+            .pending
+            .iter()
+            .any(|call| matches!(call, Call::Mutes(_)))
+        {
+            self.mutes = mutes;
         }
     }
 
@@ -788,12 +821,16 @@ async fn perform(client: Arc<Client>, me: Weak<Mutex<Center>>, call: Call) {
         // the runner is gone: never replayed under another
         return;
     }
-    match center.client_ready() {
-        // the inbox is in hand (the deadline passed on a healthy socket):
-        // again, now
-        Some(_) => _ = center.send(call),
-        // away: with the connect
-        None => center.keep(call),
+    // kept for the connect, in order (a tag read is its watermark's)
+    center.keep(call);
+    if center.state == InboxState::Ready {
+        // the inbox seemed in hand: the connection is lost, the runner
+        // connects again under its backoff and replays what is kept
+        center.set_state(InboxState::Unreachable { since: wall() });
+        if let Some(lost) = &center.lost {
+            lost.notify_one();
+        }
+        super::wake();
     }
 }
 

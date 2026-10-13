@@ -352,6 +352,28 @@ fn a_banner_the_centre_stops_tracking_comes_down() {
     assert!(center.standing.is_empty());
 }
 
+/// An untagged entry's banner is tracked under its own tag and comes
+/// down with its entry; the "N more" banners go with the account.
+#[test]
+fn an_untagged_banner_and_the_more_banner_come_down_too() {
+    let now = Instant::now();
+    let mut center = ready();
+    let allowed = settings(Some(Permission::Allow));
+    let withdrawn = || super::withdrawn().lock().unwrap().clone();
+    let own = center
+        .arrived(&allowed, entry(71, "chat", "", 1), now, "Chat")
+        .unwrap();
+    assert_eq!(own.tag, "id/71");
+    assert_eq!(center.standing.get("id/71"), Some(&71));
+    center.read_elsewhere(&[71]);
+    assert!(withdrawn().contains(&"id/71".to_owned()));
+    for id in 72..=76 {
+        center.arrived(&allowed, entry(id, "chat", "", 1), now, "Chat");
+    }
+    center.forget_account();
+    assert!(withdrawn().contains(&"more/chat".to_owned()));
+}
+
 /// The runner's writes are checked against its stamp under the one lock
 /// that writes: a dropped runner's end and its page land nowhere.
 #[tokio::test]
@@ -374,10 +396,12 @@ async fn a_dropped_runners_writes_land_nowhere() {
         stopped: None,
         stalled: None,
     };
+    let lost = std::sync::Arc::new(tokio::sync::Notify::new());
     assert!(!super::follow::fill(
         &handle,
         stale,
         &client,
+        &lost,
         status(),
         Default::default(),
         page()
@@ -394,6 +418,7 @@ async fn a_dropped_runners_writes_land_nowhere() {
         &handle,
         live,
         &client,
+        &lost,
         status(),
         Default::default(),
         page()
@@ -768,13 +793,38 @@ async fn a_failed_call_stays_with_its_runner() {
         "never replayed under the next runner"
     );
     assert_eq!(center.lock().pending_for_test(), 0);
-    // held past the deadline while the inbox stays in hand: again, now
+    // held past the deadline while the socket holds: the connection is
+    // lost, the call is kept, and the reconnect replays it once
     fake.hold("hide", 2_000);
     center.lock().clear_read();
     until(|| fake.hides() == 1).await;
+    until(|| matches!(center.lock().state, InboxState::Unreachable { .. })).await;
+    assert_eq!(fake.hides(), 1, "never re-sent from the task");
     fake.hold("hide", 0);
-    until(|| fake.hides() >= 2).await;
-    assert_eq!(center.lock().state, InboxState::Ready);
+    until(|| center.lock().state == InboxState::Ready).await;
+    until(|| fake.hides() == 2).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(fake.hides(), 2, "once");
+}
+
+/// A mutes call kept for the connect carries the mutes as they stand
+/// then: a set the inbox sent meanwhile is what goes out, never the set
+/// at the click.
+#[tokio::test]
+async fn a_kept_mutes_call_carries_the_mutes_as_they_stand() {
+    let _seat = seated(35).await;
+    let fake = FakeInbox::start().await;
+    let center = CenterHandle::default();
+    center.lock().set_network("net#0");
+    center.lock().set_muted("chat", true);
+    center.lock().set_mutes(inbox_api::Mutes {
+        programs: vec!["zed".into()],
+        ..Default::default()
+    });
+    let rpc = crate::backend::RpcClient::new(fake.origin());
+    let _follower = super::start(&rpc, "net#0", "Desktop", center.clone());
+    until(|| fake.mute_puts().len() == 1).await;
+    assert_eq!(fake.mute_puts()[0].programs, vec!["zed".to_owned()]);
 }
 
 /// An unread entry under a watermark the inbox already confirmed (indexed
@@ -814,19 +864,22 @@ async fn calls_made_without_the_inbox_go_out_on_the_connect() {
     center.lock().clear_read();
     center.lock().set_muted("chat", true);
     let rpc = crate::backend::RpcClient::new(fake.origin());
-    fake.hold_reads(200);
+    fake.hold_reads(400);
     let _follower = super::start(&rpc, "net#0", "Desktop", center.clone());
     until(|| fake.reads().contains(&Read::All { all: true })).await;
+    // the read's answer is held: the hide waits for it
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(fake.hides(), 0, "the hide waits for the read's answer");
     until(|| fake.hides() == 1).await;
     until(|| fake.mute_puts().len() == 1).await;
     assert_eq!(fake.mute_puts()[0].programs, vec!["chat".to_owned()]);
-    let calls = fake.calls();
-    // the connect's own `prefs` (the mutes read) comes first; the kept
-    // calls follow in order: the read, the hide, then the mutes `PUT`
-    let at = |name: &str| calls.iter().rposition(|call| call == name).unwrap();
+    // the answers went out in the order the calls were made: the read,
+    // the hide, then the mutes `PUT` (the connect's own `prefs` read first)
+    let answered = fake.answered();
+    let at = |name: &str| answered.iter().rposition(|call| call == name).unwrap();
     assert!(
         at("read") < at("hide") && at("hide") < at("prefs"),
-        "{calls:?}"
+        "{answered:?}"
     );
 }
 

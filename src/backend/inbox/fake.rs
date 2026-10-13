@@ -44,8 +44,9 @@ struct State {
     /// then one every `PACE_EVERY_MS`, else 429. `due` as the inbox keeps it.
     budget: Option<std::time::Instant>,
     budgeted: bool,
-    /// Every authed call, in the order it was answered.
-    calls: Vec<String>,
+    /// Every authed call, in the order its answer went out (after any
+    /// hold): what a caller that waits for each answer sees.
+    answered: Vec<String>,
     /// Live sockets open now, and how many were open when the page was
     /// last answered.
     live_sockets: usize,
@@ -157,9 +158,10 @@ impl FakeInbox {
         self.state().budgeted = on;
     }
 
-    /// The authed calls answered so far, in order (`read`, `hide`, ...).
-    pub(crate) fn calls(&self) -> Vec<String> {
-        self.state().calls.clone()
+    /// The authed calls in the order their answers went out: what a
+    /// caller that waits for each answer sees.
+    pub(crate) fn answered(&self) -> Vec<String> {
+        self.state().answered.clone()
     }
 
     pub(crate) fn set_stopped(&self, stopped: Option<inbox_api::Stopped>) {
@@ -219,16 +221,16 @@ async fn serve(mut stream: TcpStream, state: Arc<Mutex<State>>, pushes: broadcas
     let Ok((method, path, body)) = read_request(&mut stream).await else {
         return;
     };
-    let (status, body) = answer(&method, &path, &head, &body, &state, &pushes);
-    let held = state
-        .lock()
-        .unwrap()
-        .hold
-        .clone()
-        .filter(|(at, _)| path.starts_with(at.as_str()))
-        .map(|(_, ms)| ms);
+    let (status, body, held) = answer(&method, &path, &head, &body, &state, &pushes);
     if let Some(ms) = held {
         tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+    }
+    if let Some(call) = path
+        .strip_prefix("/inbox/v1/")
+        .map(|call| call.split('?').next().unwrap_or("").to_owned())
+        .filter(|call| !matches!(call.as_str(), "status" | "challenge" | "login"))
+    {
+        state.lock().unwrap().answered.push(call);
     }
     let reply = format!(
         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -270,6 +272,8 @@ fn read_ids(entries: &[Entry], read: &Read) -> Vec<i64> {
         .collect()
 }
 
+/// The answer, and how long it is held before it goes out: read under the
+/// one lock, so a hold cleared as the call is counted still holds it.
 fn answer(
     method: &str,
     path: &str,
@@ -277,8 +281,25 @@ fn answer(
     body: &[u8],
     state: &Mutex<State>,
     pushes: &broadcast::Sender<Push>,
-) -> (&'static str, Vec<u8>) {
+) -> (&'static str, Vec<u8>, Option<u64>) {
     let mut state = state.lock().unwrap_or_else(|p| p.into_inner());
+    let held = state
+        .hold
+        .clone()
+        .filter(|(at, _)| path.starts_with(at.as_str()))
+        .map(|(_, ms)| ms);
+    let (status, body) = answer_under(method, path, head, body, &mut state, pushes);
+    (status, body, held)
+}
+
+fn answer_under(
+    method: &str,
+    path: &str,
+    head: &str,
+    body: &[u8],
+    state: &mut State,
+    pushes: &broadcast::Sender<Push>,
+) -> (&'static str, Vec<u8>) {
     let (path, query) = path.split_once('?').unwrap_or((path, ""));
     let call = path.strip_prefix("/inbox/v1/").unwrap_or("");
     if state.no_inbox || call.is_empty() {
@@ -348,7 +369,6 @@ fn answer(
                 }
                 state.budget = Some(due + every);
             }
-            state.calls.push(call.to_owned());
             match (method, call) {
                 ("POST", "logout") => {
                     state.logouts += 1;
