@@ -363,6 +363,65 @@ fn a_drag_down_numbered_lines_copies_the_code_not_the_numbers(cx: &mut gpui_kit:
     assert_eq!(copied, "fn a() {}\nfn b() {}");
 }
 
+/// A click on words leaves nothing behind it in the selection: gpui-base
+/// would keep an empty anchor for a shift-click to extend from, and while it
+/// holds one every frame publishes every paragraph to every other. So a
+/// shift-click after a click selects nothing, and a double-click still
+/// selects its word.
+#[gpui_kit::test]
+fn a_click_on_words_leaves_no_anchor_behind(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let root = container_with_style(
+        "pane",
+        div().w(px(150.)).h_full().flex().flex_col().style().clone(),
+        [
+            paragraph("alpha", "alpha beta"),
+            paragraph("gamma", "gamma"),
+        ],
+    );
+    let window = cx.open_window(size(px(300.), px(100.)), |_, cx| Window2 {
+        tree: cx.new(|_| ViewTree::new(root)),
+    });
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    let (word, below) = (point(px(5.), px(10.)), point(px(140.), px(30.)));
+    let press = |native: &mut gpui_kit::VisualTestContext,
+                 at: Point<Pixels>,
+                 click_count: usize,
+                 modifiers: gpui_kit::Modifiers| {
+        native.simulate_event(MouseDownEvent {
+            button: MouseButton::Left,
+            position: at,
+            modifiers,
+            click_count,
+            first_mouse: false,
+        });
+        native.simulate_event(MouseUpEvent {
+            button: MouseButton::Left,
+            position: at,
+            modifiers,
+            click_count,
+        });
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            gpui_kit::base::TextSelection::selected_text(window, cx)
+        })
+    };
+    press(&mut native, word, 1, gpui_kit::Modifiers::default());
+    native.simulate_mouse_move(below, None, Default::default());
+    assert_eq!(
+        press(&mut native, below, 1, gpui_kit::Modifiers::shift()),
+        "",
+        "a shift-click after a click"
+    );
+    press(&mut native, word, 1, gpui_kit::Modifiers::default());
+    assert_eq!(
+        press(&mut native, word, 2, gpui_kit::Modifiers::default()),
+        "alpha",
+        "a double-click"
+    );
+}
+
 /// A drag selecting words inside a clickable box (a chat message's cell)
 /// is not a click on it: the words stay selected, the box hears nothing.
 /// A plain click on the same box is still its click.
