@@ -310,20 +310,30 @@ impl ViewTree {
         let styled = StyledText::new(shared.clone());
         let layout = styled.layout().clone();
         let selection_range = std::rc::Rc::new(std::cell::RefCell::new(None));
-        let selection = selection_canvas(layout.clone(), selection_range.clone(), None);
         let mut element = div().relative();
         *element.style() = Arc::unwrap_or_clone(self.style(*style));
         crate::fonts::refine_fallbacks(element.style());
+        let mut element = element.id(native_id.clone());
+        if !self.in_control {
+            element = element.child(selection_canvas(
+                layout.clone(),
+                selection_range.clone(),
+                None,
+            ));
+        }
         // The div is the Label `announce` names below; the styled text
         // itself has no AX node, so it is not a second, empty-named node
         // carrying the same content as its value.
-        let element = element.id(native_id.clone()).child(selection).child(styled);
-        let element = announce(element, accessible(node));
+        let element = announce(element.child(styled), accessible(node));
         #[cfg(test)]
         let element = {
             use gpui_kit::test::TestSupportExt as _;
             element.test_support()
         };
+        // a control's label is no paragraph of the selection (`is_control`)
+        if self.in_control {
+            return element.into_any_element();
+        }
         // A plain text is a paragraph of the selection too: a drag across
         // a label, a caption or a heading selects and copies it, as across
         // a message body.
@@ -484,6 +494,10 @@ impl ViewTree {
                 content.into_any_element()
             }
         };
+        // a control's label is no paragraph of the selection (`is_control`)
+        if self.in_control {
+            return content;
+        }
         RichParagraph {
             id: native_id,
             content,

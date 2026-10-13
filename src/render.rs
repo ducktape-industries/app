@@ -110,6 +110,37 @@ pub(crate) fn enter_scope(node: &wire::Node, row: Option<usize>, path: &mut Auth
     }
 }
 
+/// Whether a node of `role` is a control: what is pressed, toggled, picked
+/// or slid. Its words are its label, and a label is not text to read: as a
+/// browser's button and a native app's controls do, it stays out of the
+/// window's text selection, so a press on it that drifts is its press and
+/// a double-click on it selects no word. A link, a list's option, a row or
+/// a cell holds content (an address, a name) and stays selectable.
+fn is_control(role: gpui_kit::Role) -> bool {
+    use gpui_kit::Role::*;
+    matches!(
+        role,
+        Button
+            | DefaultButton
+            | CheckBox
+            | RadioButton
+            | Switch
+            | Tab
+            | MenuItem
+            | MenuItemCheckBox
+            | MenuItemRadio
+            | MenuListOption
+            | ComboBox
+            | EditableComboBox
+            | Slider
+            | SpinButton
+            | Splitter
+            | ScrollBar
+            | ColorWell
+            | DisclosureTriangle
+    )
+}
+
 /// Native widget state worth carrying into a fresh `ViewTree` when a view's
 /// guest is re-instantiated: plain data only, no entity or handler id, since
 /// the new guest's handler ids mean different things. Taken by
@@ -180,6 +211,10 @@ pub struct ViewTree {
     row: Option<(usize, usize)>,
     /// The document order the next rich paragraph registers for selection.
     selection_order: std::rc::Rc<std::cell::Cell<u64>>,
+    /// Whether the node being drawn sits inside a control (`is_control`):
+    /// its words are the control's label, not text to read, and stay out
+    /// of the window's text selection.
+    in_control: bool,
 
     // Native widgets, one per mounted node.
     fields: HashMap<AuthoredPath, Field>,
@@ -295,6 +330,7 @@ impl ViewTree {
             next_row: None,
             row: None,
             selection_order: Default::default(),
+            in_control: false,
             perf_key: None,
             #[cfg(test)]
             renders: 0,
@@ -350,6 +386,11 @@ impl ViewTree {
         // rows in another order. Element state keyed under the number (a
         // paragraph's place in the selection) survives both.
         let outer_index = entered_scope.then(|| std::mem::take(&mut self.render_index));
+        let outer_control = self.in_control;
+        self.in_control |= node
+            .interactivity()
+            .and_then(|interactivity| interactivity.role)
+            .is_some_and(is_control);
         use wire::Node;
         let element = match node {
             Node::Text(view_wire::TextNode { .. }) => self.text(node),
@@ -375,6 +416,7 @@ impl ViewTree {
         if let Some(outer) = outer_index {
             self.render_index = outer;
         }
+        self.in_control = outer_control;
         // a row with no id of its own is drawn under the index it is filed
         // under, so gpui files its ids (and their accessibility nodes and
         // element state) under the row too

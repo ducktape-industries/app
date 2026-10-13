@@ -248,6 +248,77 @@ fn a_drag_across_a_plain_text_copies_it_too(cx: &mut gpui_kit::TestAppContext) {
     );
 }
 
+/// A control's words are its label, not text to read: a drag down the pane
+/// copies the lines around a button but not its word, and a double-click
+/// on the word selects nothing, as on a browser's button.
+#[gpui_kit::test]
+fn a_controls_label_is_no_text_to_select(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let text = |key: &str, words: &str| {
+        wire::Node::Text(view_wire::TextNode {
+            id: Some(named_id(key)),
+            style: crate::render::test_style(div().h(px(20.)).style().clone()),
+            content: words.into(),
+        })
+    };
+    let mut button = container_with_style(
+        "send",
+        div().h(px(20.)).style().clone(),
+        [text("send-label", "Send")],
+    );
+    if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut button {
+        let interactivity = interactivity.get_or_insert_default();
+        interactivity.role = Some(gpui_kit::Role::Button);
+        interactivity.on_click = Some(5);
+    }
+    let root = container_with_style(
+        "pane",
+        div().w(px(150.)).h_full().flex().flex_col().style().clone(),
+        [text("author", "ada"), button, paragraph("gamma", "gamma")],
+    );
+    let window = cx.open_window(size(px(300.), px(100.)), |_, cx| Window2 {
+        tree: cx.new(|_| ViewTree::new(root)),
+    });
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    let word = point(px(5.), px(30.));
+    for click_count in [1, 2] {
+        native.simulate_event(MouseDownEvent {
+            button: MouseButton::Left,
+            position: word,
+            modifiers: Default::default(),
+            click_count,
+            first_mouse: false,
+        });
+        native.simulate_event(MouseUpEvent {
+            button: MouseButton::Left,
+            position: word,
+            modifiers: Default::default(),
+            click_count,
+        });
+    }
+    let doubled = native.update(|window, cx| {
+        window.render_frame(cx);
+        gpui_kit::base::TextSelection::selected_text(window, cx)
+    });
+    assert_eq!(doubled, "", "a double-click on the button's word");
+    let (from, to) = (point(px(1.), px(10.)), point(px(140.), px(50.)));
+    native.simulate_mouse_move(from, None, Default::default());
+    native.simulate_mouse_down(from, MouseButton::Left, Default::default());
+    native.simulate_mouse_move(to, Some(MouseButton::Left), Default::default());
+    native.update(|window, cx| window.render_frame(cx));
+    native.simulate_mouse_up(to, MouseButton::Left, Default::default());
+    let copied = native.update(|window, cx| {
+        window.render_frame(cx);
+        gpui_kit::base::TextSelection::selected_text(window, cx)
+    });
+    assert!(
+        copied.contains("ada") && copied.contains("gamma"),
+        "{copied:?}"
+    );
+    assert!(!copied.contains("Send"), "the button's word: {copied:?}");
+}
+
 /// A drag selecting words inside a clickable box (a chat message's cell)
 /// is not a click on it: the words stay selected, the box hears nothing.
 /// A plain click on the same box is still its click.
