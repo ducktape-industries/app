@@ -221,6 +221,33 @@ fn a_drag_that_wanders_into_the_next_pane_stays_in_its_own(cx: &mut gpui_kit::Te
     assert!(!copied.contains("beta"), "the thread's line: {copied:?}");
 }
 
+/// A plain text (an author, a caption, a heading) is as selectable as a
+/// paragraph: a drag down the pane copies the label and the line under it.
+#[gpui_kit::test]
+fn a_drag_across_a_plain_text_copies_it_too(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let label = wire::Node::Text(view_wire::TextNode {
+        id: Some(named_id("author")),
+        style: crate::render::test_style(div().h(px(20.)).style().clone()),
+        content: "ada".into(),
+    });
+    let root = container_with_style(
+        "pane",
+        div().w(px(150.)).h_full().flex().flex_col().style().clone(),
+        [label, paragraph("gamma", "gamma")],
+    );
+    let copied = drag_over(
+        root,
+        point(px(1.), px(10.)),
+        &[point(px(140.), px(30.))],
+        cx,
+    );
+    assert!(
+        copied.contains("ada") && copied.contains("gamma"),
+        "{copied:?}"
+    );
+}
+
 #[test]
 fn only_the_clip_a_drag_began_in_joins_it() {
     let room = Bounds::new(point(px(0.), px(0.)), size(px(150.), px(100.)));

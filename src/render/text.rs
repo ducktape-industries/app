@@ -91,8 +91,11 @@ impl IntoElement for RichParagraph {
 impl Element for RichParagraph {
     type RequestLayoutState = ();
     type PrepaintState = (gpui_kit::Hitbox, Bounds<Pixels>);
+    // No id of its own: the content carries `id`, so what is inside is
+    // filed under the one id the view gave (or the host numbered), and the
+    // selection state below is keyed under that same id.
     fn id(&self) -> Option<ElementId> {
-        Some(self.id.clone())
+        None
     }
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
         None
@@ -108,7 +111,7 @@ impl Element for RichParagraph {
     }
     fn prepaint(
         &mut self,
-        id: Option<&GlobalElementId>,
+        _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _: &mut (),
@@ -131,22 +134,23 @@ impl Element for RichParagraph {
                 .with_text_bounds(vec![layout_bounds])
                 .with_document_order(order)
         };
-        let id = id.expect("a paragraph always has an id");
-        window.with_element_state::<RichSelection, _>(id, |state, window| {
-            let state = state.unwrap_or_else(|| {
-                let handle = gpui_kit::base::TextSelectionHandle::new(text.to_string(), cx);
-                let refresh = refresh_on_change(&handle, window, cx);
-                RichSelection {
-                    handle,
-                    _refresh: refresh,
+        window.with_global_id(self.id.clone(), |id, window| {
+            window.with_element_state::<RichSelection, _>(id, |state, window| {
+                let state = state.unwrap_or_else(|| {
+                    let handle = gpui_kit::base::TextSelectionHandle::new(text.to_string(), cx);
+                    let refresh = refresh_on_change(&handle, window, cx);
+                    RichSelection {
+                        handle,
+                        _refresh: refresh,
+                    }
+                });
+                state.handle.set_fallback_copy_text(text.to_string(), cx);
+                *active.borrow_mut() = Some(state.handle.clone());
+                if joins {
+                    state.handle.register(registration(), window, cx);
                 }
-            });
-            state.handle.set_fallback_copy_text(text.to_string(), cx);
-            *active.borrow_mut() = Some(state.handle.clone());
-            if joins {
-                state.handle.register(registration(), window, cx);
-            }
-            ((), state)
+                ((), state)
+            })
         });
         (hitbox, clip)
     }
@@ -258,6 +262,28 @@ fn paint_picked_link(
     }
 }
 
+/// The layer over a paragraph that paints its selected `range` each frame,
+/// and the mark on `picked`, the link the arrows are on.
+fn selection_canvas(
+    layout: TextLayout,
+    range: std::rc::Rc<std::cell::RefCell<Option<std::ops::Range<usize>>>>,
+    picked: Option<std::ops::Range<usize>>,
+) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |_, (), window, cx| {
+            if let Some(range) = range.borrow().as_ref() {
+                paint_rich_selection(&layout, range, window, cx);
+            }
+            if let Some(range) = &picked {
+                paint_picked_link(&layout, range, window, cx);
+            }
+        },
+    )
+    .absolute()
+    .size_full()
+}
+
 impl ViewTree {
     pub(super) fn text(&mut self, node: &wire::Node) -> AnyElement {
         let wire::Node::Text(view_wire::TextNode {
@@ -271,22 +297,37 @@ impl ViewTree {
             self.render_index += 1;
             host_id(format!("text-{index}"))
         });
-        let mut element = div();
+        let shared: SharedString = content.clone().into();
+        let styled = StyledText::new(shared.clone());
+        let layout = styled.layout().clone();
+        let selection_range = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let selection = selection_canvas(layout.clone(), selection_range.clone(), None);
+        let mut element = div().relative();
         *element.style() = Arc::unwrap_or_clone(self.style(*style));
         crate::fonts::refine_fallbacks(element.style());
-        let element = element
-            .id(native_id)
-            // The div above is the Label `announce` names below; the text
-            // itself stays out of the AX tree so it is not a second,
-            // empty-named node carrying the same content as its value.
-            .child(gpui_kit::Text::new_inaccessible(content.clone().into()));
+        // The div is the Label `announce` names below; the styled text
+        // itself has no AX node, so it is not a second, empty-named node
+        // carrying the same content as its value.
+        let element = element.id(native_id.clone()).child(selection).child(styled);
         let element = announce(element, accessible(node));
         #[cfg(test)]
         let element = {
             use gpui_kit::test::TestSupportExt as _;
             element.test_support()
         };
-        element.into_any_element()
+        // A plain text is a paragraph of the selection too: a drag across
+        // a label, a caption or a heading selects and copies it, as across
+        // a message body.
+        RichParagraph {
+            id: native_id,
+            content: element.into_any_element(),
+            text: shared,
+            layout,
+            active_handle: Default::default(),
+            selection: selection_range,
+            order: self.selection_order.clone(),
+        }
+        .into_any_element()
     }
 
     pub(super) fn rich_text(
@@ -417,21 +458,7 @@ impl ViewTree {
             .and_then(|(_, linking)| linking.picked)
             .map(|index| clickable_ranges[index].clone());
         let selection_range = std::rc::Rc::new(std::cell::RefCell::new(None));
-        let selection_for_paint = selection_range.clone();
-        let selection_layout = layout.clone();
-        let selection = canvas(
-            |_, _, _| (),
-            move |_, (), window, cx| {
-                if let Some(range) = selection_for_paint.borrow().as_ref() {
-                    paint_rich_selection(&selection_layout, range, window, cx);
-                }
-                if let Some(range) = &picked {
-                    paint_picked_link(&selection_layout, range, window, cx);
-                }
-            },
-        )
-        .absolute()
-        .size_full();
+        let selection = selection_canvas(layout.clone(), selection_range.clone(), picked);
         let content = match linked {
             Some((mut boxed, linking)) => {
                 *boxed.style() = Arc::unwrap_or_clone(self.style(*style));
@@ -439,7 +466,11 @@ impl ViewTree {
                 boxed.child(selection).child(interactive).into_any_element()
             }
             None => {
-                let mut content = div().relative().child(selection).child(interactive);
+                let mut content = div()
+                    .id(native_id.clone())
+                    .relative()
+                    .child(selection)
+                    .child(interactive);
                 *content.style() = Arc::unwrap_or_clone(self.style(*style));
                 content.into_any_element()
             }
