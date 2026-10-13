@@ -29,7 +29,7 @@ pub(super) use overlays::OverlayLayer;
 #[cfg(test)]
 pub(super) use overlays::SETTLE;
 #[cfg(test)]
-pub(super) use panes::{BORDER, FILL_STRIP, TITLE};
-pub(super) use panes::{PaneLayer, PaneView, view_body};
+pub(super) use panes::{BORDER, FILL_STRIP};
+pub(super) use panes::{PaneLayer, PaneView, TITLE, view_body};
 pub(super) use root::WindowRoot;
 pub(super) use toast::ToastView;

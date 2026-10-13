@@ -342,6 +342,10 @@ impl Page {
         let Some(host) = self.shared.host() else {
             return;
         };
+        #[cfg(target_os = "macos")]
+        if down && self.edit(keystroke) {
+            return;
+        }
         let event = cef::KeyEvent {
             type_: if down {
                 cef::KeyEventType::RAWKEYDOWN
@@ -351,6 +355,16 @@ impl Page {
             modifiers: flags(&keystroke.modifiers, None),
             windows_key_code: code,
             ..Default::default()
+        };
+        #[cfg(target_os = "macos")]
+        let event = match crate::mac::key(&keystroke.key) {
+            Some((native, character)) => cef::KeyEvent {
+                native_key_code: native,
+                character,
+                unmodified_character: character,
+                ..event
+            },
+            None => return,
         };
         host.send_key_event(Some(&event));
         // Enter's character, `\r`, as a keyboard types it: the page submits a
@@ -364,6 +378,38 @@ impl Page {
                 ..event
             }));
         }
+    }
+}
+
+impl Page {
+    /// macOS: Chromium leaves ⌘C, ⌘X, ⌘V, ⌘A, ⌘Z and ⇧⌘Z to the app's Edit
+    /// menu, so as keys they do nothing in the page: its focused frame is
+    /// told instead. `false`: not one of them.
+    #[cfg(target_os = "macos")]
+    fn edit(&self, keystroke: &Keystroke) -> bool {
+        let modifiers = &keystroke.modifiers;
+        if !modifiers.platform || modifiers.control || modifiers.alt {
+            return false;
+        }
+        let Some(frame) = self
+            .shared
+            .browser
+            .borrow()
+            .as_ref()
+            .and_then(|browser| browser.focused_frame())
+        else {
+            return false;
+        };
+        match (keystroke.key.as_str(), modifiers.shift) {
+            ("c", false) => frame.copy(),
+            ("x", false) => frame.cut(),
+            ("v", false) => frame.paste(),
+            ("a", false) => frame.select_all(),
+            ("z", false) => frame.undo(),
+            ("z", true) => frame.redo(),
+            _ => return false,
+        }
+        true
     }
 }
 

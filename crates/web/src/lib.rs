@@ -10,6 +10,10 @@
 //!   sandbox: the Linux helper (`chrome-sandbox` beside the binary) must be
 //!   root's and setuid, else every page says the helper is not installed.
 //!   `DUCKTAPE_WEB_NO_SANDBOX=1` runs without it (development boxes).
+//!   macOS has no helper: CEF's framework sits beside the binary (`build.rs`
+//!   links it there), the app loads it before any CEF call (`mac.rs`), and
+//!   each child, this binary unbundled, enters its seatbelt sandbox first.
+//!   No app bundle yet.
 //!   CEF's signal handlers are off: a SIGTERM is the app's to handle.
 //! - the message loop is CEF's external pump: `on_schedule_message_pump_work`
 //!   (any CEF thread) sends its delay down a channel; one gpui foreground
@@ -30,6 +34,8 @@ mod cursor;
 mod glib;
 mod handlers;
 mod keys;
+#[cfg(target_os = "macos")]
+mod mac;
 mod menu;
 mod page;
 
@@ -99,8 +105,12 @@ pub fn child() -> Option<i32> {
     if !std::env::args().any(|arg| arg.starts_with("--type=")) {
         return None;
     }
-    let _ = cef::api_hash(cef::sys::CEF_API_VERSION_LAST, 0);
     let args = cef::args::Args::new();
+    #[cfg(target_os = "macos")]
+    if !mac::sandbox(args.as_main_args()) || !mac::load() {
+        return Some(1);
+    }
+    let _ = cef::api_hash(cef::sys::CEF_API_VERSION_LAST, 0);
     Some(cef::execute_process(
         Some(args.as_main_args()),
         Some(&mut handlers::app()),
@@ -197,6 +207,10 @@ fn initialize(root: &Path) -> Result<(), SharedString> {
     if sandbox && !sandbox_helper_installed() {
         return Err("The web sandbox helper is not installed.".into());
     }
+    #[cfg(target_os = "macos")]
+    if !mac::load() {
+        return Err("The web view's framework is not beside the app.".into());
+    }
     let _ = cef::api_hash(cef::sys::CEF_API_VERSION_LAST, 0);
     let _ = std::fs::create_dir_all(root);
     if !handlers::initialize(sandbox, root) {
@@ -220,8 +234,9 @@ fn sandbox_helper_installed() -> bool {
         .is_ok_and(|helper| helper.uid() == 0 && helper.mode() & 0o4000 != 0)
 }
 
-// ponytail: macOS and Windows sandboxes are their packaging's (helper
-// bundles, a broker); unchecked here until there is one to check
+// macOS: each child enters seatbelt itself (`mac::sandbox`), nothing to
+// install. ponytail: Windows' sandbox is its packaging's (a broker),
+// unchecked here until there is one to check
 #[cfg(not(target_os = "linux"))]
 fn sandbox_helper_installed() -> bool {
     true

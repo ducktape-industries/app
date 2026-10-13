@@ -330,8 +330,15 @@ impl Windows {
             titlebar: Some(TitlebarOptions {
                 title: Some(title.into()),
                 appears_transparent: cfg!(target_os = "macos"),
-                // the buttons are 14px tall: centred in the 36px bar
-                traffic_light_position: Some(point(px(11.), px(11.))),
+                // the buttons are 14px tall, centred on the bar they sit
+                // over: the console's, or a pop-out's strip above its 1px rule
+                traffic_light_position: Some(point(
+                    px(11.),
+                    px(match kind {
+                        WindowKind::Console => (layers::BAR - 14.) / 2.,
+                        WindowKind::View { .. } => (layers::TITLE - 1. - 14.) / 2.,
+                    }),
+                )),
             }),
             // one window serves the launcher and the desk, so it resizes;
             // a pop-out goes down to its view's minimum, as it stands when
