@@ -319,6 +319,50 @@ fn a_controls_label_is_no_text_to_select(cx: &mut gpui_kit::TestAppContext) {
     assert!(!copied.contains("Send"), "the button's word: {copied:?}");
 }
 
+/// A drag down a file's lines copies its code and not its line numbers: the
+/// gutter is each line's list marker, drawn beside the content, as a
+/// browser leaves an ordered list's numbers out of a copy.
+#[gpui_kit::test]
+fn a_drag_down_numbered_lines_copies_the_code_not_the_numbers(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let line = |number: &str, code: &str| {
+        let mut gutter = container_with_style(
+            &format!("gutter-{number}"),
+            div().w(px(30.)).h(px(20.)).style().clone(),
+            [wire::Node::Text(view_wire::TextNode {
+                id: Some(named_id(&format!("number-{number}"))),
+                style: crate::render::test_style(div().style().clone()),
+                content: number.into(),
+            })],
+        );
+        if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut gutter {
+            interactivity.get_or_insert_default().role = Some(gpui_kit::Role::ListMarker);
+        }
+        // the code fills the line, as a code view's text does
+        let mut code = paragraph(&format!("code-{number}"), code);
+        if let wire::Node::RichText { style, .. } = &mut code {
+            *style = crate::render::test_style(div().h(px(20.)).flex_1().style().clone());
+        }
+        container_with_style(
+            &format!("line-{number}"),
+            div().h(px(20.)).flex().flex_row().style().clone(),
+            [gutter, code],
+        )
+    };
+    let root = container_with_style(
+        "file",
+        div().w(px(280.)).h_full().flex().flex_col().style().clone(),
+        [line("1", "fn a() {}"), line("2", "fn b() {}")],
+    );
+    let copied = drag_over(
+        root,
+        point(px(1.), px(10.)),
+        &[point(px(270.), px(30.))],
+        cx,
+    );
+    assert_eq!(copied, "fn a() {}\nfn b() {}");
+}
+
 /// A drag selecting words inside a clickable box (a chat message's cell)
 /// is not a click on it: the words stay selected, the box hears nothing.
 /// A plain click on the same box is still its click.

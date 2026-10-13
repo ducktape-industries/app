@@ -330,7 +330,7 @@ impl ViewTree {
         *element.style() = Arc::unwrap_or_clone(self.style(*style));
         crate::fonts::refine_fallbacks(element.style());
         let mut element = element.id(native_id.clone());
-        if !self.in_control {
+        if !self.unselected {
             element = element.child(selection_canvas(
                 layout.clone(),
                 selection_range.clone(),
@@ -346,8 +346,9 @@ impl ViewTree {
             use gpui_kit::test::TestSupportExt as _;
             element.test_support()
         };
-        // a control's label is no paragraph of the selection (`is_control`)
-        if self.in_control {
+        // a control's label or a list marker is no paragraph of the selection
+        // (`keeps_words_unselected`)
+        if self.unselected {
             return element.into_any_element();
         }
         // A plain text is a paragraph of the selection too: a drag across
@@ -512,8 +513,9 @@ impl ViewTree {
                 content.into_any_element()
             }
         };
-        // a control's label is no paragraph of the selection (`is_control`)
-        if self.in_control {
+        // a control's label or a list marker is no paragraph of the selection
+        // (`keeps_words_unselected`)
+        if self.unselected {
             return content;
         }
         RichParagraph {

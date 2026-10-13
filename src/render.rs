@@ -141,6 +141,16 @@ fn is_control(role: gpui_kit::Role) -> bool {
     )
 }
 
+/// Whether the words inside a node of `role` stay out of the window's text
+/// selection: a control's label (`is_control`), and a list marker: the
+/// bullet or number before an item, a code line's number, a diff line's
+/// +/−. A marker is drawn beside the content and is not part of it, as a
+/// browser leaves an ordered list's numbers out of a selection and its copy:
+/// a drag down a file copies its code, not its line numbers.
+fn keeps_words_unselected(role: gpui_kit::Role) -> bool {
+    is_control(role) || role == gpui_kit::Role::ListMarker
+}
+
 /// Native widget state worth carrying into a fresh `ViewTree` when a view's
 /// guest is re-instantiated: plain data only, no entity or handler id, since
 /// the new guest's handler ids mean different things. Taken by
@@ -212,10 +222,10 @@ pub struct ViewTree {
     row: Option<(usize, usize)>,
     /// The document order the next rich paragraph registers for selection.
     selection_order: std::rc::Rc<std::cell::Cell<u64>>,
-    /// Whether the node being drawn sits inside a control (`is_control`):
-    /// its words are the control's label, not text to read, and stay out
-    /// of the window's text selection.
-    in_control: bool,
+    /// Whether the node being drawn sits inside a control or a list marker
+    /// (`keeps_words_unselected`): its words are a label or a marker, not
+    /// text to read, and stay out of the window's text selection.
+    unselected: bool,
 
     // Native widgets, one per mounted node.
     fields: HashMap<AuthoredPath, Field>,
@@ -331,7 +341,7 @@ impl ViewTree {
             next_row: None,
             row: None,
             selection_order: Default::default(),
-            in_control: false,
+            unselected: false,
             perf_key: None,
             #[cfg(test)]
             renders: 0,
@@ -387,11 +397,11 @@ impl ViewTree {
         // rows in another order. Element state keyed under the number (a
         // paragraph's place in the selection) survives both.
         let outer_index = entered_scope.then(|| std::mem::take(&mut self.render_index));
-        let outer_control = self.in_control;
-        self.in_control |= node
+        let outer_unselected = self.unselected;
+        self.unselected |= node
             .interactivity()
             .and_then(|interactivity| interactivity.role)
-            .is_some_and(is_control);
+            .is_some_and(keeps_words_unselected);
         use wire::Node;
         let element = match node {
             Node::Text(view_wire::TextNode { .. }) => self.text(node),
@@ -417,7 +427,7 @@ impl ViewTree {
         if let Some(outer) = outer_index {
             self.render_index = outer;
         }
-        self.in_control = outer_control;
+        self.unselected = outer_unselected;
         // a row with no id of its own is drawn under the index it is filed
         // under, so gpui files its ids (and their accessibility nodes and
         // element state) under the row too
