@@ -12,6 +12,7 @@ mod render;
 mod runtime;
 mod shell;
 mod tray;
+mod update;
 
 fn main() {
     // a CEF child process (feature `web`) is this binary with `--type=...`
@@ -44,8 +45,11 @@ fn main() {
             eprintln!("ax: this build has no AX door (it is built with the `ax-door` feature)");
             std::process::exit(2);
         }
+        // lay down a self-updating install of this binary
+        Some("install") => std::process::exit(update::install_cli()),
         Some("--help" | "-h") => {
             println!("usage: ducktape-app [--version | --help]");
+            println!("       ducktape-app install  (install this binary; it then updates itself)");
             #[cfg(feature = "ax-door")]
             println!("       ducktape-app ax <command...>  (the AX door's client)");
             #[cfg(debug_assertions)]
@@ -60,6 +64,9 @@ fn main() {
     }
     install_log();
     perf::mark("log");
+    // the self-update's boot step: flip to a staged release, or back from
+    // one that never came up, and exec the release that should run
+    update::boot();
     raise_open_file_limit();
     // no view ships with the app: every one comes off the connected node.
     // A view developer's DUCKTAPE_VIEWS_DIR supplies files in their place,

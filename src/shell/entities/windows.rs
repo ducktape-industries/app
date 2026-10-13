@@ -18,8 +18,8 @@
 //! told). A link a banner's click or the passkey page asks for off the
 //! window thread comes over the `Posted` channel (`posted`).
 use super::{
-    AccountEvent, Entities, Front, Listed, Overlay, Overlays, Popped, Screen, SessionEvent, Shared,
-    Slice, Spotlight, WindowEntities,
+    AccountEvent, Entities, Front, Listed, Overlay, Overlays, Popped, Screen, SessionEvent,
+    SettingsPage, Shared, Slice, Spotlight, WindowEntities,
 };
 use crate::runtime::notify::{CenterHandle, Entry};
 use crate::runtime::{Link, WindowKey};
@@ -372,6 +372,9 @@ impl Windows {
                     release_window_input(window, cx);
                     true
                 });
+                // the self-update's healthy signal: the window drew, and the
+                // platform's frame loop came round for it
+                window.on_next_frame(|_, _| crate::update::rendered());
                 cx.new(|cx| gpui_kit::component::Root::new(view, window, cx))
             });
             match opened {
@@ -810,6 +813,15 @@ impl Windows {
                 self.open_link(&url, cx);
             }
             Posted::Url(url) => cx.open_url(&url),
+            Posted::OpenUpdates => {
+                self.raise_console(cx);
+                if let Some(own) = self.console_own() {
+                    own.overlays.update(cx, |overlays, cx| {
+                        overlays.open(Overlay::Settings(SettingsPage::Updates), cx)
+                    });
+                }
+            }
+            Posted::UpdatesMoved => cx.refresh_windows(),
         }
     }
 
@@ -990,12 +1002,17 @@ async fn left_full_size(
 // ---------- links and pages asked for off the window thread ----------
 
 /// Something asked for from a thread with no `&mut App`: a banner's click
-/// (`runtime::notify`) or the passkey ceremony's page (`backend::auth_page`).
+/// (`runtime::notify`), the passkey ceremony's page (`backend::auth_page`)
+/// or the self-update's word (`update`).
 pub(crate) enum Posted {
     /// A link, for `Windows::open_link`.
     Link(String),
     /// A web page, for the system browser.
     Url(String),
+    /// Settings › Updates, on the console: the update notice was clicked.
+    OpenUpdates,
+    /// The updater's reading moved: whatever shows it draws again.
+    UpdatesMoved,
 }
 
 fn poster() -> &'static Mutex<Option<UnboundedSender<Posted>>> {
@@ -1011,8 +1028,14 @@ pub(crate) fn posted() -> UnboundedReceiver<Posted> {
     assert!(current.is_none(), "one native shell per process");
     // runtime::notify and backend::auth_page cannot depend on shell: they
     // call these hooks instead
-    crate::runtime::notify::on_open_link(|url| post(Posted::Link(url)));
+    crate::runtime::notify::on_open(|opened| {
+        post(match opened {
+            crate::runtime::notify::Opened::Link(url) => Posted::Link(url),
+            crate::runtime::notify::Opened::Updates => Posted::OpenUpdates,
+        })
+    });
     crate::backend::auth_page::on_open_url(|url| post(Posted::Url(url)));
+    crate::update::on_moved(|| post(Posted::UpdatesMoved));
     *current = Some(send);
     receive
 }

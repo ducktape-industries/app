@@ -24,6 +24,11 @@
 //! freedesktop's `ActionInvoked` on the banner's default action, and on
 //! macOS the notification centre's delegate hearing the default action on a
 //! banner that names its row (in its `userInfo`).
+//!
+//! The host posts one notice of its own ([`post_host`]): the self-update's
+//! "ready". It is no view's, so no row, no view's word and no burst limit;
+//! only the device's banners switch decides it, and a click on it opens
+//! Settings › Updates.
 
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -127,7 +132,7 @@ fn post(guest: &mut Guest, center: &CenterHandle, id: u64, payload: &[u8]) {
     let raised = banner.map(|notice| {
         let (tell, told) = tokio::sync::oneshot::channel();
         in_order(guest.module, move || {
-            let _ = tell.send(platform::post(&notice, entry));
+            let _ = tell.send(platform::post(&notice, entry.map(Click::Row)));
         });
         told
     });
@@ -165,37 +170,68 @@ fn seen(guest: &mut Guest, id: u64, payload: &[u8]) {
     guest.reply(id, Ok(methods::encode(&())));
 }
 
-/// What opens a clicked banner's link: the shell's, handed over at startup
-/// ([`on_open_link`]) so this layer never calls up into it.
-static OPEN_LINK: OnceLock<fn(String)> = OnceLock::new();
-
-/// The shell says how a link a banner click opens reaches `Windows`.
-pub(crate) fn on_open_link(open: fn(String)) {
-    let _ = OPEN_LINK.set(open);
+/// What a click on a banner opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Click {
+    /// A centre row, as if picked in the centre.
+    Row(u64),
+    /// Settings › Updates: the host's own update notice.
+    Updates,
 }
 
-/// A banner clicked: its row opens as if picked in the centre — read now,
-/// and its `duck://` link opened (the view's seat, when it carried none).
-fn clicked(entry: u64) {
-    let Some(entry) = center().lock().open(entry) else {
-        return;
+/// What a click asks the shell to open.
+pub(crate) enum Opened {
+    /// A `duck://` link, for `Windows::open_link`.
+    Link(String),
+    /// Settings › Updates.
+    Updates,
+}
+
+/// What opens what a banner click names: the shell's, handed over at
+/// startup ([`on_open`]) so this layer never calls up into it.
+static OPEN: OnceLock<fn(Opened)> = OnceLock::new();
+
+/// The shell says how what a banner click opens reaches `Windows`.
+pub(crate) fn on_open(open: fn(Opened)) {
+    let _ = OPEN.set(open);
+}
+
+/// A banner clicked. A row opens as if picked in the centre — read now, and
+/// its `duck://` link opened (the view's seat, when it carried none).
+fn clicked(click: Click) {
+    let opened = match click {
+        Click::Row(entry) => {
+            let Some(entry) = center().lock().open(entry) else {
+                return;
+            };
+            Opened::Link(match entry.link.is_empty() {
+                true => format!("duck://{}", entry.module),
+                false => entry.link,
+            })
+        }
+        Click::Updates => Opened::Updates,
     };
-    let link = match entry.link.is_empty() {
-        true => format!("duck://{}", entry.module),
-        false => entry.link,
-    };
-    match OPEN_LINK.get() {
-        Some(open) => open(link),
+    match OPEN.get() {
+        Some(open) => open(opened),
         None => {
             tracing::error!(target: "ducktape::app", reason = "no_link_opener", "a banner's link could not be opened")
         }
     }
 }
 
-// Each platform module exposes `post(&Notice, row: Option<u64>) -> raised`
-// and `withdraw(tag)`. Both block on OS calls and run only through
-// `in_order` under the view's module, on the blocking pool; a click on a banner calls back
-// `clicked(row)`.
+/// The host's own notice: up if the device's banners are on, a click
+/// opening Settings › Updates; a newer one under the same tag replaces it.
+/// Blocks on the OS call, so the caller is a thread of its own. Whether it
+/// went up.
+pub(crate) fn post_host(notice: &Notice) -> bool {
+    Settings::load().banners && platform::post(notice, Some(Click::Updates))
+}
+
+// Each platform module exposes `post(&Notice, click: Option<Click>) -> raised`
+// and `withdraw(tag)`. Both block on OS calls; a view's run only through
+// `in_order` under the view's module, on the blocking pool, and the host's
+// on the thread that posts it. A click on a banner calls back
+// `clicked(click)`.
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]

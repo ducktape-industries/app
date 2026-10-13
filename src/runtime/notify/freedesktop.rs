@@ -3,7 +3,7 @@
 //! each desktop answers through its own daemon. Pure Rust, and no new
 //! dependency — zbus is already in this binary's graph.
 
-use super::Notice;
+use super::{Click, Notice};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -46,14 +46,14 @@ pub(super) fn markup_escaped(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// The centre row each clickable banner stands for, by banner id.
-fn clicks() -> &'static Mutex<HashMap<u32, u64>> {
-    static CLICKS: OnceLock<Mutex<HashMap<u32, u64>>> = OnceLock::new();
+/// What a click on each clickable banner opens, by banner id.
+fn clicks() -> &'static Mutex<HashMap<u32, Click>> {
+    static CLICKS: OnceLock<Mutex<HashMap<u32, Click>>> = OnceLock::new();
     CLICKS.get_or_init(Mutex::default)
 }
 
 /// One thread for the life of the process, hearing the daemon say a
-/// banner was clicked: its row is opened as if picked in the centre.
+/// banner was clicked: what it names is opened.
 fn listen(bus: &'static zbus::blocking::Connection) {
     static LISTENING: OnceLock<()> = OnceLock::new();
     LISTENING.get_or_init(|| {
@@ -78,13 +78,13 @@ fn listen(bus: &'static zbus::blocking::Connection) {
                     let Ok((banner, action)) = message.body().deserialize::<(u32, String)>() else {
                         continue;
                     };
-                    let entry = clicks()
+                    let click = clicks()
                         .lock()
                         .expect("banner clicks")
                         .get(&banner)
                         .copied();
-                    if let Some(entry) = entry.filter(|_| action == "default") {
-                        super::clicked(entry);
+                    if let Some(click) = click.filter(|_| action == "default") {
+                        super::clicked(click);
                     }
                 }
             });
@@ -94,11 +94,11 @@ fn listen(bus: &'static zbus::blocking::Connection) {
     });
 }
 
-pub(super) fn post(notice: &Notice, entry: Option<u64>) -> bool {
+pub(super) fn post(notice: &Notice, click: Option<Click>) -> bool {
     let Some(bus) = session_bus() else {
         return false;
     };
-    if entry.is_some() {
+    if click.is_some() {
         listen(bus);
     }
     // held across the call: two notices under one tag posted at once
@@ -108,14 +108,14 @@ pub(super) fn post(notice: &Notice, entry: Option<u64>) -> bool {
         true => 0,
         false => standing.get(&notice.tag).copied().unwrap_or(0),
     };
-    match notify(bus, notice, replaces, entry.is_some()) {
+    match notify(bus, notice, replaces, click.is_some()) {
         Ok(raised) => {
             if !notice.tag.is_empty() {
                 standing.insert(notice.tag.clone(), raised);
             }
             let mut clicks = clicks().lock().expect("banner clicks");
-            match entry {
-                Some(entry) => clicks.insert(raised, entry),
+            match click {
+                Some(click) => clicks.insert(raised, click),
                 None => clicks.remove(&raised),
             };
             true

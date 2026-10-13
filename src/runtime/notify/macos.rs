@@ -3,7 +3,7 @@
 //! caller can catch, the process dies. `cargo test`, `cargo run` and any
 //! bare binary are exactly that process, so the identifier is read first.
 
-use super::Notice;
+use super::{Click, Notice};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{ClassType, DeclaredClass, declare_class, msg_send_id, mutability};
@@ -15,9 +15,12 @@ use objc2_user_notifications::{
     UNUserNotificationCenterDelegate,
 };
 
-/// The userInfo key a banner carries its centre row under: macOS does
-/// not hand `targetContentIdentifier` back in a click's response.
+/// The userInfo key a banner carries what a click opens under (its centre
+/// row's id, or [`UPDATES`]): macOS does not hand `targetContentIdentifier`
+/// back in a click's response.
 const ROW: &str = "row";
+/// The `ROW` of the host's update notice.
+const UPDATES: &str = "updates";
 
 fn bundled() -> bool {
     // SAFETY: reading the main bundle's identifier is valid on any thread.
@@ -72,9 +75,12 @@ declare_class!(
             };
             // SAFETY: a framework constant.
             let default = &*action == unsafe { UNNotificationDefaultActionIdentifier };
-            let entry = row.and_then(|row| row.parse::<u64>().ok());
-            if let Some(entry) = entry.filter(|_| default) {
-                super::clicked(entry);
+            let click = row.and_then(|row| match row.as_str() {
+                UPDATES => Some(Click::Updates),
+                row => row.parse::<u64>().ok().map(Click::Row),
+            });
+            if let Some(click) = click.filter(|_| default) {
+                super::clicked(click);
             }
             done.call(());
         }
@@ -94,7 +100,7 @@ fn listen(centre: &UNUserNotificationCenter) {
     });
 }
 
-pub(super) fn post(notice: &Notice, entry: Option<u64>) -> bool {
+pub(super) fn post(notice: &Notice, click: Option<Click>) -> bool {
     if !bundled() {
         tracing::debug!(
             target: "ducktape::app",
@@ -114,11 +120,15 @@ pub(super) fn post(notice: &Notice, entry: Option<u64>) -> bool {
         if !notice.tag.is_empty() {
             content.setThreadIdentifier(&NSString::from_str(&notice.tag));
         }
-        // the row a click opens
-        if let Some(entry) = entry {
+        // what a click opens
+        if let Some(click) = click {
+            let opens = match click {
+                Click::Row(entry) => entry.to_string(),
+                Click::Updates => UPDATES.to_string(),
+            };
             let row = NSDictionary::<NSString, NSString>::from_vec(
                 &[&*NSString::from_str(ROW)],
-                vec![NSString::from_str(&entry.to_string())],
+                vec![NSString::from_str(&opens)],
             );
             // a dictionary of strings is a property list, as userInfo holds
             content.setUserInfo(&Retained::cast::<NSDictionary>(row));

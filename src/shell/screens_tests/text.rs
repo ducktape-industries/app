@@ -141,6 +141,20 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
         &["About", "Ducktape", "Version", env!("CARGO_PKG_VERSION")],
     );
 
+    // Settings › Updates, on a copy that is not an installed one
+    let updates = Overlay::Settings(SettingsPage::Updates);
+    let (_view, mut native) = open((gate::desk(), updates), cx);
+    let nodes = native.update(draw);
+    reads(
+        &nodes,
+        &[
+            "Updates",
+            "Version",
+            "Status",
+            "Off: this copy is not an installed one",
+        ],
+    );
+
     // the node's status, in its menu
     let mut seed = gate::desk();
     seed.chain.node = Some(crate::backend::NodeStatus {
@@ -181,4 +195,50 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
         &nodes,
         &["Add a device", "On the new device, choose", "Code"],
     );
+}
+
+/// Settings › Updates on an installed copy with a release waiting: the
+/// channel switch, the status in words and "Restart to update", each named
+/// for a screen reader, and the page through the audit.
+#[gpui_kit::test]
+fn settings_updates_reads_the_channel_the_status_and_the_restart(cx: &mut TestAppContext) {
+    crate::update::show_here(Some(crate::update::Shown {
+        channel: crate::update::Channel::Nightly,
+        status: "0.1.0+abc1234 is ready: it takes over at the next start".into(),
+        restart: true,
+    }));
+    let updates = Overlay::Settings(SettingsPage::Updates);
+    let (_view, mut native) = open((gate::desk(), updates), cx);
+    let nodes = native.update(draw);
+    reads(
+        &nodes,
+        &[
+            "Version",
+            "Channel",
+            "Stable follows",
+            "Status",
+            "0.1.0+abc1234 is ready",
+        ],
+    );
+    let controls: Vec<(String, String)> = nodes
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|node| {
+            let field = |key: &str| node[key].as_str().unwrap_or_default().to_owned();
+            (field("role"), field("name"))
+        })
+        .collect();
+    for (role, name) in [
+        ("RadioButton", "Stable"),
+        ("RadioButton", "Nightly"),
+        ("Button", "Restart to update"),
+    ] {
+        assert!(
+            controls.contains(&(role.into(), name.into())),
+            "no {role} {name:?} in {controls:?}"
+        );
+    }
+    gate::passes(&mut native, "settings-updates-ready", false);
+    crate::update::show_here(None);
 }
