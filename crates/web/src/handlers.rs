@@ -35,6 +35,20 @@ pub(crate) fn initialize(sandbox: bool, root: &Path) -> bool {
         log_severity: LogSeverity::WARNING,
         // a SIGTERM is the app's: CEF's own handler exits before teardown
         disable_signal_handlers: 1,
+        // macOS: the framework beside the binary, the children this binary
+        // (else CEF looks for both inside an app bundle)
+        #[cfg(target_os = "macos")]
+        framework_dir_path: crate::mac::framework()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .as_ref()
+            .into(),
+        #[cfg(target_os = "macos")]
+        browser_subprocess_path: std::env::current_exe()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .as_ref()
+            .into(),
         ..Default::default()
     };
     cef::initialize(

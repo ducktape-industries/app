@@ -16,7 +16,8 @@
 #   cargo test --locked --workspace --features web
 #   cargo build --locked --features web
 # The first build downloads CEF (about 300 MiB). Without the setuid sandbox
-# helper beside the binary, run with DUCKTAPE_WEB_NO_SANDBOX=1.
+# helper beside the binary, run with DUCKTAPE_WEB_NO_SANDBOX=1 (Linux; macOS
+# needs no helper, its framework is linked beside the binary at build).
 
 [package]
 name = "ducktape-web"
@@ -35,6 +36,7 @@ cef = [
     "dep:serde_json",
     "dep:accesskit",
     "dep:gpui_linux",
+    "dep:cef-dll-sys",
 ]
 
 [dependencies]
@@ -60,6 +62,11 @@ cef = { version = "=154.5.0", default-features = false, features = ["sandbox"], 
 # the hook
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui_linux = { package = "gpui-pre-linux", version = "=0.3.9", default-features = false, optional = true }
+
+# macOS: CEF is a framework loaded at run time, not linked; `build.rs` reads
+# where cef-dll-sys unpacked it (only a direct dependent sees that)
+[target.'cfg(target_os = "macos")'.dependencies]
+cef-dll-sys = { version = "=154.5.0", default-features = false, optional = true }
 
 [dev-dependencies]
 # a page's tree built into a test window
