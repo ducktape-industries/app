@@ -369,6 +369,7 @@ mod faces;
 mod gpui_activation;
 mod gpui_clip;
 mod grip;
+mod held_keys;
 mod host_ids;
 mod inputs;
 mod layout;
