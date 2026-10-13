@@ -15,14 +15,21 @@
 //! app with the updater off and says why under `ducktape::update`: the boot
 //! step's one job is to never strand the user.
 
+use std::io::Read as _;
+use std::os::fd::AsRawFd as _;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command as Process, Stdio};
+use std::time::{Duration, Instant};
 
 use app_update::{Command, Event, Phase, Sha, SwapState, step};
 use tracing::{debug, info, warn};
 
 use super::{Layout, Refusal, TARGET};
+
+/// How long a staged release has to answer `--version`. The boot step runs
+/// before any window, so a release that hangs there would hang every start.
+const QUALIFY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What the boot step decided for this process.
 #[derive(Debug, PartialEq, Eq)]
@@ -194,7 +201,7 @@ fn qualify(layout: &Layout, sha: Sha) -> Event {
         });
     let answered = whole
         .map_err(|refusal| refusal.reason.to_string())
-        .and_then(|()| answers_version(&layout.release_exe(sha)));
+        .and_then(|()| answers_version(&layout.release_exe(sha), QUALIFY_TIMEOUT));
     match answered {
         Ok(()) => Event::QualifyPassed(sha),
         Err(reason) => {
@@ -204,18 +211,36 @@ fn qualify(layout: &Layout, sha: Sha) -> Event {
     }
 }
 
-/// `<exe> --version` exits 0 and names itself.
-fn answers_version(exe: &Path) -> Result<(), String> {
-    let output = Process::new(exe)
+/// `<exe> --version` exits 0 within `timeout` and names itself.
+pub(super) fn answers_version(exe: &Path, timeout: Duration) -> Result<(), String> {
+    let mut child = Process::new(exe)
         .arg("--version")
         .stdin(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .output()
+        .spawn()
         .map_err(|_| "qualify_spawn_failed".to_string())?;
-    match (
-        output.status.code(),
-        output.stdout.starts_with(b"ducktape-app "),
-    ) {
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("qualify_timeout".into());
+            }
+        }
+    };
+    // what it said by its exit, read without waiting: a process it left
+    // behind may still hold the pipe open
+    let mut said = [0u8; 64];
+    let read = child.stdout.take().map_or(0, |mut stdout| {
+        // SAFETY: an open descriptor and flag constants.
+        unsafe { libc::fcntl(stdout.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
+        stdout.read(&mut said).unwrap_or(0)
+    });
+    match (status.code(), said[..read].starts_with(b"ducktape-app ")) {
         (Some(0), true) => Ok(()),
         (Some(0), false) => Err("qualify_unrecognized".into()),
         (Some(code), _) => Err(format!("qualify_exit_{code}")),

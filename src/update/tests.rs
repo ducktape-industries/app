@@ -345,6 +345,52 @@ fn a_partial_longer_than_the_artifact_is_dropped_unasked() {
     assert!(bucket.asked().is_empty());
 }
 
+/// The boot step runs before any window: a staged release that never
+/// answers its self-check is refused once its time is up, and one that
+/// answers but leaves a process holding its output is not waited on.
+#[test]
+fn a_self_check_is_never_waited_on_past_its_time() {
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::time::{Duration, Instant};
+
+    use super::boot::answers_version;
+    let root = tempfile::tempdir().unwrap();
+    let release = |name: &str, body: &str| {
+        let exe = root.path().join(name);
+        std::fs::write(&exe, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        exe
+    };
+    let hangs = release("hangs", "exec sleep 30");
+    let lingers = release("lingers", "(sleep 30 &)\necho 'ducktape-app 0.0.0+l'");
+    let started = Instant::now();
+    let timeout = Duration::from_millis(500);
+    assert_eq!(
+        answers_version(&hangs, timeout),
+        Err("qualify_timeout".into())
+    );
+    assert_eq!(answers_version(&lingers, Duration::from_secs(10)), Ok(()));
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+/// A `.partial` that is a link is not written through.
+#[test]
+fn a_partial_that_is_a_link_is_not_followed() {
+    let bucket = Bucket::new();
+    let (root, layout) = rig();
+    let archive = archive_bytes(1000);
+    let sha = Sha::digest(&archive);
+    bucket.put(&layout::archive_name(&sha, &Platform::HOST.key()), archive);
+    let elsewhere = root.path().join("elsewhere");
+    std::fs::write(&elsewhere, b"keep").unwrap();
+    let partial = layout.partial_path(sha);
+    std::fs::create_dir_all(partial.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &partial).unwrap();
+    let failed = block(download(&client(), &bucket.base, &layout, sha, 1000));
+    assert_eq!(failed, Err("symlink_refused".into()));
+    assert_eq!(std::fs::read(&elsewhere).unwrap(), b"keep");
+}
+
 /// The running app and the boot step, on a Linux install: the layout the
 /// tests lay out by hand is the Linux one (`current` and `previous` links).
 #[cfg(target_os = "linux")]

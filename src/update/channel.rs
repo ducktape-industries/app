@@ -251,7 +251,14 @@ pub(super) struct Updater {
 fn trusted_keys(layout: &Layout) -> TrustedKeys {
     let successor = std::fs::read_to_string(layout.successor_path())
         .ok()
-        .and_then(|text| serde_json::from_str::<SuccessorKey>(&text).ok());
+        .and_then(|text| {
+            let parsed = serde_json::from_str::<SuccessorKey>(&text);
+            if let Err(error) = &parsed {
+                // the rotation is forgotten: the pinned key alone is trusted
+                warn!(target: TARGET, event = "app_update_successor_unreadable", %error);
+            }
+            parsed.ok()
+        });
     TrustedKeys {
         pinned: RELEASE_KEY,
         successor,
@@ -490,6 +497,7 @@ pub(super) async fn download(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|_| "io")?;
     }
+    super::refuse_symlink(&path).map_err(|refusal| refusal.reason)?;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .read(true)
