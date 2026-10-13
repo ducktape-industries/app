@@ -65,6 +65,8 @@ static READING: Mutex<Option<Reading>> = Mutex::new(None);
 static MOVED: OnceLock<fn()> = OnceLock::new();
 /// "Restart to update" was pressed: one waiter, however many presses.
 static RESTARTING: AtomicBool = AtomicBool::new(false);
+/// The boot step found another process of this install running its updater.
+static ELSEWHERE: AtomicBool = AtomicBool::new(false);
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -107,6 +109,12 @@ pub(super) fn keep_channel(layout: &Layout, channel: Channel) -> Result<(), supe
         &layout.channel_path(),
         format!("{}\n", channel.name()).as_bytes(),
     )
+}
+
+/// The boot step found the install's updater running in another of its
+/// processes: Settings says so.
+pub(super) fn elsewhere() {
+    ELSEWHERE.store(true, Ordering::SeqCst);
 }
 
 /// The shell says how it hears the reading moved.
@@ -152,14 +160,13 @@ pub(crate) fn rendered() {
 pub(crate) fn choose(channel: Channel) {
     // a test's page: the pick moves what it shows, as `CHOSEN` does
     #[cfg(test)]
-    if SHOWN_HERE
-        .with(|here| {
-            here.borrow_mut()
-                .as_mut()
-                .map(|shown| shown.channel = channel)
-        })
-        .is_some()
-    {
+    if SHOWN_HERE.with(|here| match here.borrow_mut().as_mut() {
+        Some(Updates::Here(shown)) => {
+            shown.channel = channel;
+            true
+        }
+        _ => false,
+    }) {
         return;
     }
     let Some(layout) = HOME.get() else {
@@ -653,7 +660,18 @@ pub(super) fn note_banner(banner: &UpdateBanner) {
     }
 }
 
-/// What Settings › Updates shows.
+/// Where this process stands, for Settings › Updates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Updates {
+    /// Not an installed copy: nothing here updates.
+    Off,
+    /// An installed copy whose updater another of its processes runs.
+    Elsewhere,
+    /// This process is the install's updater.
+    Here(Shown),
+}
+
+/// What Settings › Updates shows of the updater this process runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Shown {
     /// The channel the person picked.
@@ -666,26 +684,27 @@ pub(crate) struct Shown {
 
 #[cfg(test)]
 thread_local! {
-    static SHOWN_HERE: std::cell::RefCell<Option<Shown>> = const { std::cell::RefCell::new(None) };
+    static SHOWN_HERE: std::cell::RefCell<Option<Updates>> = const { std::cell::RefCell::new(None) };
 }
 
 /// What Settings › Updates shows on this test's thread, in place of the
-/// process's updater (off in every test).
+/// process's (off in every test).
 #[cfg(test)]
-pub(crate) fn show_here(shown: Option<Shown>) {
-    SHOWN_HERE.with(|here| *here.borrow_mut() = shown);
+pub(crate) fn show_here(updates: Option<Updates>) {
+    SHOWN_HERE.with(|here| *here.borrow_mut() = updates);
 }
 
-/// Settings › Updates; `None` while the updater is off (this copy is not an
-/// installed one).
-pub(crate) fn shown() -> Option<Shown> {
+/// Settings › Updates.
+pub(crate) fn updates() -> Updates {
     #[cfg(test)]
-    if let Some(shown) = SHOWN_HERE.with(|here| here.borrow().clone()) {
-        return Some(shown);
+    if let Some(updates) = SHOWN_HERE.with(|here| here.borrow().clone()) {
+        return updates;
     }
-    let chosen = (*lock(&CHOSEN))?;
-    let reading = lock(&READING).clone()?;
-    Some(Shown::of(chosen, &reading))
+    match (*lock(&CHOSEN), lock(&READING).clone()) {
+        (Some(chosen), Some(reading)) => Updates::Here(Shown::of(chosen, &reading)),
+        _ if ELSEWHERE.load(Ordering::SeqCst) => Updates::Elsewhere,
+        _ => Updates::Off,
+    }
 }
 
 impl Shown {

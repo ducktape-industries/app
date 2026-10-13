@@ -757,7 +757,10 @@ mod linux {
         let held = unsafe { libc::flock(other.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         assert_eq!(held, 0);
 
-        assert_eq!(boot_at(&layout, &layout.release_exe(a)).unwrap(), Boot::Off);
+        assert_eq!(
+            boot_at(&layout, &layout.release_exe(a)).unwrap(),
+            Boot::Elsewhere
+        );
         assert_eq!(current(&layout), Layout::link_target(a));
         assert_eq!(state(&layout), staged);
         let own = root.path().join(APP_EXE);

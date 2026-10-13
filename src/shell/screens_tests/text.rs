@@ -202,11 +202,11 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
 /// for a screen reader, and the page through the audit.
 #[gpui_kit::test]
 fn settings_updates_reads_the_channel_the_status_and_the_restart(cx: &mut TestAppContext) {
-    crate::update::show_here(Some(crate::update::Shown {
+    crate::update::show_here(Some(crate::update::Updates::Here(crate::update::Shown {
         channel: crate::update::Channel::Nightly,
         status: "0.1.0+abc1234 is ready: it takes over at the next start".into(),
         restart: true,
-    }));
+    })));
     let updates = Overlay::Settings(SettingsPage::Updates);
     let (_view, mut native) = open((gate::desk(), updates), cx);
     let nodes = native.update(draw);
@@ -240,5 +240,21 @@ fn settings_updates_reads_the_channel_the_status_and_the_restart(cx: &mut TestAp
         );
     }
     gate::passes(&mut native, "settings-updates-ready", false);
+    crate::update::show_here(None);
+}
+
+/// Settings › Updates in a second process of an installed copy (on Linux a
+/// `duck://` link starts one): the copy is installed, and another of its
+/// processes runs the updater, and the page says that.
+#[gpui_kit::test]
+fn settings_updates_in_a_second_process_says_another_one_updates(cx: &mut TestAppContext) {
+    crate::update::show_here(Some(crate::update::Updates::Elsewhere));
+    let updates = Overlay::Settings(SettingsPage::Updates);
+    let (_view, mut native) = open((gate::desk(), updates), cx);
+    let nodes = native.update(draw);
+    reads(
+        &nodes,
+        &["Status", "Another running Ducktape updates this install"],
+    );
     crate::update::show_here(None);
 }

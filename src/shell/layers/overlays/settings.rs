@@ -634,20 +634,24 @@ impl OverlayLayer {
     /// updater is, with "Restart to update" once a release waits. A copy
     /// that is not an installed one updates nothing and says so.
     fn updates_page(&mut self, ink: &Ink, cx: &gpui_kit::App) -> Vec<gpui_kit::Div> {
-        use crate::update::Channel;
+        use crate::update::{Channel, Updates};
         use gpui_kit::*;
         let version = match option_env!("DUCKTAPE_APP_BUILD") {
             Some(build) => format!("{} ({build})", env!("CARGO_PKG_VERSION")),
             None => env!("CARGO_PKG_VERSION").into(),
         };
         let mut rows = vec![heading("Updates", ink), line("Version", version, ink)];
-        let Some(shown) = crate::update::shown() else {
-            rows.push(line(
-                "Status",
-                "Off: this copy is not an installed one".into(),
-                ink,
-            ));
-            return rows;
+        let off = |mut rows: Vec<Div>, status: &str| {
+            rows.push(line("Status", status.into(), ink));
+            rows
+        };
+        let shown = match crate::update::updates() {
+            Updates::Here(shown) => shown,
+            Updates::Off => return off(rows, "Off: this copy is not an installed one"),
+            // installed, and another of its processes runs the updater
+            Updates::Elsewhere => {
+                return off(rows, "Another running Ducktape updates this install");
+            }
         };
         let channel = self.segmented(
             "updates/channel",

@@ -36,6 +36,9 @@ const QUALIFY_TIMEOUT: Duration = Duration::from_secs(10);
 pub(super) enum Boot {
     /// Not an installed app: no update state was read or written.
     Off,
+    /// An installed app whose updater another of its processes runs: this
+    /// one goes on with it off, and touched nothing.
+    Elsewhere,
     /// This image is the release that should run: the app goes on, its
     /// updater armed with this phase.
     Run(Phase),
@@ -52,6 +55,10 @@ pub(crate) fn boot() {
     match boot_at(&layout, &own) {
         Ok(Boot::Off) => {
             debug!(target: TARGET, event = "app_update_off", "not an installed copy: the updater is off");
+        }
+        Ok(Boot::Elsewhere) => {
+            debug!(target: TARGET, event = "app_update_held", "another process runs this install's updater");
+            super::channel::elsewhere();
         }
         Ok(Boot::Run(phase)) => super::channel::arm(layout, phase),
         Ok(Boot::Exec(exe)) => {
@@ -73,8 +80,7 @@ pub(super) fn boot_at(layout: &Layout, own: &Path) -> Result<Boot, Refusal> {
         return Ok(Boot::Off);
     }
     if !super::hold_install(layout)? {
-        debug!(target: TARGET, event = "app_update_held", "another process runs this install's updater");
-        return Ok(Boot::Off);
+        return Ok(Boot::Elsewhere);
     }
     // taken before anything moves: on macOS the swap puts another bundle
     // at this very path
