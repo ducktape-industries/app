@@ -97,6 +97,7 @@ async fn connect(client: &Arc<Client>, center: &CenterHandle) -> Result<(), Erro
         center.set_stuck(status.stopped.or(status.stalled));
         center.mutes = mutes;
         center.replace(page.entries, page.unread);
+        center.resend_watermarks();
         center.set_state(InboxState::Ready);
     }
     wake();

@@ -442,12 +442,34 @@ impl Center {
             self.queued.insert(key, height);
             return;
         }
-        self.in_flight.insert(key);
-        self.send(Call::Read(Read::Tag {
+        let sent = self.send(Call::Read(Read::Tag {
             program: program.to_owned(),
             tag: tag.to_owned(),
             through_height: height,
         }));
+        if sent {
+            self.in_flight.insert(key);
+        }
+        // not sent (no client yet, or the inbox away): the kept watermark
+        // goes out on the next connect (`resend_watermarks`)
+    }
+
+    /// A connection made (or made again): every watermark the session
+    /// kept goes upstream once more, one in flight per tag. Covers a
+    /// view's `notify.seen` before the first page, a read lost while the
+    /// inbox was away, and a request that never answered; the inbox's
+    /// read-through-height is idempotent.
+    pub(crate) fn resend_watermarks(&mut self) {
+        self.in_flight.clear();
+        self.queued.clear();
+        let kept: Vec<((String, String), u64)> = self
+            .watermarks
+            .iter()
+            .map(|(key, height)| (key.clone(), *height))
+            .collect();
+        for ((program, tag), height) in kept {
+            self.read_tag(&program, &tag, height);
+        }
     }
 
     /// A tag read answered (or failed): the next queued height goes out.
@@ -524,10 +546,10 @@ impl Center {
 
     /// A call upstream, on the runtime, after this lock is released; a
     /// failure is logged, the page stands as the person left it. Nothing
-    /// is sent without a client (no inbox, or none yet).
-    fn send(&self, call: Call) {
+    /// is sent without a client (no inbox, or none yet): `false` then.
+    fn send(&self, call: Call) -> bool {
         let Some(client) = self.client.clone() else {
-            return;
+            return false;
         };
         let me = self.me.clone();
         crate::runtime::handle().spawn(async move {
@@ -575,6 +597,7 @@ impl Center {
                 tracing::warn!(target: "ducktape::app", %error, "the inbox did not take a change");
             }
         });
+        true
     }
 }
 

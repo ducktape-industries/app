@@ -636,3 +636,28 @@ fn a_mute_over_the_name_cap_is_refused_locally() {
     assert!(!center.muted(&long));
     assert!(center.refused.as_deref().unwrap().contains("at most"));
 }
+
+/// A view's watermark before the inbox is in hand (chat's timeline says
+/// `seen` as it renders, before status, login and the first page) goes
+/// upstream once the connection is made, and the tag is not stuck: a
+/// later watermark goes out too.
+#[tokio::test]
+async fn a_watermark_before_the_connect_goes_out_on_it() {
+    let _seat = seated(27).await;
+    let fake = FakeInbox::start().await;
+    fake.set_entries(vec![entry(1, "chat", "room", 1)]);
+    let center = CenterHandle::default();
+    center.lock().set_network("net#0");
+    assert!(center.lock().watermark("chat", "room", 7));
+    let rpc = crate::backend::RpcClient::new(fake.origin());
+    let _follower = super::start(&rpc, "net#0", "Desktop", center.clone());
+    until(|| center.lock().state == InboxState::Ready).await;
+    let tag = |height| Read::Tag {
+        program: "chat".into(),
+        tag: "room".into(),
+        through_height: height,
+    };
+    until(|| fake.reads().contains(&tag(7))).await;
+    assert!(center.lock().watermark("chat", "room", 9));
+    until(|| fake.reads().contains(&tag(9))).await;
+}
