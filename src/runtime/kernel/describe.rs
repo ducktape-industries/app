@@ -269,7 +269,7 @@ pub(super) mod tests {
 #[cfg(test)]
 mod stage {
     use super::*;
-    use crate::backend::noded::Blocks;
+    use crate::backend::noded::{Blocks, TxAsk, TxRef};
 
     #[tokio::test]
     #[ignore = "reads a running stage: DESCRIBE_STAGE=http://<listen>"]
@@ -289,16 +289,35 @@ mod stage {
                 .client
                 .blocks(&Blocks { before, limit: 100 })
                 .await
-                .expect("a page of blocks");
+                .expect("a page of blocks")
+                .blocks;
             let Some(last) = page.last().map(|block| block.height) else {
                 break;
             };
-            for tx in page.into_iter().flat_map(|block| block.txs) {
-                let described = described(&node, &tx.target, tx.payload).await.unwrap();
-                let count = counts.entry(tx.target).or_default();
-                match described {
-                    Some(_) => count.0 += 1,
-                    None => count.1 += 1,
+            for block in page {
+                for (position, tx) in block.txs.into_iter().enumerate() {
+                    let payload = match tx.payload {
+                        Some(payload) => payload,
+                        None => {
+                            let whole = TxAsk {
+                                tx: TxRef::At {
+                                    height: block.height,
+                                    position: position as u32,
+                                },
+                                most: u32::MAX,
+                            };
+                            let located = node.client.tx(&whole).await.expect("a transaction");
+                            located
+                                .and_then(|located| located.tx.payload)
+                                .expect("its payload")
+                        }
+                    };
+                    let described = described(&node, &tx.target, payload).await.unwrap();
+                    let count = counts.entry(tx.target).or_default();
+                    match described {
+                        Some(_) => count.0 += 1,
+                        None => count.1 += 1,
+                    }
                 }
             }
             if last == 0 {
