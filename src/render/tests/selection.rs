@@ -248,6 +248,76 @@ fn a_drag_across_a_plain_text_copies_it_too(cx: &mut gpui_kit::TestAppContext) {
     );
 }
 
+/// A drag selecting words inside a clickable box (a chat message's cell)
+/// is not a click on it: the words stay selected, the box hears nothing.
+/// A plain click on the same box is still its click.
+#[gpui_kit::test]
+fn a_drag_selecting_words_in_a_clickable_box_is_not_its_click(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let mut root = container_with_style(
+        "cell",
+        div().w(px(150.)).h_full().flex().flex_col().style().clone(),
+        [
+            paragraph("alpha", "alpha beta"),
+            paragraph("gamma", "gamma"),
+        ],
+    );
+    if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut root {
+        interactivity.get_or_insert_default().on_click = Some(5);
+    }
+    let window = cx.open_window(size(px(300.), px(100.)), |_, cx| Window2 {
+        tree: cx.new(|_| ViewTree::new(root)),
+    });
+    let tree = window
+        .root(cx)
+        .unwrap()
+        .read_with(cx, |window, _| window.tree.clone());
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    native.update(|window, cx| window.render_frame(cx));
+    let clicks = |events: &Rc<RefCell<Vec<wire::Event>>>| {
+        events
+            .borrow()
+            .iter()
+            .filter(|event| matches!(event, wire::Event::Click { handler: 5, .. }))
+            .count()
+    };
+    let (from, to) = (point(px(1.), px(10.)), point(px(140.), px(30.)));
+    native.simulate_mouse_move(from, None, Default::default());
+    native.simulate_mouse_down(from, MouseButton::Left, Default::default());
+    native.simulate_mouse_move(to, Some(MouseButton::Left), Default::default());
+    native.update(|window, cx| window.render_frame(cx));
+    native.simulate_mouse_up(to, MouseButton::Left, Default::default());
+    let copied = native.update(|window, cx| {
+        window.render_frame(cx);
+        gpui_kit::base::TextSelection::selected_text(window, cx)
+    });
+    assert!(
+        copied.contains("alpha") && copied.contains("gamma"),
+        "{copied:?}"
+    );
+    assert_eq!(clicks(&events), 0, "the drag was not a click");
+    native.simulate_mouse_move(from, None, Default::default());
+    native.simulate_mouse_down(from, MouseButton::Left, Default::default());
+    native.simulate_mouse_up(from, MouseButton::Left, Default::default());
+    native.update(|window, cx| window.render_frame(cx));
+    assert_eq!(clicks(&events), 1, "a plain click is still a click");
+    // a trackpad press drifts a little between down and up, on the words
+    // themselves: no word selected, so still a click
+    let drifted = point(px(1.5), px(10.));
+    native.simulate_mouse_move(from, None, Default::default());
+    native.simulate_mouse_down(from, MouseButton::Left, Default::default());
+    native.simulate_mouse_move(drifted, Some(MouseButton::Left), Default::default());
+    native.update(|window, cx| window.render_frame(cx));
+    native.simulate_mouse_up(drifted, MouseButton::Left, Default::default());
+    native.update(|window, cx| window.render_frame(cx));
+    assert_eq!(
+        clicks(&events),
+        2,
+        "a press that drifted half a pixel is a click"
+    );
+}
+
 #[test]
 fn only_the_clip_a_drag_began_in_joins_it() {
     let room = Bounds::new(point(px(0.), px(0.)), size(px(150.), px(100.)));

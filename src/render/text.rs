@@ -29,6 +29,15 @@ thread_local! {
     static DRAG_CLIP: std::cell::Cell<Option<Bounds<Pixels>>> = const { std::cell::Cell::new(None) };
 }
 
+/// Whether the pointer gesture that just ended selected words: a release
+/// then pressed nothing, whatever box it landed on. Measured by the
+/// characters selected, not by the endpoints, so a press that drifted a
+/// fraction of a pixel (a trackpad click's `mouseDragged`, fractional
+/// coordinates on macOS) is still a click.
+pub(super) fn selected_words(window: &mut Window, cx: &mut App) -> bool {
+    !gpui_kit::base::TextSelection::selected_text(window, cx).is_empty()
+}
+
 /// Whether a paragraph painted in `clip` takes part in the selection while
 /// a drag that began in `drag` is held.
 pub(super) fn joins_drag(drag: Option<Bounds<Pixels>>, clip: Bounds<Pixels>) -> bool {
@@ -396,7 +405,7 @@ impl ViewTree {
                 // a click that ended a drag selected words; it pressed nothing
                 interactive =
                     interactive.on_click(clickable_ranges.clone(), move |index, window, cx| {
-                        if !gpui_kit::base::TextSelection::has_selection(window, cx) {
+                        if !selected_words(window, cx) {
                             press(index, cx)
                         }
                     });
