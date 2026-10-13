@@ -770,13 +770,13 @@ impl Guest {
         self.visibility_change = Some(visible);
     }
 
-    /// A route a link left for this module goes to its first route
+    /// A route a link left for this seat goes to its first route
     /// subscriber, once; with no subscriber it waits.
     pub(crate) fn sync_route(&mut self) {
         let Some(&id) = self.route_subscriptions.first() else {
             return;
         };
-        if let Some(route) = crate::runtime::take_route(self.module) {
+        if let Some(route) = crate::runtime::take_route(self.module, self.instance) {
             self.stream_item(id, wire::methods::encode(&route));
         }
     }

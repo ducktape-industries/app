@@ -60,7 +60,7 @@ impl WindowRoot {
             }
             PaneMessage::PopIn => windows.update(cx, |windows, cx| windows.pop_in(key, cx)),
             PaneMessage::Open(module) => {
-                windows.update(cx, |windows, cx| windows.open_program(key, module, cx))
+                _ = windows.update(cx, |windows, cx| windows.open_program(key, module, cx))
             }
             message => self.desk.update(cx, |desk, cx| desk.moved_by(message, cx)),
         }

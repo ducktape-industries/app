@@ -460,7 +460,10 @@ draws nothing.
   show and a pop-out does brings the pop-out forward), `select_view`,
   `open_help` / `help_asked`, `open_link` (read against `Session`'s
   chain: this chain's link routes its view, another chain's opens the
-  seat and says why, an unlisted view toasts, a web link goes to the OS),
+  seat and says why, an unlisted view toasts, a web link goes to the OS;
+  the route is for one seat: the one `open_program` brings forward, or,
+  for a view's link into its own program, that view's own, with nothing
+  brought forward),
   `open_notice`, `sync_appearance`
   (the theme, and the OS's dark word back into `Prefs`), `swap_console`
   (the launcher and the desk are one window, resized in place; from an
@@ -491,7 +494,7 @@ draws nothing.
   <title>", compared before it sets it), `Notified` →
   `Notifications::refresh`, `Seated` → every desk holding the view
   settles (a window placed before its view came widens to it), `OpenLink`
-  → `Windows::open_link`. `Seats` holds `Windows` weakly.
+  → `Windows::open_link`, from that pane. `Seats` holds `Windows` weakly.
 - **Start** (`shell/launch.rs::run`). Makes the entities over the app's
   roster and notification centre (`Entities::new`), the tray (`tray.rs`:
   an entity observing `Session`, `Chain` and `Prefs`, drawn once at start;
@@ -810,8 +813,8 @@ House words, and where one word means several things.
 - **props / session** — the session facts every view gets on
   `host.session` (`wire::methods::Session`, built by `runtime::props`).
 - **route** — two meanings. (1) the path part of a `duck://<view>/<route>`
-  link, held in `runtime::route_to` until the view's first `host.route`
-  subscriber (`take_route`). (2) a closure-local name for a cloned
+  link, held for one seat by `runtime::route_to` until that seat's view
+  first subscribes to `host.route` (`take_route`). (2) a closure-local name for a cloned
   authored path in `render/`.
 - **link** — a `duck://` URL (`Roster::parse_link`, `Link`), or, in
   sign-in, "link from another device" (`join_from_device`). Unrelated.
@@ -836,7 +839,8 @@ House words, and where one word means several things.
   two things: an OS window (`WindowRoot`, `WindowKey`, `WindowKind`) and
   a pane.
 - **instance** — a pane's unique u64 (`Pane.instance`), the key for
-  `Seats`; `Seat.instance` is its own counter.
+  `Seats`; its seat keeps it (`Seat.instance`), the seat's key in the
+  runtime registry and the one a link's route waits under.
 - **split / cycle / fill / measure** — pane geometry operations in
   `ui/layout.rs`. `split` adds a pane.
 - **rail / RailRow** — the roster-ordered program list the menu bar shows

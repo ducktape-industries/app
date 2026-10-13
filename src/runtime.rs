@@ -148,40 +148,37 @@ const RETRY_MAX: Duration = Duration::from_secs(60);
 /// behind these rather than forking a thread per program.
 const LOADERS: usize = 4;
 
-/// The route a link asked of each module's view, waiting for that view's
-/// first `host.route` subscriber. One per module: a newer link replaces an
-/// older one no view has read yet.
-fn pending_routes() -> &'static Mutex<std::collections::BTreeMap<&'static str, String>> {
-    static ROUTES: OnceLock<Mutex<std::collections::BTreeMap<&'static str, String>>> =
-        OnceLock::new();
+type Routes = Mutex<std::collections::BTreeMap<(&'static str, u64), String>>;
+
+/// The route a link asked of one seat's view, by the seat's registry key
+/// (`module`, its pane's instance), waiting for that view's first
+/// `host.route` subscriber. One per seat: a newer link replaces an older
+/// one the view has not read yet.
+fn pending_routes() -> &'static Routes {
+    static ROUTES: OnceLock<Routes> = OnceLock::new();
     ROUTES.get_or_init(Mutex::default)
 }
 
-/// Hold `route` for `module`'s view until it asks, and wake the seats
-/// already open on it: a view that is up reads the route in its next
-/// turn, and nothing else about it moves.
-pub(crate) fn route_to(module: &'static str, route: String) {
+/// Hold `route` for seat `instance` of `module` until its view asks, and
+/// wake that seat if it is open: its view reads the route in its next
+/// turn, and no other seat of the module hears of it.
+pub(crate) fn route_to(module: &'static str, instance: u64, route: String) {
     pending_routes()
         .lock()
         .expect("pending routes")
-        .insert(module, route);
+        .insert((module, instance), route);
     // registry, then seat: the order `retry` takes them in
-    let registry = lock(registry());
-    for seat in registry
-        .iter()
-        .filter(|((name, _), _)| *name == module)
-        .map(|(_, seat)| seat)
-    {
+    if let Some(seat) = lock(registry()).get(&(module, instance)) {
         lock(seat).wake.send_replace(());
     }
 }
 
-/// The route waiting for `module`, handed out once.
-pub(crate) fn take_route(module: &str) -> Option<String> {
+/// The route waiting for seat `instance` of `module`, handed out once.
+pub(crate) fn take_route(module: &'static str, instance: u64) -> Option<String> {
     pending_routes()
         .lock()
         .expect("pending routes")
-        .remove(module)
+        .remove(&(module, instance))
 }
 
 /// Leaks one copy of each distinct module name, so a name can be the
@@ -418,6 +415,40 @@ pub(crate) fn intent_for_test(module: &str, instance: u64, intent: Intent) {
         panic!("{module} is not seated");
     };
     guest.intents.push(intent);
+}
+
+/// `module`'s seat `instance` listens for routes, as its view's
+/// `host.route` subscription (request 99) would.
+#[cfg(test)]
+pub(crate) fn listen_for_routes_for_test(module: &str, instance: u64) {
+    let registry = registry().lock().unwrap();
+    let Slot::Ready(guest) = &mut registry[&(module, instance)].lock().unwrap().slot else {
+        panic!("{module} is not seated");
+    };
+    guest.route_subscriptions.push(99);
+}
+
+/// The routes `module`'s seat `instance` was handed, in order.
+#[cfg(test)]
+pub(crate) fn routes_for_test(module: &str, instance: u64) -> Vec<String> {
+    let registry = registry().lock().unwrap();
+    let Slot::Ready(guest) = &registry[&(module, instance)].lock().unwrap().slot else {
+        panic!("{module} is not seated");
+    };
+    let routed = |event: &wire::Event| match event {
+        wire::Event::Response {
+            id,
+            result: Ok(item),
+            ..
+        } if guest.route_subscriptions.contains(id) => wire::methods::decode(item).ok(),
+        _ => None,
+    };
+    guest
+        .ticked_with
+        .iter()
+        .flatten()
+        .filter_map(routed)
+        .collect()
 }
 
 /// Every drawn view of `module` gives itself `name`, as its manifest

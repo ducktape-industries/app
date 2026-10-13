@@ -53,6 +53,19 @@ fn listed(app: &Entities, modules: &[&str], cx: &mut TestAppContext) {
     app.rail.update(cx, |rail, cx| rail.read_off(roster, cx));
 }
 
+/// The route waiting for the seat of window `key`'s pane showing `module`,
+/// taken; none while no pane shows it.
+fn routed(
+    app: &Entities,
+    key: WindowKey,
+    module: &'static str,
+    cx: &TestAppContext,
+) -> Option<String> {
+    let layout = desk_of(app, key, cx).read_with(cx, |desk, _| desk.get().clone());
+    let pane = layout.panes.iter().find(|pane| pane.module == module)?;
+    crate::runtime::take_route(module, pane.instance)
+}
+
 /// A view picked from ⌘K or a menu opens as a bar click does: the focused
 /// window keeps its program, and the pick is the program in front.
 #[gpui_kit::test]
@@ -197,20 +210,21 @@ fn a_link_opens_the_seat_and_a_bad_one_toasts(cx: &mut TestAppContext) {
     let toast = |cx: &TestAppContext| app.toast.read_with(cx, |toast, _| toast.get().clone());
     let open = |link: &str, cx: &mut TestAppContext| {
         app.windows
-            .update(cx, |windows, cx| windows.open_link(link, cx))
+            .update(cx, |windows, cx| windows.open_link(link, None, cx))
     };
     open("duck://testkit-0a1b2c3d/link-test-here/tx/00ff", cx);
     assert_eq!(active(&app, cx), Some("link-test-here"));
     assert_eq!(modules(&app, key, cx), ["chat", "link-test-here"]);
     assert!(toast(cx).is_empty(), "the view coming forward says it");
     assert_eq!(
-        crate::runtime::take_route("link-test-here").as_deref(),
-        Some("tx/00ff")
+        routed(&app, key, "link-test-here", cx).as_deref(),
+        Some("tx/00ff"),
+        "the pane the link opened was not handed its route"
     );
     // another chain's link opens the seat, routes nothing, and says why
     open("duck://othernet-0a1b2c3d/link-test-away/tx/00ff", cx);
     assert_eq!(active(&app, cx), Some("link-test-away"));
-    assert_eq!(crate::runtime::take_route("link-test-away"), None);
+    assert_eq!(routed(&app, key, "link-test-away", cx), None);
     assert!(toast(cx).contains("othernet"), "{:?}", toast(cx));
     // a view nobody lists opens nothing
     app.toast.update(cx, |toast, cx| toast.dismiss(cx));
@@ -231,18 +245,18 @@ fn a_link_opens_the_seat_and_a_bad_one_toasts(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn an_https_link_opens_in_the_web_view_else_in_the_system_browser(cx: &mut TestAppContext) {
     use view_wire::methods::Capability;
-    let (app, _) = console(cx);
+    let (app, key) = console(cx);
     listed(&app, &["web-link-test"], cx);
     crate::render::web::seen("web-link-test", &[Capability::Host, Capability::Web]);
     let open = |link: &str, cx: &mut TestAppContext| {
         app.windows
-            .update(cx, |windows, cx| windows.open_link(link, cx))
+            .update(cx, |windows, cx| windows.open_link(link, None, cx))
     };
     open("https://example.com/a?b=1", cx);
     if cfg!(feature = "web") {
         assert_eq!(active(&app, cx), Some("web-link-test"));
         assert_eq!(
-            crate::runtime::take_route("web-link-test").as_deref(),
+            routed(&app, key, "web-link-test", cx).as_deref(),
             Some("https://example.com/a?b=1")
         );
         assert_eq!(cx.opened_url(), None);
@@ -251,15 +265,80 @@ fn an_https_link_opens_in_the_web_view_else_in_the_system_browser(cx: &mut TestA
             cx.opened_url().as_deref(),
             Some("https://example.com/a?b=1")
         );
-        assert_eq!(crate::runtime::take_route("web-link-test"), None);
+        assert_eq!(routed(&app, key, "web-link-test", cx), None);
     }
     open("http://example.com/b", cx);
     assert_eq!(cx.opened_url().as_deref(), Some("http://example.com/b"));
-    assert_eq!(crate::runtime::take_route("web-link-test"), None);
+    assert_eq!(routed(&app, key, "web-link-test", cx), None);
     // a view whose next manifest drops `web` takes no more links
     crate::render::web::seen("web-link-test", &[Capability::Host]);
     open("https://example.com/c", cx);
     assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/c"));
+}
+
+/// Two windows of one program: a link from outside them (a notice,
+/// Spotlight, the OS) goes to the one `open_program` brings forward and
+/// to no other; with the program only in a pop-out, to the pop-out it
+/// raises, and the desk opens nothing.
+#[gpui_kit::test]
+fn an_outside_link_reaches_only_the_window_it_brings_forward(cx: &mut TestAppContext) {
+    const MODULE: &str = "two-window-link";
+    let (app, console) = console(cx);
+    listed(&app, &[MODULE], cx);
+    let desk = desk_of(&app, console, cx);
+    desk.update(cx, |desk, cx| {
+        desk.split(MODULE, cx);
+        desk.split(MODULE, cx);
+    });
+    let open = |cx: &mut TestAppContext| {
+        app.windows.update(cx, |windows, cx| {
+            windows.open_link(&format!("duck://{MODULE}/room/9"), None, cx)
+        })
+    };
+    open(cx);
+    let layout = desk.read_with(cx, |desk, _| desk.get().clone());
+    let forward = layout.panes[layout.focused].instance;
+    let other = layout
+        .panes
+        .iter()
+        .find(|pane| pane.module == MODULE && pane.instance != forward)
+        .expect("two windows of the program")
+        .instance;
+    assert_eq!(
+        crate::runtime::take_route(MODULE, forward).as_deref(),
+        Some("room/9")
+    );
+    assert_eq!(
+        crate::runtime::take_route(MODULE, other),
+        None,
+        "the window left behind was handed the route too"
+    );
+    // the program in a pop-out only
+    let at = |instance, cx: &TestAppContext| {
+        let layout = desk.read_with(cx, |desk, _| desk.get().clone());
+        layout
+            .panes
+            .iter()
+            .position(|pane| pane.instance == instance)
+    };
+    let index = at(other, cx).unwrap();
+    desk.update(cx, |desk, cx| _ = desk.close(index, cx));
+    let index = at(forward, cx).unwrap();
+    app.windows
+        .update(cx, |windows, cx| windows.pop_out(console, index, None, cx));
+    cx.run_until_parked();
+    assert_eq!(modules(&app, console, cx), ["chat"]);
+    open(cx);
+    assert_eq!(
+        modules(&app, console, cx),
+        ["chat"],
+        "the desk opened it again"
+    );
+    assert_eq!(
+        crate::runtime::take_route(MODULE, forward).as_deref(),
+        Some("room/9"),
+        "the pop-out was not handed the route"
+    );
 }
 
 /// The same link notice while it is up is not shown again, so a view
@@ -271,7 +350,7 @@ fn a_repeated_link_notice_does_not_restart_the_toast(cx: &mut TestAppContext) {
     let toast = |cx: &TestAppContext| app.toast.read_with(cx, |toast, _| toast.get().clone());
     let open = |cx: &mut TestAppContext| {
         app.windows.update(cx, |windows, cx| {
-            windows.open_link("duck://testkit-0a1b2c3d/notice-test-nowhere/x", cx)
+            windows.open_link("duck://testkit-0a1b2c3d/notice-test-nowhere/x", None, cx)
         })
     };
     open(cx);
@@ -303,7 +382,7 @@ fn spotlight_and_links_both_land_in_the_desk_and_leaving_clears_it(cx: &mut Test
         .update(cx, |rail, cx| rail.set_badge("pane-link", 2, cx));
     app.windows.update(cx, |windows, cx| {
         windows.select_view("forge", cx);
-        windows.open_link("duck://pane-link/x", cx);
+        windows.open_link("duck://pane-link/x", None, cx);
     });
     assert_eq!(modules(&app, key, cx), ["chat", "forge", "pane-link"]);
     assert_eq!(active(&app, cx), Some("pane-link"));
