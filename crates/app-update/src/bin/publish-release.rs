@@ -1,12 +1,13 @@
 //! `publish-release`: the release job's signer.
 //!
 //! Given one archive per platform, it names each by its own sha256
-//! ([`app_update::layout::archive_name`]), writes the sealed manifest of
-//! `--channel` (`stable.json` or `nightly.json`), signs it with the seed in
-//! `RELEASE_SIGNING_KEY` and checks the pair the way the app does before it
-//! says done. Everything lands in `--out`, ready to upload: the archives
-//! first, then the manifest, then its `.sig`. `--sequence` is the built
-//! commit's committer time (unix seconds), the order both channels share.
+//! ([`app_update::layout::archive_name`]), seals the manifest of
+//! `--channel`, signs it with the seed in `RELEASE_SIGNING_KEY`, writes both
+//! into the channel's one file (`stable.json` or `nightly.json`) and checks
+//! that file the way the app does before it says done. Everything lands in
+//! `--out`, ready to upload: the archives first, then the channel file.
+//! `--sequence` is the built commit's committer time (unix seconds), the
+//! order both channels share.
 //!
 //! The seed was stored without a round trip, so BEFORE anything is signed its
 //! public half is derived and compared with the key the app pins
@@ -150,24 +151,24 @@ fn publish(args: &Args, seed: &str) -> Result<String, String> {
         successor_key: None,
     }
     .sealed();
-    let mut bytes = serde_json::to_vec_pretty(&manifest).expect("a Manifest serializes");
-    bytes.push(b'\n');
-    let signature = Signature::sign(&signer, &bytes).encoded();
-    // the app's own check, on the two files exactly as they will be served
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest).expect("a Manifest serializes");
+    let signature = Signature::sign(&signer, &manifest_bytes);
+    let file = SignedManifest {
+        manifest_bytes,
+        signature,
+    }
+    .file();
+    // the app's own check, on the file exactly as it will be served
     let keys = TrustedKeys {
         pinned: args.expect,
         successor: None,
     };
-    SignedManifest::from_files(bytes.clone(), &signature)
+    SignedManifest::from_file(file.as_bytes())
         .and_then(|signed| verify_manifest(&signed, args.channel.name(), &keys))
         .map_err(|refusal| format!("the signed manifest does not verify: {refusal}"))?;
-    for (name, text) in [
-        (args.channel.manifest(), bytes),
-        (args.channel.signature(), signature.into()),
-    ] {
-        std::fs::write(args.out.join(&name), text).map_err(|error| io(&name, error))?;
-        summary.push_str(&format!("{name}\n"));
-    }
+    let name = args.channel.file();
+    std::fs::write(args.out.join(&name), file).map_err(|error| io(&name, error))?;
+    summary.push_str(&format!("{name}\n"));
     Ok(summary)
 }
 
@@ -238,8 +239,9 @@ mod tests {
         assert!(!out.exists());
     }
 
-    /// The published pair is the channel's, verifies under the key it was
-    /// signed for, and names the archive by its own sha256 and size.
+    /// The channel file is the channel's, verifies under the key it was
+    /// signed for, and names the archive by its own sha256 and size; it is
+    /// the one file published after the archives.
     #[test]
     fn a_publish_writes_an_archive_named_by_its_sha_and_a_pair_the_app_accepts() {
         let root = tempfile::tempdir().unwrap();
@@ -250,13 +252,10 @@ mod tests {
         let key = PublicKey::of(&signing_key_from_hex(&seed).unwrap());
         let summary = publish(&args(out.clone(), archive, key), &seed).unwrap();
         let name = layout::archive_name(&Sha::digest(b"archive"), &Platform::HOST.key());
-        assert_eq!(summary, format!("{name}\nnightly.json\nnightly.json.sig\n"));
+        assert_eq!(summary, format!("{name}\nnightly.json\n"));
         assert_eq!(std::fs::read(out.join(&name)).unwrap(), b"archive");
-        let signed = SignedManifest::from_files(
-            std::fs::read(out.join("nightly.json")).unwrap(),
-            &std::fs::read_to_string(out.join("nightly.json.sig")).unwrap(),
-        )
-        .unwrap();
+        let signed =
+            SignedManifest::from_file(&std::fs::read(out.join("nightly.json")).unwrap()).unwrap();
         let keys = TrustedKeys {
             pinned: key,
             successor: None,

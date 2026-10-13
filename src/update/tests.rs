@@ -14,7 +14,7 @@ use app_update::layout::Channel;
 use app_update::release::signing_key_from_hex;
 use app_update::{
     Artifact, Manifest, Platform, PublicKey, Refusal as ManifestRefusal, Release, SCHEMA, Sha,
-    Signature, TrustedKeys, layout,
+    Signature, SignedManifest, TrustedKeys, layout,
 };
 
 use super::channel::{client, download, fetch};
@@ -35,6 +35,18 @@ fn keys() -> TrustedKeys {
         pinned: test_key(),
         successor: None,
     }
+}
+
+/// A channel's file: `manifest` and the test key's signature over it.
+fn channel_file(manifest: &Manifest) -> Vec<u8> {
+    let manifest_bytes = serde_json::to_vec_pretty(manifest).unwrap();
+    let signature = Signature::sign(&signing_key_from_hex(&seed()).unwrap(), &manifest_bytes);
+    SignedManifest {
+        manifest_bytes,
+        signature,
+    }
+    .file()
+    .into_bytes()
 }
 
 fn block<F: std::future::Future>(future: F) -> F::Output {
@@ -177,11 +189,8 @@ fn publish(bucket: &Bucket, channel: Channel, sequence: u64, release: &[Item]) -
         successor_key: None,
     }
     .sealed();
-    let bytes = serde_json::to_vec_pretty(&manifest).unwrap();
-    let signature = Signature::sign(&signing_key_from_hex(&seed()).unwrap(), &bytes).encoded();
     bucket.put(&layout::archive_name(&sha, &Platform::HOST.key()), archive);
-    bucket.put(&channel.manifest(), bytes);
-    bucket.put(&channel.signature(), signature.into_bytes());
+    bucket.put(&channel.file(), channel_file(&manifest));
     sha
 }
 
@@ -212,12 +221,13 @@ fn release_of(exe: Vec<u8>) -> Vec<Item> {
 
 // ---- the channel: fetch and download ----------------------------------------
 
-/// Each channel's pair is read from its own files and verifies under the
-/// pinned key; a stranger's signature over the same bytes is refused, and a
-/// channel with nothing published is a check that did not happen, not a
-/// refusal.
+/// Each channel is one file, its manifest and the signature over it, read
+/// whole in one request from the channel's own name, and verifies under the
+/// pinned key; a stranger's signature over the same manifest is refused,
+/// and a channel with nothing published is a check that did not happen,
+/// not a refusal.
 #[test]
-fn a_published_pair_verifies_and_a_strangers_signature_is_refused() {
+fn a_channel_file_verifies_and_a_strangers_signature_is_refused() {
     let bucket = Bucket::new();
     let client = client();
     let sequence = |channel| {
@@ -229,12 +239,19 @@ fn a_published_pair_verifies_and_a_strangers_signature_is_refused() {
     publish(&bucket, Channel::Nightly, 9, &release_of(script("n")));
     assert_eq!(sequence(Channel::Stable), Some(Ok(7)));
     assert_eq!(sequence(Channel::Nightly), Some(Ok(9)));
-    let manifest = bucket.files.lock().unwrap()["stable.json"].clone();
-    let stranger = signing_key_from_hex(&"07".repeat(32)).unwrap();
-    bucket.put(
-        "stable.json.sig",
-        Signature::sign(&stranger, &manifest).encoded().into_bytes(),
+    let asked: Vec<String> = bucket.asked().into_iter().map(|(path, _)| path).collect();
+    assert_eq!(
+        asked,
+        ["nightly.json", "stable.json", "nightly.json"],
+        "one file per check"
     );
+    let signed = SignedManifest::from_file(&bucket.files.lock().unwrap()["stable.json"]).unwrap();
+    let stranger = signing_key_from_hex(&"07".repeat(32)).unwrap();
+    let forged = SignedManifest {
+        signature: Signature::sign(&stranger, &signed.manifest_bytes),
+        ..signed
+    };
+    bucket.put("stable.json", forged.file().into_bytes());
     assert_eq!(
         sequence(Channel::Stable),
         Some(Err(ManifestRefusal::BadSignature))
@@ -261,7 +278,6 @@ fn the_kept_channel_reads_back_and_anything_else_is_stable() {
 fn a_manifest_larger_than_the_cap_is_not_read() {
     let bucket = Bucket::new();
     bucket.put("stable.json", vec![b' '; 300 * 1024]);
-    bucket.put("stable.json.sig", b"00".to_vec());
     assert_eq!(
         block(fetch(&client(), &bucket.base, Channel::Stable, &keys())),
         None
@@ -1085,11 +1101,8 @@ mod macos {
             successor_key: None,
         }
         .sealed();
-        let json = serde_json::to_vec_pretty(&manifest).unwrap();
-        let signature = Signature::sign(&signing_key_from_hex(&seed()).unwrap(), &json).encoded();
         bucket.put(&layout::archive_name(&sha, &Platform::HOST.key()), bytes);
-        bucket.put("stable.json", json);
-        bucket.put("stable.json.sig", signature.into_bytes());
+        bucket.put("stable.json", channel_file(&manifest));
         sha
     }
 

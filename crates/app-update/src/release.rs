@@ -4,8 +4,9 @@
 //!
 //! The namespace is a fixed prefix, so the preimage is unambiguous and a
 //! release signature means one thing only: the same key's signature over the
-//! same bytes for any other purpose is not a release signature. The signature
-//! file holds the 64 bytes as 128 hex characters.
+//! same bytes for any other purpose is not a release signature. A channel's
+//! file carries the 64 bytes as 128 hex characters beside the manifest
+//! ([`crate::SignedManifest`]).
 //!
 //! Everything a signature binds is INSIDE the signed body: `channel`,
 //! `sequence` and `successor_key` are manifest fields, so nothing rides
@@ -99,7 +100,7 @@ impl<'de> Deserialize<'de> for PublicKey {
     }
 }
 
-/// A release signature: 64 raw ed25519 bytes, hex in the `.sig` file.
+/// A release signature: 64 raw ed25519 bytes, hex in a channel's file.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Signature([u8; 64]);
 
@@ -129,12 +130,12 @@ impl Signature {
         key.verify_strict(&preimage(manifest_bytes), &signature)
             .is_ok()
     }
+}
 
-    /// The `.sig` file's text: 128 hex characters and a newline.
-    pub fn encoded(&self) -> String {
-        let mut text = bytes_to_hex(&self.0);
-        text.push('\n');
-        text
+/// 128 hex characters.
+impl fmt::Display for Signature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&bytes_to_hex(&self.0))
     }
 }
 
@@ -222,8 +223,8 @@ mod tests {
             pubkey
         );
         let signature = Signature::sign(&signer, b"x");
-        let encoded = signature.encoded();
-        assert_eq!(encoded.len(), 129);
+        let encoded = signature.to_string();
+        assert_eq!(encoded.len(), 128);
         assert_eq!(encoded.parse::<Signature>().unwrap(), signature);
         assert_eq!("abc".parse::<Signature>(), Err(SignatureParseError));
         assert_eq!("abc".parse::<PublicKey>(), Err(PublicKeyParseError));

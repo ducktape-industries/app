@@ -4,15 +4,16 @@
 //! and an archive's name is derived from that content and the platform.
 //!
 //! ```text
-//! https://dl.ducktape.industries/stable.json                            a channel's manifest
-//! https://dl.ducktape.industries/stable.json.sig                        its signature
-//! https://dl.ducktape.industries/nightly.json(.sig)                     the other channel's
+//! https://dl.ducktape.industries/stable.json                            a channel's manifest and its signature
+//! https://dl.ducktape.industries/nightly.json                           the other channel's
 //! https://dl.ducktape.industries/Ducktape-<sha256>-<os>-<arch>.tar.gz   one archive per platform
 //! ```
 //!
+//! A channel is ONE file ([`crate::SignedManifest`]): an upload replaces
+//! it whole, so no reader sees a manifest beside another one's signature.
 //! An archive's name carries its whole sha256, so a name never changes
 //! bytes: the bucket serves archives as immutable and only the small
-//! manifest files under a short cache.
+//! channel files under a short cache.
 
 use crate::sha::Sha;
 
@@ -48,14 +49,10 @@ impl Channel {
             .find(|channel| channel.name() == name)
     }
 
-    /// The manifest's name under [`BASE_URL`].
-    pub fn manifest(self) -> String {
+    /// The channel file's name under [`BASE_URL`]: its manifest and the
+    /// signature over it.
+    pub fn file(self) -> String {
         format!("{}.json", self.name())
-    }
-
-    /// The signature's name under [`BASE_URL`].
-    pub fn signature(self) -> String {
-        format!("{}.json.sig", self.name())
     }
 }
 
@@ -71,8 +68,8 @@ mod tests {
 
     #[test]
     fn names_have_the_fixed_shape() {
-        assert_eq!(Channel::Stable.manifest(), "stable.json");
-        assert_eq!(Channel::Nightly.signature(), "nightly.json.sig");
+        assert_eq!(Channel::Stable.file(), "stable.json");
+        assert_eq!(Channel::Nightly.file(), "nightly.json");
         assert_eq!(Channel::of("nightly"), Some(Channel::Nightly));
         assert_eq!(Channel::of("beta"), None);
         assert_eq!(Channel::default(), Channel::Stable);

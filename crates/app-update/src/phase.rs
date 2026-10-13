@@ -227,8 +227,8 @@ pub enum SwapState {
 pub enum Command {
     /// Write `state.json` (tmp-write + rename).
     Persist(Phase),
-    /// Read the channel manifest + `.sig` ([`crate::layout`]), verify,
-    /// answer with `ManifestFetched`.
+    /// Read the channel's file, manifest and signature ([`crate::layout`]),
+    /// verify, answer with `ManifestFetched`.
     Fetch,
     /// Download the archive ([`crate::layout::archive_name`] of `sha` for
     /// the host platform) into `releases/<sha>.partial`, resumable by size,

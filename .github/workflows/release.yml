@@ -3,7 +3,8 @@
 # - on the prerelease bin-<commit>: the Linux binary as a tarball, the Mac
 #   app as an ad-hoc signed DMG and as a tarball of Ducktape.app;
 # - to the self-update's bucket (dl.ducktape.industries, Cloudflare R2): the
-#   two tarballs named by their sha256, then the channel's signed manifest.
+#   two tarballs named by their sha256, then the channel's one file, its
+#   manifest and the signature over it.
 # Two channels, one signing key, one order: a release's sequence is its
 # commit's committer time, on either channel.
 # - stable: each time `main` moves;
@@ -58,7 +59,7 @@ jobs:
           # before the first publish (or with the bucket unreachable) there
           # is nothing to compare with
           published=$(curl -fsS --max-time 20 "https://dl.ducktape.industries/$channel.json" 2>/dev/null \
-            | jq -r '.sequence // 0' 2>/dev/null || true)
+            | jq -r '.manifest | fromjson | .sequence // 0' 2>/dev/null || true)
           published=${published:-0}
           skip=false
           if [ "$published" -ge "$sequence" ]; then
@@ -141,8 +142,9 @@ jobs:
           gh release upload "$TAG" "$ASSET" "$APP_ASSET" --clobber
 
   # Sign the channel's manifest over both archives and upload: archives
-  # first (immutable, named by their sha256), then the manifest, then its
-  # signature, so a client never reads a manifest whose archive is not there.
+  # first (immutable, named by their sha256), then the channel's one file,
+  # so a client never reads a manifest whose archive is not there, nor a
+  # manifest beside another one's signature.
   publish:
     needs: [plan, linux, macos]
     runs-on: ubuntu-latest

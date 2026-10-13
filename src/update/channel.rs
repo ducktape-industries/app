@@ -5,8 +5,9 @@
 //! person picks the other channel in Settings ([`choose`]).
 //!
 //! What runs here:
-//! - `Fetch`: the chosen channel's manifest and its `.sig` over HTTPS (each
-//!   at most [`MAX_MANIFEST_BYTES`]), verified under the pinned key and its
+//! - `Fetch`: the chosen channel's one file over HTTPS, its manifest and the
+//!   signature over it (at most [`MAX_MANIFEST_BYTES`]), verified under the
+//!   pinned key and its
 //!   successor, and against the highest sequence the channel has shown this
 //!   install ([`Updater::against_seen`]), answering `ManifestFetched`.
 //!   Unreachable or unpublished is not a refusal: the check did not happen,
@@ -45,7 +46,7 @@ use super::{Layout, TARGET, stage};
 
 /// How often the running app asks the channel.
 pub(super) const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
-/// A manifest or signature file larger than this is not one.
+/// A channel file larger than this is not one.
 const MAX_MANIFEST_BYTES: usize = 256 * 1024;
 /// The tag the update notice stands under: a newer staged release replaces it.
 const NOTICE_TAG: &str = "ducktape/update";
@@ -489,25 +490,22 @@ fn notify_ready(display: &str) {
     debug!(target: TARGET, event = "app_update_notice", raised);
 }
 
-/// `Fetch`: `channel`'s manifest and its signature, verified.
+/// `Fetch`: `channel`'s file, its manifest verified.
 pub(super) async fn fetch(
     client: &reqwest::Client,
     base: &str,
     channel: Channel,
     keys: &TrustedKeys,
 ) -> Option<Result<VerifiedManifest, ManifestRefusal>> {
-    let manifest = get_small(client, &format!("{base}{}", channel.manifest())).await;
-    let signature = get_small(client, &format!("{base}{}", channel.signature())).await;
-    let (manifest, signature) = match (manifest, signature) {
-        (Ok(manifest), Ok(signature)) => (manifest, signature),
-        (Err(error), _) | (_, Err(error)) => {
+    let file = match get_small(client, &format!("{base}{}", channel.file())).await {
+        Ok(file) => file,
+        Err(error) => {
             debug!(target: TARGET, event = "app_update_manifest_unavailable", %error);
             return None;
         }
     };
-    let signature = String::from_utf8_lossy(&signature);
     Some(
-        SignedManifest::from_files(manifest, &signature)
+        SignedManifest::from_file(&file)
             .and_then(|signed| verify_manifest(&signed, channel.name(), keys)),
     )
 }

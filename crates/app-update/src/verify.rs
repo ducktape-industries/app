@@ -19,9 +19,9 @@ use crate::release::{PublicKey, Signature};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Refusal {
-    /// The `.sig` file is not 128 hex characters.
+    /// The channel file's `signature` is not 128 hex characters.
     MalformedSignature,
-    /// The manifest JSON did not parse.
+    /// The channel file, or the manifest it carries, did not parse.
     MalformedManifest,
     /// `schema` is not [`SCHEMA`].
     SchemaUnsupported,
@@ -74,26 +74,60 @@ pub struct TrustedKeys {
     pub successor: Option<SuccessorKey>,
 }
 
-/// What was fetched: the manifest file's bytes and the `.sig` file's
-/// signature, exactly as published. The bytes are verified as-is, never
-/// re-serialized.
+/// A channel's manifest and the release key's signature over its bytes.
+/// The bytes are verified as-is, never re-serialized.
+///
+/// Both travel in ONE file, the channel's (`stable.json`), so a reader
+/// never holds one without the other: an upload replaces the object whole,
+/// where two files had a window with a new manifest beside an old
+/// signature. The manifest rides as a JSON string, its bytes exactly the
+/// signed ones:
+///
+/// ```json
+/// { "manifest": "{\n  \"schema\": 1, …", "signature": "<128 hex>" }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedManifest {
     pub manifest_bytes: Vec<u8>,
     pub signature: Signature,
 }
 
+/// The channel file's shape.
+#[derive(Serialize, Deserialize)]
+struct ChannelFile {
+    manifest: String,
+    signature: String,
+}
+
 impl SignedManifest {
-    /// The two files as read: the `.sig` text must parse or the pair is
-    /// `malformed_signature` before anything else is looked at.
-    pub fn from_files(manifest_bytes: Vec<u8>, signature_text: &str) -> Result<Self, Refusal> {
-        let signature = signature_text
+    /// The channel file as read: its two fields must be there, and the
+    /// signature must parse, before anything else is looked at.
+    pub fn from_file(bytes: &[u8]) -> Result<Self, Refusal> {
+        let file: ChannelFile =
+            serde_json::from_slice(bytes).map_err(|_| Refusal::MalformedManifest)?;
+        let signature = file
+            .signature
             .parse()
             .map_err(|_| Refusal::MalformedSignature)?;
         Ok(SignedManifest {
-            manifest_bytes,
+            manifest_bytes: file.manifest.into_bytes(),
             signature,
         })
+    }
+
+    /// The channel file's text, as published.
+    ///
+    /// # Panics
+    /// When the manifest bytes are not UTF-8; a manifest is JSON text.
+    pub fn file(&self) -> String {
+        let file = ChannelFile {
+            manifest: String::from_utf8(self.manifest_bytes.clone())
+                .expect("a manifest is JSON text"),
+            signature: self.signature.to_string(),
+        };
+        let mut text = serde_json::to_string_pretty(&file).expect("a channel file serializes");
+        text.push('\n');
+        text
     }
 }
 
@@ -242,17 +276,24 @@ mod tests {
         assert_eq!(verified.manifest, f.manifest);
     }
 
+    /// The manifest's bytes come back out of the channel file exactly, and
+    /// still verify; a file without both fields, or a signature that is
+    /// not one, is refused before anything is verified.
     #[test]
-    fn the_sig_file_round_trips_through_from_files() {
+    fn the_channel_file_carries_the_exact_signed_bytes() {
         let f = fixture(manifest(17));
-        let signed = SignedManifest::from_files(
-            f.signed.manifest_bytes.clone(),
-            &f.signed.signature.encoded(),
-        )
-        .unwrap();
+        let file = f.signed.file();
+        let signed = SignedManifest::from_file(file.as_bytes()).unwrap();
         assert_eq!(signed, f.signed);
+        assert!(verify_manifest(&signed, CHANNEL, &f.keys).is_ok());
+        let without_signature = serde_json::json!({ "manifest": "{}" }).to_string();
         assert_eq!(
-            SignedManifest::from_files(f.signed.manifest_bytes.clone(), "nope").unwrap_err(),
+            SignedManifest::from_file(without_signature.as_bytes()).unwrap_err(),
+            Refusal::MalformedManifest
+        );
+        let bad_signature = serde_json::json!({ "manifest": "{}", "signature": "nope" });
+        assert_eq!(
+            SignedManifest::from_file(bad_signature.to_string().as_bytes()).unwrap_err(),
             Refusal::MalformedSignature
         );
     }
