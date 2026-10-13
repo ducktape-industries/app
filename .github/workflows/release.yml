@@ -1,33 +1,83 @@
-# Each time `main` moves, the app is built for Linux x86_64 (GitHub's Ubuntu)
-# and macOS arm64 (the self-hosted runner mac-byeongsu) and published on the
-# prerelease bin-<commit>: the Linux binary as a tarball, the Mac app as an
-# ad-hoc signed DMG.
+# The app is built for Linux x86_64 (GitHub's Ubuntu) and macOS arm64 (the
+# self-hosted runner mac-byeongsu) and published twice:
+# - on the prerelease bin-<commit>: the Linux binary as a tarball, the Mac
+#   app as an ad-hoc signed DMG and as a tarball of Ducktape.app;
+# - to the self-update's bucket (dl.ducktape.industries, Cloudflare R2): the
+#   two tarballs named by their sha256, then the channel's signed manifest.
+# Two channels, one signing key, one order: a release's sequence is its
+# commit's committer time, on either channel.
+# - stable: each time `main` moves;
+# - nightly: `dev` once a day (and on demand), skipped when dev's head is
+#   already the published nightly.
 name: release
 
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: "17 3 * * *"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.sha }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && 'stable' || 'nightly' }}
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
-  TAG: bin-${{ github.sha }}
 
 jobs:
+  # Which channel, which commit, and whether the bucket already has it.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      channel: ${{ steps.plan.outputs.channel }}
+      sha: ${{ steps.plan.outputs.sha }}
+      sequence: ${{ steps.plan.outputs.sequence }}
+      skip: ${{ steps.plan.outputs.skip }}
+    steps:
+      # a schedule runs on the default branch: the nightly checks out dev
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'push' && github.sha || 'dev' }}
+      - id: plan
+        run: |
+          channel=nightly
+          if [ "$GITHUB_EVENT_NAME" = push ]; then channel=stable; fi
+          sha=$(git rev-parse HEAD)
+          sequence=$(git show -s --format=%ct HEAD)
+          # before the first publish (or with the bucket unreachable) there
+          # is nothing to compare with
+          published=$(curl -fsS --max-time 20 "https://dl.ducktape.industries/$channel.json" 2>/dev/null \
+            | jq -r '.sequence // 0' 2>/dev/null || true)
+          published=${published:-0}
+          skip=false
+          if [ "$published" -ge "$sequence" ]; then
+            skip=true
+            echo "$channel already publishes $published, not older than $sha ($sequence): skipped"
+          fi
+          {
+            echo "channel=$channel"
+            echo "sha=$sha"
+            echo "sequence=$sequence"
+            echo "skip=$skip"
+          } >> "$GITHUB_OUTPUT"
+
   linux:
+    needs: plan
+    if: needs.plan.outputs.skip != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
       CARGO_BUILD_JOBS: 3
+      SHA: ${{ needs.plan.outputs.sha }}
+      TAG: bin-${{ needs.plan.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
       - name: Native build dependencies
         run: |
           sudo apt-get update
@@ -40,33 +90,101 @@ jobs:
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}
+          # the release tree, the app at its top: also the update archive
           ASSET: ducktape-app-x86_64-unknown-linux-gnu.tar.gz
         run: |
           tar czf "$ASSET" -C target/release ducktape-app
           # Both jobs may try to create the release; the loser finds it made.
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
-            --prerelease --latest=false --target "$GITHUB_SHA" --title "$TAG" \
-            --notes "The ducktape app built at $GITHUB_SHA." \
+            --prerelease --latest=false --target "$SHA" --title "$TAG" \
+            --notes "The ducktape app built at $SHA." \
             || gh release view "$TAG" >/dev/null
           gh release upload "$TAG" "$ASSET" --clobber
 
   macos:
+    needs: plan
+    if: needs.plan.outputs.skip != 'true'
     runs-on: [self-hosted, mac-byeongsu]
     timeout-minutes: 60
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/../target
+      SHA: ${{ needs.plan.outputs.sha }}
+      TAG: bin-${{ needs.plan.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
       - run: ops/bundle-app-macos.sh
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}
           ASSET: ducktape-app-aarch64-apple-darwin.dmg
+          # the update archive: Ducktape.app whole, no AppleDouble files and
+          # no extended attributes (its signature lives in its files)
+          APP_ASSET: ducktape-app-aarch64-apple-darwin.app.tar.gz
         run: |
           mv target/app-bundle/Ducktape-*.dmg "$ASSET"
+          COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -czf "$APP_ASSET" \
+            -C target/app-bundle Ducktape.app
           # Both jobs may try to create the release; the loser finds it made.
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
-            --prerelease --latest=false --target "$GITHUB_SHA" --title "$TAG" \
-            --notes "The ducktape app built at $GITHUB_SHA." \
+            --prerelease --latest=false --target "$SHA" --title "$TAG" \
+            --notes "The ducktape app built at $SHA." \
             || gh release view "$TAG" >/dev/null
-          gh release upload "$TAG" "$ASSET" --clobber
+          gh release upload "$TAG" "$ASSET" "$APP_ASSET" --clobber
+
+  # Sign the channel's manifest over both archives and upload: archives
+  # first (immutable, named by their sha256), then the manifest, then its
+  # signature, so a client never reads a manifest whose archive is not there.
+  publish:
+    needs: [plan, linux, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CHANNEL: ${{ needs.plan.outputs.channel }}
+      SHA: ${{ needs.plan.outputs.sha }}
+      SEQUENCE: ${{ needs.plan.outputs.sequence }}
+      TAG: bin-${{ needs.plan.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: fetch the archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$TAG" --dir assets \
+            --pattern ducktape-app-x86_64-unknown-linux-gnu.tar.gz \
+            --pattern ducktape-app-aarch64-apple-darwin.app.tar.gz
+      - name: sign
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          cargo run --locked --release -p app-update --bin publish-release -- \
+            --channel "$CHANNEL" \
+            --sequence "$SEQUENCE" \
+            --display "$version+${SHA:0:7}" \
+            --published-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --notes-url "https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG" \
+            --archive linux-x86_64=assets/ducktape-app-x86_64-unknown-linux-gnu.tar.gz \
+            --archive macos-aarch64=assets/ducktape-app-aarch64-apple-darwin.app.tar.gz \
+            --out out > upload-order
+          cat upload-order
+      - name: upload
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          while read -r name; do
+            case "$name" in
+              *.tar.gz) cache="public, max-age=31536000, immutable" ;;
+              *) cache="public, max-age=60" ;;
+            esac
+            aws s3 cp "out/$name" "s3://$BUCKET/$name" \
+              --endpoint-url "$ENDPOINT" --cache-control "$cache"
+          done < upload-order
