@@ -40,8 +40,10 @@ pub(super) enum Snapshot {
 /// gone with the instance. A replacement prepared by `load` is a second
 /// `Guest` seated over this one (`alive`, `staged`).
 pub(super) struct Guest {
-    /// Node requests belong to the network selected when this instance starts.
-    pub(crate) connection_rev: u64,
+    /// The connection this instance started on, or was last reconnected
+    /// to: its node requests and its `store` file go there, and only while
+    /// it is still the app's (the same `rev`).
+    pub(crate) connection: Connection,
     /// Transient user activation, as the web has it: when the host last
     /// received a real press or key aimed at this view's tree
     /// (`ViewTree::activate`, carried here by the seat's turn). Fresh for

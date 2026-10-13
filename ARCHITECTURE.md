@@ -327,8 +327,10 @@ its meaning; the host and the views name the const, never the string.
    `host.session` (the props subscription) and `host.log`.
 3. **Relay.** `kernel/node.rs` `spawn_method`, behind `spawn_retrying`,
    `spawn_retrying_unsent` and `spawn_no_retry`, first checks in `connected`
-   that the guest still belongs to the current `roster::connection()` (else
-   `stale_connection`, or `not_connected` with no node); then `start` admits
+   that the guest's own connection (`Guest.connection`, taken at start and
+   at each reconnect) is still the current `roster::connection()`'s `rev`
+   (else `stale_connection`), and asks the node that connection names (else
+   `not_connected`); then `start` admits
    the call against `MAX_IN_FLIGHT` (`in_flight_limit`) and runs the handler
    as a tokio task on `views-kernel`, owned by `guest.tasks` as a `NodeTask`
    that aborts on drop (cancel, swap, teardown). A read (`spawn_retrying`)

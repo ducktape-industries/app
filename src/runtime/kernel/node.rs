@@ -404,13 +404,12 @@ pub(in crate::runtime) fn spawn_reply(
     })
 }
 
-/// The node to ask, or `None` with the request REFUSED: `stale_connection`
-/// for a view from before the last (re)connect, `not_connected` without a
-/// node.
+/// The node to ask, the one the view's own connection names, or `None`
+/// with the request REFUSED: `stale_connection` for a view from before the
+/// app's last (re)connect, `not_connected` without a node.
 fn connected(guest: &mut Guest, id: u64) -> Option<Node> {
-    let connection = super::super::connection().lock().expect("views rpc");
-    if connection.rev != guest.connection_rev {
-        drop(connection);
+    let rev = super::super::connection().lock().expect("views rpc").rev;
+    if rev != guest.connection.rev {
         guest.refuse(
             id,
             refusal::STALE_CONNECTION,
@@ -418,8 +417,7 @@ fn connected(guest: &mut Guest, id: u64) -> Option<Node> {
         );
         return None;
     }
-    let node = node_on(&connection);
-    drop(connection);
+    let node = node_on(&guest.connection);
     if node.is_none() {
         guest.refuse(id, refusal::NOT_CONNECTED, "not connected to a node");
     }

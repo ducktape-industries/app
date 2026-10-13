@@ -65,11 +65,13 @@ fn ask(guest: &mut Guest, id: u64, path: PathBuf, (stage, run): Method, payload:
     }
 }
 
-/// This view's file on the network in hand; a view from before the last
-/// (re)connect is refused, so it never writes into the next network's.
+/// This view's file on its own connection's network; a view from before
+/// the app's last (re)connect is refused, so it never writes into the next
+/// network's.
 fn file(guest: &Guest) -> Result<PathBuf, wire::Error> {
-    let connection = super::connection().lock().expect("views rpc");
-    if connection.rev != guest.connection_rev {
+    let rev = super::connection().lock().expect("views rpc").rev;
+    let connection = &guest.connection;
+    if connection.rev != rev {
         return Err(wire::Error::new(
             methods::refusal::STALE_CONNECTION,
             "view belongs to a previous network connection",
