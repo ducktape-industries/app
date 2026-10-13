@@ -1122,6 +1122,44 @@ mod macos {
         assert_eq!(boot_at(&layout, &own).unwrap(), Boot::Run(adopted(&own)));
     }
 
+    /// A newer bundle dragged over an installed one finds a state pinned
+    /// below it, which no longer describes what runs: the start adopts the
+    /// bundle, and a release the older state had staged is dropped, never
+    /// swapped in over it.
+    #[test]
+    fn a_newer_bundle_dragged_over_an_install_is_not_taken_back() {
+        let (root, layout) = rig();
+        let download = root.path().join("download");
+        std::fs::create_dir_all(&download).unwrap();
+        let a =
+            crate::update::install::install(&layout, &bundle_exe(&bundle(&download, "a"))).unwrap();
+        let own = layout.app_exe();
+        let sequence = crate::update::own_sequence();
+        assert!(sequence > 100, "the test build knows its commit's time");
+        let older = Sha::digest(b"older");
+        bundle(&layout.release_dir(older), "older");
+        let behind = Phase::Staged(app_update::Staged {
+            current: a,
+            previous: None,
+            pinned_sequence: sequence - 100,
+            staged: older,
+            sequence: sequence - 50,
+            display: "0.1.0+older".into(),
+            refused: None,
+        });
+        crate::update::persist_phase(&layout, &behind).unwrap();
+        assert_eq!(boot_at(&layout, &own).unwrap(), Boot::Run(adopted(&own)));
+        assert!(
+            !layout.release_dir(older).exists(),
+            "the older release is dropped"
+        );
+        let output = Command::new(&own).arg("--version").output().unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "ducktape-app 0.0.0+a"
+        );
+    }
+
     /// The headline on macOS: install, stage a newer signed bundle, the next
     /// start swaps it in, it never renders, the start after swaps back.
     #[test]

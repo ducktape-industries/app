@@ -80,13 +80,18 @@ pub(super) fn boot_at(layout: &Layout, own: &Path) -> Result<Boot, Refusal> {
     // at this very path
     let own_id = super::file_id(own)?;
     let phase = super::read_state(&layout.state_path())?;
-    // macOS adopts the bundle that runs from the install dir when there is
-    // no state ([`super::install::adopt`]), as for a bundle dragged in from
-    // the DMG. On Linux a bare binary runs from anywhere, and `install` is
-    // the way in.
-    let phase = match (phase, cfg!(target_os = "macos")) {
-        (Some(phase), _) => phase,
-        (None, true) => super::install::adopt(layout, own)?,
+    // macOS adopts the bundle that runs from the install dir when no state
+    // describes it ([`super::install::adopt`]): none, as for a bundle dragged
+    // in from the DMG, or one pinned below the bundle's own sequence, as for
+    // one dragged over an installed one, which a check would otherwise take
+    // back to the channel's older release. On Linux a bare binary runs from
+    // anywhere, and `install` is the way in.
+    let described = phase
+        .as_ref()
+        .is_some_and(|phase| phase.pinned_sequence() >= super::own_sequence());
+    let phase = match (phase, cfg!(target_os = "macos") && !described) {
+        (_, true) => super::install::adopt(layout, own)?,
+        (Some(phase), false) => phase,
         (None, false) => {
             return Err(Refusal::new(
                 "state_missing",
