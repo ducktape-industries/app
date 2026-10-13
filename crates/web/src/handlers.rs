@@ -15,6 +15,11 @@ const NO_RANGE: Range = Range {
     to: u32::MAX,
 };
 
+/// The cursor `on_cursor_change` hands over: the cef crate names one on
+/// Linux and Windows, and on macOS passes the `NSCursor` as a bare pointer.
+#[cfg(target_os = "macos")]
+type CursorHandle = *mut u8;
+
 pub(crate) fn app() -> App {
     WebApp::new()
 }
@@ -272,7 +277,7 @@ wrap_display_handler! {
         fn on_cursor_change(
             &self,
             _browser: Option<&mut Browser>,
-            _cursor: std::os::raw::c_ulong,
+            _cursor: CursorHandle,
             type_: CursorType,
             _custom_cursor_info: Option<&CursorInfo>,
         ) -> c_int {
