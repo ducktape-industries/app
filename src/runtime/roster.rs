@@ -191,6 +191,19 @@ pub struct RailRow {
     pub empty: bool,
 }
 
+/// How far a seat's view has come, readiest first: the rail names a
+/// program by its readiest seat.
+fn readiness(slot: &Slot) -> u8 {
+    match slot {
+        Slot::Ready(guest) if !guest.name.is_empty() => 0,
+        Slot::Compiled { name, .. } if !name.is_empty() => 1,
+        Slot::Ready(_) | Slot::Compiled { .. } => 2,
+        Slot::Empty => 3,
+        Slot::Failed(_) => 4,
+        Slot::Loading | Slot::Fetching { .. } | Slot::Compiling => 5,
+    }
+}
+
 impl Roster {
     pub(crate) fn rail(&self) -> Vec<RailRow> {
         let _timed = crate::perf::time(crate::perf::Key::Shell, "rail");
@@ -206,10 +219,14 @@ impl Roster {
         programs
             .into_iter()
             .map(|module| {
+                // one seat a pane: the row is the readiest one's, so two
+                // panes of a program, one still loading, never flip the row
+                // between their names as the map's order happens to fall
                 let seat = registry
                     .iter()
-                    .find_map(|((name, _), seat)| (*name == module).then_some(seat))
-                    .map(|seat| lock(seat));
+                    .filter(|((name, _), _)| *name == module)
+                    .min_by_key(|((_, instance), seat)| (readiness(&lock(seat).slot), *instance))
+                    .map(|(_, seat)| lock(seat));
                 let (label, note, empty) = match seat.as_ref().map(|seat| &seat.slot) {
                     Some(Slot::Ready(guest)) if !guest.name.is_empty() => {
                         (guest.name.clone(), None, false)
@@ -683,6 +700,44 @@ mod rail_tests {
         lock(registry()).remove(&(module, 0));
         assert_eq!((row.label.as_str(), row.note), ("Compiled view", None));
         assert!(!row.empty);
+    }
+
+    /// Two panes of one program hold a seat each; while one is still on
+    /// its way the row keeps the name the other's view gives itself, on
+    /// every read, whatever order the seats are kept in: it flipped
+    /// between "Nodes" and "Valset · Loading" as the map's order fell.
+    #[test]
+    fn a_program_with_two_seats_is_named_by_its_readiest() {
+        let module = "rail-tests-two-seats";
+        let named = Mounted::seat();
+        lock(&named).slot = Slot::Compiled {
+            name: "Nodes".into(),
+            icon: String::new(),
+            min_width: 320,
+        };
+        let instances = 1..=16u64;
+        {
+            let mut registry = lock(registry());
+            for instance in instances.clone() {
+                registry.insert((module, instance), Mounted::seat());
+            }
+            registry.insert((module, 9), named);
+        }
+        let roster = Roster::listing(&[module]);
+        let rows: Vec<RailRow> = (0..8)
+            .flat_map(|_| roster.rail())
+            .filter(|row| row.module == module)
+            .collect();
+        {
+            let mut registry = lock(registry());
+            for instance in instances {
+                registry.remove(&(module, instance));
+            }
+        }
+        assert_eq!(rows.len(), 8);
+        for row in rows {
+            assert_eq!((row.label.as_str(), row.note), ("Nodes", None));
+        }
     }
 
     /// A view-only entry (no program behind it) is a rail row like any
