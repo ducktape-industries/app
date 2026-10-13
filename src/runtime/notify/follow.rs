@@ -95,38 +95,68 @@ pub(crate) fn start_with(client: Arc<Client>, center: CenterHandle, label_of: La
     }
 }
 
-fn unreachable(center: &CenterHandle, error: &Error) {
+/// What a connection's end does to the centre, written under the one
+/// lock that checks the runner's `stamp`: a dropped runner writes nothing.
+/// Whether the runner goes on (`true`: unreachable, try again).
+pub(super) fn settle(center: &CenterHandle, stamp: u64, ended: &Result<(), Error>) -> bool {
     let mut center = center.lock();
-    if !matches!(center.state, InboxState::Unreachable { .. }) {
-        tracing::info!(target: "ducktape::app", kind = %error.kind(), "the inbox is unreachable");
-        center.set_state(InboxState::Unreachable {
-            since: super::wall(),
-        });
+    if !center.stamped(stamp) {
+        return false;
     }
+    match ended {
+        Ok(()) => false,
+        Err(Error::NoInbox) => {
+            center.set_state(InboxState::NoInbox);
+            false
+        }
+        Err(Error::Denied(why)) => {
+            center.set_state(InboxState::Denied(why.clone()));
+            false
+        }
+        Err(error) => {
+            if !matches!(center.state, InboxState::Unreachable { .. }) {
+                tracing::info!(target: "ducktape::app", kind = %error.kind(), "the inbox is unreachable");
+                center.set_state(InboxState::Unreachable {
+                    since: super::wall(),
+                });
+            }
+            true
+        }
+    }
+}
+
+/// A connection made: what it read goes into the centre, under the one
+/// lock that checks the runner's `stamp`; `false` for a dropped runner.
+pub(super) fn fill(
+    center: &CenterHandle,
+    stamp: u64,
+    client: &Arc<Client>,
+    status: inbox_api::Status,
+    mutes: inbox_api::Mutes,
+    page: inbox_api::Entries,
+) -> bool {
+    let mut center = center.lock();
+    if !center.stamped(stamp) {
+        return false;
+    }
+    center.set_client(Some(client.clone()));
+    center.set_stuck(status.stopped.or(status.stalled));
+    center.mutes = mutes;
+    center.replace(page.entries, page.unread);
+    center.set_state(InboxState::Ready);
+    center.resend_watermarks();
+    true
 }
 
 async fn run(client: Arc<Client>, center: CenterHandle, stamp: u64, label_of: LabelOf) {
     let mut backoff = FIRST_BACKOFF;
     loop {
-        let connected = connect(&client, &center, stamp, &label_of, &mut backoff).await;
-        if !center.lock().stamped(stamp) {
+        let ended = connect(&client, &center, stamp, &label_of, &mut backoff).await;
+        let again = settle(&center, stamp, &ended);
+        wake();
+        if !again {
             return;
         }
-        match connected {
-            Ok(()) => return,
-            Err(Error::NoInbox) => {
-                center.lock().set_state(InboxState::NoInbox);
-                wake();
-                return;
-            }
-            Err(Error::Denied(why)) => {
-                center.lock().set_state(InboxState::Denied(why));
-                wake();
-                return;
-            }
-            Err(error) => unreachable(&center, &error),
-        }
-        wake();
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(MAX_BACKOFF);
     }
@@ -147,17 +177,8 @@ async fn connect(
     let mut live = client.live().await?;
     let mutes = client.mutes().await?;
     let page = client.entries(None, PAGE).await?;
-    {
-        let mut center = center.lock();
-        if !center.stamped(stamp) {
-            return Ok(());
-        }
-        center.set_client(Some(client.clone()));
-        center.set_stuck(status.stopped.or(status.stalled));
-        center.mutes = mutes;
-        center.replace(page.entries, page.unread);
-        center.set_state(InboxState::Ready);
-        center.resend_watermarks();
+    if !fill(center, stamp, client, status, mutes, page) {
+        return Ok(());
     }
     *backoff = FIRST_BACKOFF;
     wake();

@@ -180,11 +180,12 @@ pub(crate) fn wall() -> i64 {
 }
 
 /// The standing banner's tag for an entry: a program's tags are its own,
-/// so two programs never replace each other's banner.
+/// so two programs never replace each other's banner, and under a prefix
+/// the "N more" banner (`more/<program>`) cannot share with any pair.
 pub(super) fn banner_tag(program: &str, tag: &str) -> String {
     match tag.is_empty() {
         true => String::new(),
-        false => format!("{program}/{tag}"),
+        false => format!("entry/{program}/{tag}"),
     }
 }
 
@@ -202,6 +203,9 @@ impl Center {
     /// new address or key): its page, count, mutes, watermarks, questions
     /// and banners go with it. The chain and the window in front stay.
     pub(crate) fn forget_account(&mut self) {
+        for tag in self.standing.keys().cloned().collect::<Vec<_>>() {
+            self.forget_banner(&tag);
+        }
         *self = Center {
             network: std::mem::take(&mut self.network),
             front: self.front,
@@ -256,8 +260,29 @@ impl Center {
         self.entries = entries;
         self.unread = unread;
         let listed: Vec<i64> = self.entries.iter().map(|entry| entry.id).collect();
-        self.standing.retain(|_, id| listed.contains(id));
+        let gone: Vec<String> = self
+            .standing
+            .iter()
+            .filter(|(_, id)| !listed.contains(id))
+            .map(|(tag, _)| tag.clone())
+            .collect();
+        for tag in gone {
+            self.forget_banner(&tag);
+        }
+        // an unread entry under a watermark the inbox confirmed: indexed
+        // after the read, so the tag is read upstream again (as on arrival)
+        let again: BTreeSet<Key> = self
+            .entries
+            .iter()
+            .filter(|entry| !entry.read && self.under_watermark(entry))
+            .map(|entry| (entry.program.clone(), entry.tag.clone()))
+            .collect();
         self.mark_read(|center, entry| center.under_watermark(entry));
+        for key in again {
+            let seen = self.watermarks[&key];
+            self.confirmed.remove(&key);
+            self.read_tag(&key.0, &key.1, seen);
+        }
     }
 
     /// A `live` entry: into the page, counted, and judged by the device's
@@ -376,8 +401,14 @@ impl Center {
         else {
             return;
         };
-        self.standing.remove(&tag);
-        super::withdraw(tag);
+        self.forget_banner(&tag);
+    }
+
+    /// A banner the centre stops tracking comes down with it: nothing
+    /// else would take it down.
+    fn forget_banner(&mut self, tag: &str) {
+        self.standing.remove(tag);
+        super::withdraw(tag.to_owned());
     }
 
     /// The page folded by `(program, tag)`, newest first.
@@ -429,11 +460,18 @@ impl Center {
 
     /// A row picked (in the bell, or its banner clicked): a watermark at
     /// the row's newest height, so its entries are read here and upstream
-    /// (kept until the inbox has it), and the link minted for this chain;
-    /// `None` for an id no row has.
+    /// (kept until the inbox has it); an untagged row is one entry, read by
+    /// id. The link is minted for this chain; `None` for an id no row has.
     pub(crate) fn open(&mut self, id: i64) -> Option<Opened> {
         let row = self.rows().into_iter().find(|row| row.id == id)?;
-        self.watermark(&row.program, &row.tag, row.through_height);
+        match row.tag.is_empty() {
+            // a row of its own: that entry alone, by id, kept as a call
+            true => {
+                self.mark_read(|_, entry| entry.id == id);
+                self.send(Call::Read(Read::Ids { ids: vec![id] }));
+            }
+            false => _ = self.watermark(&row.program, &row.tag, row.through_height),
+        }
         let segments: Vec<&str> = row.link.segments.iter().map(String::as_str).collect();
         let link = ducklink::mint(&self.network, &row.link.program, &segments);
         Some(Opened { link })
@@ -539,8 +577,18 @@ impl Center {
         for ((program, tag), height) in kept {
             self.read_tag(&program, &tag, height);
         }
-        for call in std::mem::take(&mut self.pending) {
-            self.send(call);
+        // the kept calls, in the order they were made (Clear read never
+        // lands before Mark all read), one task
+        let pending = std::mem::take(&mut self.pending);
+        if let Some(client) = self.client_ready() {
+            let me = self.me.clone();
+            crate::runtime::handle().spawn(async move {
+                for call in pending {
+                    perform(client.clone(), me.clone(), call).await;
+                }
+            });
+        } else {
+            self.pending = pending;
         }
     }
 
@@ -627,91 +675,34 @@ impl Center {
         self.pending.len()
     }
 
-    /// A call upstream, on the runtime, after this lock is released; a
-    /// failure is logged by kind. Without the inbox in hand (none yet, or
-    /// away) nothing is sent, `false`: a tag read is covered by its kept
-    /// watermark, any other call waits for the next connect. A call the
-    /// inbox did not take waits too.
+    /// A call upstream, on the runtime, after this lock is released.
+    /// Without the inbox in hand (none yet, or away) nothing is sent,
+    /// `false`: a tag read is covered by its kept watermark, any other
+    /// call waits for the next connect.
     fn send(&mut self, call: Call) -> bool {
-        let client = match (&self.client, &self.state) {
-            (Some(client), InboxState::Ready) => client.clone(),
-            _ => {
-                self.keep(call);
-                return false;
-            }
+        let Some(client) = self.client_ready() else {
+            self.keep(call);
+            return false;
         };
         let me = self.me.clone();
-        crate::runtime::handle().spawn(async move {
-            let failed = match &call {
-                Call::Read(read) => {
-                    let answer = client.read(read).await;
-                    if let Read::Tag {
-                        program,
-                        tag,
-                        through_height,
-                    } = read
-                        && let Some(center) = me.upgrade()
-                    {
-                        let mut center = center
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner());
-                        // not for a later runner's account
-                        if center
-                            .client
-                            .as_ref()
-                            .is_some_and(|now| Arc::ptr_eq(now, &client))
-                        {
-                            center.read_tag_done(
-                                program,
-                                tag,
-                                answer.is_ok().then_some(*through_height),
-                            );
-                        }
-                    }
-                    answer.err()
-                }
-                Call::HideRead => client.hide_read().await.err(),
-                Call::Mutes(mutes) => match client.set_mutes(mutes).await {
-                    // the stored set comes back over `live` as well
-                    Ok(_) => None,
-                    Err(Error::Failed {
-                        status: 400,
-                        sentence,
-                    }) => {
-                        // refused (over MAX_MUTES): said, and the mutes put
-                        // back as the inbox keeps them
-                        let kept = client.mutes().await.ok();
-                        if let Some(center) = me.upgrade() {
-                            let mut center = center
-                                .lock()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner());
-                            if let Some(kept) = kept {
-                                center.set_mutes(kept);
-                            }
-                            center.refused = Some(sentence);
-                            center.rev += 1;
-                        }
-                        super::wake();
-                        None
-                    }
-                    Err(error) => Some(error),
-                },
-            };
-            if let Some(error) = failed {
-                tracing::warn!(target: "ducktape::app", kind = %error.kind(), "the inbox did not take a change");
-                if matches!(error, Error::Unreachable(_))
-                    && let Some(center) = me.upgrade()
-                {
-                    // the inbox went away under the call: it goes again
-                    // with the next connect
-                    center
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .keep(call);
-                }
-            }
-        });
+        crate::runtime::handle().spawn(perform(client, me, call));
         true
+    }
+
+    /// The runner's client, while the inbox is in hand.
+    fn client_ready(&self) -> Option<Arc<Client>> {
+        match (&self.client, &self.state) {
+            (Some(client), InboxState::Ready) => Some(client.clone()),
+            _ => None,
+        }
+    }
+
+    /// Whether `client` is still the runner's: a write from a call made
+    /// under another runner (dropped, or another account's) is refused.
+    fn mine(&self, client: &Arc<Client>) -> bool {
+        self.client
+            .as_ref()
+            .is_some_and(|now| Arc::ptr_eq(now, client))
     }
 
     /// `call` waits for the next connect; a tag read does not (its
@@ -725,6 +716,84 @@ impl Center {
             }
             call => self.pending.push(call),
         }
+    }
+}
+
+/// One call to the inbox, and what its answer does to the centre: only
+/// while `client` is still the centre's (the runner it was sent under).
+/// A tag read's answer confirms the height; a refused mutes `PUT` (400)
+/// puts the inbox's set and its sentence in; a call the inbox did not
+/// take goes again now if the inbox is in hand, waits for the connect if
+/// it is away, and is dropped if its runner is gone.
+async fn perform(client: Arc<Client>, me: Weak<Mutex<Center>>, call: Call) {
+    fn lock(center: &Arc<Mutex<Center>>) -> MutexGuard<'_, Center> {
+        center
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+    let failed = match &call {
+        Call::Read(read) => {
+            let answer = client.read(read).await;
+            if let Read::Tag {
+                program,
+                tag,
+                through_height,
+            } = read
+                && let Some(center) = me.upgrade()
+            {
+                let mut center = lock(&center);
+                if center.mine(&client) {
+                    center.read_tag_done(program, tag, answer.is_ok().then_some(*through_height));
+                }
+            }
+            answer.err()
+        }
+        Call::HideRead => client.hide_read().await.err(),
+        Call::Mutes(mutes) => match client.set_mutes(mutes).await {
+            // the stored set comes back over `live` as well
+            Ok(_) => None,
+            Err(Error::Failed {
+                status: 400,
+                sentence,
+            }) => {
+                let kept = client.mutes().await.ok();
+                if let Some(center) = me.upgrade() {
+                    let mut center = lock(&center);
+                    if center.mine(&client) {
+                        if let Some(kept) = kept {
+                            center.set_mutes(kept);
+                        }
+                        center.refused = Some(sentence);
+                        center.rev += 1;
+                    }
+                }
+                super::wake();
+                None
+            }
+            Err(error) => Some(error),
+        },
+    };
+    let Some(error) = failed else {
+        return;
+    };
+    tracing::warn!(target: "ducktape::app", kind = %error.kind(), "the inbox did not take a change");
+    if !matches!(error, Error::Unreachable(_)) {
+        return;
+    }
+    let Some(center) = me.upgrade() else {
+        return;
+    };
+    let mut center = lock(&center);
+    if !center.mine(&client) {
+        // the runner is gone: never replayed under another
+        return;
+    }
+    match center.client_ready() {
+        // the inbox is in hand (the deadline passed on a healthy socket):
+        // again, now
+        Some(_) => _ = center.send(call),
+        // away: with the connect
+        None => center.keep(call),
     }
 }
 

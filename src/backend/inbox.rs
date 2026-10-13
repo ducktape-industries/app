@@ -119,6 +119,9 @@ pub(crate) struct Client {
     /// One login at a time: a second caller whose token went stale waits
     /// and takes the first's.
     relogin: tokio::sync::Mutex<()>,
+    /// Logged out: a call still in flight at the drop gets a 401 on the
+    /// old token and must not sign in again.
+    closed: std::sync::atomic::AtomicBool,
     /// The inbox's budget, kept here too: a call waits its turn instead
     /// of being refused.
     pacer: Mutex<Pacer>,
@@ -158,6 +161,7 @@ impl Client {
             label: label.into(),
             token: Mutex::new(None),
             relogin: tokio::sync::Mutex::new(()),
+            closed: std::sync::atomic::AtomicBool::new(false),
             pacer: Mutex::new(Pacer { due: None }),
             deadline: DEADLINE,
             ping: PING,
@@ -251,6 +255,9 @@ impl Client {
     /// at a time: a caller that waited takes the token the first got.
     async fn fresh_token(&self, stale: Option<&Token>) -> Result<Token> {
         let _one = self.relogin.lock().await;
+        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(Error::Denied("this session was logged out".into()));
+        }
         if let Some(token) = self.token()
             && Some(&token) != stale
         {
@@ -262,6 +269,8 @@ impl Client {
 
     /// Ends the session on the inbox: the token is forgotten here.
     pub(crate) async fn logout(&self) -> Result<()> {
+        self.closed
+            .store(true, std::sync::atomic::Ordering::Release);
         let Some(token) = self.token() else {
             return Ok(());
         };
@@ -686,6 +695,7 @@ mod tests {
         let rpc = RpcClient::new(fake.origin());
         let client = std::sync::Arc::new(Client::new(&rpc, "net#0", "d"));
         client.login().await.unwrap();
+        fake.set_budget(true);
         let started = std::time::Instant::now();
         let calls: Vec<_> = (0..inbox_api::PACE_BURST + 5)
             .map(|_| {
@@ -730,5 +740,11 @@ mod tests {
         assert_eq!((fake.logouts(), client.token()), (1, None));
         client.logout().await.unwrap();
         assert_eq!(fake.logouts(), 1, "nothing to end twice");
+        // a call still in flight at the drop never signs in again
+        assert!(matches!(
+            client.read(&Read::All { all: true }).await.unwrap_err(),
+            Error::Denied(_)
+        ));
+        assert_eq!(fake.logins(), 1);
     }
 }

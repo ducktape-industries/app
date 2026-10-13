@@ -115,7 +115,7 @@ fn a_programs_permission_decides_ask_count_or_banner() {
         .unwrap();
     assert_eq!(
         (banner.title.as_str(), banner.tag.as_str()),
-        ("title 3", "chat/room")
+        ("title 3", "entry/chat/room")
     );
     assert_eq!(center.unread(), 3);
     let mut off = settings(Some(Permission::Allow));
@@ -198,7 +198,8 @@ fn a_burst_past_the_limit_coalesces_into_one_more_banner() {
     let own = center
         .arrived(&allowed_more, entry(40, "more", "chat", 1), start, "More")
         .unwrap();
-    assert_eq!((own.tag.as_str(), own.opens), ("more/chat", Some(40)));
+    assert_eq!((own.tag.as_str(), own.opens), ("entry/more/chat", Some(40)));
+    assert_ne!(own.tag, more.tag, "no pair can forge the host's tag");
     let more = center
         .arrived(&allowed, entry(5, "chat", "", 1), start, "Chat")
         .unwrap();
@@ -250,10 +251,10 @@ fn a_banner_stands_for_its_entry_until_that_entry_is_read_or_gone() {
             .arrived(&allowed, entry(2, "chat", "room", 2), now, "Chat")
             .is_some()
     );
-    assert_eq!(center.standing.get("chat/room"), Some(&2));
+    assert_eq!(center.standing.get("entry/chat/room"), Some(&2));
     // the older entry hidden elsewhere: the newer one's banner stands
     center.removed(&[1]);
-    assert_eq!(center.standing.get("chat/room"), Some(&2));
+    assert_eq!(center.standing.get("entry/chat/room"), Some(&2));
     // read on this device: down
     center.open(2);
     assert!(center.standing.is_empty());
@@ -308,6 +309,112 @@ fn opening_a_row_reads_through_its_newest_height_and_mints_the_link() {
         None,
         "a link that does not mint"
     );
+}
+
+/// An untagged row is one entry: opening it reads that entry alone (by
+/// id, kept as a call for the connect), not the program's older untagged
+/// entries, and keeps no watermark.
+#[test]
+fn opening_an_untagged_row_reads_that_entry_alone() {
+    let mut center = ready();
+    center.replace(vec![entry(2, "chat", "", 20), entry(1, "chat", "", 10)], 2);
+    center.set_state(InboxState::Off);
+    center.open(2);
+    let rows = center.rows();
+    assert_eq!((rows[0].read, rows[1].read), (true, false));
+    assert_eq!(
+        center.pending_for_test(),
+        1,
+        "the read by id waits for the connect"
+    );
+    assert!(
+        center.watermark("chat", "", 20),
+        "no watermark was kept at 20"
+    );
+}
+
+/// Banners the centre stops tracking come down with it: the previous
+/// account's at a key lock (`forget_account`), and those of entries a
+/// re-read page no longer lists (a mute from another device).
+#[test]
+fn a_banner_the_centre_stops_tracking_comes_down() {
+    let now = Instant::now();
+    let mut center = ready();
+    let allowed = settings(Some(Permission::Allow));
+    let withdrawn = || super::withdrawn().lock().unwrap().clone();
+    center.arrived(&allowed, entry(1, "chat", "forget-a", 1), now, "Chat");
+    center.arrived(&allowed, entry(2, "chat", "forget-b", 2), now, "Chat");
+    center.replace(vec![entry(2, "chat", "forget-b", 2)], 1);
+    assert!(withdrawn().contains(&"entry/chat/forget-a".to_owned()));
+    assert!(!withdrawn().contains(&"entry/chat/forget-b".to_owned()));
+    center.forget_account();
+    assert!(withdrawn().contains(&"entry/chat/forget-b".to_owned()));
+    assert!(center.standing.is_empty());
+}
+
+/// The runner's writes are checked against its stamp under the one lock
+/// that writes: a dropped runner's end and its page land nowhere.
+#[tokio::test]
+async fn a_dropped_runners_writes_land_nowhere() {
+    let handle = CenterHandle::default();
+    handle.lock().set_network("net#0");
+    let stale = handle.lock().claim();
+    let live = handle.lock().claim();
+    let fake = FakeInbox::start().await;
+    let rpc = crate::backend::RpcClient::new(fake.origin());
+    let client = std::sync::Arc::new(crate::backend::inbox::Client::new(&rpc, "net#0", "d"));
+    let page = || inbox_api::Entries {
+        entries: vec![entry(1, "chat", "room", 1)],
+        unread: 1,
+    };
+    let status = || inbox_api::Status {
+        chain: "net#0".into(),
+        indexed_height: 1,
+        tip: 1,
+        stopped: None,
+        stalled: None,
+    };
+    assert!(!super::follow::fill(
+        &handle,
+        stale,
+        &client,
+        status(),
+        Default::default(),
+        page()
+    ));
+    assert!(handle.lock().rows().is_empty());
+    assert_eq!(handle.lock().state, InboxState::Off);
+    assert!(!super::follow::settle(
+        &handle,
+        stale,
+        &Err(crate::backend::inbox::Error::NoInbox)
+    ));
+    assert_eq!(handle.lock().state, InboxState::Off);
+    assert!(super::follow::fill(
+        &handle,
+        live,
+        &client,
+        status(),
+        Default::default(),
+        page()
+    ));
+    assert_eq!(handle.lock().rows().len(), 1);
+    assert_eq!(handle.lock().state, InboxState::Ready);
+    assert!(super::follow::settle(
+        &handle,
+        live,
+        &Err(crate::backend::inbox::Error::Unreachable("x".into()))
+    ));
+    assert!(matches!(
+        handle.lock().state,
+        InboxState::Unreachable { .. }
+    ));
+    assert!(!super::follow::settle(
+        &handle,
+        live,
+        &Err(crate::backend::inbox::Error::NoInbox)
+    ));
+    assert_eq!(handle.lock().state, InboxState::NoInbox);
 }
 
 /// A view's watermark marks the tag's rows at or below it read and moves
@@ -550,7 +657,8 @@ async fn the_runner_fills_the_centre_and_follows_live() {
     assert_eq!(fake.reads(), vec![tag(1), tag(3)]);
     // dropped: the page goes, the session is logged out
     drop(_follower);
-    assert!(center.lock().rows().is_empty() && center.lock().state == InboxState::Off);
+    assert!(center.lock().rows().is_empty());
+    assert_eq!(center.lock().state, InboxState::Off);
     until(|| fake.logouts() == 1).await;
 }
 
@@ -624,8 +732,78 @@ async fn a_row_opened_while_the_inbox_is_away_is_read_when_it_is_back() {
     until(|| fake.unread() == 0 && center.lock().unread() == 0).await;
 }
 
+/// A call that fails after its runner was dropped is never replayed by
+/// the next runner (another account's, maybe); one that fails while the
+/// inbox is still in hand (a deadline on a healthy socket) goes again now.
+#[tokio::test]
+async fn a_failed_call_stays_with_its_runner() {
+    let _seat = seated(33).await;
+    let fake = FakeInbox::start().await;
+    fake.set_entries(vec![entry(1, "chat", "room", 1)]);
+    let center = CenterHandle::default();
+    center.lock().set_network("net#0");
+    let rpc = crate::backend::RpcClient::new(fake.origin());
+    let short = || {
+        std::sync::Arc::new(
+            crate::backend::inbox::Client::new(&rpc, "net#0", "d")
+                .with_clock(Duration::from_millis(500), Duration::from_secs(30)),
+        )
+    };
+    let label: super::follow::LabelOf = std::sync::Arc::new(|program: &str| program.to_owned());
+    let follower = super::start_with(short(), center.clone(), label.clone());
+    until(|| center.lock().state == InboxState::Ready).await;
+    // held past the deadline, then the runner dropped: the call is gone
+    fake.hold_reads(2_000);
+    center.lock().mark_all_read();
+    until(|| fake.reads().len() == 1).await;
+    drop(follower);
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    fake.hold_reads(0);
+    let _next = super::start_with(short(), center.clone(), label);
+    until(|| center.lock().state == InboxState::Ready).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        fake.reads().len(),
+        1,
+        "never replayed under the next runner"
+    );
+    assert_eq!(center.lock().pending_for_test(), 0);
+    // held past the deadline while the inbox stays in hand: again, now
+    fake.hold("hide", 2_000);
+    center.lock().clear_read();
+    until(|| fake.hides() == 1).await;
+    fake.hold("hide", 0);
+    until(|| fake.hides() >= 2).await;
+    assert_eq!(center.lock().state, InboxState::Ready);
+}
+
+/// An unread entry under a watermark the inbox already confirmed (indexed
+/// after the read, while this device was away) is read upstream again
+/// when the page lists it.
+#[tokio::test]
+async fn a_page_under_a_confirmed_watermark_reads_it_again() {
+    let _seat = seated(34).await;
+    let fake = FakeInbox::start().await;
+    fake.set_entries(vec![entry(1, "chat", "room", 1)]);
+    let center = CenterHandle::default();
+    center.lock().set_network("net#0");
+    let rpc = crate::backend::RpcClient::new(fake.origin());
+    let _follower = super::start(&rpc, "net#0", "Desktop", center.clone());
+    until(|| center.lock().state == InboxState::Ready).await;
+    center.lock().watermark("chat", "room", 10);
+    until(|| fake.reads() == vec![tag(10)]).await;
+    // the inbox indexes one more under it; the page is read again
+    fake.set_entries(vec![
+        entry(2, "chat", "room", 5),
+        entry(1, "chat", "room", 1),
+    ]);
+    fake.push(Push::Read { ids: vec![77] });
+    until(|| fake.reads() == vec![tag(10), tag(10)]).await;
+    until(|| fake.unread() == 0 && center.lock().unread() == 0).await;
+}
+
 /// Mark all read, Clear read and a mute made without the inbox in hand go
-/// out on the connect.
+/// out on the connect, in the order they were made.
 #[tokio::test]
 async fn calls_made_without_the_inbox_go_out_on_the_connect() {
     let _seat = seated(31).await;
@@ -636,11 +814,20 @@ async fn calls_made_without_the_inbox_go_out_on_the_connect() {
     center.lock().clear_read();
     center.lock().set_muted("chat", true);
     let rpc = crate::backend::RpcClient::new(fake.origin());
+    fake.hold_reads(200);
     let _follower = super::start(&rpc, "net#0", "Desktop", center.clone());
     until(|| fake.reads().contains(&Read::All { all: true })).await;
     until(|| fake.hides() == 1).await;
     until(|| fake.mute_puts().len() == 1).await;
     assert_eq!(fake.mute_puts()[0].programs, vec!["chat".to_owned()]);
+    let calls = fake.calls();
+    // the connect's own `prefs` (the mutes read) comes first; the kept
+    // calls follow in order: the read, the hide, then the mutes `PUT`
+    let at = |name: &str| calls.iter().rposition(|call| call == name).unwrap();
+    assert!(
+        at("read") < at("hide") && at("hide") < at("prefs"),
+        "{calls:?}"
+    );
 }
 
 /// A 404 says this address keeps no inbox; a refused login is shown and

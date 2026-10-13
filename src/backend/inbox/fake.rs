@@ -40,6 +40,12 @@ struct State {
     hold: Option<(String, u64)>,
     /// The next `n` authed calls answer 429.
     pace_refusals: usize,
+    /// The inbox's budget, when a test turns it on: `PACE_BURST` at once,
+    /// then one every `PACE_EVERY_MS`, else 429. `due` as the inbox keeps it.
+    budget: Option<std::time::Instant>,
+    budgeted: bool,
+    /// Every authed call, in the order it was answered.
+    calls: Vec<String>,
     /// Live sockets open now, and how many were open when the page was
     /// last answered.
     live_sockets: usize,
@@ -144,6 +150,16 @@ impl FakeInbox {
     /// The next `n` calls under a token answer 429.
     pub(crate) fn refuse_pace(&self, n: usize) {
         self.state().pace_refusals = n;
+    }
+
+    /// The inbox's budget on: a call past it is refused with 429.
+    pub(crate) fn set_budget(&self, on: bool) {
+        self.state().budgeted = on;
+    }
+
+    /// The authed calls answered so far, in order (`read`, `hide`, ...).
+    pub(crate) fn calls(&self) -> Vec<String> {
+        self.state().calls.clone()
     }
 
     pub(crate) fn set_stopped(&self, stopped: Option<inbox_api::Stopped>) {
@@ -320,6 +336,19 @@ fn answer(
                 state.pace_refusals -= 1;
                 return ("429 Too Many Requests", b"one call every 200 ms".to_vec());
             }
+            if state.budgeted {
+                let every = std::time::Duration::from_millis(inbox_api::PACE_EVERY_MS);
+                let now = std::time::Instant::now();
+                let due = state.budget.map_or(now, |due| due.max(now));
+                if due > now + every * (inbox_api::PACE_BURST as u32 - 1) {
+                    return (
+                        "429 Too Many Requests",
+                        b"this account asks too often".to_vec(),
+                    );
+                }
+                state.budget = Some(due + every);
+            }
+            state.calls.push(call.to_owned());
             match (method, call) {
                 ("POST", "logout") => {
                     state.logouts += 1;

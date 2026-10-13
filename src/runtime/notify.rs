@@ -85,7 +85,16 @@ fn seen(guest: &mut Guest, id: u64, payload: &[u8]) {
 /// The banner under `tag` comes down, queued behind the banners already
 /// raised (the centre, as the entry it stands for is read or gone).
 pub(super) fn withdraw(tag: String) {
+    #[cfg(test)]
+    withdrawn().lock().unwrap().push(tag.clone());
     in_order("inbox", move || platform::withdraw(&tag));
+}
+
+/// The banner tags taken down so far, for a test.
+#[cfg(test)]
+pub(crate) fn withdrawn() -> &'static std::sync::Mutex<Vec<String>> {
+    static WITHDRAWN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    &WITHDRAWN
 }
 
 /// What opens a clicked banner's link: the shell's, handed over at startup
