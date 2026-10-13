@@ -208,9 +208,11 @@ fn answer(mut stream: std::net::TcpStream, answers: &Answers, held: &Mutex<Held>
         let query: crate::backend::noded::Query = abi::decode(&body).unwrap();
         let frame: crate::backend::noded::Frame = abi::decode(&query.frame).unwrap();
         let reply = match abi::decode(&frame.body.payload).unwrap() {
-            module_registry::Query::Views(_) => {
-                module_registry::Reply::Views(answers.views.clone())
-            }
+            module_registry::Query::Roster => module_registry::Reply::Roster {
+                height: 1,
+                programs: answers.programs.clone(),
+                views: answers.views.clone(),
+            },
             module_registry::Query::Roles => {
                 held.lock().unwrap().roles_asked += 1;
                 let Some(roles) = answers.roles.clone() else {
@@ -219,7 +221,7 @@ fn answer(mut stream: std::net::TcpStream, answers: &Answers, held: &Mutex<Held>
                 };
                 module_registry::Reply::Roles(roles)
             }
-            _ => module_registry::Reply::Programs(answers.programs.clone()),
+            other => panic!("unexpected registry query: {other:?}"),
         };
         return respond(&mut stream, "200 OK", &abi::encode(&abi::encode(&reply)));
     }
@@ -332,6 +334,7 @@ fn registry_swapping(program: &str, at: u64) -> (::guest::MockHost, abi::BlobId,
     let genesis = Genesis {
         programs: vec![entry(running)],
         views: Vec::new(),
+        hooks: Vec::new(),
     };
     Modules::init(
         &store.exec(registry_env(0, Origin::Root)),
@@ -375,12 +378,20 @@ fn serve_registry(stream: &mut std::net::TcpStream, registry: &::guest::MockHost
 }
 
 #[test]
-fn a_scheduled_swap_is_read_once_the_tip_reaches_its_height() {
+fn a_scheduled_swap_is_read_once_the_block_being_built_reaches_its_height() {
     let node = RegistryNode::swapping("scheduled-swap", 5);
     let (roster, registry) = (Roster::default(), Registry::default());
     let code_at = |tip| node.code_at(tip, "scheduled-swap", &roster, &registry);
-    assert_eq!(code_at(4), Some(node.running), "below its height");
-    assert_eq!(code_at(5), Some(node.scheduled), "at its height");
+    assert_eq!(
+        code_at(3),
+        Some(node.running),
+        "the block being built is below its height"
+    );
+    assert_eq!(
+        code_at(4),
+        Some(node.scheduled),
+        "the block being built is at its height"
+    );
     assert_eq!(
         code_at(9),
         Some(node.scheduled),

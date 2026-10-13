@@ -8,7 +8,7 @@
 //! behind it (Explorer); they follow the programs.
 //!
 //! Nothing here knows a program by name: the roster's order (programs by
-//! name, then view-only entries by name, as the registry folds them) is the
+//! name, then view-only entries by name, as the registry answers them) is the
 //! rail's order, the manifest inside the view names the tab.
 
 use std::path::PathBuf;
@@ -59,27 +59,23 @@ impl std::fmt::Display for Fetch {
     }
 }
 
-/// The roster as the registry program answers it (sorted by name, programs
-/// first): asked of that program through the same query path every view's
-/// request takes. Only an id in its one spelling (`program::is_name`) is
-/// taken: the chain accepts more (a capital, a space, a newline), and such
-/// an id could read as another's wherever the app names it (the rail, a
-/// pane, the consent card's "Program <id>", which a newline would end
-/// before a "System asks" of its own). One left off is said in app.log,
-/// once while the same ids are.
+/// The roster as the registry program answers it at the node's height
+/// (sorted by name, programs first): asked of that program through the
+/// same query path every view's request takes. Only an id in its one
+/// spelling (`program::is_name`) is taken: the chain accepts more (a
+/// capital, a space, a newline), and such an id could read as another's
+/// wherever the app names it (the rail, a pane, the consent card's
+/// "Program <id>", which a newline would end before a "System asks" of its
+/// own). One left off is said in app.log, once while the same ids are.
 pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>, Fetch> {
     use module_registry::{Query, Reply};
-    let tip = client.status().await.map_err(fetch_error)?.height;
-    let Reply::Programs(entries) = ask(client, network, Query::At(tip)).await? else {
-        return Err(Fetch::Refused("the registry answered no programs".into()));
+    let Reply::Roster {
+        programs, views, ..
+    } = ask(client, network, Query::Roster).await?
+    else {
+        return Err(Fetch::Refused("the registry answered no roster".into()));
     };
-    // a registry from before view-only entries refuses the question: no views
-    let views = match ask(client, network, Query::Views(tip)).await {
-        Ok(Reply::Views(views)) => views,
-        Ok(_) | Err(Fetch::Refused(_)) => Vec::new(),
-        Err(error) => return Err(error),
-    };
-    let programs = entries.into_iter().map(|entry| Program {
+    let programs = programs.into_iter().map(|entry| Program {
         name: entry.program,
         code: entry.code,
         bare: false,
