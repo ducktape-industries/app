@@ -37,6 +37,7 @@
 //!   <updates>/state.json                          the machine's phase
 //!   <updates>/channel                             the channel picked (stable when absent)
 //!   <updates>/lock                                held by the install's one updater
+//!   <updates>/seen.json                           the highest sequence each channel has shown
 //!   <updates>/keys/successor.json                 a key rotation this install saw
 //! ```
 //! Every path is absolute under those roots, never relative to the running
@@ -122,6 +123,11 @@ impl Layout {
     /// update state: Settings writes it, nothing else does.
     fn channel_path(&self) -> PathBuf {
         self.updates.join("channel")
+    }
+
+    /// The replay guard's marks ([`channel`]'s `against_seen`).
+    fn seen_path(&self) -> PathBuf {
+        self.updates.join("seen.json")
     }
 
     fn successor_path(&self) -> PathBuf {

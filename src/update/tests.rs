@@ -391,6 +391,68 @@ fn a_partial_that_is_a_link_is_not_followed() {
     assert_eq!(std::fs::read(&elsewhere).unwrap(), b"keep");
 }
 
+/// Whoever serves the bucket cannot hand back an older signed manifest that
+/// is still newer than what runs: the highest sequence a channel has shown
+/// is kept with the update state, and anything below it is refused and never
+/// downloaded, by this process and by the next. The other channel keeps its
+/// own mark.
+#[test]
+fn a_manifest_below_the_highest_its_channel_showed_is_refused() {
+    use super::channel::Updater;
+    let bucket = Bucket::new();
+    let (_root, layout) = rig();
+    let running = app_update::Phase::Idle(app_update::Idle {
+        current: Sha::digest(b"a"),
+        previous: None,
+        pinned_sequence: 1000,
+    });
+    super::persist_phase(&layout, &running).unwrap();
+    let updater = |channel| {
+        Updater::new(
+            layout.clone(),
+            running.clone(),
+            keys(),
+            channel,
+            &bucket.base,
+        )
+    };
+    // the channel shows 1010, whose archive holds no app: nothing stages
+    publish(
+        &bucket,
+        Channel::Stable,
+        1010,
+        &[Item::File("README", b"no app".to_vec(), 0o644)],
+    );
+    let mut first = updater(Channel::Stable);
+    block(first.check(&client()));
+    assert_eq!(
+        first.shown().status,
+        "Verification refused: release_incomplete"
+    );
+    // then an older signed release, still newer than what runs
+    let older = publish(&bucket, Channel::Stable, 1005, &release_of(script("o")));
+    for mut checking in [first, updater(Channel::Stable)] {
+        block(checking.check(&client()));
+        assert_eq!(
+            checking.shown().status,
+            "Last check refused: sequence_replayed"
+        );
+    }
+    let archive = layout::archive_name(&older, &Platform::HOST.key());
+    assert_eq!(bucket.asked_for(&archive), 0, "never downloaded");
+    assert_eq!(
+        super::read_state(&layout.state_path()).unwrap(),
+        Some(running.clone())
+    );
+    publish(&bucket, Channel::Nightly, 1005, &release_of(script("n")));
+    let mut nightly = updater(Channel::Nightly);
+    block(nightly.check(&client()));
+    assert_ne!(
+        nightly.shown().status,
+        "Last check refused: sequence_replayed"
+    );
+}
+
 /// The running app and the boot step, on a Linux install: the layout the
 /// tests lay out by hand is the Linux one (`current` and `previous` links).
 #[cfg(target_os = "linux")]

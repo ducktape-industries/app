@@ -7,8 +7,10 @@
 //! What runs here:
 //! - `Fetch`: the chosen channel's manifest and its `.sig` over HTTPS (each
 //!   at most [`MAX_MANIFEST_BYTES`]), verified under the pinned key and its
-//!   successor, answering `ManifestFetched`. Unreachable or unpublished is not
-//!   a refusal: the check did not happen, and the next is an interval away.
+//!   successor, and against the highest sequence the channel has shown this
+//!   install ([`Updater::against_seen`]), answering `ManifestFetched`.
+//!   Unreachable or unpublished is not a refusal: the check did not happen,
+//!   and the next is an interval away.
 //! - `Download`: the archive into `releases/<sha>.partial`, resuming from the
 //!   file's length with an HTTP `Range`, sha256 running over every byte the
 //!   file holds; a mismatch deletes the partial.
@@ -23,6 +25,7 @@
 //! what the bucket serves is untrusted bytes until `verify_manifest` says
 //! otherwise.
 
+use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::os::unix::process::CommandExt as _;
 use std::process::{Command as Process, Stdio};
@@ -242,6 +245,9 @@ pub(super) struct Updater {
     base: String,
     banner: Option<UpdateBanner>,
     rolled_back: Option<RolledBack>,
+    /// The highest sequence each channel's verified manifest has carried,
+    /// by channel name: `<updates>/seen.json`.
+    seen: BTreeMap<String, u64>,
     /// The process's own updater ([`arm`]): it, and no test's, is what
     /// Settings reads and what raises the desktop notice.
     published: bool,
@@ -273,6 +279,15 @@ impl Updater {
         channel: Channel,
         base: &str,
     ) -> Self {
+        let seen = match std::fs::read_to_string(layout.seen_path()) {
+            Ok(text) => serde_json::from_str(&text).unwrap_or_else(|error| {
+                // the marks are forgotten: the pin alone guards until the
+                // next manifest sets them again
+                warn!(target: TARGET, event = "app_update_seen_unreadable", %error);
+                BTreeMap::new()
+            }),
+            Err(_) => BTreeMap::new(),
+        };
         Updater {
             layout,
             phase,
@@ -281,6 +296,7 @@ impl Updater {
             base: base.to_string(),
             banner: None,
             rolled_back: None,
+            seen,
             published: false,
         }
     }
@@ -381,11 +397,14 @@ impl Updater {
 
     /// One job; `None` is a check that did not happen (unreachable, nothing
     /// published), which is not a refusal.
-    async fn run(&self, client: &reqwest::Client, job: Job) -> Option<Event> {
+    async fn run(&mut self, client: &reqwest::Client, job: Job) -> Option<Event> {
         match job {
-            Job::Fetch => fetch(client, &self.base, self.channel, &self.keys)
-                .await
-                .map(Event::ManifestFetched),
+            Job::Fetch => {
+                let fetched = fetch(client, &self.base, self.channel, &self.keys).await?;
+                Some(Event::ManifestFetched(
+                    fetched.and_then(|verified| self.against_seen(verified)),
+                ))
+            }
             Job::Download { sha, size } => Some(
                 match download(client, &self.base, &self.layout, sha, size).await {
                     Ok(()) => Event::DownloadFinished { sha },
@@ -394,6 +413,31 @@ impl Updater {
             ),
             Job::Verify(sha) => Some(verify(&self.layout, sha)),
         }
+    }
+
+    /// Replay: whoever serves the bucket can serve an older signed manifest
+    /// that is still newer than what runs. The highest sequence each
+    /// channel's verified manifest has carried is kept beside the update
+    /// state, written before anything it offers is downloaded and never
+    /// lowered (a switch, a rollback and an install keep it); a manifest
+    /// below its channel's mark is refused.
+    fn against_seen(
+        &mut self,
+        verified: VerifiedManifest,
+    ) -> Result<VerifiedManifest, ManifestRefusal> {
+        let (channel, sequence) = (self.channel.name(), verified.manifest.sequence);
+        let seen = self.seen.get(channel).copied().unwrap_or(0);
+        if sequence < seen {
+            return Err(ManifestRefusal::SequenceReplayed);
+        }
+        if sequence > seen {
+            self.seen.insert(channel.to_string(), sequence);
+            let text = serde_json::to_string_pretty(&self.seen).expect("the marks serialize");
+            if let Err(refusal) = super::persist(&self.layout.seen_path(), text.as_bytes()) {
+                warn!(target: TARGET, event = "app_update_persist_failed", reason = refusal.reason, detail = %refusal.detail);
+            }
+        }
+        Ok(verified)
     }
 
     fn reading(&self) -> Reading {

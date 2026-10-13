@@ -2,7 +2,9 @@
 //! pinned key, never the transport. Whoever serves the bucket can withhold,
 //! replace or replay a manifest; nobody can mint one, move one to another
 //! channel or sequence (both are inside the signed body), or keep an old key
-//! alive past its announced successor.
+//! alive past its announced successor. A replay below the highest sequence
+//! its channel has shown an install is refused by the app, which keeps that
+//! mark ([`Refusal::SequenceReplayed`]).
 
 use std::fmt;
 
@@ -34,6 +36,10 @@ pub enum Refusal {
     Sha256IdMismatch,
     /// `sequence` is below the pinned sequence: a downgrade.
     SequenceNotNewer,
+    /// `sequence` is below the highest this install has seen its channel
+    /// publish: an older signed manifest served again. The executor keeps
+    /// that mark; the machine never raises this.
+    SequenceReplayed,
     /// The manifest ships no artifact for this (os, arch).
     NoArtifactForPlatform,
 }
@@ -49,6 +55,7 @@ impl fmt::Display for Refusal {
             Refusal::KeySuperseded => "key_superseded",
             Refusal::Sha256IdMismatch => "sha256_id_mismatch",
             Refusal::SequenceNotNewer => "sequence_not_newer",
+            Refusal::SequenceReplayed => "sequence_replayed",
             Refusal::NoArtifactForPlatform => "no_artifact_for_platform",
         };
         f.write_str(reason)
@@ -383,6 +390,7 @@ mod tests {
             (Refusal::KeySuperseded, "key_superseded"),
             (Refusal::Sha256IdMismatch, "sha256_id_mismatch"),
             (Refusal::SequenceNotNewer, "sequence_not_newer"),
+            (Refusal::SequenceReplayed, "sequence_replayed"),
             (Refusal::NoArtifactForPlatform, "no_artifact_for_platform"),
         ];
         for (refusal, text) in all {
