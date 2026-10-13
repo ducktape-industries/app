@@ -48,6 +48,13 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = push ]; then channel=stable; fi
           sha=$(git rev-parse HEAD)
           sequence=$(git show -s --format=%ct HEAD)
+          # a committer time is whatever the committer's clock said: one from
+          # the future would pin every install that takes it past every
+          # release until that date comes
+          if [ "$sequence" -gt $(( $(date +%s) + 600 )) ]; then
+            echo "::error::$sha is dated $sequence, in the future: not published"
+            exit 1
+          fi
           # before the first publish (or with the bucket unreachable) there
           # is nothing to compare with
           published=$(curl -fsS --max-time 20 "https://dl.ducktape.industries/$channel.json" 2>/dev/null \
@@ -157,12 +164,15 @@ jobs:
           gh release download "$TAG" --dir assets \
             --pattern ducktape-app-x86_64-unknown-linux-gnu.tar.gz \
             --pattern ducktape-app-aarch64-apple-darwin.app.tar.gz
+      # built before the key is in the environment: no build script runs
+      # with it
+      - run: cargo build --locked --release -p app-update --bin publish-release
       - name: sign
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
-          cargo run --locked --release -p app-update --bin publish-release -- \
+          target/release/publish-release \
             --channel "$CHANNEL" \
             --sequence "$SEQUENCE" \
             --display "$version+${SHA:0:7}" \
