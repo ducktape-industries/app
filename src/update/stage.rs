@@ -6,10 +6,11 @@
 //!
 //! The archive (`.tar.gz`) holds the release directory's contents at its top
 //! level: Linux `ducktape-app`; macOS `Ducktape.app/…`. Extraction accepts
-//! regular files, directories and symlinks whose target stays under the
-//! release directory; it refuses absolute paths, `..`, a symlink that would
-//! leave the directory, and hard links. Every refusal is a stable snake_case
-//! token: it is the log's `reason` and what Settings reads.
+//! regular files, directories and symlinks; it refuses absolute paths, `..`,
+//! an entry whose directory is, on disk, outside the release directory
+//! (reached through a link an earlier entry made), a symlink that does not
+//! resolve to something inside it, and hard links. Every refusal is a stable
+//! snake_case token: it is the log's `reason` and what Settings reads.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -61,42 +62,48 @@ fn extract(archive: &Path, release_dir: &Path) -> Result<(), String> {
     tar.set_preserve_permissions(false);
     tar.set_preserve_ownerships(false);
     std::fs::create_dir_all(release_dir).map_err(|_| "io")?;
+    let root = release_dir.canonicalize().map_err(|_| "io")?;
+    let mut links = Vec::new();
     let entries = tar.entries().map_err(|_| "archive_unreadable")?;
     for entry in entries {
         let mut entry = entry.map_err(|_| "archive_unreadable")?;
         let entry_path = entry.path().map_err(|_| "archive_unreadable")?.into_owned();
         let destination = entry_destination(release_dir, &entry_path)?;
-        admit(
-            entry.header().entry_type(),
-            &destination,
-            release_dir,
-            &entry,
-        )?;
+        let kind = entry.header().entry_type();
+        admit(kind)?;
+        // `./`: the release dir itself
+        let Some(parent) = destination.parent().filter(|_| destination != release_dir) else {
+            continue;
+        };
+        // where the entry's directory is on disk, not what its path reads:
+        // a link an earlier entry made can lead a path that reads inside
+        // to anywhere
+        let parent = parent.canonicalize().map_err(|_| "extract_failed")?;
+        if !parent.starts_with(&root) {
+            return Err("path_escapes".into());
+        }
         entry.unpack(&destination).map_err(|_| "extract_failed")?;
+        if kind == tar::EntryType::Symlink {
+            links.push(destination);
+        }
+    }
+    // with every entry in place: each link, through any chain of links,
+    // resolves to something inside
+    for link in links {
+        let inside = link
+            .canonicalize()
+            .is_ok_and(|target| target.starts_with(&root));
+        if !inside {
+            return Err("symlink_escapes".into());
+        }
     }
     Ok(())
 }
 
-/// Whether one entry, its path already inside the release dir, is a kind
-/// a release is made of — and, for a symlink, one that stays inside.
-fn admit<R: std::io::Read>(
-    kind: tar::EntryType,
-    destination: &Path,
-    release_dir: &Path,
-    entry: &tar::Entry<'_, R>,
-) -> Result<(), String> {
+/// Whether one entry is a kind a release is made of.
+fn admit(kind: tar::EntryType) -> Result<(), String> {
     match kind {
-        tar::EntryType::Regular | tar::EntryType::Directory => Ok(()),
-        tar::EntryType::Symlink => {
-            let target = entry
-                .link_name()
-                .map_err(|_| "archive_unreadable")?
-                .ok_or("symlink_without_target")?;
-            match symlink_stays_inside(release_dir, destination, &target) {
-                true => Ok(()),
-                false => Err("symlink_escapes".into()),
-            }
-        }
+        tar::EntryType::Regular | tar::EntryType::Directory | tar::EntryType::Symlink => Ok(()),
         tar::EntryType::Link => Err("hard_link".into()),
         // devices, fifos, sparse and extension headers: none is a release file
         _ => Err("unsupported_entry".into()),
@@ -115,43 +122,6 @@ fn entry_destination(root: &Path, entry_path: &Path) -> Result<PathBuf, String> 
         }
     }
     Ok(destination)
-}
-
-/// A symlink at `link` (under `root`) pointing at `target` stays inside
-/// when the target is relative and, resolved lexically from the link's
-/// directory, never climbs above `root`.
-fn symlink_stays_inside(root: &Path, link: &Path, target: &Path) -> bool {
-    if target.is_absolute() {
-        return false;
-    }
-    let Ok(link_relative) = link.strip_prefix(root) else {
-        return false;
-    };
-    let mut depth: Vec<&std::ffi::OsStr> = link_relative
-        .parent()
-        .map(|parent| {
-            parent
-                .components()
-                .filter_map(|component| match component {
-                    Component::Normal(part) => Some(part),
-                    _ => None,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    for component in target.components() {
-        match component {
-            Component::Normal(part) => depth.push(part),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if depth.pop().is_none() {
-                    return false;
-                }
-            }
-            Component::RootDir | Component::Prefix(_) => return false,
-        }
-    }
-    true
 }
 
 // ---- seal / unseal ---------------------------------------------------------
@@ -400,6 +370,28 @@ pub(super) mod tests {
         assert_eq!(outcome, Err("symlink_escapes".into()));
     }
 
+    /// `a/b -> ..` is the release dir itself, so `a/b/c -> ..` reads as
+    /// inside and is the release dir's parent on disk: nothing is written
+    /// through it, and a link that resolves there is refused.
+    #[test]
+    fn a_path_through_an_earlier_link_never_lands_outside() {
+        let chain = |last: Option<Item>| {
+            let mut items = vec![
+                Item::File(APP_EXE, b"app".to_vec(), 0o755),
+                Item::Dir("a"),
+                Item::Symlink("a/b", ".."),
+                Item::Symlink("a/b/c", ".."),
+            ];
+            items.extend(last);
+            staged(&items)
+        };
+        let (root, outcome) = chain(Some(Item::File("a/b/c/escaped", b"x".to_vec(), 0o644)));
+        assert_eq!(outcome, Err("path_escapes".into()));
+        assert!(!root.path().join("escaped").exists(), "written outside");
+        let (_root, outcome) = chain(None);
+        assert_eq!(outcome, Err("symlink_escapes".into()));
+    }
+
     #[test]
     fn a_hard_link_is_refused() {
         let mut items = whole_release(b"app");
@@ -511,19 +503,5 @@ pub(super) mod tests {
             releases.join("state.json").is_file(),
             "a stranger file is untouched"
         );
-    }
-
-    #[test]
-    fn symlink_containment_is_lexical_from_the_links_directory() {
-        let root = Path::new("/r");
-        let inside = |link: &str, target: &str| {
-            symlink_stays_inside(root, &root.join(link), Path::new(target))
-        };
-        assert!(inside("a/b", "../c"));
-        assert!(inside("a/b", "./c/../d"));
-        assert!(inside("Contents/MacOS/views", "../Resources/views"));
-        assert!(!inside("a/b", "../../c"));
-        assert!(!inside("top", "../x"));
-        assert!(!inside("a", "/etc"));
     }
 }
