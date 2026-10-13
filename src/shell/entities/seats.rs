@@ -186,7 +186,7 @@ impl Seats {
             let props = &self.props;
             let placed = self.map.entry(instance).or_insert_with(|| {
                 moved = true;
-                let seat = cx.new(|cx| Seat::new(module, cx));
+                let seat = cx.new(|cx| Seat::new(module, instance, cx));
                 let _intents = cx.subscribe(&seat, move |this, _, intent: &Intent, cx| {
                     this.route(module, instance, intent.clone(), cx)
                 });
@@ -275,9 +275,12 @@ impl Seats {
                     desk.update(cx, |desk, cx| desk.settle(cx));
                 }
             }
+            // from this pane: a link into its own program stays in it
             Intent::OpenLink(link) => {
                 if let Some(windows) = self.windows.upgrade() {
-                    windows.update(cx, |windows, cx| windows.open_link(&link, cx));
+                    windows.update(cx, |windows, cx| {
+                        windows.open_link(&link, Some((module, instance)), cx)
+                    });
                 }
             }
         }

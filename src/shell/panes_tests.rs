@@ -1241,7 +1241,7 @@ fn a_seats_keys_are_free_only_in_front_with_nothing_over_the_desk(cx: &mut TestA
 
 /// A view's link (`link.open`) is routed by `Seats` to `Windows::open_link`
 /// on the seat's next turn: the listed view opens on the console's desk,
-/// comes to the front and is handed the route.
+/// comes to the front, and the route waits for that new pane's seat.
 #[gpui_kit::test]
 fn a_views_link_opens_its_seat_on_the_console(cx: &mut TestAppContext) {
     const MODULE: &str = "pane-link-intent-view";
@@ -1274,24 +1274,80 @@ fn a_views_link_opens_its_seat_on_the_console(cx: &mut TestAppContext) {
         native.run_until_parked();
         frame(&mut native);
     }
-    let modules: Vec<_> = native.update(|_, cx| {
+    let layout = native.update(|_, cx| view.read(cx).layout(cx).clone());
+    let opened = layout.panes.iter().find(|pane| pane.module == LINKED);
+    let Some(opened) = opened else {
+        panic!("the link opened nothing: {:?}", layout.panes);
+    };
+    assert_eq!(active(&app, &native), Some(LINKED));
+    assert_eq!(
+        crate::runtime::take_route(LINKED, opened.instance).as_deref(),
+        Some("room/7"),
+        "the view was not handed its route"
+    );
+}
+
+/// Two windows of one program (two Chat windows: a channel picked in one
+/// switched the other): a link one view opens into its own program is that
+/// view's alone. The other window's view, listening for routes, hears
+/// nothing and the desk does not move; the route waits for the view that
+/// opened it.
+#[gpui_kit::test]
+fn a_views_link_into_its_own_program_reaches_its_own_window_only(cx: &mut TestAppContext) {
+    use crate::runtime::{Intent, intent_for_test, listen_for_routes_for_test, routes_for_test};
+    const MODULE: &str = "pane-own-link-view";
+    let (app, _, view, mut native) = console(cx);
+    crate::runtime::seat_for_test(MODULE, 400);
+    let roster = crate::runtime::Roster::listing(&[MODULE]);
+    app.rail
+        .update(&mut native, |rail, cx| rail.read_off(roster, cx));
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    pane(&view, PaneMessage::Split(MODULE), &mut native);
+    // the second window's seat holds a view too
+    crate::runtime::seat_for_test(MODULE, 400);
+    let turn = |native: &mut VisualTestContext| {
+        for _ in 0..2 {
+            app.seats.update(native, |seats, cx| seats.settle(cx));
+            native.run_until_parked();
+            frame(native);
+        }
+    };
+    turn(&mut native);
+    let focused =
+        |native: &mut VisualTestContext| native.update(|_, cx| view.read(cx).layout(cx).focused);
+    let seats: Vec<u64> = native.update(|_, cx| {
         view.read(cx)
             .layout(cx)
             .panes
             .iter()
-            .map(|pane| pane.module)
+            .map(|pane| {
+                let seat = app.seats.read(cx).seat(pane.instance).expect("seated");
+                seat.read(cx).instance()
+            })
             .collect()
     });
-    assert!(
-        modules.contains(&LINKED),
-        "the link opened nothing: {modules:?}"
+    let [other, own] = seats[..] else {
+        panic!("two windows of {MODULE}: {seats:?}");
+    };
+    assert_eq!(focused(&mut native), 1, "the split window is in front");
+    // the other window listens and the opener not yet: a route kept for
+    // the program would reach the other, whichever seat turned first
+    listen_for_routes_for_test(MODULE, other);
+    intent_for_test(
+        MODULE,
+        own,
+        Intent::OpenLink(format!("duck://{MODULE}/room/7")),
     );
-    assert_eq!(active(&app, &native), Some(LINKED));
+    turn(&mut native);
     assert_eq!(
-        crate::runtime::take_route(LINKED).as_deref(),
-        Some("room/7"),
-        "the view was not handed its route"
+        routes_for_test(MODULE, other),
+        Vec::<String>::new(),
+        "the other window was handed the route"
     );
+    assert_eq!(focused(&mut native), 1, "the link moved the desk");
+    listen_for_routes_for_test(MODULE, own);
+    turn(&mut native);
+    assert_eq!(routes_for_test(MODULE, own), ["room/7"]);
 }
 
 /// Two windows of one program are named by their own views (`host.title`):
@@ -1302,10 +1358,6 @@ fn a_views_link_opens_its_seat_on_the_console(cx: &mut TestAppContext) {
 fn each_window_takes_the_title_its_own_view_gave(cx: &mut TestAppContext) {
     use crate::runtime::{Intent, intent_for_test};
     const MODULE: &str = "pane-title-view";
-    // a pane number spent with no seat: run alone, a pane's instance and
-    // its seat's own number (`Seat::instance`) would otherwise match, and
-    // a title routed by the wrong one would still land
-    _ = crate::ui::layout::Pane::new(MODULE);
     let (app, _, view, mut native) = console(cx);
     crate::runtime::seat_for_test(MODULE, 400);
     pane(&view, PaneMessage::Select(MODULE), &mut native);

@@ -62,7 +62,7 @@ fn start(boot: Boot) {
             while let Some(urls) = urls.next().await {
                 let result = url_windows.update(cx, |windows, cx| {
                     for url in urls {
-                        windows.open_link(&url, cx);
+                        windows.open_link(&url, None, cx);
                     }
                 });
                 if result.is_err() {

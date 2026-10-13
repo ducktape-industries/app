@@ -534,7 +534,7 @@ fn link_open_needs_an_activation_and_takes_it() {
     assert_eq!(refusal_code(&mut guest).as_deref(), Some("needs_gesture"));
     // a route the OS handed the view (`Windows::open_seat`) activates nothing
     guest.route_subscriptions.push(2);
-    crate::runtime::route_to("request-test", "tx/1".into());
+    crate::runtime::route_to("request-test", guest.instance, "tx/1".into());
     guest.sync_route();
     guest.answer(link_request(3, "duck://request-test/tx/1"), &None);
     assert_eq!(refusal_code(&mut guest).as_deref(), Some("needs_gesture"));

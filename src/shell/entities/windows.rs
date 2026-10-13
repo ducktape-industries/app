@@ -625,30 +625,43 @@ impl Windows {
     /// window, Spotlight, a link): where `Layout::open` puts it, but a
     /// program that desk does not show and a pop-out does brings the
     /// pop-out forward rather than opening it again (the desk's focused
-    /// empty window still takes it).
+    /// empty window still takes it). The instance of the one pane brought
+    /// forward: a link's route is for its seat alone.
     pub(crate) fn open_program(
         &mut self,
         key: WindowKey,
         module: &'static str,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Option<u64> {
         let _timed = timed();
-        let Some(desk) = self.by_window.get(&key).map(|own| own.desk.clone()) else {
-            return;
+        let desk = self.by_window.get(&key).map(|own| own.desk.clone())?;
+        let pane_of = |layout: &Layout| {
+            let pane = layout.panes.iter().find(|pane| pane.module == module);
+            pane.map(|pane| pane.instance)
         };
         let layout = desk.read(cx).get();
         let here = layout
             .panes
             .get(layout.focused)
             .is_some_and(|pane| pane.is_empty())
-            || layout.panes.iter().any(|pane| pane.module == module);
-        let away = self.by_window.iter().find_map(|(other, own)| {
-            (self.console != Some(*other) && *other != key && own.desk.read(cx).holds(module))
-                .then_some(*other)
-        });
+            || pane_of(layout).is_some();
+        let away = self
+            .by_window
+            .iter()
+            .filter(|(other, _)| self.console != Some(**other) && **other != key)
+            .find_map(|(other, own)| Some((*other, pane_of(own.desk.read(cx).get())?)));
         match away.filter(|_| !here) {
-            Some(away) => self.raise(away, cx),
-            None => desk.update(cx, |desk, cx| desk.open(module, cx)),
+            Some((away, instance)) => {
+                self.raise(away, cx);
+                Some(instance)
+            }
+            None => {
+                desk.update(cx, |desk, cx| desk.open(module, cx));
+                // `Layout::open` leaves the pane it opened or found focused
+                let layout = desk.read(cx).get();
+                let pane = layout.panes.get(layout.focused)?;
+                (pane.module == module).then_some(pane.instance)
+            }
         }
     }
 
@@ -675,7 +688,7 @@ impl Windows {
     /// one of its own.
     pub(crate) fn select_view(&mut self, module: &'static str, cx: &mut Context<Self>) {
         let _timed = timed();
-        self.open_seat(module, None, cx);
+        self.open_seat(module, None, None, cx);
     }
 
     /// Help on the desk: into the focused window if it is empty, else
@@ -701,12 +714,18 @@ impl Windows {
     /// `duck://<chain>/<program>/<tail>` on this chain, or the short
     /// `duck://<view>/<route>`: the seat opens and its view is handed the
     /// route. The window coming forward is the answer; a notice only says
-    /// what there is nothing to see of.
-    pub(crate) fn open_link(&mut self, link: &str, cx: &mut Context<Self>) {
+    /// what there is nothing to see of. `from` is the pane (its module and
+    /// instance) whose view opened the link, `None` from anywhere else.
+    pub(crate) fn open_link(
+        &mut self,
+        link: &str,
+        from: Option<(&'static str, u64)>,
+        cx: &mut Context<Self>,
+    ) {
         let _timed = timed();
         let parsed = self.shared.rail.read(cx).parse_link(link);
         match parsed {
-            Link::View { module, route } => self.open_seat(module, route, cx),
+            Link::View { module, route } => self.open_seat(module, route, from, cx),
             Link::Chain(parsed) if !self.shared.rail.read(cx).lists(&parsed.program) => {
                 self.notice(format!("No view here opens {} links.", parsed.program), cx);
             }
@@ -716,7 +735,7 @@ impl Windows {
                 let chain = self.shared.session.read(cx).get().chain.clone();
                 if parsed.chain.to_string() != chain {
                     // another chain's page is not this chain's to show
-                    self.open_seat(module, None, cx);
+                    self.open_seat(module, None, from, cx);
                     self.notice(
                         format!(
                             "That link is to {}, not this network; opened {module}.",
@@ -725,9 +744,9 @@ impl Windows {
                         cx,
                     );
                 } else if route.is_empty() || crate::runtime::valid_route(&route) {
-                    self.open_seat(module, (!route.is_empty()).then_some(route), cx);
+                    self.open_seat(module, (!route.is_empty()).then_some(route), from, cx);
                 } else {
-                    self.open_seat(module, None, cx);
+                    self.open_seat(module, None, from, cx);
                     self.notice(format!("{module} can't open that part of the link."), cx);
                 }
             }
@@ -736,7 +755,7 @@ impl Windows {
             Link::Web(url) => match crate::render::web::view_for(&url)
                 .filter(|module| self.shared.rail.read(cx).lists(module))
             {
-                Some(module) => self.open_seat(module, Some(url), cx),
+                Some(module) => self.open_seat(module, Some(url), from, cx),
                 None => cx.open_url(&url),
             },
             Link::Unknown => self.notice("This link is not one this app opens.".into(), cx),
@@ -747,25 +766,38 @@ impl Windows {
     /// seat brought forward.
     pub(crate) fn open_notice(&mut self, entry: &Entry, cx: &mut Context<Self>) {
         if !entry.link.is_empty() {
-            self.open_link(&entry.link, cx);
+            self.open_link(&entry.link, None, cx);
         } else if self.shared.rail.read(cx).lists(&entry.module) {
-            self.open_seat(crate::runtime::intern(&entry.module), None, cx);
+            self.open_seat(crate::runtime::intern(&entry.module), None, None, cx);
         }
     }
 
     /// `module` beside the view in front on the console's desk, not in
-    /// place of it, or its pop-out forward (`open_program`), handed `route`
-    /// first.
-    fn open_seat(&mut self, module: &'static str, route: Option<String>, cx: &mut Context<Self>) {
-        if let Some(route) = route {
-            crate::runtime::route_to(module, route);
+    /// place of it, or its pop-out forward (`open_program`), and that one
+    /// seat handed `route`. A view's link into its own program (`from`)
+    /// goes to its own seat, and nothing comes forward or moves.
+    fn open_seat(
+        &mut self,
+        module: &'static str,
+        route: Option<String>,
+        from: Option<(&'static str, u64)>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((_, instance)) = from.filter(|(from, _)| *from == module) {
+            if let Some(route) = route {
+                crate::runtime::route_to(module, instance, route);
+            }
+            return;
         }
         if self.active != Some(module) {
             self.active = Some(module);
             cx.notify();
         }
-        if let Some(console) = self.console {
-            self.open_program(console, module, cx);
+        let seat = self
+            .console
+            .and_then(|console| self.open_program(console, module, cx));
+        if let Some((route, instance)) = route.zip(seat) {
+            crate::runtime::route_to(module, instance, route);
         }
     }
 
@@ -807,7 +839,7 @@ impl Windows {
                 self.shared
                     .notifications
                     .update(cx, |notifications, cx| _ = notifications.refresh(cx));
-                self.open_link(&url, cx);
+                self.open_link(&url, None, cx);
             }
             Posted::Url(url) => cx.open_url(&url),
         }
