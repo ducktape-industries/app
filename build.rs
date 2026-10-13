@@ -1,4 +1,6 @@
-//! Stamp this checkout's identity into the binary for `ducktape-app --version`.
+//! Stamp this checkout's identity into the binary for `ducktape-app --version`,
+//! and its commit's committer time for the self-update (`src/update.rs`): the
+//! sequence a release is published at, so an installed build pins its own.
 //!
 //! The same stamp `ducktape --version` carries (`crates/noded/build.rs` in
 //! ducktape-industries/ducktape), so a walk report compares the app's build
@@ -21,6 +23,9 @@ fn main() {
 
     if let Some(build) = build_id() {
         println!("cargo:rustc-env=DUCKTAPE_APP_BUILD={build}");
+    }
+    if let Some(time) = git(&["log", "-1", "--format=%ct", "HEAD"]) {
+        println!("cargo:rustc-env=DUCKTAPE_APP_COMMIT_TIME={time}");
     }
 
     // feature `web`: cef-dll-sys copies libcef.so and its files next to the

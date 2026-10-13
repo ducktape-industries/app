@@ -3,12 +3,12 @@
 # The app is a BLIND HOST: it connects to a node, reads the roster, fetches
 # each program's view and renders it. It knows no program by name; every
 # view request names its own target and the app relays the bytes. Source
-# here is the app crate and its boot-time launcher (to return);
+# here is the app crate and its self-update (`crates/app-update`);
 # everything else arrives as a cargo git dependency.
 #
-# The self-update lane (app-update, bin/app-launcher, backend/update*) is
-# OUT until the kernel branch stops naming `keyscheme` at sdk `dev`, where it
-# no longer exists; cargo refuses a same-source patch. First thing back.
+# The app updates itself (`src/update.rs`): `crates/app-update` is the pure
+# state machine and the release signer, and the one executable runs the boot
+# step (flip, rollback, exec) at the top of its `main`.
 
 [package]
 name = "ducktape-app"
@@ -124,6 +124,11 @@ libc.workspace = true
 sha1 = "0.10"
 # feature `web` only: CEF and everything that names it
 ducktape-web = { path = "crates/web", optional = true }
+# self-update: the state machine, the manifest and its signature
+app-update = { path = "crates/app-update" }
+# the release archive a self-update downloads (`.tar.gz`)
+tar = { version = "0.4", default-features = false }
+flate2 = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tray-icon = { version = "0.24", default-features = false }
@@ -179,6 +184,11 @@ opt-level = 0
 [profile.test.package.ducktape-app]
 debug = 0
 opt-level = 1
+
+# sha256 over a whole app binary (the self-update's install, and every
+# archive it stages): half a minute unoptimized, under a second optimized.
+[profile.dev.package.sha2]
+opt-level = 3
 
 # Optimize the native render and text stack without slowing unrelated workspace crates.
 [profile.dev.package.gpui-pre]
