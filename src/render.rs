@@ -343,6 +343,13 @@ impl ViewTree {
         self.row = self.next_row.take();
         let index = self.row.map(|(position, _)| position - 1);
         let entered_scope = enter_scope(node, index, &mut self.authored_path);
+        // The host numbers id-less nodes within the nearest id'd node, from
+        // zero: gpui files them under that node's id, so a number only has
+        // to be unique there, and so it does not move when something is
+        // added before this node elsewhere, or when a list measures its
+        // rows in another order. Element state keyed under the number (a
+        // paragraph's place in the selection) survives both.
+        let outer_index = entered_scope.then(|| std::mem::take(&mut self.render_index));
         use wire::Node;
         let element = match node {
             Node::Text(view_wire::TextNode { .. }) => self.text(node),
@@ -364,6 +371,9 @@ impl ViewTree {
         };
         if entered_scope {
             self.authored_path.pop();
+        }
+        if let Some(outer) = outer_index {
+            self.render_index = outer;
         }
         // a row with no id of its own is drawn under the index it is filed
         // under, so gpui files its ids (and their accessibility nodes and
