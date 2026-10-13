@@ -205,6 +205,72 @@ fn accepted_frames_retain_anonymous_list_scroll(cx: &mut gpui_kit::TestAppContex
     });
 }
 
+/// A view's `scroll_to` (no wheel, no drag) reports once where the list
+/// settled: the visible range reaches the end; nothing more is reported
+/// while the list stands still.
+#[gpui_kit::test]
+fn a_programmatic_scroll_reports_where_the_list_settled(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let rows = (0..40)
+        .map(|index| fixed_row(100 + index, 20., 0x404040))
+        .collect();
+    let root = container_with_style(
+        "room",
+        div().w(px(200.)).h(px(120.)).style().clone(),
+        [variable_list_node(40, wire::ListAlignment::Top, 0, rows)],
+    );
+    let window = cx.open_window(size(px(200.), px(120.)), |_, _| ViewTree::new(root));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    let frame = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            window.simulate_next_frame(cx);
+        });
+    };
+    frame(&mut native);
+    let scrolls = |events: &Rc<RefCell<Vec<wire::Event>>>| -> Vec<wire::ListScroll> {
+        events
+            .borrow()
+            .iter()
+            .filter_map(|event| match event {
+                wire::Event::ListScroll { handler: 42, event } => Some(event.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    // the mount's own report: the top six rows
+    let mounted = scrolls(&events);
+    assert_eq!(mounted.len(), 1);
+    assert_eq!(
+        (mounted[0].visible_start, mounted[0].is_scrolled),
+        (0, false)
+    );
+    events.borrow_mut().clear();
+    native.update(|_, cx| {
+        tree.update(cx, |tree, cx| {
+            let state = tree.variable_lists.values().next().unwrap().state.clone();
+            state.scroll_to(gpui_kit::ListOffset {
+                item_ix: 39,
+                offset_in_item: px(0.),
+            });
+            cx.notify();
+        })
+    });
+    frame(&mut native);
+    let settled = scrolls(&events);
+    assert_eq!(settled.len(), 1, "one report for the scroll");
+    assert_eq!(settled[0].visible_end, 40, "reaches the end");
+    assert!(settled[0].visible_start >= 34 && settled[0].is_scrolled);
+    assert_eq!(settled[0].count, 40);
+    assert_eq!(settled[0].offset.item_ix, settled[0].visible_start);
+    // idle: nothing more
+    frame(&mut native);
+    frame(&mut native);
+    assert_eq!(scrolls(&events).len(), 1, "nothing while idle");
+}
+
 /// A row is kept while its node is equal, and equal ids are equal styles
 /// only in one table. A whole frame brings its own: its rows, equal by id
 /// to the ones held, are other rows (here twice as tall), and each is

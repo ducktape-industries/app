@@ -3,6 +3,13 @@
 //! not have is asked for with one `ListRequest` per frame, and a row it has
 //! is rendered under the list's own authored path, which ends in the
 //! list's id: a list is a scope of its own (`wire::identity`).
+//!
+//! Where the list stands (`ListScroll`) is reported once it has settled
+//! after any cause — a wheel, a drag, a view's `scroll_to`, a reveal, rows
+//! arriving, a resize: the frame after each render compares the list's
+//! state with the last report and emits only what changed, never per
+//! frame. gpui's own scroll handler fires on a wheel or a drag alone, and
+//! with the range from before the move, so it is not used.
 use super::*;
 
 /// A List's retained state, per authored path.
@@ -16,6 +23,11 @@ pub(super) struct VariableList {
     /// The rows to ask for in the request already scheduled this frame.
     requested: Option<std::ops::Range<usize>>,
     request_scheduled: bool,
+    alignment: ListAlignment,
+    /// The scroll state last reported to the guest; the next frame reports
+    /// only a change from it.
+    reported: Option<wire::ListScroll>,
+    settle_scheduled: bool,
     /// Rows remeasured, summed over renders.
     #[cfg(test)]
     pub(super) remeasured: usize,
@@ -25,6 +37,7 @@ impl ViewTree {
     pub(super) fn variable_list(
         &mut self,
         node: &wire::Node,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::List {
@@ -72,6 +85,9 @@ impl ViewTree {
                 revision: *revision,
                 requested: None,
                 request_scheduled: false,
+                alignment: native_alignment,
+                reported: None,
+                settle_scheduled: false,
                 #[cfg(test)]
                 remeasured: 0,
             }
@@ -134,33 +150,20 @@ impl ViewTree {
         let mut native = native;
         *native.style() = Arc::unwrap_or_clone(self.style(*style));
 
-        if let Some(handler) = *scroll_handler {
+        let list = self
+            .variable_lists
+            .get_mut(&key)
+            .expect("the list just drawn");
+        if let Some(handler) = *scroll_handler
+            && !list.settle_scheduled
+        {
+            // after this frame is painted: where the list settled, if it
+            // moved since the last report (one callback per render)
+            list.settle_scheduled = true;
             let weak = cx.entity().downgrade();
-            state.set_scroll_handler(move |event, _, cx| {
-                let weak = weak.clone();
-                let scroll_key = key.clone();
-                let event = wire::ListScroll {
-                    visible_start: event.visible_range.start,
-                    visible_end: event.visible_range.end,
-                    count: event.count,
-                    is_scrolled: event.is_scrolled,
-                    is_following_tail: event.is_following_tail,
-                    offset: wire::ListOffset::default(),
-                };
-                cx.defer(move |cx| {
-                    let _ = weak.update(cx, |this, cx| {
-                        let Some(list) = this.variable_lists.get(&scroll_key) else {
-                            return;
-                        };
-                        let mut event = event;
-                        let offset = list.state.logical_scroll_top();
-                        event.offset = wire::ListOffset {
-                            item_ix: offset.item_ix,
-                            offset_in_item: f32::from(offset.offset_in_item),
-                        };
-                        cx.emit(wire::Event::ListScroll { handler, event });
-                    });
-                });
+            let settle_key = key.clone();
+            window.on_next_frame(move |_, cx| {
+                let _ = weak.update(cx, |this, cx| this.settle_list(&settle_key, handler, cx));
             });
         }
         let interactivity = interactivity
@@ -180,6 +183,56 @@ impl ViewTree {
         let host = host.id(scope).child(native.size_full());
         self.guest_aria(host, node, interactivity, cx)
             .into_any_element()
+    }
+}
+
+impl ViewTree {
+    /// The frame after a render: the list's scroll state as it settled,
+    /// reported when it differs from the last report.
+    fn settle_list(&mut self, key: &AuthoredPath, handler: u32, cx: &mut Context<Self>) {
+        let Some(list) = self.variable_lists.get_mut(key) else {
+            return;
+        };
+        list.settle_scheduled = false;
+        let now = settled(&list.state, list.alignment);
+        if list.reported.as_ref() == Some(&now) {
+            return;
+        }
+        list.reported = Some(now.clone());
+        cx.emit(wire::Event::ListScroll {
+            handler,
+            event: now,
+        });
+    }
+}
+
+/// The list's scroll state after its last paint, in the wheel report's
+/// fields: the rows from the logical top through the last one whose top
+/// is above the viewport's bottom, the count, whether it is off its
+/// resting place (the top, or the end of a bottom-aligned list), whether
+/// it follows the tail, and the logical offset.
+fn settled(state: &ListState, alignment: ListAlignment) -> wire::ListScroll {
+    let count = state.item_count();
+    let top = state.logical_scroll_top();
+    let visible_start = top.item_ix.min(count);
+    let mut visible_end = visible_start;
+    while visible_end < count && state.item_is_below_viewport(visible_end) == Some(false) {
+        visible_end += 1;
+    }
+    let resting = match alignment {
+        ListAlignment::Top => top.item_ix == 0 && top.offset_in_item == px(0.),
+        ListAlignment::Bottom => top.item_ix >= count,
+    };
+    wire::ListScroll {
+        visible_start,
+        visible_end,
+        count,
+        is_scrolled: !resting,
+        is_following_tail: state.is_following_tail(),
+        offset: wire::ListOffset {
+            item_ix: top.item_ix,
+            offset_in_item: f32::from(top.offset_in_item),
+        },
     }
 }
 
