@@ -9,6 +9,7 @@
 //! desks holding it, a link to `Windows`.
 use super::{Account, Notifications, Rail, Session, Windows};
 use crate::runtime::{Intent, Seat, WindowKey};
+use crate::shell::WindowKind;
 use crate::shell::layers::view_body;
 use crate::ui::layout::Layout;
 use gpui_kit::{AnyWindowHandle, App, AppContext as _, Context, Entity, Subscription, WeakEntity};
@@ -137,19 +138,20 @@ impl Seats {
         let Some(windows) = self.windows.upgrade() else {
             return;
         };
-        let (layouts, handles, console, front) = {
+        let (layouts, handles, front) = {
             let windows = windows.read(cx);
-            let layouts: BTreeMap<WindowKey, Layout> = windows
+            // the body is the frame's on a console's desk, where the pane
+            // is drawn framed; a window one view fills (a pop-out, `--live`)
+            // lays its pane out edge to edge, whatever frame the layout keeps
+            let layouts: BTreeMap<WindowKey, (Layout, bool)> = windows
                 .by_window()
                 .iter()
-                .map(|(key, own)| (*key, own.desk.read(cx).get().clone()))
+                .map(|(key, own)| {
+                    let on_desk = own.kind == WindowKind::Console;
+                    (*key, (own.desk.read(cx).get().clone(), on_desk))
+                })
                 .collect();
-            (
-                layouts,
-                windows.handles().clone(),
-                windows.console(),
-                windows.front(),
-            )
+            (layouts, windows.handles().clone(), windows.front())
         };
         type Place = (
             &'static str,
@@ -157,9 +159,9 @@ impl Seats {
         );
         let wanted: BTreeMap<u64, Place> = layouts
             .iter()
-            .flat_map(|(key, layout)| {
+            .flat_map(|(key, (layout, on_desk))| {
                 let window = handles.get(key).copied();
-                let console = console == Some(*key);
+                let on_desk = *on_desk;
                 let in_front = front == Some(*key);
                 layout
                     .panes
@@ -167,7 +169,7 @@ impl Seats {
                     .enumerate()
                     .filter(|(_, pane)| pane.is_view())
                     .map(move |(index, pane)| {
-                        let body = view_body(console, layout, index);
+                        let body = view_body(on_desk, layout, index);
                         (
                             pane.instance,
                             (pane.module, window.map(|window| (window, body, in_front))),

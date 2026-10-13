@@ -36,17 +36,18 @@ pub(in crate::shell) const FILL_STRIP: f32 = 36.;
 pub(in crate::shell) const BORDER: f32 = 1.;
 
 /// The body the view of `layout`'s pane `index` is laid out in, as
-/// [`PaneView::place`] draws it: on the console a pane's frame less its
-/// border and title bar, or filling the desk the desk less its strip; in a
-/// window of its own the window less the title bar; none until the desk is
-/// drawn. The seat widens it to the view's own minimum (`Pane::min_width`).
+/// [`PaneView::place`] draws it: `on_desk` (the console, where a pane is
+/// framed) a pane's frame less its border and title bar, or filling the
+/// desk the desk less its strip; in a window one view fills (a pop-out,
+/// `--live`) the window less the title bar, whatever frame the layout
+/// keeps for it; none until the desk is drawn. The seat widens it to the view's own minimum (`Pane::min_width`).
 pub(in crate::shell) fn view_body(
-    console: bool,
+    on_desk: bool,
     layout: &layout::Layout,
     index: usize,
 ) -> Option<(f32, f32)> {
     let desk = layout.desk;
-    match layout.panes[index].frame.filter(|_| console) {
+    match layout.panes[index].frame.filter(|_| on_desk) {
         Some(_) if layout.fills(index) => desk.map(|(width, height)| (width, height - FILL_STRIP)),
         Some(frame) => Some((frame.w - 2. * BORDER, frame.h - 2. * BORDER - TITLE)),
         None => desk.map(|(width, height)| (width, height - TITLE)),
