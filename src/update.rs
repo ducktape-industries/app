@@ -17,7 +17,8 @@
 //! `state.json` exists AND the running executable is the installed one
 //! ([`Layout::owns`]). `cargo run`, a bare binary out of the tarball, and a
 //! copy launched from anywhere else run with the updater off and touch
-//! nothing.
+//! nothing. Of the processes an install runs at once, one is its updater:
+//! the one holding `<updates>/lock` ([`hold_install`]).
 //!
 //! ```text
 //! Linux  (<data> = $XDG_DATA_HOME, else ~/.local/share):
@@ -35,6 +36,7 @@
 //! both   (<updates> = <config>/ducktape/updates, the app's config dir):
 //!   <updates>/state.json                          the machine's phase
 //!   <updates>/channel                             the channel picked (stable when absent)
+//!   <updates>/lock                                held by the install's one updater
 //!   <updates>/keys/successor.json                 a key rotation this install saw
 //! ```
 //! Every path is absolute under those roots, never relative to the running
@@ -57,8 +59,10 @@ pub(crate) use install::install_cli;
 
 use std::fmt;
 use std::io::Write as _;
+use std::os::fd::AsRawFd as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use app_update::{Phase, Sha, state};
 
@@ -416,6 +420,43 @@ fn remove_leftover(path: &Path) -> Result<(), Refusal> {
         false => std::fs::remove_file(path),
     };
     removed.map_err(|error| Refusal::io("leftover_not_removed", path, &error))
+}
+
+/// One updater per install. Two processes of one install (on Linux every
+/// `duck://` link starts one) would each step the machine from what they
+/// read at their own start: the second flips while the first runs, and the
+/// first then writes back a phase that names the release it runs and
+/// collects the one `current` names. So the process holding
+/// `<updates>/lock` is the install's one updater, and `install` its one
+/// writer; a start that finds it held runs with the updater off and touches
+/// nothing. `true` once this process holds it, for the rest of its life:
+/// exit and `exec` let it go.
+fn hold_install(layout: &Layout) -> Result<bool, Refusal> {
+    static HELD: Mutex<Vec<(PathBuf, std::fs::File)>> = Mutex::new(Vec::new());
+    let path = layout.updates.join("lock");
+    let mut held = HELD.lock().unwrap_or_else(PoisonError::into_inner);
+    if held.iter().any(|(at, _)| *at == path) {
+        return Ok(true);
+    }
+    refuse_symlink(&path)?;
+    std::fs::create_dir_all(&layout.updates)
+        .map_err(|error| Refusal::io("lock_failed", &layout.updates, &error))?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|error| Refusal::io("lock_failed", &path, &error))?;
+    // SAFETY: an open descriptor and flag constants.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let error = std::io::Error::last_os_error();
+        return match error.kind() {
+            std::io::ErrorKind::WouldBlock => Ok(false),
+            _ => Err(Refusal::io("lock_failed", &path, &error)),
+        };
+    }
+    held.push((path, file));
+    Ok(true)
 }
 
 /// rename(2), or a copy and remove across volumes.

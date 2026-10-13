@@ -595,6 +595,52 @@ mod linux {
         assert_eq!(current(&layout), Layout::link_target(a));
     }
 
+    /// Another process of this install holds its lock (on Linux each
+    /// `duck://` link starts one): this start flips nothing, even with a
+    /// release staged, and runs with the updater off; an install is refused
+    /// until that process quits. The tree is laid by hand, so this process
+    /// holds no lock of its own on it.
+    #[test]
+    fn a_second_process_of_the_install_touches_nothing() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::io::AsRawFd as _;
+
+        use crate::update::boot::{Boot, boot_at};
+        let (root, layout) = rig();
+        let (a, b) = (Sha::digest(b"a"), Sha::digest(b"b"));
+        for (sha, name) in [(a, "a"), (b, "b")] {
+            let exe = layout.release_exe(sha);
+            std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+            std::fs::write(&exe, script(name)).unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        crate::update::replace_symlink(&layout.current_link(), &Layout::link_target(a)).unwrap();
+        let staged = Phase::Staged(app_update::Staged {
+            current: a,
+            previous: None,
+            pinned_sequence: 10,
+            staged: b,
+            sequence: 11,
+            display: "0.1.0+b".into(),
+            refused: None,
+        });
+        crate::update::persist_phase(&layout, &staged).unwrap();
+        // the other process's hold, through an open file of its own
+        let other = std::fs::File::create(layout.updates.join("lock")).unwrap();
+        // SAFETY: an open descriptor and flag constants.
+        let held = unsafe { libc::flock(other.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(held, 0);
+
+        assert_eq!(boot_at(&layout, &layout.release_exe(a)).unwrap(), Boot::Off);
+        assert_eq!(current(&layout), Layout::link_target(a));
+        assert_eq!(state(&layout), staged);
+        let own = root.path().join(APP_EXE);
+        std::fs::write(&own, script("c")).unwrap();
+        let refused = crate::update::install::install(&layout, &own).unwrap_err();
+        assert_eq!(refused.reason, "install_busy");
+        assert_eq!(state(&layout), staged);
+    }
+
     /// A `state.json` that is a link is not followed: this start runs with the
     /// updater off.
     #[test]

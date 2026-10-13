@@ -53,6 +53,12 @@ pub(crate) fn install_cli() -> i32 {
 
 /// Install `own` (the running executable) under `layout`.
 pub(super) fn install(layout: &Layout, own: &Path) -> Result<Sha, Refusal> {
+    if !super::hold_install(layout)? {
+        return Err(Refusal::new(
+            "install_busy",
+            "Ducktape is running from this install: quit it first",
+        ));
+    }
     let sha = super::digest_file(own)?;
     match cfg!(target_os = "macos") {
         true => install_macos(layout, own, sha)?,

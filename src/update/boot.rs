@@ -65,6 +65,10 @@ pub(super) fn boot_at(layout: &Layout, own: &Path) -> Result<Boot, Refusal> {
     if !(has_state && layout.owns(own)) {
         return Ok(Boot::Off);
     }
+    if !super::hold_install(layout)? {
+        debug!(target: TARGET, event = "app_update_held", "another process runs this install's updater");
+        return Ok(Boot::Off);
+    }
     // taken before anything moves: on macOS the swap puts another bundle
     // at this very path
     let own_id = super::file_id(own)?;
