@@ -136,6 +136,10 @@ impl Entities {
 /// One OS window's own entities.
 #[derive(Clone)]
 pub(crate) struct WindowEntities {
+    /// The console (a desk of framed windows under a bar) or a window one
+    /// view fills: what its panes' bodies are measured from (`Seats`), as
+    /// its layer draws them.
+    pub(crate) kind: crate::shell::WindowKind,
     pub(crate) desk: Entity<Desk>,
     /// What is open over it (only the console's opens anything), and ⌘K's
     /// text: their methods write them.

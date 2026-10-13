@@ -217,7 +217,7 @@ impl Windows {
     ) -> WindowKey {
         let _timed = timed();
         let key = WindowKey::unique();
-        self.make_own(key, cx);
+        self.make_own(key, kind, cx);
         if kind == WindowKind::Console {
             self.console = Some(key);
         }
@@ -242,10 +242,11 @@ impl Windows {
     /// program in front and the notification centre follow its desk;
     /// anything opening over the desk lets go of the keyboard's hold, and
     /// "Add a device…" closing, however it did, forgets what it found.
-    fn make_own(&mut self, key: WindowKey, cx: &mut Context<Self>) {
+    fn make_own(&mut self, key: WindowKey, kind: WindowKind, cx: &mut Context<Self>) {
         let desk = cx.new(|_| Slice::new(Layout::default()));
         let session = self.shared.session.clone();
         let own = WindowEntities {
+            kind,
             front: Front::of_desk(&desk, cx),
             overlays: cx.new(|cx| Overlays::new(&session, cx)),
             spotlight: cx.new(|_| Slice::new(Spotlight::default())),
