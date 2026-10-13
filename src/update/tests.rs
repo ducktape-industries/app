@@ -241,6 +241,21 @@ fn a_published_pair_verifies_and_a_strangers_signature_is_refused() {
     );
 }
 
+/// A pick kept in `<updates>/channel` reads back as picked; no file, or
+/// anything else in it, reads as stable.
+#[test]
+fn the_kept_channel_reads_back_and_anything_else_is_stable() {
+    use super::channel::{keep_channel, read_channel};
+    let (_root, layout) = rig();
+    assert_eq!(read_channel(&layout), Channel::Stable);
+    keep_channel(&layout, Channel::Nightly).unwrap();
+    assert_eq!(read_channel(&layout), Channel::Nightly);
+    keep_channel(&layout, Channel::Stable).unwrap();
+    assert_eq!(read_channel(&layout), Channel::Stable);
+    std::fs::write(layout.updates.join("channel"), "beta\n").unwrap();
+    assert_eq!(read_channel(&layout), Channel::Stable);
+}
+
 /// A manifest past the cap is not read, whatever it holds.
 #[test]
 fn a_manifest_larger_than_the_cap_is_not_read() {

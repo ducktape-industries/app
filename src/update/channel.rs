@@ -98,6 +98,14 @@ pub(super) fn read_channel(layout: &Layout) -> Channel {
         .unwrap_or_default()
 }
 
+/// What [`read_channel`] reads back.
+pub(super) fn keep_channel(layout: &Layout, channel: Channel) -> Result<(), super::Refusal> {
+    super::persist(
+        &layout.channel_path(),
+        format!("{}\n", channel.name()).as_bytes(),
+    )
+}
+
 /// The shell says how it hears the reading moved.
 pub(crate) fn on_moved(moved: fn()) {
     let _ = MOVED.set(moved);
@@ -154,8 +162,7 @@ pub(crate) fn choose(channel: Channel) {
     let Some(layout) = HOME.get() else {
         return;
     };
-    let name = format!("{}\n", channel.name());
-    if let Err(refusal) = super::persist(&layout.channel_path(), name.as_bytes()) {
+    if let Err(refusal) = keep_channel(layout, channel) {
         warn!(target: TARGET, event = "app_update_persist_failed", reason = refusal.reason, detail = %refusal.detail);
         return;
     }
