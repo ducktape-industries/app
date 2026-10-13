@@ -216,10 +216,7 @@ impl Chrome {
                 .into_iter()
                 .flat_map(char::to_uppercase)
                 .collect();
-            let source = match entry.tag.is_empty() {
-                true => entry.program.clone(),
-                false => format!("{} · {}", entry.program, entry.tag),
-            };
+            let source = source(&rail, &entry.program, &entry.tag);
             let said = format!(
                 "{}{}: {}",
                 if entry.read { "" } else { "Unread. " },
@@ -413,6 +410,16 @@ impl Chrome {
     }
 }
 
+/// A row's "from where": the program as the rail names it (its view's
+/// title, else its id, as every other place names it), then its tag.
+fn source(rail: &[crate::runtime::RailRow], program: &str, tag: &str) -> String {
+    let name = crate::shell::panes::label(rail, program);
+    match tag.is_empty() {
+        true => name,
+        false => format!("{name} · {tag}"),
+    }
+}
+
 /// "14:02": the local clock at the wall second `wall`.
 fn clock(wall: i64) -> String {
     let local = (wall + crate::runtime::local_offset(wall)).rem_euclid(86_400);
@@ -439,7 +446,23 @@ fn ago(at: i64, now: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ago, local_midnight};
+    use super::{ago, local_midnight, source};
+
+    /// A row names its program as the rail does: the view's title for a
+    /// program on the rail, its id otherwise; the tag as the inbox gave it.
+    #[test]
+    fn a_row_names_a_rail_program_by_its_label() {
+        let rail = vec![crate::runtime::RailRow {
+            module: "chat",
+            label: "Chat".into(),
+            icon: String::new(),
+            note: None,
+            empty: false,
+        }];
+        assert_eq!(source(&rail, "chat", "general"), "Chat · general");
+        assert_eq!(source(&rail, "chat", ""), "Chat");
+        assert_eq!(source(&rail, "forge", "web#3"), "forge · web#3");
+    }
 
     #[test]
     fn times_read_short() {

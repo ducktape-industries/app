@@ -91,7 +91,7 @@ fn a_programs_permission_decides_ask_count_or_banner() {
     let mut center = ready();
     assert!(
         center
-            .arrived(&settings(None), entry(1, "chat", "", 1), now)
+            .arrived(&settings(None), entry(1, "chat", "", 1), now, "Chat")
             .is_none()
     );
     assert!(center.asking.contains("chat") && center.rows().len() == 1);
@@ -100,7 +100,8 @@ fn a_programs_permission_decides_ask_count_or_banner() {
             .arrived(
                 &settings(Some(Permission::Silent)),
                 entry(2, "chat", "", 2),
-                now
+                now,
+                "Chat"
             )
             .is_none()
     );
@@ -109,6 +110,7 @@ fn a_programs_permission_decides_ask_count_or_banner() {
             &settings(Some(Permission::Allow)),
             entry(3, "chat", "room", 3),
             now,
+            "Chat",
         )
         .unwrap();
     assert_eq!(
@@ -118,9 +120,17 @@ fn a_programs_permission_decides_ask_count_or_banner() {
     assert_eq!(center.unread(), 3);
     let mut off = settings(Some(Permission::Allow));
     off.banners = false;
-    assert!(center.arrived(&off, entry(4, "chat", "", 4), now).is_none());
+    assert!(
+        center
+            .arrived(&off, entry(4, "chat", "", 4), now, "Chat")
+            .is_none()
+    );
     // the same entry pushed twice counts once
-    assert!(center.arrived(&off, entry(4, "chat", "", 4), now).is_none());
+    assert!(
+        center
+            .arrived(&off, entry(4, "chat", "", 4), now, "Chat")
+            .is_none()
+    );
     assert_eq!(center.unread(), 4);
 }
 
@@ -134,13 +144,13 @@ fn the_focused_view_is_not_bannered_unless_show_is_set() {
     center.set_front(window, true, "chat");
     assert!(
         center
-            .arrived(&allowed, entry(1, "chat", "", 1), now)
+            .arrived(&allowed, entry(1, "chat", "", 1), now, "Chat")
             .is_none()
     );
     allowed.in_front = true;
     assert!(
         center
-            .arrived(&allowed, entry(2, "chat", "", 2), now)
+            .arrived(&allowed, entry(2, "chat", "", 2), now, "Chat")
             .is_some()
     );
     allowed.in_front = false;
@@ -149,7 +159,7 @@ fn the_focused_view_is_not_bannered_unless_show_is_set() {
     center.set_front(window, false, "");
     assert!(
         center
-            .arrived(&allowed, entry(3, "chat", "", 3), now)
+            .arrived(&allowed, entry(3, "chat", "", 3), now, "Chat")
             .is_some()
     );
 }
@@ -163,24 +173,24 @@ fn a_burst_past_the_limit_coalesces_into_one_more_banner() {
     let allowed = settings(Some(Permission::Allow));
     for id in 1..=3 {
         let banner = center
-            .arrived(&allowed, entry(id, "chat", "", 1), start)
+            .arrived(&allowed, entry(id, "chat", "", 1), start, "Chat")
             .unwrap();
         assert_eq!(banner.title, format!("title {id}"));
     }
     let more = center
-        .arrived(&allowed, entry(4, "chat", "", 1), start)
+        .arrived(&allowed, entry(4, "chat", "", 1), start, "Chat")
         .unwrap();
     assert_eq!(
         (more.title.as_str(), more.tag.as_str()),
-        ("1 more from chat", "more/chat")
+        ("1 more from Chat", "more/chat")
     );
     let more = center
-        .arrived(&allowed, entry(5, "chat", "", 1), start)
+        .arrived(&allowed, entry(5, "chat", "", 1), start, "Chat")
         .unwrap();
-    assert_eq!(more.title, "2 more from chat");
+    assert_eq!(more.title, "2 more from Chat");
     let later = start + Duration::from_secs(21);
     let banner = center
-        .arrived(&allowed, entry(6, "chat", "", 1), later)
+        .arrived(&allowed, entry(6, "chat", "", 1), later, "Chat")
         .unwrap();
     assert_eq!(banner.title, "title 6");
     assert_eq!(center.unread(), 6);
@@ -264,7 +274,8 @@ fn a_watermark_marks_read_and_moves_once() {
             .arrived(
                 &settings(Some(Permission::Allow)),
                 entry(4, "chat", "room", 25),
-                Instant::now()
+                Instant::now(),
+                "Chat"
             )
             .is_none()
     );

@@ -218,6 +218,7 @@ impl Center {
         settings: &Settings,
         mut entry: Entry,
         now: Instant,
+        label: &str,
     ) -> Option<Notice> {
         let key = (entry.program.clone(), entry.tag.clone());
         if self
@@ -272,7 +273,7 @@ impl Center {
         let more = self.more.entry(program.clone()).or_default();
         *more += 1;
         Some(Notice {
-            title: format!("{more} more from {program}"),
+            title: format!("{more} more from {label}"),
             body: "They're waiting in Notifications.".into(),
             tag: format!("more/{program}"),
         })

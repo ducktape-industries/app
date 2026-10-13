@@ -420,6 +420,7 @@ impl OverlayLayer {
             .filter(|row| !row.empty)
             .cloned()
             .collect();
+        let listed_rows = self.rail.read(cx).rows().to_vec();
         // the roster's programs, then any the inbox keeps out that the
         // roster does not list (muted on another device, or gone)
         let muted = self.notifications.read(cx).muted_programs();
@@ -429,7 +430,8 @@ impl OverlayLayer {
             .collect();
         for program in muted {
             if !programs.iter().any(|(module, _)| *module == program) {
-                programs.push((crate::runtime::intern(&program), program));
+                let module = crate::runtime::intern(&program);
+                programs.push((module, crate::shell::panes::label(&listed_rows, module)));
             }
         }
         // the inbox refused the last mutes change: said once, under Programs

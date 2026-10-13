@@ -109,7 +109,13 @@ async fn connect(client: &Arc<Client>, center: &CenterHandle) -> Result<(), Erro
             match push {
                 Push::Entry { entry } => {
                     let id = entry.id as u64;
-                    let banner = center.arrived(&Settings::kept(), *entry, Instant::now());
+                    // the program as the rail names it: its view's title
+                    let label = crate::runtime::roster()
+                        .rail()
+                        .into_iter()
+                        .find(|row| row.module == entry.program)
+                        .map_or_else(|| entry.program.clone(), |row| row.label);
+                    let banner = center.arrived(&Settings::kept(), *entry, Instant::now(), &label);
                     (banner.map(|notice| (notice, id)), Vec::new(), false)
                 }
                 Push::Read { ids } => {
