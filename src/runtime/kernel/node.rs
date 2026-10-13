@@ -627,6 +627,7 @@ async fn next_heads(node: &Node, last: Option<u64>) -> noded::Result<(Vec<method
         .client
         .blocks(&page)
         .await?
+        .blocks
         .into_iter()
         .rev()
         .filter(|block| last.is_none_or(|last| block.height > last))
@@ -863,21 +864,22 @@ fn block_of(block: noded::Finalized) -> methods::Block {
         time: block.time,
         epoch: block.epoch,
         proposer: block.proposer,
-        txs: block
-            .txs
-            .into_iter()
-            .map(|tx| methods::Tx {
-                hash: tx.hash,
-                signer: tx.signer,
-                anchor: methods::Tip {
-                    height: tx.anchor.height,
-                    id: tx.anchor.id,
-                },
-                target: tx.target,
-                payload: tx.payload,
-                receipt: tx.receipt.map(receipt_of),
-            })
-            .collect(),
+        txs: block.txs.into_iter().map(tx_of).collect(),
+    }
+}
+
+fn tx_of(tx: noded::Tx) -> methods::Tx {
+    methods::Tx {
+        hash: tx.hash,
+        signer: tx.signer,
+        anchor: methods::Tip {
+            height: tx.anchor.height,
+            id: tx.anchor.id,
+        },
+        target: tx.target,
+        size: tx.size,
+        payload: tx.payload,
+        receipt: tx.receipt.map(receipt_of),
     }
 }
 
@@ -903,9 +905,11 @@ pub(super) fn blocks(node: Node, ask: Vec<u8>) -> Answered {
             before: page.before,
             limit: page.limit,
         };
-        let blocks = node.client.blocks(&page).await.map_err(refused)?;
-        let blocks: Vec<methods::Block> = blocks.into_iter().map(block_of).collect();
-        Ok(methods::encode(&blocks))
+        let page = node.client.blocks(&page).await.map_err(refused)?;
+        Ok(methods::encode(&methods::BlockList {
+            blocks: page.blocks.into_iter().map(block_of).collect(),
+            listed_from: page.listed_from,
+        }))
     })
 }
 
@@ -918,6 +922,24 @@ pub(super) fn block(node: Node, ask: Vec<u8>) -> Answered {
         };
         let block = node.client.block(&by).await.map_err(refused)?;
         Ok(methods::encode(&block.map(block_of)))
+    })
+}
+
+pub(super) fn tx(node: Node, ask: Vec<u8>) -> Answered {
+    Box::pin(async move {
+        let ask: methods::TxAsk = methods::decode(&ask).map_err(malformed)?;
+        let tx = match ask.tx {
+            methods::TxRef::At { height, position } => noded::TxRef::At { height, position },
+            methods::TxRef::Hash(hash) => noded::TxRef::Hash(hash),
+        };
+        let ask = noded::TxAsk { tx, most: ask.most };
+        let located = node.client.tx(&ask).await.map_err(refused)?;
+        Ok(methods::encode(&located.map(|located| methods::Located {
+            height: located.height,
+            position: located.position,
+            time: located.time,
+            tx: tx_of(located.tx),
+        })))
     })
 }
 
