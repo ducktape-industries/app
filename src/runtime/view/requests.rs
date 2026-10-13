@@ -389,6 +389,9 @@ impl View {
         let outcome = outcome.and_then(|shaped| {
             crate::render::web::declared(&shaped.0, &self.capabilities).map(|()| shaped)
         });
+        let outcome = outcome.and_then(|shaped| {
+            crate::render::av::declared(&shaped.0, &self.capabilities).map(|()| shaped)
+        });
         match outcome {
             Ok((mut frame, mut reports)) => {
                 let kind = match (frame.root.is_some(), frame.unchanged) {

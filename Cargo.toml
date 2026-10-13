@@ -79,6 +79,12 @@ ax-door = []
 # web piece says the build has no web view, and https links go to the system
 # browser.
 web = ["dep:ducktape-web", "ducktape-web/cef"]
+# The camera and the microphone: a view whose manifest declares `camera`
+# or `microphone` draws its pieces with a real device (`src/render/av.rs`,
+# `crates/av`: nokhwa, cpal). A default build compiles none of it: the
+# pieces say the build has no camera or microphone and their methods are
+# refused `media_unsupported`.
+av = ["dep:ducktape-av", "ducktape-av/capture"]
 
 [dependencies]
 gpui-kit = "=0.7.3"
@@ -130,6 +136,8 @@ sha1 = "0.10"
 noded-client = { path = "crates/noded-client", features = ["commonware"] }
 # feature `web` only: CEF and everything that names it
 ducktape-web = { path = "crates/web", optional = true }
+# feature `av` only: nokhwa, cpal and everything that names them
+ducktape-av = { path = "crates/av", optional = true }
 # self-update: the state machine, the manifest and its signature
 ducktape-updater = { path = "crates/updater" }
 # the release archive a self-update downloads (`.tar.gz`)
@@ -216,6 +224,10 @@ opt-level = 3
 
 # Optimize the native render and text stack without slowing unrelated workspace crates.
 [profile.dev.package.gpui-pre]
+opt-level = 2
+
+# a camera picture converted per pixel, 30 times a second (feature av)
+[profile.dev.package.ducktape-av]
 opt-level = 2
 
 [profile.dev.package.gpui-base]

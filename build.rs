@@ -35,6 +35,21 @@ fn main() {
     {
         println!("cargo:rustc-link-arg-bins=-Wl,-rpath,$ORIGIN");
     }
+
+    // feature `av` on macOS: an unbundled binary has no Info.plist but the
+    // one in its own `__info_plist` section, and without the camera's and
+    // microphone's usage strings there the system raises no prompt
+    if std::env::var_os("CARGO_FEATURE_AV").is_some()
+        && std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos")
+    {
+        let plist =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging/dev-Info.plist");
+        println!("cargo:rerun-if-changed={}", plist.display());
+        println!(
+            "cargo:rustc-link-arg-bins=-Wl,-sectcreate,__TEXT,__info_plist,{}",
+            plist.display()
+        );
+    }
 }
 
 /// `<short sha>`, or `<short sha>-<digest>` when the working tree differs from

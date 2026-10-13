@@ -25,6 +25,9 @@
 //!   short prefix; `link.open` — the one way out: a `duck://` link, or an
 //!   `https://` one for the system browser; `clock.ticks` — a periodic
 //!   empty item, at most one per redraw ([`ticked`]).
+//! - `camera.devices`, `microphone.devices` — the devices the system lists
+//!   now (`render/av.rs`), refused `media_unsupported` by a build without
+//!   feature `av`.
 //!
 //! On the node, as a task on [`handle`] (`node`), each answer waiting in
 //! [`Replies`] for the view's next redraw; transport failures retried for
@@ -370,6 +373,10 @@ pub(super) fn answer(
             ),
             Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
         },
+        // the cameras, microphones and speakers (`render/av.rs`; refused
+        // `media_unsupported` by a build without feature `av`)
+        (Capability::Camera, "devices") => view.reply(id, crate::render::av::cameras()),
+        (Capability::Microphone, "devices") => view.reply(id, crate::render::av::microphones()),
         (Capability::Host, "badge") => match methods::decode::<i64>(payload).ok() {
             Some(count) => {
                 view.intents.push(Intent::Badge(count));

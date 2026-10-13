@@ -26,6 +26,7 @@ pub(crate) const GRAB: f32 = 5.;
 
 mod accessibility;
 mod anchored;
+pub(crate) mod av;
 mod canvas;
 mod commands;
 pub(crate) mod deferred;
@@ -237,6 +238,8 @@ pub struct ViewTree {
     sensors: HashMap<AuthoredPath, SensorState>,
     /// The web pieces' pages (`web.rs`).
     webs: web::Pages,
+    /// The camera and microphone pieces' devices (`av.rs`).
+    media: av::Media,
     /// A resize handle's press position while its drag lasts.
     drags: HashMap<AuthoredPath, Point<Pixels>>,
 
@@ -337,6 +340,7 @@ impl ViewTree {
             held_keys: Vec::new(),
             sensors: HashMap::new(),
             webs: Default::default(),
+            media: Default::default(),
             pictures: Default::default(),
             images: Default::default(),
             tooltips: HashMap::new(),
@@ -424,6 +428,8 @@ impl ViewTree {
             Node::Overlay { .. } => self.overlay(node, window, cx),
             Node::Anchored { .. } => self.anchored(node, window, cx),
             Node::Web { .. } => self.web(node, window, cx),
+            Node::Camera { .. } => self.camera(node, cx),
+            Node::Microphone { .. } => self.microphone(node, window, cx),
         };
         if entered_scope {
             self.authored_path.pop();
