@@ -41,6 +41,9 @@ fn drag_from(x: f32, cx: &mut gpui_kit::TestAppContext) -> (f64, bool) {
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
     native.update(|window, cx| window.render_frame(cx));
+    // the list's first settled report is the mount's, not the wheel's
+    native.update(|window, cx| _ = window.simulate_next_frame(cx));
+    events.borrow_mut().clear();
     let at = point(px(x), px(40.));
     native.simulate_mouse_move(at, None, Default::default());
     native.simulate_mouse_down(at, MouseButton::Left, Default::default());
@@ -191,7 +194,9 @@ fn scrolled_beside_the_divider(x: f32, cx: &mut gpui_kit::TestAppContext) -> usi
         path: vec![named_id("split"), named_id("rows")],
         item_count: 40,
         alignment: wire::ListAlignment::Bottom,
-        overdraw: 0.,
+        // two rows measured above the fold: what a wheel can move into
+        // (unmeasured rows have no height to scroll through)
+        overdraw: 40.,
         sizing: wire::ListSizingBehavior::Auto,
         following_tail: true,
         revision: 0,
@@ -208,6 +213,9 @@ fn scrolled_beside_the_divider(x: f32, cx: &mut gpui_kit::TestAppContext) -> usi
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
     native.update(|window, cx| window.render_frame(cx));
+    // the list's first settled report is the mount's, not the wheel's
+    native.update(|window, cx| _ = window.simulate_next_frame(cx));
+    events.borrow_mut().clear();
     let at = point(px(x), px(40.));
     native.simulate_mouse_move(at, None, Default::default());
     native.simulate_event(gpui_kit::ScrollWheelEvent {
@@ -216,6 +224,7 @@ fn scrolled_beside_the_divider(x: f32, cx: &mut gpui_kit::TestAppContext) -> usi
         ..Default::default()
     });
     native.update(|window, cx| window.render_frame(cx));
+    native.update(|window, cx| _ = window.simulate_next_frame(cx));
     native.run_until_parked();
     events
         .borrow()

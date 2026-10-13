@@ -972,7 +972,7 @@ mod tests {
             gpui_kit::size(gpui_kit::px(400.), gpui_kit::px(300.)),
             |window, cx| {
                 seat.update(cx, |seat, cx| {
-                    seat.place(window.window_handle(), Some((400., 300.)), cx)
+                    seat.place(window.window_handle(), Some((400., 300.)), true, cx)
                 });
                 Pane {
                     seat: seat.clone(),

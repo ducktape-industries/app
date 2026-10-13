@@ -348,7 +348,7 @@ impl ViewTree {
             Node::Text(view_wire::TextNode { .. }) => self.text(node),
             Node::Space => div().into_any_element(),
             Node::UniformList { .. } => self.uniform_list(node, window, cx),
-            Node::List { .. } => self.variable_list(node, cx),
+            Node::List { .. } => self.variable_list(node, window, cx),
             Node::Container(view_wire::ContainerNode { .. }) => self.container(node, window, cx),
             Node::Field { .. } => self.field(node, window, cx),
             Node::Deferred { .. } => self.deferred(node, window, cx),
