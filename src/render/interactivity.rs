@@ -4,9 +4,9 @@
 
 use super::{Tree, ViewTree};
 use gpui_kit::{
-    App, Context, FocusHandle, KeyDownEvent, KeyUpEvent, Keystroke, ModifiersChangedEvent,
-    MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MousePressureEvent, MouseUpEvent,
-    PinchEvent, ScrollWheelEvent, StatefulInteractiveElement,
+    App, AppContext as _, Context, FocusHandle, KeyDownEvent, KeyUpEvent, Keystroke,
+    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
+    MousePressureEvent, MouseUpEvent, PinchEvent, ScrollWheelEvent, StatefulInteractiveElement,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +17,7 @@ pub(super) fn apply<E: StatefulInteractiveElement>(
     interactivity: &wire::Interactivity,
     styles: &wire::Styles,
     focus_handle: Option<FocusHandle>,
-    tooltip: Option<(Arc<wire::Node>, wire::Styles)>,
+    tooltip_held: bool,
     cx: &mut Context<ViewTree>,
 ) -> E {
     if let Some(value) = interactivity.tab_stop {
@@ -72,17 +72,29 @@ pub(super) fn apply<E: StatefulInteractiveElement>(
     element = apply_mouse(element, interactivity, cx);
     element = apply_keyboard(element, interactivity, cx);
     element = apply_misc(element, interactivity, cx);
-    if let (Some(tooltip), Some((content, styles))) = (&interactivity.tooltip, tooltip) {
-        let parent = cx.entity().downgrade();
+    if let Some(tooltip) = &interactivity.tooltip
+        && tooltip_held
+    {
+        let (parent, request) = (cx.entity().downgrade(), tooltip.request);
         let delay = Duration::from_millis(tooltip.delay_ms);
         element = element.tooltip_show_delay(delay);
-        // the content is drawn with the table it came with
+        // what the tree holds for the route when gpui shows the tooltip, not
+        // when this frame drew: gpui keeps the builder of the frame the hover
+        // began in, and the guest's answer to that hover lands in the delay.
+        // The content is drawn with the table it came with.
         let build = move |cx: &mut App| {
-            let tree = Tree {
-                root: (*content).clone(),
-                styles: styles.clone(),
-            };
-            super::tooltip_containment::build(parent.clone(), tree, cx)
+            let held = parent.upgrade().and_then(|tree| {
+                let held = tree.read(cx).tooltips.get(&request)?;
+                Some(Tree {
+                    root: (*held.content).clone(),
+                    styles: held.styles.clone(),
+                })
+            });
+            match held {
+                Some(tree) => super::tooltip_containment::build(parent.clone(), tree, cx),
+                // the guest took it back during the delay
+                None => cx.new(|_| gpui_kit::Empty).into(),
+            }
         };
         if tooltip.hoverable {
             element = element.hoverable_tooltip(move |_, cx| build(cx));

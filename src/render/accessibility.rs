@@ -370,16 +370,15 @@ impl ViewTree {
                 .or_insert_with(|| cx.focus_handle());
             tabbed(handle.clone(), interactivity)
         });
-        // the content the guest built for the node's tooltip, if it has
-        let tooltip = (interactivity.tooltip.as_ref())
-            .and_then(|tooltip| self.tooltips.get(&tooltip.request))
-            .map(|held| (held.content.clone(), held.styles.clone()));
+        // whether the guest has built the node's tooltip
+        let tooltip_held = (interactivity.tooltip.as_ref())
+            .is_some_and(|tooltip| self.tooltips.contains_key(&tooltip.request));
         element = super::interactivity::apply(
             element,
             interactivity,
             &self.styles,
             focus_handle,
-            tooltip,
+            tooltip_held,
             cx,
         );
         // assistive technology's press is this click too: gpui-pre answers
