@@ -262,6 +262,24 @@ fn an_https_link_opens_in_the_web_view_else_in_the_system_browser(cx: &mut TestA
     assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/c"));
 }
 
+/// A click on the update notice (`runtime::notify` posts `OpenUpdates`):
+/// Settings opens on the console, on its Updates page.
+#[gpui_kit::test]
+fn the_update_notice_opens_settings_on_updates(cx: &mut TestAppContext) {
+    let (app, key) = console(cx);
+    let overlays = app
+        .windows
+        .read_with(cx, |windows, _| windows.own(key).unwrap().overlays.clone());
+    app.windows.update(cx, |windows, cx| {
+        windows.posted(super::windows::Posted::OpenUpdates, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        overlays.read_with(cx, |it, _| *it.get()),
+        Some(Overlay::Settings(super::SettingsPage::Updates))
+    );
+}
+
 /// The same link notice while it is up is not shown again, so a view
 /// repeating a bad link cannot keep the notice up past its time.
 #[gpui_kit::test]

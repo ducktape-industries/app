@@ -212,28 +212,33 @@ fn release_of(exe: Vec<u8>) -> Vec<Item> {
 
 // ---- the channel: fetch and download ----------------------------------------
 
-/// A published pair verifies under the pinned key; a stranger's signature
-/// over the same bytes is refused, and a channel with nothing published is
-/// a check that did not happen, not a refusal.
+/// Each channel's pair is read from its own files and verifies under the
+/// pinned key; a stranger's signature over the same bytes is refused, and a
+/// channel with nothing published is a check that did not happen, not a
+/// refusal.
 #[test]
 fn a_published_pair_verifies_and_a_strangers_signature_is_refused() {
     let bucket = Bucket::new();
-    publish(&bucket, Channel::Stable, 7, &release_of(script("a")));
     let client = client();
-    let fetched = block(fetch(&client, &bucket.base, Channel::Stable, &keys()));
-    assert_eq!(fetched.unwrap().unwrap().manifest.sequence, 7);
-    assert_eq!(
-        block(fetch(&client, &bucket.base, Channel::Nightly, &keys())),
-        None
-    );
+    let sequence = |channel| {
+        let fetched = block(fetch(&client, &bucket.base, channel, &keys()));
+        fetched.map(|verified| verified.map(|verified| verified.manifest.sequence))
+    };
+    publish(&bucket, Channel::Stable, 7, &release_of(script("a")));
+    assert_eq!(sequence(Channel::Nightly), None);
+    publish(&bucket, Channel::Nightly, 9, &release_of(script("n")));
+    assert_eq!(sequence(Channel::Stable), Some(Ok(7)));
+    assert_eq!(sequence(Channel::Nightly), Some(Ok(9)));
     let manifest = bucket.files.lock().unwrap()["stable.json"].clone();
     let stranger = signing_key_from_hex(&"07".repeat(32)).unwrap();
     bucket.put(
         "stable.json.sig",
         Signature::sign(&stranger, &manifest).encoded().into_bytes(),
     );
-    let refused = block(fetch(&client, &bucket.base, Channel::Stable, &keys()));
-    assert_eq!(refused, Some(Err(ManifestRefusal::BadSignature)));
+    assert_eq!(
+        sequence(Channel::Stable),
+        Some(Err(ManifestRefusal::BadSignature))
+    );
 }
 
 /// A manifest past the cap is not read, whatever it holds.
