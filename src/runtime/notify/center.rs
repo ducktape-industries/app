@@ -99,6 +99,11 @@ pub(crate) struct Center {
     me: Weak<Mutex<Center>>,
     /// The max `through_height` a view said it saw per `(program, tag)`.
     watermarks: HashMap<(String, String), u64>,
+    /// Tag reads upstream: at most one in flight per `(program, tag)`
+    /// (the inbox paces an account), and the latest height waiting
+    /// behind it, replacing any earlier one.
+    in_flight: std::collections::HashSet<(String, String)>,
+    queued: HashMap<(String, String), u64>,
     buckets: HashMap<String, Bucket>,
     /// Entries past the burst limit since the program's last banner.
     more: HashMap<String, u32>,
@@ -370,11 +375,7 @@ impl Center {
                 && entry.tag == row.tag
                 && entry.height <= row.through_height
         });
-        self.send(Call::Read(Read::Tag {
-            program: row.program.clone(),
-            tag: row.tag.clone(),
-            through_height: row.through_height,
-        }));
+        self.read_tag(&row.program, &row.tag, row.through_height);
         let segments: Vec<&str> = row.link.segments.iter().map(String::as_str).collect();
         let link = ducklink::mint(&self.network, &row.link.program, &segments);
         Some(Opened { link })
@@ -428,12 +429,34 @@ impl Center {
         self.mark_read(|entry| {
             entry.program == program && entry.tag == tag && entry.height <= height
         });
+        self.read_tag(program, tag, height);
+        true
+    }
+
+    /// `read {program, tag, through_height}` upstream, one in flight per
+    /// `(program, tag)`: while one is out, the newest height waits and
+    /// goes when it answers (a scrolling view's burst is two requests).
+    fn read_tag(&mut self, program: &str, tag: &str, height: u64) {
+        let key = (program.to_owned(), tag.to_owned());
+        if self.in_flight.contains(&key) {
+            self.queued.insert(key, height);
+            return;
+        }
+        self.in_flight.insert(key);
         self.send(Call::Read(Read::Tag {
             program: program.to_owned(),
             tag: tag.to_owned(),
             through_height: height,
         }));
-        true
+    }
+
+    /// A tag read answered (or failed): the next queued height goes out.
+    fn read_tag_done(&mut self, program: &str, tag: &str) {
+        let key = (program.to_owned(), tag.to_owned());
+        self.in_flight.remove(&key);
+        if let Some(height) = self.queued.remove(&key) {
+            self.read_tag(program, tag, height);
+        }
     }
 
     /// The mutes as the inbox keeps them (a `Prefs` push, or the answer
@@ -453,6 +476,15 @@ impl Center {
     /// mutes replaced upstream. One race across devices is accepted: the
     /// last `PUT` wins.
     pub(crate) fn set_muted(&mut self, program: &str, muted: bool) {
+        if program.len() > notices::MAX_LINK_PROGRAM_BYTES {
+            // the inbox's cap (the notices' own): refused here, in a sentence
+            self.refused = Some(format!(
+                "a muted program's name is at most {} bytes",
+                notices::MAX_LINK_PROGRAM_BYTES
+            ));
+            self.rev += 1;
+            return;
+        }
         self.mutes.programs.retain(|known| known != program);
         if muted {
             self.mutes.programs.push(program.to_owned());
@@ -500,7 +532,18 @@ impl Center {
         let me = self.me.clone();
         crate::runtime::handle().spawn(async move {
             let failed = match call {
-                Call::Read(read) => client.read(&read).await.err(),
+                Call::Read(read) => {
+                    let failed = client.read(&read).await.err();
+                    if let Read::Tag { program, tag, .. } = &read
+                        && let Some(center) = me.upgrade()
+                    {
+                        center
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .read_tag_done(program, tag);
+                    }
+                    failed
+                }
                 Call::HideRead => client.hide_read().await.err(),
                 Call::Mutes(mutes) => match client.set_mutes(&mutes).await {
                     // the stored set comes back over `live` as well

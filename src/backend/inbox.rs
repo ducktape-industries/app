@@ -25,6 +25,10 @@ use super::session::seated_sign;
 /// KiB at most.
 const MAX_BODY_BYTES: usize = 4 << 20;
 
+/// The inbox's pace past its burst: one call every 200 ms per account. A
+/// 429 waits this long once.
+const PACE: std::time::Duration = std::time::Duration::from_millis(200);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Error {
     /// `status` answered 404: this address keeps no inbox.
@@ -143,12 +147,16 @@ impl Client {
     }
 
     /// A call under the session's token. A 401 logs in again once and
-    /// asks again; a second one is [`Error::Denied`].
+    /// asks again; a second one is [`Error::Denied`]. A 429 (the inbox's
+    /// pacing: 20 calls at once, then one every 200 ms) waits [`PACE`]
+    /// and sends once more; a second one is the answer, never a spin.
     async fn authed<T: DeserializeOwned>(
         &self,
         request: impl Fn(&reqwest::Client) -> reqwest::RequestBuilder,
     ) -> Result<T> {
-        for again in [false, true] {
+        let mut relogged = false;
+        let mut paced = false;
+        loop {
             let token = match self.token() {
                 Some(token) => token,
                 None => self.login().await?.token,
@@ -160,14 +168,27 @@ impl Client {
                     sentence,
                 }) => {
                     *self.token.lock().unwrap_or_else(|p| p.into_inner()) = None;
-                    if again {
+                    if relogged {
                         return Err(Error::Denied(sentence));
                     }
+                    relogged = true;
+                }
+                Err(Error::Failed {
+                    status: 429,
+                    sentence,
+                }) => {
+                    if paced {
+                        return Err(Error::Failed {
+                            status: 429,
+                            sentence,
+                        });
+                    }
+                    paced = true;
+                    tokio::time::sleep(PACE).await;
                 }
                 answer => return answer,
             }
         }
-        unreachable!("the second pass answers or is denied")
     }
 
     /// Newest first, below `before` (the newest when `None`).
@@ -372,6 +393,29 @@ mod tests {
             Error::Denied(_)
         ));
         assert_eq!(fake.logins(), 3, "one more login, not a loop");
+    }
+
+    /// A 429 is waited out once and the call sent again; two in a row are
+    /// the answer, not a spin.
+    #[tokio::test]
+    async fn a_429_waits_once_then_sends_once() {
+        let _seat = crate::backend::seat_serial();
+        crate::backend::seat_key(PrivateKey::from_seed(14)).await;
+        let fake = FakeInbox::start().await;
+        let rpc = RpcClient::new(fake.origin());
+        let client = Client::new(&rpc, "net#0", "d");
+        client.login().await.unwrap();
+        fake.refuse_pace(1);
+        let started = std::time::Instant::now();
+        client.read(&Read::All { all: true }).await.unwrap();
+        assert!(started.elapsed() >= PACE, "the second send waited");
+        assert_eq!(fake.reads().len(), 1);
+        fake.refuse_pace(2);
+        assert!(matches!(
+            client.read(&Read::All { all: true }).await.unwrap_err(),
+            Error::Failed { status: 429, .. }
+        ));
+        assert_eq!(fake.reads().len(), 1, "two 429s in a row end the call");
     }
 
     /// The live socket carries the token and streams the fake's pushes.

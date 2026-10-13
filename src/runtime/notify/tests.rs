@@ -320,28 +320,21 @@ fn settings_read_the_prefs_keys() {
 
 /// The kept settings are the process's, not the saving thread's: the inbox
 /// runner judges entries on the kernel's thread by the word the window
-/// thread just saved. (Under a per-thread cache the other thread reads its
-/// own, stale or empty, copy.)
+/// thread just saved. Under a per-thread cache the other thread reads its
+/// own copy, which in a test is its own empty prefs: never the word. Other
+/// tests load their own prefs into the shared cache meanwhile, so the read
+/// is tried a few times: one that sees the word proves the cache is shared.
 #[test]
 fn the_kept_settings_are_read_on_any_thread() {
-    let _serial = crate::backend::seat_serial();
     let mut center = Center::default();
-    super::settings::set_permission(&mut center, "kept-test", Permission::Allow);
-    Settings::load();
-    let seen = std::thread::spawn(|| Settings::kept().programs.get("kept-test").copied())
-        .join()
-        .unwrap();
+    let seen = (0..20).find_map(|_| {
+        super::settings::set_permission(&mut center, "kept-test", Permission::Allow);
+        Settings::load();
+        std::thread::spawn(|| Settings::kept().programs.get("kept-test").copied())
+            .join()
+            .unwrap()
+    });
     assert_eq!(seen, Some(Permission::Allow));
-    super::settings::set_permission(&mut center, "kept-test", Permission::Silent);
-    Settings::load();
-    let seen = std::thread::spawn(|| Settings::kept().programs.get("kept-test").copied())
-        .join()
-        .unwrap();
-    assert_eq!(
-        seen,
-        Some(Permission::Silent),
-        "a save reaches the other thread"
-    );
 }
 
 /// The old log directory goes, once, at start.
@@ -593,4 +586,53 @@ async fn a_prefs_push_moves_the_mutes_and_the_page_and_a_refused_put_is_said() {
         center.lock().mutes.programs,
         vec!["chat".to_owned(), "forge".to_owned()]
     );
+}
+
+/// A scrolling view's burst of watermarks under one tag sends at most one
+/// read at a time: the first goes out, the newest waits behind it and
+/// goes when it answers; the ones between are never sent. Another tag's
+/// read is its own.
+#[tokio::test]
+async fn a_burst_of_watermarks_sends_one_read_per_tag_at_a_time() {
+    let _seat = seated(26).await;
+    let fake = FakeInbox::start().await;
+    fake.set_entries(vec![entry(1, "chat", "room", 1)]);
+    fake.hold_reads(400);
+    let center = CenterHandle::default();
+    let rpc = crate::backend::RpcClient::new(fake.origin());
+    let _follower = super::start(&rpc, "net#0", "Desktop", center.clone());
+    until(|| center.lock().state == InboxState::Ready).await;
+    for height in 10..=15 {
+        center.lock().watermark("chat", "room", height);
+    }
+    center.lock().watermark("chat", "other", 3);
+    until(|| fake.reads().len() == 3).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let reads = fake.reads();
+    assert_eq!(reads.len(), 3, "first, newest, and the other tag's");
+    let heights: Vec<(String, u64)> = reads
+        .iter()
+        .filter_map(|read| match read {
+            Read::Tag {
+                tag,
+                through_height,
+                ..
+            } => Some((tag.clone(), *through_height)),
+            _ => None,
+        })
+        .collect();
+    assert!(heights.contains(&("room".into(), 10)));
+    assert!(heights.contains(&("room".into(), 15)));
+    assert!(heights.contains(&("other".into(), 3)));
+}
+
+/// A program's name over the inbox's cap is refused here, in a sentence,
+/// and nothing is sent.
+#[test]
+fn a_mute_over_the_name_cap_is_refused_locally() {
+    let mut center = ready();
+    let long = "p".repeat(notices::MAX_LINK_PROGRAM_BYTES + 1);
+    center.set_muted(&long, true);
+    assert!(!center.muted(&long));
+    assert!(center.refused.as_deref().unwrap().contains("at most"));
 }

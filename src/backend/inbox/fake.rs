@@ -33,6 +33,10 @@ struct State {
     hides: usize,
     mute_puts: Vec<Mutes>,
     stopped: Option<inbox_api::Stopped>,
+    /// Every `read` waits this long before it is answered.
+    read_delay_ms: u64,
+    /// The next `n` authed calls answer 429.
+    pace_refusals: usize,
 }
 
 pub(crate) struct FakeInbox {
@@ -106,6 +110,15 @@ impl FakeInbox {
         state.entries = entries;
     }
 
+    pub(crate) fn hold_reads(&self, ms: u64) {
+        self.state().read_delay_ms = ms;
+    }
+
+    /// The next `n` calls under a token answer 429.
+    pub(crate) fn refuse_pace(&self, n: usize) {
+        self.state().pace_refusals = n;
+    }
+
     pub(crate) fn set_stopped(&self, stopped: Option<inbox_api::Stopped>) {
         self.state().stopped = stopped;
     }
@@ -158,6 +171,10 @@ async fn serve(mut stream: TcpStream, state: Arc<Mutex<State>>, pushes: broadcas
     let Ok((method, path, body)) = read_request(&mut stream).await else {
         return;
     };
+    let delay = state.lock().unwrap().read_delay_ms;
+    if delay > 0 && path.starts_with("/inbox/v1/read") {
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+    }
     let (status, body) = answer(&method, &path, &head, &body, &state, &pushes);
     let reply = format!(
         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -241,6 +258,10 @@ fn answer(
             let token = bearer(head);
             if !token.is_some_and(|token| state.tokens.contains(&token)) {
                 return ("401 Unauthorized", b"sign in first".to_vec());
+            }
+            if state.pace_refusals > 0 {
+                state.pace_refusals -= 1;
+                return ("429 Too Many Requests", b"one call every 200 ms".to_vec());
             }
             match (method, call) {
                 ("GET", "entries") => {
