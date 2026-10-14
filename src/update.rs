@@ -46,8 +46,8 @@
 //! Every path is absolute under those roots, never relative to the running
 //! executable. On macOS the installed bundle is the one app LaunchServices
 //! knows of this install: Spotlight skips `releases.noindex`, a swap
-//! registers what it put in place and unregisters what it parked, and a
-//! bundle is unregistered before it is removed ([`macos::launch_services`]).
+//! registers the bundle it put in place, and a bundle is unregistered
+//! before it is removed ([`macos::launch_services`]).
 
 mod boot;
 mod channel;

@@ -18,9 +18,12 @@
 //! staged from an archive is named by the archive's, so its executable's is
 //! recorded as it stages, in `<updates>/executables.json`.
 //!
-//! The installed bundle is the one app of the install LaunchServices knows:
-//! the swap registers it and unregisters the bundle it parked, which would
-//! otherwise keep the record the installed path had ([`launch_services`]).
+//! The installed bundle is the one app of the install LaunchServices knows.
+//! It registers, within seconds, any bundle that appears where Spotlight
+//! looks, and keeps the record by path after the bundle is gone; so the
+//! releases dir is one Spotlight skips, the swap registers the installed
+//! path again for the bundle now there, and a removal unregisters first
+//! ([`launch_services`]).
 //!
 //! Everything here compiles on every platform so the Linux build type-checks
 //! it; only the swap call itself is macOS's, and the boot step reaches this
@@ -238,8 +241,8 @@ fn finish(layout: &Layout, from: Sha, to: Sha, journal: &Journal) -> Result<(), 
             .map_err(|error| Refusal::io("park_failed", &parent, &error))?;
         super::move_tree(&journal.swapped_with, &park)?;
     }
-    // the installed path's record went with the bundle that held it
-    launch_services(&park, false);
+    // the installed path's record is by path: it still describes the
+    // bundle that was there
     launch_services(&layout.installed_bundle(), true);
     let _ = std::fs::remove_dir(layout.release_dir(to));
     super::replace_symlink(&layout.previous_link(), &Layout::link_target(from))?;

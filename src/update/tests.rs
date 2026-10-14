@@ -1451,9 +1451,9 @@ mod macos {
         std::fs::remove_dir_all(root.path()).unwrap();
     }
 
-    /// LaunchServices knows one app of the install, the installed bundle:
-    /// after a swap in and a swap back, no staged, parked or collected
-    /// bundle is left registered. It writes to this Mac's LaunchServices,
+    /// LaunchServices knows one app of the install, the installed bundle: a
+    /// staged bundle is never registered, and after a swap in and a swap
+    /// back no parked or collected bundle is left registered. It writes to this Mac's LaunchServices,
     /// so it runs by hand, in `~/tmp` (where Spotlight looks), and
     /// unregisters what it leaves.
     #[test]
@@ -1468,13 +1468,24 @@ mod macos {
             data_home: root.path().join("data"),
         };
         crate::update::macos::LAUNCH_SERVICES.with(|on| on.set(true));
+        // a bundle that appears where Spotlight looks is registered within
+        // seconds (10 s on the test Mac); a staged one is given twice that
+        let staged = Sha::digest(b"staged");
+        bundle(&layout.release_dir(staged), "staged");
+        std::thread::sleep(std::time::Duration::from_secs(20));
+        let staged_registered = registered_under(root.path());
+        crate::update::remove_leftover(&layout.release_dir(staged)).unwrap();
         swap_in_and_back(root.path(), &layout);
         let registered = registered_under(root.path());
         for bundle in &registered {
             crate::update::macos::launch_services(bundle, false);
         }
+        for bundle in &staged_registered {
+            crate::update::macos::launch_services(bundle, false);
+        }
         let left = registered_under(root.path());
         std::fs::remove_dir_all(root.path()).unwrap();
+        assert_eq!(staged_registered, Vec::<std::path::PathBuf>::new());
         let ours = |path: &&std::path::PathBuf| {
             path.starts_with(&layout.updates) || path.starts_with(&layout.install)
         };
