@@ -25,7 +25,7 @@ mod mac;
 mod meter;
 
 pub use backend::{Device, Playback, Status};
-pub use camera::Camera;
+pub use camera::{Camera, Fit};
 pub use meter::Meter;
 
 /// What a piece emits whenever any of it changes.
@@ -35,6 +35,8 @@ pub struct State {
     /// The opened device's name; empty while none is.
     pub device: String,
     pub playback: Playback,
+    /// A microphone's: the person is speaking ([`meter`]'s hysteresis).
+    pub speaking: bool,
 }
 
 /// The cameras the system lists now; the first is the default.

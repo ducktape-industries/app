@@ -40,6 +40,20 @@ pub(crate) fn declared(frame: &wire::Frame, capabilities: &[Capability]) -> Resu
     Ok(())
 }
 
+/// Whether `link` is one of the system's privacy settings pages for the
+/// camera or the microphone, the only links besides `duck://` and
+/// `https://` that `link.open` takes: exactly the wire's two, and only on
+/// macOS, where a refused device's state says the page opens
+/// (`MediaState::settings`). Handed to the system as they are.
+pub(crate) fn settings_link(link: &str) -> bool {
+    cfg!(target_os = "macos")
+        && [
+            wire::media::SETTINGS_CAMERA,
+            wire::media::SETTINGS_MICROPHONE,
+        ]
+        .contains(&link)
+}
+
 #[cfg(not(feature = "av"))]
 fn unsupported() -> wire::Error {
     wire::Error::new(
@@ -192,6 +206,7 @@ impl ViewTree {
         &mut self,
         opened: (Option<String>, Option<String>),
         on_state: Option<u32>,
+        kind: Kind,
         make: impl FnOnce(&mut Context<Self>) -> Device,
         cx: &mut Context<Self>,
     ) -> &mut Piece {
@@ -206,7 +221,7 @@ impl ViewTree {
             let heard = route.clone();
             let tell = move |_: &mut Self, state: &ducktape_av::State, cx: &mut Context<Self>| {
                 if let Some(handler) = heard.get() {
-                    let state = told(state);
+                    let state = told(state, kind);
                     cx.emit(wire::Event::Media { handler, state });
                 }
             };
@@ -242,6 +257,7 @@ impl ViewTree {
         let wire::Node::Camera {
             device,
             mirror,
+            fit,
             on_state,
             ..
         } = node
@@ -249,19 +265,28 @@ impl ViewTree {
             unreachable!()
         };
         let mirror = *mirror;
+        let fit = match fit {
+            wire::Fit::Contain => ducktape_av::Fit::Contain,
+            wire::Fit::Cover => ducktape_av::Fit::Cover,
+        };
         let opened = (device.clone(), None);
         let device = device.clone();
         let piece = self.piece(
             opened,
             *on_state,
-            |cx| Device::Camera(cx.new(|cx| ducktape_av::Camera::new(device, mirror, cx))),
+            Kind::Camera,
+            |cx| Device::Camera(cx.new(|cx| ducktape_av::Camera::new(device, mirror, fit, cx))),
             cx,
         );
         let Device::Camera(camera) = &piece.device else {
             unreachable!("a camera's path holds a camera")
         };
-        camera.read(cx).set_mirror(mirror);
-        camera.clone()
+        let camera = camera.clone();
+        camera.update(cx, |camera, cx| {
+            camera.set_mirror(mirror);
+            camera.set_fit(fit, cx);
+        });
+        camera
     }
 
     #[cfg(feature = "av")]
@@ -288,6 +313,7 @@ impl ViewTree {
         let piece = self.piece(
             opened,
             *on_state,
+            Kind::Microphone,
             |cx| Device::Meter(cx.new(|cx| ducktape_av::Meter::new(device, output, color, cx))),
             cx,
         );
@@ -305,6 +331,7 @@ impl ViewTree {
                     match command {
                         wire::MicCommand::Record { seconds } => meter.record(*seconds),
                         wire::MicCommand::Stop => meter.stop(),
+                        wire::MicCommand::Chime => meter.chime(),
                     }
                 }
             }
@@ -313,14 +340,51 @@ impl ViewTree {
     }
 }
 
+/// Which piece a state is told of: the platform's words for a refusal
+/// name the device.
+#[cfg(feature = "av")]
+#[derive(Clone, Copy)]
+enum Kind {
+    Camera,
+    Microphone,
+}
+
+/// How to allow a refused device on this platform, in one line; and
+/// whether the system's settings page for it opens from the app
+/// (`link.open` of the wire's settings links, macOS only).
+#[cfg(feature = "av")]
+fn allow(kind: Kind) -> (String, bool) {
+    let (device, portal) = match kind {
+        Kind::Camera => ("Camera", "camera portal"),
+        Kind::Microphone => ("Microphone", "sound settings"),
+    };
+    match cfg!(target_os = "macos") {
+        true => (
+            format!(
+                "Open System Settings \u{2192} Privacy & Security \u{2192} {device}, turn Ducktape on, then try again."
+            ),
+            true,
+        ),
+        false => (
+            format!("Check the device's permissions (or your desktop's {portal}), then try again."),
+            false,
+        ),
+    }
+}
+
 /// What a view hears of its piece's device.
 #[cfg(feature = "av")]
-fn told(state: &ducktape_av::State) -> wire::MediaState {
+fn told(state: &ducktape_av::State, kind: Kind) -> wire::MediaState {
     use ducktape_av::{Playback, Status};
+    let mut settings = false;
     let (status, detail) = match &state.status {
         Status::Starting => (wire::MediaStatus::Starting, String::new()),
         Status::Live => (wire::MediaStatus::Live, String::new()),
-        Status::Denied => (wire::MediaStatus::Denied, String::new()),
+        Status::Denied => {
+            let (line, opens) = allow(kind);
+            settings = opens;
+            (wire::MediaStatus::Denied, line)
+        }
         Status::Busy => (wire::MediaStatus::Busy, String::new()),
         Status::Gone => (wire::MediaStatus::Gone, String::new()),
         Status::NoDevice => (wire::MediaStatus::NoDevice, String::new()),
@@ -340,6 +404,8 @@ fn told(state: &ducktape_av::State) -> wire::MediaState {
             Playback::Playing => wire::Playback::Playing,
         },
         detail,
+        speaking: state.speaking,
+        settings,
     }
 }
 
@@ -359,6 +425,7 @@ mod tests {
             style: crate::render::plain_style(),
             device: None,
             mirror: true,
+            fit: wire::Fit::Cover,
             on_state: None,
         }
     }
@@ -454,18 +521,41 @@ mod tests {
         .unwrap();
     }
 
-    /// A device's state reaches its view in the wire's words, bounded.
+    /// A device's state reaches its view in the wire's words, bounded;
+    /// a refusal says how to allow the device here, and only macOS offers
+    /// its settings page.
     #[cfg(feature = "av")]
     #[test]
     fn a_device_state_is_told_in_the_wires_words() {
-        let state = told(&ducktape_av::State {
-            status: ducktape_av::Status::Failed(format!("bad\n{}", "x".repeat(300))),
-            device: "Cam\u{202e}era".into(),
-            playback: ducktape_av::Playback::Playing,
-        });
+        let state = told(
+            &ducktape_av::State {
+                status: ducktape_av::Status::Failed(format!("bad\n{}", "x".repeat(300))),
+                device: "Cam\u{202e}era".into(),
+                playback: ducktape_av::Playback::Playing,
+                speaking: true,
+            },
+            Kind::Microphone,
+        );
         assert_eq!(state.status, wire::MediaStatus::Failed);
         assert!(state.detail.len() <= 200 && !state.detail.contains('\n'));
         assert_eq!(state.device, "Camera");
         assert_eq!(state.playback, wire::Playback::Playing);
+        assert!(state.speaking && !state.settings);
+        let denied = told(
+            &ducktape_av::State {
+                status: ducktape_av::Status::Denied,
+                ..Default::default()
+            },
+            Kind::Camera,
+        );
+        assert_eq!(denied.status, wire::MediaStatus::Denied);
+        assert_eq!(denied.settings, cfg!(target_os = "macos"));
+        let word = if cfg!(target_os = "macos") {
+            "Camera, turn Ducktape on"
+        } else {
+            "camera portal"
+        };
+        assert!(denied.detail.contains(word), "{}", denied.detail);
+        assert!(denied.detail.len() <= 200);
     }
 }

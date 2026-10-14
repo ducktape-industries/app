@@ -423,6 +423,19 @@ fn open_link_refuses_any_scheme_but_duck_and_https() {
     for link in ["duck://chat/general", "https://example.com/a"] {
         assert_eq!(open(link), (None, 1), "{link}");
     }
+    // the two settings pages of a refused camera or microphone: on macOS
+    // only, and exactly those two (no scheme opens in general)
+    let settings = [
+        wire::media::SETTINGS_CAMERA,
+        wire::media::SETTINGS_MICROPHONE,
+    ];
+    for link in settings {
+        let opened = match cfg!(target_os = "macos") {
+            true => (None, 1),
+            false => (Some(refusal::MALFORMED_REQUEST.into()), 0),
+        };
+        assert_eq!(open(link), opened, "{link}");
+    }
     for link in [
         "http://example.com",
         "file:///etc/passwd",
@@ -430,6 +443,9 @@ fn open_link_refuses_any_scheme_but_duck_and_https() {
         "mailto:a@b.c",
         "duck://",
         "",
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts",
+        "x-apple.systempreferences:com.apple.preference.security",
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera ",
     ] {
         assert_eq!(
             open(link),
