@@ -422,6 +422,86 @@ fn a_click_on_words_leaves_no_anchor_behind(cx: &mut gpui_kit::TestAppContext) {
     );
 }
 
+/// A click whose pointer drifts a pixel or two between press and lift (any
+/// trackpad click) leaves no anchor either: the drift took in no word, so a
+/// later shift-click selects nothing, whether a frame painted before the
+/// lift or not. A drag that took in words keeps them, and a shift-click
+/// still extends it.
+#[gpui_kit::test]
+fn a_click_that_drifts_leaves_no_anchor_behind(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let root = container_with_style(
+        "pane",
+        div().w(px(150.)).h_full().flex().flex_col().style().clone(),
+        [
+            paragraph("alpha", "alpha beta"),
+            paragraph("gamma", "gamma"),
+        ],
+    );
+    let window = cx.open_window(size(px(300.), px(100.)), |_, cx| Window2 {
+        tree: cx.new(|_| ViewTree::new(root)),
+    });
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    let (word, below) = (point(px(5.), px(10.)), point(px(140.), px(30.)));
+    let shift_click = |native: &mut gpui_kit::VisualTestContext| {
+        native.simulate_mouse_move(below, None, Default::default());
+        native.simulate_event(MouseDownEvent {
+            button: MouseButton::Left,
+            position: below,
+            modifiers: gpui_kit::Modifiers::shift(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        native.simulate_event(MouseUpEvent {
+            button: MouseButton::Left,
+            position: below,
+            modifiers: gpui_kit::Modifiers::shift(),
+            click_count: 1,
+        });
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            gpui_kit::base::TextSelection::selected_text(window, cx)
+        })
+    };
+    for drift in [1., 2., 3.] {
+        let drifted = point(word.x + px(drift), word.y);
+        native.simulate_mouse_move(word, None, Default::default());
+        native.simulate_mouse_down(word, MouseButton::Left, Default::default());
+        native.simulate_mouse_move(drifted, Some(MouseButton::Left), Default::default());
+        native.update(|window, cx| window.render_frame(cx));
+        native.simulate_mouse_up(drifted, MouseButton::Left, Default::default());
+        native.update(|window, cx| window.render_frame(cx));
+        assert_eq!(
+            shift_click(&mut native),
+            "",
+            "a shift-click after a click that drifted {drift} px"
+        );
+        press_drift_and_lift(&mut native, word, drifted);
+        assert_eq!(
+            shift_click(&mut native),
+            "",
+            "a shift-click after a click that drifted {drift} px and lifted before a frame"
+        );
+    }
+    let (from, to) = (point(px(1.), px(10.)), point(px(40.), px(10.)));
+    native.simulate_mouse_move(from, None, Default::default());
+    native.simulate_mouse_down(from, MouseButton::Left, Default::default());
+    native.simulate_mouse_move(to, Some(MouseButton::Left), Default::default());
+    native.update(|window, cx| window.render_frame(cx));
+    native.simulate_mouse_up(to, MouseButton::Left, Default::default());
+    let dragged = native.update(|window, cx| {
+        window.render_frame(cx);
+        gpui_kit::base::TextSelection::selected_text(window, cx)
+    });
+    assert!(dragged.starts_with("alph"), "the drag: {dragged:?}");
+    let extended = shift_click(&mut native);
+    assert!(
+        extended.starts_with("alph") && extended.contains("gamma"),
+        "a shift-click after the drag: {extended:?}"
+    );
+}
+
 /// A drag selecting words inside a clickable box (a chat message's cell)
 /// is not a click on it: the words stay selected, the box hears nothing.
 /// A plain click on the same box is still its click.

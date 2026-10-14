@@ -30,6 +30,10 @@ thread_local! {
     /// Where the last left press on a paragraph went down: a link's click
     /// says which range it was, not where the press began.
     static PRESS: std::cell::Cell<Option<Point<Pixels>>> = const { std::cell::Cell::new(None) };
+    /// The window where a press that went down on a paragraph has been
+    /// released, and the selection it left is still to be weighed
+    /// (`RichParagraph::paint`).
+    static SETTLING: std::cell::Cell<Option<gpui_kit::WindowId>> = const { std::cell::Cell::new(None) };
 }
 
 /// How far a press may travel and still be a click: gpui's own threshold
@@ -198,27 +202,34 @@ impl Element for RichParagraph {
                 PRESS.set(Some(event.position));
             }
         });
-        window.on_mouse_event(|event: &MouseUpEvent, phase, window, cx| {
+        window.on_mouse_event(|event: &MouseUpEvent, phase, window, _| {
             if phase == gpui_kit::DispatchPhase::Capture
                 && event.button == MouseButton::Left
                 && DRAG_CLIP.take().is_some()
             {
                 // the paragraphs the drag left out take part again
                 window.refresh();
-                // A press on words that selected none (a click) leaves
-                // gpui-base's selection an empty anchor, kept for a later
-                // shift-click to extend from. While it holds one, every
-                // paragraph's registration publishes to every paragraph,
-                // each frame: a hover step costs the square of the window's
-                // texts. Nothing extends from a click here; once the gesture
-                // has ended and the click was heard, an empty one is dropped.
-                window.defer(cx, |window, cx| {
-                    if !gpui_kit::base::TextSelection::has_selection(window, cx) {
-                        gpui_kit::base::TextSelection::clear(window, cx);
-                    }
-                });
+                SETTLING.set(Some(window.window_handle().window_id()));
             }
         });
+        // A press on words that selected none (a click, still or drifting a
+        // pixel or two) leaves gpui-base's selection an anchor, kept for a
+        // later shift-click to extend from. While it holds one, every
+        // paragraph's registration publishes to every paragraph, each frame:
+        // a hover step costs the square of the window's texts. Nothing
+        // extends from a click here, so once the gesture has ended one that
+        // takes in no word (the click test's question, `dragged_over_words`)
+        // is dropped. It is asked after the first frame past the release:
+        // until the paragraphs project the ended selection again, each one
+        // it took in copies its whole text.
+        if SETTLING.get() == Some(window.window_handle().window_id()) {
+            SETTLING.set(None);
+            window.defer(cx, |window, cx| {
+                if gpui_kit::base::TextSelection::selected_text(window, cx).is_empty() {
+                    gpui_kit::base::TextSelection::clear(window, cx);
+                }
+            });
+        }
         let run = gpui_kit::base::TextSelectionRun::new(
             self.text.clone(),
             self.layout.clone(),
