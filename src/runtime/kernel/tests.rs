@@ -567,6 +567,31 @@ fn link_open_needs_an_activation_and_takes_it() {
     assert_eq!(guest.intents.len(), 1);
 }
 
+/// `microphone.chime` makes a sound: only at the person's press or key,
+/// so a view on a clock never chimes; the press is taken by the ask.
+/// (Without av: with it, the press would sound the test machine's speaker.)
+#[cfg(not(feature = "av"))]
+#[test]
+fn the_chime_needs_a_press_and_takes_it() {
+    let mut guest = guest();
+    let chime = |id| wire::Request {
+        id,
+        kind: "microphone.chime".into(),
+        payload: methods::encode(&None::<String>),
+    };
+    guest.answer(chime(1), &None);
+    assert_eq!(refusal_code(&mut guest).as_deref(), Some("needs_gesture"));
+    guest.activation = Some(Instant::now());
+    guest.answer(chime(2), &None);
+    assert_eq!(refusal_code(&mut guest), None, "a press chimes");
+    guest.answer(chime(3), &None);
+    assert_eq!(
+        refusal_code(&mut guest).as_deref(),
+        Some("needs_gesture"),
+        "a second chime on the same press"
+    );
+}
+
 /// A screen reader's press on a view's link is one gesture: AccessKit's
 /// Click (what the AX door's `press` sends) is the link's own click, once,
 /// with the one activation the host stamps for it, and the view's

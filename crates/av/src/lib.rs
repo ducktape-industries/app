@@ -1,7 +1,8 @@
 //! The camera and the microphone in a gpui window: a [`Camera`] draws a
 //! camera's pictures (the whole picture, centred, mirrored if asked), a
 //! [`Meter`] draws a microphone's level and records and plays back, and
-//! [`cameras`] and [`audio_devices`] list what can be opened. Each emits
+//! [`cameras`] and [`audio_devices`] list what can be opened, and
+//! [`play_chime`] tests a speaker. Each piece emits
 //! its device's [`State`] as a gpui event. Nothing here knows of views or
 //! the wire.
 //!
@@ -47,6 +48,13 @@ pub fn cameras() -> Result<Vec<Device>, String> {
 /// The microphones and the speakers the system lists now.
 pub fn audio_devices() -> Result<(Vec<Device>, Vec<Device>), String> {
     backend::audio_devices()
+}
+
+/// Plays the test chime on `output` (the system's speaker when `None`)
+/// and returns once it has sounded, about 0.7 s: the speaker test, apart
+/// from any microphone. Blocks the calling thread.
+pub fn play_chime(output: Option<&str>) -> Result<(), String> {
+    backend::play_chime(output)
 }
 
 /// How often a piece reads its feed.

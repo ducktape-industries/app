@@ -90,8 +90,6 @@ pub enum Ask {
     Record(u8),
     /// End a recording or a playback.
     Stop,
-    /// Play the test chime on the speaker.
-    Chime,
 }
 
 impl MicFeed {
@@ -466,11 +464,11 @@ fn run_microphone(device: Option<String>, output: Option<String>, feed: &Arc<Mic
                 Ask::Record(seconds) => {
                     Some((Vec::new(), rate as usize * usize::from(seconds.max(1))))
                 }
-                Ask::Stop | Ask::Chime => None,
+                Ask::Stop => None,
             };
             playback(match ask {
                 Ask::Record(_) => Playback::Recording,
-                Ask::Stop | Ask::Chime => Playback::Idle,
+                Ask::Stop => Playback::Idle,
             });
         }
         let recorded = {
@@ -482,8 +480,6 @@ fn run_microphone(device: Option<String>, output: Option<String>, feed: &Arc<Mic
                 _ => None,
             }
         };
-        // the chime plays as a recording does, from samples made here
-        let recorded = recorded.or_else(|| (asked == Some(Ask::Chime)).then(|| chime(rate)));
         if let Some(samples) = recorded {
             let queue = Queue::new(Mutex::new(VecDeque::from(samples)));
             match speaker(&host, output.as_deref(), rate, queue.clone()) {
@@ -607,6 +603,39 @@ fn capture(
             format!("the microphone sends {other}"),
         )),
     }
+}
+
+/// [`crate::play_chime`]: the chime on its own speaker stream, waited
+/// out. Bounded: a speaker that takes no samples for 2 s past the chime's
+/// length is an error, not a wait forever.
+pub fn play_chime(output: Option<&str>) -> Result<(), String> {
+    let host = cpal::default_host();
+    let rate = find(&host, output, false)
+        .ok_or("no such speaker")?
+        .default_output_config()
+        .map_err(|error| error.to_string())?
+        .sample_rate();
+    let samples = chime(rate);
+    let length = Duration::from_secs_f32(samples.len() as f32 / rate.max(1) as f32);
+    let queue = Queue::new(Mutex::new(VecDeque::from(samples)));
+    let stream = speaker(&host, output, rate, queue.clone()).map_err(|status| match status {
+        Status::Failed(why) => why,
+        Status::Denied => "the system refused the speaker".into(),
+        Status::Busy => "another app is using the speaker".into(),
+        _ => "the speaker is gone".into(),
+    })?;
+    let deadline = std::time::Instant::now() + length + Duration::from_secs(2);
+    while !queue.lock().expect("chime").is_empty() {
+        if std::time::Instant::now() > deadline {
+            return Err("the speaker did not play".into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // ponytail: the last callback's buffer may still be sounding, as for
+    // a playback; a short tail is cut rather than waited on
+    std::thread::sleep(Duration::from_millis(100));
+    drop(stream);
+    Ok(())
 }
 
 /// The test chime, mono at `rate`: 0.3 s of 440 Hz then 0.3 s of 660 Hz
