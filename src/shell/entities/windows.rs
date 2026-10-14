@@ -724,6 +724,11 @@ impl Windows {
         cx: &mut Context<Self>,
     ) {
         let _timed = timed();
+        // a refused camera's or microphone's settings page (macOS): the
+        // system opens it
+        if crate::render::av::settings_link(link) {
+            return cx.open_url(link);
+        }
         let parsed = self.shared.rail.read(cx).parse_link(link);
         match parsed {
             Link::View { module, route } => self.open_seat(module, route, from, cx),

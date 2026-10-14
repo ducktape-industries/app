@@ -62,6 +62,10 @@ pub struct CameraFeed {
     /// The newest picture, not yet shown: the latest wins.
     pub picture: Mutex<Option<Picture>>,
     pub mirror: AtomicBool,
+    /// Whether the piece is being drawn: its pictures are wanted. Off, the
+    /// thread still drains the camera but converts nothing (a hidden or
+    /// minimised window costs no picture work).
+    pub wanted: AtomicBool,
     /// Set when the piece is gone: the thread releases the camera.
     pub stop: AtomicBool,
 }
@@ -74,9 +78,20 @@ pub struct MicFeed {
     pub level: AtomicU32,
     pub playback: Mutex<Playback>,
     pub monitor: AtomicBool,
-    /// `Some(seconds)`: record, then play back; `Some(0)`: stop.
-    pub ask: Mutex<Option<u8>>,
+    /// What the piece asked last, not yet done.
+    pub ask: Mutex<Option<Ask>>,
     pub stop: AtomicBool,
+}
+
+/// What a microphone piece asks of its thread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ask {
+    /// Record this many seconds, then play them back.
+    Record(u8),
+    /// End a recording or a playback.
+    Stop,
+    /// Play the test chime on the speaker.
+    Chime,
 }
 
 impl MicFeed {
@@ -172,6 +187,15 @@ fn run_camera(device: Option<String>, feed: &CameraFeed) {
                 break;
             }
         };
+        if !live {
+            live = true;
+            set(&feed.status, Status::Live);
+        }
+        // read (the camera keeps its buffers moving) but not converted
+        // while nothing draws the piece
+        if !feed.wanted.load(Ordering::Relaxed) {
+            continue;
+        }
         let resolution = buffer.resolution();
         let mirror = feed.mirror.load(Ordering::Relaxed);
         let picture = match buffer.source_frame_format() {
@@ -192,10 +216,6 @@ fn run_camera(device: Option<String>, feed: &CameraFeed) {
         };
         let Some(picture) = picture else { continue };
         *feed.picture.lock().expect("feed picture") = Some(picture);
-        if !live {
-            live = true;
-            set(&feed.status, Status::Live);
-        }
     }
     // the light off now, not when the last reference goes
     let _ = camera.stop_stream();
@@ -315,9 +335,47 @@ pub fn audio_devices() -> Result<(Vec<Device>, Vec<Device>), String> {
         .map_err(|error| error.to_string())?
         .collect();
     Ok((
-        list(inputs, host.default_input_device().as_ref().and_then(id)),
-        list(outputs, host.default_output_device().as_ref().and_then(id)),
+        recognizable(list(
+            inputs,
+            host.default_input_device().as_ref().and_then(id),
+        )),
+        recognizable(list(
+            outputs,
+            host.default_output_device().as_ref().and_then(id),
+        )),
     ))
+}
+
+/// The devices a person recognizes, one entry per device. cpal's ALSA host
+/// lists every PCM name the configuration defines, each a way to one card
+/// (`hw`, `plughw`, `sysdefault`, `front`, `surround51`, `dmix`, `dsnoop`,
+/// their numbered twins) or a plugin (`null`, `pulse`, `pipewire`): one
+/// loopback card was twenty rows. Kept: ALSA's `default` (the system's own
+/// choice, a desktop's sound server where one runs), shown as "System
+/// default", and one `plughw` per card and device (the device with the
+/// rate and format conversions an app needs), the card's own name first,
+/// so its numbered twin is dropped. Elsewhere the system lists devices.
+#[cfg(target_os = "linux")]
+fn recognizable(devices: Vec<Device>) -> Vec<Device> {
+    let mut seen = std::collections::HashSet::new();
+    devices
+        .into_iter()
+        .filter_map(|mut device| {
+            let pcm = device.id.strip_prefix("alsa:").unwrap_or(&device.id);
+            if pcm == "default" {
+                device.name = "System default".into();
+                return Some(device);
+            }
+            let dev = pcm.strip_prefix("plughw:")?.split("DEV=").nth(1)?;
+            seen.insert((device.name.clone(), dev.to_owned()))
+                .then_some(device)
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn recognizable(devices: Vec<Device>) -> Vec<Device> {
+    devices
 }
 
 /// Opens `device` (the default microphone when `None`) on a thread of its
@@ -401,15 +459,18 @@ fn run_microphone(device: Option<String>, output: Option<String>, feed: &Arc<Mic
     let playback = |to: Playback| *feed.playback.lock().expect("feed playback") = to;
     while !feed.stop.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(10));
-        if let Some(seconds) = feed.ask.lock().expect("feed ask").take() {
+        let asked = feed.ask.lock().expect("feed ask").take();
+        if let Some(ask) = asked {
             playing = None;
-            *recording.lock().expect("recording") = match seconds {
-                0 => None,
-                seconds => Some((Vec::new(), rate as usize * usize::from(seconds))),
+            *recording.lock().expect("recording") = match ask {
+                Ask::Record(seconds) => {
+                    Some((Vec::new(), rate as usize * usize::from(seconds.max(1))))
+                }
+                Ask::Stop | Ask::Chime => None,
             };
-            playback(match seconds {
-                0 => Playback::Idle,
-                _ => Playback::Recording,
+            playback(match ask {
+                Ask::Record(_) => Playback::Recording,
+                Ask::Stop | Ask::Chime => Playback::Idle,
             });
         }
         let recorded = {
@@ -421,6 +482,8 @@ fn run_microphone(device: Option<String>, output: Option<String>, feed: &Arc<Mic
                 _ => None,
             }
         };
+        // the chime plays as a recording does, from samples made here
+        let recorded = recorded.or_else(|| (asked == Some(Ask::Chime)).then(|| chime(rate)));
         if let Some(samples) = recorded {
             let queue = Queue::new(Mutex::new(VecDeque::from(samples)));
             match speaker(&host, output.as_deref(), rate, queue.clone()) {
@@ -546,6 +609,25 @@ fn capture(
     }
 }
 
+/// The test chime, mono at `rate`: 0.3 s of 440 Hz then 0.3 s of 660 Hz
+/// at -12 dBFS, each note faded in and out over 10 ms so it does not click.
+pub(crate) fn chime(rate: u32) -> Vec<f32> {
+    let rate = rate.max(1) as f32;
+    let note = (rate * 0.3) as usize;
+    let fade = (rate * 0.01) as usize;
+    let amplitude = 10f32.powf(-12. / 20.);
+    [440f32, 660.]
+        .into_iter()
+        .flat_map(|pitch| {
+            (0..note).map(move |at| {
+                let edge = at.min(note - 1 - at).min(fade) as f32 / fade.max(1) as f32;
+                let phase = std::f32::consts::TAU * pitch * at as f32 / rate;
+                amplitude * edge * phase.sin()
+            })
+        })
+        .collect()
+}
+
 /// A speaker stream playing `queue` (mono at `rate`) on every channel,
 /// silent once it is empty.
 fn speaker(
@@ -637,6 +719,78 @@ mod tests {
         assert!(yuyv_to_bgra(&src[..3], 2, 1, false).is_none());
         let padded = [16, 128, 235, 128, 0, 0, 16, 128, 235, 128, 0, 0];
         assert_eq!(yuyv_to_bgra(&padded, 2, 2, false).unwrap().bgra.len(), 16);
+    }
+
+    /// One loopback card's ALSA names come down to the default and one
+    /// row per card and device.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn alsa_names_come_down_to_one_row_a_device() {
+        let device = |id: &str, name: &str| Device {
+            id: format!("alsa:{id}"),
+            name: name.into(),
+            default: id == "default",
+        };
+        let card = "Loopback, Loopback PCM";
+        let listed = vec![
+            device(
+                "null",
+                "Discard all samples (playback) or generate zero samples (capture)",
+            ),
+            device("default", "default"),
+            device("pipewire", "PipeWire Sound Server"),
+            device("sysdefault:CARD=Loopback", card),
+            device("front:CARD=Loopback,DEV=0", card),
+            device("surround51:CARD=Loopback,DEV=0", card),
+            device("dmix:CARD=Loopback,DEV=0", card),
+            device("dsnoop:CARD=Loopback,DEV=1", card),
+            device("hw:CARD=Loopback,DEV=0", card),
+            device("plughw:CARD=Loopback,DEV=0", card),
+            device("hw:CARD=Loopback,DEV=1", card),
+            device("plughw:CARD=Loopback,DEV=1", card),
+            device("hw:CARD=0,DEV=0", card),
+            device("plughw:CARD=0,DEV=0", card),
+            device("plughw:CARD=0,DEV=1", card),
+            device("plughw:CARD=1,DEV=0", "USB Audio, USB Audio"),
+        ];
+        let kept: Vec<_> = recognizable(listed)
+            .into_iter()
+            .map(|device| (device.id, device.name, device.default))
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                ("alsa:default".into(), "System default".into(), true),
+                ("alsa:plughw:CARD=Loopback,DEV=0".into(), card.into(), false),
+                ("alsa:plughw:CARD=Loopback,DEV=1".into(), card.into(), false),
+                (
+                    "alsa:plughw:CARD=1,DEV=0".into(),
+                    "USB Audio, USB Audio".into(),
+                    false
+                ),
+            ]
+        );
+    }
+
+    /// The chime is 0.6 s, two notes, never louder than -12 dBFS, and
+    /// starts and ends in silence.
+    #[test]
+    fn the_chime_is_two_short_quiet_notes() {
+        let samples = chime(48_000);
+        assert_eq!(samples.len(), 28_800);
+        let peak = samples.iter().fold(0f32, |peak, s| peak.max(s.abs()));
+        assert!(peak <= 0.252 && peak > 0.24, "{peak}");
+        assert_eq!(samples[0], 0.);
+        assert!(samples[samples.len() - 1].abs() < 1e-3);
+        // zero crossings: 440 Hz then 660 Hz, each for 0.3 s
+        let crossings = |half: &[f32]| half.windows(2).filter(|w| w[0] < 0. && w[1] >= 0.).count();
+        let (low, high) = samples.split_at(14_400);
+        assert!((130..=133).contains(&crossings(low)), "{}", crossings(low));
+        assert!(
+            (196..=199).contains(&crossings(high)),
+            "{}",
+            crossings(high)
+        );
     }
 
     #[test]

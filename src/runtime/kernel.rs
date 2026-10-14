@@ -343,7 +343,9 @@ pub(super) fn answer(
         (Capability::Module, "changes") => changes(guest, id, payload),
         (Capability::Chain, "heads") => heads(guest, id, payload),
         // the one way out: a `duck://` link, or an `https://` one for the
-        // system browser; any other scheme is refused here, at the method.
+        // system browser (and on macOS the two privacy settings pages a
+        // refused camera or microphone points at, `render/av.rs`); any
+        // other scheme is refused here, at the method.
         // Only the person's activation opens one, taken by the ask, inside
         // the budget: a view on a clock never opens a tab or reseats the desk
         (Capability::Link, "open") => match methods::decode::<String>(payload) {
@@ -462,7 +464,7 @@ fn openable(link: &str) -> bool {
     ["duck://", "https://"].iter().any(|scheme| {
         link.strip_prefix(scheme)
             .is_some_and(|rest| !rest.is_empty())
-    })
+    }) || crate::render::av::settings_link(link)
 }
 
 /// The UTC offset in seconds the OS keeps for the local time at unix
