@@ -73,8 +73,9 @@ pub async fn take(http: &reqwest::Client, url: &str) -> Result<Option<String>, S
 }
 
 /// RFC 3986's unreserved characters as they are, every other byte
-/// percent-encoded: the app's loopback encodes a form value the same way.
-fn url_encode(value: &str) -> String {
+/// percent-encoded: how a value rides to the auth host, as a form field
+/// or in the page URL's fragment.
+pub fn url_encode(value: &str) -> String {
     value
         .bytes()
         .map(

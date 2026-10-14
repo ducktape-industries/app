@@ -164,22 +164,11 @@ fn form_decode(value: &[u8]) -> Vec<u8> {
     out
 }
 
-pub(super) fn url_encode(value: &str) -> String {
-    value
-        .bytes()
-        .map(
-            |byte| match byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte) {
-                true => (byte as char).to_string(),
-                false => format!("%{byte:02X}"),
-            },
-        )
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use keyscheme::testkit;
+    use noded_client::relay::url_encode;
 
     #[tokio::test]
     async fn the_listener_takes_one_post_on_its_path() {
