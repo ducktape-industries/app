@@ -34,8 +34,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
-use app_update::layout::Channel;
-use app_update::{
+use ducktape_updater::layout::Channel;
+use ducktape_updater::{
     Command, Event, Phase, Platform, RELEASE_KEY, Refusal as ManifestRefusal, RolledBack, Sha,
     SignedManifest, SuccessorKey, TrustedKeys, UpdateBanner, VerifiedManifest, layout, step,
     verify_manifest,

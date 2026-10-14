@@ -21,7 +21,7 @@
 
 use std::path::Path;
 
-use app_update::{Idle, Phase, Sha};
+use ducktape_updater::{Idle, Phase, Sha};
 use tracing::info;
 
 use super::{APP_EXE, BUNDLE, Layout, Refusal, TARGET};

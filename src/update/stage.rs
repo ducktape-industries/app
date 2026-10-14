@@ -14,7 +14,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use app_update::Sha;
+use ducktape_updater::Sha;
 use tracing::{info, warn};
 
 use super::{APP_EXE, BUNDLE, PARTIAL_SUFFIX, TARGET};

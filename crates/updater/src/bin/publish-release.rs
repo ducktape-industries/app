@@ -1,7 +1,7 @@
 //! `publish-release`: the release job's signer.
 //!
 //! Given one archive per platform, it names each by its own sha256
-//! ([`app_update::layout::archive_name`]), seals the manifest of
+//! ([`ducktape_updater::layout::archive_name`]), seals the manifest of
 //! `--channel`, signs it with the seed in `RELEASE_SIGNING_KEY`, writes both
 //! into the channel's one file (`stable.json` or `nightly.json`) and checks
 //! that file the way the app does before it says done. Everything lands in
@@ -11,16 +11,16 @@
 //!
 //! The seed was stored without a round trip, so BEFORE anything is signed its
 //! public half is derived and compared with the key the app pins
-//! ([`app_update::RELEASE_KEY`]); a mismatch signs nothing. `--expect-key` is
+//! ([`ducktape_updater::RELEASE_KEY`]); a mismatch signs nothing. `--expect-key` is
 //! for a dry run with a throwaway seed only: the release job never passes it.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use app_update::layout::Channel;
-use app_update::release::signing_key_from_hex;
-use app_update::{
+use ducktape_updater::layout::Channel;
+use ducktape_updater::release::signing_key_from_hex;
+use ducktape_updater::{
     Artifact, Manifest, PublicKey, RELEASE_KEY, Release, SCHEMA, Sha, Signature, SignedManifest,
     TrustedKeys, layout, verify_manifest,
 };
@@ -175,7 +175,7 @@ fn publish(args: &Args, seed: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use app_update::Platform;
+    use ducktape_updater::Platform;
 
     fn args(out: PathBuf, archive: PathBuf, expect: PublicKey) -> Args {
         Args {
@@ -262,7 +262,7 @@ mod tests {
         };
         assert_eq!(
             verify_manifest(&signed, "stable", &keys).unwrap_err(),
-            app_update::Refusal::ChannelMismatch
+            ducktape_updater::Refusal::ChannelMismatch
         );
         let verified = verify_manifest(&signed, "nightly", &keys).unwrap();
         let artifact = verified.manifest.artifact_for(Platform::HOST).unwrap();

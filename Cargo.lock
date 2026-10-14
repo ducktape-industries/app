@@ -338,17 +338,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "app-update"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
-]
-
-[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2473,7 +2462,6 @@ name = "ducktape-app"
 version = "0.1.0"
 dependencies = [
  "abi",
- "app-update",
  "base64 0.22.1",
  "block2 0.5.1",
  "borsh",
@@ -2483,6 +2471,7 @@ dependencies = [
  "design",
  "ducklink",
  "ducktape-home",
+ "ducktape-updater",
  "ducktape-web",
  "flate2",
  "futures",
@@ -2530,6 +2519,17 @@ dependencies = [
 name = "ducktape-home"
 version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape?branch=feat%2Fcapable-sandbox#665907ddc65ccada5f3e3ba0a95ae955414bfb3c"
+
+[[package]]
+name = "ducktape-updater"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
 
 [[package]]
 name = "ducktape-web"

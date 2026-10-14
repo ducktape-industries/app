@@ -36,7 +36,7 @@ use std::process::{Command, Stdio};
 
 use std::collections::BTreeMap;
 
-use app_update::{Phase, Sha, SwapState};
+use ducktape_updater::{Phase, Sha, SwapState};
 
 use super::{Layout, Refusal};
 

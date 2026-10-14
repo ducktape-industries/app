@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command as Process, Stdio};
 use std::time::{Duration, Instant};
 
-use app_update::{Command, Event, Phase, Sha, SwapState, step};
+use ducktape_updater::{Command, Event, Phase, Sha, SwapState, step};
 use tracing::{debug, info, warn};
 
 use super::{Layout, Refusal, TARGET};

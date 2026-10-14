@@ -1,5 +1,5 @@
 //! The app updates itself. One executable plays both parts of
-//! [`app_update::step`]'s machine and shares nothing between them but
+//! [`ducktape_updater::step`]'s machine and shares nothing between them but
 //! `state.json`:
 //! - [`boot`], at the very top of `main` before gpui starts: reads the state,
 //!   qualifies a staged release, flips to it (or back from one that never
@@ -7,7 +7,7 @@
 //!   through ([`boot`] module);
 //! - the running app ([`channel`]): its first frame is the healthy signal,
 //!   and from then on it checks the chosen channel (stable or nightly) at
-//!   [`app_update::layout::BASE_URL`] now and hourly, downloads, verifies
+//!   [`ducktape_updater::layout::BASE_URL`] now and hourly, downloads, verifies
 //!   and stages the next release for the next start, says so in one desktop
 //!   notice, and shows where it is in Settings › Updates;
 //! - `ducktape-app install` ([`install`]): lays down an install from the
@@ -57,13 +57,13 @@ mod stage;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use app_update::layout::Channel;
 pub(crate) use boot::boot;
 pub(crate) use channel::{
     RESTART_WAITER, Updates, choose, on_moved, rendered, restart, restart_waiter, updates,
 };
 #[cfg(test)]
 pub(crate) use channel::{Shown, rendered_here, show_here};
+pub(crate) use ducktape_updater::layout::Channel;
 pub(crate) use install::install_cli;
 
 use std::fmt;
@@ -73,7 +73,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
-use app_update::{Phase, Sha, state};
+use ducktape_updater::{Phase, Sha, state};
 
 /// The log target every update event is under.
 const TARGET: &str = "ducktape::update";
@@ -627,7 +627,7 @@ mod layout_tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("updates").join("state.json");
         assert_eq!(read_state(&path).unwrap(), None);
-        let phase = Phase::Idle(app_update::Idle {
+        let phase = Phase::Idle(ducktape_updater::Idle {
             current: Sha::digest(b"a"),
             previous: None,
             pinned_sequence: 3,

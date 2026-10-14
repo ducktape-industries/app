@@ -3,10 +3,10 @@
 # The app is a BLIND HOST: it connects to a node, reads the roster, fetches
 # each program's view and renders it. It knows no program by name; every
 # view request names its own target and the app relays the bytes. Source
-# here is the app crate and its self-update (`crates/app-update`);
+# here is the app crate and its self-update (`crates/updater`);
 # everything else arrives as a cargo git dependency.
 #
-# The app updates itself (`src/update.rs`): `crates/app-update` is the pure
+# The app updates itself (`src/update.rs`): `crates/updater` is the pure
 # state machine and the release signer, and the one executable runs the boot
 # step (flip, rollback, exec) at the top of its `main`.
 
@@ -125,7 +125,7 @@ sha1 = "0.10"
 # feature `web` only: CEF and everything that names it
 ducktape-web = { path = "crates/web", optional = true }
 # self-update: the state machine, the manifest and its signature
-app-update = { path = "crates/app-update" }
+ducktape-updater = { path = "crates/updater" }
 # the release archive a self-update downloads (`.tar.gz`)
 tar = { version = "0.4", default-features = false }
 flate2 = "1"

@@ -10,9 +10,9 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use app_update::layout::Channel;
-use app_update::release::signing_key_from_hex;
-use app_update::{
+use ducktape_updater::layout::Channel;
+use ducktape_updater::release::signing_key_from_hex;
+use ducktape_updater::{
     Artifact, Manifest, Platform, PublicKey, Refusal as ManifestRefusal, Release, SCHEMA, Sha,
     Signature, SignedManifest, TrustedKeys, layout,
 };
@@ -472,7 +472,7 @@ fn a_manifest_below_the_highest_its_channel_showed_is_refused() {
     use super::channel::Updater;
     let bucket = Bucket::new();
     let (_root, layout) = rig();
-    let running = app_update::Phase::Idle(app_update::Idle {
+    let running = ducktape_updater::Phase::Idle(ducktape_updater::Idle {
         current: Sha::digest(b"a"),
         previous: None,
         pinned_sequence: 1000,
@@ -531,7 +531,7 @@ fn a_manifest_below_the_highest_its_channel_showed_is_refused() {
 mod linux {
     use std::path::{Path, PathBuf};
 
-    use app_update::{Idle, Phase};
+    use ducktape_updater::{Idle, Phase};
 
     use super::*;
     use crate::update::channel::Updater;
@@ -823,7 +823,7 @@ mod linux {
             std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         crate::update::replace_symlink(&layout.current_link(), &Layout::link_target(a)).unwrap();
-        let staged = Phase::Staged(app_update::Staged {
+        let staged = Phase::Staged(ducktape_updater::Staged {
             current: a,
             previous: None,
             pinned_sequence: 10,
@@ -979,7 +979,7 @@ mod linux {
             let (a, installed) = install(root.path(), &layout, &script("a"));
             let pin = installed.pinned_sequence();
             let b = stage(&layout, &bucket, pin + 1, script("b"));
-            let swapping = Phase::Swapping(app_update::Swapping {
+            let swapping = Phase::Swapping(ducktape_updater::Swapping {
                 from: a,
                 to: b,
                 pinned_sequence: pin + 1,
@@ -1242,7 +1242,7 @@ mod macos {
     use std::path::Path;
     use std::process::Command;
 
-    use app_update::{Idle, Phase};
+    use ducktape_updater::{Idle, Phase};
 
     use super::*;
     use crate::update::boot::{Boot, boot_at};
@@ -1377,7 +1377,7 @@ mod macos {
         let own = layout.app_exe();
         let older = Sha::digest(b"older");
         bundle(&layout.release_dir(older), "older");
-        let staged = Phase::Staged(app_update::Staged {
+        let staged = Phase::Staged(ducktape_updater::Staged {
             current: a,
             previous: None,
             pinned_sequence: crate::update::own_sequence(),

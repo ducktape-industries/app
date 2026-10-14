@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use app_update::{PendingHealthy, Phase, Sha, Staged, state};
+use ducktape_updater::{PendingHealthy, Phase, Sha, Staged, state};
 
 const APP: &str = env!("CARGO_BIN_EXE_ducktape-app");
 

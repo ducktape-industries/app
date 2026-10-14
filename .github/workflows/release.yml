@@ -200,7 +200,7 @@ jobs:
           path: assets
       # built before the key is in the environment: no build script runs
       # with it
-      - run: cargo build --locked --release -p app-update --bin publish-release
+      - run: cargo build --locked --release -p ducktape-updater --bin publish-release
       - name: sign
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}

@@ -1,5 +1,5 @@
 [package]
-name = "app-update"
+name = "ducktape-updater"
 edition.workspace = true
 version.workspace = true
 publish = false
