@@ -119,6 +119,14 @@ abi.workspace = true
 borsh.workspace = true
 ducklink.workspace = true
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+# The live lane (`backend/live.rs`): QUIC to the node's UDP socket as halo
+# speaks it, the node's key pinned by reading it out of its certificate
+# (rustls-webpki, already rustls's own), and the wire's types from core's
+# leaf crate.
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["alloc", "ring"] }
+live-wire = { git = "https://github.com/ducktape-industries/ducktape", rev = "d6bdc3e107b14f442e09506789f79efe7b28a895", package = "live-wire" }
 wasmtime.workspace = true
 wasmparser = "0.251"
 libc.workspace = true
@@ -151,6 +159,8 @@ gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tempfile.workspace = true
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "d6bdc3e107b14f442e09506789f79efe7b28a895", package = "keyscheme", features = ["testkit"] }
 p256 = "0.13"
+# `backend/live.rs`'s test node: a self-signed certificate of an ed25519 key, as halo makes its own
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 guest = { git = "https://github.com/ducktape-industries/modules", rev = "3faf35904bfdb7944a6cb43880e5be49d2fc30f8", package = "guest" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]

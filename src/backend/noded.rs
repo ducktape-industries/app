@@ -350,6 +350,14 @@ impl Client {
         self.fetch(route::STATUS).await
     }
 
+    /// The UDP port the node takes live sessions on (QUIC, ALPN
+    /// `ducktape-live`), at the host of its `/v1` address; `None` when it
+    /// bound no UDP, and a client takes the websocket at `/v1/live`. A node
+    /// that serves no live tracks answers 404.
+    pub async fn live_port(&self) -> Result<Option<u16>> {
+        self.fetch(live_wire::PORT_ROUTE).await
+    }
+
     /// Every member's sync state as the node sees it.
     pub async fn network(&self) -> Result<Network> {
         self.fetch(route::NETWORK).await

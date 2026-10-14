@@ -16,6 +16,7 @@ pub(crate) mod identity;
 pub(crate) mod invite;
 pub(crate) mod join;
 mod key_dir;
+pub(crate) mod live;
 mod loopback;
 pub(crate) mod noded;
 pub(crate) mod passkey;
