@@ -1,4 +1,4 @@
-# fetch git dependencies (modules, ducktape, ducktape-sdk, the gpui-pre fork)
+# fetch git dependencies (programs, ducktape, ducktape-sdk, the gpui-pre fork)
 # with the git CLI instead of libgit2: a `url.insteadOf` rewrite to ssh
 # breaks cargo's built-in fetcher, while the real git binary picks up the
 # usual ssh agent/keys.

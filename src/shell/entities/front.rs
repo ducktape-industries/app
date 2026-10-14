@@ -20,7 +20,7 @@ pub(crate) struct Front {
 /// A window, as the chrome lists it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Listed {
-    pub(crate) module: &'static str,
+    pub(crate) program: &'static str,
     pub(crate) instance: u64,
     pub(crate) title: Option<String>,
     /// The pop-out it is alone in; `None` on the desk the list is read off.
@@ -30,7 +30,7 @@ pub(crate) struct Listed {
 impl Listed {
     pub(crate) fn of(pane: &Pane, away: Option<WindowKey>) -> Self {
         Self {
-            module: pane.module,
+            program: pane.program,
             instance: pane.instance,
             title: pane.title.clone(),
             away,
@@ -52,7 +52,7 @@ impl Front {
     fn of(layout: &Layout) -> Self {
         let front = layout.panes.get(layout.focused);
         Self {
-            focused: front.map(|pane| pane.module),
+            focused: front.map(|pane| pane.program),
             front: front.map(|pane| pane.instance),
             open: layout
                 .panes

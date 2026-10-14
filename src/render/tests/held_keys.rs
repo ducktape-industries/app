@@ -172,7 +172,7 @@ fn a_held_key_comes_up_when_focus_moves_to_another_element(cx: &mut gpui_kit::Te
 }
 
 /// The held key comes up on the handler the board has when focus leaves
-/// it: a listener the guest dropped and set again has a new route, and
+/// it: a listener the view dropped and set again has a new route, and
 /// the one the key went down under names nothing by then.
 #[gpui_kit::test]
 fn a_held_key_comes_up_on_the_handler_the_node_has_now(cx: &mut gpui_kit::TestAppContext) {

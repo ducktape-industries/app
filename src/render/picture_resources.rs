@@ -1,4 +1,4 @@
-//! Decoding a guest's raster into a gpui `RenderImage`, and the caps the
+//! Decoding a view's raster into a gpui `RenderImage`, and the caps the
 //! picture caches in pictures.rs share: one picture's bytes, and a whole
 //! cache's bytes and entries.
 use super::*;

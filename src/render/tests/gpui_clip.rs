@@ -1,10 +1,10 @@
 use super::*;
 
-// Host-owned slot clipping cannot be replaced by guest refinements.
-struct GuestSlot {
+// Host-owned slot clipping cannot be replaced by view refinements.
+struct ViewSlot {
     tree: Entity<ViewTree>,
 }
-impl Render for GuestSlot {
+impl Render for ViewSlot {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         // Intentionally no clipping here: ViewTree must impose its own boundary.
         div().relative().size(px(40.)).child(self.tree.clone())
@@ -12,7 +12,7 @@ impl Render for GuestSlot {
 }
 
 #[gpui_kit::test]
-fn hostile_guest_position_size_and_overflow_remain_inside_host_slot(
+fn hostile_view_position_size_and_overflow_remain_inside_host_slot(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     cx.update(gpui_kit::init);
@@ -49,7 +49,7 @@ fn hostile_guest_position_size_and_overflow_remain_inside_host_slot(
         };
         sanitize_whole(&mut frame).unwrap();
         let root = frame.root.unwrap();
-        let window = cx.open_window(size(px(200.), px(200.)), move |_, cx| GuestSlot {
+        let window = cx.open_window(size(px(200.), px(200.)), move |_, cx| ViewSlot {
             tree: cx.new(|_| ViewTree::new(root)),
         });
         cx.update_window(window.into(), |_, window, cx| {
@@ -61,7 +61,7 @@ fn hostile_guest_position_size_and_overflow_remain_inside_host_slot(
                 .collect();
             assert!(
                 !quads.is_empty(),
-                "guest content must still paint inside its slot"
+                "view content must still paint inside its slot"
             );
             let bound = gpui_kit::ScaledPixels(40. * window.scale_factor());
             for quad in quads {

@@ -2,15 +2,15 @@
 //! handler is `fn(Node, Vec<u8>) -> Answered`, run on [`handle`] with an
 //! in-flight slot from [`Replies::admit`], its answer put in [`Replies`];
 //! transport failures are retried for [`NODE_RETRY_BUDGET`]. A subscription
-//! (`module.changes`, `chain.heads`) is one long task writing items. Every
-//! task is a [`NodeTask`] in `guest.tasks`, aborted when dropped.
+//! (`program.changes`, `chain.heads`) is one long task writing items. Every
+//! task is a [`NodeTask`] in `view.tasks`, aborted when dropped.
 use super::super::consent;
 use super::*;
 use noded_client::wire as noded;
 
 pub(super) type Answered = std::pin::Pin<Box<dyn std::future::Future<Output = Answer> + Send>>;
 /// One node-backed method: the node to ask and the request's payload in,
-/// the answer out. Not a [`methods::Call`], which is `module.query`'s and
+/// the answer out. Not a [`methods::Call`], which is `program.query`'s and
 /// `op.submit`'s envelope.
 type NodeMethod = fn(Node, Vec<u8>) -> Answered;
 
@@ -90,14 +90,14 @@ async fn until_answered(
 /// failures for [`NODE_RETRY_BUDGET`]: for reads, which ask again from
 /// scratch at no cost.
 pub(super) fn spawn_retrying(
-    guest: &mut Guest,
+    view: &mut View,
     id: u64,
     payload: &[u8],
     method: NodeMethod,
     stage: &'static str,
 ) {
     spawn_method(
-        guest,
+        view,
         id,
         payload,
         method,
@@ -108,13 +108,13 @@ pub(super) fn spawn_retrying(
 }
 
 pub(super) fn spawn_retrying_unsent(
-    guest: &mut Guest,
+    view: &mut View,
     id: u64,
     payload: &[u8],
     method: NodeMethod,
     stage: &'static str,
 ) {
-    spawn_method(guest, id, payload, method, Some(unsent), stage, None);
+    spawn_method(view, id, payload, method, Some(unsent), stage, None);
 }
 
 /// `op.submit` of an op the person confirms first (`consent::needed`):
@@ -126,14 +126,14 @@ pub(super) fn spawn_retrying_unsent(
 /// runs it as [`spawn_retrying_unsent`] once they approve, refused
 /// `consent_refused` otherwise.
 pub(super) fn spawn_consented(
-    guest: &mut Guest,
+    view: &mut View,
     id: u64,
     payload: &[u8],
     call: methods::Call,
     words: consent::Words,
 ) {
-    if !guest.take_activation() {
-        guest.refuse(
+    if !view.take_activation() {
+        view.refuse(
             id,
             refusal::NEEDS_GESTURE,
             "this op asks the person and needs a press or key",
@@ -141,30 +141,30 @@ pub(super) fn spawn_consented(
         return;
     }
     if !backend::seated() {
-        guest.refuse(
+        view.refuse(
             id,
             refusal::SESSION_LOCKED,
             "this device's key is locked; unlock it first",
         );
         return;
     }
-    if connected(guest, id).is_none() {
+    if connected(view, id).is_none() {
         return;
     }
     // the in-flight slot before the ask: a request refused
     // `in_flight_limit` never puts a card up that leads nowhere
-    let Some(slot) = admit(guest, id) else {
+    let Some(slot) = admit(view, id) else {
         return;
     };
     let asking = Asking {
         waiting: consent::waiting(),
-        module: guest.module,
-        instance: guest.instance,
+        program: view.program,
+        instance: view.instance,
         words,
         call,
     };
     spawn_method(
-        guest,
+        view,
         id,
         payload,
         submit,
@@ -186,7 +186,7 @@ const DESCRIBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10
 struct Asking {
     /// the queue the request came in on (`consent::queue_in`)
     waiting: &'static std::sync::Mutex<std::collections::VecDeque<consent::Ask>>,
-    module: &'static str,
+    program: &'static str,
     instance: u64,
     words: consent::Words,
     call: methods::Call,
@@ -195,13 +195,13 @@ struct Asking {
 impl Asking {
     /// The person's yes: the op described into the words where they show
     /// the target's own description (its size when the target's describe
-    /// module reads nothing or does not answer in time), the ask queued and
+    /// program reads nothing or does not answer in time), the ask queued and
     /// the shell woken, and its answer. `consent_refused` for anything but
     /// Approve, and while another ask of this view waits.
     async fn yes(self, node: &Node) -> Result<(), wire::Error> {
         let Asking {
             waiting,
-            module,
+            program,
             instance,
             mut words,
             call,
@@ -217,7 +217,7 @@ impl Asking {
             words.shown = Some(consent::shown(described.as_ref(), len));
         }
         let refused = |message: &str| wire::Error::new(refusal::CONSENT_REFUSED, message);
-        let Some(mut told) = consent::queue_in(waiting, module, instance, words) else {
+        let Some(mut told) = consent::queue_in(waiting, program, instance, words) else {
             return Err(refused(
                 "another confirmation for this view is still waiting",
             ));
@@ -233,13 +233,13 @@ impl Asking {
 /// Runs `method` on the connected node as a task, asking exactly once: a
 /// transport failure is the answer (`invite.create` must not mint twice).
 pub(super) fn spawn_no_retry(
-    guest: &mut Guest,
+    view: &mut View,
     id: u64,
     payload: &[u8],
     method: NodeMethod,
     stage: &'static str,
 ) {
-    spawn_method(guest, id, payload, method, None, stage, None);
+    spawn_method(view, id, payload, method, None, stage, None);
 }
 
 /// `stage` names the call in the perf registry (`host_call.<kind>`): its
@@ -248,7 +248,7 @@ pub(super) fn spawn_no_retry(
 /// node at all ([`Asking::yes`]).
 #[allow(clippy::too_many_arguments, reason = "one spawn, every node method")]
 fn spawn_method(
-    guest: &mut Guest,
+    view: &mut View,
     id: u64,
     payload: &[u8],
     method: NodeMethod,
@@ -257,23 +257,23 @@ fn spawn_method(
     consent: Option<(InFlight, Asking)>,
 ) {
     let ask = payload.to_vec();
-    let Some(node) = connected(guest, id) else {
+    let Some(node) = connected(view, id) else {
         return;
     };
     let (slot, asking) = match consent {
         Some((slot, asking)) => (slot, Some(asking)),
-        None => match admit(guest, id) {
+        None => match admit(view, id) {
             Some(slot) => (slot, None),
             None => return,
         },
     };
-    let replies = guest.replies.clone();
-    let key = guest.perf_key();
+    let replies = view.replies.clone();
+    let key = view.perf_key();
     // not a `perf::Timer`: its drop would record a call refused
     // `in_flight_limit` or cancelled by the view, which never got a reply
     let asked = crate::perf::on().then(std::time::Instant::now);
     let attempts_stage = crate::perf::suffixed(stage, ".attempts");
-    run(guest, id, slot, None, async move {
+    run(view, id, slot, None, async move {
         if let Some(asking) = asking
             && let Err(refused) = asking.yes(&node).await
         {
@@ -305,14 +305,14 @@ fn spawn_method(
 /// Every task starts here: an in-flight slot ([`admit`]) — or the request
 /// refused `in_flight_limit`, and `false` — then [`run`].
 fn start(
-    guest: &mut Guest,
+    view: &mut View,
     id: u64,
     follows: Option<Follow>,
     task: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> bool {
-    match admit(guest, id) {
+    match admit(view, id) {
         Some(slot) => {
-            run(guest, id, slot, follows, task);
+            run(view, id, slot, follows, task);
             true
         }
         None => false,
@@ -321,10 +321,10 @@ fn start(
 
 /// An in-flight slot from [`Replies::admit`] for request `id`, or the
 /// request refused `in_flight_limit` and `None`.
-fn admit(guest: &mut Guest, id: u64) -> Option<InFlight> {
-    let slot = guest.replies.admit();
+fn admit(view: &mut View, id: u64) -> Option<InFlight> {
+    let slot = view.replies.admit();
     if slot.is_none() {
-        guest.refuse(
+        view.refuse(
             id,
             refusal::IN_FLIGHT_LIMIT,
             "too many in-flight view requests",
@@ -334,9 +334,9 @@ fn admit(guest: &mut Guest, id: u64) -> Option<InFlight> {
 }
 
 /// `task` on [`handle`] holding its `slot`, its [`NodeTask`] kept in
-/// `guest.tasks` (finished ones pruned) so it is aborted with the guest.
+/// `view.tasks` (finished ones pruned) so it is aborted with the view.
 fn run(
-    guest: &mut Guest,
+    view: &mut View,
     id: u64,
     slot: InFlight,
     follows: Option<Follow>,
@@ -346,10 +346,9 @@ fn run(
         let _slot = slot;
         task.await;
     });
-    guest
-        .tasks
+    view.tasks
         .retain(|(_, pending)| !pending.task.is_finished());
-    guest.tasks.push((id, NodeTask { task, follows }));
+    view.tasks.push((id, NodeTask { task, follows }));
 }
 
 /// One SUBSCRIPTION's writing end, handed to the loop that feeds it: every
@@ -376,33 +375,33 @@ impl Items {
 /// A subscription whose items come from a host loop (`chain.heads` polls
 /// the node for them). The body owns whatever it holds open, so dropping
 /// the task releases it: a cancel drops the [`NodeTask`], and so do a
-/// guest's teardown, swap and trap, which drop the whole `tasks` list.
-fn spawn_subscription<Body, Fut>(guest: &mut Guest, id: u64, follows: Follow, body: Body)
+/// view's teardown, swap and trap, which drop the whole `tasks` list.
+fn spawn_subscription<Body, Fut>(view: &mut View, id: u64, follows: Follow, body: Body)
 where
     Body: FnOnce(Items) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
-    let replies = guest.replies.clone();
+    let replies = view.replies.clone();
     let items = Items {
         drained: replies.drains(),
         replies,
         id,
     };
-    start(guest, id, Some(follows), body(items));
+    start(view, id, Some(follows), body(items));
 }
 
 /// Runs `future` on the kernel runtime and delivers its result as the one
-/// reply to request `id`; counted in flight, aborted with the guest. For a
+/// reply to request `id`; counted in flight, aborted with the view. For a
 /// host method that waits on something other than the node (`notify.post`
 /// waits on its banner, `store.*` on its file). `false` when the request
 /// was refused `in_flight_limit` instead.
 pub(in crate::runtime) fn spawn_reply(
-    guest: &mut Guest,
+    view: &mut View,
     id: u64,
     future: impl std::future::Future<Output = Answer> + Send + 'static,
 ) -> bool {
-    let replies = guest.replies.clone();
-    start(guest, id, None, async move {
+    let replies = view.replies.clone();
+    start(view, id, None, async move {
         replies.item(id, future.await, true);
     })
 }
@@ -410,19 +409,19 @@ pub(in crate::runtime) fn spawn_reply(
 /// The node to ask, the one the view's own connection names, or `None`
 /// with the request REFUSED: `stale_connection` for a view from before the
 /// app's last (re)connect, `not_connected` without a node.
-fn connected(guest: &mut Guest, id: u64) -> Option<Node> {
+fn connected(view: &mut View, id: u64) -> Option<Node> {
     let rev = super::super::connection().lock().expect("views rpc").rev;
-    if rev != guest.connection.rev {
-        guest.refuse(
+    if rev != view.connection.rev {
+        view.refuse(
             id,
             refusal::STALE_CONNECTION,
             "view belongs to a previous network connection",
         );
         return None;
     }
-    let node = node_on(&guest.connection);
+    let node = node_on(&view.connection);
     if node.is_none() {
-        guest.refuse(id, refusal::NOT_CONNECTED, "not connected to a node");
+        view.refuse(id, refusal::NOT_CONNECTED, "not connected to a node");
     }
     node
 }
@@ -439,75 +438,74 @@ fn node_on(connection: &super::super::Connection) -> Option<Node> {
 }
 
 /// A connect inside the network, under a view that kept its code
-/// (`Guest::reconnect`): each node subscription goes on, opened again on
-/// `connection`, and its follower with it — a `module.changes` one is told
+/// (`View::reconnect`): each node subscription goes on, opened again on
+/// `connection`, and its follower with it — a `program.changes` one is told
 /// first to re-read (`None`, as when the node closes the socket), a
 /// `chain.heads` one starts over at the new node's tip. Every other request
 /// still running on the old connection is refused `stale_connection`, for
 /// the view to ask again.
-pub(in crate::runtime) fn reconnected(guest: &mut Guest, connection: &super::super::Connection) {
+pub(in crate::runtime) fn reconnected(view: &mut View, connection: &super::super::Connection) {
     // counted again as each opens
-    guest.live_subscriptions.clear();
-    for (id, mut task) in std::mem::take(&mut guest.tasks) {
+    view.live_subscriptions.clear();
+    for (id, mut task) in std::mem::take(&mut view.tasks) {
         let follows = task.follows.take();
         // dropped, it aborts: the old connection's socket goes with it
         drop(task);
         match (follows, node_on(connection)) {
             (Some(Follow::Changes(program)), Some(node)) => {
-                guest
-                    .replies
+                view.replies
                     .item(id, Ok(methods::encode(&None::<methods::Change>)), false);
-                follow_changes(guest, id, node, program);
+                follow_changes(view, id, node, program);
             }
-            (Some(Follow::Heads), Some(node)) => follow_heads(guest, id, node),
-            _ => guest.refuse(id, refusal::STALE_CONNECTION, "network connection changed"),
+            (Some(Follow::Heads), Some(node)) => follow_heads(view, id, node),
+            _ => view.refuse(id, refusal::STALE_CONNECTION, "network connection changed"),
         }
     }
 }
 
-/// `module.changes <program>`: one item per block that wrote to the program,
+/// `program.changes <program>`: one item per block that wrote to the program,
 /// carrying the keys it wrote.
-pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
+pub(super) fn changes(view: &mut View, id: u64, payload: &[u8]) {
     let program = methods::decode::<String>(payload)
         .unwrap_or_default()
         .trim()
         .to_owned();
     if program.is_empty() {
-        guest.refuse(
+        view.refuse(
             id,
             refusal::MALFORMED_REQUEST,
-            "`module.changes` names no program",
+            "`program.changes` names no program",
         );
         return;
     }
-    if !guest.targets.contains(&program) {
-        guest.refuse(
+    if !view.targets.contains(&program) {
+        view.refuse(
             id,
             refusal::UNDECLARED_TARGET,
-            undeclared("module.changes", &program),
+            undeclared("program.changes", &program),
         );
         return;
     }
-    if guest.live_subscriptions.len() >= MAX_SUBSCRIPTIONS {
-        guest.refuse(
+    if view.live_subscriptions.len() >= MAX_SUBSCRIPTIONS {
+        view.refuse(
             id,
             refusal::SUBSCRIPTION_LIMIT,
-            "too many `module.changes` subscriptions",
+            "too many `program.changes` subscriptions",
         );
         return;
     }
-    let Some(node) = connected(guest, id) else {
+    let Some(node) = connected(view, id) else {
         return;
     };
-    follow_changes(guest, id, node, program);
+    follow_changes(view, id, node, program);
 }
 
-/// Subscription `id`: `module.changes` of `program` on `node`.
-fn follow_changes(guest: &mut Guest, id: u64, node: Node, program: String) {
-    let replies = guest.replies.clone();
+/// Subscription `id`: `program.changes` of `program` on `node`.
+fn follow_changes(view: &mut View, id: u64, node: Node, program: String) {
+    let replies = view.replies.clone();
     let subscribed = (id, program.clone());
     let follows = Follow::Changes(program.clone());
-    let started = start(guest, id, Some(follows), async move {
+    let started = start(view, id, Some(follows), async move {
         use futures::StreamExt as _;
         let mut drained = replies.drains();
         let mut warned = false;
@@ -555,7 +553,7 @@ fn follow_changes(guest: &mut Guest, id: u64, node: Node, program: String) {
         }
     });
     if started {
-        guest.live_subscriptions.push(subscribed);
+        view.live_subscriptions.push(subscribed);
     }
 }
 
@@ -566,24 +564,24 @@ const MAX_BLOCK_PAGE: u32 = 100;
 /// node pushes no block stream, so this reads its status at half the block
 /// time and fills each advance from the archive (a page, at most the node's
 /// cap); where the archive holds none, the tip alone.
-pub(super) fn heads(guest: &mut Guest, id: u64, payload: &[u8]) {
+pub(super) fn heads(view: &mut View, id: u64, payload: &[u8]) {
     if !payload.is_empty() {
-        guest.refuse(
+        view.refuse(
             id,
             refusal::MALFORMED_REQUEST,
             "`chain.heads` takes no payload",
         );
         return;
     }
-    let Some(node) = connected(guest, id) else {
+    let Some(node) = connected(view, id) else {
         return;
     };
-    follow_heads(guest, id, node);
+    follow_heads(view, id, node);
 }
 
 /// Subscription `id`: `chain.heads` on `node`.
-fn follow_heads(guest: &mut Guest, id: u64, node: Node) {
-    spawn_subscription(guest, id, Follow::Heads, move |mut items| async move {
+fn follow_heads(view: &mut View, id: u64, node: Node) {
+    spawn_subscription(view, id, Follow::Heads, move |mut items| async move {
         let mut last: Option<u64> = None;
         loop {
             let pace = match next_heads(&node, last).await {
@@ -662,7 +660,7 @@ pub(in crate::runtime) struct NodeTask {
 
 /// A node subscription, as a reconnect opens it again.
 enum Follow {
-    /// `module.changes` of this program.
+    /// `program.changes` of this program.
     Changes(String),
     /// `chain.heads`.
     Heads,
@@ -693,13 +691,13 @@ fn undeclared(kind: &str, target: &str) -> String {
     format!("`{kind}` names `{target}`, which this view's manifest does not list among its targets")
 }
 
-/// The envelope of `module.query` or `op.submit` (`kind`) from `guest`, its
+/// The envelope of `program.query` or `op.submit` (`kind`) from `view`, its
 /// target among the view's manifest targets; `None` with the request
 /// refused otherwise (`malformed_request`, `undeclared_target`). The task
 /// decodes the envelope again: a string and the bytes, cheaper than
 /// carrying it.
 pub(super) fn targeted(
-    guest: &mut Guest,
+    view: &mut View,
     id: u64,
     payload: &[u8],
     kind: &str,
@@ -707,12 +705,12 @@ pub(super) fn targeted(
     let call = match call_of(payload) {
         Ok(call) => call,
         Err(refusal) => {
-            guest.reply(id, Err(refusal));
+            view.reply(id, Err(refusal));
             return None;
         }
     };
-    if !guest.targets.contains(&call.target) {
-        guest.refuse(
+    if !view.targets.contains(&call.target) {
+        view.refuse(
             id,
             refusal::UNDECLARED_TARGET,
             undeclared(kind, &call.target),

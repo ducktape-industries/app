@@ -1,4 +1,4 @@
-//! The List node: variable-height rows in a gpui `ListState`. The guest
+//! The List node: variable-height rows in a gpui `ListState`. The view
 //! sends a window of rows from `range_start`; a row the list needs and does
 //! not have is asked for with one `ListRequest` per frame, and a row it has
 //! is rendered under the list's own authored path, which ends in the
@@ -17,14 +17,14 @@ pub(super) struct VariableList {
     pub(super) state: ListState,
     pub(super) rows: HashMap<usize, wire::Node>,
     item_count: usize,
-    /// The guest's command-batch revision; commands replay only when it
+    /// The view's command-batch revision; commands replay only when it
     /// changes.
     revision: u64,
     /// The rows to ask for in the request already scheduled this frame.
     requested: Option<std::ops::Range<usize>>,
     request_scheduled: bool,
     alignment: ListAlignment,
-    /// The scroll state last reported to the guest; the next frame reports
+    /// The scroll state last reported to the view; the next frame reports
     /// only a change from it.
     reported: Option<wire::ListScroll>,
     settle_scheduled: bool,
@@ -181,7 +181,7 @@ impl ViewTree {
         let mut host = div();
         *host.style() = std::mem::take(native.style());
         let host = host.id(scope).child(native.size_full());
-        self.guest_aria(host, node, interactivity, cx)
+        self.view_aria(host, node, interactivity, cx)
             .into_any_element()
     }
 }

@@ -32,21 +32,21 @@ impl Slice<Layout> {
         )
     }
 
-    /// Shift-click on the bar: the window `module` is already in comes to
+    /// Shift-click on the bar: the window `program` is already in comes to
     /// the front, else it takes the focused window's place.
-    pub(crate) fn select(&mut self, module: &'static str, cx: &mut Context<Self>) {
-        self.moved(|layout| _ = layout.select(module), cx);
+    pub(crate) fn select(&mut self, program: &'static str, cx: &mut Context<Self>) {
+        self.moved(|layout| _ = layout.select(program), cx);
     }
 
     /// A bar click, a pick, a link: into an empty focused window, else the
     /// window it is in, else one of its own (`Layout::open`).
-    pub(crate) fn open(&mut self, module: &'static str, cx: &mut Context<Self>) {
-        self.moved(|layout| _ = layout.open(module), cx);
+    pub(crate) fn open(&mut self, program: &'static str, cx: &mut Context<Self>) {
+        self.moved(|layout| _ = layout.open(program), cx);
     }
 
-    /// Another pane showing `module`.
-    pub(crate) fn split(&mut self, module: &'static str, cx: &mut Context<Self>) {
-        self.moved(|layout| _ = layout.split(module), cx);
+    /// Another pane showing `program`.
+    pub(crate) fn split(&mut self, program: &'static str, cx: &mut Context<Self>) {
+        self.moved(|layout| _ = layout.split(program), cx);
     }
 
     pub(crate) fn focus(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -139,12 +139,12 @@ impl Slice<Layout> {
         );
     }
 
-    /// An untouched desk opens `module` once, on its first draw.
-    pub(crate) fn seed(&mut self, module: &'static str, cx: &mut Context<Self>) {
+    /// An untouched desk opens `program` once, on its first draw.
+    pub(crate) fn seed(&mut self, program: &'static str, cx: &mut Context<Self>) {
         if self.get().initialized {
             return;
         }
-        self.moved(|layout| _ = layout.select(module), cx);
+        self.moved(|layout| _ = layout.select(program), cx);
     }
 
     /// The network in hand was left: every pane goes, the desk keeping
@@ -158,11 +158,11 @@ impl Slice<Layout> {
     /// (Close, PopOut, PopIn and Open cross windows: `Windows` takes them.)
     pub(crate) fn moved_by(&mut self, message: PaneMessage, cx: &mut Context<Self>) {
         match message {
-            PaneMessage::Select(module) => self.select(module, cx),
+            PaneMessage::Select(program) => self.select(program, cx),
             // desk-only (tests): panes.rs routes Open to
             // `Windows::open_program`, which brings a pop-out forward
-            PaneMessage::Open(module) => self.open(module, cx),
-            PaneMessage::Split(module) => self.split(module, cx),
+            PaneMessage::Open(program) => self.open(program, cx),
+            PaneMessage::Split(program) => self.split(program, cx),
             PaneMessage::Focus(index) => self.focus(index, cx),
             PaneMessage::Cycle { forward } => self.cycle(forward, cx),
             PaneMessage::Fill => self.fill(cx),
@@ -176,8 +176,8 @@ impl Slice<Layout> {
         }
     }
 
-    /// Whether `module` is on this desk.
-    pub(crate) fn holds(&self, module: &str) -> bool {
-        self.get().panes.iter().any(|pane| pane.module == module)
+    /// Whether `program` is on this desk.
+    pub(crate) fn holds(&self, program: &str) -> bool {
+        self.get().panes.iter().any(|pane| pane.program == program)
     }
 }

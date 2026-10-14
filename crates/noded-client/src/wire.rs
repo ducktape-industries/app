@@ -412,7 +412,7 @@ mod tests {
             contract: NODE_CONTRACT,
             genesis: [9; 32],
             roles: abi::Roles {
-                registry: "r".into(),
+                programs: "r".into(),
                 validators: "v".into(),
                 identity: "i".into(),
             },

@@ -883,7 +883,7 @@ impl Chrome {
     /// window, or its own); a shift-click, or Shift with Enter or Space,
     /// shows it in the focused window instead (a press with Shift is no
     /// click).
-    fn opening(&self, row: Stateful<Div>, module: &'static str) -> Stateful<Div> {
+    fn opening(&self, row: Stateful<Div>, program: &'static str) -> Stateful<Div> {
         let (click, keys) = (self.window.clone(), self.window.clone());
         row.aria_description(format!(
             "Shift+{} shows it in this window",
@@ -891,8 +891,8 @@ impl Chrome {
         ))
         .on_click(move |event: &ClickEvent, window, cx| {
             let _ = click.update(cx, |desk, cx| match event.modifiers().shift {
-                true => desk.pane_message(PaneMessage::Select(module), window, cx),
-                false => desk.open_view(module, window, cx),
+                true => desk.pane_message(PaneMessage::Select(program), window, cx),
+                false => desk.open_view(program, window, cx),
             });
         })
         .on_key_down(move |event: &KeyDownEvent, window, cx| {
@@ -902,7 +902,7 @@ impl Chrome {
             {
                 cx.stop_propagation();
                 let _ = keys.update(cx, |desk, cx| {
-                    desk.pane_message(PaneMessage::Select(module), window, cx)
+                    desk.pane_message(PaneMessage::Select(program), window, cx)
                 });
             }
         })
@@ -976,7 +976,7 @@ impl Chrome {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             bar.network.hash(&mut hasher);
             for row in &bar.rows {
-                (row.module, &row.label, row.note, row.empty).hash(&mut hasher);
+                (row.program, &row.label, row.note, row.empty).hash(&mut hasher);
             }
             (bar.unlocked, &bar.account).hash(&mut hasher);
             hasher.finish()
@@ -1013,7 +1013,7 @@ impl Chrome {
         // keys, else the focused window's program, else the first
         let stop = self.stop.clone();
         let rows = bar.rows.iter().filter(|row| !row.empty);
-        let listed: Vec<&'static str> = rows.clone().map(|row| row.module).collect();
+        let listed: Vec<&'static str> = rows.clone().map(|row| row.program).collect();
         let active = self
             .rail_cursor
             .into_iter()
@@ -1023,9 +1023,9 @@ impl Chrome {
         let tabs: Vec<_> = rows
             .enumerate()
             .map(|(n, row)| {
-                let module = row.module;
-                let selected = bar.focused == Some(module);
-                let badge = self.rail.read(cx).badge(module);
+                let program = row.program;
+                let selected = bar.focused == Some(program);
+                let badge = self.rail.read(cx).badge(program);
                 let shown = tab_label(row);
                 let name = program_name(row, badge);
                 // folded: the icon its view declares, its initial when it has
@@ -1049,7 +1049,7 @@ impl Chrome {
                 let tip = narrow.then(|| SharedString::from(name.clone()));
                 let hover = ink.ink;
                 let tab = crate::a11y::roving_item(
-                    sans(400, 13.).id(SharedString::from(format!("rail/{module}"))),
+                    sans(400, 13.).id(SharedString::from(format!("rail/{program}"))),
                     (n == active).then_some(&stop),
                     ink.ink,
                 )
@@ -1063,13 +1063,13 @@ impl Chrome {
                 .px(px(10.))
                 .cursor_pointer()
                 .text_color(
-                    match selected || bar.listed.iter().any(|it| it.module == module) {
+                    match selected || bar.listed.iter().any(|it| it.program == program) {
                         true => ink.ink,
                         false => ink.muted,
                     },
                 )
                 .hover(move |style| style.text_color(hover));
-                self.opening(tab, module)
+                self.opening(tab, program)
                     .child(shown)
                     .when_some(tip, |tab, tip| {
                         tab.tooltip(move |window, cx| {
@@ -1118,9 +1118,9 @@ impl Chrome {
                     [active, listed.len()],
                     // the arrows move the keys; Return opens the program
                     move |to, _, cx| {
-                        let module = listed[to];
+                        let program = listed[to];
                         let _ = moved.update(cx, |this, cx| {
-                            this.rail_cursor = Some(Row::Program(module));
+                            this.rail_cursor = Some(Row::Program(program));
                             cx.notify();
                         });
                     },
@@ -1180,7 +1180,7 @@ mod tests {
     fn a_folded_tab_is_the_icon_its_view_declares_or_its_initial() {
         let drawn = |icon: &str| {
             let row = RailRow {
-                module: "folded-tab",
+                program: "folded-tab",
                 label: "Folded".into(),
                 icon: icon.into(),
                 note: None,

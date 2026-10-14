@@ -107,8 +107,8 @@ fn a_press_on_a_row_of_a_window_without_the_keys_opens_it_there(cx: &mut TestApp
     let nodes = native.update(draw);
     let layout = native.update(|_, cx| view.read(cx).layout(cx));
     assert_eq!(layout.focused, 0, "the pressed window has the keys");
-    assert_eq!(layout.panes[0].module, "combotest-alpha");
-    assert_eq!(layout.panes[1].module, crate::ui::layout::EMPTY);
+    assert_eq!(layout.panes[0].program, "combotest-alpha");
+    assert_eq!(layout.panes[1].program, crate::ui::layout::EMPTY);
     let keys: Vec<&str> = nodes
         .as_array()
         .unwrap()
@@ -126,13 +126,13 @@ fn a_press_on_a_row_of_a_window_without_the_keys_opens_it_there(cx: &mut TestApp
         "the keys are in the window it opened in: {keys:?}"
     );
 
-    // the Module switch of a window without the keys gives it the keys too
+    // the Program switch of a window without the keys gives it the keys too
     let (view, mut native) = two_empty_windows(cx);
-    native.update(|window, cx| press("pane/0/view", "empty-window/module", window, cx));
+    native.update(|window, cx| press("pane/0/view", "empty-window/program", window, cx));
     native.update(draw);
     let layout = native.update(|_, cx| view.read(cx).layout(cx));
     assert_eq!(layout.focused, 0);
-    assert_eq!(layout.panes[0].module, crate::ui::layout::EMPTY);
+    assert_eq!(layout.panes[0].program, crate::ui::layout::EMPTY);
 }
 
 /// A desk with two empty windows (⌘N twice), the second in front.

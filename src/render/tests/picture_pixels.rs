@@ -26,7 +26,7 @@ pub(in crate::render) fn rendering_app() -> HeadlessAppContext {
     cx
 }
 
-/// A 30px guest Svg of [`SQUARE`] with `style` on top.
+/// A 30px view Svg of [`SQUARE`] with `style` on top.
 fn glyph(style: gpui_kit::Div) -> wire::Node {
     wire::Node::Svg {
         id: Some(named_id("glyph")),
@@ -80,28 +80,28 @@ fn assert_near(actual: [u8; 4], expected: [u8; 4], what: &str) {
     );
 }
 
-/// A guest Svg with its own colour draws in it.
+/// A view Svg with its own colour draws in it.
 #[test]
-fn a_guest_svg_paints_in_its_own_colour() {
+fn a_view_svg_paints_in_its_own_colour() {
     let (glyph, outside) = painted(div(), glyph(div().text_color(rgb(0xff0000))));
     assert_near(outside, WHITE, "the page around the glyph");
     assert_near(glyph, RED, "the glyph's middle");
 }
 
-/// A guest Svg with no colour of its own draws in the colour it inherits
+/// A view Svg with no colour of its own draws in the colour it inherits
 /// (CSS `currentColor`), as text does, not nothing.
 #[test]
-fn a_guest_svg_with_no_colour_paints_in_the_one_it_inherits() {
+fn a_view_svg_with_no_colour_paints_in_the_one_it_inherits() {
     let (glyph, outside) = painted(div().text_color(rgb(0x0000ff)), glyph(div()));
     assert_near(outside, WHITE, "the page around the glyph");
     assert_near(glyph, BLUE, "the glyph's middle");
 }
 
-/// A guest's gradient background crosses the host's sanitizer and paints
+/// A view's gradient background crosses the host's sanitizer and paints
 /// as gpui draws one: red at its left, blue at its right, where the
 /// sanitizer once dropped it and left the page white.
 #[test]
-fn a_guest_gradient_background_paints() {
+fn a_view_gradient_background_paints() {
     let gradient = gpui_kit::linear_gradient(
         90.,
         gpui_kit::linear_color_stop(rgb(0xff0000), 0.),

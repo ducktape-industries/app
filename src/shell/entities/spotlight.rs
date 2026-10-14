@@ -56,13 +56,13 @@ impl Spotlight {
         let mut rows: Vec<SpotRow> = rail
             .rows()
             .iter()
-            .filter(|program| !program.empty)
-            .map(|program| {
+            .filter(|listed| !listed.empty)
+            .map(|listed| {
                 row(
                     "Programs",
-                    program.label.clone(),
+                    listed.label.clone(),
                     "Open".into(),
-                    Spot::Open(program.module),
+                    Spot::Open(listed.program),
                 )
             })
             .collect();

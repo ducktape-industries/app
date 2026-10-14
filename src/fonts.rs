@@ -1,9 +1,9 @@
 //! The app's faces and their fallback chains, for the shell's own
-//! screens and a guest view's text alike.
+//! screens and a view's text alike.
 
 /// The app draws with these two. The shared `design` crate still names
 /// Inter and JetBrains Mono, which are not bundled; [`app_family`] swaps
-/// those names for these everywhere the app draws, so a guest view asking
+/// those names for these everywhere the app draws, so a view asking
 /// for a design-crate face gets the app's.
 pub(crate) const FAMILY_UI: &str = "Instrument Sans";
 pub(crate) const FAMILY_MONO: &str = "IBM Plex Mono";
@@ -64,7 +64,7 @@ fn chain_led_by(hangul: &str) -> gpui_kit::FontFallbacks {
     )
 }
 
-/// The face the app draws for `family`: a guest names the design crate's
+/// The face the app draws for `family`: a view names the design crate's
 /// faces, and the app's own stand in for them.
 pub(crate) fn app_family(family: &gpui_kit::SharedString) -> gpui_kit::SharedString {
     match family.as_ref() {
@@ -74,7 +74,7 @@ pub(crate) fn app_family(family: &gpui_kit::SharedString) -> gpui_kit::SharedStr
     }
 }
 
-/// Pairs the family a guest asked for, already the app's face (the renderer
+/// Pairs the family a view asked for, already the app's face (the renderer
 /// reads every style through [`app_family`]), with the fallback chain that
 /// carries its Hangul: code faces fall back to the monospace Hangul face,
 /// everything else to the proportional one. Wire styles arrive by

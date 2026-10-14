@@ -18,9 +18,9 @@ fn desk(cx: &mut TestAppContext) -> Entity<Desk> {
     desk
 }
 
-fn modules(desk: &Entity<Desk>, cx: &TestAppContext) -> Vec<&'static str> {
+fn programs(desk: &Entity<Desk>, cx: &TestAppContext) -> Vec<&'static str> {
     desk.read_with(cx, |desk, _| {
-        desk.get().panes.iter().map(|pane| pane.module).collect()
+        desk.get().panes.iter().map(|pane| pane.program).collect()
     })
 }
 
@@ -31,11 +31,11 @@ fn layout(desk: &Entity<Desk>, cx: &TestAppContext) -> Layout {
 #[gpui_kit::test]
 fn an_untouched_desk_opens_its_seed_once_and_every_window_has_a_frame(cx: &mut TestAppContext) {
     let desk = desk(cx);
-    assert_eq!(modules(&desk, cx), ["chat"]);
+    assert_eq!(programs(&desk, cx), ["chat"]);
     assert!(layout(&desk, cx).panes[0].frame.is_some());
     desk.update(cx, |desk, cx| _ = desk.close(0, cx));
     desk.update(cx, |desk, cx| desk.seed("files", cx));
-    assert!(modules(&desk, cx).is_empty(), "a closed desk reopened");
+    assert!(programs(&desk, cx).is_empty(), "a closed desk reopened");
 }
 
 #[gpui_kit::test]
@@ -84,7 +84,7 @@ fn a_move_that_changes_nothing_notifies_nobody(cx: &mut TestAppContext) {
 /// desk narrower than that it is the desk.
 #[gpui_kit::test]
 fn a_window_widens_to_its_view_once_the_view_is_seated(cx: &mut TestAppContext) {
-    for (module, width, min_width, placed, widened) in [
+    for (program, width, min_width, placed, widened) in [
         ("seated-wide-view", 1000., 680, (200., 600.), (200., 682.)),
         // the console at its smallest, forge opening in it
         ("seated-console-view", 720., 640, (144., 432.), (78., 642.)),
@@ -93,17 +93,17 @@ fn a_window_widens_to_its_view_once_the_view_is_seated(cx: &mut TestAppContext) 
         let desk = cx.new(|_| Slice::new(Layout::default()));
         desk.update(cx, |desk, cx| {
             desk.resize((width, 700.), cx);
-            desk.seed(module, cx);
+            desk.seed(program, cx);
         });
         let frame = layout(&desk, cx).panes[0].frame.unwrap();
-        assert_eq!((frame.x, frame.w), placed, "{module}");
-        crate::runtime::seat_for_test(module, min_width);
+        assert_eq!((frame.x, frame.w), placed, "{program}");
+        crate::runtime::seat_for_test(program, min_width);
         // `Seats` routes the seat's `Seated` to every desk holding it
-        assert!(desk.read_with(cx, |desk, _| desk.holds(module)));
+        assert!(desk.read_with(cx, |desk, _| desk.holds(program)));
         desk.update(cx, |desk, cx| desk.settle(cx));
         let frame = layout(&desk, cx).panes[0].frame.unwrap();
-        assert_eq!((frame.x, frame.w), widened, "{module}");
-        assert!(frame.x + frame.w <= width, "{module}: {frame:?}");
+        assert_eq!((frame.x, frame.w), widened, "{program}");
+        assert!(frame.x + frame.w <= width, "{program}: {frame:?}");
     }
 }
 
@@ -118,5 +118,5 @@ fn a_cleared_desk_keeps_its_measure_and_seeds_again(cx: &mut TestAppContext) {
     assert_eq!(cleared.desk, Some(DESK));
     assert!(!cleared.initialized);
     desk.update(cx, |desk, cx| desk.seed("files", cx));
-    assert_eq!(modules(&desk, cx), ["files"]);
+    assert_eq!(programs(&desk, cx), ["files"]);
 }

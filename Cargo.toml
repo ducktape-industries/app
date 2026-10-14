@@ -28,17 +28,17 @@ version = "0.1.0"
 
 [workspace.dependencies]
 
-# --- sdk-line: crates/sdk of ducktape-industries/modules (abi, view-wire, program, ducklink, design, describe). Every modules crate here and below sits on ONE rev, and every view this app seats is built at that rev: its manifest's wire_id must equal `view_wire::WIRE_ID` (`runtime/guest.rs` `wire_id`). Which rev and why is in `git log -- Cargo.toml`. ---
-abi = { git = "https://github.com/ducktape-industries/modules", rev = "4339899c8f48e3795c13382d0a4af3f7167b7052", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "4339899c8f48e3795c13382d0a4af3f7167b7052", package = "view-wire" }
+# --- sdk-line: crates/sdk of ducktape-industries/programs (abi, view-wire, program, ducklink, design, describe). Every crate of that repo here and below sits on ONE rev, and every view this app seats is built at that rev: its manifest's wire_id must equal `view_wire::WIRE_ID` (`runtime/view.rs` `wire_id`). Which rev and why is in `git log -- Cargo.toml`. ---
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "2fd601ceae68dbb25e974480653ac888625cdc01", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "2fd601ceae68dbb25e974480653ac888625cdc01", package = "view-wire" }
 # `program::is_name`: the one spelling of a program id
-program = { git = "https://github.com/ducktape-industries/modules", rev = "4339899c8f48e3795c13382d0a4af3f7167b7052", package = "program" }
-ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "4339899c8f48e3795c13382d0a4af3f7167b7052", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/modules", rev = "4339899c8f48e3795c13382d0a4af3f7167b7052", package = "design" }
-# `module.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/modules", rev = "4339899c8f48e3795c13382d0a4af3f7167b7052", package = "describe", features = ["host"] }
+program = { git = "https://github.com/ducktape-industries/programs", rev = "2fd601ceae68dbb25e974480653ac888625cdc01", package = "program" }
+ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "2fd601ceae68dbb25e974480653ac888625cdc01", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/programs", rev = "2fd601ceae68dbb25e974480653ac888625cdc01", package = "design" }
+# `program.describe`: the runner a program's untrusted describe module goes through
+describe = { git = "https://github.com/ducktape-industries/programs", rev = "2fd601ceae68dbb25e974480653ac888625cdc01", package = "describe", features = ["host"] }
 # the identity program's own types: the app's passkey lane and `crates/noded-client`'s flows
-identity = { git = "https://github.com/ducktape-industries/modules", rev = "4339899c8f48e3795c13382d0a4af3f7167b7052", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/programs", rev = "2fd601ceae68dbb25e974480653ac888625cdc01", package = "identity" }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -59,7 +59,7 @@ tempfile = "3"
 zeroize = "1"
 base64 = "0.22"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
-# wasmtime — pinned exactly, matching the node's runtime: a module-owned view
+# wasmtime — pinned exactly, matching the node's runtime: a program-owned view
 # executes in the same wasm semantics the kernel does.
 wasmtime = "=46.0.3"
 libc = "0.2"
@@ -99,8 +99,8 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b", package = "keyscheme" }
 identity.workspace = true
 # The roster's full query surface: its programs and its view-only entries.
-module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "4339899c8f48e3795c13382d0a4af3f7167b7052", package = "module-registry" }
-valset = { git = "https://github.com/ducktape-industries/modules", rev = "4339899c8f48e3795c13382d0a4af3f7167b7052", package = "valset" }
+programs = { git = "https://github.com/ducktape-industries/programs", rev = "2fd601ceae68dbb25e974480653ac888625cdc01", package = "programs" }
+valset = { git = "https://github.com/ducktape-industries/programs", rev = "2fd601ceae68dbb25e974480653ac888625cdc01", package = "valset" }
 base64.workspace = true
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -108,7 +108,7 @@ rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
-# A guest SVG's own size, which sets the height gpui rasterises it at
+# A view SVG's own size, which sets the height gpui rasterises it at
 # (`render/svg_limits.rs`): gpui's own parser, already in the graph.
 usvg = { version = "0.46.0", default-features = false }
 reqwest.workspace = true
@@ -158,7 +158,6 @@ tempfile.workspace = true
 tokio-tungstenite.workspace = true
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b", package = "keyscheme", features = ["testkit"] }
 p256 = "0.13"
-guest = { git = "https://github.com/ducktape-industries/modules", rev = "4339899c8f48e3795c13382d0a4af3f7167b7052", package = "guest" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # test-support: its headless renderer, which `render/tests/picture_pixels.rs`
@@ -191,7 +190,7 @@ inherits = "release"
 lto = "fat"
 codegen-units = 1
 
-# dev/test builds compile wasm guests through cranelift (module-owned view
+# dev/test builds compile wasm views through cranelift (program-owned view
 # fixtures); unoptimized cranelift is 10-30x slower, so the code generator
 # itself is always built optimized. build-time only.
 [profile.dev.build-override]

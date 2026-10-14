@@ -1260,7 +1260,7 @@ fn escape_bound(window: &Window, cx: &App) -> bool {
 /// to 4 (M + 1) presses, M the most nodes offering focus a snapshot has
 /// shown so far (counted before `keep` filters). Those nodes are no floor:
 /// a composite and its chosen row both offer focus and are one stop.
-/// A Tab that leaves the focus where it was (a guest editor keeps Tab for
+/// A Tab that leaves the focus where it was (a view editor keeps Tab for
 /// its indent) is followed by `escape tab`, the way out Help gives (owner,
 /// 2026-09-28), once until the focus moves, and never under a modal:
 /// there `escape` closes the modal (Spotlight, whose one Tab stop Tab

@@ -20,7 +20,7 @@ pub async fn ask(
     let frame = Frame::query(
         signer,
         network.as_bytes(),
-        identity::MODULE,
+        identity::PROGRAM,
         abi::encode(&query),
     )
     .map_err(|refused| refused.to_string())?;
@@ -57,7 +57,7 @@ pub async fn account_of_key(
     let frame = Frame::query(
         signer,
         network.as_bytes(),
-        identity::MODULE,
+        identity::PROGRAM,
         abi::encode(&Query::OfKey { key }),
     )
     .map_err(|refused| refused.to_string())?;
@@ -137,7 +137,7 @@ pub async fn submit_signed(
         network.as_bytes(),
         anchor,
         Some(salt()),
-        identity::MODULE,
+        identity::PROGRAM,
         abi::encode(op),
     )
     .map_err(|refused| refused.to_string())?;
@@ -284,7 +284,7 @@ mod tests {
             contract: crate::wire::NODE_CONTRACT,
             genesis: [9; 32],
             roles: abi::Roles {
-                registry: "r".into(),
+                programs: "r".into(),
                 validators: "v".into(),
                 identity: "i".into(),
             },

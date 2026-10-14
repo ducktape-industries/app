@@ -1,5 +1,5 @@
 //! Image, Svg and Canvas nodes. A picture's bytes cross the wire once;
-//! later frames name it by the guest's content hash, and the tree draws
+//! later frames name it by the view's content hash, and the tree draws
 //! that hash from the seat's [`PictureBytes`]. Rasters decoded from them
 //! are cached in [`Rasters`].
 use super::picture_resources::{cache_fits, decode_image};
@@ -23,7 +23,7 @@ pub(crate) struct PictureBytes {
 /// drops (`ViewTree::release`). Past the caps (`picture_resources`) it
 /// evicts the rasters drawn least recently before the current frame, whose
 /// bytes the seat still holds to decode again; a raster that does not fit
-/// beside the current frame's is refused, and its Image draws the guest's
+/// beside the current frame's is refused, and its Image draws the view's
 /// fallback.
 #[derive(Default)]
 pub(crate) struct Rasters {
@@ -114,10 +114,10 @@ impl Rasters {
         if !std::mem::replace(&mut self.refused, true) {
             tracing::warn!(
                 target: "ducktape::app",
-                reason = "module_view_image_cache_full",
+                reason = "program_view_image_cache_full",
                 held = self.bytes,
                 rasters = self.held.len(),
-                "module view images past the seat's raster cache; drawing their fallback"
+                "program view images past the seat's raster cache; drawing their fallback"
             );
         }
     }
@@ -139,8 +139,8 @@ impl Rasters {
 mod svg_canvas;
 use svg_canvas::SvgCanvas;
 
-/// A guest Svg's glyph. gpui's `svg()` paints only in its own text colour
-/// (`Svg::paint`), and the guest's style is on the wrapping box, so the
+/// A view Svg's glyph. gpui's `svg()` paints only in its own text colour
+/// (`Svg::paint`), and the view's style is on the wrapping box, so the
 /// glyph takes the colour in effect where it paints, as CSS `currentColor`
 /// does: the box's own `text_color` (hover and active included, since the
 /// box computes them), else the one it inherits.
@@ -303,7 +303,7 @@ impl ViewTree {
     }
 
     /// The loading or the fallback child of an Image. `children` holds them
-    /// in that order, each present only when its flag says so (the guest SDK
+    /// in that order, each present only when its flag says so (the view SDK
     /// pushes loading first, then fallback), so which index is which depends
     /// on both flags.
     fn image_state(
@@ -396,7 +396,7 @@ impl ViewTree {
             _ => {
                 if full {
                     // a picture the cache has no room for draws the
-                    // guest's fallback, as a refused one does
+                    // view's fallback, as a refused one does
                     self.images.borrow_mut().log_refusal();
                     if let Some(child) =
                         Self::image_state(*loading, *fallback, state_children, true)
@@ -413,7 +413,7 @@ impl ViewTree {
                 } else if let Some(child) =
                     Self::image_state(*loading, *fallback, state_children, false)
                 {
-                    // the loading placeholder is an ordinary guest node, laid
+                    // the loading placeholder is an ordinary view node, laid
                     // out and clipped inside this image's box
                     element = element.child(self.node(child, window, cx));
                 }
@@ -422,8 +422,8 @@ impl ViewTree {
         self.primitive_interactivity(element, node, cx)
     }
 
-    /// An Image's or Svg's box as the guest styled and wired it; its role
-    /// and name come through `accessible` (`guest_aria`), so a labelled
+    /// An Image's or Svg's box as the view styled and wired it; its role
+    /// and name come through `accessible` (`view_aria`), so a labelled
     /// picture with no role is an Image.
     fn primitive_interactivity(
         &mut self,
@@ -449,7 +449,7 @@ impl ViewTree {
             host_id(format!("primitive-{index}"))
         });
         let element = element.id(native_id);
-        self.guest_aria(element, node, interactivity, cx)
+        self.view_aria(element, node, interactivity, cx)
             .into_any_element()
     }
 }

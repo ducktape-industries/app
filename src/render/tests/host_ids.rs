@@ -102,7 +102,7 @@ fn a_view_text_spelled_like_a_host_text_id_is_its_own_node(cx: &mut gpui_kit::Te
             [
                 plain_text(None, "first"),
                 plain_text(
-                    Some(wire::ElementIdWire::NamedInteger("guest-text".into(), 0)),
+                    Some(wire::ElementIdWire::NamedInteger("view-text".into(), 0)),
                     "second",
                 ),
             ],
@@ -135,7 +135,7 @@ fn a_view_text_spelled_like_a_linked_box_is_its_own_node(cx: &mut gpui_kit::Test
             [
                 linked,
                 plain_text(
-                    Some(wire::ElementIdWire::NamedInteger("guest-rich".into(), 0)),
+                    Some(wire::ElementIdWire::NamedInteger("view-rich".into(), 0)),
                     "beside",
                 ),
             ],
@@ -237,7 +237,7 @@ fn a_click_on_a_container_spelled_like_a_host_id_fires_its_own_handler(
             button(None, "A", 1),
             button(
                 Some(wire::ElementIdWire::NamedInteger(
-                    "guest-container".into(),
+                    "view-container".into(),
                     0,
                 )),
                 "B",

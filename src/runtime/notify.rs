@@ -35,7 +35,7 @@ use std::time::Instant;
 
 use super::kernel::{in_order, spawn_reply};
 use super::wire::methods::{self, Capability, Delivery, Notification, refusal};
-use super::{Guest, Intent};
+use super::{Intent, View};
 
 mod center;
 mod settings;
@@ -83,15 +83,15 @@ fn shortened(mut post: Notification) -> Result<Notification, &'static str> {
 }
 
 pub(super) fn answer(
-    guest: &mut Guest,
+    view: &mut View,
     capability: Capability,
     operation: &str,
     id: u64,
     payload: &[u8],
 ) -> bool {
     match (capability, operation) {
-        (Capability::Notify, "post") => post(guest, center(), id, payload),
-        (Capability::Notify, "seen") => seen(guest, id, payload),
+        (Capability::Notify, "post") => post(view, center(), id, payload),
+        (Capability::Notify, "seen") => seen(view, id, payload),
         _ => return false,
     }
     true
@@ -100,13 +100,13 @@ pub(super) fn answer(
 /// `notify.post` into `center`: judged by the settings as last read
 /// ([`Settings::kept`]), not a prefs read per post; the log is written at
 /// the end of the redraw ([`center::Center::flush`]).
-fn post(guest: &mut Guest, center: &CenterHandle, id: u64, payload: &[u8]) {
+fn post(view: &mut View, center: &CenterHandle, id: u64, payload: &[u8]) {
     let post = methods::decode::<Notification>(payload)
         .and_then(|post| shortened(post).map_err(str::to_owned));
     let post = match post {
         Ok(post) => post,
         Err(error) => {
-            guest.refuse(id, refusal::MALFORMED_REQUEST, error);
+            view.refuse(id, refusal::MALFORMED_REQUEST, error);
             return;
         }
     };
@@ -114,8 +114,8 @@ fn post(guest: &mut Guest, center: &CenterHandle, id: u64, payload: &[u8]) {
         let mut center = center.lock();
         let (posted, banner) = center.post(
             &Settings::kept(),
-            guest.module,
-            &guest.name,
+            view.program,
+            &view.name,
             post,
             Instant::now(),
             wall(),
@@ -127,16 +127,16 @@ fn post(guest: &mut Guest, center: &CenterHandle, id: u64, payload: &[u8]) {
         (posted, banner, entry)
     };
     // the bell and the bar redraw
-    guest.intents.push(Intent::Notified);
+    view.intents.push(Intent::Notified);
     // queued now, in the order the view posted, not when the task runs
     let raised = banner.map(|notice| {
         let (tell, told) = tokio::sync::oneshot::channel();
-        in_order(guest.module, move || {
+        in_order(view.program, move || {
             let _ = tell.send(platform::post(&notice, entry.map(Click::Row)));
         });
         told
     });
-    spawn_reply(guest, id, async move {
+    spawn_reply(view, id, async move {
         let raised = match raised {
             None => false,
             Some(told) => told.await.unwrap_or(false),
@@ -151,23 +151,23 @@ fn post(guest: &mut Guest, center: &CenterHandle, id: u64, payload: &[u8]) {
 
 /// `notify.seen`: the view's rows under the tag read, and its standing
 /// banner under it down, queued behind the banners it already raised.
-fn seen(guest: &mut Guest, id: u64, payload: &[u8]) {
+fn seen(view: &mut View, id: u64, payload: &[u8]) {
     let tag = match methods::decode::<String>(payload) {
         Ok(tag) => tag,
         Err(error) => {
-            guest.refuse(id, refusal::MALFORMED_REQUEST, error);
+            view.refuse(id, refusal::MALFORMED_REQUEST, error);
             return;
         }
     };
-    if center().lock().read_tag(guest.module, &tag) {
+    if center().lock().read_tag(view.program, &tag) {
         // the bell and the centre redraw
-        guest.intents.push(Intent::Notified);
+        view.intents.push(Intent::Notified);
     }
     if !tag.is_empty() {
-        let tag = format!("{}/{tag}", guest.module);
-        in_order(guest.module, move || platform::withdraw(&tag));
+        let tag = format!("{}/{tag}", view.program);
+        in_order(view.program, move || platform::withdraw(&tag));
     }
-    guest.reply(id, Ok(methods::encode(&())));
+    view.reply(id, Ok(methods::encode(&())));
 }
 
 /// What a click on a banner opens.
@@ -205,7 +205,7 @@ fn clicked(click: Click) {
                 return;
             };
             Opened::Link(match entry.link.is_empty() {
-                true => format!("duck://{}", entry.module),
+                true => format!("duck://{}", entry.program),
                 false => entry.link,
             })
         }
@@ -263,7 +263,7 @@ fn process_token(pid: u32, started: std::time::SystemTime) -> String {
 
 // Each platform module exposes `post(&Notice, click: Option<Click>) -> raised`
 // and `withdraw(tag)`. Both block on OS calls; a view's run only through
-// `in_order` under the view's module, on the blocking pool, and the host's
+// `in_order` under the view's program, on the blocking pool, and the host's
 // on the thread that posts it. A click on a banner calls back
 // `clicked(click)`.
 #[cfg(target_os = "macos")]

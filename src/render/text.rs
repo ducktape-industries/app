@@ -7,7 +7,7 @@ use crate::render::native_id;
 
 pub(super) mod links;
 
-/// The content the guest built for the rich tooltip `request` over
+/// The content the view built for the rich tooltip `request` over
 /// `character_index`, once it has answered for that character.
 fn rich_tooltip_content(
     tooltips: &HashMap<u32, TooltipContent>,

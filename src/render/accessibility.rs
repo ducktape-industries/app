@@ -1,10 +1,10 @@
 //! What a wire node is to assistive technology. `accessible` maps a node to
 //! an `Accessible` (role, name, value, states); `announce` writes one onto
-//! the element a renderer built; `guest_aria`, the one aria mapper, writes
-//! the guest's own `Interactivity` for the nodes that carry it (Container,
+//! the element a renderer built; `view_aria`, the one aria mapper, writes
+//! the view's own `Interactivity` for the nodes that carry it (Container,
 //! Image, Svg, UniformList, List, ResizeHandle). `ViewTree::presentation` also lives
 //! here for now, though it is not accessibility: it is the native state
-//! carried across a guest generation (see its doc).
+//! carried across a view generation (see its doc).
 use super::*;
 
 /// What one wire node is to assistive technology: the role it plays, the
@@ -61,11 +61,11 @@ fn descendant_text(node: &wire::Node) -> Option<String> {
 /// nodes the presenter announces itself: a view never names those controls'
 /// roles, it says `label` and the role follows from the variant. Not every
 /// variant passes through here. Container, UniformList, List, ResizeHandle,
-/// Image and Svg carry the guest's own `Interactivity.aria` through
-/// `guest_aria` instead, which
+/// Image and Svg carry the view's own `Interactivity.aria` through
+/// `view_aria` instead, which
 /// takes only a picture's default role and name from the Image/Svg arm
 /// below; RichText has none. The node's accessibility id is its wire key
-/// under the module's view, the element id each variant is already built
+/// under the program's view, the element id each variant is already built
 /// with.
 pub(crate) fn accessible(node: &wire::Node) -> Accessible {
     use gpui_kit::Role;
@@ -89,7 +89,7 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
             value: named(content),
             ..Default::default()
         },
-        // the value is the guest's word on the text; the mounted field
+        // the value is the view's word on the text; the mounted field
         // reads the engine's (`ViewTree::field`). A field with no name is
         // described by what it shows in place of its text.
         Node::Field {
@@ -224,8 +224,8 @@ impl ViewTree {
     /// technology receives it, on the element a renderer built. Role,
     /// focusable, the author id, every `aria.*` gpui has a setter for, the
     /// rest in one `a11y::Patch`, each advertised action routed back as
-    /// `Event::A11yAction`, then the guest focus handle (made once per
-    /// id, kept in `guest_focus_targets`), the rest of the interactivity
+    /// `Event::A11yAction`, then the view focus handle (made once per
+    /// id, kept in `view_focus_targets`), the rest of the interactivity
     /// through `interactivity::apply`, and `on_click`, which is assistive
     /// technology's Click on the node too. A picture with no role
     /// takes `accessible`'s (a labelled one is an Image); a roled node with
@@ -233,7 +233,7 @@ impl ViewTree {
     /// value speaks it as its value too (macOS reads the value). Each setter
     /// is a field write gpui reads once at prepaint, so where the caller
     /// puts this among its own setters does not matter.
-    pub(super) fn guest_aria<E: gpui_kit::StatefulInteractiveElement>(
+    pub(super) fn view_aria<E: gpui_kit::StatefulInteractiveElement>(
         &mut self,
         mut element: E,
         node: &wire::Node,
@@ -365,12 +365,12 @@ impl ViewTree {
         }
         let focus_handle = interactivity.focus_handle.map(|id| {
             let handle = self
-                .guest_focus_targets
+                .view_focus_targets
                 .entry(id)
                 .or_insert_with(|| cx.focus_handle());
             tabbed(handle.clone(), interactivity)
         });
-        // whether the guest has built the node's tooltip
+        // whether the view has built the node's tooltip
         let tooltip_held = (interactivity.tooltip.as_ref())
             .is_some_and(|tooltip| self.tooltips.contains_key(&tooltip.request));
         // only a node with an id of its own is found again by its path
@@ -389,7 +389,7 @@ impl ViewTree {
         // them (a keyboard click on its bounds), wherever it is drawn, so
         // the reader's press is the node's, with the one activation a
         // pointer's or Enter's has
-        // a click the guest consumes stops here, as gpui's
+        // a click the view consumes stops here, as gpui's
         // `cx.stop_propagation()` in the listener would: no element under
         // it hears the same press
         if let Some(handler) = interactivity.on_click {
@@ -426,11 +426,11 @@ impl ViewTree {
 }
 
 impl ViewTree {
-    /// The native state worth keeping when the view's guest is re-instantiated
+    /// The native state worth keeping when the view is re-instantiated
     /// (a new generation): each field's text, selection and focus, the focused
     /// container, and the decoded image cache itself (the seat's, shared, not
     /// copied). Plain data otherwise: no native entity, callback, handler id
-    /// or IME preedit crosses a generation, since the new guest's handler ids
+    /// or IME preedit crosses a generation, since the new view's handler ids
     /// mean different things.
     pub(crate) fn presentation(&self, window: &Window, cx: &App) -> NativePresentation {
         let inputs = self
@@ -460,4 +460,4 @@ impl ViewTree {
 }
 
 #[cfg(test)]
-mod guest_aria_tests;
+mod view_aria_tests;

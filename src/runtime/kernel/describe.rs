@@ -1,4 +1,4 @@
-//! `module.describe`: an op as its program says a person reads it. The
+//! `program.describe`: an op as its program says a person reads it. The
 //! program's CURRENT code blob (the roster the app already holds) carries a
 //! wasm module in its `ducktape.describe` section; it is compiled once per
 //! code id and called in a fresh, import-free, fuel- and memory-bounded
@@ -66,7 +66,7 @@ pub(super) async fn described(
         return Ok(None);
     };
     let described = tokio::task::spawn_blocking(move || {
-        ::describe::host::run(super::super::guest::engine(), &module, &op)
+        ::describe::host::run(super::super::view::engine(), &module, &op)
     })
     .await
     .ok()
@@ -105,7 +105,7 @@ async fn module(node: &Node, code: abi::BlobId) -> Result<Option<Arc<Module>>, w
             Ok(tokio::task::spawn_blocking(move || {
                 ::describe::host::section(&bytes)
                     .and_then(|section| {
-                        ::describe::host::compile(super::super::guest::engine(), section)
+                        ::describe::host::compile(super::super::view::engine(), section)
                     })
                     .map(Arc::new)
             })
@@ -145,7 +145,7 @@ pub(super) mod tests {
             });
         let module = wat.and_then(|wat| {
             ::describe::host::compile(
-                super::super::super::guest::engine(),
+                super::super::super::view::engine(),
                 &wat::parse_str(wat).unwrap(),
             )
         });
@@ -328,7 +328,7 @@ mod stage {
         for (program, (described, bytes)) in &counts {
             println!("{program}: {described} described, {bytes} as bytes");
         }
-        let ours = ["chat", "forge", "identity", "valset", "module-registry"];
+        let ours = ["chat", "forge", "identity", "valset", "programs"];
         let fell_back: Vec<_> = counts
             .iter()
             .filter(|(program, (_, bytes))| ours.contains(&program.as_str()) && *bytes > 0)

@@ -226,16 +226,16 @@ impl Windows {
         key
     }
 
-    /// `--live`: `module` in a window of its own, the only window, and so
+    /// `--live`: `program` in a window of its own, the only window, and so
     /// the one dialogs (a consent card) open in.
     #[cfg(debug_assertions)]
-    pub(crate) fn open_live(&mut self, module: &'static str, cx: &mut Context<Self>) {
-        let key = self.open(WindowKind::View { module }, None, cx);
+    pub(crate) fn open_live(&mut self, program: &'static str, cx: &mut Context<Self>) {
+        let key = self.open(WindowKind::View { program }, None, cx);
         self.console = Some(key);
-        self.active = Some(module);
+        self.active = Some(program);
         self.by_window[&key]
             .desk
-            .update(cx, |desk, cx| desk.seed(module, cx));
+            .update(cx, |desk, cx| desk.seed(program, cx));
     }
 
     /// Window `key`'s own entities, and what follows them here: the
@@ -257,10 +257,10 @@ impl Windows {
             .push(cx.observe(&own.desk, move |this, desk, cx| {
                 // the window in front is the active program, however it got
                 // there (a frame or a fill moves no front: `shown` stands)
-                if let Some(module) = desk.read(cx).get().shown()
-                    && this.active != Some(module)
+                if let Some(program) = desk.read(cx).get().shown()
+                    && this.active != Some(program)
                 {
-                    this.active = Some(module);
+                    this.active = Some(program);
                     cx.notify();
                 }
                 this.set_front(key, cx);
@@ -310,8 +310,8 @@ impl Windows {
         use gpui_kit::{TitlebarOptions, WindowOptions, point};
         let title = match kind {
             WindowKind::Console => "Ducktape".to_owned(),
-            WindowKind::View { module } => {
-                crate::shell::panes::label(self.shared.rail.read(cx).rows(), module)
+            WindowKind::View { program } => {
+                crate::shell::panes::label(self.shared.rail.read(cx).rows(), program)
             }
         };
         // the launcher is a small window of a fixed size; the desk grows
@@ -346,8 +346,8 @@ impl Windows {
             // the window opens (there is no setting it later)
             window_min_size: Some(match kind {
                 WindowKind::Console => size(px(720.), px(480.)),
-                WindowKind::View { module } => {
-                    size(px(windows::popout_min(module)), px(windows::POPOUT_MIN))
+                WindowKind::View { program } => {
+                    size(px(windows::popout_min(program)), px(windows::POPOUT_MIN))
                 }
             }),
             app_id: Some("dev.ducktape.app".into()),
@@ -446,7 +446,7 @@ impl Windows {
         let focused = layout
             .panes
             .get(layout.focused)
-            .map_or(layout::EMPTY, |pane| pane.module);
+            .map_or(layout::EMPTY, |pane| pane.program);
         self.center
             .lock()
             .set_front(key, self.front == Some(key), focused);
@@ -630,7 +630,7 @@ impl Windows {
             return;
         };
         let kind = WindowKind::View {
-            module: pane.module,
+            program: pane.program,
         };
         let key = self.open(kind, at, cx);
         self.by_window[&key]
@@ -638,7 +638,7 @@ impl Windows {
             .update(cx, |desk, cx| desk.popin(pane, cx));
     }
 
-    /// `module` asked for on window `key`'s desk (a tab, a pick in an empty
+    /// `program` asked for on window `key`'s desk (a tab, a pick in an empty
     /// window, Spotlight, a link): where `Layout::open` puts it, but a
     /// program that desk does not show and a pop-out does brings the
     /// pop-out forward rather than opening it again (the desk's focused
@@ -647,13 +647,13 @@ impl Windows {
     pub(crate) fn open_program(
         &mut self,
         key: WindowKey,
-        module: &'static str,
+        program: &'static str,
         cx: &mut Context<Self>,
     ) -> Option<u64> {
         let _timed = timed();
         let desk = self.by_window.get(&key).map(|own| own.desk.clone())?;
         let pane_of = |layout: &Layout| {
-            let pane = layout.panes.iter().find(|pane| pane.module == module);
+            let pane = layout.panes.iter().find(|pane| pane.program == program);
             pane.map(|pane| pane.instance)
         };
         let layout = desk.read(cx).get();
@@ -673,11 +673,11 @@ impl Windows {
                 Some(instance)
             }
             None => {
-                desk.update(cx, |desk, cx| desk.open(module, cx));
+                desk.update(cx, |desk, cx| desk.open(program, cx));
                 // `Layout::open` leaves the pane it opened or found focused
                 let layout = desk.read(cx).get();
                 let pane = layout.panes.get(layout.focused)?;
-                (pane.module == module).then_some(pane.instance)
+                (pane.program == program).then_some(pane.instance)
             }
         }
     }
@@ -703,9 +703,9 @@ impl Windows {
     /// Show a program on the desk (Spotlight, a menu), as the bar's click
     /// does: into an empty focused window, else the window it is in, else
     /// one of its own.
-    pub(crate) fn select_view(&mut self, module: &'static str, cx: &mut Context<Self>) {
+    pub(crate) fn select_view(&mut self, program: &'static str, cx: &mut Context<Self>) {
         let _timed = timed();
-        self.open_seat(module, None, None, cx);
+        self.open_seat(program, None, None, cx);
     }
 
     /// Help on the desk: into the focused window if it is empty, else
@@ -731,7 +731,7 @@ impl Windows {
     /// `duck://<chain>/<program>/<tail>` on this chain, or the short
     /// `duck://<view>/<route>`: the seat opens and its view is handed the
     /// route. The window coming forward is the answer; a notice only says
-    /// what there is nothing to see of. `from` is the pane (its module and
+    /// what there is nothing to see of. `from` is the pane (its program and
     /// instance) whose view opened the link, `None` from anywhere else.
     pub(crate) fn open_link(
         &mut self,
@@ -742,37 +742,37 @@ impl Windows {
         let _timed = timed();
         let parsed = self.shared.rail.read(cx).parse_link(link);
         match parsed {
-            Link::View { module, route } => self.open_seat(module, route, from, cx),
+            Link::View { program, route } => self.open_seat(program, route, from, cx),
             Link::Chain(parsed) if !self.shared.rail.read(cx).lists(&parsed.program) => {
                 self.notice(format!("No view here opens {} links.", parsed.program), cx);
             }
             Link::Chain(parsed) => {
-                let module = crate::runtime::intern(&parsed.program);
+                let program = crate::runtime::intern(&parsed.program);
                 let route = parsed.tail.join("/");
                 let chain = self.shared.session.read(cx).get().chain.clone();
                 if parsed.chain.to_string() != chain {
                     // another chain's page is not this chain's to show
-                    self.open_seat(module, None, from, cx);
+                    self.open_seat(program, None, from, cx);
                     self.notice(
                         format!(
-                            "That link is to {}, not this network; opened {module}.",
+                            "That link is to {}, not this network; opened {program}.",
                             parsed.chain.label
                         ),
                         cx,
                     );
                 } else if route.is_empty() || crate::runtime::valid_route(&route) {
-                    self.open_seat(module, (!route.is_empty()).then_some(route), from, cx);
+                    self.open_seat(program, (!route.is_empty()).then_some(route), from, cx);
                 } else {
-                    self.open_seat(module, None, from, cx);
-                    self.notice(format!("{module} can't open that part of the link."), cx);
+                    self.open_seat(program, None, from, cx);
+                    self.notice(format!("{program} can't open that part of the link."), cx);
                 }
             }
             // to the view that declares `web`, if one is listed and this
             // build has a web view; else the system browser
             Link::Web(url) => match crate::render::web::view_for(&url)
-                .filter(|module| self.shared.rail.read(cx).lists(module))
+                .filter(|program| self.shared.rail.read(cx).lists(program))
             {
-                Some(module) => self.open_seat(module, Some(url), from, cx),
+                Some(program) => self.open_seat(program, Some(url), from, cx),
                 None => cx.open_url(&url),
             },
             Link::Unknown => self.notice("This link is not one this app opens.".into(), cx),
@@ -784,37 +784,37 @@ impl Windows {
     pub(crate) fn open_notice(&mut self, entry: &Entry, cx: &mut Context<Self>) {
         if !entry.link.is_empty() {
             self.open_link(&entry.link, None, cx);
-        } else if self.shared.rail.read(cx).lists(&entry.module) {
-            self.open_seat(crate::runtime::intern(&entry.module), None, None, cx);
+        } else if self.shared.rail.read(cx).lists(&entry.program) {
+            self.open_seat(crate::runtime::intern(&entry.program), None, None, cx);
         }
     }
 
-    /// `module` beside the view in front on the console's desk, not in
+    /// `program` beside the view in front on the console's desk, not in
     /// place of it, or its pop-out forward (`open_program`), and that one
     /// seat handed `route`. A view's link into its own program (`from`)
     /// goes to its own seat, and nothing comes forward or moves.
     fn open_seat(
         &mut self,
-        module: &'static str,
+        program: &'static str,
         route: Option<String>,
         from: Option<(&'static str, u64)>,
         cx: &mut Context<Self>,
     ) {
-        if let Some((_, instance)) = from.filter(|(from, _)| *from == module) {
+        if let Some((_, instance)) = from.filter(|(from, _)| *from == program) {
             if let Some(route) = route {
-                crate::runtime::route_to(module, instance, route);
+                crate::runtime::route_to(program, instance, route);
             }
             return;
         }
-        if self.active != Some(module) {
-            self.active = Some(module);
+        if self.active != Some(program) {
+            self.active = Some(program);
             cx.notify();
         }
         let seat = self
             .console
-            .and_then(|console| self.open_program(console, module, cx));
+            .and_then(|console| self.open_program(console, program, cx));
         if let Some((route, instance)) = route.zip(seat) {
-            crate::runtime::route_to(module, instance, route);
+            crate::runtime::route_to(program, instance, route);
         }
     }
 
@@ -996,8 +996,8 @@ impl Windows {
 
     /// The program in front, as a test seeds it.
     #[cfg(test)]
-    pub(in crate::shell) fn set_active(&mut self, module: Option<&'static str>) {
-        self.active = module;
+    pub(in crate::shell) fn set_active(&mut self, program: Option<&'static str>) {
+        self.active = program;
     }
 
     /// Each window's root view.

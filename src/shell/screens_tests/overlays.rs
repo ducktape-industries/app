@@ -509,12 +509,12 @@ fn a_menu_hangs_four_pixels_under_the_bar_at_every_scale(cx: &mut TestAppContext
     }
 }
 
-/// An ask queued from the view `module`, saying `said`, and the console's
+/// An ask queued from the view `program`, saying `said`, and the console's
 /// card synced to the queue as the shell's wake syncs it.
 fn ask(
     view: &Entity<WindowRoot>,
     native: &mut VisualTestContext,
-    module: &'static str,
+    program: &'static str,
     said: &str,
 ) -> consent::Told {
     let words = consent::Words {
@@ -524,7 +524,7 @@ fn ask(
         shown: None,
         described: false,
     };
-    let told = consent::queue(module, 0, words).expect("queued");
+    let told = consent::queue(program, 0, words).expect("queued");
     sync(view, native);
     told
 }
@@ -687,7 +687,7 @@ fn a_card_for_the_network_says_so_and_shows_the_description(cx: &mut TestAppCont
         0,
         consent::Words {
             title: consent::NETWORK,
-            said: "Program explorer asks your key to sign an op on the module registry. \
+            said: "Program explorer asks your key to sign an op on the programs role. \
                    Approve only if you meant to."
                 .into(),
             id: Some(8..16),

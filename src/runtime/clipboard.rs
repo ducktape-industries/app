@@ -1,9 +1,9 @@
-//! The clipboard, read and written on the window thread for one guest.
+//! The clipboard, read and written on the window thread for one view.
 use super::wire::methods::{self, Capability, refusal};
-use super::{Guest, Seat};
+use super::{Seat, View};
 use gpui_kit::{ClipboardEntry, Context};
 
-/// Requests a guest may have waiting for the window thread between two
+/// Requests a view may have waiting for the window thread between two
 /// ticks; a view has no reason to read the clipboard sixteen times a frame.
 const MAX_PENDING: usize = 16;
 
@@ -23,7 +23,7 @@ impl Clipboard {
 }
 
 pub(super) fn answer(
-    guest: &mut Guest,
+    view: &mut View,
     capability: Capability,
     operation: &str,
     id: u64,
@@ -37,31 +37,31 @@ pub(super) fn answer(
     // what the person copied elsewhere is read, and replaced, only on
     // their activation, which the ask takes; a view on a clock never sees it
     match request {
-        Ok(_) if !guest.take_activation() => guest.refuse(
+        Ok(_) if !view.take_activation() => view.refuse(
             id,
             refusal::NEEDS_GESTURE,
             "the clipboard needs a press or key",
         ),
-        Ok(request) => queue(guest, id, request),
-        Err(error) => guest.refuse(id, refusal::MALFORMED_REQUEST, error),
+        Ok(request) => queue(view, id, request),
+        Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
     }
     true
 }
 
-fn queue(guest: &mut Guest, id: u64, request: Request) {
-    if guest.clipboard.pending.len() >= MAX_PENDING {
-        guest.refuse(
+fn queue(view: &mut View, id: u64, request: Request) {
+    if view.clipboard.pending.len() >= MAX_PENDING {
+        view.refuse(
             id,
             refusal::IN_FLIGHT_LIMIT,
             "too many pending clipboard requests",
         );
         return;
     }
-    guest.clipboard.pending.push((id, request));
+    view.clipboard.pending.push((id, request));
 }
 
-pub(super) fn mount(guest: &mut Guest, cx: &mut Context<Seat>) {
-    for (id, request) in std::mem::take(&mut guest.clipboard.pending) {
+pub(super) fn mount(view: &mut View, cx: &mut Context<Seat>) {
+    for (id, request) in std::mem::take(&mut view.clipboard.pending) {
         match request {
             Request::Read => {
                 let mut text = String::new();
@@ -72,11 +72,11 @@ pub(super) fn mount(guest: &mut Guest, cx: &mut Context<Seat>) {
                         }
                     }
                 }
-                guest.reply(id, Ok(methods::encode(&methods::Clipboard { text })));
+                view.reply(id, Ok(methods::encode(&methods::Clipboard { text })));
             }
             Request::Write(text) => {
                 cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
-                guest.reply(id, Ok(Vec::new()));
+                view.reply(id, Ok(Vec::new()));
             }
         }
     }

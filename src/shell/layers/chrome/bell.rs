@@ -113,8 +113,8 @@ impl Chrome {
                 .flat_map(char::to_uppercase)
                 .collect();
             let source = match entry.tag.is_empty() {
-                true => entry.module.clone(),
-                false => format!("{} · {}", entry.module, entry.tag),
+                true => entry.program.clone(),
+                false => format!("{} · {}", entry.program, entry.tag),
             };
             let said = format!(
                 "{}{}: {}",

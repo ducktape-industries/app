@@ -55,7 +55,7 @@ async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals()
             ),
         ],
     );
-    let ask = call("registry", &payload);
+    let ask = call("programs", &payload);
     assert_eq!(
         query(node.clone(), ask.clone()).await.unwrap(),
         [255, 0, 129]
@@ -69,17 +69,17 @@ async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals()
         let query: noded_client::wire::Query = abi::decode(&body).unwrap();
         assert_eq!(query.layer, backend::Layer::Preconfirmed);
         let frame: noded_client::wire::Frame = abi::decode(&query.frame).unwrap();
-        assert_eq!(frame.body.target, "registry");
+        assert_eq!(frame.body.target, "programs");
         assert_eq!(frame.body.network, b"test-network");
         assert_eq!(frame.body.payload, payload);
         assert_eq!(frame.proof.len(), 64);
     }
 
     for ask in [
-        b"registry".to_vec(),
+        b"programs".to_vec(),
         Vec::new(),
         call("", b""),
-        call("../registry", b""),
+        call("../programs", b""),
     ] {
         assert_eq!(
             query(node.clone(), ask).await.unwrap_err().code,

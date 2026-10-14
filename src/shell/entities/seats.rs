@@ -172,7 +172,7 @@ impl Seats {
                         let body = view_body(on_desk, layout, index);
                         (
                             pane.instance,
-                            (pane.module, window.map(|window| (window, body, in_front))),
+                            (pane.program, window.map(|window| (window, body, in_front))),
                         )
                     })
             })
@@ -184,13 +184,13 @@ impl Seats {
             .copied()
             .collect();
         let mut moved = !gone.is_empty();
-        for (instance, (module, window)) in wanted {
+        for (instance, (program, window)) in wanted {
             let props = &self.props;
             let placed = self.map.entry(instance).or_insert_with(|| {
                 moved = true;
-                let seat = cx.new(|cx| Seat::new(module, instance, cx));
+                let seat = cx.new(|cx| Seat::new(program, instance, cx));
                 let _intents = cx.subscribe(&seat, move |this, _, intent: &Intent, cx| {
-                    this.route(module, instance, intent.clone(), cx)
+                    this.route(program, instance, intent.clone(), cx)
                 });
                 // the session as it stands, before its first turn
                 seat.update(cx, |seat, cx| seat.set_props(props.clone(), cx));
@@ -207,27 +207,31 @@ impl Seats {
             let Some(placed) = self.map.remove(&instance) else {
                 continue;
             };
-            let module = placed.seat.read(cx).module();
+            let program = placed.seat.read(cx).program();
             let intents = placed.seat.update(cx, |seat, _| seat.hide());
             // the seat drops with this entry: its images leave the atlas
             if let Some(tree) = placed.seat.read(cx).tree() {
                 tree.update(cx, |tree, cx| tree.release(cx));
             }
-            hidden.extend(intents.into_iter().map(|intent| (module, instance, intent)));
+            hidden.extend(
+                intents
+                    .into_iter()
+                    .map(|intent| (program, instance, intent)),
+            );
         }
         if moved {
             cx.notify();
         }
-        for (module, instance, intent) in hidden {
-            self.route(module, instance, intent, cx);
+        for (program, instance, intent) in hidden {
+            self.route(program, instance, intent, cx);
         }
     }
 
-    /// What the view of `module` in the pane with this layout `instance`
+    /// What the view of `program` in the pane with this layout `instance`
     /// asked for, to the entity it moves.
     fn route(
         &mut self,
-        module: &'static str,
+        program: &'static str,
         instance: u64,
         intent: Intent,
         cx: &mut Context<Self>,
@@ -235,7 +239,7 @@ impl Seats {
         match intent {
             Intent::Badge(count) => self
                 .rail
-                .update(cx, |rail, cx| rail.set_badge(module, count, cx)),
+                .update(cx, |rail, cx| rail.set_badge(program, count, cx)),
             // its own window's name, wherever that pane is now (a pane
             // gone from every desk names nothing)
             Intent::Title(title) => {
@@ -271,7 +275,7 @@ impl Seats {
                     .by_window()
                     .values()
                     .map(|own| own.desk.clone())
-                    .filter(|desk| desk.read(cx).holds(module))
+                    .filter(|desk| desk.read(cx).holds(program))
                     .collect();
                 for desk in desks {
                     desk.update(cx, |desk, cx| desk.settle(cx));
@@ -281,7 +285,7 @@ impl Seats {
             Intent::OpenLink(link) => {
                 if let Some(windows) = self.windows.upgrade() {
                     windows.update(cx, |windows, cx| {
-                        windows.open_link(&link, Some((module, instance)), cx)
+                        windows.open_link(&link, Some((program, instance)), cx)
                     });
                 }
             }
@@ -289,7 +293,7 @@ impl Seats {
     }
 
     /// Every seat turned now. The AX door calls this before a read: a reply
-    /// the guest has answered is then in the tree the read draws (or, with
+    /// the view has answered is then in the tree the read draws (or, with
     /// a tick still to draw, in the next one), as the draw itself took
     /// it in before the seat left the draw path. The door's task yields to
     /// no other between a press and its read, so the seats' own reply wakes

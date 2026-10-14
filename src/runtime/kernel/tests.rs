@@ -3,10 +3,10 @@ use std::time::{Duration, Instant};
 
 mod node_methods;
 
-/// A guest holding every capability, its code doing nothing.
-pub(in crate::runtime) fn guest() -> Guest {
+/// A view holding every capability, its code doing nothing.
+pub(in crate::runtime) fn view() -> View {
     let code = wasmtime::Module::new(
-        super::super::guest::engine(),
+        super::super::view::engine(),
         r#"(module
             (memory (export "memory") 1)
             (func (export "alloc") (param i32) (result i32) i32.const 0)
@@ -16,10 +16,10 @@ pub(in crate::runtime) fn guest() -> Guest {
             (func (export "restore") (param i32 i32) (result i64) i64.const 0))"#,
     )
     .unwrap();
-    let mut guest = Guest::instantiate("request-test", &code, "request test").unwrap();
-    guest.capabilities = Capability::ALL.to_vec();
-    guest.targets = vec!["registry".into()];
-    guest
+    let mut view = View::instantiate("request-test", &code, "request test").unwrap();
+    view.capabilities = Capability::ALL.to_vec();
+    view.targets = vec!["programs".into()];
+    view
 }
 
 /// The in-order queue `name` held by a job that waits for the returned
@@ -188,16 +188,16 @@ fn serve(
     }
 }
 
-/// The reason `kind` is refused for, asked by a guest declaring `declared`,
-/// the view of the program bound to the registry role (`invite.create` is
+/// The reason `kind` is refused for, asked by a view declaring `declared`,
+/// the view of the program bound to the programs role (`invite.create` is
 /// a role's own view's) while [`acl_roles`] are bound; `None` if it is not
 /// refused at once.
 fn refused_with(declared: &[Capability], kind: &str) -> Option<String> {
-    let mut guest = guest();
-    guest.module = "acl-registry";
-    guest.capabilities = declared.to_vec();
+    let mut view = view();
+    view.program = "acl-programs";
+    view.capabilities = declared.to_vec();
     let payload = methods::encode(&methods::Call {
-        target: "registry".into(),
+        target: "programs".into(),
         body: Vec::new(),
     });
     for id in [1, 2] {
@@ -206,22 +206,22 @@ fn refused_with(declared: &[Capability], kind: &str) -> Option<String> {
             kind: kind.into(),
             payload: payload.clone(),
         };
-        guest.answer(request, &None);
+        view.answer(request, &None);
     }
     let want =
         Capability::of_kind(kind).map_or(0, |(family, _)| usize::from(!declared.contains(&family)));
     assert_eq!(
-        guest.undeclared_logged.len(),
+        view.undeclared_logged.len(),
         want,
         "{kind} logged {want} time(s)"
     );
-    refusal_code(&mut guest)
+    refusal_code(&mut view)
 }
 
-/// The code the guest's last pending event refuses with; `None` if that
+/// The code the view's last pending event refuses with; `None` if that
 /// event is not a refusal.
-fn refusal_code(guest: &mut Guest) -> Option<String> {
-    match guest.pending.pop() {
+fn refusal_code(view: &mut View) -> Option<String> {
+    match view.pending.pop() {
         Some(wire::Event::Response {
             result: Err(refusal),
             ..
@@ -265,7 +265,7 @@ fn a_method_is_reached_only_through_its_declared_capability() {
 
 #[test]
 fn unknown_kinds_finish_with_a_typed_refusal() {
-    let mut guest = guest();
+    let mut view = view();
     for (id, kind) in [
         "missing",
         "rpc.unknown",
@@ -278,7 +278,7 @@ fn unknown_kinds_finish_with_a_typed_refusal() {
     .into_iter()
     .enumerate()
     {
-        guest.answer(
+        view.answer(
             wire::Request {
                 id: id as u64,
                 kind: kind.into(),
@@ -290,7 +290,7 @@ fn unknown_kinds_finish_with_a_typed_refusal() {
             id: answered,
             result: Err(refusal),
             done,
-        }) = guest.pending.pop()
+        }) = view.pending.pop()
         else {
             panic!("{kind} must answer a refusal");
         };
@@ -299,7 +299,7 @@ fn unknown_kinds_finish_with_a_typed_refusal() {
         assert_eq!(refusal.code, refusal::UNKNOWN_REQUEST);
         assert!(refusal.message.contains(kind));
     }
-    assert!(guest.pending.is_empty());
+    assert!(view.pending.is_empty());
 }
 
 /// The roster's role bindings are the process's: a test that binds them
@@ -324,7 +324,7 @@ impl Drop for AclRoles {
 
 fn acl_roles() -> AclRoles {
     super::super::roster().bind(Some(abi::Roles {
-        registry: "acl-registry".into(),
+        programs: "acl-programs".into(),
         validators: "acl-valset".into(),
         identity: "acl-identity".into(),
     }));
@@ -339,25 +339,25 @@ fn acl_roles() -> AclRoles {
 fn invite_create_is_a_role_views_own() {
     let _serial = roles_serial();
     let mint = methods::encode(&methods::CreateInvite { ttl_days: 7 });
-    let refused = |module: &'static str| {
-        let mut guest = guest();
-        guest.module = module;
+    let refused = |program: &'static str| {
+        let mut view = view();
+        view.program = program;
         assert!(answer(
-            &mut guest,
+            &mut view,
             Capability::Invite,
             "create",
             7,
             &mint,
             &None
         ));
-        refusal_code(&mut guest)
+        refusal_code(&mut view)
     };
-    let unbound = refused("acl-registry");
+    let unbound = refused("acl-programs");
     assert_eq!(unbound.as_deref(), Some(refusal::UNDECLARED_CAPABILITY));
     let _roles = acl_roles();
     // a manifest name is the view's own word: the roster's program decides
-    let mut named = guest();
-    named.name = "acl-registry".into();
+    let mut named = view();
+    named.name = "acl-programs".into();
     assert!(answer(
         &mut named,
         Capability::Invite,
@@ -371,7 +371,7 @@ fn invite_create_is_a_role_views_own() {
         Some(refusal::UNDECLARED_CAPABILITY)
     );
     assert_eq!(
-        refused("acl-registry").as_deref(),
+        refused("acl-programs").as_deref(),
         Some(refusal::NOT_CONNECTED)
     );
 }
@@ -384,18 +384,18 @@ fn invite_create_is_a_role_views_own() {
 /// comes before the node, as the capability gate does.
 #[test]
 fn node_methods_answer_for_the_missing_node_first() {
-    let to_registry = methods::encode(&methods::Call {
-        target: "registry".into(),
+    let to_programs = methods::encode(&methods::Call {
+        target: "programs".into(),
         body: b"not borsh".to_vec(),
     });
     for (capability, operation, payload) in [
-        (Capability::Module, "query", to_registry.as_slice()),
+        (Capability::Program, "query", to_programs.as_slice()),
         (Capability::Chain, "status", b"not borsh"),
     ] {
-        let mut guest = guest();
-        assert!(answer(&mut guest, capability, operation, 7, payload, &None));
+        let mut view = view();
+        assert!(answer(&mut view, capability, operation, 7, payload, &None));
         assert!(
-            matches!(guest.pending.pop(), Some(wire::Event::Response {
+            matches!(view.pending.pop(), Some(wire::Event::Response {
                 id: 7, result: Err(refusal), done: true
             }) if refusal.code == refusal::NOT_CONNECTED),
             "{capability:?}.{operation}"
@@ -407,9 +407,9 @@ fn node_methods_answer_for_the_missing_node_first() {
 #[test]
 fn open_link_refuses_any_scheme_but_duck_and_https() {
     let open = |link: &str| {
-        let mut guest = guest();
-        guest.activation = Some(Instant::now());
-        guest.answer(
+        let mut view = view();
+        view.activation = Some(Instant::now());
+        view.answer(
             wire::Request {
                 id: 5,
                 kind: "link.open".into(),
@@ -417,7 +417,7 @@ fn open_link_refuses_any_scheme_but_duck_and_https() {
             },
             &None,
         );
-        (refusal_code(&mut guest), guest.intents.len())
+        (refusal_code(&mut view), view.intents.len())
     };
     for link in ["duck://chat/general", "https://example.com/a"] {
         assert_eq!(open(link), (None, 1), "{link}");
@@ -446,8 +446,8 @@ fn open_link_refuses_any_scheme_but_duck_and_https() {
 #[test]
 fn host_title_is_cleaned_and_anything_but_a_string_refused() {
     let title = |payload: Vec<u8>| {
-        let mut guest = guest();
-        guest.answer(
+        let mut view = view();
+        view.answer(
             wire::Request {
                 id: 3,
                 kind: "host.title".into(),
@@ -455,7 +455,7 @@ fn host_title_is_cleaned_and_anything_but_a_string_refused() {
             },
             &None,
         );
-        (guest.pending.pop(), std::mem::take(&mut guest.intents))
+        (view.pending.pop(), std::mem::take(&mut view.intents))
     };
     let named = |raw: &str| match title(methods::encode(&raw.to_owned())) {
         (
@@ -512,8 +512,8 @@ fn link_request(id: u64, link: &str) -> wire::Request {
     }
 }
 
-fn clipboard_read(guest: &mut Guest, id: u64) -> Option<String> {
-    guest.answer(
+fn clipboard_read(view: &mut View, id: u64) -> Option<String> {
+    view.answer(
         wire::Request {
             id,
             kind: "clipboard.read".into(),
@@ -521,7 +521,7 @@ fn clipboard_read(guest: &mut Guest, id: u64) -> Option<String> {
         },
         &None,
     );
-    refusal_code(guest)
+    refusal_code(view)
 }
 
 /// `link.open` needs the view's activation and takes it: a view on a
@@ -529,26 +529,26 @@ fn clipboard_read(guest: &mut Guest, id: u64) -> Option<String> {
 /// one press opens one link.
 #[test]
 fn link_open_needs_an_activation_and_takes_it() {
-    let mut guest = guest();
-    guest.answer(link_request(1, "https://example.com/a"), &None);
-    assert_eq!(refusal_code(&mut guest).as_deref(), Some("needs_gesture"));
+    let mut view = view();
+    view.answer(link_request(1, "https://example.com/a"), &None);
+    assert_eq!(refusal_code(&mut view).as_deref(), Some("needs_gesture"));
     // a route the OS handed the view (`Windows::open_seat`) activates nothing
-    guest.route_subscriptions.push(2);
-    crate::runtime::route_to("request-test", guest.instance, "tx/1".into());
-    guest.sync_route();
-    guest.answer(link_request(3, "duck://request-test/tx/1"), &None);
-    assert_eq!(refusal_code(&mut guest).as_deref(), Some("needs_gesture"));
-    assert!(guest.intents.is_empty(), "a link opened with no activation");
-    guest.activation = Some(Instant::now());
-    guest.answer(link_request(4, "https://example.com/a"), &None);
-    assert_eq!(refusal_code(&mut guest), None);
-    guest.answer(link_request(5, "https://example.com/b"), &None);
+    view.route_subscriptions.push(2);
+    crate::runtime::route_to("request-test", view.instance, "tx/1".into());
+    view.sync_route();
+    view.answer(link_request(3, "duck://request-test/tx/1"), &None);
+    assert_eq!(refusal_code(&mut view).as_deref(), Some("needs_gesture"));
+    assert!(view.intents.is_empty(), "a link opened with no activation");
+    view.activation = Some(Instant::now());
+    view.answer(link_request(4, "https://example.com/a"), &None);
+    assert_eq!(refusal_code(&mut view), None);
+    view.answer(link_request(5, "https://example.com/b"), &None);
     assert_eq!(
-        refusal_code(&mut guest).as_deref(),
+        refusal_code(&mut view).as_deref(),
         Some("needs_gesture"),
         "a second link on the same press"
     );
-    assert_eq!(guest.intents.len(), 1);
+    assert_eq!(view.intents.len(), 1);
 }
 
 /// A screen reader's press on a view's link is one gesture: AccessKit's
@@ -611,19 +611,19 @@ fn a_readers_press_on_a_link_opens_it_once(cx: &mut gpui_kit::TestAppContext) {
             cx,
         );
     });
-    // the seat hands the tree's stamp to the guest at its next turn
-    // (`a_trees_activation_reaches_its_guest_on_the_next_turn`), and the
+    // the seat hands the tree's stamp to the view at its next turn
+    // (`a_trees_activation_reaches_its_view_on_the_next_turn`), and the
     // view asks to open its link on each click it hears
-    let mut guest = guest();
-    guest.activation = tree.read_with(&native, |tree, _| tree.take_activation());
+    let mut view = view();
+    view.activation = tree.read_with(&native, |tree, _| tree.take_activation());
     let mut refusals = Vec::new();
     for (id, event) in events.borrow().iter().enumerate() {
         if let wire::Event::Click { handler: 7, .. } = event {
-            guest.answer(
+            view.answer(
                 link_request(id as u64 + 1, "https://example.com/docs"),
                 &None,
             );
-            refusals.push(refusal_code(&mut guest));
+            refusals.push(refusal_code(&mut view));
         }
     }
     assert_eq!(
@@ -632,29 +632,29 @@ fn a_readers_press_on_a_link_opens_it_once(cx: &mut gpui_kit::TestAppContext) {
         "one click, its link admitted: {:?}",
         events.borrow()
     );
-    assert_eq!(guest.intents.len(), 1);
+    assert_eq!(view.intents.len(), 1);
 }
 
 /// Four links a minute per view, each on its own activation; the fifth is
 /// refused `link_limit` until the window moves on.
 #[test]
 fn link_open_refuses_the_fifth_link_in_a_minute() {
-    let mut guest = guest();
+    let mut view = view();
     for id in 1..=4 {
-        guest.activation = Some(Instant::now());
-        guest.answer(link_request(id, "https://example.com/"), &None);
-        assert_eq!(refusal_code(&mut guest), None, "link {id}");
+        view.activation = Some(Instant::now());
+        view.answer(link_request(id, "https://example.com/"), &None);
+        assert_eq!(refusal_code(&mut view), None, "link {id}");
     }
-    guest.activation = Some(Instant::now());
-    guest.answer(link_request(5, "https://example.com/"), &None);
-    assert_eq!(refusal_code(&mut guest).as_deref(), Some("link_limit"));
-    assert_eq!(guest.intents.len(), 4);
+    view.activation = Some(Instant::now());
+    view.answer(link_request(5, "https://example.com/"), &None);
+    assert_eq!(refusal_code(&mut view).as_deref(), Some("link_limit"));
+    assert_eq!(view.intents.len(), 4);
     // a minute on, the oldest is forgotten and one more goes through
-    guest.links[0] -= Duration::from_secs(61);
-    guest.activation = Some(Instant::now());
-    guest.answer(link_request(6, "https://example.com/"), &None);
-    assert_eq!(refusal_code(&mut guest), None);
-    assert_eq!(guest.intents.len(), 5);
+    view.links[0] -= Duration::from_secs(61);
+    view.activation = Some(Instant::now());
+    view.answer(link_request(6, "https://example.com/"), &None);
+    assert_eq!(refusal_code(&mut view), None);
+    assert_eq!(view.intents.len(), 5);
 }
 
 /// One activation admits one gated call, whichever asks first; a stale
@@ -666,39 +666,39 @@ fn one_activation_admits_one_gated_call_and_a_stale_one_none() {
         kind: "clipboard.write".into(),
         payload: methods::encode(&"copied".to_owned()),
     };
-    let mut guest = guest();
+    let mut view = view();
     assert_eq!(
-        clipboard_read(&mut guest, 1).as_deref(),
+        clipboard_read(&mut view, 1).as_deref(),
         Some("needs_gesture")
     );
-    guest.answer(write(2), &None);
-    assert_eq!(refusal_code(&mut guest).as_deref(), Some("needs_gesture"));
-    guest.activation = Some(Instant::now());
-    assert_eq!(clipboard_read(&mut guest, 3), None, "the read is admitted");
-    guest.answer(write(4), &None);
+    view.answer(write(2), &None);
+    assert_eq!(refusal_code(&mut view).as_deref(), Some("needs_gesture"));
+    view.activation = Some(Instant::now());
+    assert_eq!(clipboard_read(&mut view, 3), None, "the read is admitted");
+    view.answer(write(4), &None);
     assert_eq!(
-        refusal_code(&mut guest).as_deref(),
+        refusal_code(&mut view).as_deref(),
         Some("needs_gesture"),
         "the read took the activation"
     );
-    guest.activation = Some(Instant::now());
-    guest.answer(write(5), &None);
-    assert_eq!(refusal_code(&mut guest), None, "the write is admitted");
-    guest.answer(link_request(6, "https://example.com/"), &None);
-    assert_eq!(refusal_code(&mut guest).as_deref(), Some("needs_gesture"));
-    guest.activation =
-        Some(Instant::now() - crate::runtime::guest::ACTIVATION_EXPIRY - Duration::from_secs(1));
+    view.activation = Some(Instant::now());
+    view.answer(write(5), &None);
+    assert_eq!(refusal_code(&mut view), None, "the write is admitted");
+    view.answer(link_request(6, "https://example.com/"), &None);
+    assert_eq!(refusal_code(&mut view).as_deref(), Some("needs_gesture"));
+    view.activation =
+        Some(Instant::now() - crate::runtime::view::ACTIVATION_EXPIRY - Duration::from_secs(1));
     assert_eq!(
-        clipboard_read(&mut guest, 7).as_deref(),
+        clipboard_read(&mut view, 7).as_deref(),
         Some("needs_gesture"),
         "a stale activation admitted a read"
     );
-    assert!(guest.activation.is_none(), "a stale activation is gone");
+    assert!(view.activation.is_none(), "a stale activation is gone");
 }
 
 #[test]
 fn host_session_is_program_independent_and_tracks_updates() {
-    let mut guest = guest();
+    let mut view = view();
     let props = Some(super::super::props(
         true,
         "test-network",
@@ -706,7 +706,7 @@ fn host_session_is_program_independent_and_tracks_updates() {
         None,
         "http://127.0.0.1:19001",
     ));
-    guest.answer(
+    view.answer(
         wire::Request {
             id: 22,
             kind: "host.session".into(),
@@ -714,12 +714,12 @@ fn host_session_is_program_independent_and_tracks_updates() {
         },
         &props,
     );
-    assert_eq!(guest.props_subscription, Some(22));
+    assert_eq!(view.props_subscription, Some(22));
     let Some(wire::Event::Response {
         result: Ok(bytes),
         done: false,
         ..
-    }) = guest.pending.pop()
+    }) = view.pending.pop()
     else {
         panic!("props must stay live")
     };
@@ -734,12 +734,12 @@ fn host_session_is_program_independent_and_tracks_updates() {
         Some(7),
         "http://127.0.0.1:19001",
     ));
-    guest.sync_props(&changed);
+    view.sync_props(&changed);
     let Some(wire::Event::Response {
         id: 22,
         result: Ok(bytes),
         done: false,
-    }) = guest.pending.pop()
+    }) = view.pending.pop()
     else {
         panic!("a changed session is pushed")
     };
@@ -747,17 +747,17 @@ fn host_session_is_program_independent_and_tracks_updates() {
     assert_eq!(decoded.account, Some(7));
 }
 
-/// The host's facts reach the guest as events, each once until it moves:
+/// The host's facts reach the view as events, each once until it moves:
 /// the reader's UTC offset (a DST change moves it) and the body the view
 /// is laid out in. The latest of each wins the tick.
 #[test]
 fn the_hosts_facts_cross_once_and_again_when_they_move() {
-    let mut guest = guest();
-    guest.pending.clear();
+    let mut view = view();
+    view.pending.clear();
     let minutes = super::offset_minutes();
     assert!((-14 * 60..=14 * 60).contains(&minutes));
-    guest.sync_offset(minutes);
-    guest.sync_viewport(766., 501.);
+    view.sync_offset(minutes);
+    view.sync_viewport(766., 501.);
     let told = vec![
         wire::Event::Offset { minutes },
         wire::Event::Viewport {
@@ -765,14 +765,14 @@ fn the_hosts_facts_cross_once_and_again_when_they_move() {
             height: 501.,
         },
     ];
-    assert_eq!(guest.pending, told);
-    guest.sync_offset(minutes);
-    guest.sync_viewport(766., 501.);
-    assert_eq!(guest.pending, told, "the same facts are not sent twice");
-    guest.sync_offset(minutes + 60);
-    guest.sync_viewport(800., 501.);
+    assert_eq!(view.pending, told);
+    view.sync_offset(minutes);
+    view.sync_viewport(766., 501.);
+    assert_eq!(view.pending, told, "the same facts are not sent twice");
+    view.sync_offset(minutes + 60);
+    view.sync_viewport(800., 501.);
     assert_eq!(
-        guest.pending,
+        view.pending,
         [
             wire::Event::Offset {
                 minutes: minutes + 60
@@ -791,8 +791,8 @@ fn the_hosts_facts_cross_once_and_again_when_they_move() {
 /// no length prefix builds fine here and fails only in the view's decode.
 #[test]
 fn host_id_answers_a_borsh_string_a_view_can_decode() {
-    let mut guest = guest();
-    guest.answer(
+    let mut view = view();
+    view.answer(
         wire::Request {
             id: 9,
             kind: "host.id".into(),
@@ -804,7 +804,7 @@ fn host_id_answers_a_borsh_string_a_view_can_decode() {
         id: 9,
         result: Ok(bytes),
         done: true,
-    }) = guest.pending.pop()
+    }) = view.pending.pop()
     else {
         panic!("host.id must answer once");
     };
@@ -858,7 +858,7 @@ fn routed_kind(line: &str) -> Option<String> {
 }
 
 /// A node method reaches only a program the view's manifest lists among
-/// its targets: `op.submit`, `module.query` and `module.changes` to any
+/// its targets: `op.submit`, `program.query` and `program.changes` to any
 /// other are refused `undeclared_target` before anything is signed or
 /// subscribed; to a listed one they pass the gate (and meet the missing
 /// node next).
@@ -874,25 +874,25 @@ fn a_node_method_reaches_only_a_declared_target() {
     let named = |program: &str| methods::encode(&program.to_owned());
     for (kind, to_identity, to_chat) in [
         ("op.submit", call("identity"), call("chat")),
-        ("module.query", call("identity"), call("chat")),
-        ("module.changes", named("identity"), named("chat")),
+        ("program.query", call("identity"), call("chat")),
+        ("program.changes", named("identity"), named("chat")),
     ] {
-        let mut guest = guest();
-        guest.targets = vec!["chat".into()];
+        let mut view = view();
+        view.targets = vec!["chat".into()];
         let request = |id, payload| wire::Request {
             id,
             kind: kind.into(),
             payload,
         };
-        guest.answer(request(1, to_identity), &None);
+        view.answer(request(1, to_identity), &None);
         assert_eq!(
-            refusal_code(&mut guest).as_deref(),
+            refusal_code(&mut view).as_deref(),
             Some(refusal::UNDECLARED_TARGET),
             "{kind} to an unlisted program"
         );
-        guest.answer(request(2, to_chat), &None);
+        view.answer(request(2, to_chat), &None);
         assert_eq!(
-            refusal_code(&mut guest).as_deref(),
+            refusal_code(&mut view).as_deref(),
             Some(refusal::NOT_CONNECTED),
             "{kind} to a listed program passes the gate"
         );
@@ -900,10 +900,10 @@ fn a_node_method_reaches_only_a_declared_target() {
 }
 
 /// The reply a task delivered, waited for; `None` after two seconds.
-fn awaited(guest: &mut Guest) -> Option<wire::Event> {
+fn awaited(view: &mut View) -> Option<wire::Event> {
     for _ in 0..200 {
         let mut events = Vec::new();
-        guest.replies.drain_into(&mut events).unwrap();
+        view.replies.drain_into(&mut events).unwrap();
         if let Some(event) = events.pop() {
             return Some(event);
         }
@@ -936,7 +936,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     let _seat = backend::seat_serial();
     let _serial = roles_serial();
     let remove = methods::encode(&methods::Call {
-        target: identity::MODULE.into(),
+        target: identity::PROGRAM.into(),
         body: abi::encode(&identity::Op::RemoveKey {
             account: 7,
             key: vec![1, 2, 3],
@@ -947,22 +947,22 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
         kind: "op.submit".into(),
         payload: remove.clone(),
     };
-    let mut guest = guest();
-    guest.targets = vec![identity::MODULE.into()];
+    let mut view = view();
+    view.targets = vec![identity::PROGRAM.into()];
     // the card names the program, never the manifest's own word for itself
-    guest.name = "Chat".into();
+    view.name = "Chat".into();
     // no press behind it: refused before anything is asked, even locked
     handle().block_on(backend::lock_signer());
-    guest.answer(request(1), &None);
+    view.answer(request(1), &None);
     assert_eq!(
-        refusal_code(&mut guest).as_deref(),
+        refusal_code(&mut view).as_deref(),
         Some(refusal::NEEDS_GESTURE)
     );
     // locked: refused before anything is asked
-    guest.activation = Some(Instant::now());
-    guest.answer(request(1), &None);
+    view.activation = Some(Instant::now());
+    view.answer(request(1), &None);
     assert_eq!(
-        refusal_code(&mut guest).as_deref(),
+        refusal_code(&mut view).as_deref(),
         Some(refusal::SESSION_LOCKED)
     );
     assert!(consent::front().is_none());
@@ -974,17 +974,17 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
         noded_client::wire::route::STATUS,
         Mode::Answer(b"not a status".to_vec()),
     )]);
-    guest.connection = super::super::Connection {
+    view.connection = super::super::Connection {
         client: Some(node.node.client.clone()),
         network: node.node.network.clone(),
         chain: "test-network#1".into(),
-        rev: guest.connection.rev,
+        rev: view.connection.rev,
     };
     // the props say the seated key holds account 7, the one the op names
     let props = Some(super::super::props(true, "test-network#1", "", Some(7), ""));
-    guest.activation = Some(Instant::now());
-    guest.answer(request(2), &props);
-    assert_eq!(refusal_code(&mut guest), None, "the request waits");
+    view.activation = Some(Instant::now());
+    view.answer(request(2), &props);
+    assert_eq!(refusal_code(&mut view), None, "the request waits");
     let (first, words) = asked().expect("an ask waits");
     assert!(
         words
@@ -993,9 +993,9 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
         "{words:?}"
     );
     // a second ask while the first waits
-    guest.activation = Some(Instant::now());
-    guest.answer(request(3), &None);
-    match awaited(&mut guest) {
+    view.activation = Some(Instant::now());
+    view.answer(request(3), &None);
+    match awaited(&mut view) {
         Some(wire::Event::Response {
             id: 3,
             result: Err(refusal),
@@ -1005,7 +1005,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     }
     // Cancel: refused, and the node was never asked
     assert!(!consent::answer(first, false), "nothing waits behind it");
-    match awaited(&mut guest) {
+    match awaited(&mut view) {
         Some(wire::Event::Response {
             id: 2,
             result: Err(refusal),
@@ -1016,26 +1016,26 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     // the in-flight budget spent: refused before the card goes up (the ask
     // is the request's own slot, so Approve could lead nowhere)
     let held: Vec<_> = (0..MAX_IN_FLIGHT)
-        .map(|_| guest.replies.admit().expect("within budget"))
+        .map(|_| view.replies.admit().expect("within budget"))
         .collect();
-    guest.activation = Some(Instant::now());
-    guest.answer(request(6), &None);
+    view.activation = Some(Instant::now());
+    view.answer(request(6), &None);
     assert_eq!(
-        refusal_code(&mut guest).as_deref(),
+        refusal_code(&mut view).as_deref(),
         Some(refusal::IN_FLIGHT_LIMIT)
     );
     assert!(consent::front().is_none(), "nothing asked");
     drop(held);
     // resubmitted after Cancel with no new press: no second card
-    guest.answer(request(5), &None);
+    view.answer(request(5), &None);
     assert_eq!(
-        refusal_code(&mut guest).as_deref(),
+        refusal_code(&mut view).as_deref(),
         Some(refusal::NEEDS_GESTURE)
     );
     assert!(consent::front().is_none(), "nothing asked");
     // with no account resolved the card does not call it the person's own
-    guest.activation = Some(Instant::now());
-    guest.answer(request(4), &None);
+    view.activation = Some(Instant::now());
+    view.answer(request(4), &None);
     let (second, words) = asked().expect("an ask waits");
     assert_ne!(first, second);
     assert!(
@@ -1052,7 +1052,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
         "{words:?}"
     );
     assert!(!consent::answer(second, true));
-    match awaited(&mut guest) {
+    match awaited(&mut view) {
         Some(wire::Event::Response {
             id: 4,
             result: Err(refusal),
@@ -1063,10 +1063,10 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     }
     // the view torn down with an ask waiting: the ask goes with it (its
     // task, aborted, lets go of the ask on the runtime's next turn)
-    guest.activation = Some(Instant::now());
-    guest.answer(request(7), &None);
+    view.activation = Some(Instant::now());
+    view.answer(request(7), &None);
     assert!(asked().is_some(), "an ask waits");
-    drop(guest);
+    drop(view);
     let gone = (0..200).any(|_| {
         std::thread::sleep(std::time::Duration::from_millis(10));
         consent::front().is_none()
@@ -1078,7 +1078,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
 /// A view whose program is bound to no role asks the person before its op
 /// to a role's program, whatever its manifest calls it, and the card goes
 /// up only once the target has described the op: in the validators'
-/// program's own words, or as the op's size where the registry's code
+/// program's own words, or as the op's size where the programs role's code
 /// carries no describe module. Cancel refuses it and the node is never
 /// asked; Approve, and only then, sends it on (the frame's anchor read,
 /// which this node, the view's own connection, answers with garbage).
@@ -1092,27 +1092,27 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
     let _roles = acl_roles();
     list_program("acl-valset", 0xa1, false, Some(HI));
     // listed, its code carrying no describe module
-    list_program("acl-registry", 0xa2, false, None);
+    list_program("acl-programs", 0xa2, false, None);
     let key = commonware_cryptography::ed25519::PrivateKey::decode([7u8; 32].as_slice()).unwrap();
     handle().block_on(backend::seat_key(key));
-    let mut guest = guest();
+    let mut view = view();
     // a manifest name that reads as a role's: the card asks all the same,
     // naming the roster's program
-    guest.name = "acl-valset".into();
-    guest.targets = vec!["acl-valset".into(), "acl-registry".into()];
+    view.name = "acl-valset".into();
+    view.targets = vec!["acl-valset".into(), "acl-programs".into()];
     let node = fake_node(vec![(
         noded_client::wire::route::STATUS,
         Mode::Answer(b"not a status".to_vec()),
     )]);
-    guest.connection = super::super::Connection {
+    view.connection = super::super::Connection {
         client: Some(node.node.client.clone()),
         network: node.node.network.clone(),
         chain: "test-network#1".into(),
-        rev: guest.connection.rev,
+        rev: view.connection.rev,
     };
-    let submit = |guest: &mut Guest, id: u64, target: &str| {
-        guest.activation = Some(Instant::now());
-        guest.answer(
+    let submit = |view: &mut View, id: u64, target: &str| {
+        view.activation = Some(Instant::now());
+        view.answer(
             wire::Request {
                 id,
                 kind: "op.submit".into(),
@@ -1123,7 +1123,7 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
             },
             &None,
         );
-        assert_eq!(refusal_code(guest), None, "the request waits");
+        assert_eq!(refusal_code(view), None, "the request waits");
     };
     for (id, target, title, what, shown) in [
         (
@@ -1135,13 +1135,13 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
         ),
         (
             2,
-            "acl-registry",
+            "acl-programs",
             consent::NETWORK,
-            "sign an op on the module registry",
+            "sign an op on the programs role",
             "3 bytes this app cannot read",
         ),
     ] {
-        submit(&mut guest, id, target);
+        submit(&mut view, id, target);
         let (ask, words) = asked().expect("an ask waits");
         assert_eq!(words.title, title);
         assert_eq!(
@@ -1150,7 +1150,7 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
         );
         assert_eq!(words.shown.as_deref(), Some(shown));
         assert!(!consent::answer(ask, false));
-        match awaited(&mut guest) {
+        match awaited(&mut view) {
             Some(wire::Event::Response {
                 id: answered,
                 result: Err(refusal),
@@ -1163,10 +1163,10 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
         }
     }
     // Approve: the op goes on to be signed, its frame's anchor read first
-    submit(&mut guest, 3, "acl-valset");
+    submit(&mut view, 3, "acl-valset");
     let (ask, _) = asked().expect("an ask waits");
     assert!(!consent::answer(ask, true));
-    match awaited(&mut guest) {
+    match awaited(&mut view) {
         Some(wire::Event::Response {
             id: 3,
             result: Err(refusal),

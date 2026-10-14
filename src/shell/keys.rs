@@ -7,7 +7,7 @@
 //! whether it is past the launcher (`on_desk`: ⌘K works here even with
 //! something open), whether the desk's keys reach it (`desk`: on the desk,
 //! nothing open over it), and whether something is open over it
-//! (`overlay`). A guest's text field takes its claimed keys at the
+//! (`overlay`). A view's text field takes its claimed keys at the
 //! keystroke interceptor, before any binding. An empty window's ↑↓ and Enter are its field's
 //! (`layers::EmptyPane` takes them); Tab there is `SwitchMode` once agent chat is built
 //! (`layers::CHAT_READY`), under the empty window's own context
@@ -42,7 +42,7 @@ gpui_kit::actions!(
         OpenSettings,
         /// ⌘/: the app's help, in a window on the desk.
         OpenHelp,
-        /// Tab in an empty window's field: what it searches (Module | Chat).
+        /// Tab in an empty window's field: what it searches (Program | Chat).
         SwitchMode,
         /// Escape: whatever is open over the desk.
         CloseOverlay,

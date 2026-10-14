@@ -159,7 +159,7 @@ pub(super) fn passkey_body(pubkey: &[u8], network: &str, anchor: Tip, payload: V
         network: network.as_bytes().to_vec(),
         anchor,
         salt: Some(salt()),
-        target: identity::MODULE.to_owned(),
+        target: identity::PROGRAM.to_owned(),
         payload,
     }
 }

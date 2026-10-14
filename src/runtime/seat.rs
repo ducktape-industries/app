@@ -1,7 +1,7 @@
 use super::*;
 
 /// One seat: the load state, props and retry hold-off of one view instance
-/// of one module (instance 0 is the preloaded seat no tab has claimed yet:
+/// of one program (instance 0 is the preloaded seat no tab has claimed yet:
 /// compiled, never started).
 /// Shared by the tab's widget on the window thread and the loader thread,
 /// which swaps a finished load in place; the tab polls it while loading.
@@ -110,7 +110,7 @@ impl Mounted {
     /// the replacement's, not its own.
     pub(super) fn load_failed(
         &mut self,
-        module: &str,
+        program: &str,
         held_off: Option<Retry>,
         asked_for: Option<[u8; 32]>,
         Unloaded {
@@ -120,10 +120,10 @@ impl Mounted {
     ) {
         tracing::warn!(
             target: "ducktape::app",
-            module,
-            reason = "module_view_unloadable",
+            program,
+            reason = "program_view_unloadable",
             error = %failure,
-            "module view not loaded"
+            "program view not loaded"
         );
         self.retry = Some(Retry::after(held_off.as_ref(), failed_on.and(asked_for)));
         if !matches!(self.slot, Slot::Ready(_)) {
@@ -165,7 +165,7 @@ pub(super) enum Slot {
     /// view's code and what its manifest says, which the rail and the
     /// layout read. The pane that claims it starts that code.
     Compiled(Box<ViewCode>),
-    Ready(Box<Guest>),
+    Ready(Box<View>),
     /// The active deployment verified, and it ships no view.
     Empty,
     Failed(Failure),
@@ -191,13 +191,13 @@ pub(super) struct ViewCode {
 
 #[cfg(test)]
 impl ViewCode {
-    /// An empty module no blob lists, its manifest saying `name`, `icon`
+    /// An empty program no blob lists, its manifest saying `name`, `icon`
     /// and `min_width`: a seat's compiled view no pane starts as it is.
     pub(super) fn for_test(name: &str, icon: &str, min_width: u32) -> Box<Self> {
         Box::new(ViewCode {
             blob: None,
             hash: [0; 32],
-            code: Arc::new(Module::new(guest::engine(), "(module)").unwrap()),
+            code: Arc::new(Module::new(view::engine(), "(module)").unwrap()),
             name: name.into(),
             icon: icon.into(),
             min_width,
@@ -228,9 +228,9 @@ impl Slot {
 pub(crate) enum Failure {
     /// The node could not be asked, or does not hold the bytes (yet).
     Unreachable(String),
-    /// The bytes do not hash to the code the registry names.
+    /// The bytes do not hash to the code the programs role names.
     HashMismatch(String),
-    /// This network's registry does not list the view.
+    /// This network's programs role does not list the view.
     NotListed(String),
     /// The view ran out of fuel or trapped.
     Trapped(String),
@@ -290,20 +290,20 @@ pub(super) fn registry() -> &'static Registry {
     MOUNTED.get_or_init(Mutex::default)
 }
 
-/// Claim a preloaded seat or create a distinct guest for this view instance.
-pub(super) fn mounted(module: &'static str, instance: u64) -> Arc<Mutex<Mounted>> {
-    let code = roster().code(module);
+/// Claim a preloaded seat or create a distinct view for this view instance.
+pub(super) fn mounted(program: &'static str, instance: u64) -> Arc<Mutex<Mounted>> {
+    let code = roster().code(program);
     let mut registry = lock(registry());
-    let seat = registry.remove(&(module, 0)).unwrap_or_else(Mounted::seat);
-    registry.insert((module, instance), seat.clone());
+    let seat = registry.remove(&(program, 0)).unwrap_or_else(Mounted::seat);
+    registry.insert((program, instance), seat.clone());
     let snapshot = connection().lock().expect("views rpc").clone();
     let mut locked = lock(&seat);
     locked.instance = instance;
-    if let Slot::Ready(guest) = &mut locked.slot {
-        guest.instance = instance;
+    if let Slot::Ready(view) = &mut locked.slot {
+        view.instance = instance;
     }
     let first = locked.generation == 0;
-    let asked = snapshot.client.is_some() || view_override(module).is_some();
+    let asked = snapshot.client.is_some() || view_override(program).is_some();
     // a seat preloaded only as far as compiled: this pane's load starts
     // it, right here when it holds the code the roster lists: an instance
     // and its `init`, on the one tick's fuel every tick here runs on
@@ -312,7 +312,7 @@ pub(super) fn mounted(module: &'static str, instance: u64) -> Arc<Mutex<Mounted>
     let load = (first && asked || compiled).then(|| {
         locked.rev = snapshot.rev;
         Load {
-            module,
+            program,
             seat: seat.clone(),
             generation: locked.start(),
             asked_of: snapshot,
@@ -323,12 +323,12 @@ pub(super) fn mounted(module: &'static str, instance: u64) -> Arc<Mutex<Mounted>
     drop(registry);
     match load {
         Some(load) if here => load.land(|load, timing| {
-            Guest::start(load.module, load.code, load.generation, &load.seat, timing)
+            View::start(load.program, load.code, load.generation, &load.seat, timing)
         }),
         Some(load) => queue(load),
         None => {}
     }
-    // the module's row may now be read off this seat
+    // the program's row may now be read off this seat
     rail_moved();
     seat
 }
@@ -337,15 +337,15 @@ pub(super) fn mounted(module: &'static str, instance: u64) -> Arc<Mutex<Mounted>
 /// again now, under a new generation, past any hold-off a block's retries
 /// left. A failure goes back to loading, and a stopped view gives up its
 /// seat, so what lands is a fresh instance rather than a swap against it.
-pub(crate) fn retry(module: &'static str, instance: u64) {
-    let code = roster().code(module);
+pub(crate) fn retry(program: &'static str, instance: u64) {
+    let code = roster().code(program);
     let registry = lock(registry());
-    let Some(seat) = registry.get(&(module, instance)).cloned() else {
+    let Some(seat) = registry.get(&(program, instance)).cloned() else {
         return;
     };
     let snapshot = connection().lock().expect("views rpc").clone();
     let mut locked = lock(&seat);
-    let stopped = matches!(&locked.slot, Slot::Ready(guest) if guest.fault.is_some());
+    let stopped = matches!(&locked.slot, Slot::Ready(view) if view.fault.is_some());
     if stopped || matches!(locked.slot, Slot::Failed(_)) {
         locked.slot = Slot::Loading;
     }
@@ -357,7 +357,7 @@ pub(crate) fn retry(module: &'static str, instance: u64) {
     // a failure's row says Loading again
     rail_moved();
     queue(Load {
-        module,
+        program,
         seat,
         generation,
         asked_of: snapshot,
@@ -365,11 +365,11 @@ pub(crate) fn retry(module: &'static str, instance: u64) {
     });
 }
 
-/// One load a seat waits for: `module`'s view out of `code` (the roster's
+/// One load a seat waits for: `program`'s view out of `code` (the roster's
 /// blob id when the load was asked for, and whether that blob is the view
 /// itself), asked of the node in `asked_of`, under the seat's `generation`.
 pub(super) struct Load {
-    pub(super) module: &'static str,
+    pub(super) program: &'static str,
     pub(super) seat: Arc<Mutex<Mounted>>,
     pub(super) generation: u64,
     pub(super) asked_of: Connection,
@@ -452,11 +452,11 @@ fn next_load() -> Option<Load> {
 }
 
 impl Load {
-    /// The load itself, on a loader: [`Guest::load`], landed.
+    /// The load itself, on a loader: [`View::load`], landed.
     fn run(self) {
         self.land(|load, timing| {
-            Guest::load(
-                load.module,
+            View::load(
+                load.program,
                 load.code,
                 &load.asked_of,
                 load.generation,
@@ -479,7 +479,9 @@ impl Load {
     ) {
         use std::panic::{AssertUnwindSafe, catch_unwind};
         let Load {
-            module, generation, ..
+            program,
+            generation,
+            ..
         } = self;
         // the blob this load is asked for, as the roster reads compare it:
         // a failure is held off under this, not under the view section's
@@ -499,14 +501,14 @@ impl Load {
         let mut locked = lock(&self.seat);
         timing.lock_wait = waited.elapsed();
         let key = crate::perf::Key::View {
-            module,
+            program,
             instance: locked.instance,
         };
         let installed = Instant::now();
         // the guard outlives a panic in here, so the seat is not poisoned
         let landed = catch_unwind(AssertUnwindSafe(|| {
             install(
-                module,
+                program,
                 &mut locked,
                 generation,
                 &self.asked_of,
@@ -521,7 +523,7 @@ impl Load {
             let held_off = locked.retry.take();
             let failure = panicked("installing", &**panic);
             locked.load_failed(
-                module,
+                program,
                 held_off,
                 asked_for,
                 Unloaded {
@@ -545,7 +547,7 @@ impl Load {
                 timing.lock_wait.as_micros() as u64,
             );
             crate::perf::record(key, "install", timing.install.as_micros() as u64);
-            timing.log(module);
+            timing.log(program);
         }
         drop(locked);
         if let Some(generation) = start {
@@ -567,11 +569,11 @@ fn panicked(doing: &str, panic: &(dyn std::any::Any + Send)) -> Failure {
 
 /// Puts what a load came back with into the seat, if the seat still waits
 /// for this very load and, for a network's view, the app is still on the
-/// node it was asked of. A swap also drops the old `Guest` here, its store
+/// node it was asked of. A swap also drops the old `View` here, its store
 /// and memory with it. `true` when what it put there is `Compiled`: a seat
 /// no pane held when the load began, which a pane may hold by now.
 fn install(
-    module: &'static str,
+    program: &'static str,
     locked: &mut Mounted,
     generation: u64,
     asked_of: &Connection,
@@ -587,7 +589,7 @@ fn install(
     // seat, so the revision read here is the one the seat installs
     // against — and `connected` reconnects a seat it passed already
     let current = connection().lock().expect("views rpc").clone();
-    let from_the_node = view_override(module).is_none();
+    let from_the_node = view_override(program).is_none();
     let node_since_left = current.rev != asked_of.rev;
     if from_the_node && node_since_left {
         return false;
@@ -598,7 +600,7 @@ fn install(
     let loaded = match loaded {
         Ok(loaded) => loaded,
         Err(unloaded) => {
-            locked.load_failed(module, held_off, asked_for, unloaded);
+            locked.load_failed(program, held_off, asked_for, unloaded);
             return false;
         }
     };
@@ -609,15 +611,15 @@ fn install(
         ..
     } = &mut *locked;
     match loaded {
-        Loaded::Fresh(mut guest) => {
-            guest.instance = *instance;
-            guest.installed_generation = Some(generation);
-            guest.report_display_truncation();
-            *slot = Slot::Ready(guest);
+        Loaded::Fresh(mut view) => {
+            view.instance = *instance;
+            view.installed_generation = Some(generation);
+            view.report_display_truncation();
+            *slot = Slot::Ready(view);
         }
         Loaded::Unchanged => {
-            if let Slot::Ready(guest) = slot {
-                guest.reconnect(&current);
+            if let Slot::Ready(view) = slot {
+                view.reconnect(&current);
             }
         }
         Loaded::Empty => {
@@ -643,11 +645,11 @@ fn install(
                     fresh.instance = *instance;
                     fresh.installed_generation = Some(generation);
                     fresh.report_display_truncation();
-                    log_source(module, fresh.hash.as_ref(), "Swapped", generation, "");
+                    log_source(program, fresh.hash.as_ref(), "Swapped", generation, "");
                     *slot = Slot::Ready(fresh);
                 }
                 Err(reason) => {
-                    log_source(module, hash.as_ref(), "Failed", generation, &reason);
+                    log_source(program, hash.as_ref(), "Failed", generation, &reason);
                     *retry = Some(Retry::after(held_off.as_ref(), asked_for));
                 }
             }
@@ -665,13 +667,13 @@ fn install(
 /// race it. Why there is no replacement, if there is none.
 fn swapped(
     slot: &mut Slot,
-    mut fresh: Box<Guest>,
+    mut fresh: Box<View>,
     alive: &Arc<()>,
     ticks: u64,
     code: &Module,
     shown: &str,
     timing: &mut LoadTiming,
-) -> Result<Box<Guest>, String> {
+) -> Result<Box<View>, String> {
     let Slot::Ready(old) = slot else {
         return Err("the view left while its replacement was prepared".into());
     };
@@ -679,7 +681,7 @@ fn swapped(
         return Err("the view changed while its replacement was prepared".into());
     }
     if old.ticks != ticks || !old.settled() {
-        fresh = Guest::prepared_again(old, &fresh, code, shown, timing)
+        fresh = View::prepared_again(old, &fresh, code, shown, timing)
             .map(Box::new)
             .map_err(|failure| failure.to_string())?;
     }
@@ -688,7 +690,7 @@ fn swapped(
     let own = std::mem::take(&mut fresh.pictures);
     let mut none = wire::Node::empty();
     let root = fresh.frame.root.as_mut().unwrap_or(&mut none);
-    if pictures.carry(own, root, old.module) {
+    if pictures.carry(own, root, old.program) {
         fresh.pending.push(wire::Event::Resync);
     }
     fresh.pictures = pictures;
@@ -698,7 +700,7 @@ fn swapped(
 /// What a load came back with.
 pub(super) enum Loaded {
     /// A view where there was none.
-    Fresh(Box<Guest>),
+    Fresh(Box<View>),
     /// The view already drawn is the active deployment's.
     Unchanged,
     /// A prepared replacement for the view drawn: restored from its
@@ -706,7 +708,7 @@ pub(super) enum Loaded {
     /// instance it was prepared against, and `code`, named `shown`, is what
     /// it is an instance of.
     Swap {
-        fresh: Box<Guest>,
+        fresh: Box<View>,
         alive: Arc<()>,
         ticks: u64,
         code: Arc<Module>,
@@ -729,7 +731,7 @@ pub(super) struct Unloaded {
 /// One `view_source` line per outcome, with the same fields every time:
 /// stable keys for anyone reading loads out of app.log.
 pub(super) fn log_source(
-    module: &str,
+    program: &str,
     hash: Option<&[u8; 32]>,
     state: &str,
     generation: u64,
@@ -737,7 +739,7 @@ pub(super) fn log_source(
 ) {
     tracing::info!(
         target: "ducktape::app",
-        module,
+        program,
         hash = %hash.map_or_else(|| "-".to_owned(), |hash| noded_client::hex::hex_encode(hash)),
         state,
         gen = generation,
@@ -746,7 +748,7 @@ pub(super) fn log_source(
     );
 }
 
-/// How long each stage of one module-owned load took, and where its bytes
+/// How long each stage of one program-owned load took, and where its bytes
 /// and code came from: `fetch` is the node's answer (`blob`: `disk` or
 /// `node`), `compile` is cranelift (`code`: `memory`, `disk` or `cold`),
 /// both `seat` for a claimed seat started from the code it compiled,
@@ -779,7 +781,7 @@ pub(super) struct LoadTiming {
 impl LoadTiming {
     /// One `view_load` line per load, every field every time, once the
     /// load is installed, on the perf target.
-    pub(super) fn log(&self, module: &str) {
+    pub(super) fn log(&self, program: &str) {
         let ms = |duration: Duration| duration.as_millis();
         let word = |word: &'static str| if word.is_empty() { "-" } else { word };
         let hash = self.hash.map_or_else(
@@ -792,7 +794,7 @@ impl LoadTiming {
         let total = self.started.map_or(0, |started| ms(started.elapsed()));
         tracing::info!(
             target: "ducktape::perf",
-            module,
+            program,
             hash = %hash,
             path = self.path,
             outcome = self.outcome,
@@ -825,10 +827,10 @@ pub fn override_views_from(dir: Option<PathBuf>) {
     *VIEW_OVERRIDE.lock().expect("view override") = dir;
 }
 
-/// The file the developer's override supplies for `module`, if any.
-pub(super) fn view_override(module: &str) -> Option<PathBuf> {
+/// The file the developer's override supplies for `program`, if any.
+pub(super) fn view_override(program: &str) -> Option<PathBuf> {
     let dir = VIEW_OVERRIDE.lock().expect("view override").clone()?;
-    let path = dir.join(format!("{module}_view.wasm"));
+    let path = dir.join(format!("{program}_view.wasm"));
     path.is_file().then_some(path)
 }
 

@@ -14,18 +14,18 @@ fn timed() -> Option<crate::perf::Timer> {
     crate::perf::time(crate::perf::Key::Shell, "reducer.notify")
 }
 
-/// The person answered `module`'s ask: the word is saved and its bar goes.
+/// The person answered `program`'s ask: the word is saved and its bar goes.
 /// Two entities move: the centre (`Notifications`) and the saved settings
 /// (`Prefs`, read off disk again), so the answer is one call here.
 pub(crate) fn permission(
     notifications: &Entity<Notifications>,
     prefs: &Entity<Slice<Prefs>>,
-    module: &str,
+    program: &str,
     permission: Permission,
     cx: &mut App,
 ) {
     notifications.update(cx, |notifications, cx| {
-        notifications.permission(module, permission, cx)
+        notifications.permission(program, permission, cx)
     });
     prefs.update(cx, |prefs, cx| prefs.reload_notify(cx));
 }
@@ -76,8 +76,8 @@ impl Notifications {
     }
 
     /// The views waiting for a word on their notices.
-    pub(crate) fn asking(&self, module: &str) -> bool {
-        self.asking.contains(module)
+    pub(crate) fn asking(&self, program: &str) -> bool {
+        self.asking.contains(program)
     }
 
     /// The log's rows, newest first, as the bell lists them.
@@ -85,10 +85,10 @@ impl Notifications {
         self.center.lock().entries().cloned().collect()
     }
 
-    /// How many notices `module` posted this week, as of the wall second
+    /// How many notices `program` posted this week, as of the wall second
     /// `wall` (Settings' Notifications page).
-    pub(crate) fn this_week(&self, module: &str, wall: i64) -> u32 {
-        self.center.lock().this_week(module, wall)
+    pub(crate) fn this_week(&self, program: &str, wall: i64) -> u32 {
+        self.center.lock().this_week(program, wall)
     }
 
     /// A row picked in the bell: read, and handed back for the link or
@@ -112,17 +112,17 @@ impl Notifications {
         self.refresh(cx);
     }
 
-    /// The person's word on `module`'s notices, saved (see [`permission`]).
-    fn permission(&mut self, module: &str, permission: Permission, cx: &mut Context<Self>) {
+    /// The person's word on `program`'s notices, saved (see [`permission`]).
+    fn permission(&mut self, program: &str, permission: Permission, cx: &mut Context<Self>) {
         let _timed = timed();
-        notify::set_permission(&mut self.center.lock(), module, permission);
+        notify::set_permission(&mut self.center.lock(), program, permission);
         self.refresh(cx);
     }
 
     /// "Not now": the bar goes for this run; the view asks again next launch.
-    pub(crate) fn not_now(&mut self, module: &str, cx: &mut Context<Self>) {
+    pub(crate) fn not_now(&mut self, program: &str, cx: &mut Context<Self>) {
         let _timed = timed();
-        notify::not_now(&mut self.center.lock(), module);
+        notify::not_now(&mut self.center.lock(), program);
         self.refresh(cx);
     }
 

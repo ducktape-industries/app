@@ -128,7 +128,7 @@ impl ViewTree {
                             "home" => 0,
                             "end" => last,
                             // gpui's activation keys, as on any pressable
-                            // element (a guest's `block_link` too)
+                            // element (a view's `block_link` too)
                             "enter" | "space" => {
                                 cx.stop_propagation();
                                 press(at, cx);

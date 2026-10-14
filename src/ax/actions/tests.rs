@@ -1,5 +1,5 @@
 //! Regression tests for the AX door's field path: `perform_by_id` on a
-//! nested composer field must reach the guest as the change it is; an
+//! nested composer field must reach the view as the change it is; an
 //! action a view advertises reaches the view; and a press on a view's
 //! control is that control's click, wherever it is drawn.
 
@@ -28,7 +28,7 @@ fn container(key: &str, children: Vec<wire::Node>) -> wire::Node {
 }
 
 /// The real shape a chat composer's field mounts under (see PR #238's
-/// `chat_shaped_tree` in `runtime/guest/requests.rs`): `chat-viewport >
+/// `chat_shaped_tree` in `runtime/view/requests.rs`): `chat-viewport >
 /// chat-root > chat-panes > chat-room > draft-general >
 /// draft-general/editor`. Every one of those named ancestors is owned by
 /// a different file, none of which the field's own key threads through.
@@ -70,9 +70,9 @@ fn chat_shaped_field() -> wire::Node {
 
 /// Drives `action` with the value "hello" through the AX door path a QA
 /// runner uses (`perform_by_id`) against a tree shaped like the real
-/// composer's nested ancestry, and asserts the guest hears the field
+/// composer's nested ancestry, and asserts the view hears the field
 /// reading it.
-fn ax_action_reaches_the_guests_field(cx: &mut gpui_kit::TestAppContext, action: &str) {
+fn ax_action_reaches_the_views_field(cx: &mut gpui_kit::TestAppContext, action: &str) {
     cx.update(gpui_kit::init);
     let window = cx.open_window(size(px(400.), px(300.)), |_, _| {
         ViewTree::new(chat_shaped_field())
@@ -104,24 +104,24 @@ fn ax_action_reaches_the_guests_field(cx: &mut gpui_kit::TestAppContext, action:
     assert_eq!(
         heard.borrow().last(),
         Some(&(1, "hello".to_owned())),
-        "AX `{action}` on the composer's field must reach the guest as its change"
+        "AX `{action}` on the composer's field must reach the view as its change"
     );
 }
 
 /// The QA runner's `type` AX action typed into the composer's
 /// AX-visible native field (focus and value both showed it) but the
-/// guest never heard of it: Send stayed disabled forever.
+/// view never heard of it: Send stayed disabled forever.
 #[gpui_kit::test]
-fn ax_type_on_a_nested_editor_reaches_the_guests_document(cx: &mut gpui_kit::TestAppContext) {
-    ax_action_reaches_the_guests_field(cx, "type");
+fn ax_type_on_a_nested_editor_reaches_the_views_document(cx: &mut gpui_kit::TestAppContext) {
+    ax_action_reaches_the_views_field(cx, "type");
 }
 
 /// The same drive, through AX `set_value`. `perform` focuses the node
 /// before SetValue, as it does for `type` (#241): typing goes where the
 /// keys are.
 #[gpui_kit::test]
-fn ax_set_value_on_a_nested_editor_reaches_the_guests_document(cx: &mut gpui_kit::TestAppContext) {
-    ax_action_reaches_the_guests_field(cx, "set_value");
+fn ax_set_value_on_a_nested_editor_reaches_the_views_document(cx: &mut gpui_kit::TestAppContext) {
+    ax_action_reaches_the_views_field(cx, "set_value");
 }
 
 /// A view's stepper advertising increment, decrement and one custom
