@@ -13,7 +13,7 @@ use gpui_kit::*;
 
 /// The program whose view is Account (the account, its keys, agents and
 /// invites), which the account menu opens.
-const ACCOUNT_VIEW: &str = "module-registry";
+const ACCOUNT_VIEW: &str = "programs";
 
 impl Chrome {
     /// What the breath means (the NodeStatus board): in sync or not, and

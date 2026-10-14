@@ -46,9 +46,9 @@ impl Pictures {
     /// tree as the guest remembers it. A hash already held keeps its first
     /// bytes. Then holds the budget against `root`; `true` when it evicted,
     /// and the guest is owed a `Resync`.
-    pub(super) fn adopt(&mut self, root: &mut wire::Node, module: &str) -> bool {
+    pub(super) fn adopt(&mut self, root: &mut wire::Node, program: &str) -> bool {
         self.join(bytes_of(root));
-        self.hold(root, module)
+        self.hold(root, program)
     }
 
     /// Moves the pictures' bytes out of a tooltip's `content` the same way,
@@ -58,19 +58,19 @@ impl Pictures {
         &mut self,
         content: &mut wire::Node,
         root: &mut wire::Node,
-        module: &str,
+        program: &str,
     ) -> bool {
         self.join(bytes_of(content));
-        self.hold(root, module)
+        self.hold(root, program)
     }
 
     /// The drawn view's store, carried to its replacement across a hot
     /// swap: `fresh`, the replacement's own, joins it (the drawn view's
     /// bytes win a shared hash), and the budget holds against `root`, the
     /// replacement's first tree. `true` when it evicted.
-    pub(super) fn carry(&mut self, fresh: Pictures, root: &mut wire::Node, module: &str) -> bool {
+    pub(super) fn carry(&mut self, fresh: Pictures, root: &mut wire::Node, program: &str) -> bool {
         self.join(Arc::unwrap_or_clone(fresh.held));
-        self.hold(root, module)
+        self.hold(root, program)
     }
 
     /// Takes in the pictures of `fresh` whose hash is not held yet.
@@ -99,7 +99,7 @@ impl Pictures {
 
     /// Past the budget, keeps what `root` names, in tree order, while it
     /// fits, and evicts the rest. `true` when it evicted.
-    fn hold(&mut self, root: &mut wire::Node, module: &str) -> bool {
+    fn hold(&mut self, root: &mut wire::Node, program: &str) -> bool {
         let count = self.held.raster.len() + self.held.vector.len();
         if self.bytes <= MAX_PICTURE_BYTES && count <= MAX_PICTURES {
             return false;
@@ -135,12 +135,12 @@ impl Pictures {
             self.evicted = true;
             tracing::warn!(
                 target: "ducktape::app",
-                module,
-                reason = "module_view_pictures_evicted",
+                program,
+                reason = "program_view_pictures_evicted",
                 held = self.bytes,
                 kept = bytes,
                 budget = MAX_PICTURE_BYTES,
-                "module view pictures past the seat's budget; evicted, view asked to resend"
+                "program view pictures past the seat's budget; evicted, view asked to resend"
             );
         }
         self.held = Arc::new(kept);

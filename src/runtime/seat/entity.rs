@@ -21,7 +21,7 @@ use gpui_kit::{AnyWindowHandle, Context, Entity, EventEmitter, Subscription};
 const BUSY_FRAME: Duration = Duration::from_millis(16);
 
 pub(crate) struct Seat {
-    module: &'static str,
+    program: &'static str,
     instance: u64,
     mounted: Arc<Mutex<Mounted>>,
     /// The window the pane is placed in now; set by `Seats::reconcile`
@@ -97,9 +97,9 @@ pub(super) fn native_root(tree: crate::render::Tree) -> crate::render::Tree {
 impl Seat {
     /// The seat of the pane with this layout `instance`, which is its key
     /// in the registry: a link's route waits for it by that key.
-    pub(crate) fn new(module: &'static str, instance: u64, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(program: &'static str, instance: u64, cx: &mut Context<Self>) -> Self {
         let theme = cx.observe_global::<gpui_kit::component::Theme>(|this, cx| this.turn(cx));
-        let mounted = mounted(module, instance);
+        let mounted = mounted(program, instance);
         let mut woken = lock(&mounted).wake.subscribe();
         let wake = cx.spawn(async move |this, cx| {
             while woken.changed().await.is_ok() {
@@ -109,7 +109,7 @@ impl Seat {
             }
         });
         Self {
-            module,
+            program,
             instance,
             mounted,
             window: None,
@@ -137,8 +137,8 @@ impl Seat {
         }
     }
 
-    pub(crate) fn module(&self) -> &'static str {
-        self.module
+    pub(crate) fn program(&self) -> &'static str {
+        self.program
     }
 
     /// Its pane's layout instance (its perf key).
@@ -146,11 +146,11 @@ impl Seat {
         self.instance
     }
 
-    /// The id around the view's tree, `view/<module>`: the AX test door
-    /// (`ax::tree`) reads the module off it. A host id, so no id a view
+    /// The id around the view's tree, `view/<program>`: the AX test door
+    /// (`ax::tree`) reads the program off it. A host id, so no id a view
     /// sends is one.
     pub(crate) fn ax_mark(&self) -> gpui_kit::ElementId {
-        crate::render::host_id(format!("{}{}", crate::render::VIEW_MARK, self.module))
+        crate::render::host_id(format!("{}{}", crate::render::VIEW_MARK, self.program))
     }
 
     pub(crate) fn tree(&self) -> Option<Entity<crate::render::ViewTree>> {
@@ -277,14 +277,14 @@ impl Seat {
         let mounted = self.mounted.clone();
         let mut locked = lock(&mounted);
         let shown = Instant::now();
-        let module = self.module;
+        let program = self.program;
         let Mounted { slot, props, .. } = &mut *locked;
         let guest = match slot {
             Slot::Ready(guest) => guest,
             Slot::Empty => {
                 drop(locked);
                 let words = format!(
-                    "This network has no {module} view. An admin can activate a deployment that ships one."
+                    "This network has no {program} view. An admin can activate a deployment that ships one."
                 );
                 return self.show_standin(words.into(), cx);
             }
@@ -458,7 +458,7 @@ impl Seat {
         // new, so the desk fits its windows to it
         cx.emit(Intent::Seated);
         if crate::perf::on() {
-            crate::perf::mark(intern(&format!("first_seated.{}", self.module)));
+            crate::perf::mark(intern(&format!("first_seated.{}", self.program)));
         }
         self.generation = generation;
         self.alive = Some(alive.clone());
@@ -589,10 +589,10 @@ impl Seat {
 
 impl Drop for Seat {
     fn drop(&mut self) {
-        lock(registry()).remove(&(self.module, self.instance));
+        lock(registry()).remove(&(self.program, self.instance));
         // a route its view never read goes with it: no seat takes its key again
-        _ = take_route(self.module, self.instance);
-        // the module's row may now be read off another seat, or say Loading
+        _ = take_route(self.program, self.instance);
+        // the program's row may now be read off another seat, or say Loading
         rail_moved();
     }
 }

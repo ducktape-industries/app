@@ -2,7 +2,7 @@
 //! handler is `fn(Node, Vec<u8>) -> Answered`, run on [`handle`] with an
 //! in-flight slot from [`Replies::admit`], its answer put in [`Replies`];
 //! transport failures are retried for [`NODE_RETRY_BUDGET`]. A subscription
-//! (`module.changes`, `chain.heads`) is one long task writing items. Every
+//! (`program.changes`, `chain.heads`) is one long task writing items. Every
 //! task is a [`NodeTask`] in `guest.tasks`, aborted when dropped.
 use super::super::consent;
 use super::*;
@@ -10,7 +10,7 @@ use noded_client::wire as noded;
 
 pub(super) type Answered = std::pin::Pin<Box<dyn std::future::Future<Output = Answer> + Send>>;
 /// One node-backed method: the node to ask and the request's payload in,
-/// the answer out. Not a [`methods::Call`], which is `module.query`'s and
+/// the answer out. Not a [`methods::Call`], which is `program.query`'s and
 /// `op.submit`'s envelope.
 type NodeMethod = fn(Node, Vec<u8>) -> Answered;
 
@@ -158,7 +158,7 @@ pub(super) fn spawn_consented(
     };
     let asking = Asking {
         waiting: consent::waiting(),
-        module: guest.module,
+        program: guest.program,
         instance: guest.instance,
         words,
         call,
@@ -186,7 +186,7 @@ const DESCRIBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10
 struct Asking {
     /// the queue the request came in on (`consent::queue_in`)
     waiting: &'static std::sync::Mutex<std::collections::VecDeque<consent::Ask>>,
-    module: &'static str,
+    program: &'static str,
     instance: u64,
     words: consent::Words,
     call: methods::Call,
@@ -195,13 +195,13 @@ struct Asking {
 impl Asking {
     /// The person's yes: the op described into the words where they show
     /// the target's own description (its size when the target's describe
-    /// module reads nothing or does not answer in time), the ask queued and
+    /// program reads nothing or does not answer in time), the ask queued and
     /// the shell woken, and its answer. `consent_refused` for anything but
     /// Approve, and while another ask of this view waits.
     async fn yes(self, node: &Node) -> Result<(), wire::Error> {
         let Asking {
             waiting,
-            module,
+            program,
             instance,
             mut words,
             call,
@@ -217,7 +217,7 @@ impl Asking {
             words.shown = Some(consent::shown(described.as_ref(), len));
         }
         let refused = |message: &str| wire::Error::new(refusal::CONSENT_REFUSED, message);
-        let Some(mut told) = consent::queue_in(waiting, module, instance, words) else {
+        let Some(mut told) = consent::queue_in(waiting, program, instance, words) else {
             return Err(refused(
                 "another confirmation for this view is still waiting",
             ));
@@ -440,7 +440,7 @@ fn node_on(connection: &super::super::Connection) -> Option<Node> {
 
 /// A connect inside the network, under a view that kept its code
 /// (`Guest::reconnect`): each node subscription goes on, opened again on
-/// `connection`, and its follower with it — a `module.changes` one is told
+/// `connection`, and its follower with it — a `program.changes` one is told
 /// first to re-read (`None`, as when the node closes the socket), a
 /// `chain.heads` one starts over at the new node's tip. Every other request
 /// still running on the old connection is refused `stale_connection`, for
@@ -465,7 +465,7 @@ pub(in crate::runtime) fn reconnected(guest: &mut Guest, connection: &super::sup
     }
 }
 
-/// `module.changes <program>`: one item per block that wrote to the program,
+/// `program.changes <program>`: one item per block that wrote to the program,
 /// carrying the keys it wrote.
 pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
     let program = methods::decode::<String>(payload)
@@ -476,7 +476,7 @@ pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
         guest.refuse(
             id,
             refusal::MALFORMED_REQUEST,
-            "`module.changes` names no program",
+            "`program.changes` names no program",
         );
         return;
     }
@@ -484,7 +484,7 @@ pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
         guest.refuse(
             id,
             refusal::UNDECLARED_TARGET,
-            undeclared("module.changes", &program),
+            undeclared("program.changes", &program),
         );
         return;
     }
@@ -492,7 +492,7 @@ pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
         guest.refuse(
             id,
             refusal::SUBSCRIPTION_LIMIT,
-            "too many `module.changes` subscriptions",
+            "too many `program.changes` subscriptions",
         );
         return;
     }
@@ -502,7 +502,7 @@ pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
     follow_changes(guest, id, node, program);
 }
 
-/// Subscription `id`: `module.changes` of `program` on `node`.
+/// Subscription `id`: `program.changes` of `program` on `node`.
 fn follow_changes(guest: &mut Guest, id: u64, node: Node, program: String) {
     let replies = guest.replies.clone();
     let subscribed = (id, program.clone());
@@ -662,7 +662,7 @@ pub(in crate::runtime) struct NodeTask {
 
 /// A node subscription, as a reconnect opens it again.
 enum Follow {
-    /// `module.changes` of this program.
+    /// `program.changes` of this program.
     Changes(String),
     /// `chain.heads`.
     Heads,
@@ -693,7 +693,7 @@ fn undeclared(kind: &str, target: &str) -> String {
     format!("`{kind}` names `{target}`, which this view's manifest does not list among its targets")
 }
 
-/// The envelope of `module.query` or `op.submit` (`kind`) from `guest`, its
+/// The envelope of `program.query` or `op.submit` (`kind`) from `guest`, its
 /// target among the view's manifest targets; `None` with the request
 /// refused otherwise (`malformed_request`, `undeclared_target`). The task
 /// decodes the envelope again: a string and the bytes, cheaper than

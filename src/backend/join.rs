@@ -122,7 +122,7 @@ pub(crate) async fn add_recovery_key(
         network.as_bytes(),
         anchor,
         Some(salt()),
-        identity::MODULE,
+        identity::PROGRAM,
         abi::encode(&add),
     )
     .map_err(|refused| refused.to_string())?;

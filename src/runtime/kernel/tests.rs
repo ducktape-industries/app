@@ -18,7 +18,7 @@ pub(in crate::runtime) fn guest() -> Guest {
     .unwrap();
     let mut guest = Guest::instantiate("request-test", &code, "request test").unwrap();
     guest.capabilities = Capability::ALL.to_vec();
-    guest.targets = vec!["registry".into()];
+    guest.targets = vec!["programs".into()];
     guest
 }
 
@@ -189,15 +189,15 @@ fn serve(
 }
 
 /// The reason `kind` is refused for, asked by a guest declaring `declared`,
-/// the view of the program bound to the registry role (`invite.create` is
+/// the view of the program bound to the programs role (`invite.create` is
 /// a role's own view's) while [`acl_roles`] are bound; `None` if it is not
 /// refused at once.
 fn refused_with(declared: &[Capability], kind: &str) -> Option<String> {
     let mut guest = guest();
-    guest.module = "acl-registry";
+    guest.program = "acl-programs";
     guest.capabilities = declared.to_vec();
     let payload = methods::encode(&methods::Call {
-        target: "registry".into(),
+        target: "programs".into(),
         body: Vec::new(),
     });
     for id in [1, 2] {
@@ -324,7 +324,7 @@ impl Drop for AclRoles {
 
 fn acl_roles() -> AclRoles {
     super::super::roster().bind(Some(abi::Roles {
-        registry: "acl-registry".into(),
+        programs: "acl-programs".into(),
         validators: "acl-valset".into(),
         identity: "acl-identity".into(),
     }));
@@ -339,9 +339,9 @@ fn acl_roles() -> AclRoles {
 fn invite_create_is_a_role_views_own() {
     let _serial = roles_serial();
     let mint = methods::encode(&methods::CreateInvite { ttl_days: 7 });
-    let refused = |module: &'static str| {
+    let refused = |program: &'static str| {
         let mut guest = guest();
-        guest.module = module;
+        guest.program = program;
         assert!(answer(
             &mut guest,
             Capability::Invite,
@@ -352,12 +352,12 @@ fn invite_create_is_a_role_views_own() {
         ));
         refusal_code(&mut guest)
     };
-    let unbound = refused("acl-registry");
+    let unbound = refused("acl-programs");
     assert_eq!(unbound.as_deref(), Some(refusal::UNDECLARED_CAPABILITY));
     let _roles = acl_roles();
     // a manifest name is the view's own word: the roster's program decides
     let mut named = guest();
-    named.name = "acl-registry".into();
+    named.name = "acl-programs".into();
     assert!(answer(
         &mut named,
         Capability::Invite,
@@ -371,7 +371,7 @@ fn invite_create_is_a_role_views_own() {
         Some(refusal::UNDECLARED_CAPABILITY)
     );
     assert_eq!(
-        refused("acl-registry").as_deref(),
+        refused("acl-programs").as_deref(),
         Some(refusal::NOT_CONNECTED)
     );
 }
@@ -384,12 +384,12 @@ fn invite_create_is_a_role_views_own() {
 /// comes before the node, as the capability gate does.
 #[test]
 fn node_methods_answer_for_the_missing_node_first() {
-    let to_registry = methods::encode(&methods::Call {
-        target: "registry".into(),
+    let to_programs = methods::encode(&methods::Call {
+        target: "programs".into(),
         body: b"not borsh".to_vec(),
     });
     for (capability, operation, payload) in [
-        (Capability::Module, "query", to_registry.as_slice()),
+        (Capability::Program, "query", to_programs.as_slice()),
         (Capability::Chain, "status", b"not borsh"),
     ] {
         let mut guest = guest();
@@ -858,7 +858,7 @@ fn routed_kind(line: &str) -> Option<String> {
 }
 
 /// A node method reaches only a program the view's manifest lists among
-/// its targets: `op.submit`, `module.query` and `module.changes` to any
+/// its targets: `op.submit`, `program.query` and `program.changes` to any
 /// other are refused `undeclared_target` before anything is signed or
 /// subscribed; to a listed one they pass the gate (and meet the missing
 /// node next).
@@ -874,8 +874,8 @@ fn a_node_method_reaches_only_a_declared_target() {
     let named = |program: &str| methods::encode(&program.to_owned());
     for (kind, to_identity, to_chat) in [
         ("op.submit", call("identity"), call("chat")),
-        ("module.query", call("identity"), call("chat")),
-        ("module.changes", named("identity"), named("chat")),
+        ("program.query", call("identity"), call("chat")),
+        ("program.changes", named("identity"), named("chat")),
     ] {
         let mut guest = guest();
         guest.targets = vec!["chat".into()];
@@ -936,7 +936,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     let _seat = backend::seat_serial();
     let _serial = roles_serial();
     let remove = methods::encode(&methods::Call {
-        target: identity::MODULE.into(),
+        target: identity::PROGRAM.into(),
         body: abi::encode(&identity::Op::RemoveKey {
             account: 7,
             key: vec![1, 2, 3],
@@ -948,7 +948,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
         payload: remove.clone(),
     };
     let mut guest = guest();
-    guest.targets = vec![identity::MODULE.into()];
+    guest.targets = vec![identity::PROGRAM.into()];
     // the card names the program, never the manifest's own word for itself
     guest.name = "Chat".into();
     // no press behind it: refused before anything is asked, even locked
@@ -1078,7 +1078,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
 /// A view whose program is bound to no role asks the person before its op
 /// to a role's program, whatever its manifest calls it, and the card goes
 /// up only once the target has described the op: in the validators'
-/// program's own words, or as the op's size where the registry's code
+/// program's own words, or as the op's size where the programs role's code
 /// carries no describe module. Cancel refuses it and the node is never
 /// asked; Approve, and only then, sends it on (the frame's anchor read,
 /// which this node, the view's own connection, answers with garbage).
@@ -1092,14 +1092,14 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
     let _roles = acl_roles();
     list_program("acl-valset", 0xa1, false, Some(HI));
     // listed, its code carrying no describe module
-    list_program("acl-registry", 0xa2, false, None);
+    list_program("acl-programs", 0xa2, false, None);
     let key = commonware_cryptography::ed25519::PrivateKey::decode([7u8; 32].as_slice()).unwrap();
     handle().block_on(backend::seat_key(key));
     let mut guest = guest();
     // a manifest name that reads as a role's: the card asks all the same,
     // naming the roster's program
     guest.name = "acl-valset".into();
-    guest.targets = vec!["acl-valset".into(), "acl-registry".into()];
+    guest.targets = vec!["acl-valset".into(), "acl-programs".into()];
     let node = fake_node(vec![(
         noded_client::wire::route::STATUS,
         Mode::Answer(b"not a status".to_vec()),
@@ -1135,9 +1135,9 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
         ),
         (
             2,
-            "acl-registry",
+            "acl-programs",
             consent::NETWORK,
-            "sign an op on the module registry",
+            "sign an op on the programs role",
             "3 bytes this app cannot read",
         ),
     ] {

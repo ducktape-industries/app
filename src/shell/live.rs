@@ -1,7 +1,7 @@
 //! Debug builds only: `ducktape-app --live <endpoint> <entry> <seed>`
 //! opens one view in a window of its own on the node at `endpoint`, with
 //! no launcher, desk or rail around it: a view developer's loop, driven
-//! from the modules repository (`cargo run -p <view> --example live`,
+//! from the programs repository (`cargo run -p <view> --example live`,
 //! which serves a fake node of the real programs and starts this).
 //!
 //! What the launcher does on a sign-in, done straight: the key seated is
@@ -17,7 +17,7 @@ use commonware_cryptography::{Signer as _, ed25519};
 
 pub(crate) struct Live {
     endpoint: String,
-    module: &'static str,
+    program: &'static str,
     seed: u64,
 }
 
@@ -26,10 +26,10 @@ impl Live {
     pub(crate) fn parse() -> Live {
         let args: Vec<String> = std::env::args().skip(2).collect();
         let parsed = match args.as_slice() {
-            [endpoint, module, seed] if program::is_name(module) => {
+            [endpoint, name, seed] if program::is_name(name) => {
                 seed.parse().ok().map(|seed| Live {
                     endpoint: endpoint.trim_end_matches('/').to_owned(),
-                    module: crate::runtime::intern(module),
+                    program: crate::runtime::intern(name),
                     seed,
                 })
             }
@@ -69,7 +69,7 @@ pub(crate) fn boot(live: Live, entities: &Entities, cx: &mut gpui_kit::App) {
     });
     entities
         .windows
-        .update(cx, |windows, cx| windows.open_live(live.module, cx));
+        .update(cx, |windows, cx| windows.open_live(live.program, cx));
     cx.on_window_closed(|cx, _| {
         cx.defer(|cx| {
             if cx.windows().is_empty() {

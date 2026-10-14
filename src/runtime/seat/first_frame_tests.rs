@@ -42,7 +42,7 @@ impl Render for Root {
             self.drawn.borrow_mut().push((guest.ticks, guest.frame_rev));
         }
         let body = match (seat.standin(), seat.tree()) {
-            (Some(standin), _) => standin.element(seat.module(), seat.instance(), seat.ax_mark()),
+            (Some(standin), _) => standin.element(seat.program(), seat.instance(), seat.ax_mark()),
             (None, Some(tree)) => gpui_kit::AnyView::from(tree)
                 .cached(gpui_kit::StyleRefinement::default().size_full())
                 .into_any_element(),
@@ -52,29 +52,29 @@ impl Render for Root {
     }
 }
 
-/// A [`WINDOW`] whose root draws one seat of `module`, placed in it with
+/// A [`WINDOW`] whose root draws one seat of `program`, placed in it with
 /// the window as its body.
 fn open(
     cx: &mut TestAppContext,
-    module: &'static str,
+    program: &'static str,
 ) -> (Entity<Seat>, DrawnLog, Arc<Mutex<Mounted>>, Opened) {
-    open_in(cx, module, Some(WINDOW))
+    open_in(cx, program, Some(WINDOW))
 }
 
 /// [`open`], the seat placed with `body`: none is a pane whose desk is not
 /// drawn yet.
 fn open_in(
     cx: &mut TestAppContext,
-    module: &'static str,
+    program: &'static str,
     body: Option<(f32, f32)>,
 ) -> (Entity<Seat>, DrawnLog, Arc<Mutex<Mounted>>, Opened) {
     cx.update(gpui_kit::init);
     let drawn: DrawnLog = Default::default();
     let log = drawn.clone();
     let window = cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
-        let seat = cx.new(|cx| Seat::new(module, Pane::new(module).instance, cx));
+        let seat = cx.new(|cx| Seat::new(program, Pane::new(program).instance, cx));
         let key = seat.read(cx);
-        let mounted = registry().lock().unwrap()[&(key.module(), key.instance())].clone();
+        let mounted = registry().lock().unwrap()[&(key.program(), key.instance())].clone();
         seat.update(cx, |seat, cx| {
             seat.place(window.window_handle(), body, true, cx)
         });
@@ -131,9 +131,9 @@ fn facts(events: &[wire::Event]) -> (Option<bool>, Option<(f32, f32)>, Option<i3
 /// A view answering `frames` in order, one per tick, the last on every
 /// tick after. `snapshot` hands over one empty state and `restore` takes
 /// any, so the same code serves as a swap's old and new instance.
-fn frames_in_order(module: &'static str, min_width: u32, frames: &[wire::Frame]) {
+fn frames_in_order(program: &'static str, min_width: u32, frames: &[wire::Frame]) {
     let code = Module::new(crate::runtime::guest::engine(), frames_wat(frames)).unwrap();
-    crate::runtime::seat_code_for_test(module, min_width, code);
+    crate::runtime::seat_code_for_test(program, min_width, code);
 }
 
 fn full(root: wire::Node) -> wire::Frame {
@@ -158,9 +158,9 @@ fn boxed(key: &str) -> wire::Node {
 /// nothing else: a fact that did not move does not cross again.
 #[gpui_kit::test]
 fn a_views_first_tick_carries_the_hosts_facts(cx: &mut TestAppContext) {
-    const MODULE: &str = "first-frame-facts-test";
-    frames_in_order(MODULE, 320, &[full(boxed("card"))]);
-    let (seat, drawn, mounted, opened) = open(cx, MODULE);
+    const PROGRAM: &str = "first-frame-facts-test";
+    frames_in_order(PROGRAM, 320, &[full(boxed("card"))]);
+    let (seat, drawn, mounted, opened) = open(cx, PROGRAM);
     let Opened { mut native, handle } = opened;
     native.run_until_parked();
     assert_eq!(*drawn.borrow(), vec![(1, 1)]);
@@ -194,9 +194,9 @@ fn a_views_first_tick_carries_the_hosts_facts(cx: &mut TestAppContext) {
 /// pane is placed with a body, and that first tick carries it.
 #[gpui_kit::test]
 fn a_view_is_not_ticked_before_its_pane_has_a_body(cx: &mut TestAppContext) {
-    const MODULE: &str = "first-frame-no-body-test";
-    frames_in_order(MODULE, 320, &[full(boxed("card"))]);
-    let (seat, drawn, mounted, opened) = open_in(cx, MODULE, None);
+    const PROGRAM: &str = "first-frame-no-body-test";
+    frames_in_order(PROGRAM, 320, &[full(boxed("card"))]);
+    let (seat, drawn, mounted, opened) = open_in(cx, PROGRAM, None);
     let Opened { mut native, handle } = opened;
     native.run_until_parked();
     assert_eq!(
@@ -220,9 +220,9 @@ fn a_view_is_not_ticked_before_its_pane_has_a_body(cx: &mut TestAppContext) {
 /// its body `min_w`, and the viewport the guest hears is that width.
 #[gpui_kit::test]
 fn a_views_viewport_is_never_narrower_than_its_minimum(cx: &mut TestAppContext) {
-    const MODULE: &str = "first-frame-min-width-test";
-    frames_in_order(MODULE, 640, &[full(boxed("card"))]);
-    let (_seat, _drawn, mounted, opened) = open(cx, MODULE);
+    const PROGRAM: &str = "first-frame-min-width-test";
+    frames_in_order(PROGRAM, 640, &[full(boxed("card"))]);
+    let (_seat, _drawn, mounted, opened) = open(cx, PROGRAM);
     opened.native.run_until_parked();
     let ticks = ticked_with(&mounted);
     assert_eq!(facts(&ticks[0]).1, Some((640., WINDOW.1)), "{:?}", ticks[0]);
@@ -235,10 +235,10 @@ fn a_views_viewport_is_never_narrower_than_its_minimum(cx: &mut TestAppContext) 
 /// draws once, at frame_rev 2, and the view has ticked once.
 #[gpui_kit::test]
 fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAppContext) {
-    const MODULE: &str = "first-frame-swap-test";
+    const PROGRAM: &str = "first-frame-swap-test";
     let _on = crate::perf::on_for_test();
-    frames_in_order(MODULE, 320, &[full(boxed("card"))]);
-    let (_seat, drawn, mounted, opened) = open(cx, MODULE);
+    frames_in_order(PROGRAM, 320, &[full(boxed("card"))]);
+    let (_seat, drawn, mounted, opened) = open(cx, PROGRAM);
     let native = opened.native;
     native.run_until_parked();
     assert_eq!(*drawn.borrow(), vec![(1, 1)], "the old view is up");
@@ -252,7 +252,7 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
     assert!(old_theme.is_some(), "the drawn view heard the theme");
     // the new deployment's load, as a block starts it: the same code, a
     // replacement of the same shape
-    let module = Arc::new(
+    let program = Arc::new(
         Module::new(
             crate::runtime::guest::engine(),
             frames_wat(&[full(boxed("card"))]),
@@ -261,7 +261,7 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
     );
     let generation = lock(&mounted).start();
     let load = Load {
-        module: MODULE,
+        program: PROGRAM,
         seat: mounted.clone(),
         generation,
         asked_of: connection().lock().unwrap().clone(),
@@ -270,7 +270,7 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
     let first_tick = Rc::new(RefCell::new(None));
     let seen = first_tick.clone();
     load.land(|load, timing| {
-        let mut fresh = Guest::instantiate(load.module, &module, load.module).unwrap();
+        let mut fresh = Guest::instantiate(load.program, &program, load.program).unwrap();
         fresh.min_width = 320;
         let mut ticks = 0;
         let fresh = Guest::replacement(
@@ -278,8 +278,8 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
             &alive,
             &mut ticks,
             &load.seat,
-            &module,
-            load.module,
+            &program,
+            load.program,
             timing,
         )
         .expect("prepared");
@@ -294,8 +294,8 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
             fresh: Box::new(fresh),
             alive: alive.clone(),
             ticks,
-            code: module.clone(),
-            shown: load.module.into(),
+            code: program.clone(),
+            shown: load.program.into(),
         })
     });
     assert_eq!(

@@ -31,14 +31,14 @@ impl Guest {
         kernel::reconnected(self, connection);
     }
 
-    /// A view comes from the roster's `code` for `module` on the connected
+    /// A view comes from the roster's `code` for `program` on the connected
     /// node — nothing else, so with no node there is nothing to load yet,
     /// and no file is ever opened for it unless the developer's override
     /// ([`override_views_from`]) supplies one. A seat no pane holds yet
     /// (instance 0) stops at the compiled code: `Compiled`, its manifest
     /// read, nothing instantiated or run; the pane that claims it starts
     /// that code ([`Self::start`]). Over an empty seat a pane holds the view
-    /// is `init`ed. With a view of the module already drawn, the same code
+    /// is `init`ed. With a view of the program already drawn, the same code
     /// is `Unchanged`, and different code is prepared as its replacement
     /// (`replacement`): instantiated without `init`, restored from the drawn
     /// view's snapshot, its first tree verified, and handed to the seat to
@@ -48,7 +48,7 @@ impl Guest {
     /// `view_load` line once the load is installed. Each stage is also a
     /// sample under the seat's perf key.
     pub(crate) fn load(
-        module: &'static str,
+        program: &'static str,
         code: Option<(::abi::BlobId, bool)>,
         asked_of: &Connection,
         generation: u64,
@@ -60,10 +60,10 @@ impl Guest {
             failure,
         };
         let logged = |hash: Option<&[u8; 32]>, state: &str, reason: &str| {
-            log_source(module, hash, state, generation, reason);
+            log_source(program, hash, state, generation, reason);
         };
         let instance = lock(mounted).instance;
-        if let Some(path) = view_override(module) {
+        if let Some(path) = view_override(program) {
             let reason = format!("DUCKTAPE_VIEWS_DIR developer override: {}", path.display());
             logged(None, "Overridden", &reason);
             if instance == 0 {
@@ -76,10 +76,10 @@ impl Guest {
                     use sha2::Digest as _;
                     sha2::Sha256::digest(&bytes).into()
                 };
-                let view = view_code(module, None, hash, code, &bytes);
+                let view = view_code(program, None, hash, code, &bytes);
                 return Ok(Loaded::Compiled(Box::new(view)));
             }
-            return Self::load_from(module, &path)
+            return Self::load_from(program, &path)
                 .map(|guest| Loaded::Fresh(Box::new(guest)))
                 .map_err(|reason| before_any_candidate(Failure::Refused(reason)));
         }
@@ -91,7 +91,7 @@ impl Guest {
             )));
         };
         let Some((blob, bare)) = code else {
-            let reason = format!("this network's roster does not list {module}");
+            let reason = format!("this network's roster does not list {program}");
             logged(None, "Failed", &reason);
             return Err(before_any_candidate(Failure::NotListed(reason)));
         };
@@ -99,12 +99,12 @@ impl Guest {
         // is. A seat no pane holds is never started, however often it loads
         let startable = instance != 0 && lock(mounted).slot.startable(code);
         if startable {
-            return Self::start(module, code, generation, mounted, timing);
+            return Self::start(program, code, generation, mounted, timing);
         }
         let runtime = handle();
         timing.started = Some(Instant::now());
         timing.path = "first";
-        let key = crate::perf::Key::View { module, instance };
+        let key = crate::perf::Key::View { program, instance };
         let show = |stage: Slot| lock(mounted).show(generation, stage);
         show(Slot::Fetching {
             received: 0,
@@ -144,7 +144,7 @@ impl Guest {
             use sha2::Digest as _;
             sha2::Sha256::digest(&view_bytes).into()
         };
-        let shown = shown_as(module, &hash);
+        let shown = shown_as(program, &hash);
         let outcome = (|| -> Result<Loaded, Failure> {
             // the instance in the slot, if the deployment is a new one for
             // it: the replacement is seated only against that very
@@ -176,13 +176,13 @@ impl Guest {
                 },
                 1,
             );
-            let view = view_code(module, Some(blob), hash, code, &view_bytes);
+            let view = view_code(program, Some(blob), hash, code, &view_bytes);
             // a seat no pane holds stops here: the rail reads its name and
             // its icon off the manifest, and the pane that claims it starts it
             if instance == 0 && against.is_none() {
                 return Ok(Loaded::Compiled(Box::new(view)));
             }
-            let fresh = Self::instance_of(module, instance, &view, &shown, timing)?;
+            let fresh = Self::instance_of(program, instance, &view, &shown, timing)?;
             let fresh = match &mut against {
                 Some((alive, ticks)) => {
                     Self::replacement(fresh, alive, ticks, mounted, &view.code, &shown, timing)?
@@ -234,7 +234,7 @@ impl Guest {
     /// program gone) has nothing here to start: the load is stale, and its
     /// failure lands nowhere.
     pub(crate) fn start(
-        module: &'static str,
+        program: &'static str,
         code: Option<(::abi::BlobId, bool)>,
         generation: u64,
         mounted: &Arc<Mutex<Mounted>>,
@@ -261,9 +261,9 @@ impl Guest {
         timing.blob = "seat";
         timing.code = "seat";
         timing.hash = Some(view.hash);
-        let shown = shown_as(module, &view.hash);
+        let shown = shown_as(program, &view.hash);
         let started =
-            Self::instance_of(module, instance, &view, &shown, timing).and_then(|mut fresh| {
+            Self::instance_of(program, instance, &view, &shown, timing).and_then(|mut fresh| {
                 fresh.timed_init(&shown, timing)?;
                 Ok(fresh)
             });
@@ -271,7 +271,7 @@ impl Guest {
             Ok(_) => ("Ready", String::new()),
             Err(failure) => ("Failed", failure.to_string()),
         };
-        log_source(module, Some(&view.hash), state, generation, &reason);
+        log_source(program, Some(&view.hash), state, generation, &reason);
         timing.outcome = state;
         started
             .map(|fresh| Loaded::Fresh(Box::new(fresh)))
@@ -285,14 +285,14 @@ impl Guest {
     /// on it, nothing run yet: `init`ed fresh, or `restore`d as a
     /// replacement.
     fn instance_of(
-        module: &'static str,
+        program: &'static str,
         instance: u64,
         view: &ViewCode,
         shown: &str,
         timing: &mut LoadTiming,
     ) -> Result<Self, Failure> {
         let instantiated = Instant::now();
-        let mut fresh = Self::instantiate(module, &view.code, shown).map_err(Failure::Refused)?;
+        let mut fresh = Self::instantiate(program, &view.code, shown).map_err(Failure::Refused)?;
         timing.instantiate = instantiated.elapsed();
         fresh.instance = instance;
         let key = fresh.perf_key();
@@ -486,7 +486,7 @@ impl Guest {
     /// is carried, and what the instance ran into starts fresh.
     fn sibling(&self, code: &Module, shown: &str) -> Result<Self, String> {
         let Self {
-            module,
+            program,
             instance,
             name,
             icon,
@@ -532,7 +532,7 @@ impl Guest {
             alive: _,
             staged: _,
         } = self;
-        let mut sibling = Self::instantiate(module, code, shown)?;
+        let mut sibling = Self::instantiate(program, code, shown)?;
         sibling.instance = *instance;
         sibling.name = name.clone();
         sibling.icon = icon.clone();
@@ -548,7 +548,7 @@ impl Guest {
     fn state_dropped(&self, reason: &str, refusal: &str) {
         tracing::warn!(
             target: "ducktape::app",
-            module = self.module,
+            program = self.program,
             hash = %noded_client::hex::hex_encode(self.hash.as_ref().map_or(&[][..], |hash| hash)),
             reason,
             refusal = %refusal,
@@ -667,20 +667,20 @@ impl Guest {
         Ok(())
     }
 
-    pub(crate) fn load_from(module: &'static str, path: &std::path::Path) -> Result<Self, String> {
+    pub(crate) fn load_from(program: &'static str, path: &std::path::Path) -> Result<Self, String> {
         let shown = path.display().to_string();
         let bytes = std::fs::read(path).map_err(|error| format!("{shown}: {error}"))?;
-        Self::from_bytes(module, &bytes, &shown)
+        Self::from_bytes(program, &bytes, &shown)
     }
 
     /// The view instantiated and mounted; `shown` names it in errors.
     pub(crate) fn from_bytes(
-        module: &'static str,
+        program: &'static str,
         bytes: &[u8],
         shown: &str,
     ) -> Result<Self, String> {
         let code = Self::compile(bytes, shown).map_err(|failure| failure.to_string())?;
-        let mut guest = Self::instantiate(module, &code, shown)?;
+        let mut guest = Self::instantiate(program, &code, shown)?;
         (
             guest.name,
             guest.capabilities,
@@ -688,7 +688,7 @@ impl Guest {
             guest.targets,
             guest.icon,
         ) = manifest_of(bytes);
-        crate::render::web::seen(module, &guest.capabilities);
+        crate::render::web::seen(program, &guest.capabilities);
         guest.init(shown)?;
         Ok(guest)
     }
@@ -713,7 +713,7 @@ impl Guest {
     /// The module instantiated, its exports bound, nothing run yet: a
     /// fresh view is `init`ed, a replacement `restore`d.
     pub(crate) fn instantiate(
-        module: &'static str,
+        program: &'static str,
         code: &Module,
         shown: &str,
     ) -> Result<Self, String> {
@@ -772,7 +772,7 @@ impl Guest {
             connection: connection().lock().expect("views rpc").clone(),
             activation: None,
             links: Vec::new(),
-            module,
+            program,
             instance: 0,
             name: String::new(),
             icon: String::new(),
@@ -845,7 +845,7 @@ impl Guest {
         let Some(&id) = self.route_subscriptions.first() else {
             return;
         };
-        if let Some(route) = crate::runtime::take_route(self.module, self.instance) {
+        if let Some(route) = crate::runtime::take_route(self.program, self.instance) {
             self.stream_item(id, wire::methods::encode(&route));
         }
     }
@@ -860,11 +860,11 @@ impl Guest {
     }
 }
 
-/// How a view is named in logs and errors: its module and the first six
+/// How a view is named in logs and errors: its program and the first six
 /// bytes of its hash.
-fn shown_as(module: &str, hash: &[u8; 32]) -> String {
+fn shown_as(program: &str, hash: &[u8; 32]) -> String {
     format!(
-        "{module} view @ {}",
+        "{program} view @ {}",
         noded_client::hex::hex_encode(&hash[..6])
     )
 }
@@ -872,14 +872,14 @@ fn shown_as(module: &str, hash: &[u8; 32]) -> String {
 /// The view `bytes`, compiled to `code` out of `blob`, with what their
 /// manifest says: what a pane starts it from.
 fn view_code(
-    module: &'static str,
+    program: &'static str,
     blob: Option<::abi::BlobId>,
     hash: [u8; 32],
     code: Arc<Module>,
     bytes: &[u8],
 ) -> ViewCode {
     let (name, capabilities, min_width, targets, icon) = manifest_of(bytes);
-    crate::render::web::seen(module, &capabilities);
+    crate::render::web::seen(program, &capabilities);
     ViewCode {
         blob,
         hash,

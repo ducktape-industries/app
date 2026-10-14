@@ -146,9 +146,9 @@ impl Guest {
     /// props the app holds, `host.log` — and anything else is refused.
     pub(crate) fn answer(&mut self, request: wire::Request, props: &Option<Vec<u8>>) {
         let wire::Request { id, kind, payload } = request;
-        // `op.submit` and `module.describe` carry an op inside a `methods::Call`
+        // `op.submit` and `program.describe` carry an op inside a `methods::Call`
         let payload_limit = match kind.as_str() {
-            "op.submit" | "module.describe" => MAX_OP_BYTES + OP_ENVELOPE_BYTES,
+            "op.submit" | "program.describe" => MAX_OP_BYTES + OP_ENVELOPE_BYTES,
             _ => MAX_PAYLOAD_BYTES,
         };
         if payload.len() > payload_limit {
@@ -175,7 +175,7 @@ impl Guest {
                 self.undeclared_logged.push(capability);
                 tracing::warn!(
                     target: "ducktape::app",
-                    module = self.module,
+                    program = self.program,
                     capability = name,
                     "view asked for a capability its manifest does not declare"
                 );
@@ -187,7 +187,7 @@ impl Guest {
             );
             return;
         }
-        // the kernel contract first: what every view may ask, module-free
+        // the kernel contract first: what every view may ask, program-free
         if kernel::answer(self, capability, operation, id, &payload, props) {
             return;
         }
@@ -202,9 +202,9 @@ impl Guest {
                 Ok(line) => {
                     tracing::debug!(
                         target: "ducktape::app",
-                        module = self.module,
+                        program = self.program,
                         line,
-                        "module view log"
+                        "program view log"
                     );
                     self.reply(id, Ok(Vec::new()));
                 }
@@ -349,14 +349,14 @@ impl Guest {
         if self.display_diagnostics.first_cut(&self.frame_reports) {
             let cuts = &self.frame_reports;
             crate::perf::count(self.perf_key(), "truncations", 1);
-            tracing::warn!(target: "ducktape::app", module = self.module, generation,
+            tracing::warn!(target: "ducktape::app", program = self.program, generation,
                 reason = "frame_cut", nodes = cuts.nodes, depth = cuts.depth,
                 strings = cuts.strings, text = cuts.text, pictures = cuts.pictures,
-                canvases = cuts.canvases, lists = cuts.lists, first = ?cuts.first, "module view frame cut by the host's budgets");
+                canvases = cuts.canvases, lists = cuts.lists, first = ?cuts.first, "program view frame cut by the host's budgets");
         }
     }
 
-    /// One call into the module with the pending events, inside the budget.
+    /// One call into the view with the pending events, inside the budget.
     /// A trap ends the view; the widget shows the message in its place.
     /// Each stage is a perf sample under the seat's key: the call, the
     /// decode, the merge, the fuel and bytes each way, the frame's kind.
@@ -379,7 +379,7 @@ impl Guest {
             perf::record(key, "fuel.tick", self.fuel_used());
         }
         // `RUST_LOG=ducktape::perf=debug`: how much of the budget a tick took
-        tracing::debug!(target: "ducktape::perf", module = self.module,
+        tracing::debug!(target: "ducktape::perf", program = self.program,
             used = self.fuel_used(), limit = FUEL_PER_TICK);
         let outcome = answer.and_then(|frame| {
             perf::record(key, "frame_bytes", frame.len() as u64);
@@ -415,7 +415,7 @@ impl Guest {
                             // The guest remembers its tree without the
                             // picture bytes; the tree its patches build on
                             // has to be that one.
-                            if self.pictures.adopt(root, self.module) {
+                            if self.pictures.adopt(root, self.program) {
                                 self.pending.push(wire::Event::Resync);
                             }
                             // O(n) over the tree: only with perf on, and
@@ -434,10 +434,10 @@ impl Guest {
                         frame.root = previous;
                         tracing::warn!(
                             target: "ducktape::app",
-                            module = self.module,
-                            reason = "module_view_patch_refused",
+                            program = self.program,
+                            reason = "program_view_patch_refused",
                             error = refused,
-                            "module view patch refused"
+                            "program view patch refused"
                         );
                         self.frame_rev += 1;
                         self.pending.push(wire::Event::Resync);
@@ -455,7 +455,7 @@ impl Guest {
                     for mut response in frame.tooltip_responses.drain(..) {
                         if let (Some(content), Some(root)) =
                             (&mut response.content, &mut frame.root)
-                            && self.pictures.take(content, root, self.module)
+                            && self.pictures.take(content, root, self.program)
                         {
                             self.pending.push(wire::Event::Resync);
                         }
@@ -476,10 +476,10 @@ impl Guest {
                 let reason = panic_message(&mut self.store).unwrap_or(trap);
                 tracing::warn!(
                     target: "ducktape::app",
-                    module = self.module,
-                    reason = "module_view_trapped",
+                    program = self.program,
+                    reason = "program_view_trapped",
                     error = %reason,
-                    "module view ended"
+                    "program view ended"
                 );
                 self.fault = Some(reason);
                 self.frame_rev += 1;

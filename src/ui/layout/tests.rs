@@ -19,13 +19,13 @@ fn rail_selection_focuses_existing_or_replaces_only_focused() {
     let frame = layout.panes[0].frame;
     assert!(layout.select("calendar"));
     assert_eq!(layout.panes.len(), 2);
-    assert_eq!(layout.panes[0].module, "calendar");
+    assert_eq!(layout.panes[0].program, "calendar");
     assert_eq!(
         layout.panes[0].frame, frame,
         "a replaced view keeps its window"
     );
     assert_ne!(layout.panes[0].instance, chat);
-    assert_eq!(layout.panes[1].module, "files");
+    assert_eq!(layout.panes[1].program, "files");
 }
 
 #[test]
@@ -36,7 +36,7 @@ fn split_opens_on_top_with_unique_instances_and_limits_count() {
     assert!(layout.focus(0));
     assert!(layout.split("chat"));
     assert_eq!(layout.focused, 1);
-    assert_eq!(layout.panes[1].module, "chat");
+    assert_eq!(layout.panes[1].program, "chat");
     assert_eq!(
         *layout.stacking().last().unwrap(),
         1,
@@ -51,8 +51,8 @@ fn split_opens_on_top_with_unique_instances_and_limits_count() {
 #[test]
 fn focus_raises_and_closing_focuses_the_window_left_on_top() {
     let mut layout = Layout::default();
-    for module in ["chat", "files", "calendar"] {
-        layout.split(module);
+    for program in ["chat", "files", "calendar"] {
+        layout.split(program);
     }
     assert!(layout.focus(0));
     assert_eq!(layout.stacking(), vec![1, 2, 0]);
@@ -270,11 +270,11 @@ fn part(x: f32, y: f32, w: f32, h: f32) -> Option<Frame> {
     Some(Frame { x, y, w, h })
 }
 
-/// `modules` in windows at `frames`, the last one focused.
+/// `programs` in windows at `frames`, the last one focused.
 fn tiled(frames: &[(&'static str, Option<Frame>)]) -> Layout {
     let mut layout = Layout::default();
-    for &(module, frame) in frames {
-        layout.split(module);
+    for &(program, frame) in frames {
+        layout.split(program);
         layout.panes[layout.focused].frame = frame;
     }
     layout
@@ -352,7 +352,7 @@ fn the_menu_bar_fills_an_empty_window_focuses_an_open_one_else_opens_another() {
     layout.split(EMPTY);
     let empty = layout.panes[0].instance;
     assert!(layout.open("chat"));
-    assert_eq!((layout.panes.len(), layout.panes[0].module), (1, "chat"));
+    assert_eq!((layout.panes.len(), layout.panes[0].program), (1, "chat"));
     assert_ne!(layout.panes[0].instance, empty);
     assert!(layout.open("files"), "a window of its own");
     assert_eq!((layout.panes.len(), layout.focused), (2, 1), "and the keys");
@@ -363,8 +363,8 @@ fn the_menu_bar_fills_an_empty_window_focuses_an_open_one_else_opens_another() {
 #[test]
 fn cycling_visits_every_window_and_back_returns() {
     let mut layout = Layout::default();
-    for module in ["chat", "files", "calendar"] {
-        layout.split(module);
+    for program in ["chat", "files", "calendar"] {
+        layout.split(program);
     }
     let mut seen = vec![];
     for _ in 0..3 {

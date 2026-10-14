@@ -378,7 +378,7 @@ fn a_sensor_tells_its_bounds_at_first_sight_and_when_they_differ(
 }
 
 /// A seat `left` px into its window: the view under it is cached, as a
-/// module's is.
+/// program's is.
 struct Shifted {
     tree: Entity<ViewTree>,
     left: f32,

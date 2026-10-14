@@ -58,7 +58,7 @@ pub(crate) fn rpc_client(base: impl Into<String>) -> RpcClient {
 #[cfg(test)]
 pub(crate) fn test_roles() -> abi::Roles {
     abi::Roles {
-        registry: "module-registry".into(),
+        programs: "programs".into(),
         validators: "valset".into(),
         identity: "identity".into(),
     }

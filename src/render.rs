@@ -94,7 +94,7 @@ pub(crate) fn is_host_id(id: &ElementId) -> bool {
 }
 
 /// The name of the host id a seat draws around its view's tree, before the
-/// module (`Seat::ax_mark`): the AX door reads the module off it.
+/// program (`Seat::ax_mark`): the AX door reads the program off it.
 pub(crate) const VIEW_MARK: &str = "view/";
 
 /// Pushes the id `node` is filed under onto `path` (`wire::identity`: its

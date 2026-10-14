@@ -3,9 +3,9 @@
 # another device through the auth host's relay, the keyring binding).
 #
 # The desktop app (this repo) and the phone (ducktape-industries/mobile)
-# both link it; the phone by git rev of this repo. Its modules crates sit on
-# the app's ONE modules rev (`[workspace.dependencies]`), so a modules bump
-# is one chain: modules -> app (pin + this crate) -> mobile (pin).
+# both link it; the phone by git rev of this repo. Its programs crates sit on
+# the app's ONE programs rev (`[workspace.dependencies]`), so a programs bump
+# is one chain: programs -> app (pin + this crate) -> mobile (pin).
 #
 # It links no core crate (no keystore, keyscheme, ducktape-home): a signer
 # is whatever implements `Signer`. `commonware` adds the impl for

@@ -3,7 +3,7 @@
 //! the desktop does on the account's events (a lock's toast, a new
 //! account's Help, a network left).
 use super::super::{WindowKey, WindowKind};
-use super::tests::{active, desk_of, modules, session};
+use super::tests::{active, desk_of, programs, session};
 use super::{Account, AccountStep, Entities, Screen, Slice};
 use crate::backend;
 use crate::ui::layout::{EMPTY, HELP};
@@ -825,13 +825,13 @@ fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
         account.layout_chosen(backend::Layout::MenuBar, cx)
     });
     assert_eq!(shown(&entities.screen, cx), "Desk");
-    assert_eq!(modules(&entities, key, cx), [HELP]);
+    assert_eq!(programs(&entities, key, cx), [HELP]);
     assert_eq!(active(&entities, cx), None, "help is no program");
     assert!(welcome(cx), "a new account is greeted");
     entities
         .windows
         .update(cx, |windows, cx| windows.help_asked(cx));
-    assert_eq!(modules(&entities, key, cx), [HELP], "not twice");
+    assert_eq!(programs(&entities, key, cx), [HELP], "not twice");
     assert!(!welcome(cx), "asked for, help is just help");
 
     let (entities, key) = desktop(cx);
@@ -841,7 +841,7 @@ fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
         account.create_later(cx);
     });
     assert_eq!(
-        modules(&entities, key, cx),
+        programs(&entities, key, cx),
         [EMPTY],
         "not now: the desk as it was"
     );
@@ -853,7 +853,7 @@ fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
     });
     assert_eq!(shown(&entities.screen, cx), "Desk");
     assert_eq!(
-        modules(&entities, key, cx),
+        programs(&entities, key, cx),
         [EMPTY],
         "a known account is not greeted"
     );

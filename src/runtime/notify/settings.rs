@@ -86,7 +86,7 @@ impl Settings {
             .as_object()
             .into_iter()
             .flatten()
-            .filter_map(|(module, word)| Some((module.clone(), Permission::of(word.as_str()?)?)))
+            .filter_map(|(program, word)| Some((program.clone(), Permission::of(word.as_str()?)?)))
             .collect();
         Self {
             banners: prefs[NOTIFY_PREF].as_bool().unwrap_or(true),
@@ -116,19 +116,19 @@ pub(crate) fn save_burst(burst: u32) {
 }
 
 /// The person answered a view: its bar goes, and the word is kept.
-pub(crate) fn set_permission(center: &mut Center, module: &str, permission: Permission) {
+pub(crate) fn set_permission(center: &mut Center, program: &str, permission: Permission) {
     edit(|prefs| {
         if !prefs[VIEWS_PREF].is_object() {
             prefs[VIEWS_PREF] = serde_json::json!({});
         }
-        prefs[VIEWS_PREF][module] = serde_json::json!(permission.word());
+        prefs[VIEWS_PREF][program] = serde_json::json!(permission.word());
     });
-    center.asking.remove(module);
+    center.asking.remove(program);
 }
 
 /// "Not now": the bar goes for this run; the view's notices stay logged
 /// silently, and the bar asks again next launch.
-pub(crate) fn not_now(center: &mut Center, module: &str) {
-    center.asking.remove(module);
-    center.not_now.insert(module.to_owned());
+pub(crate) fn not_now(center: &mut Center, program: &str) {
+    center.asking.remove(program);
+    center.not_now.insert(program.to_owned());
 }

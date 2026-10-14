@@ -52,9 +52,9 @@ pub(super) struct Guest {
     pub(crate) activation: Option<std::time::Instant>,
     /// When each recent `link.open` was admitted, for the per-minute budget.
     pub(crate) links: Vec<std::time::Instant>,
-    pub(crate) module: &'static str,
+    pub(crate) program: &'static str,
     /// The seat entity showing this seat (`Seat.instance`;
-    /// 0 for a preloaded seat no tab has claimed): with `module`, the key
+    /// 0 for a preloaded seat no tab has claimed): with `program`, the key
     /// this instance's perf samples land under.
     pub(crate) instance: u64,
     /// The manifest's name: what a registered view's tab is called.
@@ -110,7 +110,7 @@ pub(super) struct Guest {
     pub(crate) ticks: u64,
     /// Every picture the guest has sent, by hash: the bytes cross once.
     pub(crate) pictures: Pictures,
-    /// The guest's `<module>.props` subscription, once it asked, and the
+    /// The guest's `<program>.props` subscription, once it asked, and the
     /// props it was last given on it.
     pub(crate) props_subscription: Option<u64>,
     pub(crate) props_sent: Option<Vec<u8>>,
@@ -123,7 +123,7 @@ pub(super) struct Guest {
     pub(crate) intents: Vec<Intent>,
     /// The kernel's answers to this guest's node calls, on their way in.
     pub(crate) replies: Arc<kernel::Replies>,
-    /// The guest's `module.changes` subscriptions and the program each one
+    /// The guest's `program.changes` subscriptions and the program each one
     /// watches: told on every block that wrote to that program.
     pub(crate) live_subscriptions: Vec<(u64, String)>,
     /// Pending host requests and subscriptions, each owned by this guest
@@ -131,7 +131,7 @@ pub(super) struct Guest {
     pub(crate) tasks: Vec<(u64, kernel::NodeTask)>,
     pub(crate) clipboard: clipboard::Clipboard,
     /// The guest's `clock.ticks` subscriptions: the period it asked for and
-    /// the instant its next item is due. A module has no clock of its own,
+    /// the instant its next item is due. A view has no clock of its own,
     /// so periodic guest subscriptions use this list — driven from the window
     /// thread's own redraw, never from a thread that would have to wake it.
     pub(crate) clocks: Vec<kernel::Clock>,
@@ -151,7 +151,7 @@ pub(super) struct Guest {
 impl Guest {
     pub(crate) fn perf_key(&self) -> crate::perf::Key {
         crate::perf::Key::View {
-            module: self.module,
+            program: self.program,
             instance: self.instance,
         }
     }
@@ -178,7 +178,7 @@ impl Guest {
 impl Drop for Guest {
     fn drop(&mut self) {
         if self.installed_generation.is_some() {
-            crate::perf::retire(self.module, self.instance);
+            crate::perf::retire(self.program, self.instance);
         }
     }
 }

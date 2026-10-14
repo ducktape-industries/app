@@ -65,7 +65,7 @@ fn descendant_text(node: &wire::Node) -> Option<String> {
 /// `guest_aria` instead, which
 /// takes only a picture's default role and name from the Image/Svg arm
 /// below; RichText has none. The node's accessibility id is its wire key
-/// under the module's view, the element id each variant is already built
+/// under the program's view, the element id each variant is already built
 /// with.
 pub(crate) fn accessible(node: &wire::Node) -> Accessible {
     use gpui_kit::Role;

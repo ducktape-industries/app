@@ -48,11 +48,11 @@ What the app deliberately does not know:
   (`Roster::rail`), a tab's name and the icon it draws on a folded menu bar
   from the view's manifest. Two *system* programs are named by id and
   nothing else: `identity` (`backend/passkey.rs`, `backend/join.rs`:
-  accounts and keys) and `module-registry` (`backend/views.rs`: the roster
+  accounts and keys) and `programs` (`backend/views.rs`: the roster
   query; `shell/layers/chrome/menus.rs`: the Account menu opens it).
-- **No payload.** `module.query` and `op.submit` carry `Call{target, body}`;
+- **No payload.** `program.query` and `op.submit` carry `Call{target, body}`;
   the app signs and forwards `body` and returns the program's bytes as
-  they are. `module.describe` renders an op readable by running the
+  they are. `program.describe` renders an op readable by running the
   *program's own* describe module, sandboxed.
 - **No program state.** The shell's entities (`src/shell/entities/`) hold
   the node, the key, the account, which screen the console shows and where
@@ -105,7 +105,7 @@ quit) are `Windows`' methods.
 | Thread | What runs there | Where it is made |
 |---|---|---|
 | **window / main** (GPUI foreground) | every entity method and the timers the entities and layers own (`Session`'s status poll, `Toast`'s dismiss, an open menu's ages in `layers::Chrome`, a `Seat`'s clocks); every `WindowRoot` render and its layers'; `Seat::turn`, so every wasm **tick**; `ViewTree` layout and paint; AX door answers (`ax::serve`); the entities' own `Task` futures (connect, status poll, sign-in) — polled on the GPUI foreground inside `runtime.enter()` (`spawn_on_runtime`), so their HTTP bodies are decoded here | `shell/launch.rs` |
-| **`views-kernel`** (one tokio current-thread runtime) | the I/O driver for every `reqwest`/WebSocket; view-originated node calls (`kernel/node.rs` `spawn_retrying`/`spawn_retrying_unsent`/`spawn_no_retry`, `changes`, `heads`); the banner queue (`notify::in_order`); its blocking pool runs `module.describe`, OS banners and device-key opening | `kernel::handle` |
+| **`views-kernel`** (one tokio current-thread runtime) | the I/O driver for every `reqwest`/WebSocket; view-originated node calls (`kernel/node.rs` `spawn_retrying`/`spawn_retrying_unsent`/`spawn_no_retry`, `changes`, `heads`); the banner queue (`notify::in_order`); its blocking pool runs `program.describe`, OS banners and device-key opening | `kernel::handle` |
 | **`view-loader` threads** (at most `LOADERS`, 4) | each takes the next queued load: fetch, verify, compile, instantiate, snapshot/restore (`Guest::load`), then the install; a pane's load goes ahead of the preloads | `seat::queue` |
 | **`roster` thread** | `/v1/programs` and the seat reconciliation on connect and on each new block; it queues the loads and returns, never waiting on one | `roster::spawn_roster_read` |
 | **`ax-door`** | TCP accept and HTTP parsing, one request per connection in turn (a long `/wait` holds the next caller; a connection has 5 s to send its request, whose head is capped at 16 KiB before the token is read); each request is forwarded to the window thread | `ax/http.rs` |
@@ -123,17 +123,17 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
 
 1. **Roster.** `Session::connect_answered` (`shell/entities/session.rs`) calls `runtime::connected`,
    which bumps `Connection.rev` and starts `roster::spawn_roster_read`.
-   That thread calls `backend::views::programs` (the `module-registry`
+   That thread calls `backend::views::programs` (the `programs`
    query; the app takes at most `MAX_PROGRAMS`, 256, entries), stores the
    list in the app's `Roster` (`roster::roster`, the
    one `launch::run` hands the `Rail`), retires seats of programs that left,
-   creates a preloaded seat `(module, 0)` for each program and queues a
+   creates a preloaded seat `(program, 0)` for each program and queues a
    load for every seat whose active code moved (or that was never
    asked of this node), then returns: nothing waits on a load. Each new block (`Session::status_answered` with a moved
    height → `runtime::deployments_checked`) repeats it, one read in flight
    at a time. A load that finds the drawn view already current
    (`Loaded::Unchanged`) only calls `Guest::reconnect`: its node
-   subscriptions open again on the new connection (a `module.changes`
+   subscriptions open again on the new connection (a `program.changes`
    follower is told to re-read first), and its other tasks of the previous
    connection are refused `stale_connection`.
 2. **Blob → section.** `backend::views::view_of` fetches the program's code
@@ -155,7 +155,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    Compiled modules are cached by sha256 of the bytes in `ViewCodeCache`
    (16 modules, 32 MiB of source).
 4. **Seat / mount.** A **seat** is `seat::Mounted`, one per
-   `(module, instance)` in `seat::registry`, holding a `Slot`:
+   `(program, instance)` in `seat::registry`, holding a `Slot`:
    `Loading → Fetching → Compiling → Compiled | Ready(Guest) | Empty | Failed(Failure)`,
    and a `wake` (`watch::Sender<()>`) the loader signals when a load
    installs, a stage shows or a retry is asked. A pane's entity is
@@ -164,7 +164,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    window's `Desk`) for every view pane the desks hold and keyed by the
    pane's `instance`; it is `place`d in the window whose desk holds the
    pane. `Seat::new` claims
-   seat `(module, 0)` or makes a new one and subscribes to its `wake`.
+   seat `(program, 0)` or makes a new one and subscribes to its `wake`.
    A preloaded seat (instance 0, no pane) stops at the compiled code:
    `Compiled(ViewCode)` keeps the code, the blob it came out of and the
    manifest (name, icon and minimum width, which the rail and the layout
@@ -226,7 +226,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    .with_presentation(old.presentation())`; the seat notifies, and the
    pane (`layers::PaneView`)
    draws `seat.tree()` cached (with a11y on too) inside the
-   `view/<module>` mark, laid out from `seat.min_width()`, or its `Standin`
+   `view/<program>` mark, laid out from `seat.min_width()`, or its `Standin`
    while it holds one (a load, a failure, a stopped view), over any tree it
    keeps. `ViewTree::node` (`render.rs`) is the dispatcher: one
    method per `Node` variant, each building GPUI / gpui-kit elements.
@@ -291,7 +291,7 @@ to `init`.
 **What fails how.** A seat that has no view holds a `Standin`
 (`seat/standin.rs`, compared: it notifies only when the words move) that
 the pane draws: the load's stage words while loading; the network's word
-for `Slot::Empty` ("This network has no `<module>` view. An admin can
+for `Slot::Empty` ("This network has no `<program>` view. An admin can
 activate a deployment that ships one."); or a `Failure` with a
 title and Retry — `Unreachable` (node or blob), `HashMismatch`,
 `NotListed`, `Trapped` (fuel exhausted or a wasm trap, the panic message
@@ -319,7 +319,7 @@ its meaning; the host and the views name the const, never the string.
 
 1. **Ask.** The view's `tick` returns requests in its `Frame`. `Guest::answer`
    (`runtime/guest/requests.rs`) caps the payload (`MAX_PAYLOAD_BYTES`;
-   `MAX_OP_BYTES` plus the envelope for `op.submit` and `module.describe`),
+   `MAX_OP_BYTES` plus the envelope for `op.submit` and `program.describe`),
    splits the kind with `Capability::of_kind` (a kind that does not split is
    `unknown_request`), and refuses `undeclared_capability` when the
    manifest did not declare it (logged once per capability).
@@ -371,7 +371,7 @@ its meaning; the host and the views name the const, never the string.
    and turns; `Guest::redraw` drains the queue into
    `guest.pending` as `Event::Response` values, so the answer reaches the
    view on its next tick. Nothing wakes the wasm from another thread.
-6. **Subscriptions.** `module.changes <program>` (`live`: one WebSocket
+6. **Subscriptions.** `program.changes <program>` (`live`: one WebSocket
    `/v1/changes/<program>` per subscription), `chain.heads` (`heads`: polls
    status and pages `/v1/blocks`), `clock.ticks`, `host.session`,
    `host.route`, `host.offset`, `host.visible` answer many times with
@@ -380,7 +380,7 @@ its meaning; the host and the views name the const, never the string.
    instead of adding items, so a slow view holds its own backlog on the
    socket. A cancel drops the task and with it the socket.
 
-`module.describe` (`kernel/describe.rs`) is the odd one: it fetches the
+`program.describe` (`kernel/describe.rs`) is the odd one: it fetches the
 program's current code blob, compiles the `ducktape.describe` section once
 per code id, runs it on the blocking pool in an import-free fuel-bounded
 instance, caches by (code id, op hash) up to `MAX_KEPT` answers, and
@@ -448,9 +448,9 @@ draws nothing.
   come from the pane layer's next-frame callback (`PaneLayer::shown`:
   `resize`, then `seed` with the program in front), never from a draw.
 - **Geometry.** `ui/layout.rs` is pure: `Layout` per window holds `Pane`s
-  (frame, `instance`, `module`, z, title), focus, fill (the window in
+  (frame, `instance`, `program`, z, title), focus, fill (the window in
   front covers the desk; frames untouched) and the desk size; operations
-  (`split`, `cycle`, fill, place, measure). Sentinel modules:
+  (`split`, `cycle`, fill, place, measure). Sentinel programs:
   `EMPTY` (an empty pane shows the program finder) and `HELP`.
 - **Windows** (`shell/entities/windows.rs`). The OS windows: each one's
   handle, root view and own entities (`WindowEntities`: its `Desk`, what
@@ -676,7 +676,7 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   windows are `console` (the console) and `console<key>` (any other:
   `console2`, … as they open), each name kept for the window's life
   (`Windows::served`, by `WindowKey`), read on every request; a view's
-  nodes sit under the `view/<module>` mark `Seat::ax_mark`
+  nodes sit under the `view/<program>` mark `Seat::ax_mark`
   wraps around each view (`render::VIEW_MARK`), a `render::host_id`, so a
   view's own `view/<other>` id is never taken for one. Answers carry
   `X-Ax-Revision`, which moves when a tree changed. `ducktape-app ax …`
@@ -684,7 +684,7 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
 - **How qa drives it.** The qa repo builds the app with `--features
   ax-door`; its rig launches the app with
   `DUCKTAPE_AX_DOOR=0`, reads the door file, and walks scenarios through
-  these endpoints; element ids such as `rail/<module>` and `pane/<n>/…` are
+  these endpoints; element ids such as `rail/<program>` and `pane/<n>/…` are
   its contract. In-repo, `shell/panes_tests.rs`, `shell/screens_tests.rs`
   and `render/tests/accessibility.rs` read `ax::snapshot` directly.
 - **Caveat.** Activating the door switches the a11y tree on through the
@@ -749,17 +749,17 @@ House words, and where one word means several things.
   (`ducklink::ChainId`), used for links, the view store and the notify log.
 - **contract** — `noded_client::wire::NODE_CONTRACT`, the `/v1` version; a node with
   another is refused at connect. Also "the kernel contract" (§4).
-- **roster / registry** — the node's program list
+- **roster** — the node's program list as the programs role answers it
   (`backend::views::programs`, kept in a `Roster`: the app's one is
   `roster::roster`, and a test builds its own). "Registry" is
-  also `seat::registry()`, the seat map. **bare** — a roster entry whose
+  `seat::registry()`, the seat map. **bare** — a roster entry whose
   blob is the view itself.
-- **module** — a program's name as the roster lists it, interned to
-  `&'static str` (`runtime::intern`) and used as the view's key. Not a
-  Rust module and not a `wasmtime::Module`.
+- **program** — in code, a program's name as the roster lists it,
+  interned to `&'static str` (`runtime::intern`) and used as the view's
+  key.
 - **view** — a program's UI: the wasm in its blob's `ducktape.view`
   section. **guest** — one running instance of it (`runtime::Guest`); "guest-owned" means the wasm decides it.
-- **seat** — four meanings. (1) `seat::Mounted`: the per-`(module,
+- **seat** — four meanings. (1) `seat::Mounted`: the per-`(program,
   instance)` slot a view is loaded into, in `runtime/seat.rs`.
   (2) the **seated key**: the signing key in `backend/session.rs`'s
   `SIGNER` (`seat_key`, `seated_frame`; `AccountState::seating` while it
@@ -831,7 +831,7 @@ House words, and where one word means several things.
   not (`seat/standin.rs`, `stage_words`). **Screen** (`shell/entities/screen.rs`)
   is which screen the console shows; `layers::PaneLayer` (`shell/layers/panes.rs`)
   draws the pane area. Unrelated.
-- **override** — `DUCKTAPE_VIEWS_DIR`: a developer's `<module>_view.wasm`
+- **override** — `DUCKTAPE_VIEWS_DIR`: a developer's `<program>_view.wasm`
   files replace the network's views, unverified, logged.
 - **console** — the main OS window (`WindowKind::Console`, `Windows::console`):
   the launcher first, then the desk. Also the AX door's window names
@@ -857,7 +857,7 @@ House words, and where one word means several things.
   desk's, then its pop-outs')
   (`Roster::rail`, read into `entities::Rail` once per change the roster's
   channel reports). The name is from an older side rail and survives in
-  AX ids (`rail/<module>`, `rail/<module>/<instance>`, `rail-search`) that
+  AX ids (`rail/<program>`, `rail/<program>/<instance>`, `rail-search`) that
   qa depends on.
 - **overlay / popover / scrim** — the one thing open over the desk
   (`Overlay`: Spotlight, Approve, Settings, Network, a bar menu); a
@@ -865,7 +865,7 @@ House words, and where one word means several things.
   button); a **scrim** dims the desk and makes
   the overlay modal.
 - **Command** — the command line: the empty pane's program-finder field
-  and its `Mode` (Module | Chat), in `shell/layers/empty_pane.rs`.
+  and its `Mode` (Program | Chat), in `shell/layers/empty_pane.rs`.
 - **entity / Slice / Observed** — the shell's state is gpui entities
   (`shell/entities/`), each written by its own methods. `Slice<T>`
   (`entities/slice.rs`) is a shared value whose one write compares first:
@@ -928,7 +928,7 @@ House words, and where one word means several things.
 ## 10. Where to start
 
 - **Add a kernel method.** The request and reply types live upstream in
-  `view_wire::methods` (the modules repo); bump the pin in `Cargo.toml`.
+  `view_wire::methods` (the programs repo); bump the pin in `Cargo.toml`.
   Then: a new operation under an existing capability gets an arm in
   `kernel::answer` (or in `clipboard`/`notify`/`store::answer` if it
   belongs there); a node-backed one gets a handler in `kernel/node.rs` and
@@ -959,7 +959,7 @@ House words, and where one word means several things.
   (`HashMismatch`); does the manifest parse and name this app's `WIRE_ID`
   (`Refused`, `Wire`); did `init` or the first tick
   trap (`Trapped` — a panic message is in the sentence). To bypass the
-  node, point `DUCKTAPE_VIEWS_DIR` at a directory of `<module>_view.wasm`.
+  node, point `DUCKTAPE_VIEWS_DIR` at a directory of `<program>_view.wasm`.
   `RUST_LOG=ducktape::perf=debug` shows per-tick fuel.
 - **Run against a node.** Start a node from `ducktape-industries/ducktape`
   (the branch README names), then `cargo run -p ducktape-app`;

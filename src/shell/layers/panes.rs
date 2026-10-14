@@ -245,7 +245,7 @@ impl PaneLayer {
                 app.account.clone(),
             );
             let (layer, desk_window) = (cx.weak_entity(), self.window.clone());
-            let (module, instance) = (pane.module, pane.instance);
+            let (program, instance) = (pane.program, pane.instance);
             let view = cx.new(|cx| {
                 let strip = cx.new(|cx| {
                     Strip::new(
@@ -263,7 +263,7 @@ impl PaneLayer {
                 });
                 let body = match seat {
                     Some(seat) => Body::Seat(Observed::new(&seat, cx)),
-                    None if module == layout::HELP => {
+                    None if program == layout::HELP => {
                         Body::Help(cx.new(|cx| HelpPane::new(&account, &prefs, key, cx)))
                     }
                     None if pane.is_view() => Body::Missing,
@@ -396,8 +396,8 @@ impl PaneLayer {
         if !console || desk.read(cx).get().initialized {
             return;
         }
-        if let Some(module) = windows.read(cx).active() {
-            desk.update(cx, |desk, cx| desk.seed(module, cx));
+        if let Some(program) = windows.read(cx).active() {
+            desk.update(cx, |desk, cx| desk.seed(program, cx));
         }
     }
 }
@@ -531,7 +531,7 @@ impl PaneView {
                 // cache misses among them
                 crate::perf::count(
                     crate::perf::Key::View {
-                        module: seat.module(),
+                        program: seat.program(),
                         instance: seat.instance(),
                     },
                     "draws",
@@ -542,7 +542,7 @@ impl PaneView {
                 // next live frame, and its presentation carries over then
                 match (seat.standin(), seat.tree()) {
                     (Some(standin), _) => {
-                        standin.element(seat.module(), seat.instance(), seat.ax_mark())
+                        standin.element(seat.program(), seat.instance(), seat.ax_mark())
                     }
                     (None, Some(tree)) => {
                         let guest =
@@ -716,8 +716,8 @@ impl Render for PaneView {
                 .id(SharedString::from(format!("pane/{index}/view")))
                 .role(Role::Group)
                 .aria_label(match &pane.title {
-                    Some(title) => format!("{}, {title}", panes::label(&rail, pane.module)),
-                    None => panes::label(&rail, pane.module),
+                    Some(title) => format!("{}, {title}", panes::label(&rail, pane.program)),
+                    None => panes::label(&rail, pane.program),
                 })
                 .when(self.kind == WindowKind::Console, |view| {
                     view.aria_keyshortcuts(chord_label(&(index + 1).to_string()))
@@ -734,7 +734,7 @@ impl Render for PaneView {
                             crate::a11y::live(
                                 div().id("hold-say").role(Role::Status),
                                 accesskit::Live::Polite,
-                                pane_hold::hold_words(&rail, pane.module),
+                                pane_hold::hold_words(&rail, pane.program),
                             )
                             .absolute()
                             .size(px(1.))
@@ -750,7 +750,7 @@ impl Render for PaneView {
         // rectangle: nothing floats over its corners. The strip is cached
         // at the title bar's height; while its view asks to notify it
         // grows a bar of its words' height, and draws uncached
-        let asking = pane.is_view() && self.notifications.read(cx).asking(pane.module);
+        let asking = pane.is_view() && self.notifications.read(cx).asking(pane.program);
         let filled =
             self.kind == WindowKind::Console && pane.frame.is_some() && layout.fills(index);
         let strip = match asking {
@@ -789,7 +789,7 @@ struct Shown {
     filled: bool,
     /// What its view named the window.
     title: Option<String>,
-    module: &'static str,
+    program: &'static str,
     is_view: bool,
     /// Split is offered (the desk has room for another window).
     split: bool,
@@ -813,7 +813,7 @@ impl Shown {
             on_desk,
             filled: on_desk && layout.fills(index),
             title: pane.title.clone(),
-            module: pane.module,
+            program: pane.program,
             is_view: pane.is_view(),
             split: layout.panes.len() < layout::MAX_PANES,
         }
@@ -852,18 +852,18 @@ enum PaneAction {
 }
 
 impl PaneAction {
-    /// Its element id, its accessible name on the window of `module` (one
+    /// Its element id, its accessible name on the window of `program` (one
     /// window's Close is not another's: "Close Chat window"), its glyph.
     fn parts(
         self,
         rail: &[crate::runtime::RailRow],
-        module: &str,
+        program: &str,
     ) -> (&'static str, String, gpui_kit::assets::IconName) {
         use gpui_kit::assets::IconName;
-        let program = panes::label(rail, module);
-        let window = match module {
+        let label = panes::label(rail, program);
+        let window = match program {
             layout::EMPTY => "empty window".to_owned(),
-            _ => format!("{program} window"),
+            _ => format!("{label} window"),
         };
         match self {
             Self::Split => ("split", format!("Open another {window}"), IconName::Plus),
@@ -874,12 +874,12 @@ impl PaneAction {
             ),
             Self::PopOut => (
                 "popout",
-                format!("Open {program} in a new window"),
+                format!("Open {label} in a new window"),
                 IconName::SquareArrowOutUpRight,
             ),
             Self::PopIn => (
                 "popin",
-                format!("Move {program} to the main window"),
+                format!("Move {label} to the main window"),
                 IconName::ArrowDownLeft,
             ),
             Self::Close => ("close", format!("Close {window}"), IconName::X),
@@ -940,7 +940,7 @@ impl Strip {
     fn pane_button(
         &self,
         index: usize,
-        module: &'static str,
+        program: &'static str,
         action: PaneAction,
         enabled: bool,
         ink: &super::super::ink::Ink,
@@ -950,7 +950,7 @@ impl Strip {
         // The element id is stable for the AX door and tests; the AX name
         // is a phrase a screen reader can announce on its own, not the bare
         // verb.
-        let (id, name, glyph) = action.parts(self.rail.read(cx).rows(), module);
+        let (id, name, glyph) = action.parts(self.rail.read(cx).rows(), program);
         crate::a11y::keyboard(
             div()
                 .id(SharedString::from(format!("pane/{index}/{id}")))
@@ -972,7 +972,7 @@ impl Strip {
                         return;
                     }
                     let message = match action {
-                        PaneAction::Split => PaneMessage::Split(module),
+                        PaneAction::Split => PaneMessage::Split(program),
                         PaneAction::Restore => PaneMessage::Fill,
                         PaneAction::Close => PaneMessage::Close(index),
                         PaneAction::PopOut => PaneMessage::PopOut { index, at: None },
@@ -999,7 +999,7 @@ impl Strip {
             focused,
             on_desk,
             filled,
-            module,
+            program,
             is_view,
             split,
             ..
@@ -1010,19 +1010,19 @@ impl Strip {
             .items_center()
             .gap(px(if filled { 8. } else { 2. }))
             .when(console, |strip| {
-                strip.child(self.pane_button(index, module, PaneAction::Split, split, ink, cx))
+                strip.child(self.pane_button(index, program, PaneAction::Split, split, ink, cx))
             })
             .when(filled, |strip| {
-                strip.child(self.pane_button(index, module, PaneAction::Restore, true, ink, cx))
+                strip.child(self.pane_button(index, program, PaneAction::Restore, true, ink, cx))
             })
             // an empty or Help window has no program view to carry out
             .when(console && is_view, |strip| {
-                strip.child(self.pane_button(index, module, PaneAction::PopOut, true, ink, cx))
+                strip.child(self.pane_button(index, program, PaneAction::PopOut, true, ink, cx))
             })
             .when(!console, |strip| {
-                strip.child(self.pane_button(index, module, PaneAction::PopIn, true, ink, cx))
+                strip.child(self.pane_button(index, program, PaneAction::PopIn, true, ink, cx))
             })
-            .child(self.pane_button(index, module, PaneAction::Close, true, ink, cx));
+            .child(self.pane_button(index, program, PaneAction::Close, true, ink, cx));
         // A window of its own on macOS draws no title bar of the
         // system's: this bar is its handle, and the traffic lights sit
         // over its left end. Elsewhere the system's bar names it.
@@ -1065,7 +1065,7 @@ impl Strip {
             )
             .when(on_desk || handle, |title| {
                 title.child(strip_name(
-                    &panes::label(self.rail.read(cx).rows(), module),
+                    &panes::label(self.rail.read(cx).rows(), program),
                     self.shown.title.as_deref(),
                     filled,
                     ink,
@@ -1082,13 +1082,13 @@ impl Strip {
     /// they answer its notices wait in Notifications, silently.
     fn permission_bar(
         &self,
-        module: &'static str,
+        program: &'static str,
         ink: &super::super::ink::Ink,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         use super::super::ink::*;
         use crate::runtime::notify::Permission;
-        let name = panes::label(self.rail.read(cx).rows(), module);
+        let name = panes::label(self.rail.read(cx).rows(), program);
         let burst = self.prefs.read(cx).get().notify.burst;
         let (notifications, prefs) = (
             self.notifications.entity().clone(),
@@ -1098,7 +1098,7 @@ impl Strip {
             |id: &'static str, text: &'static str, filled: bool, answer: Box<dyn Fn(&mut App)>| {
                 crate::a11y::keyboard(
                     sans(500, 14.)
-                        .id(SharedString::from(format!("notify-ask/{module}/{id}")))
+                        .id(SharedString::from(format!("notify-ask/{program}/{id}")))
                         .control(Role::Button, text)
                         .h(px(tall(30.)))
                         .px(px(12.))
@@ -1121,7 +1121,7 @@ impl Strip {
         // announced as it appears: nothing else says a view is waiting
         crate::a11y::live(
             div()
-                .id(SharedString::from(format!("notify-ask/{module}")))
+                .id(SharedString::from(format!("notify-ask/{program}")))
                 .role(Role::Group),
             accesskit::Live::Polite,
             format!("{name} wants to show desktop notifications"),
@@ -1164,7 +1164,7 @@ impl Strip {
                 super::super::entities::permission(
                     &notifications,
                     &prefs,
-                    module,
+                    program,
                     Permission::Allow,
                     cx,
                 )
@@ -1175,7 +1175,7 @@ impl Strip {
             "Not now",
             false,
             Box::new(move |cx| {
-                notifications.update(cx, |notifications, cx| notifications.not_now(module, cx))
+                notifications.update(cx, |notifications, cx| notifications.not_now(program, cx))
             }),
         ))
         .into_any_element()
@@ -1187,7 +1187,7 @@ impl Render for Strip {
         let Shown {
             here,
             index,
-            module,
+            program,
             is_view,
             ..
         } = self.shown;
@@ -1205,7 +1205,7 @@ impl Render for Strip {
         // a window of its own is named on the system's bar too: on Linux,
         // Windows and in macOS fullscreen its strip draws no name
         if self.kind != WindowKind::Console {
-            let label = panes::label(self.rail.read(cx).rows(), module);
+            let label = panes::label(self.rail.read(cx).rows(), program);
             let name = match &self.shown.title {
                 Some(title) => format!("{label} — {title}"),
                 None => label,
@@ -1217,8 +1217,8 @@ impl Render for Strip {
         }
         let ink = super::super::ink::Ink::of(self.prefs.read(cx).get().dark());
         let title = self.title_bar(&ink, window, cx);
-        let asking = (is_view && self.notifications.read(cx).asking(module))
-            .then(|| self.permission_bar(module, &ink, cx));
+        let asking = (is_view && self.notifications.read(cx).asking(program))
+            .then(|| self.permission_bar(program, &ink, cx));
         div()
             .w_full()
             .flex_shrink_0()

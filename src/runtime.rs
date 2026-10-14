@@ -151,7 +151,7 @@ const LOADERS: usize = 4;
 type Routes = Mutex<std::collections::BTreeMap<(&'static str, u64), String>>;
 
 /// The route a link asked of one seat's view, by the seat's registry key
-/// (`module`, its pane's instance), waiting for that view's first
+/// (`program`, its pane's instance), waiting for that view's first
 /// `host.route` subscriber. One per seat: a newer link replaces an older
 /// one the view has not read yet.
 fn pending_routes() -> &'static Routes {
@@ -159,29 +159,29 @@ fn pending_routes() -> &'static Routes {
     ROUTES.get_or_init(Mutex::default)
 }
 
-/// Hold `route` for seat `instance` of `module` until its view asks, and
+/// Hold `route` for seat `instance` of `program` until its view asks, and
 /// wake that seat if it is open: its view reads the route in its next
-/// turn, and no other seat of the module hears of it.
-pub(crate) fn route_to(module: &'static str, instance: u64, route: String) {
+/// turn, and no other seat of the program hears of it.
+pub(crate) fn route_to(program: &'static str, instance: u64, route: String) {
     pending_routes()
         .lock()
         .expect("pending routes")
-        .insert((module, instance), route);
+        .insert((program, instance), route);
     // registry, then seat: the order `retry` takes them in
-    if let Some(seat) = lock(registry()).get(&(module, instance)) {
+    if let Some(seat) = lock(registry()).get(&(program, instance)) {
         lock(seat).wake.send_replace(());
     }
 }
 
-/// The route waiting for seat `instance` of `module`, handed out once.
-pub(crate) fn take_route(module: &'static str, instance: u64) -> Option<String> {
+/// The route waiting for seat `instance` of `program`, handed out once.
+pub(crate) fn take_route(program: &'static str, instance: u64) -> Option<String> {
     pending_routes()
         .lock()
         .expect("pending routes")
-        .remove(&(module, instance))
+        .remove(&(program, instance))
 }
 
-/// Leaks one copy of each distinct module name, so a name can be the
+/// Leaks one copy of each distinct program name, so a name can be the
 /// `&'static str` key the registry, the rail and the routes use.
 pub(crate) fn intern(id: &str) -> &'static str {
     static INTERNED: OnceLock<Mutex<std::collections::BTreeSet<&'static str>>> = OnceLock::new();
@@ -218,13 +218,13 @@ fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>, u32, Vec<String>, Stri
         .unwrap_or_default()
 }
 
-/// The narrowest `module`'s view is laid out, in px, once one of its seats
+/// The narrowest `program`'s view is laid out, in px, once one of its seats
 /// holds it drawn or compiled; `None` while it loads, failed, or has none.
-pub(crate) fn min_width(module: &str) -> Option<f32> {
+pub(crate) fn min_width(program: &str) -> Option<f32> {
     let registry = lock(registry());
     registry
         .iter()
-        .filter(|((name, _), _)| *name == module)
+        .filter(|((name, _), _)| *name == program)
         .find_map(|(_, seat)| match &lock(seat).slot {
             Slot::Ready(guest) => Some(guest.min_width as f32),
             Slot::Compiled(view) => Some(view.min_width as f32),
@@ -232,21 +232,21 @@ pub(crate) fn min_width(module: &str) -> Option<f32> {
         })
 }
 
-/// Every seat of `module` holds a drawn view whose manifest says
+/// Every seat of `program` holds a drawn view whose manifest says
 /// `min_width`, or, with none yet, one is preloaded for its first pane: a
 /// WAT view with the five exports whose every tick draws an empty tree.
 #[cfg(test)]
-pub(crate) fn seat_for_test(module: &'static str, min_width: u32) {
-    seat_drawing_for_test(module, min_width, wire::Node::empty());
+pub(crate) fn seat_for_test(program: &'static str, min_width: u32) {
+    seat_drawing_for_test(program, min_width, wire::Node::empty());
 }
 
-/// `module`'s seat preloaded as far as compiled, its view's manifest saying
+/// `program`'s seat preloaded as far as compiled, its view's manifest saying
 /// `name` and `icon` (none when empty): a rail row no pane has opened.
 #[cfg(test)]
-pub(crate) fn seat_compiled_for_test(module: &'static str, name: &str, icon: &str) {
+pub(crate) fn seat_compiled_for_test(program: &'static str, name: &str, icon: &str) {
     let seat = Mounted::seat();
     lock(&seat).slot = Slot::Compiled(ViewCode::for_test(name, icon, 320));
-    lock(registry()).insert((module, 0), seat);
+    lock(registry()).insert((program, 0), seat);
 }
 
 /// `frame` encoded as the string of a WAT `data` segment, and its length.
@@ -259,9 +259,9 @@ pub(crate) fn wat_frame(frame: &wire::Frame) -> (String, u32) {
 
 /// [`seat_for_test`], its view drawing `root` on every tick.
 #[cfg(test)]
-pub(crate) fn seat_drawing_for_test(module: &'static str, min_width: u32, root: wire::Node) {
+pub(crate) fn seat_drawing_for_test(program: &'static str, min_width: u32, root: wire::Node) {
     seat_frame_for_test(
-        module,
+        program,
         min_width,
         wire::Frame {
             root: Some(root),
@@ -272,7 +272,7 @@ pub(crate) fn seat_drawing_for_test(module: &'static str, min_width: u32, root: 
 
 /// [`seat_for_test`], its view answering every tick with `frame`.
 #[cfg(test)]
-pub(crate) fn seat_frame_for_test(module: &'static str, min_width: u32, frame: wire::Frame) {
+pub(crate) fn seat_frame_for_test(program: &'static str, min_width: u32, frame: wire::Frame) {
     let (bytes, len) = wat_frame(&frame);
     let tick = wire::abi::pack(65536, len);
     let code = Module::new(
@@ -289,20 +289,20 @@ pub(crate) fn seat_frame_for_test(module: &'static str, min_width: u32, frame: w
         ),
     )
     .unwrap();
-    seat_code_for_test(module, min_width, code);
+    seat_code_for_test(program, min_width, code);
 }
 
 /// [`seat_for_test`], its view saying `busy` (out of budget, tick again
 /// soon) on its first `busy_ticks` ticks and quiet from then on.
 #[cfg(test)]
-pub(crate) fn seat_busy_for_test(module: &'static str, min_width: u32, busy_ticks: u32) {
+pub(crate) fn seat_busy_for_test(program: &'static str, min_width: u32, busy_ticks: u32) {
     let frame = |busy| wire::Frame {
         root: Some(wire::Node::empty()),
         busy,
         ..Default::default()
     };
     let code = frames_code(&frame(true), busy_ticks, &frame(false));
-    seat_code_for_test(module, min_width, code);
+    seat_code_for_test(program, min_width, code);
 }
 
 /// [`seat_for_test`], its view drawing `first` on its first tick, saying
@@ -310,7 +310,7 @@ pub(crate) fn seat_busy_for_test(module: &'static str, min_width: u32, busy_tick
 /// first frame is not its settled one.
 #[cfg(test)]
 pub(crate) fn seat_frames_for_test(
-    module: &'static str,
+    program: &'static str,
     min_width: u32,
     first: wire::Node,
     then: wire::Node,
@@ -321,7 +321,7 @@ pub(crate) fn seat_frames_for_test(
         ..Default::default()
     };
     let code = frames_code(&frame(first, true), 1, &frame(then, false));
-    seat_code_for_test(module, min_width, code);
+    seat_code_for_test(program, min_width, code);
 }
 
 /// A view's code answering its first `first_ticks` ticks with `first` and
@@ -361,7 +361,7 @@ pub(crate) fn frames_code(first: &wire::Frame, first_ticks: u32, then: &wire::Fr
 /// and the last one on every tick after: an `unchanged` frame after a full
 /// one is a guest with nothing new to show.
 #[cfg(test)]
-pub(crate) fn seat_ticking_for_test(module: &'static str, min_width: u32, frames: &[wire::Frame]) {
+pub(crate) fn seat_ticking_for_test(program: &'static str, min_width: u32, frames: &[wire::Frame]) {
     assert!(!frames.is_empty(), "a view answers at least one frame");
     let mut data = String::new();
     let mut arms = String::new();
@@ -398,38 +398,38 @@ pub(crate) fn seat_ticking_for_test(module: &'static str, min_width: u32, frames
         ),
     )
     .unwrap();
-    seat_code_for_test(module, min_width, code);
+    seat_code_for_test(program, min_width, code);
 }
 
-/// An intent `module`'s seat `instance` will hand over on its next update,
+/// An intent `program`'s seat `instance` will hand over on its next update,
 /// as a `host.badge` or `link.open` request would leave it.
 #[cfg(test)]
-pub(crate) fn intent_for_test(module: &str, instance: u64, intent: Intent) {
+pub(crate) fn intent_for_test(program: &str, instance: u64, intent: Intent) {
     let registry = registry().lock().unwrap();
-    let seat = &registry[&(module, instance)];
+    let seat = &registry[&(program, instance)];
     let Slot::Ready(guest) = &mut seat.lock().unwrap().slot else {
-        panic!("{module} is not seated");
+        panic!("{program} is not seated");
     };
     guest.intents.push(intent);
 }
 
-/// `module`'s seat `instance` listens for routes, as its view's
+/// `program`'s seat `instance` listens for routes, as its view's
 /// `host.route` subscription (request 99) would.
 #[cfg(test)]
-pub(crate) fn listen_for_routes_for_test(module: &str, instance: u64) {
+pub(crate) fn listen_for_routes_for_test(program: &str, instance: u64) {
     let registry = registry().lock().unwrap();
-    let Slot::Ready(guest) = &mut registry[&(module, instance)].lock().unwrap().slot else {
-        panic!("{module} is not seated");
+    let Slot::Ready(guest) = &mut registry[&(program, instance)].lock().unwrap().slot else {
+        panic!("{program} is not seated");
     };
     guest.route_subscriptions.push(99);
 }
 
-/// The routes `module`'s seat `instance` was handed, in order.
+/// The routes `program`'s seat `instance` was handed, in order.
 #[cfg(test)]
-pub(crate) fn routes_for_test(module: &str, instance: u64) -> Vec<String> {
+pub(crate) fn routes_for_test(program: &str, instance: u64) -> Vec<String> {
     let registry = registry().lock().unwrap();
-    let Slot::Ready(guest) = &registry[&(module, instance)].lock().unwrap().slot else {
-        panic!("{module} is not seated");
+    let Slot::Ready(guest) = &registry[&(program, instance)].lock().unwrap().slot else {
+        panic!("{program} is not seated");
     };
     let routed = |event: &wire::Event| match event {
         wire::Event::Response {
@@ -447,12 +447,12 @@ pub(crate) fn routes_for_test(module: &str, instance: u64) -> Vec<String> {
         .collect()
 }
 
-/// Every drawn view of `module` gives itself `name`, as its manifest
+/// Every drawn view of `program` gives itself `name`, as its manifest
 /// would: the rail reads it on its next refresh.
 #[cfg(test)]
-pub(crate) fn name_for_test(module: &str, name: &str) {
+pub(crate) fn name_for_test(program: &str, name: &str) {
     for ((seated, _), seat) in lock(registry()).iter() {
-        if *seated == module
+        if *seated == program
             && let Slot::Ready(guest) = &mut lock(seat).slot
         {
             guest.name = name.into();
@@ -460,64 +460,64 @@ pub(crate) fn name_for_test(module: &str, name: &str) {
     }
 }
 
-/// `module`'s seat `instance` traps: its guest keeps its tree but shows a
+/// `program`'s seat `instance` traps: its guest keeps its tree but shows a
 /// fault from now on, and the seat is woken as a trapping tick would.
 #[cfg(test)]
-pub(crate) fn fault_for_test(module: &str, instance: u64) {
+pub(crate) fn fault_for_test(program: &str, instance: u64) {
     let registry = registry().lock().unwrap();
-    let mut locked = registry[&(module, instance)].lock().unwrap();
+    let mut locked = registry[&(program, instance)].lock().unwrap();
     let Slot::Ready(guest) = &mut locked.slot else {
-        panic!("{module} is not seated");
+        panic!("{program} is not seated");
     };
     guest.fault = Some("trapped for the test".into());
     locked.wake.send_replace(());
 }
 
-/// The events every tick of `module`'s seated view carried, in order:
+/// The events every tick of `program`'s seated view carried, in order:
 /// what the view knew when it drew each frame.
 #[cfg(test)]
-pub(crate) fn ticks_for_test(module: &str) -> Vec<Vec<wire::Event>> {
-    seated_for_test(module, |guest| guest.ticked_with.clone())
+pub(crate) fn ticks_for_test(program: &str) -> Vec<Vec<wire::Event>> {
+    seated_for_test(program, |guest| guest.ticked_with.clone())
 }
 
-/// Whether `module`'s seated view was last told it is on screen
+/// Whether `program`'s seated view was last told it is on screen
 /// (`host.visible`).
 #[cfg(test)]
-pub(crate) fn visible_for_test(module: &str) -> bool {
-    seated_for_test(module, |guest| guest.visible)
+pub(crate) fn visible_for_test(program: &str) -> bool {
+    seated_for_test(program, |guest| guest.visible)
 }
 
-/// `read` off the guest of `module`'s first seat; it panics unless seated.
+/// `read` off the guest of `program`'s first seat; it panics unless seated.
 #[cfg(test)]
-fn seated_for_test<T>(module: &str, read: impl FnOnce(&Guest) -> T) -> T {
+fn seated_for_test<T>(program: &str, read: impl FnOnce(&Guest) -> T) -> T {
     let registry = registry().lock().unwrap();
     let seat = registry
         .iter()
-        .find(|((name, _), _)| *name == module)
+        .find(|((name, _), _)| *name == program)
         .map(|(_, seat)| seat.clone())
-        .expect("a seat of the module");
+        .expect("a seat of the program");
     match &seat.lock().unwrap().slot {
         Slot::Ready(guest) => read(guest),
-        _ => panic!("{module} is not seated"),
+        _ => panic!("{program} is not seated"),
     }
 }
 
 #[cfg(test)]
-pub(crate) fn seat_code_for_test(module: &'static str, min_width: u32, code: Module) {
+pub(crate) fn seat_code_for_test(program: &'static str, min_width: u32, code: Module) {
     let ready = || {
-        let mut guest = Guest::instantiate(module, &code, module).unwrap();
+        let mut guest = Guest::instantiate(program, &code, program).unwrap();
         guest.min_width = min_width;
         Slot::Ready(Box::new(guest))
     };
     let mut registry = registry().lock().unwrap();
     let mut seats: Vec<_> = registry
         .iter()
-        .filter(|((name, _), _)| *name == module)
+        .filter(|((name, _), _)| *name == program)
         .map(|(_, seat)| seat.clone())
         .collect();
     if seats.is_empty() {
         seats.push(Mounted::seat());
-        registry.insert((module, 0), seats[0].clone());
+        registry.insert((program, 0), seats[0].clone());
     }
     for seat in seats {
         let mut locked = seat.lock().unwrap();

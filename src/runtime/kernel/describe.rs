@@ -1,4 +1,4 @@
-//! `module.describe`: an op as its program says a person reads it. The
+//! `program.describe`: an op as its program says a person reads it. The
 //! program's CURRENT code blob (the roster the app already holds) carries a
 //! wasm module in its `ducktape.describe` section; it is compiled once per
 //! code id and called in a fresh, import-free, fuel- and memory-bounded
@@ -328,7 +328,7 @@ mod stage {
         for (program, (described, bytes)) in &counts {
             println!("{program}: {described} described, {bytes} as bytes");
         }
-        let ours = ["chat", "forge", "identity", "valset", "module-registry"];
+        let ours = ["chat", "forge", "identity", "valset", "programs"];
         let fell_back: Vec<_> = counts
             .iter()
             .filter(|(program, (_, bytes))| ours.contains(&program.as_str()) && *bytes > 0)

@@ -115,7 +115,7 @@ loop runs on the window thread inside `Seat::turn`
 | Pictures | nothing | `Pictures::adopt` (`src/runtime/pictures.rs`) keeps a running byte total, held under `MAX_PICTURE_BYTES` (64 MiB) by eviction | G `picture_bytes` (D) | free |
 | Linear memory | nothing (the `MEMORY_LIMIT` trap) | `Exports.memory.data_size(&store)` after `Guest::tick` | G `memory` max (D) | a3 |
 | Snapshot on the way out | nothing | `Guest::snapshot` (covered above) | | a3 |
-| Faults | warns `module_view_trapped` (`Guest::tick`), `module_view_unloadable` (`Mounted::load_failed`) | same sites | C `faults` (D) | a3 / free |
+| Faults | warns `program_view_trapped` (`Guest::tick`), `program_view_unloadable` (`Mounted::load_failed`) | same sites | C `faults` (D) | a3 / free |
 
 Two findings the table depends on:
 
@@ -140,9 +140,9 @@ there.
 
 | Stage | Measured today | Hook point | Metric | Held |
 |---|---|---|---|---|
-| Startup milestones | nothing | t0 at the top of `main` (`src/main.rs`); `log` after `install_log`; `gpui` at the top of the `application.run` closure in `shell::launch::run`; `fonts` after `initialize_rendering`; `boot` once the app's notification centre (its log read off disk) and roster are in hand, before the entities are made; `window` at `Ok(handle)` in `Windows::open_window` (`shell/entities/windows.rs`); `connected` in `Session::connect_answered` (`shell/entities/session.rs`); `desk` where `Windows` sees `Screen` cross from the launcher to the desk (`shell/entities/windows.rs`); `first_seated.<module>` in `Seat::mount`. No first-present mark without the gpui profiler | G `startup.<mark>` ms since t0 (W) | free, except `frame` (70) |
+| Startup milestones | nothing | t0 at the top of `main` (`src/main.rs`); `log` after `install_log`; `gpui` at the top of the `application.run` closure in `shell::launch::run`; `fonts` after `initialize_rendering`; `boot` once the app's notification centre (its log read off disk) and roster are in hand, before the entities are made; `window` at `Ok(handle)` in `Windows::open_window` (`shell/entities/windows.rs`); `connected` in `Session::connect_answered` (`shell/entities/session.rs`); `desk` where `Windows` sees `Screen` cross from the launcher to the desk (`shell/entities/windows.rs`); `first_seated.<program>` in `Seat::mount`. No first-present mark without the gpui profiler | G `startup.<mark>` ms since t0 (W) | free, except `frame` (70) |
 | Frame time per window | nothing (`ZED_MEASUREMENTS=1` — `gpui_util::measure` in the fork's frame callback — prints `frame duration` to stderr for callback-driven frames only, no rebuild) | `WindowRoot::render` (`shell/layers/root.rs`) for the app's render phase; end-to-end draw+present needs the fork's `WindowProfiler` (§1, §7) | H `frame.render` per `WindowKey` (W) | free |
-| Long frames > 16 ms with a cause | nothing | with only the app's spans: a ring of the last N spans over 1 ms, timestamped; a `frame.render` over budget is written to the ring with the spans that overlapped it (reducer domain, view module and stage, `turn`/`hide`/close). Draw/present/input causes need `HangDetector` over `cx.foreground_journal()` (fork, `profiler` feature) | C `long_frames`, ring `slow` (W) | free |
+| Long frames > 16 ms with a cause | nothing | with only the app's spans: a ring of the last N spans over 1 ms, timestamped; a `frame.render` over budget is written to the ring with the spans that overlapped it (reducer domain, view program and stage, `turn`/`hide`/close). Draw/present/input causes need `HangDetector` over `cx.foreground_journal()` (fork, `profiler` feature) | C `long_frames`, ring `slow` (W) | free |
 | Entity method per call | nothing | every entity method (`shell/entities/`) keyed by the domain the reducer's arms had (the reducer is gone, with its `dispatch` timer; the names stay, since qa's hang rule reads them, §4.2 rule 5): `Desk` as `reducer.pane`, `Windows`, `Toast` and `Prefs` as `reducer.desk`, `Notifications` as `reducer.notify`, `Overlays` as `reducer.overlay`, `Session` as `reducer.connect`, `Account` as `reducer.sign_in`. **Never key by the argument**: the entities' methods take passwords, codes and phrases. Calls arrive three ways — synchronously from input listeners (`pane_message`, keys, screens), from a frame's callback (`PaneLayer::shown`: the desk's size and its seed, measured in the pane layer's prepaint and called from `window.on_next_frame`, never from the draw), and from the entities' own tasks, observers and subscriptions | H `reducer.<domain>` (W) | free |
 | Pane / window switch | nothing (ducktape-70's temporary `pane_message` mark and `pane_stage` span) | start at `WindowRoot::pane_message` / `open_view` (`shell/panes.rs`), `Windows::raise` (`shell/entities/windows.rs`) or `WindowRoot::new`'s activation observer (`shell/layers/root.rs`), each through `WindowRoot::start_switch`; end with `window.on_next_frame` scheduled from the `WindowRoot::render` that shows the switch. Next-frame callbacks run at the start of the frame after the switched one was presented, so this is an upper bound high by one frame interval | H `switch` (W, ms) | 70 (`panes.rs`), free (`entities/windows.rs`, `layers/root.rs`) |
 | Animation frames | `a_frame_is_cheap` test in `shell/figure.rs` (under 15 ms at test opt-level 1) | `Spin::render` (`shell/spin.rs`): time `Figure::frame`, and the interval between renders. `Spin::run` waits on a background timer for the next grid line (`App::until_next_animation_frame`) and calls `cx.notify()`, never `request_animation_frame`, so gpui's present-interval histogram and its inactive-window throttle both miss it | H `figure.frame`, H `figure.interval` (W) | free |
@@ -175,7 +175,7 @@ pub(crate) fn on() -> bool                       // one relaxed atomic load
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Key {
-    View { module: &'static str, instance: u64 }, // the seat key (`seat::mounted`)
+    View { program: &'static str, instance: u64 }, // the seat key (`seat::mounted`)
     Window(crate::runtime::WindowKey),
     Shell,                                       // startup, reducer, io, rss
 }
@@ -191,7 +191,7 @@ pub(crate) fn suffixed(stage: &str, suffix: &str) -> Option<&'static str> // an 
 pub(crate) fn snapshot(by_instance: bool) -> serde_json::Value
 pub(crate) fn reset()                            // counters and samples; the marks stay
 pub(crate) fn summary()                          // one `perf_summary` line if anything changed
-pub(crate) fn retire(module: &'static str, instance: u64) // one `view_perf` line
+pub(crate) fn retire(program: &'static str, instance: u64) // one `view_perf` line
 ```
 
 - `Timer` records `elapsed()` on drop into the histogram named by its key.
@@ -202,18 +202,18 @@ pub(crate) fn retire(module: &'static str, instance: u64) // one `view_perf` lin
   `ponytail:` one global lock, one fixed ring; fine at fewer than a few
   thousand samples a second.
 - Stage names are flat and carry their group as a prefix (`tick.call`,
-  `fuel.tick`, `frame_bytes`, `host_call.module.query`,
-  `host_call.module.query.attempts`, `io.read_prefs`, `reducer.pane`), so
+  `fuel.tick`, `frame_bytes`, `host_call.program.query`,
+  `host_call.program.query.attempts`, `io.read_prefs`, `reducer.pane`), so
   a key's JSON is one object of stage → value, the same in `/perf`,
   `perf_summary` and `view_perf`.
-- Keys are `&'static str`: module names are interned already
+- Keys are `&'static str`: program names are interned already
   (`runtime::intern`), stage names are literals.
-- Keyed by **(module, instance)**, not module: the seat registry is
-  `(module, instance)` (`seat::mounted`, `Seat::new`), and two
+- Keyed by **(program, instance)**, not program: the seat registry is
+  `(program, instance)` (`seat::mounted`, `Seat::new`), and two
   windows can show the same view. The seat carries its instance
   (`Mounted.instance`, `Guest.instance`), so the loader thread and the
   window thread write under one key; a preloaded seat's load stages land
-  under instance 0 until a tab claims it. `/perf` aggregates by module
+  under instance 0 until a tab claims it. `/perf` aggregates by program
   unless `?by=instance`.
 - Why not on `Guest`: stats must survive a swap and cover load stages that
   run before the `Guest` exists. The registry is a leaf lock; reading it
@@ -265,14 +265,14 @@ only when on and only when the tree changed.
   never draws.
 - Reply shape: one flat object of stage → value per key. A counter is a
   number, a gauge `{max, last}`, a histogram `{n, mean, p50, p95, max,
-  last}` (µs for times). Views by module, or by `module/instance` with
+  last}` (µs for times). Views by program, or by `program/instance` with
   `?by=instance`; windows by `WindowKey` number with the door's `name`
   beside it; `startup` the marks in ms since `t0`:
 
 ```json
 { "on": true, "since_ms": 123456, "cache_on": true,
   "startup": { "log": 3, "gpui": 41, "fonts": 60, "boot": 70, "window": 190, "connected": 800, "desk": 1500, "first_seated.chat": 1700 },
-  "views": { "chat": { "module": "chat",
+  "views": { "chat": { "program": "chat",
       "ticks": 412, "busy_ticks": 3, "draws": 900, "renders": 415, "faults": 0,
       "fuel.tick": { "n": 412, "p50": 4100000, "p95": 31000000, "max": 71800000 },
       "tick.call": {...}, "tick.decode": {...}, "merge": {...}, "replace": {...}, "render": {...},
@@ -280,7 +280,7 @@ only when on and only when the tree changed.
       "frame_bytes": {...}, "events_bytes": {...}, "snapshot_bytes": { "max": 20480 }, "memory": { "max": 12582912 },
       "picture_bytes": {...}, "view_bytes": {...}, "nodes": { "max": 1900 }, "truncations": 0,
       "frame.full": 3, "frame.patch": 90, "frame.unchanged": 319, "requests": {...}, "cancels": {...}, "backlog": {...},
-      "host_call.module.query": { "n": 20, "p50": 9000, "p95": 40000, "max": 90000 }, "host_call.module.query.attempts": 20,
+      "host_call.program.query": { "n": 20, "p50": 9000, "p95": 40000, "max": 90000 }, "host_call.program.query.attempts": 20,
       "fetch": {...}, "fetch.disk": 1, "compile": {...}, "compile.memory": 1, "instantiate": {...}, "fuel.instantiate": {...},
       "snapshot": {...}, "restore": {...}, "init": {...}, "first_frame": {...}, "install.lock_wait": {...}, "install": {...}, "first_tree": {...} } },
   "windows": { "1": { "name": "console", "renders": 240, "renders.chrome": 3, "renders.panes": 240, "renders.pane.0": 240, "renders.dot": 230,
@@ -330,7 +330,7 @@ only when on and only when the tree changed.
   `module_version`), so the disk cache stays warm and every module registers
   with the agent, cache hits included. wasmtime's `profiling` feature is in
   its defaults.
-- **`GuestProfiler` (Firefox-profiler JSON).** `DUCKTAPE_WASM_PROFILE=<module>`.
+- **`GuestProfiler` (Firefox-profiler JSON).** `DUCKTAPE_WASM_PROFILE=<program>`.
   It needs `Config::epoch_interruption(true)`, a ticker calling
   `Engine::increment_epoch`, `Store::set_epoch_deadline` in `guest::arm`
   and `Store::epoch_deadline_callback` to call `GuestProfiler::sample` and
@@ -340,8 +340,8 @@ only when on and only when the tree changed.
   deadline. Keep it a dev flag. If the owner adopts a real time budget (§7),
   epoch interruption is always on and this cost disappears.
 - **Names.** Shipped views are stripped and `wasm-opt`'d
-  (`modules/tools/view-gate.sh` → `optimize-view.sh`); `make wasm-why
-  V=<view>` in modules keeps names and skips `wasm-opt`. Use it for *where*
+  (`programs/tools/view-gate.sh` → `optimize-view.sh`); `make wasm-why
+  V=<view>` in programs keeps names and skips `wasm-opt`. Use it for *where*
   time goes, not *how much*. It can only be seated through
   `DUCKTAPE_VIEWS_DIR`, and override loads are always `Fresh` and log no
   `view_load`, so the swap/snapshot/restore path cannot be profiled that way.
@@ -381,16 +381,16 @@ Measured so far (fold in, attribute, do not over-trust):
   per-tick fuel trace, screen and stage not recorded, before the qa gate
   existed.
 - Explorer, qa's `a11y-census` on a freshly seeded stage (`kit up`,
-  `kit seed`, the seed inside the 1,000-block window). Until modules#267
+  `kit seed`, the seed inside the 1,000-block window). Until programs#267
   the heaviest tick was one render of the Transactions page, 50 rows and
   1,074 wire nodes (`nodes.max`). `fuel.tick.max` read 111.95–114.43M in
-  all 89 such runs on record before modules#232 (2026-09-29 to 10-01).
-  modules#232 (`62e52242`) made the SDK's diff move a replaced subtree
+  all 89 such runs on record before programs#232 (2026-09-29 to 10-01).
+  programs#232 (`62e52242`) made the SDK's diff move a replaced subtree
   instead of copying it:
   96,763,257 in the census at the `dev` heads (2026-10-01: app `cf8384cd`,
-  modules `62e52242`, qa `24a1e33a`), and 96.7–96.8M in every seeded
+  programs `62e52242`, qa `24a1e33a`), and 96.7–96.8M in every seeded
   census on record until the SDK fix campaign (2026-10-03 and 10-04). Since
-  modules#267 the page is a window of the rows shown, 696 nodes, and the
+  programs#267 the page is a window of the rows shown, 696 nodes, and the
   explorer reads 31.4–33.7M (rule 2 below).
   Without the seed the explorer reads less: 18.8M at 218 nodes when every
   block in the window was empty (2026-09-29), 57–59M at 394 nodes once the
@@ -422,7 +422,7 @@ Measured so far (fold in, attribute, do not over-trust):
   rig, one run: **report-only until three baseline runs on the reference
   rig.**
 - members-view sits at 98.5% of its wasm size limit (owner's number; the
-  modules tooling enforces no limit — `tools/view-gate.sh` prints
+  programs tooling enforces no limit — `tools/view-gate.sh` prints
   `name  bytes` and nothing else). Its top
   guest-side cost is `view_wire::Node` serialize/clone/eq. The host cannot
   time guest encode, but it sees the result: track `bytes.view` (the
@@ -431,7 +431,7 @@ Measured so far (fold in, attribute, do not over-trust):
   diffs and encodes inside the one `Exports::tick` call, so `bytes.frame`
   and `tick.call` together are the tracked pair.
 
-Rules, in `qa`'s `perf-budgets.json`, keyed by module and by window:
+Rules, in `qa`'s `perf-budgets.json`, keyed by program and by window:
 
 1. **Hard ceiling**: 50% of each kill ceiling, every view. Fuel max ≤ 125M,
    frame bytes max ≤ 4 MiB, requests max ≤ 128, memory max ≤ 32 MiB.
@@ -448,7 +448,7 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by module and by window:
 
    The procedure for a refresh. Bring up a fresh stage and seed it
    (`kit up`, `kit seed`), run qa's `a11y-census` with the app and the
-   views at the `dev` heads, and read `views.<module>.fuel.tick.max` from
+   views at the `dev` heads, and read `views.<program>.fuel.tick.max` from
    the end snapshot in the run's `perf.jsonl`. The run is green for a
    view's metric when that view's steps pass (for the explorer: "open the
    Transactions page" and "audit Explorer: transactions"), and it is an
@@ -463,10 +463,10 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by module and by window:
    reports the same tick without it.
 
    Refreshed 2026-10-05, after the campaign's second part (bytes cross
-   the wire as a bin, modules#269; a lowered node costs what it sets,
-   modules#270; the views build at `opt-level` 3, modules#271): the
+   the wire as a bin, programs#269; a lowered node costs what it sets,
+   programs#270; the views build at `opt-level` 3, programs#271): the
    largest of seven seeded censuses of this code line, the last at the
-   `dev` heads (app `7bb30f7b`, modules `9c51ad01`), every run 94 of 94
+   `dev` heads (app `7bb30f7b`, programs `9c51ad01`), every run 94 of 94
    steps. Chat 11,974,346 × 1.25 = 15M, explorer 6,528,779 × 1.25 =
    8M, forge 2,764,051 × 1.25 = 3.46M, kept at 3.5M: a whole million
    is a third of it. They replace 37M, 42M and 11M. The explorer's
@@ -474,15 +474,15 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by module and by window:
 
    Before that, 2026-10-04, after the SDK fix campaign: the largest of five
    seeded censuses of this code, four on the branches before the merge and
-   the last at the `dev` heads (app `72555218`, modules `b650bebf`, qa
+   the last at the `dev` heads (app `72555218`, programs `b650bebf`, qa
    `39aab414`), every run 94 of 94 steps. Chat 29,856,561 × 1.25 = 37M (746
    nodes), forge 8,626,202 × 1.25 = 11M (252 nodes), explorer 33,669,182 ×
    1.25 = 42M (696 nodes; 31.4–33.7M across the five). They replace 90M and
    56M (#291's trace × 1.25) and the explorer's 121M (96,763,257 on
    2026-10-01). The last two moves, each read in a census: a node names
-   its style by an id into one table per tree (modules#265: chat 34.0M →
+   its style by an id into one table per tree (programs#265: chat 34.0M →
    27.5M, forge 12.1M → 8.7M, explorer 51.0M → 31.8M), and chat keeps a
-   window of rows from its first frame (modules#267: 27.5M → 29.8M, 568 →
+   window of rows from its first frame (programs#267: 27.5M → 29.8M, 568 →
    746 nodes) while the explorer's Transactions page became a window of
    the rows shown (1,074 → 696 nodes).
 
@@ -505,7 +505,7 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by module and by window:
    ask back after). In both windows:
    - `busy_ticks == 0`;
    - `ticks ≤ clock items + block-subscription items + 1`. Clocks have a
-     16 ms floor (`MIN_TICK_MS`, `src/runtime/kernel.rs`); `module.changes`
+     16 ms floor (`MIN_TICK_MS`, `src/runtime/kernel.rs`); `program.changes`
      delivers one item per block that wrote to the program, `chain.heads` polls
      at block_time/2 clamped to 100 ms–2 s and delivers one item per block
      (`kernel::node::live`, `heads`);
@@ -716,7 +716,7 @@ Design:
   Write the three as a `perf.jsonl` line beside `transcript.jsonl`; put
   the breaches in the scenario's result.
 - **Failure**: an over-budget D metric or a steady-phase hang fails the
-  scenario as `perf-over-budget <module|window> <metric> <value> > <budget>`.
+  scenario as `perf-over-budget <program|window> <metric> <value> > <budget>`.
   Oracles cannot do this: they see trees and context, not the door.
 - **Baseline**: `--perf-baseline <run-dir>` fails any D `max` above 1.25 ×
   baseline; a green run on `dev` refreshes it.
@@ -807,7 +807,7 @@ Phase 1, as listed:
   `snapshot_bytes` (`guest/lifecycle.rs`); `compile.{memory,disk,cold}`
   from the in-process cache and wasmtime's hit counter (`guest.rs`,
   approximate under concurrent loads, said so in code).
-- `Seat`: `replace`, `first_tree`, `first_seated.<module>` (`seat/entity.rs`);
+- `Seat`: `replace`, `first_tree`, `first_seated.<program>` (`seat/entity.rs`);
   `draws` (`shell/layers/panes.rs`, `PaneView`); `ViewTree::render` `renders`
   and `render` under the seat's key (`render.rs`, `ViewTree::with_perf_key`).
 - `door_draws` in `ax::actions::current`, for the process.
@@ -895,11 +895,11 @@ design, not merged. What still informs:
    **Answered (owner, 2026-09-28): the document's pick** — the scenario and
    the no-read key, both phase 2.
    The no-read key has landed (§4.3); the scenario has not.
-5. **Instance vs module keys on the door.** The registry is per
-   `(module, instance)`; should `/perf` default to aggregating by module
+5. **Instance vs program keys on the door.** The registry is per
+   `(program, instance)`; should `/perf` default to aggregating by program
    for qa's budgets, with instances behind `?by=instance`?
 
-   **Answered (owner, 2026-09-28): yes.** `/perf` aggregates by module;
+   **Answered (owner, 2026-09-28): yes.** `/perf` aggregates by program;
    `?by=instance` lists instances.
 6. **`POST /perf/reset` vs `GET /perf?reset=1`.**
 

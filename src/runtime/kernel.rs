@@ -29,7 +29,7 @@
 //! On the node, as a task on [`handle`] (`node`), each answer waiting in
 //! [`Replies`] for the view's next redraw; transport failures retried for
 //! up to a minute unless said otherwise:
-//! - `module.query` `Call{target, body}` — one query on the connected node:
+//! - `program.query` `Call{target, body}` — one query on the connected node:
 //!   `body` is the payload of a signed frame to `target`, and the bytes the
 //!   program `Respond`ed come back as they are. It reads the node's
 //!   preconfirmed layer: an op this view was just answered for is already
@@ -41,7 +41,7 @@
 //!   the preconfirmed layer and waits for a block, and until one carries it
 //!   the node can still drop it (a block that lands first and makes it
 //!   fail, a node restart) with no word to anyone; a view shows what
-//!   `module.query` reads. Retried only while nothing reached the node: a
+//!   `program.query` reads. Retried only while nothing reached the node: a
 //!   lost answer is reported ([`refusal::NODE_FAILED`]), never followed by
 //!   a second submission.
 //! - `chain.status` — node status as `NodeStatus`.
@@ -52,11 +52,11 @@
 //!   one transaction by its place or hash, its payload when at most `most`
 //!   bytes (`/v1/tx`).
 //! - `blob.get` `<id>` — a blob by `sha256:<hex>` or `sha1:<hex>` id, unframed.
-//! - `module.describe` `(program, op)` — the op as the program's own
+//! - `program.describe` `(program, op)` — the op as the program's own
 //!   describe module reads it, or `None` (`describe`).
 //! - `invite.create` `CreateInvite{ttl_days}` — minted ONCE, never retried;
 //!   `Invite{invite, notes}`. Node refusals retain their tokens.
-//! - `module.changes` `<program>` — a subscription that gets one item per
+//! - `program.changes` `<program>` — a subscription that gets one item per
 //!   block that wrote to `program` (`/v1/changes/<program>`): the block's
 //!   height and the keys it wrote, as the node publishes them, so the view
 //!   re-reads what moved; `None` when the link was reopened and the view
@@ -100,7 +100,7 @@ const MAX_BLOB_BYTES: usize = 16 << 20;
 /// ([`Replies::admit`]); past it a request is refused `in_flight_limit`.
 const MAX_IN_FLIGHT: usize = 256;
 /// Subscriptions of one kind a view may hold, counted per kind and only
-/// for `clock.ticks` and `module.changes`; the `host.*` subscriptions are
+/// for `clock.ticks` and `program.changes`; the `host.*` subscriptions are
 /// each one list a view has no reason to grow.
 const MAX_SUBSCRIPTIONS: usize = 256;
 /// Answers waiting in [`Replies`] between two redraws, by count and by
@@ -171,7 +171,7 @@ pub(super) fn handle() -> tokio::runtime::Handle {
 
 /// Jobs under one name run one after another, in the order they were
 /// queued, each on the blocking pool (an OS call or a file): a view's
-/// banners (`notify`, under its module), so a burst's "N more" never lands
+/// banners (`notify`, under its program), so a burst's "N more" never lands
 /// before the banners it counts, a view's store file (`store`, under its
 /// path), so a `get` reads the `set` before it, and the notification log
 /// (under its path). One task per name on [`handle`] runs them; [`drain`]
@@ -270,9 +270,9 @@ pub(super) fn answer(
             guest.route_subscriptions.push(id);
             guest.sync_route();
         }
-        (Capability::Module, "query") => {
-            if node::targeted(guest, id, payload, "module.query").is_some() {
-                spawn_retrying(guest, id, payload, query, "host_call.module.query")
+        (Capability::Program, "query") => {
+            if node::targeted(guest, id, payload, "program.query").is_some() {
+                spawn_retrying(guest, id, payload, query, "host_call.program.query")
             }
         }
         (Capability::Chain, "status") => {
@@ -291,7 +291,7 @@ pub(super) fn answer(
         // the node's key signs an invite: only a role's own view asks
         // for one (a view no vote reviewed could hand it to its program)
         (Capability::Invite, "create") => {
-            if !super::consent::bound(guest.module, super::roster().roles().as_ref()) {
+            if !super::consent::bound(guest.program, super::roster().roles().as_ref()) {
                 guest.refuse(
                     id,
                     refusal::UNDECLARED_CAPABILITY,
@@ -317,7 +317,7 @@ pub(super) fn answer(
                 .and_then(|session| session.account);
             let roles = super::roster().roles();
             match super::consent::needed(
-                guest.module,
+                guest.program,
                 roles.as_ref(),
                 &call.target,
                 &call.body,
@@ -330,14 +330,14 @@ pub(super) fn answer(
         (Capability::Blob, "get") => {
             spawn_retrying(guest, id, payload, blob_get, "host_call.blob.get")
         }
-        (Capability::Module, "describe") => spawn_retrying(
+        (Capability::Program, "describe") => spawn_retrying(
             guest,
             id,
             payload,
             describe::describe,
-            "host_call.module.describe",
+            "host_call.program.describe",
         ),
-        (Capability::Module, "changes") => changes(guest, id, payload),
+        (Capability::Program, "changes") => changes(guest, id, payload),
         (Capability::Chain, "heads") => heads(guest, id, payload),
         // the one way out: a `duck://` link, or an `https://` one for the
         // system browser; any other scheme is refused here, at the method.

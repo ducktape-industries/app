@@ -66,7 +66,7 @@ impl Standin {
     /// turns the seat.
     pub(crate) fn element(
         &self,
-        module: &'static str,
+        program: &'static str,
         instance: u64,
         mark: gpui_kit::ElementId,
     ) -> gpui_kit::AnyElement {
@@ -118,7 +118,7 @@ impl Standin {
                     .outline()
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
-                        retry(module, instance);
+                        retry(program, instance);
                     })
             }));
         #[cfg(test)]

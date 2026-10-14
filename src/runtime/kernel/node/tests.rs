@@ -13,7 +13,7 @@ fn refused(guest: &mut Guest, id: u64) -> (String, String) {
     }
 }
 
-/// Too many `module.changes` subscriptions is the same refusal as too many
+/// Too many `program.changes` subscriptions is the same refusal as too many
 /// `clock.ticks`: `subscription_limit`, said as such — not the malformed
 /// request a nameless program is.
 #[test]
@@ -24,7 +24,7 @@ fn too_many_changes_subscriptions_is_the_subscription_limit() {
         refused(&mut guest, 1),
         (
             refusal::MALFORMED_REQUEST.to_owned(),
-            "`module.changes` names no program".to_owned()
+            "`program.changes` names no program".to_owned()
         )
     );
     guest.targets = vec!["chat".into()];
@@ -36,7 +36,7 @@ fn too_many_changes_subscriptions_is_the_subscription_limit() {
         refused(&mut guest, 2),
         (
             refusal::SUBSCRIPTION_LIMIT.to_owned(),
-            "too many `module.changes` subscriptions".to_owned()
+            "too many `program.changes` subscriptions".to_owned()
         )
     );
 }
@@ -65,7 +65,7 @@ const TIP: noded::Tip = noded::Tip {
 
 fn applied() -> noded::Receipt {
     noded::Receipt {
-        program: "registry".into(),
+        program: "programs".into(),
         outcome: abi::Outcome::Applied { output: Vec::new() },
         events: Vec::new(),
         nested: Vec::new(),
@@ -136,7 +136,7 @@ async fn a_submit_whose_answer_was_lost_is_not_submitted_again() {
 
 fn call_registry() -> Vec<u8> {
     methods::encode(&methods::Call {
-        target: "registry".into(),
+        target: "programs".into(),
         body: vec![1, 2, 3],
     })
 }
@@ -163,7 +163,7 @@ async fn a_submit_whose_anchor_read_was_lost_is_asked_again() {
     assert_eq!(submits.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
-/// A view's `module.query` to a node that takes the request and never
+/// A view's `program.query` to a node that takes the request and never
 /// answers is refused once its attempt's deadline passes, and gives its
 /// in-flight slot back: before, it waited for good and held the slot.
 #[test]
@@ -236,7 +236,7 @@ async fn a_redirected_submit_goes_nowhere_else() {
     let elsewhere = fake_node(vec![(
         noded::route::SUBMIT,
         Mode::Answer(abi::encode(&noded::Receipt {
-            program: "registry".into(),
+            program: "programs".into(),
             outcome: abi::Outcome::Applied { output: Vec::new() },
             events: Vec::new(),
             nested: Vec::new(),
@@ -416,7 +416,7 @@ fn changes_node(heights: &'static [u64]) -> Node {
 }
 
 /// A connect inside the network, under a view that kept its code: its
-/// `module.changes` subscription goes on, on the new node, so its follower
+/// `program.changes` subscription goes on, on the new node, so its follower
 /// hears `None` (re-read what moved meanwhile) and then the new node's
 /// blocks; its `chain.heads` goes on too; a request still running on the
 /// old connection is refused `stale_connection`. Before, the subscriptions

@@ -69,7 +69,7 @@ pub(crate) enum WindowKind {
     /// The main window: the launcher, then the desk with its menu bar.
     Console,
     /// A pop-out: one pane that left the desk, in a window of its own.
-    View { module: &'static str },
+    View { program: &'static str },
 }
 
 /// How the platform writes a command chord: "⌘K" on a Mac, "Ctrl K"

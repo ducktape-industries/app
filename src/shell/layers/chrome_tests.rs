@@ -15,17 +15,17 @@ use gpui_kit::{TestAppContext, VisualTestContext, px, size};
 /// draw with it).
 #[gpui_kit::test]
 fn a_beat_that_moves_a_height_re_renders_the_chrome_once_and_no_pane(cx: &mut TestAppContext) {
-    const MODULE: &str = "chrome-height-view";
+    const PROGRAM: &str = "chrome-height-view";
     let _on = crate::perf::on_for_test();
     let (app, key, view, mut native) = console(cx);
-    crate::runtime::seat_drawing_for_test(MODULE, 400, line("a line"));
+    crate::runtime::seat_drawing_for_test(PROGRAM, 400, line("a line"));
     set_motion(&app, false, &mut native);
-    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    pane(&view, PaneMessage::Select(PROGRAM), &mut native);
     polled(&app, status(7), &mut native);
     for _ in 0..8 {
         frame(&mut native);
     }
-    let (chrome, tree) = (window_count(key, "renders.chrome"), tree_renders(MODULE));
+    let (chrome, tree) = (window_count(key, "renders.chrome"), tree_renders(PROGRAM));
     assert!(chrome > 0 && tree > 0, "the bar and the tree drew");
     polled(&app, status(8), &mut native);
     for _ in 0..3 {
@@ -36,7 +36,11 @@ fn a_beat_that_moves_a_height_re_renders_the_chrome_once_and_no_pane(cx: &mut Te
         chrome + 1,
         "a height moved and the chrome drew other than once"
     );
-    assert_eq!(tree_renders(MODULE), tree, "a height moved and a tree drew");
+    assert_eq!(
+        tree_renders(PROGRAM),
+        tree,
+        "a height moved and a tree drew"
+    );
 }
 
 /// The rail's rows moving (a loader thread's word, no clock) draw the
@@ -71,11 +75,11 @@ fn a_roster_change_re_renders_the_chrome_without_a_beat(cx: &mut TestAppContext)
 fn a_drag_frame_moves_the_desk_once_and_leaves_the_chrome_cached(cx: &mut TestAppContext) {
     use crate::shell::layers;
     use gpui_kit::{MouseButton, MouseDownEvent, MouseMoveEvent, PlatformInput};
-    const MODULE: &str = "chrome-drag-view";
+    const PROGRAM: &str = "chrome-drag-view";
     let _on = crate::perf::on_for_test();
     let (_, key, view, mut native) = console(cx);
-    crate::runtime::seat_for_test(MODULE, 400);
-    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    crate::runtime::seat_for_test(PROGRAM, 400);
+    pane(&view, PaneMessage::Select(PROGRAM), &mut native);
     for _ in 0..3 {
         frame(&mut native);
     }
@@ -231,14 +235,14 @@ fn a_menus_ages_tick_only_while_it_is_open(cx: &mut TestAppContext) {
 /// that becomes Ready draws the strip once, on no clock.
 #[gpui_kit::test]
 fn the_strip_title_follows_the_rail(cx: &mut TestAppContext) {
-    const MODULE: &str = "chrome-strip-view";
+    const PROGRAM: &str = "chrome-strip-view";
     let _on = crate::perf::on_for_test();
     let (app, key, view, mut native) = console(cx);
     // listed, not yet seated: a Loading row
-    let roster = crate::runtime::Roster::listing(&[MODULE]);
+    let roster = crate::runtime::Roster::listing(&[PROGRAM]);
     app.rail
         .update(&mut native, |rail, cx| rail.read_off(roster, cx));
-    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    pane(&view, PaneMessage::Select(PROGRAM), &mut native);
     for _ in 0..3 {
         frame(&mut native);
     }
@@ -249,7 +253,7 @@ fn the_strip_title_follows_the_rail(cx: &mut TestAppContext) {
     assert!(strip > 0, "the strip never drew");
     // the seat lands; the rail hears it (by hand: no loader thread reaches
     // a test's scheduler) and the strip follows
-    crate::runtime::seat_for_test(MODULE, 400);
+    crate::runtime::seat_for_test(PROGRAM, 400);
     app.rail.update(&mut native, |rail, cx| {
         rail.refresh(cx);
     });
@@ -287,8 +291,8 @@ fn a_folded_tab_with_no_icon_to_draw_is_its_initial(cx: &mut TestAppContext) {
             serde_json::to_value(crate::ax::snapshot("console", window, true)).unwrap()
         });
         let nodes = nodes.as_array().unwrap();
-        [DECLARED, PLAIN].map(|module| {
-            let id = format!("console:rail/{module}");
+        [DECLARED, PLAIN].map(|program| {
+            let id = format!("console:rail/{program}");
             let tab = nodes.iter().find(|node| node["id"] == id);
             let tab = tab.unwrap_or_else(|| panic!("no {id}: {nodes:?}"));
             assert_eq!(tab["name"], "Folded", "a folded tab keeps its whole name");

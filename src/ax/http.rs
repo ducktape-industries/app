@@ -565,7 +565,7 @@ mod tests {
         line.split_whitespace().map(str::to_owned).collect()
     }
 
-    /// `/perf` reads, by module unless `?by=instance`; only a POST resets,
+    /// `/perf` reads, by program unless `?by=instance`; only a POST resets,
     /// and both are in the 404 list a wrong path gets.
     #[test]
     fn perf_routes() {

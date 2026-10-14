@@ -332,7 +332,7 @@ fn draw(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> Vec<crate::ax::A
     })
 }
 
-/// A view mounted the way a module seat mounts a guest: a cached view under
+/// A view mounted the way a program seat mounts a guest: a cached view under
 /// a full-size div, not as the window root (which gpui stretches).
 pub(super) struct Seat(pub(super) Entity<ViewTree>);
 

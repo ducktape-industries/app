@@ -9,7 +9,7 @@
 //! that token is refused. `ducktape-app ax …` ([`cli`]) is its client.
 //!
 //! Ids are `<window>:<path>`: a native node's own string ElementId
-//! (`console:network-switcher`), a view node's `<module>/<wire key>`
+//! (`console:network-switcher`), a view node's `<program>/<wire key>`
 //! (`console:chat/send`), widened with its ancestors' ids (`console:row.send`)
 //! only while another node in the window shares it, and `~2`, `~3` … when
 //! even the whole path is shared ([`tree::door_ids`]). A synthetic child with
@@ -239,7 +239,7 @@ pub(crate) enum Request {
         launcher: bool,
     },
     /// `GET /perf[?by=instance]`: the perf registry (docs/perf.md), by
-    /// module unless asked by instance. Answered without a window read.
+    /// program unless asked by instance. Answered without a window read.
     Perf {
         by_instance: bool,
     },
@@ -934,14 +934,14 @@ mod tests {
     /// it, the same request with the seats left alone does not.
     #[gpui_kit::test]
     async fn a_read_turns_the_seats_first(cx: &mut gpui_kit::TestAppContext) {
-        const MODULE: &str = "door-read-turns-view";
-        crate::runtime::seat_for_test(MODULE, 200);
+        const PROGRAM: &str = "door-read-turns-view";
+        crate::runtime::seat_for_test(PROGRAM, 200);
         cx.update(gpui_kit::init);
         let seat = cx.update(|cx| {
             use gpui_kit::AppContext as _;
             cx.new(|cx| {
-                let instance = crate::ui::layout::Pane::new(MODULE).instance;
-                crate::runtime::Seat::new(MODULE, instance, cx)
+                let instance = crate::ui::layout::Pane::new(PROGRAM).instance;
+                crate::runtime::Seat::new(PROGRAM, instance, cx)
             })
         });
         let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -993,7 +993,7 @@ mod tests {
             bounds: false,
         };
         for (settles, expected) in [(false, false), (true, true)] {
-            crate::runtime::intent_for_test(MODULE, instance, crate::runtime::Intent::Badge(3));
+            crate::runtime::intent_for_test(PROGRAM, instance, crate::runtime::Intent::Badge(3));
             heard.borrow_mut().clear();
             let turning = seat.clone();
             cx.spawn(async move |mut cx| {

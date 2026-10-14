@@ -430,7 +430,7 @@ mod tests {
     fn a_draw_times_gpuis_passes_over_the_tree(cx: &mut gpui_kit::TestAppContext) {
         let _on = crate::perf::on_for_test();
         let key = crate::perf::Key::View {
-            module: "layer-test",
+            program: "layer-test",
             instance: 1,
         };
         cx.update(gpui_kit::init);

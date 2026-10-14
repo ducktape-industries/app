@@ -261,7 +261,7 @@ fn a_view_drawing_a_fresh_picture_every_tick_stays_in_its_budget() {
 /// deployment takes: the drawn view ticked, its state carried into a fresh
 /// instance of the same code, and that instance's first tree drawn from
 /// it. The bytes are view-guest's `exported_view` example built for wasm32
-/// by modules' `make view-wasm-check`, named by `DUCKTAPE_VIEW_PROBE`.
+/// by the programs repo's `make view-wasm-check`, named by `DUCKTAPE_VIEW_PROBE`.
 #[test]
 #[ignore = "needs DUCKTAPE_VIEW_PROBE=<exported_view.wasm>"]
 fn a_ticked_view_survives_a_swap_with_its_state() {
@@ -322,7 +322,7 @@ fn a_ticked_view_survives_a_swap_with_its_state() {
     ));
 }
 
-/// A module's minimum width is its drawn or compiled view's: none while the
+/// A program's minimum width is its drawn or compiled view's: none while the
 /// seat loads.
 #[test]
 fn a_view_says_its_min_width_once_it_is_drawn() {
@@ -611,14 +611,14 @@ fn count(guest: &Guest) -> u8 {
     guest.exports.memory.data(&guest.store)[16]
 }
 
-/// A seat holding a [`counting_code`] view of `module`, inited and drawn
+/// A seat holding a [`counting_code`] view of `program`, inited and drawn
 /// once, so it ticks on its clock; the code, the view's `alive`, and the
 /// load a block would start for a new deployment of it.
-fn counting_seat(module: &'static str) -> (Arc<Module>, Arc<()>, Load) {
+fn counting_seat(program: &'static str) -> (Arc<Module>, Arc<()>, Load) {
     let code = Arc::new(counting_code());
-    let mut old = Guest::instantiate(module, &code, module).unwrap();
+    let mut old = Guest::instantiate(program, &code, program).unwrap();
     old.capabilities = vec![Capability::Clock];
-    old.init(module).unwrap();
+    old.init(program).unwrap();
     old.redraw(&None);
     assert_eq!((old.ticks, count(&old), old.clocks.len()), (1, 101, 1));
     let alive = old.alive.clone();
@@ -626,7 +626,7 @@ fn counting_seat(module: &'static str) -> (Arc<Module>, Arc<()>, Load) {
     lock(&seat).slot = Slot::Ready(Box::new(old));
     let generation = lock(&seat).start();
     let load = Load {
-        module,
+        program,
         seat,
         generation,
         asked_of: connection().lock().unwrap().clone(),
@@ -656,7 +656,7 @@ fn a_view_ticking_on_a_clock_swaps_to_new_code_with_its_state() {
     let (code, alive, load) = counting_seat("ticking-swap");
     let seat = load.seat.clone();
     load.land(|load, timing| {
-        let mut fresh = Guest::instantiate(load.module, &code, load.module).unwrap();
+        let mut fresh = Guest::instantiate(load.program, &code, load.program).unwrap();
         // as `load` seats the manifest's targets on what it prepares
         fresh.targets = vec!["chat".into()];
         let mut ticks = 0;
@@ -666,7 +666,7 @@ fn a_view_ticking_on_a_clock_swaps_to_new_code_with_its_state() {
             &mut ticks,
             &load.seat,
             &code,
-            load.module,
+            load.program,
             timing,
         )
         .expect("prepared");
@@ -678,7 +678,7 @@ fn a_view_ticking_on_a_clock_swaps_to_new_code_with_its_state() {
             alive: alive.clone(),
             ticks,
             code: code.clone(),
-            shown: load.module.into(),
+            shown: load.program.into(),
         })
     });
     let locked = lock(&seat);
@@ -713,7 +713,7 @@ fn a_swap_refused_at_install_is_asked_again() {
     let (code, alive) = (&code, &alive);
     let prepared = |event: bool| {
         move |load: &Load, timing: &mut LoadTiming| {
-            let fresh = Guest::instantiate(load.module, code, load.module).unwrap();
+            let fresh = Guest::instantiate(load.program, code, load.program).unwrap();
             let mut ticks = 0;
             let fresh = Guest::replacement(
                 fresh,
@@ -721,7 +721,7 @@ fn a_swap_refused_at_install_is_asked_again() {
                 &mut ticks,
                 &load.seat,
                 code,
-                load.module,
+                load.program,
                 timing,
             )
             .expect("prepared");
@@ -736,7 +736,7 @@ fn a_swap_refused_at_install_is_asked_again() {
                 alive: alive.clone(),
                 ticks,
                 code: code.clone(),
-                shown: load.module.into(),
+                shown: load.program.into(),
             })
         }
     };
@@ -759,7 +759,7 @@ fn a_swap_refused_at_install_is_asked_again() {
     let generation = lock(&seat).start();
     let asked_of = connection().lock().unwrap().clone();
     Load {
-        module: "refused-swap",
+        program: "refused-swap",
         seat: seat.clone(),
         generation,
         asked_of,

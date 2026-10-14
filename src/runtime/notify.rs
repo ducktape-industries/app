@@ -114,7 +114,7 @@ fn post(guest: &mut Guest, center: &CenterHandle, id: u64, payload: &[u8]) {
         let mut center = center.lock();
         let (posted, banner) = center.post(
             &Settings::kept(),
-            guest.module,
+            guest.program,
             &guest.name,
             post,
             Instant::now(),
@@ -131,7 +131,7 @@ fn post(guest: &mut Guest, center: &CenterHandle, id: u64, payload: &[u8]) {
     // queued now, in the order the view posted, not when the task runs
     let raised = banner.map(|notice| {
         let (tell, told) = tokio::sync::oneshot::channel();
-        in_order(guest.module, move || {
+        in_order(guest.program, move || {
             let _ = tell.send(platform::post(&notice, entry.map(Click::Row)));
         });
         told
@@ -159,13 +159,13 @@ fn seen(guest: &mut Guest, id: u64, payload: &[u8]) {
             return;
         }
     };
-    if center().lock().read_tag(guest.module, &tag) {
+    if center().lock().read_tag(guest.program, &tag) {
         // the bell and the centre redraw
         guest.intents.push(Intent::Notified);
     }
     if !tag.is_empty() {
-        let tag = format!("{}/{tag}", guest.module);
-        in_order(guest.module, move || platform::withdraw(&tag));
+        let tag = format!("{}/{tag}", guest.program);
+        in_order(guest.program, move || platform::withdraw(&tag));
     }
     guest.reply(id, Ok(methods::encode(&())));
 }
@@ -205,7 +205,7 @@ fn clicked(click: Click) {
                 return;
             };
             Opened::Link(match entry.link.is_empty() {
-                true => format!("duck://{}", entry.module),
+                true => format!("duck://{}", entry.program),
                 false => entry.link,
             })
         }
@@ -263,7 +263,7 @@ fn process_token(pid: u32, started: std::time::SystemTime) -> String {
 
 // Each platform module exposes `post(&Notice, click: Option<Click>) -> raised`
 // and `withdraw(tag)`. Both block on OS calls; a view's run only through
-// `in_order` under the view's module, on the blocking pool, and the host's
+// `in_order` under the view's program, on the blocking pool, and the host's
 // on the thread that posts it. A click on a banner calls back
 // `clicked(click)`.
 #[cfg(target_os = "macos")]

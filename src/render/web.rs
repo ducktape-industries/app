@@ -43,22 +43,22 @@ pub(crate) fn declared(frame: &wire::Frame, capabilities: &[Capability]) -> Resu
     }
 }
 
-/// The modules whose view's manifest declares `web`, as last read.
+/// The programs whose view's manifest declares `web`, as last read.
 fn web_views() -> &'static Mutex<BTreeSet<&'static str>> {
     static VIEWS: Mutex<BTreeSet<&'static str>> = Mutex::new(BTreeSet::new());
     &VIEWS
 }
 
-/// `module`'s view manifest was read: whether it declares `web`.
-pub(crate) fn seen(module: &'static str, capabilities: &[Capability]) {
+/// `program`'s view manifest was read: whether it declares `web`.
+pub(crate) fn seen(program: &'static str, capabilities: &[Capability]) {
     let mut views = web_views().lock().expect("web views");
     match capabilities.contains(&Capability::Web) {
-        true => views.insert(module),
-        false => views.remove(module),
+        true => views.insert(program),
+        false => views.remove(program),
     };
 }
 
-/// The view an http(s) `link` opens in: the module whose view declares
+/// The view an http(s) `link` opens in: the program whose view declares
 /// `web` (the first by name, if more do), when this build has a web view
 /// and the address is one a page loads. `None`: the system browser's.
 pub(crate) fn view_for(link: &str) -> Option<&'static str> {
@@ -226,18 +226,18 @@ fn told(state: &ducktape_web::PageState) -> wire::WebState {
     }
 }
 
-/// A program's own cookies and cache: `<cache>/web/<module>`, the module
+/// A program's own cookies and cache: `<cache>/web/<program>`, the program
 /// of the seat this tree draws for.
 #[cfg(feature = "web")]
 fn profile(key: Option<crate::perf::Key>) -> std::path::PathBuf {
-    let module = match key {
-        Some(crate::perf::Key::View { module, .. }) => module,
+    let program = match key {
+        Some(crate::perf::Key::View { program, .. }) => program,
         _ => "unknown",
     };
     crate::backend::cache_dir()
         .unwrap_or_else(|_| std::env::temp_dir().join("ducktape"))
         .join("web")
-        .join(module)
+        .join(program)
 }
 
 #[cfg(test)]

@@ -1,9 +1,9 @@
 //! `store.get` / `store.set`: what a view keeps on this device between runs.
 //!
-//! One file per view per network, `<config>/store/<chain>/<module>.borsh`:
+//! One file per view per network, `<config>/store/<chain>/<program>.borsh`:
 //! a borsh map of key → bytes, rewritten whole through
 //! `noded_client::fs::atomic_write`, at most [`MAX_KEYS`] keys and [`MAX_BYTES`]. A
-//! view names keys, never paths — the chain and the module come from the
+//! view names keys, never paths — the chain and the program come from the
 //! host — so no view reaches another view's file or another network's.
 //!
 //! The file is read and written off the window thread, one request after
@@ -85,14 +85,14 @@ fn file(guest: &Guest) -> Result<PathBuf, wire::Error> {
     }
     let config = crate::backend::config_dir()
         .map_err(|error| refusal(methods::refusal::HOST_FAULT, error))?;
-    Ok(path(&config, &connection.chain, guest.module))
+    Ok(path(&config, &connection.chain, guest.program))
 }
 
-fn path(config: &Path, chain: &str, module: &str) -> PathBuf {
+fn path(config: &Path, chain: &str, program: &str) -> PathBuf {
     config
         .join("store")
         .join(escaped(chain))
-        .join(format!("{}.borsh", escaped(module)))
+        .join(format!("{}.borsh", escaped(program)))
 }
 
 /// A name as one path segment, one-to-one: ASCII letters, digits and `-`

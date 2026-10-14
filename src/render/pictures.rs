@@ -114,10 +114,10 @@ impl Rasters {
         if !std::mem::replace(&mut self.refused, true) {
             tracing::warn!(
                 target: "ducktape::app",
-                reason = "module_view_image_cache_full",
+                reason = "program_view_image_cache_full",
                 held = self.bytes,
                 rasters = self.held.len(),
-                "module view images past the seat's raster cache; drawing their fallback"
+                "program view images past the seat's raster cache; drawing their fallback"
             );
         }
     }

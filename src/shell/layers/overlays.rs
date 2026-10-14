@@ -332,9 +332,9 @@ pub(super) fn run(
             .account
             .update(cx, |account, cx| account.create_account(cx)),
         Some(Spot::Lock) => app.account.update(cx, |account, cx| account.lock(cx)),
-        Some(Spot::Open(module)) => app
+        Some(Spot::Open(program)) => app
             .windows
-            .update(cx, |windows, cx| windows.select_view(module, cx)),
+            .update(cx, |windows, cx| windows.select_view(program, cx)),
         Some(Spot::Appearance(mode)) => app
             .prefs
             .update(cx, |prefs, cx| prefs.set_appearance(mode, cx)),

@@ -495,10 +495,10 @@ fn one_views_flood_leaves_the_other_views_rows() {
             10 + nth,
         );
     }
-    let rows = |center: &Center, module: &str| {
+    let rows = |center: &Center, program: &str| {
         center
             .entries()
-            .filter(|entry| entry.module == module)
+            .filter(|entry| entry.program == program)
             .map(|entry| entry.title.clone())
             .collect::<Vec<_>>()
     };

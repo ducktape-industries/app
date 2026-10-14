@@ -1481,14 +1481,14 @@ async fn the_probe_moves_along_a_row_with_nothing_above_or_below(
 }
 
 /// The refused elements `Filter` keeps: a view's audit reports the ones under
-/// its `view/<module>` element, the shell's are in the whole window's alone.
+/// its `view/<program>` element, the shell's are in the whole window's alone.
 mod refused_scope {
     use super::*;
     use crate::ax::Filter;
     use gpui_kit::{ElementId, GlobalElementId};
 
     /// A `GlobalElementId` is made by the window: every segment on its
-    /// element-id stack, the last one's id read off it. A `view/<module>`
+    /// element-id stack, the last one's id read off it. A `view/<program>`
     /// segment is that view's mark (`Seat::ax_mark`).
     fn path(window: &mut gpui_kit::Window, segments: &[&str]) -> GlobalElementId {
         let name = |segment: &str| match segment.starts_with("view/") {

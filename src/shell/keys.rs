@@ -42,7 +42,7 @@ gpui_kit::actions!(
         OpenSettings,
         /// ⌘/: the app's help, in a window on the desk.
         OpenHelp,
-        /// Tab in an empty window's field: what it searches (Module | Chat).
+        /// Tab in an empty window's field: what it searches (Program | Chat).
         SwitchMode,
         /// Escape: whatever is open over the desk.
         CloseOverlay,

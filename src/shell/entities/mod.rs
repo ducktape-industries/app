@@ -188,14 +188,14 @@ pub(crate) mod tests {
         })
     }
 
-    /// The modules window `key`'s desk shows, pane by pane.
-    pub(crate) fn modules(
+    /// The programs window `key`'s desk shows, pane by pane.
+    pub(crate) fn programs(
         app: &Entities,
         key: crate::runtime::WindowKey,
         cx: &gpui_kit::TestAppContext,
     ) -> Vec<&'static str> {
         desk_of(app, key, cx).read_with(cx, |desk, _| {
-            desk.get().panes.iter().map(|pane| pane.module).collect()
+            desk.get().panes.iter().map(|pane| pane.program).collect()
         })
     }
 
