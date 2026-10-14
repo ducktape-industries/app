@@ -1473,10 +1473,10 @@ mod macos {
         };
         crate::update::macos::LAUNCH_SERVICES.with(|on| on.set(true));
         // a bundle that appears where Spotlight looks is registered within
-        // seconds (10 s on the test Mac); a staged one is given twice that
+        // 10-30 s on the test Mac; a staged one is given a minute
         let staged = Sha::digest(b"staged");
         bundle(&layout.release_dir(staged), "staged");
-        std::thread::sleep(std::time::Duration::from_secs(20));
+        std::thread::sleep(std::time::Duration::from_secs(60));
         let staged_registered = registered_under(root.path());
         crate::update::remove_leftover(&layout.release_dir(staged)).unwrap();
         // the flow's own builds stay out of the indexer's way
