@@ -31,7 +31,8 @@ thread_local! {
     /// says which range it was, not where the press began.
     static PRESS: std::cell::Cell<Option<Point<Pixels>>> = const { std::cell::Cell::new(None) };
     /// The window where a press that went down on a paragraph has been
-    /// released, and the selection it left is still to be weighed
+    /// released, and the selection it left is still to be weighed by the
+    /// next frame's paragraphs, unless a new press comes first
     /// (`RichParagraph::paint`).
     static SETTLING: std::cell::Cell<Option<gpui_kit::WindowId>> = const { std::cell::Cell::new(None) };
 }
@@ -194,10 +195,16 @@ impl Element for RichParagraph {
     ) {
         let (hitbox, clip) = (hitbox.clone(), *clip);
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, _| {
-            if phase == gpui_kit::DispatchPhase::Capture
-                && event.button == MouseButton::Left
-                && hitbox.is_hovered(window)
-            {
+            if phase != gpui_kit::DispatchPhase::Capture || event.button != MouseButton::Left {
+                return;
+            }
+            // a new press replaces the click's anchor with its own: weighing
+            // the selection after the next frame (below) would weigh this
+            // gesture, and drop its anchor before it moves
+            if SETTLING.get() == Some(window.window_handle().window_id()) {
+                SETTLING.set(None);
+            }
+            if hitbox.is_hovered(window) {
                 DRAG_CLIP.set(Some(clip));
                 PRESS.set(Some(event.position));
             }
@@ -220,8 +227,21 @@ impl Element for RichParagraph {
         // extends from a click here, so once the gesture has ended one that
         // takes in no word (the click test's question, `dragged_over_words`)
         // is dropped. It is asked after the first frame past the release:
-        // until the paragraphs project the ended selection again, each one
-        // it took in copies its whole text.
+        // the release resets every paragraph's projected copy text
+        // (`set_snapshot`), and until they paint again each one the
+        // selection took in copies its whole text. The kit's own question,
+        // `selects_text`, reads the painted runs and would answer at the
+        // release, but it is private.
+        //
+        // The root fix is in gpui-base, and it makes this step go: its
+        // `is_active` ignoring the ends a finished click left when they take
+        // in no character keeps the anchor, and the shift-click from it, at
+        // no cost.
+        //
+        // `SETTLING` holds one window: a release in another window before
+        // this one paints (not one pointer's pace) leaves this anchor to its
+        // next press, which drops it. A closed window's id never matches a
+        // later one (gpui's ids are versioned).
         if SETTLING.get() == Some(window.window_handle().window_id()) {
             SETTLING.set(None);
             window.defer(cx, |window, cx| {

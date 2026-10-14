@@ -502,6 +502,66 @@ fn a_click_that_drifts_leaves_no_anchor_behind(cx: &mut gpui_kit::TestAppContext
     );
 }
 
+/// A press that lands before the frame after a click (a quick hand, or a
+/// script driving the pointer) begins a gesture of its own: the click's
+/// weighing, which waits for that frame, must not drop the new press's
+/// anchor, or the drag that follows selects nothing.
+#[gpui_kit::test]
+fn a_press_before_the_frame_after_a_click_still_drags(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let root = container_with_style(
+        "pane",
+        div().w(px(150.)).h_full().flex().flex_col().style().clone(),
+        [
+            paragraph("alpha", "alpha beta"),
+            paragraph("gamma", "gamma"),
+        ],
+    );
+    let window = cx.open_window(size(px(300.), px(100.)), |_, cx| Window2 {
+        tree: cx.new(|_| ViewTree::new(root)),
+    });
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    let (word, from, to) = (
+        point(px(5.), px(10.)),
+        point(px(1.), px(30.)),
+        point(px(40.), px(30.)),
+    );
+    native.simulate_mouse_move(word, None, Default::default());
+    native.update(|window, cx| {
+        let click_count = 1;
+        let modifiers = gpui_kit::Modifiers::default();
+        let button = MouseButton::Left;
+        let clicked = MouseDownEvent {
+            button,
+            position: word,
+            modifiers,
+            click_count,
+            first_mouse: false,
+        };
+        let lifted = MouseUpEvent {
+            button,
+            position: word,
+            modifiers,
+            click_count,
+        };
+        let pressed = MouseDownEvent {
+            position: from,
+            ..clicked.clone()
+        };
+        window.dispatch_event(clicked.to_platform_input(), cx);
+        window.dispatch_event(lifted.to_platform_input(), cx);
+        window.dispatch_event(pressed.to_platform_input(), cx);
+    });
+    native.simulate_mouse_move(to, Some(MouseButton::Left), Default::default());
+    native.simulate_mouse_up(to, MouseButton::Left, Default::default());
+    let copied = native.update(|window, cx| {
+        window.render_frame(cx);
+        gpui_kit::base::TextSelection::selected_text(window, cx)
+    });
+    assert!(copied.starts_with("gamm"), "the drag: {copied:?}");
+}
+
 /// A drag selecting words inside a clickable box (a chat message's cell)
 /// is not a click on it: the words stay selected, the box hears nothing.
 /// A plain click on the same box is still its click.
