@@ -1276,7 +1276,7 @@ mod macos {
         std::fs::write(
             bundle.join("Contents/Info.plist"),
             format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>{APP_EXE}</string><key>CFBundleIdentifier</key><string>dev.ducktape.test.{name}</string></dict></plist>\n"
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleExecutable</key><string>{APP_EXE}</string><key>CFBundleIdentifier</key><string>dev.ducktape.test.{name}</string></dict></plist>\n"
             ),
         )
         .unwrap();
@@ -1461,7 +1461,11 @@ mod macos {
     fn launch_services_knows_only_the_installed_bundle() {
         let tmp = Path::new(&std::env::var_os("HOME").unwrap()).join("tmp");
         std::fs::create_dir_all(&tmp).unwrap();
-        let root = tempfile::tempdir_in(&tmp).unwrap();
+        // not a dot dir: Spotlight skips hidden ones
+        let root = tempfile::Builder::new()
+            .prefix("ls-check-")
+            .tempdir_in(&tmp)
+            .unwrap();
         let layout = Layout {
             updates: root.path().join("cfg/ducktape/updates"),
             install: root.path().join("apps"),
@@ -1475,7 +1479,8 @@ mod macos {
         std::thread::sleep(std::time::Duration::from_secs(20));
         let staged_registered = registered_under(root.path());
         crate::update::remove_leftover(&layout.release_dir(staged)).unwrap();
-        swap_in_and_back(root.path(), &layout);
+        // the flow's own builds stay out of the indexer's way
+        swap_in_and_back(&root.path().join("builds.noindex"), &layout);
         let registered = registered_under(root.path());
         for bundle in &registered {
             crate::update::macos::launch_services(bundle, false);
