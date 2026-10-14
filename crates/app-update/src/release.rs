@@ -27,11 +27,12 @@ use crate::sha::{bytes_to_hex, hex_to_array};
 pub const RELEASE_NS: &[u8] = b"ducktape:app-release";
 
 /// The release key every install trusts: the public half of the seed in the
-/// release job's `RELEASE_SIGNING_KEY` secret. A new key takes over through a
-/// signed [`crate::SuccessorKey`], never by editing this line alone.
+/// `RELEASE_SIGNING_KEY` secret of the repo's `release` environment. A new
+/// key takes over through a signed [`crate::SuccessorKey`], never by editing
+/// this line alone.
 pub const RELEASE_KEY: PublicKey = PublicKey([
-    0x5b, 0x22, 0x2e, 0x31, 0x14, 0x94, 0x0c, 0xb1, 0x2f, 0x07, 0xbf, 0xe1, 0x97, 0xb1, 0xf5, 0x25,
-    0x8c, 0x90, 0x5a, 0x04, 0x73, 0x40, 0x4a, 0x4a, 0xf8, 0x6c, 0x08, 0x58, 0x6c, 0x3c, 0x6f, 0x8e,
+    0x37, 0x21, 0x17, 0x18, 0x04, 0x41, 0x1e, 0x59, 0x32, 0x81, 0x78, 0xff, 0x23, 0x46, 0x8b, 0xd7,
+    0x57, 0x3b, 0x9c, 0x15, 0xc8, 0xdb, 0xaf, 0x63, 0x12, 0xb5, 0x46, 0x11, 0x27, 0x73, 0xda, 0x87,
 ]);
 
 /// A release-signing public key: 32 raw ed25519 bytes, hex on the wire.
@@ -235,7 +236,7 @@ mod tests {
     fn the_pinned_key_is_the_release_jobs_public_half() {
         assert_eq!(
             RELEASE_KEY.to_string(),
-            "5b222e3114940cb12f07bfe197b1f5258c905a0473404a4af86c08586c3c6f8e"
+            "3721171804411e59328178ff23468bd7573b9c15c8dbaf6312b546112773da87"
         );
     }
 

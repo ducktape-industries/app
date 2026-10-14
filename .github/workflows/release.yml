@@ -10,6 +10,12 @@
 # - stable: each time `main` moves;
 # - nightly: `dev` once a day (and on demand), skipped when dev's head is
 #   already the published nightly.
+# The signing key and the bucket's credentials live in the `release`
+# environment, which admits runs on `main` only (a scheduled run is one: it
+# runs main's workflow; dispatch it from main too). Only the publish job
+# enters it, and it runs nothing of the built commit: it builds the signer
+# from `main`, and the archives reach it as artifacts of the build jobs,
+# which see no secret.
 name: release
 
 on:
@@ -37,6 +43,7 @@ jobs:
       channel: ${{ steps.plan.outputs.channel }}
       sha: ${{ steps.plan.outputs.sha }}
       sequence: ${{ steps.plan.outputs.sequence }}
+      version: ${{ steps.plan.outputs.version }}
       skip: ${{ steps.plan.outputs.skip }}
     steps:
       # a schedule runs on the default branch: the nightly checks out dev
@@ -66,10 +73,12 @@ jobs:
             skip=true
             echo "$channel already publishes $published, not older than $sha ($sequence): skipped"
           fi
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
           {
             echo "channel=$channel"
             echo "sha=$sha"
             echo "sequence=$sequence"
+            echo "version=$version"
             echo "skip=$skip"
           } >> "$GITHUB_OUTPUT"
 
@@ -82,6 +91,8 @@ jobs:
       CARGO_BUILD_JOBS: 3
       SHA: ${{ needs.plan.outputs.sha }}
       TAG: bin-${{ needs.plan.outputs.sha }}
+      # the release tree, the app at its top: also the update archive
+      ASSET: ducktape-app-x86_64-unknown-linux-gnu.tar.gz
     steps:
       - uses: actions/checkout@v4
         with:
@@ -98,8 +109,6 @@ jobs:
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}
-          # the release tree, the app at its top: also the update archive
-          ASSET: ducktape-app-x86_64-unknown-linux-gnu.tar.gz
         run: |
           tar czf "$ASSET" -C target/release ducktape-app
           # Both jobs may try to create the release; the loser finds it made.
@@ -108,6 +117,12 @@ jobs:
             --notes "The ducktape app built at $SHA." \
             || gh release view "$TAG" >/dev/null
           gh release upload "$TAG" "$ASSET" --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-archive
+          path: ${{ env.ASSET }}
+          retention-days: 7
+          overwrite: true
 
   macos:
     needs: plan
@@ -118,6 +133,9 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/../target
       SHA: ${{ needs.plan.outputs.sha }}
       TAG: bin-${{ needs.plan.outputs.sha }}
+      # the update archive: Ducktape.app whole, no AppleDouble files and no
+      # extended attributes (its signature lives in its files)
+      APP_ASSET: ducktape-app-aarch64-apple-darwin.app.tar.gz
     steps:
       - uses: actions/checkout@v4
         with:
@@ -127,9 +145,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ASSET: ducktape-app-aarch64-apple-darwin.dmg
-          # the update archive: Ducktape.app whole, no AppleDouble files and
-          # no extended attributes (its signature lives in its files)
-          APP_ASSET: ducktape-app-aarch64-apple-darwin.app.tar.gz
         run: |
           mv target/app-bundle/Ducktape-*.dmg "$ASSET"
           COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -czf "$APP_ASSET" \
@@ -140,32 +155,46 @@ jobs:
             --notes "The ducktape app built at $SHA." \
             || gh release view "$TAG" >/dev/null
           gh release upload "$TAG" "$ASSET" "$APP_ASSET" --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-archive
+          path: ${{ env.APP_ASSET }}
+          retention-days: 7
+          overwrite: true
 
   # Sign the channel's manifest over both archives and upload: archives
   # first (immutable, named by their sha256), then the channel's one file,
   # so a client never reads a manifest whose archive is not there, nor a
-  # manifest beside another one's signature.
+  # manifest beside another one's signature. The one job in the `release`
+  # environment: `main`'s signer over the build jobs' archives. No cache:
+  # the build jobs build whatever commit they are given, and nothing they
+  # leave behind reaches the job that holds the key.
   publish:
     needs: [plan, linux, macos]
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: read
     env:
       CHANNEL: ${{ needs.plan.outputs.channel }}
       SHA: ${{ needs.plan.outputs.sha }}
       SEQUENCE: ${{ needs.plan.outputs.sequence }}
+      VERSION: ${{ needs.plan.outputs.version }}
       TAG: bin-${{ needs.plan.outputs.sha }}
     steps:
+      # main, on a push and on the schedule alike: never the built commit
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.plan.outputs.sha }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: fetch the archives
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download "$TAG" --dir assets \
-            --pattern ducktape-app-x86_64-unknown-linux-gnu.tar.gz \
-            --pattern ducktape-app-aarch64-apple-darwin.app.tar.gz
+          ref: main
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-archive
+          path: assets
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-archive
+          path: assets
       # built before the key is in the environment: no build script runs
       # with it
       - run: cargo build --locked --release -p app-update --bin publish-release
@@ -173,11 +202,10 @@ jobs:
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
         run: |
-          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
           target/release/publish-release \
             --channel "$CHANNEL" \
             --sequence "$SEQUENCE" \
-            --display "$version+${SHA:0:7}" \
+            --display "$VERSION+${SHA:0:7}" \
             --published-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --notes-url "https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG" \
             --archive linux-x86_64=assets/ducktape-app-x86_64-unknown-linux-gnu.tar.gz \
