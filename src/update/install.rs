@@ -85,6 +85,52 @@ pub(super) fn adopt(layout: &Layout, own: &Path) -> Result<Phase, Refusal> {
     Ok(adopted)
 }
 
+/// The state rebuilt from the install on disk, for a `state.json` that does
+/// not parse (the boot step's): with no backward compatibility, any change
+/// to its shape would otherwise switch every install's updater off for good.
+/// macOS adopts the running bundle; Linux keeps the release the install path
+/// names, which must be the image that runs (its sequence is the pin). As
+/// after an install, nothing to go back to and nothing staged; the channel,
+/// `seen.json` and a successor key stay.
+pub(super) fn rebuild(layout: &Layout, own: &Path) -> Result<Phase, Refusal> {
+    if cfg!(target_os = "macos") {
+        return adopt(layout, own);
+    }
+    let link = layout.current_link();
+    let named = super::read_link(&link)?;
+    let sha = named
+        .as_deref()
+        .and_then(|target| {
+            target
+                .strip_prefix("releases")
+                .ok()?
+                .to_str()?
+                .parse::<Sha>()
+                .ok()
+        })
+        .filter(|sha| named.as_deref() == Some(Layout::link_target(*sha).as_path()))
+        .ok_or_else(|| {
+            Refusal::new(
+                "install_path_unknown",
+                format!("{} points at {named:?}, no release", link.display()),
+            )
+        })?;
+    super::require_release(layout, sha)?;
+    if super::file_id(own)? != super::file_id(&layout.app_exe())? {
+        return Err(Refusal::new(
+            "state_invalid",
+            format!(
+                "not rebuilt: {} is not the release {} names",
+                own.display(),
+                link.display()
+            ),
+        ));
+    }
+    super::remove_leftover(&layout.previous_link())?;
+    keep_only(&layout.releases_dir(), Some(sha))?;
+    fresh(layout, sha)
+}
+
 /// The state an install starts from: what runs, nothing to go back to,
 /// pinned at the sequence this binary was published at.
 fn fresh(layout: &Layout, sha: Sha) -> Result<Phase, Refusal> {

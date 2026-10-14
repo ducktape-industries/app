@@ -10,6 +10,9 @@
 //! `PendingHealthy{boots: 0}`, counts itself (`boots: 1`) and goes on. If it
 //! never renders a frame, the next start finds `boots: 1` and flips back.
 //!
+//! A `state.json` that does not parse is rebuilt from the install on disk
+//! ([`super::install::rebuild`]), as an install would have written it.
+//!
 //! When the update machinery cannot be trusted (a link where a file should
 //! be, a flip that refused, an `exec` that failed) the process goes on as the
 //! app with the updater off and says why under `ducktape::update`: the boot
@@ -85,7 +88,13 @@ pub(super) fn boot_at(layout: &Layout, own: &Path) -> Result<Boot, Refusal> {
     // taken before anything moves: on macOS the swap puts another bundle
     // at this very path
     let own_id = super::file_id(own)?;
-    let phase = super::read_state(&layout.state_path())?;
+    let phase = match super::read_state(&layout.state_path()) {
+        Err(refusal) if refusal.reason == "state_invalid" => {
+            warn!(target: TARGET, event = "app_update_state_rebuilt", detail = %refusal.detail, "state.json does not parse: rebuilt from the install on disk");
+            Some(super::install::rebuild(layout, own)?)
+        }
+        read => read?,
+    };
     // macOS adopts the bundle that runs from the install dir when no state
     // describes it ([`super::install::adopt`]): none, as for a bundle dragged
     // in from the DMG, or one pinned below the bundle's own sequence, as for

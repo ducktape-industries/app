@@ -800,6 +800,42 @@ mod linux {
         assert_eq!(refused.reason, "symlink_refused");
     }
 
+    /// A `state.json` that does not parse (another build's shape) is
+    /// rebuilt from the release the install path names, as an install would
+    /// have written it: a staged release is dropped, `seen.json` stays. A
+    /// process that is not that release rebuilds nothing.
+    #[test]
+    fn a_state_that_does_not_parse_is_rebuilt_from_the_install_path() {
+        use crate::update::boot::{Boot, boot_at};
+        let bucket = Bucket::new();
+        let (root, layout) = rig();
+        let (a, installed) = install(root.path(), &layout, &script("a"));
+        let b = stage(
+            &layout,
+            &bucket,
+            installed.pinned_sequence() + 1,
+            script("b"),
+        );
+        let seen = std::fs::read(layout.seen_path()).unwrap();
+        std::fs::write(layout.state_path(), r#"{"phase":"from another build"}"#).unwrap();
+
+        let refused = boot_at(&layout, &layout.release_exe(b)).unwrap_err();
+        assert_eq!(refused.reason, "state_invalid");
+        assert!(layout.release_dir(b).exists(), "nothing touched");
+
+        assert_eq!(
+            boot_at(&layout, &layout.release_exe(a)).unwrap(),
+            Boot::Run(installed.clone())
+        );
+        assert_eq!(state(&layout), installed);
+        assert_eq!(current(&layout), Layout::link_target(a));
+        assert!(
+            !layout.release_dir(b).exists(),
+            "the staged release is dropped"
+        );
+        assert_eq!(std::fs::read(layout.seen_path()).unwrap(), seen);
+    }
+
     /// A crash between `Swapping` and `PendingHealthy` finishes from whichever
     /// side the install path is on: landed, it records `previous`; untouched,
     /// it flips. Either way the start runs the new release.
@@ -1136,6 +1172,10 @@ mod macos {
         assert_eq!(state(&layout), adopted(&own));
         // the next start reads what this one wrote
         assert_eq!(boot_at(&layout, &own).unwrap(), Boot::Run(adopted(&own)));
+        // and one that finds it unparsable adopts the bundle again
+        std::fs::write(layout.state_path(), "{").unwrap();
+        assert_eq!(boot_at(&layout, &own).unwrap(), Boot::Run(adopted(&own)));
+        assert_eq!(state(&layout), adopted(&own));
     }
 
     /// A newer bundle dragged over an installed one finds a state pinned
