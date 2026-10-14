@@ -27,6 +27,35 @@ thread_local! {
     /// the drag started in — take part, so a pointer that wanders into the
     /// thread or the sidebar cannot pull their text into the selection.
     static DRAG_CLIP: std::cell::Cell<Option<Bounds<Pixels>>> = const { std::cell::Cell::new(None) };
+    /// Where the last left press on a paragraph went down: a link's click
+    /// says which range it was, not where the press began.
+    static PRESS: std::cell::Cell<Option<Point<Pixels>>> = const { std::cell::Cell::new(None) };
+    /// The window where a press that went down on a paragraph has been
+    /// released, and the selection it left is still to be weighed by the
+    /// next frame's paragraphs, unless a new press comes first
+    /// (`RichParagraph::paint`).
+    static SETTLING: std::cell::Cell<Option<gpui_kit::WindowId>> = const { std::cell::Cell::new(None) };
+}
+
+/// How far a press may travel and still be a click: gpui's own threshold
+/// for a drag (`DRAG_THRESHOLD`, private to its `div.rs`).
+const DRAG_THRESHOLD: f64 = 2.;
+
+/// Whether a press at `down` released at `up` was a drag that selected
+/// words: then the release pressed nothing, whatever box it landed on.
+/// Both halves count. A press that drifted no farther than a drag goes (a
+/// trackpad click's `mouseDragged`, fractional coordinates on macOS) is a
+/// click whatever the selection holds: until the next frame paints, a
+/// paragraph the selection just took in copies its whole text, however
+/// little of it the drift covered. A drag over no words is a click too.
+pub(super) fn dragged_over_words(
+    down: Point<Pixels>,
+    up: Point<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
+    (up - down).magnitude() > DRAG_THRESHOLD
+        && !gpui_kit::base::TextSelection::selected_text(window, cx).is_empty()
 }
 
 /// Whether a paragraph painted in `clip` takes part in the selection while
@@ -91,8 +120,11 @@ impl IntoElement for RichParagraph {
 impl Element for RichParagraph {
     type RequestLayoutState = ();
     type PrepaintState = (gpui_kit::Hitbox, Bounds<Pixels>);
+    // No id of its own: the content carries `id`, so what is inside is
+    // filed under the one id the view gave (or the host numbered), and the
+    // selection state below is keyed under that same id.
     fn id(&self) -> Option<ElementId> {
-        Some(self.id.clone())
+        None
     }
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
         None
@@ -108,7 +140,7 @@ impl Element for RichParagraph {
     }
     fn prepaint(
         &mut self,
-        id: Option<&GlobalElementId>,
+        _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _: &mut (),
@@ -131,22 +163,23 @@ impl Element for RichParagraph {
                 .with_text_bounds(vec![layout_bounds])
                 .with_document_order(order)
         };
-        let id = id.expect("a paragraph always has an id");
-        window.with_element_state::<RichSelection, _>(id, |state, window| {
-            let state = state.unwrap_or_else(|| {
-                let handle = gpui_kit::base::TextSelectionHandle::new(text.to_string(), cx);
-                let refresh = refresh_on_change(&handle, window, cx);
-                RichSelection {
-                    handle,
-                    _refresh: refresh,
+        window.with_global_id(self.id.clone(), |id, window| {
+            window.with_element_state::<RichSelection, _>(id, |state, window| {
+                let state = state.unwrap_or_else(|| {
+                    let handle = gpui_kit::base::TextSelectionHandle::new(text.to_string(), cx);
+                    let refresh = refresh_on_change(&handle, window, cx);
+                    RichSelection {
+                        handle,
+                        _refresh: refresh,
+                    }
+                });
+                state.handle.set_fallback_copy_text(text.to_string(), cx);
+                *active.borrow_mut() = Some(state.handle.clone());
+                if joins {
+                    state.handle.register(registration(), window, cx);
                 }
-            });
-            state.handle.set_fallback_copy_text(text.to_string(), cx);
-            *active.borrow_mut() = Some(state.handle.clone());
-            if joins {
-                state.handle.register(registration(), window, cx);
-            }
-            ((), state)
+                ((), state)
+            })
         });
         (hitbox, clip)
     }
@@ -162,11 +195,18 @@ impl Element for RichParagraph {
     ) {
         let (hitbox, clip) = (hitbox.clone(), *clip);
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, _| {
-            if phase == gpui_kit::DispatchPhase::Capture
-                && event.button == MouseButton::Left
-                && hitbox.is_hovered(window)
-            {
+            if phase != gpui_kit::DispatchPhase::Capture || event.button != MouseButton::Left {
+                return;
+            }
+            // a new press replaces the click's anchor with its own: weighing
+            // the selection after the next frame (below) would weigh this
+            // gesture, and drop its anchor before it moves
+            if SETTLING.get() == Some(window.window_handle().window_id()) {
+                SETTLING.set(None);
+            }
+            if hitbox.is_hovered(window) {
                 DRAG_CLIP.set(Some(clip));
+                PRESS.set(Some(event.position));
             }
         });
         window.on_mouse_event(|event: &MouseUpEvent, phase, window, _| {
@@ -176,8 +216,40 @@ impl Element for RichParagraph {
             {
                 // the paragraphs the drag left out take part again
                 window.refresh();
+                SETTLING.set(Some(window.window_handle().window_id()));
             }
         });
+        // A press on words that selected none (a click, still or drifting a
+        // pixel or two) leaves gpui-base's selection an anchor, kept for a
+        // later shift-click to extend from. While it holds one, every
+        // paragraph's registration publishes to every paragraph, each frame:
+        // a hover step costs the square of the window's texts. Nothing
+        // extends from a click here, so once the gesture has ended one that
+        // takes in no word (the click test's question, `dragged_over_words`)
+        // is dropped. It is asked after the first frame past the release:
+        // the release resets every paragraph's projected copy text
+        // (`set_snapshot`), and until they paint again each one the
+        // selection took in copies its whole text. The kit's own question,
+        // `selects_text`, reads the painted runs and would answer at the
+        // release, but it is private.
+        //
+        // The root fix is in gpui-base, and it makes this step go: its
+        // `is_active` ignoring the ends a finished click left when they take
+        // in no character keeps the anchor, and the shift-click from it, at
+        // no cost.
+        //
+        // `SETTLING` holds one window: a release in another window before
+        // this one paints (not one pointer's pace) leaves this anchor to its
+        // next press, which drops it. A closed window's id never matches a
+        // later one (gpui's ids are versioned).
+        if SETTLING.get() == Some(window.window_handle().window_id()) {
+            SETTLING.set(None);
+            window.defer(cx, |window, cx| {
+                if gpui_kit::base::TextSelection::selected_text(window, cx).is_empty() {
+                    gpui_kit::base::TextSelection::clear(window, cx);
+                }
+            });
+        }
         let run = gpui_kit::base::TextSelectionRun::new(
             self.text.clone(),
             self.layout.clone(),
@@ -258,6 +330,28 @@ fn paint_picked_link(
     }
 }
 
+/// The layer over a paragraph that paints its selected `range` each frame,
+/// and the mark on `picked`, the link the arrows are on.
+fn selection_canvas(
+    layout: TextLayout,
+    range: std::rc::Rc<std::cell::RefCell<Option<std::ops::Range<usize>>>>,
+    picked: Option<std::ops::Range<usize>>,
+) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |_, (), window, cx| {
+            if let Some(range) = range.borrow().as_ref() {
+                paint_rich_selection(&layout, range, window, cx);
+            }
+            if let Some(range) = &picked {
+                paint_picked_link(&layout, range, window, cx);
+            }
+        },
+    )
+    .absolute()
+    .size_full()
+}
+
 impl ViewTree {
     pub(super) fn text(&mut self, node: &wire::Node) -> AnyElement {
         let wire::Node::Text(view_wire::TextNode {
@@ -271,22 +365,48 @@ impl ViewTree {
             self.render_index += 1;
             host_id(format!("text-{index}"))
         });
-        let mut element = div();
+        let shared: SharedString = content.clone().into();
+        let styled = StyledText::new(shared.clone());
+        let layout = styled.layout().clone();
+        let selection_range = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut element = div().relative();
         *element.style() = Arc::unwrap_or_clone(self.style(*style));
         crate::fonts::refine_fallbacks(element.style());
-        let element = element
-            .id(native_id)
-            // The div above is the Label `announce` names below; the text
-            // itself stays out of the AX tree so it is not a second,
-            // empty-named node carrying the same content as its value.
-            .child(gpui_kit::Text::new_inaccessible(content.clone().into()));
-        let element = announce(element, accessible(node));
+        let mut element = element.id(native_id.clone());
+        if !self.unselected {
+            element = element.child(selection_canvas(
+                layout.clone(),
+                selection_range.clone(),
+                None,
+            ));
+        }
+        // The div is the Label `announce` names below; the styled text
+        // itself has no AX node, so it is not a second, empty-named node
+        // carrying the same content as its value.
+        let element = announce(element.child(styled), accessible(node));
         #[cfg(test)]
         let element = {
             use gpui_kit::test::TestSupportExt as _;
             element.test_support()
         };
-        element.into_any_element()
+        // a control's label or a list marker is no paragraph of the selection
+        // (`keeps_words_unselected`)
+        if self.unselected {
+            return element.into_any_element();
+        }
+        // A plain text is a paragraph of the selection too: a drag across
+        // a label, a caption or a heading selects and copies it, as across
+        // a message body.
+        RichParagraph {
+            id: native_id,
+            content: element.into_any_element(),
+            text: shared,
+            layout,
+            active_handle: Default::default(),
+            selection: selection_range,
+            order: self.selection_order.clone(),
+        }
+        .into_any_element()
     }
 
     pub(super) fn rich_text(
@@ -355,7 +475,9 @@ impl ViewTree {
                 // a click that ended a drag selected words; it pressed nothing
                 interactive =
                     interactive.on_click(clickable_ranges.clone(), move |index, window, cx| {
-                        if !gpui_kit::base::TextSelection::has_selection(window, cx) {
+                        let up = window.mouse_position();
+                        let down = PRESS.get().unwrap_or(up);
+                        if !dragged_over_words(down, up, window, cx) {
                             press(index, cx)
                         }
                     });
@@ -417,21 +539,7 @@ impl ViewTree {
             .and_then(|(_, linking)| linking.picked)
             .map(|index| clickable_ranges[index].clone());
         let selection_range = std::rc::Rc::new(std::cell::RefCell::new(None));
-        let selection_for_paint = selection_range.clone();
-        let selection_layout = layout.clone();
-        let selection = canvas(
-            |_, _, _| (),
-            move |_, (), window, cx| {
-                if let Some(range) = selection_for_paint.borrow().as_ref() {
-                    paint_rich_selection(&selection_layout, range, window, cx);
-                }
-                if let Some(range) = &picked {
-                    paint_picked_link(&selection_layout, range, window, cx);
-                }
-            },
-        )
-        .absolute()
-        .size_full();
+        let selection = selection_canvas(layout.clone(), selection_range.clone(), picked);
         let content = match linked {
             Some((mut boxed, linking)) => {
                 *boxed.style() = Arc::unwrap_or_clone(self.style(*style));
@@ -439,11 +547,20 @@ impl ViewTree {
                 boxed.child(selection).child(interactive).into_any_element()
             }
             None => {
-                let mut content = div().relative().child(selection).child(interactive);
+                let mut content = div()
+                    .id(native_id.clone())
+                    .relative()
+                    .child(selection)
+                    .child(interactive);
                 *content.style() = Arc::unwrap_or_clone(self.style(*style));
                 content.into_any_element()
             }
         };
+        // a control's label or a list marker is no paragraph of the selection
+        // (`keeps_words_unselected`)
+        if self.unselected {
+            return content;
+        }
         RichParagraph {
             id: native_id,
             content,

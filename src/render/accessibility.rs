@@ -392,7 +392,21 @@ impl ViewTree {
         if let Some(handler) = interactivity.on_click {
             let consumes = interactivity.consumes_click;
             element = element.on_click(cx.listener(
-                move |this, event: &gpui_kit::ClickEvent, _, cx| {
+                move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                    // gpui answers a press and a release on one box with a
+                    // click however far the pointer went between them; a
+                    // release that ended a drag selecting words pressed
+                    // nothing (as the links in a paragraph say)
+                    if let gpui_kit::ClickEvent::Mouse(click) = event
+                        && super::text::dragged_over_words(
+                            click.down.position,
+                            click.up.position,
+                            window,
+                            cx,
+                        )
+                    {
+                        return;
+                    }
                     this.activate();
                     cx.emit(wire::Event::Click {
                         handler,
