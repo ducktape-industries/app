@@ -151,6 +151,8 @@ thread_local! {
 /// Tell LaunchServices `bundle` is an app to open (`registered`), or no
 /// longer one. Its failure is logged and changes nothing else: the
 /// registration is what Finder and `open` offer, not what the update runs.
+/// An unregister of a bundle it never knew (a staged one, normally) exits 1
+/// with -10814, as a real failure would, so that is said at debug.
 pub(super) fn launch_services(bundle: &Path, registered: bool) {
     #[cfg(test)]
     if !LAUNCH_SERVICES.with(std::cell::Cell::get) {
@@ -163,15 +165,28 @@ pub(super) fn launch_services(bundle: &Path, registered: bool) {
         true => "-f",
         false => "-u",
     };
-    let status = Command::new(LSREGISTER)
+    let output = Command::new(LSREGISTER)
         .arg(flag)
         .arg(bundle)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    if !status.as_ref().is_ok_and(std::process::ExitStatus::success) {
-        tracing::warn!(target: super::TARGET, event = "app_update_launch_services_failed", flag, bundle = %bundle.display(), ?status);
+        .output();
+    let said = match &output {
+        Ok(output) if output.status.success() => return,
+        Ok(output) => format!(
+            "{}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+        Err(error) => error.to_string(),
+    };
+    match registered {
+        true => {
+            tracing::warn!(target: super::TARGET, event = "app_update_launch_services_failed", flag, bundle = %bundle.display(), said)
+        }
+        false => {
+            tracing::debug!(target: super::TARGET, event = "app_update_launch_services_failed", flag, bundle = %bundle.display(), said)
+        }
     }
 }
 
