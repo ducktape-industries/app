@@ -103,15 +103,7 @@ pub(super) fn swap_bundles(layout: &Layout, from: Sha, to: Sha) -> Result<(), Re
             format!("{} already exists; remove it first", park.display()),
         ));
     }
-    // the app seals a staged release `a-w`; the swap renames entries inside
-    // `releases/<to>/`, which needs write on that directory
-    unseal_dir(&layout.release_dir(to))?;
     let source = same_volume_copy(&staged, &layout.install, to)?;
-    // moving a directory to another parent rewrites its `..`, which needs
-    // write on the directory itself: RENAME_SWAP moves both bundles, and
-    // `finish` moves the outgoing one again, to its park slot
-    unseal_dir(&source)?;
-    unseal_dir(&installed)?;
     let journal = Journal {
         to,
         app_digest: super::digest_file(&super::bundle_exe(&source))?,
@@ -193,17 +185,6 @@ fn same_volume_copy(staged: &Path, install: &Path, sha: Sha) -> Result<PathBuf, 
     Ok(copy)
 }
 
-/// `u+w` on one directory (not its contents).
-fn unseal_dir(dir: &Path) -> Result<(), Refusal> {
-    use std::os::unix::fs::PermissionsExt as _;
-    let mode = std::fs::metadata(dir)
-        .map_err(|error| Refusal::io("release_missing", dir, &error))?
-        .permissions()
-        .mode();
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode | 0o200))
-        .map_err(|error| Refusal::io("unseal_failed", dir, &error))
-}
-
 /// `renamex_np(a, b, RENAME_SWAP)`: both paths exist before and after;
 /// their contents trade places atomically.
 #[cfg(target_os = "macos")]
@@ -253,35 +234,20 @@ mod tests {
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    fn chmod(mode: &str, path: &Path) {
-        assert!(
-            Command::new("chmod")
-                .args(["-R", mode])
-                .arg(path)
-                .status()
-                .unwrap()
-                .success()
-        );
-    }
-
-    /// The app seals a staged release `chmod -R a-w`; the swap, the park
-    /// and the swap back must still land, and leave no journal.
+    /// The swap, the park and the swap back land, and leave no journal.
     #[test]
-    fn sealed_bundles_swap_in_park_and_swap_back() {
+    fn bundles_swap_in_park_and_swap_back() {
         let root = tempfile::tempdir().unwrap();
         let layout = layout(root.path());
         let (a, b) = (Sha::digest(b"a"), Sha::digest(b"b"));
         bundle(&layout.installed_bundle(), b"app-a");
         bundle(&layout.staged_bundle(b), b"app-b");
-        chmod("a-w", &layout.release_dir(b));
-        chmod("a-w", &layout.installed_bundle());
 
         let flipped = swap_bundles(&layout, a, b);
         let rolled_back = flipped.clone().and_then(|()| swap_bundles(&layout, b, a));
         let parked_b =
             super::super::digest_file(&super::super::bundle_exe(&layout.staged_bundle(b)));
         let installed = super::super::digest_file(&layout.app_exe());
-        chmod("u+w", root.path());
         assert_eq!(flipped, Ok(()));
         assert_eq!(rolled_back, Ok(()));
         assert_eq!(installed.unwrap(), Sha::digest(b"app-a"));

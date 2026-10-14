@@ -503,10 +503,11 @@ mod linux {
         Updater::new(layout.clone(), state(layout), keys(), channel, &bucket.base)
     }
 
-    /// A newer release on the channel is downloaded, verified, staged sealed,
-    /// and waits for the next start; the pin moves only at the flip.
+    /// A newer release on the channel is downloaded, verified and staged,
+    /// and waits for the next start; the pin moves only at the flip. What
+    /// it lays down stays its user's to remove or replace.
     #[test]
-    fn a_check_stages_a_newer_release_sealed_and_keeps_the_pin() {
+    fn a_check_stages_a_newer_release_and_keeps_the_pin() {
         use std::os::unix::fs::PermissionsExt as _;
         let bucket = Bucket::new();
         let (root, layout) = rig();
@@ -529,11 +530,10 @@ mod linux {
             (a, b, pin + 1, pin)
         );
         assert_eq!(updater.phase(), &Phase::Staged(staged));
-        let mode = std::fs::metadata(layout.release_dir(b))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o222, 0, "the staged release is sealed");
+        for path in [layout.release_dir(b), layout.release_exe(b)] {
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o200, 0o200, "{} is read-only", path.display());
+        }
         let shown = updater.shown();
         assert!(shown.restart);
         assert!(
@@ -1265,6 +1265,11 @@ mod macos {
             String::from_utf8_lossy(&output.stdout).trim(),
             "ducktape-app 0.0.0+b"
         );
+        // the bundle the update put in place is its user's, as a dragged
+        // one is: a Finder "Replace" or a removal needs no chmod
+        let probe = layout.installed_bundle().join("Contents/MacOS/probe");
+        std::fs::write(&probe, b"x").unwrap();
+        std::fs::remove_file(&probe).unwrap();
         let own_b = layout.app_exe();
         let booted = boot_at(&layout, &own_b).unwrap();
         assert!(
@@ -1303,7 +1308,7 @@ mod macos {
         );
         let archive = layout::archive_name(&b, &Platform::HOST.key());
         assert_eq!(bucket.asked_for(&archive), 1, "B was downloaded once");
-        // the whole tree is the test's to remove
-        run(Command::new("chmod").args(["-R", "u+w"]).arg(root.path()));
+        // nothing the updates laid down needs a chmod to go
+        std::fs::remove_dir_all(root.path()).unwrap();
     }
 }

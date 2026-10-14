@@ -13,7 +13,7 @@
 //!   with a host artifact that is not `current` → `Downloading` +
 //!   `Download`; equal to the pin → `Banner(UpToDate)`; older →
 //!   `Refused(SequenceNotNewer)`. `DownloadFinished` → `Verify`; `Verified` →
-//!   `SealImmutable` (+ `PinSuccessor`) → `Staged` + `Banner(Ready)`.
+//!   (`PinSuccessor`) → `Staged` + `Banner(Ready)`.
 //! - `Boot` while `Staged` → `Qualify`; `QualifyPassed` → `Persist(Swapping)`
 //!   → `Flip` → `Persist(PendingHealthy{boots: 0})` → `Exec`, the swap
 //!   adopting the staged sequence as the pin; `QualifyFailed` → stay
@@ -316,8 +316,7 @@ fn downloading_download_failed(
     abandon_download(downloading, banner)
 }
 
-/// Verified: seal the extracted dir, record any announced successor key, and
-/// offer the restart. The pin stays: it advances at the flip.
+/// Verified: record any announced successor key, and offer the restart. The pin stays: it advances at the flip.
 fn downloading_verified(downloading: Downloading, sha: Sha) -> (Phase, Vec<Command>) {
     let is_stale = sha != downloading.target;
     if is_stale {
@@ -336,8 +335,11 @@ fn downloading_verified(downloading: Downloading, sha: Sha) -> (Phase, Vec<Comma
         staged: downloading.target,
         display: downloading.display,
     };
-    let mut commands = vec![Command::SealImmutable(downloading.target)];
-    commands.extend(downloading.successor_key.map(Command::PinSuccessor));
+    let mut commands: Vec<Command> = downloading
+        .successor_key
+        .map(Command::PinSuccessor)
+        .into_iter()
+        .collect();
     commands.push(Command::Persist(staged.clone()));
     commands.push(Command::Banner(banner));
     (staged, commands)
@@ -837,13 +839,12 @@ mod tests {
                 ),
             },
             Case {
-                name: "downloading verified seals and stages, the pin kept for the flip",
+                name: "downloading verified stages, the pin kept for the flip",
                 phase: Phase::Downloading(downloading("b", 18)),
                 event: Event::Verified(sha("b")),
                 expect: (
                     staged_ready.clone(),
                     vec![
-                        Command::SealImmutable(sha("b")),
                         Command::Persist(staged_ready.clone()),
                         Command::Banner(UpdateBanner::Ready {
                             staged: sha("b"),
@@ -1245,9 +1246,8 @@ mod tests {
         let mut d = downloading("b", 18);
         d.successor_key = Some(successor.clone());
         let (_, commands) = step(Phase::Downloading(d), Event::Verified(sha("b")));
-        assert_eq!(commands[0], Command::SealImmutable(sha("b")));
-        assert_eq!(commands[1], Command::PinSuccessor(successor));
-        assert!(matches!(commands[2], Command::Persist(Phase::Staged(_))));
+        assert_eq!(commands[0], Command::PinSuccessor(successor));
+        assert!(matches!(commands[1], Command::Persist(Phase::Staged(_))));
     }
 
     /// A staged release whose own qualify refuses it does not spend the

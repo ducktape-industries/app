@@ -16,7 +16,7 @@
 //!   file's length with an HTTP `Range`, sha256 running over every byte the
 //!   file holds; a mismatch deletes the partial.
 //! - `Verify`: extract into `releases/<sha>/` ([`super::stage`]).
-//! - `SealImmutable`, `Gc`, `Persist`, `PinSuccessor`, `Banner`: the local
+//! - `Gc`, `Persist`, `PinSuccessor`, `Banner`: the local
 //!   writes, what Settings › Updates shows ([`shown`]), and one desktop
 //!   notice per staged release.
 //!
@@ -368,12 +368,6 @@ impl Updater {
                 Command::Fetch => job = Some(Job::Fetch),
                 Command::Download { sha, size } => job = Some(Job::Download { sha, size }),
                 Command::Verify(sha) => job = Some(Job::Verify(sha)),
-                Command::SealImmutable(sha) => match stage::seal(&self.layout.release_dir(sha)) {
-                    Ok(()) => info!(target: TARGET, event = "app_update_sealed", %sha),
-                    Err(error) => {
-                        warn!(target: TARGET, event = "app_update_seal_failed", %sha, %error)
-                    }
-                },
                 Command::PinSuccessor(successor) => {
                     let text = serde_json::to_string_pretty(&successor).expect("a key serializes");
                     if let Err(refusal) =

@@ -33,7 +33,7 @@ pub enum Phase {
     /// A newer manifest was accepted; `target` is being downloaded (and then
     /// verified — the machine stays here until `Verified`/`VerifyRefused`).
     Downloading(Downloading),
-    /// `staged` is verified, extracted, sealed immutable and ready to flip.
+    /// `staged` is verified, extracted and ready to flip.
     /// The channel stays open: a newer release supersedes it.
     Staged(Staged),
     /// The crash-safe swap bit: persisted before `Flip`, replaced after.
@@ -238,8 +238,6 @@ pub enum Command {
     /// sha256 the archive against `sha`, extract into `releases/<sha>/`,
     /// macOS `codesign --verify`; answer with `Verified`/`VerifyRefused`.
     Verify(Sha),
-    /// `chmod -R a-w releases/<sha>/`.
-    SealImmutable(Sha),
     /// Record the announced successor key beside the pinned one.
     PinSuccessor(SuccessorKey),
     /// Ask the staged release whether it runs; answer with

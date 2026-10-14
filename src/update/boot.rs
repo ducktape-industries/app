@@ -166,7 +166,6 @@ fn drive(layout: &Layout, mut phase: Phase) -> Result<Phase, Refusal> {
                 command @ (Command::Fetch
                 | Command::Download { .. }
                 | Command::Verify(_)
-                | Command::SealImmutable(_)
                 | Command::PinSuccessor(_)
                 | Command::Gc { .. }) => {
                     return Err(Refusal::new(

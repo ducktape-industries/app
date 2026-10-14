@@ -1,8 +1,8 @@
 //! Staging a downloaded release on disk: the archive out of
 //! `releases/<sha>.partial` into `releases/<sha>/` (the FINAL directory, never
 //! a temp elsewhere — what is verified is what is flipped), the bundle check
-//! that makes it trusted, the seal that keeps it that way, and the collector
-//! that removes what no phase names any more.
+//! that makes it trusted, and the collector that removes what no phase names
+//! any more.
 //!
 //! The archive (`.tar.gz`) holds the release directory's contents at its top
 //! level: Linux `ducktape-app`; macOS `Ducktape.app/…`. Extraction accepts
@@ -44,7 +44,7 @@ pub(super) fn stage(archive: &Path, sha: Sha, release_dir: &Path) -> Result<(), 
 }
 
 /// A release dir is a real directory the app creates: a link at its path
-/// is refused, a leftover directory is unsealed and removed.
+/// is refused, a leftover directory is removed.
 fn clear_release_dir(release_dir: &Path) -> Result<(), String> {
     let Ok(meta) = std::fs::symlink_metadata(release_dir) else {
         return Ok(());
@@ -52,7 +52,6 @@ fn clear_release_dir(release_dir: &Path) -> Result<(), String> {
     if meta.file_type().is_symlink() {
         return Err("release_dir_is_a_link".into());
     }
-    unseal(release_dir);
     std::fs::remove_dir_all(release_dir).map_err(|_| "io".to_string())
 }
 
@@ -124,43 +123,6 @@ fn entry_destination(root: &Path, entry_path: &Path) -> Result<PathBuf, String> 
     Ok(destination)
 }
 
-// ---- seal / unseal ---------------------------------------------------------
-
-/// `chmod -R a-w`: nothing in a staged release changes after it verified.
-/// Symlinks are left alone (their mode is meaningless; their target is
-/// inside and gets its own visit).
-pub(super) fn seal(dir: &Path) -> std::io::Result<()> {
-    walk(dir, &|path, mode| set_mode(path, mode & !0o222))
-}
-
-/// `chmod -R u+w`, so a sealed release can be moved or removed. Errors are
-/// ignored: the remove that follows reports its own.
-pub(super) fn unseal(dir: &Path) {
-    let _ = walk(dir, &|path, mode| set_mode(path, mode | 0o200));
-}
-
-fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-}
-
-/// Every non-link entry under `dir`, children before their directory. A
-/// sealed directory still reads (`r-x`) and chmod needs ownership, not a
-/// writable parent, so one order serves both the seal and the unseal.
-fn walk(dir: &Path, apply: &dyn Fn(&Path, u32) -> std::io::Result<()>) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    let meta = std::fs::symlink_metadata(dir)?;
-    if meta.file_type().is_symlink() {
-        return Ok(());
-    }
-    if meta.is_dir() {
-        for entry in std::fs::read_dir(dir)? {
-            walk(&entry?.path(), apply)?;
-        }
-    }
-    apply(dir, meta.permissions().mode() & 0o7777)
-}
-
 // ---- gc --------------------------------------------------------------------
 
 /// `Gc`: remove every `releases/<sha>` whose sha is not in `keep`, and every
@@ -191,9 +153,6 @@ pub(super) fn collect(releases_dir: &Path, keep: &[Sha]) {
             continue;
         };
         let kind = if meta.is_dir() { "release" } else { "partial" };
-        if meta.is_dir() {
-            unseal(&path);
-        }
         let removed = match meta.is_dir() {
             true => std::fs::remove_dir_all(&path),
             false => std::fs::remove_file(&path),
@@ -430,7 +389,6 @@ pub(super) mod tests {
         let release = root.path().join("release");
         std::fs::create_dir_all(release.join("stale")).unwrap();
         std::fs::write(release.join("stale/old"), b"old").unwrap();
-        seal(&release).unwrap();
         assert_eq!(stage(&archive, sha, &release), Ok(()));
         assert!(!release.join("stale").exists(), "the leftover went");
 
@@ -440,33 +398,6 @@ pub(super) mod tests {
             stage(&archive, sha, &linked),
             Err("release_dir_is_a_link".into())
         );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn seal_takes_every_write_bit_and_unseal_gives_the_owner_one_back() {
-        let (root, outcome) = staged(&whole_release(b"app"));
-        assert_eq!(outcome, Ok(()));
-        let release = root.path().join("release");
-        seal(&release).unwrap();
-        for path in [
-            release.clone(),
-            release.join(APP_EXE),
-            release.join("res"),
-            release.join("res/icon.svg"),
-        ] {
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-            assert_eq!(mode & 0o222, 0, "{} is writable", path.display());
-        }
-        assert!(
-            std::fs::write(release.join("res/new"), b"x").is_err(),
-            "a sealed dir takes no new entry"
-        );
-        unseal(&release);
-        for path in [release.join(APP_EXE), release.join("res")] {
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-            assert_eq!(mode & 0o200, 0o200, "{} not reopened", path.display());
-        }
     }
 
     #[test]
@@ -479,7 +410,6 @@ pub(super) mod tests {
             let dir = releases.join(sha.to_string());
             std::fs::create_dir_all(dir.join("res")).unwrap();
             std::fs::write(dir.join(APP_EXE), b"app").unwrap();
-            seal(&dir).unwrap();
         }
         std::fs::create_dir_all(releases.join("not-a-sha")).unwrap();
         std::fs::write(releases.join(format!("{keep}.partial")), b"p").unwrap();

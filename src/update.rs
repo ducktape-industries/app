@@ -378,7 +378,7 @@ fn require_executable(path: &Path) -> Result<(), Refusal> {
 }
 
 /// A release dir the boot step may flip to: not a link, its executable in
-/// place. Sealing it is the app's job; the flip only checks it is whole.
+/// place.
 fn require_release(layout: &Layout, sha: Sha) -> Result<(), Refusal> {
     refuse_symlink(&layout.release_dir(sha))?;
     require_executable(&layout.release_exe(sha))
@@ -420,9 +420,6 @@ fn remove_leftover(path: &Path) -> Result<(), Refusal> {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return Ok(());
     };
-    if meta.is_dir() {
-        stage::unseal(path);
-    }
     let removed = match meta.is_dir() {
         true => std::fs::remove_dir_all(path),
         false => std::fs::remove_file(path),
