@@ -343,12 +343,22 @@ impl Updater {
     }
 
     /// One check: `Tick`, then every job it leads to, in turn.
+    /// Each job's answer is for the channel the check asked: picked away
+    /// from while it ran (`<updates>/channel` moved), the answer is dropped,
+    /// never staged, and the next turn's [`Updater::switch`] drops what it
+    /// was downloading.
     pub(super) async fn check(&mut self, client: &reqwest::Client) {
+        let asked = self.channel;
         let mut job = self.apply(Event::Tick);
         while let Some(next) = job.take() {
             let Some(event) = self.run(client, next).await else {
                 return;
             };
+            let now = read_channel(&self.layout);
+            if now != asked {
+                info!(target: TARGET, event = "app_update_dropped", asked = asked.name(), now = now.name(), "the channel moved while this check ran");
+                return;
+            }
             job = self.apply(event);
         }
     }
@@ -384,23 +394,7 @@ impl Updater {
                     }
                     self.banner = Some(banner);
                 }
-                Command::Gc { keep } => {
-                    stage::collect(&self.layout.releases_dir(), &keep);
-                    if cfg!(target_os = "macos")
-                        && let Err(refusal) = super::macos::forget_executables(&self.layout, &keep)
-                    {
-                        warn!(target: TARGET, event = "app_update_gc_failed", reason = refusal.reason, detail = %refusal.detail);
-                    }
-                    // `previous` naming a release that went goes with it
-                    let previous = self.layout.previous_link();
-                    let named = super::read_link(&previous).ok().flatten();
-                    let gone = named.is_some_and(|target| {
-                        !keep.iter().any(|sha| target == Layout::link_target(*sha))
-                    });
-                    if gone && let Err(refusal) = super::remove_leftover(&previous) {
-                        warn!(target: TARGET, event = "app_update_gc_failed", reason = refusal.reason, detail = %refusal.detail);
-                    }
-                }
+                Command::Gc { keep } => super::collect(&self.layout, &keep),
                 // the boot step's; no event the running app raises leads here
                 command @ (Command::Qualify(_)
                 | Command::ResolveSwap { .. }

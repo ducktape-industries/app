@@ -244,6 +244,7 @@ fn offer_newer(idle: Idle, verified: VerifiedManifest) -> (Phase, Vec<Command>) 
         size: artifact.size,
         sequence: manifest.sequence,
         display: manifest.release.display.clone(),
+        channel: manifest.channel.clone(),
         successor_key: manifest.successor_key.clone(),
     };
     let download = Command::Download {
@@ -333,6 +334,7 @@ fn downloading_verified(downloading: Downloading, sha: Sha) -> (Phase, Vec<Comma
         staged: downloading.target,
         sequence: downloading.sequence,
         display: downloading.display.clone(),
+        channel: downloading.channel.clone(),
         refused: None,
     });
     let banner = UpdateBanner::Ready {
@@ -614,6 +616,7 @@ mod tests {
             size: 42,
             sequence,
             display: "0.1.0+b".into(),
+            channel: "stable".into(),
             successor_key: None,
         }
     }
@@ -626,6 +629,7 @@ mod tests {
             staged: sha(staged),
             sequence: 18,
             display: "0.1.0+b".into(),
+            channel: "stable".into(),
             refused: None,
         }
     }
@@ -711,6 +715,7 @@ mod tests {
             staged: sha("b"),
             sequence: 18,
             display: "0.1.0+b".into(),
+            channel: "stable".into(),
             refused: None,
         });
         let accepted = Downloading {
@@ -721,6 +726,7 @@ mod tests {
             size: 42,
             sequence: 18,
             display: "0.1.0+9d71b254".into(),
+            channel: "stable".into(),
             successor_key: None,
         };
         vec![

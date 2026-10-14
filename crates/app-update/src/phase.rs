@@ -62,6 +62,8 @@ pub struct Downloading {
     pub size: u64,
     pub sequence: u64,
     pub display: String,
+    /// The channel that offered it (its manifest's).
+    pub channel: String,
     pub successor_key: Option<SuccessorKey>,
 }
 
@@ -73,6 +75,9 @@ pub struct Staged {
     pub staged: Sha,
     pub sequence: u64,
     pub display: String,
+    /// The channel that offered it: a boot that finds the device on another
+    /// one drops it, never flips to it.
+    pub channel: String,
     /// Why the staged release's own qualify last refused it, if it did. It is
     /// persisted because the boot step qualifies and the app reports it.
     pub refused: Option<String>,

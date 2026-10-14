@@ -116,7 +116,16 @@ pub(super) fn boot_at(layout: &Layout, own: &Path) -> Result<Boot, Refusal> {
             ));
         }
     };
-    let phase = drive(layout, phase)?;
+    // a release staged for a channel the device has since left is that
+    // channel's offer: dropped, never flipped to
+    let first = match &phase {
+        Phase::Staged(staged) if staged.channel != super::channel::read_channel(layout).name() => {
+            warn!(target: TARGET, event = "app_update_refused", reason = "other_channel", staged = %staged.staged, channel = %staged.channel, "the device follows another channel now; not flipped");
+            Event::ChannelChanged
+        }
+        _ => Event::Boot,
+    };
+    let phase = drive(layout, phase, first)?;
     if cfg!(not(target_os = "macos")) {
         let points_at = super::read_link(&layout.current_link())?;
         let names = Layout::link_target(phase.current());
@@ -139,13 +148,13 @@ pub(super) fn boot_at(layout: &Layout, own: &Path) -> Result<Boot, Refusal> {
     }
 }
 
-/// Step the machine from `Boot`, performing each command in order and
-/// feeding the answers (`SwapResolved`, `QualifyPassed`/`Failed`) back in,
-/// until a list asks for nothing more. Returns the phase it settled on.
-/// `Exec` needs nothing here: [`boot_at`] runs whatever the install path
-/// names once the machine is done with it.
-fn drive(layout: &Layout, mut phase: Phase) -> Result<Phase, Refusal> {
-    let mut event = Event::Boot;
+/// Step the machine from `event` (`Boot`, or `ChannelChanged` for a release
+/// another channel staged), performing each command in order and feeding
+/// the answers (`SwapResolved`, `QualifyPassed`/`Failed`) back in, until a
+/// list asks for nothing more. Returns the phase it settled on. `Exec`
+/// needs nothing here: [`boot_at`] runs whatever the install path names
+/// once the machine is done with it.
+fn drive(layout: &Layout, mut phase: Phase, mut event: Event) -> Result<Phase, Refusal> {
     loop {
         let (next, commands) = step(phase, event);
         phase = next;
@@ -165,11 +174,11 @@ fn drive(layout: &Layout, mut phase: Phase) -> Result<Phase, Refusal> {
                     debug!(target: TARGET, release = %sha, "the install path names it")
                 }
                 Command::Banner(banner) => super::channel::note_banner(&banner),
+                Command::Gc { keep } => super::collect(layout, &keep),
                 command @ (Command::Fetch
                 | Command::Download { .. }
                 | Command::Verify(_)
-                | Command::PinSuccessor(_)
-                | Command::Gc { .. }) => {
+                | Command::PinSuccessor(_)) => {
                     return Err(Refusal::new(
                         "app_only_command",
                         format!("a boot was told to {command:?}; that is the running app's"),

@@ -59,6 +59,7 @@ mod tests {
                 size: 12345,
                 sequence: 18,
                 display: "0.1.0+abc".into(),
+                channel: "stable".into(),
                 successor_key: Some(SuccessorKey {
                     pubkey: PublicKey::of(&key_pair(5)),
                     from_sequence: 20,
@@ -71,6 +72,7 @@ mod tests {
                 staged: b,
                 sequence: 18,
                 display: "0.1.0+abc".into(),
+                channel: "nightly".into(),
                 refused: None,
             }),
             Phase::Staged(Staged {
@@ -80,6 +82,7 @@ mod tests {
                 staged: Sha::digest(b"d"),
                 sequence: 4,
                 display: "0.1.0+qualify-fail".into(),
+                channel: "stable".into(),
                 refused: Some("qualify_exit_3".into()),
             }),
             Phase::Swapping(Swapping {

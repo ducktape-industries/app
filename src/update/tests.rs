@@ -61,6 +61,8 @@ fn block<F: std::future::Future>(future: F) -> F::Output {
 
 /// Every request a bucket heard: the file, and the `Range` start it asked.
 type Asked = Arc<Mutex<Vec<(String, Option<u64>)>>>;
+/// What runs as a file is asked for, before it is answered: once each.
+type Hooks = Arc<Mutex<Vec<(String, Box<dyn FnOnce() + Send>)>>>;
 
 /// A bucket on loopback: files by name, every request recorded.
 struct Bucket {
@@ -69,6 +71,7 @@ struct Bucket {
     asked: Asked,
     /// Answer every request whole, as a server without range support does.
     ignore_range: Arc<AtomicBool>,
+    hooks: Hooks,
 }
 
 impl Bucket {
@@ -80,18 +83,29 @@ impl Bucket {
             files: Arc::default(),
             asked: Arc::default(),
             ignore_range: Arc::default(),
+            hooks: Arc::default(),
         };
-        let (files, asked, ignore_range) = (
+        let (files, asked, ignore_range, hooks) = (
             bucket.files.clone(),
             bucket.asked.clone(),
             bucket.ignore_range.clone(),
+            bucket.hooks.clone(),
         );
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                serve(stream, &files, &asked, &ignore_range);
+                serve(stream, &files, &asked, &ignore_range, &hooks);
             }
         });
         bucket
+    }
+
+    /// Run `then` as `name` is first asked for, before it is answered.
+    #[cfg(target_os = "linux")]
+    fn when_asked(&self, name: &str, then: impl FnOnce() + Send + 'static) {
+        self.hooks
+            .lock()
+            .unwrap()
+            .push((name.to_string(), Box::new(then)));
     }
 
     fn put(&self, name: &str, bytes: Vec<u8>) {
@@ -113,6 +127,7 @@ fn serve(
     files: &Mutex<HashMap<String, Vec<u8>>>,
     asked: &Mutex<Vec<(String, Option<u64>)>>,
     ignore_range: &AtomicBool,
+    hooks: &Hooks,
 ) {
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
@@ -138,6 +153,17 @@ fn serve(
         from.parse::<u64>().ok()
     });
     asked.lock().unwrap().push((path.clone(), range));
+    let due: Vec<_> = {
+        let mut hooks = hooks.lock().unwrap();
+        let (due, kept) = std::mem::take(&mut *hooks)
+            .into_iter()
+            .partition(|(name, _)| *name == path);
+        *hooks = kept;
+        due
+    };
+    for (_, then) in due {
+        then();
+    }
     let body = files.lock().unwrap().get(&path).cloned();
     let range = range.filter(|_| !ignore_range.load(Ordering::SeqCst));
     let (status, extra, body) = match (body, range) {
@@ -461,6 +487,7 @@ fn a_manifest_below_the_highest_its_channel_showed_is_refused() {
         Some(running.clone())
     );
     publish(&bucket, Channel::Nightly, 1005, &release_of(script("n")));
+    super::channel::keep_channel(&layout, Channel::Nightly).unwrap();
     let mut nightly = updater(Channel::Nightly);
     block(nightly.check(&client()));
     assert_ne!(
@@ -597,11 +624,17 @@ mod linux {
             pin + 100,
             &release_of(script("n")),
         );
+        // a pick is the channel file, then the running updater's switch
+        let pick = |updater: &mut Updater, channel| {
+            crate::update::channel::keep_channel(&layout, channel).unwrap();
+            updater.switch(channel);
+        };
+        crate::update::channel::keep_channel(&layout, Channel::Nightly).unwrap();
         let mut updater = updater(&layout, &bucket, Channel::Nightly);
         block(updater.check(&client()));
         assert!(matches!(state(&layout), Phase::Staged(ref staged) if staged.staged == nightly));
 
-        updater.switch(Channel::Stable);
+        pick(&mut updater, Channel::Stable);
         assert_eq!(
             state(&layout),
             Phase::Idle(Idle {
@@ -633,7 +666,7 @@ mod linux {
         block(updater.check(&client()));
         assert!(matches!(state(&layout), Phase::Staged(ref staged) if staged.staged == stable));
 
-        updater.switch(Channel::Nightly);
+        pick(&mut updater, Channel::Nightly);
         let newest = publish(
             &bucket,
             Channel::Nightly,
@@ -768,6 +801,7 @@ mod linux {
             staged: b,
             sequence: 11,
             display: "0.1.0+b".into(),
+            channel: "stable".into(),
             refused: None,
         });
         crate::update::persist_phase(&layout, &staged).unwrap();
@@ -788,6 +822,70 @@ mod linux {
         let refused = crate::update::install::install(&layout, &own).unwrap_err();
         assert_eq!(refused.reason, "install_busy");
         assert_eq!(state(&layout), staged);
+    }
+
+    /// The person picks nightly while a stable check is downloading: the
+    /// download's answer is the old channel's, so it is dropped, never
+    /// staged, and the next turn's switch collects what it left. Nothing is
+    /// offered for a restart, and the next start runs what it ran.
+    #[test]
+    fn a_pick_during_a_check_drops_what_the_old_channel_was_downloading() {
+        use crate::update::boot::{Boot, boot_at};
+        let bucket = Bucket::new();
+        let (root, layout) = rig();
+        let (a, installed) = install(root.path(), &layout, &script("a"));
+        let b = publish(
+            &bucket,
+            Channel::Stable,
+            installed.pinned_sequence() + 1,
+            &release_of(script("b")),
+        );
+        let picked = layout.clone();
+        bucket.when_asked(
+            &layout::archive_name(&b, &Platform::HOST.key()),
+            move || crate::update::channel::keep_channel(&picked, Channel::Nightly).unwrap(),
+        );
+        let mut updater = updater(&layout, &bucket, Channel::Stable);
+        updater.start();
+        block(updater.check(&client()));
+        assert!(
+            !matches!(state(&layout), Phase::Staged(_)),
+            "{:?}",
+            state(&layout)
+        );
+        assert!(!updater.shown().restart, "no restart offered");
+        updater.switch(Channel::Nightly);
+        assert_eq!(state(&layout), installed);
+        assert!(!layout.release_dir(b).exists());
+        assert_eq!(
+            boot_at(&layout, &layout.release_exe(a)).unwrap(),
+            Boot::Run(installed)
+        );
+    }
+
+    /// A release stable staged, then the pick of nightly, then a start
+    /// before the running app's switch dropped it (Restart pressed at
+    /// once): the boot step drops the old channel's release, never flips.
+    #[test]
+    fn a_start_never_flips_to_a_release_another_channel_staged() {
+        use crate::update::boot::{Boot, boot_at};
+        let bucket = Bucket::new();
+        let (root, layout) = rig();
+        let (a, installed) = install(root.path(), &layout, &script("a"));
+        let b = stage(
+            &layout,
+            &bucket,
+            installed.pinned_sequence() + 1,
+            script("b"),
+        );
+        crate::update::channel::keep_channel(&layout, Channel::Nightly).unwrap();
+        assert_eq!(
+            boot_at(&layout, &layout.release_exe(a)).unwrap(),
+            Boot::Run(installed.clone())
+        );
+        assert_eq!(state(&layout), installed);
+        assert_eq!(current(&layout), Layout::link_target(a));
+        assert!(!layout.release_dir(b).exists(), "the staged release went");
     }
 
     /// A `state.json` that is a link is not followed: this start runs with the
@@ -1214,6 +1312,7 @@ mod macos {
             staged: older,
             sequence: crate::update::own_sequence() + 1,
             display: "0.1.0+older".into(),
+            channel: "stable".into(),
             refused: None,
         });
         crate::update::persist_phase(&layout, &staged).unwrap();

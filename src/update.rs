@@ -329,6 +329,24 @@ fn persist_phase(layout: &Layout, phase: &Phase) -> Result<(), Refusal> {
     persist(&layout.state_path(), state::encode(phase).as_bytes())
 }
 
+/// `Gc`: every release and partial not in `keep`, a `previous` link
+/// naming one that went, and (macOS) their recorded executables.
+fn collect(layout: &Layout, keep: &[Sha]) {
+    stage::collect(&layout.releases_dir(), keep);
+    if cfg!(target_os = "macos")
+        && let Err(refusal) = macos::forget_executables(layout, keep)
+    {
+        tracing::warn!(target: TARGET, event = "app_update_gc_failed", reason = refusal.reason, detail = %refusal.detail);
+    }
+    let previous = layout.previous_link();
+    let named = read_link(&previous).ok().flatten();
+    let gone =
+        named.is_some_and(|target| !keep.iter().any(|sha| target == Layout::link_target(*sha)));
+    if gone && let Err(refusal) = remove_leftover(&previous) {
+        tracing::warn!(target: TARGET, event = "app_update_gc_failed", reason = refusal.reason, detail = %refusal.detail);
+    }
+}
+
 /// `link -> target`, atomically: a symlink at a temp name, renamed over.
 fn replace_symlink(link: &Path, target: &Path) -> Result<(), Refusal> {
     let tmp = tmp_name(link);

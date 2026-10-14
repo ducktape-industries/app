@@ -160,6 +160,7 @@ fn a_start_with_a_staged_release_execs_it_in_the_same_process_with_its_link() {
         staged,
         sequence: pin + 1,
         display: "0.0.0+next".into(),
+        channel: "stable".into(),
         refused: None,
     }));
     let (pid, record) = rig.start(&["duck://garage/chat/dm 1", "--flag"]);
