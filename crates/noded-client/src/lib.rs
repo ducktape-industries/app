@@ -36,11 +36,26 @@ use wire::{
 /// What signs a frame or a consent: an ed25519 key, wherever it is kept.
 /// `sign` answers the ed25519 signature over commonware's
 /// `union_unique(namespace, message)`, which is what the node checks a
-/// frame's proof and identity a consent against.
+/// frame's proof and identity a consent against, or why it could not sign
+/// (the key is locked, the key store refused). `public_key` cannot fail: a
+/// signer is made for one key, known when it is made, so a frame never
+/// names one key and carries another's proof.
 pub trait Signer: Send + Sync {
     fn public_key(&self) -> [u8; 32];
-    fn sign(&self, namespace: &[u8], message: &[u8]) -> [u8; 64];
+    fn sign(&self, namespace: &[u8], message: &[u8]) -> std::result::Result<[u8; 64], SignError>;
 }
+
+/// Why a [`Signer`] did not sign, in words for the person.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignError(pub String);
+
+impl std::fmt::Display for SignError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SignError {}
 
 /// Feature `commonware`: commonware-cryptography links aws-lc-rs on
 /// x86_64 and aarch64 whatever its features, which an Android build cannot
@@ -54,12 +69,13 @@ impl Signer for commonware_cryptography::ed25519::PrivateKey {
             .expect("an ed25519 public key is 32 bytes")
     }
 
-    fn sign(&self, namespace: &[u8], message: &[u8]) -> [u8; 64] {
+    /// Never refuses: the key is in memory.
+    fn sign(&self, namespace: &[u8], message: &[u8]) -> std::result::Result<[u8; 64], SignError> {
         let signature = commonware_cryptography::Signer::sign(self, namespace, message);
-        signature
+        Ok(signature
             .as_ref()
             .try_into()
-            .expect("an ed25519 signature is 64 bytes")
+            .expect("an ed25519 signature is 64 bytes"))
     }
 }
 
@@ -290,8 +306,8 @@ impl Signer for FixedSigner {
         [1; 32]
     }
 
-    fn sign(&self, _: &[u8], _: &[u8]) -> [u8; 64] {
-        [2; 64]
+    fn sign(&self, _: &[u8], _: &[u8]) -> std::result::Result<[u8; 64], SignError> {
+        Ok([2; 64])
     }
 }
 

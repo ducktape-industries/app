@@ -124,7 +124,8 @@ pub(crate) async fn add_recovery_key(
         Some(salt()),
         identity::MODULE,
         abi::encode(&add),
-    );
+    )
+    .map_err(|refused| refused.to_string())?;
     submit(client, frame.encode()).await.map(drop)
 }
 

@@ -182,7 +182,9 @@ pub async fn approve(
         signer,
     )
     .await?;
-    let proof = signer.sign(CONSENT_NAMESPACE, &admission.preimage());
+    let proof = signer
+        .sign(CONSENT_NAMESPACE, &admission.preimage())
+        .map_err(|refused| refused.to_string())?;
     let consent = serde_json::json!({
         "v": 1,
         "account": account,

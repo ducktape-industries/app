@@ -14,7 +14,7 @@
 use abi::{ProgramId, Root};
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use crate::Signer;
+use crate::{SignError, Signer};
 
 pub const NODE_CONTRACT: u32 = 4;
 pub const FRAME_NAMESPACE: &[u8] = b"ducktape:frame";
@@ -93,7 +93,7 @@ impl Frame {
         salt: Option<u64>,
         target: &str,
         payload: Vec<u8>,
-    ) -> Frame {
+    ) -> Result<Frame, SignError> {
         let body = Body {
             scheme: abi::Scheme::Ed25519,
             signer: signer.public_key().to_vec(),
@@ -103,12 +103,17 @@ impl Frame {
             target: target.to_owned(),
             payload,
         };
-        let proof = signer.sign(FRAME_NAMESPACE, &body.preimage()).to_vec();
-        Frame { body, proof }
+        let proof = signer.sign(FRAME_NAMESPACE, &body.preimage())?.to_vec();
+        Ok(Frame { body, proof })
     }
 
     /// A query's frame: [`UNANCHORED`], no salt.
-    pub fn query(signer: &dyn Signer, network: &[u8], target: &str, payload: Vec<u8>) -> Frame {
+    pub fn query(
+        signer: &dyn Signer,
+        network: &[u8],
+        target: &str,
+        payload: Vec<u8>,
+    ) -> Result<Frame, SignError> {
         Frame::sign(signer, network, UNANCHORED, None, target, payload)
     }
 
@@ -277,7 +282,7 @@ mod tests {
             height: 3,
             id: [4; 32],
         };
-        let frame = Frame::sign(&key, b"net", anchor, Some(5), "demo", vec![1, 2]);
+        let frame = Frame::sign(&key, b"net", anchor, Some(5), "demo", vec![1, 2]).unwrap();
         assert_eq!(frame.body.signer, Commonware::public_key(&key).as_ref());
         assert_eq!(frame.body.scheme, abi::Scheme::Ed25519);
         let decoded: Frame = abi::decode(&frame.encode()).unwrap();
@@ -289,7 +294,9 @@ mod tests {
 
     #[test]
     fn a_query_frame_names_the_target_and_the_network_and_carries_no_salt() {
-        let frame = Frame::query(&crate::FixedSigner, b"net", "demo", vec![1]).encode();
+        let frame = Frame::query(&crate::FixedSigner, b"net", "demo", vec![1])
+            .unwrap()
+            .encode();
         let decoded: Frame = abi::decode(&frame).unwrap();
         assert_eq!(decoded.body.target, "demo");
         assert_eq!(decoded.body.network, b"net");

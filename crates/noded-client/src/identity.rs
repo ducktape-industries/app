@@ -22,7 +22,8 @@ pub async fn ask(
         network.as_bytes(),
         identity::MODULE,
         abi::encode(&query),
-    );
+    )
+    .map_err(|refused| refused.to_string())?;
     let reply = client
         .query(Layer::Preconfirmed, frame.encode())
         .await
@@ -58,7 +59,8 @@ pub async fn account_of_key(
         network.as_bytes(),
         identity::MODULE,
         abi::encode(&Query::OfKey { key }),
-    );
+    )
+    .map_err(|refused| refused.to_string())?;
     let reply = match client.query(Layer::Preconfirmed, frame.encode()).await {
         Err(Error::Refused(_)) => return Ok(None),
         reply => reply.map_err(|error| node_error(error.to_string()))?,
@@ -137,7 +139,8 @@ pub async fn submit_signed(
         Some(salt()),
         identity::MODULE,
         abi::encode(op),
-    );
+    )
+    .map_err(|refused| refused.to_string())?;
     submit(client, frame.encode()).await
 }
 
@@ -175,7 +178,7 @@ pub fn node_error(sentence: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::FixedSigner;
+    use crate::{FixedSigner, SignError};
 
     /// A node answering every request with `status` and `body`.
     async fn fake_node(status: &'static str, body: Vec<u8>) -> Client {
@@ -253,6 +256,48 @@ mod tests {
                 expires_at: built.expires_at,
             }
         );
+    }
+
+    /// A signer that refuses (a key store that failed, a seat locked while
+    /// the flow waited) is the flow's answer in its own words, not a panic.
+    #[tokio::test]
+    async fn a_refused_signature_is_the_flows_answer() {
+        struct Refusing;
+        impl Signer for Refusing {
+            fn public_key(&self) -> [u8; 32] {
+                [1; 32]
+            }
+            fn sign(&self, _: &[u8], _: &[u8]) -> Result<[u8; 64], SignError> {
+                Err(SignError("the key store refused".into()))
+            }
+        }
+        let status = crate::wire::Status {
+            network: "testkit".into(),
+            time: 1,
+            block_time_ms: 2,
+            epoch_length: 3,
+            height: 4,
+            tip: [5; 32],
+            root: abi::Root([6; 32]),
+            epoch: 7,
+            identity: vec![8],
+            contract: crate::wire::NODE_CONTRACT,
+            genesis: [9; 32],
+            roles: abi::Roles {
+                registry: "r".into(),
+                validators: "v".into(),
+                identity: "i".into(),
+            },
+        };
+        let client = fake_node("200 OK", abi::encode(&status)).await;
+        let create = Op::Create {
+            name: "a".into(),
+            scheme: abi::Scheme::Ed25519,
+        };
+        let submitted = submit_signed(&client, "testkit", &create, &Refusing).await;
+        assert_eq!(submitted, Err("the key store refused".into()));
+        let asked = ask(&client, "testkit", Query::Get { number: 1 }, &Refusing).await;
+        assert!(matches!(asked, Err(sentence) if sentence == "the key store refused"));
     }
 
     #[test]
