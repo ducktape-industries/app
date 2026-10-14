@@ -137,7 +137,8 @@ async fn write_control(send: &mut quinn::SendStream, control: Control) {
     send.write_all(&bytes).await.unwrap();
 }
 
-/// The test node's side of one session.
+/// The node's side of one session: a proof that does not verify is
+/// refused `bad_proof`, as core's relay refuses it.
 async fn relay(connection: quinn::Connection, answer: Answer) {
     let (mut send, mut recv) = connection.accept_bi().await.unwrap();
     let Control::Hello(hello) = read(&mut recv).await else {
@@ -155,9 +156,8 @@ async fn relay(connection: quinn::Connection, answer: Answer) {
         &preimage,
         &proof.signature,
     );
-    assert!(signed, "the proof is the seated key's over the preimage");
     assert_eq!(hello.chain, [9; 32], "the hello names the genesis");
-    if let Answer::Refuse = answer {
+    if !signed || matches!(answer, Answer::Refuse) {
         let code = Code::BadProof;
         write_control(&mut send, Control::Refused { request: 0, code }).await;
         // the refusal is read before the session goes: the client hangs up
@@ -180,15 +180,15 @@ async fn relay(connection: quinn::Connection, answer: Answer) {
                 incoming.read_exact(&mut head).await.unwrap();
                 let header: GroupHeader = abi::decode(&head).unwrap();
                 assert_eq!(header.alias, PUBLISHED);
-                let rest = incoming.read_to_end(1 << 20).await.unwrap();
                 let mut out = streams.open_uni().await.unwrap();
                 let header = GroupHeader {
                     alias: SUBSCRIBED,
                     ..header
                 };
                 out.write_all(&abi::encode(&header)).await.unwrap();
-                out.write_all(&rest).await.unwrap();
-                out.finish().unwrap();
+                // as the bytes come, so a group is in flight while it runs
+                let _ = tokio::io::copy(&mut incoming, &mut out).await;
+                let _ = out.finish();
             });
         }
     });
@@ -205,14 +205,21 @@ async fn relay(connection: quinn::Connection, answer: Answer) {
     });
     let garble = matches!(answer, Answer::Garble);
     let mut mode = None;
+    let mut track = None;
+    // core's rule: one subscriber per track and one watcher per room for a
+    // session, a repeat refused `duplicate_track`
+    let mut following: HashMap<RequestId, Track> = HashMap::new();
+    let mut watching: HashMap<RequestId, String> = HashMap::new();
     loop {
         let answer = match read(&mut recv).await {
             Control::Publish {
                 request,
                 mode: published,
+                track: named,
                 ..
             } => {
                 mode = Some(published);
+                track = Some(named);
                 Control::Published {
                     request,
                     alias: PUBLISHED,
@@ -235,19 +242,64 @@ async fn relay(connection: quinn::Connection, answer: Answer) {
                 send.write_all(&bytes).await.unwrap();
                 continue;
             }
-            Control::Subscribe { request, .. } => match mode {
-                Some(mode) => Control::Subscribed {
+            Control::Subscribe {
+                request,
+                track: asked,
+                ..
+            } if following.values().any(|held| *held == asked) => Control::Refused {
+                request,
+                code: Code::Duplicate,
+            },
+            Control::Watch { request, namespace }
+                if watching.values().any(|held| *held == namespace) =>
+            {
+                Control::Refused {
                     request,
-                    alias: SUBSCRIBED,
-                    by: ACCOUNT,
-                    mode,
-                    latest: None,
-                },
+                    code: Code::Duplicate,
+                }
+            }
+            Control::Unsubscribe { request } => {
+                following.remove(&request);
+                continue;
+            }
+            Control::Unwatch { request } => {
+                watching.remove(&request);
+                continue;
+            }
+            Control::Subscribe {
+                request,
+                track: asked,
+                ..
+            } => match mode {
+                Some(mode) => {
+                    following.insert(request, asked);
+                    Control::Subscribed {
+                        request,
+                        alias: SUBSCRIBED,
+                        by: ACCOUNT,
+                        mode,
+                        latest: None,
+                    }
+                }
                 None => Control::Refused {
                     request,
                     code: Code::Unknown,
                 },
             },
+            // a room's list: the one track up, if any
+            Control::Watch { request, namespace } => {
+                watching.insert(request, namespace);
+                match (&track, mode) {
+                    (Some(track), Some(mode)) => Control::Announce {
+                        request,
+                        track: track.clone(),
+                        by: ACCOUNT,
+                        mode,
+                        up: true,
+                    },
+                    _ => continue,
+                }
+            }
             _ => continue,
         };
         write_control(&mut send, answer).await;
@@ -400,6 +452,10 @@ async fn a_refused_proof_is_the_nodes_word() {
         .err()
         .unwrap();
     assert_eq!(refused.code, Code::BadProof.as_str());
+    assert!(
+        lock(&client.0.not_before).is_some_and(|until| until > Instant::now()),
+        "a refusal is redialed at once"
+    );
 }
 
 /// A certificate that holds another key than the status names is not the
@@ -517,6 +573,269 @@ async fn a_quitting_app_closes_its_session_and_the_node_hears_it_at_once() {
     assert!(
         matches!(&heard, quinn::ConnectionError::ApplicationClosed(close) if close.reason == "quit"),
         "the node heard {heard:?}"
+    );
+}
+
+/// A client on a test node with a stream track `doc` published, its
+/// publication taken.
+async fn publishing(seed: u64) -> (Client, Request) {
+    let node_key = ed25519::PrivateKey::from_seed(seed);
+    let identity = node_key.public_key().as_ref().to_vec();
+    let client = Client::new(node(&node_key, identity, Answer::Welcome).await);
+    let mut published = client
+        .open(Ask::Publish {
+            track: track("doc"),
+            mode: Mode::Stream,
+            priority: 128,
+        })
+        .await
+        .unwrap();
+    assert_eq!(published.heard.recv().await, Some(Heard::Published));
+    (client, published)
+}
+
+fn follow(from: Start) -> Ask {
+    Ask::Subscribe {
+        track: track("doc"),
+        from,
+    }
+}
+
+/// A subscription the node answered, its `Subscribed` read.
+async fn following(client: &Client, from: Start) -> (Request, Option<u64>) {
+    let mut request = client.open(follow(from)).await.unwrap();
+    let Some(Heard::Subscribed { latest, .. }) = request.heard.recv().await else {
+        panic!("the subscription was not answered")
+    };
+    (request, latest)
+}
+
+async fn send(published: &Request, group: u64, object: u32, body: &[u8], end: bool) {
+    let object = Object {
+        group,
+        object,
+        body: body.to_vec(),
+        end,
+    };
+    published.objects.send(object).await.unwrap();
+}
+
+/// The next `count` items, bounded: an item that never comes fails the
+/// test instead of holding it.
+async fn heard(request: &mut Request, count: usize) -> Vec<Data> {
+    let mut got = Vec::new();
+    for _ in 0..count {
+        let next = tokio::time::timeout(Duration::from_secs(5), request.data.recv());
+        got.push(next.await.expect("an object never came").unwrap());
+    }
+    got
+}
+
+fn object(group: u64, object: u32, body: &[u8]) -> Data {
+    Data::Object {
+        group,
+        object,
+        body: body.to_vec(),
+    }
+}
+
+/// Two windows that follow one track share the session's one subscription
+/// (the node holds one subscriber per track and session) and hear the same
+/// objects. A second publisher of the track in the app is refused: one
+/// publisher per track.
+#[tokio::test]
+async fn two_requests_of_one_track_hear_the_same_objects() {
+    let _seat = seated().await;
+    let (client, published) = publishing(9).await;
+    let (mut first, _) = following(&client, Start::Latest).await;
+    let (mut second, _) = following(&client, Start::Latest).await;
+    send(&published, 4, 0, b"a", false).await;
+    send(&published, 4, 1, b"b", true).await;
+    let whole = [
+        object(4, 0, b"a"),
+        object(4, 1, b"b"),
+        Data::GroupEnd {
+            group: 4,
+            complete: true,
+        },
+    ];
+    assert_eq!(heard(&mut first, 3).await, whole);
+    assert_eq!(heard(&mut second, 3).await, whole);
+    let again = client
+        .open(Ask::Publish {
+            track: track("doc"),
+            mode: Mode::Stream,
+            priority: 128,
+        })
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(again.code, refusal::DUPLICATE_TRACK);
+}
+
+/// A window that follows a track later, from the latest group, is handed
+/// the group in flight from the app's copy, then hears it go on with the
+/// others. One that asks for the next group hears nothing of it.
+#[tokio::test]
+async fn a_later_request_is_handed_the_group_in_flight() {
+    let _seat = seated().await;
+    let (client, published) = publishing(10).await;
+    let (mut first, _) = following(&client, Start::Latest).await;
+    send(&published, 4, 0, b"a", false).await;
+    send(&published, 4, 1, b"b", false).await;
+    assert_eq!(
+        heard(&mut first, 2).await,
+        [object(4, 0, b"a"), object(4, 1, b"b")]
+    );
+    let (mut later, latest) = following(&client, Start::Latest).await;
+    assert_eq!(
+        latest,
+        Some(4),
+        "the later window was not told the group in hand"
+    );
+    assert_eq!(
+        heard(&mut later, 2).await,
+        [object(4, 0, b"a"), object(4, 1, b"b")]
+    );
+    let (mut next, latest) = following(&client, Start::Next).await;
+    assert_eq!(latest, None);
+    send(&published, 4, 2, b"c", true).await;
+    send(&published, 5, 0, b"d", false).await;
+    let rest = [
+        object(4, 2, b"c"),
+        Data::GroupEnd {
+            group: 4,
+            complete: true,
+        },
+    ];
+    assert_eq!(heard(&mut first, 2).await, rest);
+    assert_eq!(heard(&mut later, 2).await, rest);
+    assert_eq!(
+        heard(&mut next, 1).await,
+        [object(5, 0, b"d")],
+        "a window that asked for the next group heard the one in flight"
+    );
+}
+
+/// A window that stops following leaves the others running: the
+/// subscription stays the node's until its last reader goes.
+#[tokio::test]
+async fn one_window_withdrawing_leaves_the_other_running() {
+    let _seat = seated().await;
+    let (client, published) = publishing(11).await;
+    let (first, _) = following(&client, Start::Latest).await;
+    let (mut second, _) = following(&client, Start::Latest).await;
+    drop(first);
+    send(&published, 4, 0, b"a", true).await;
+    assert_eq!(
+        heard(&mut second, 2).await,
+        [
+            object(4, 0, b"a"),
+            Data::GroupEnd {
+                group: 4,
+                complete: true
+            }
+        ]
+    );
+}
+
+/// Two windows that list one room share the session's one watcher: the
+/// later is handed the tracks up now.
+#[tokio::test]
+async fn a_later_list_of_a_room_is_handed_the_tracks_up() {
+    let _seat = seated().await;
+    let (client, _published) = publishing(12).await;
+    let watch = || Ask::Watch {
+        namespace: "loopback#1/echo/lobby".into(),
+    };
+    let up = Heard::Announce {
+        track: track("doc"),
+        by: ACCOUNT,
+        mode: Mode::Stream,
+        up: true,
+    };
+    let mut first = client.open(watch()).await.unwrap();
+    assert_eq!(first.heard.recv().await, Some(up.clone()));
+    let mut later = client.open(watch()).await.unwrap();
+    assert_eq!(later.heard.recv().await, Some(up));
+}
+
+/// The websocket door closes a socket on a message over one object's cap
+/// and 1 KiB: the largest object the kernel lets through
+/// (`MAX_STREAM_OBJECT`), framed with its group, fits.
+#[test]
+fn the_largest_object_framed_fits_the_nodes_websocket_cap() {
+    let frame = WsFrame::Group {
+        header: GroupHeader {
+            alias: u32::MAX,
+            group: u64::MAX,
+            priority: u8::MAX,
+        },
+        objects: vec![vec![0; live_wire::MAX_STREAM_OBJECT]],
+        end: true,
+    };
+    assert!(abi::encode(&frame).len() <= live_wire::MAX_STREAM_OBJECT + (1 << 10));
+}
+
+/// Over the websocket a group the node cut short (an object refused, the
+/// track ended) has no end of its own: the next group starts. It ends
+/// incomplete, not malformed.
+#[test]
+fn a_group_the_next_one_cuts_short_ends_incomplete() {
+    let (control, _controls) = mpsc::unbounded_channel();
+    let (frames, _queue) = mpsc::unbounded_channel();
+    let conn = Conn {
+        path: Path::Ws(frames),
+        udp: None,
+        control,
+        table: Mutex::new(Table::default()),
+        next: AtomicU64::new(1),
+        closed: AtomicBool::new(false),
+        client: Weak::new(),
+    };
+    let (mut request, ends) = request(|| {});
+    let mut entry = Entry::new(
+        Kind::Subscribe,
+        follow(Start::Latest),
+        Reader::new(1, &ends, false),
+    );
+    entry.established = true;
+    entry.alias = Some(9);
+    {
+        let mut table = lock(&conn.table);
+        table.requests.insert(1, entry);
+        table.aliases.insert(9, 1);
+    }
+    let header = |group| GroupHeader {
+        alias: 9,
+        group,
+        priority: 0,
+    };
+    heard_slice(&conn, header(1), vec![b"a".to_vec()], false);
+    heard_slice(&conn, header(2), vec![b"b".to_vec()], true);
+    let mut got = Vec::new();
+    while let Ok(data) = request.data.try_recv() {
+        got.push(data);
+    }
+    let object = |group, body: &[u8]| Data::Object {
+        group,
+        object: 0,
+        body: body.to_vec(),
+    };
+    assert_eq!(
+        got,
+        [
+            object(1, b"a"),
+            Data::GroupEnd {
+                group: 1,
+                complete: false
+            },
+            object(2, b"b"),
+            Data::GroupEnd {
+                group: 2,
+                complete: true
+            },
+        ]
     );
 }
 

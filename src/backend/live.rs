@@ -205,8 +205,14 @@ pub(crate) struct Ends {
 /// A request and its session's ends; `withdraw` runs when the request is
 /// dropped.
 pub(crate) fn request(withdraw: impl FnOnce() + Send + 'static) -> (Request, Ends) {
+    request_holding(withdraw, 0)
+}
+
+/// [`request`], its data path holding `replayed` more objects than
+/// [`DATA_BACKLOG`]: the group in flight a later reader is handed.
+fn request_holding(withdraw: impl FnOnce() + Send + 'static, replayed: usize) -> (Request, Ends) {
     let (heard, hears) = mpsc::unbounded_channel();
-    let (data, datas) = mpsc::channel(DATA_BACKLOG);
+    let (data, datas) = mpsc::channel(DATA_BACKLOG + replayed);
     let (objects, outbox) = mpsc::channel(OUTBOX);
     let latest = Arc::new(Latest::default());
     let request = Request {
@@ -247,11 +253,21 @@ struct Inner {
     rpc: RpcClient,
     conn: tokio::sync::Mutex<Option<Arc<Conn>>>,
     /// Until when the node asked not to be dialed (`GoAway`), or the
-    /// client holds off after a wire mismatch.
+    /// client holds off after a failure ([`Inner::hold_off`]).
     not_before: Mutex<Option<Instant>>,
-    /// Sessions ended as a wire mismatch: each one holds the next dial off
-    /// longer ([`super::retry_delay`]).
-    mismatches: AtomicU32,
+    /// Failures since the last session opened: dials that failed (the
+    /// node refused, was busy or was not there) and sessions ended as a
+    /// wire mismatch. Each holds the next dial off longer.
+    failures: AtomicU32,
+}
+
+impl Inner {
+    /// The next dial waits [`super::retry_delay`] of the failures so far:
+    /// a refusal, a busy node or a wire mismatch is never redialed at once.
+    fn hold_off(&self) {
+        let failures = self.failures.fetch_add(1, Ordering::SeqCst) + 1;
+        *lock(&self.not_before) = Some(Instant::now() + super::retry_delay(failures));
+    }
 }
 
 impl Client {
@@ -260,7 +276,7 @@ impl Client {
             rpc,
             conn: tokio::sync::Mutex::new(None),
             not_before: Mutex::new(None),
-            mismatches: AtomicU32::new(0),
+            failures: AtomicU32::new(0),
         }))
     }
 
@@ -273,7 +289,14 @@ impl Client {
         if let Some(until) = not_before {
             tokio::time::sleep_until(until.into()).await;
         }
-        let conn = dial(&self.0.rpc, Arc::downgrade(&self.0)).await?;
+        let conn = match dial(&self.0.rpc, Arc::downgrade(&self.0)).await {
+            Ok(conn) => conn,
+            Err(refused) => {
+                self.0.hold_off();
+                return Err(refused);
+            }
+        };
+        self.0.failures.store(0, Ordering::SeqCst);
         *held = Some(conn.clone());
         Ok(conn)
     }
@@ -282,7 +305,7 @@ impl Client {
 impl Session for Client {
     fn open(&self, ask: Ask) -> BoxFuture<'static, Result<Request, Error>> {
         let client = self.clone();
-        Box::pin(async move { Ok(client.conn().await?.open(ask)) })
+        Box::pin(async move { client.conn().await?.open(ask) })
     }
 
     /// Over QUIC the close is a CONNECTION_CLOSE the endpoint sends after
@@ -355,11 +378,15 @@ enum Kind {
     Watch,
 }
 
+/// One node request. The node holds one subscriber per track and one
+/// watcher per room for a session, so every request of the app that follows
+/// the same track or room shares one: its readers. A publication has one
+/// reader; a second publisher of a track in the app is refused.
 struct Entry {
     kind: Kind,
-    heard: mpsc::UnboundedSender<Heard>,
-    data: mpsc::Sender<Data>,
-    latest: Arc<Latest>,
+    /// What it asked ([`same_ask`]).
+    asked: Ask,
+    readers: Vec<Reader>,
     /// A publication's alias, handed to its writer once the node took it.
     taken: Option<oneshot::Sender<Alias>>,
     established: bool,
@@ -367,6 +394,161 @@ struct Entry {
     /// Over the websocket, the group a subscription is in and its next
     /// object's number: the stream's implicit count.
     counted: Option<(u64, u32)>,
+    /// A subscription's publisher and mode, once the node answered: a
+    /// later reader's `Subscribed`.
+    opened: Option<(u64, Mode)>,
+    /// A subscription's group in flight, for a later reader that asks
+    /// `Latest`.
+    in_flight: Option<InFlight>,
+    /// A room's tracks up now, for a later reader of its list.
+    up: Vec<Heard>,
+}
+
+/// One request of the app that a node request serves.
+struct Reader {
+    id: u64,
+    heard: mpsc::UnboundedSender<Heard>,
+    data: mpsc::Sender<Data>,
+    latest: Arc<Latest>,
+    /// Groups up to this one are not its: it asked `Next` while the group
+    /// was in flight.
+    after: Option<u64>,
+    /// It asked `Next` before the node answered: the group the node
+    /// replays first (`Subscribed.latest`) is not its.
+    next_only: bool,
+}
+
+impl Reader {
+    fn new(id: u64, ends: &Ends, next_only: bool) -> Reader {
+        Reader {
+            id,
+            heard: ends.heard.clone(),
+            data: ends.data.clone(),
+            latest: ends.latest.clone(),
+            after: None,
+            next_only,
+        }
+    }
+
+    fn follows(&self, data: &Data) -> bool {
+        let group = match data {
+            Data::Object { group, .. } | Data::GroupEnd { group, .. } => *group,
+        };
+        self.after.is_none_or(|after| group > after)
+    }
+}
+
+/// A shared subscription's group in flight, from its first object: what a
+/// later reader that asks `Latest` is handed. Kept while it fits a group's
+/// cap ([`live_wire::MAX_GROUP_BYTES`]); dropped when the group ends or a
+/// newer one starts. A datagram track keeps its newest object only.
+struct InFlight {
+    group: u64,
+    objects: Vec<Data>,
+    bytes: usize,
+    /// Every object since the group's first: a later reader can be handed
+    /// it.
+    whole: bool,
+}
+
+impl Entry {
+    fn new(kind: Kind, asked: Ask, reader: Reader) -> Entry {
+        Entry {
+            kind,
+            asked,
+            readers: vec![reader],
+            taken: None,
+            established: false,
+            alias: None,
+            counted: None,
+            opened: None,
+            in_flight: None,
+            up: Vec::new(),
+        }
+    }
+
+    /// `heard` to every reader.
+    fn tell(&self, heard: Heard) {
+        for reader in &self.readers {
+            let _ = reader.heard.send(heard.clone());
+        }
+    }
+
+    /// One item of the subscription's data: kept in the group in flight,
+    /// and the readers it is for.
+    fn keep(&mut self, data: &Data) -> impl Iterator<Item = &Reader> {
+        match data {
+            Data::Object {
+                group,
+                object,
+                body,
+            } => {
+                let datagram = matches!(self.opened, Some((_, Mode::Datagram)));
+                let fresh = self
+                    .in_flight
+                    .as_ref()
+                    .is_none_or(|in_flight| in_flight.group != *group);
+                if fresh || datagram {
+                    self.in_flight = Some(InFlight {
+                        group: *group,
+                        objects: Vec::new(),
+                        bytes: 0,
+                        whole: datagram || *object == 0,
+                    });
+                }
+                let in_flight = self.in_flight.as_mut().expect("kept just now");
+                let fits = in_flight.bytes + body.len() <= live_wire::MAX_GROUP_BYTES;
+                match in_flight.whole && fits {
+                    true => {
+                        in_flight.bytes += body.len();
+                        in_flight.objects.push(data.clone());
+                    }
+                    false => {
+                        in_flight.whole = false;
+                        in_flight.objects = Vec::new();
+                    }
+                }
+            }
+            Data::GroupEnd { .. } => self.in_flight = None,
+        }
+        self.readers.iter().filter(|reader| reader.follows(data))
+    }
+
+    /// A later request that follows this subscription: it hears what the
+    /// node answered, and with `Latest` the group in flight first.
+    fn join_subscription(&mut self, reader: Reader, ends: &Ends, from: Start) {
+        let mut reader = reader;
+        if let Some((by, mode)) = self.opened {
+            let replay = match from {
+                Start::Latest => self.in_flight.as_ref().filter(|in_flight| in_flight.whole),
+                Start::Next => {
+                    reader.after = self.in_flight.as_ref().map(|in_flight| in_flight.group);
+                    None
+                }
+            };
+            let latest = replay.map(|in_flight| in_flight.group);
+            let _ = reader.heard.send(Heard::Subscribed { by, mode, latest });
+            for data in replay.iter().flat_map(|in_flight| &in_flight.objects) {
+                match mode {
+                    Mode::Datagram => ends.latest.put(data.clone()),
+                    Mode::Stream => {
+                        // the data path holds the replay (`request_holding`)
+                        let _ = ends.data.try_send(data.clone());
+                    }
+                }
+            }
+        }
+        self.readers.push(reader);
+    }
+
+    /// A later request that follows this room's list: the tracks up now
+    /// first.
+    fn join_list(&mut self, reader: Reader) {
+        for announce in &self.up {
+            let _ = reader.heard.send(announce.clone());
+        }
+        self.readers.push(reader);
+    }
 }
 
 impl Conn {
@@ -392,36 +574,72 @@ impl Conn {
     /// would fail the same way.
     fn fail(&self, refusal: Error) {
         for (_, entry) in lock(&self.table).requests.drain() {
-            let _ = entry.heard.send(Heard::Closed(refusal.clone()));
+            entry.tell(Heard::Closed(refusal.clone()));
+        }
+        if let Some(client) = self.client.upgrade() {
+            client.hold_off();
         }
         self.close("wire_mismatch");
     }
 
-    fn open(self: &Arc<Self>, ask: Ask) -> Request {
+    /// `ask` as a request of the session: a new node request, or a share
+    /// of the one that follows the same track or room already. A second
+    /// publisher of a track in the app is refused `duplicate_track`: one
+    /// publisher per track.
+    fn open(self: &Arc<Self>, ask: Ask) -> Result<Request, Error> {
         let id = self.next.fetch_add(1, Ordering::SeqCst);
         let weak = Arc::downgrade(self);
+        let withdraw = move || {
+            if let Some(conn) = weak.upgrade() {
+                conn.withdraw(id);
+            }
+        };
+        let mut table = lock(&self.table);
+        let held = table
+            .requests
+            .values_mut()
+            .find(|held| same_ask(&held.asked, &ask));
+        if let Some(held) = held {
+            return match ask {
+                Ask::Publish { .. } => Err(Error::new(
+                    refusal::DUPLICATE_TRACK,
+                    "another window of this app publishes this track",
+                )),
+                Ask::Subscribe { from, .. } => {
+                    let replayed = held
+                        .in_flight
+                        .as_ref()
+                        .map_or(0, |in_flight| in_flight.objects.len());
+                    let (request, ends) = request_holding(withdraw, replayed);
+                    let reader = Reader::new(id, &ends, from == Start::Next);
+                    held.join_subscription(reader, &ends, from);
+                    Ok(request)
+                }
+                Ask::Watch { .. } => {
+                    let (request, ends) = request(withdraw);
+                    held.join_list(Reader::new(id, &ends, false));
+                    Ok(request)
+                }
+            };
+        }
+        let (request, ends) = request(withdraw);
         let kind = match ask {
             Ask::Publish { .. } => Kind::Publish,
             Ask::Subscribe { .. } => Kind::Subscribe,
             Ask::Watch { .. } => Kind::Watch,
         };
-        let (request, ends) = request(move || {
-            if let Some(conn) = weak.upgrade() {
-                conn.withdraw(id);
+        let next_only = matches!(
+            ask,
+            Ask::Subscribe {
+                from: Start::Next,
+                ..
             }
-        });
+        );
+        let mut entry = Entry::new(kind, ask.clone(), Reader::new(id, &ends, next_only));
         let (taken, alias) = oneshot::channel();
-        let entry = Entry {
-            kind,
-            heard: ends.heard,
-            data: ends.data,
-            latest: ends.latest,
-            taken: (kind == Kind::Publish).then_some(taken),
-            established: false,
-            alias: None,
-            counted: None,
-        };
-        lock(&self.table).requests.insert(id, entry);
+        entry.taken = (kind == Kind::Publish).then_some(taken);
+        table.requests.insert(id, entry);
+        drop(table);
         let control = match ask {
             Ask::Publish {
                 track,
@@ -447,24 +665,36 @@ impl Conn {
             },
         };
         let _ = self.control.send(control);
-        request
+        Ok(request)
     }
 
-    /// The request was dropped: the node is told, unless it ended it first.
-    fn withdraw(&self, id: RequestId) {
-        let entry = {
+    /// Request `id` of the app was dropped: it leaves the node request it
+    /// shares, and the node is told once its last reader went, unless the
+    /// node ended it first.
+    fn withdraw(&self, id: u64) {
+        let gone = {
             let mut table = lock(&self.table);
-            let entry = table.requests.remove(&id);
-            if let Some(alias) = entry.as_ref().and_then(|entry| entry.alias) {
+            let Some((&request, entry)) = table
+                .requests
+                .iter_mut()
+                .find(|(_, entry)| entry.readers.iter().any(|reader| reader.id == id))
+            else {
+                return;
+            };
+            entry.readers.retain(|reader| reader.id != id);
+            if !entry.readers.is_empty() {
+                return;
+            }
+            let entry = table.requests.remove(&request).expect("found just now");
+            if let Some(alias) = entry.alias {
                 table.aliases.remove(&alias);
             }
-            entry
+            (request, entry.kind)
         };
-        let control = match entry.map(|entry| entry.kind) {
-            Some(Kind::Publish) => Control::Unpublish { request: id },
-            Some(Kind::Subscribe) => Control::Unsubscribe { request: id },
-            Some(Kind::Watch) => Control::Unwatch { request: id },
-            None => return,
+        let control = match gone {
+            (request, Kind::Publish) => Control::Unpublish { request },
+            (request, Kind::Subscribe) => Control::Unsubscribe { request },
+            (request, Kind::Watch) => Control::Unwatch { request },
         };
         let _ = self.control.send(control);
     }
@@ -479,7 +709,7 @@ impl Conn {
                     if let Some(taken) = entry.taken.take() {
                         let _ = taken.send(alias);
                     }
-                    let _ = entry.heard.send(Heard::Published);
+                    entry.tell(Heard::Published);
                 }
             }
             Control::Subscribed {
@@ -492,13 +722,24 @@ impl Conn {
                 if let Some(entry) = table.requests.get_mut(&request) {
                     entry.established = true;
                     entry.alias = Some(alias);
-                    let _ = entry.heard.send(Heard::Subscribed { by, mode, latest });
+                    entry.opened = Some((by, mode));
+                    for reader in &mut entry.readers {
+                        // the group the node replays is not a `Next` reader's
+                        let latest = match reader.next_only {
+                            true => {
+                                reader.after = latest;
+                                None
+                            }
+                            false => latest,
+                        };
+                        let _ = reader.heard.send(Heard::Subscribed { by, mode, latest });
+                    }
                     table.aliases.insert(alias, request);
                 }
             }
             Control::Subscribers { request, count } => {
                 if let Some(entry) = table.requests.get(&request) {
-                    let _ = entry.heard.send(Heard::Subscribers(count));
+                    entry.tell(Heard::Subscribers(count));
                 }
             }
             Control::Announce {
@@ -508,13 +749,20 @@ impl Conn {
                 mode,
                 up,
             } => {
-                if let Some(entry) = table.requests.get(&request) {
-                    let _ = entry.heard.send(Heard::Announce {
-                        track,
+                if let Some(entry) = table.requests.get_mut(&request) {
+                    let announce = Heard::Announce {
+                        track: track.clone(),
                         by,
                         mode,
                         up,
-                    });
+                    };
+                    entry.up.retain(
+                        |held| !matches!(held, Heard::Announce { track: held, .. } if *held == track),
+                    );
+                    if up {
+                        entry.up.push(announce.clone());
+                    }
+                    entry.tell(announce);
                 }
             }
             Control::Ended { request, reason } => {
@@ -538,9 +786,7 @@ impl Conn {
                     .get(&request)
                     .is_some_and(|entry| entry.kind == Kind::Publish && entry.established);
                 match dropped {
-                    true => {
-                        let _ = table.requests[&request].heard.send(Heard::Dropped(code));
-                    }
+                    true => table.requests[&request].tell(Heard::Dropped(code)),
                     false => end(&mut table, request, code.as_str()),
                 }
             }
@@ -557,11 +803,28 @@ impl Conn {
         Ok(())
     }
 
-    /// The data path of the subscription `alias` names.
-    fn data(&self, alias: Alias) -> Option<(mpsc::Sender<Data>, Arc<Latest>)> {
-        let table = lock(&self.table);
-        let entry = table.requests.get(table.aliases.get(&alias)?)?;
-        Some((entry.data.clone(), entry.latest.clone()))
+    /// One stream-mode item of the subscription `alias` names, kept in
+    /// its group in flight: the data paths of the readers it is for, to
+    /// send to outside the lock. `None` when nothing follows `alias`.
+    fn deliver(&self, alias: Alias, data: &Data) -> Option<Vec<mpsc::Sender<Data>>> {
+        let mut table = lock(&self.table);
+        let request = *table.aliases.get(&alias)?;
+        let entry = table.requests.get_mut(&request)?;
+        Some(entry.keep(data).map(|reader| reader.data.clone()).collect())
+    }
+
+    /// One datagram-mode object of the subscription `alias` names: the
+    /// newest for each reader it is for.
+    fn deliver_latest(&self, alias: Alias, data: Data) {
+        let mut table = lock(&self.table);
+        let Some(request) = table.aliases.get(&alias).copied() else {
+            return;
+        };
+        if let Some(entry) = table.requests.get_mut(&request) {
+            for reader in entry.keep(&data) {
+                reader.latest.put(data.clone());
+            }
+        }
     }
 }
 
@@ -576,7 +839,7 @@ fn end(table: &mut Table, id: RequestId, word: &'static str) {
             Kind::Subscribe => "the node ended this subscription",
             Kind::Watch => "the node ended this list",
         };
-        let _ = entry.heard.send(Heard::Closed(Error::new(word, what)));
+        entry.tell(Heard::Closed(Error::new(word, what)));
     }
 }
 
@@ -593,23 +856,30 @@ enum Unread {
 
 impl Unread {
     /// The refusal of a request that was opening when it happened.
-    fn refusal(self, client: &Weak<Inner>) -> Error {
+    fn refusal(self) -> Error {
         match self {
             Unread::Closed(why) => unavailable(why),
-            Unread::Mismatch(what) => mismatch(client, what),
+            Unread::Mismatch(what) => mismatch(what),
         }
     }
 }
 
-/// The node speaks another live wire than this client (`what` names the
-/// message and the decode error): said in the log, the next dial held off,
-/// and the refusal that ends the requests.
-fn mismatch(client: &Weak<Inner>, what: String) -> Error {
-    tracing::warn!(target: "ducktape::app", reason = "wire_mismatch", %what, "the node's live message does not decode: it speaks another live wire");
-    if let Some(client) = client.upgrade() {
-        let mismatches = client.mismatches.fetch_add(1, Ordering::SeqCst) + 1;
-        *lock(&client.not_before) = Some(Instant::now() + super::retry_delay(mismatches));
+/// Whether `ask` asks what `held` asks of the node: the same track
+/// published or followed, or the same room's list.
+fn same_ask(held: &Ask, ask: &Ask) -> bool {
+    match (held, ask) {
+        (Ask::Publish { track: held, .. }, Ask::Publish { track, .. })
+        | (Ask::Subscribe { track: held, .. }, Ask::Subscribe { track, .. }) => held == track,
+        (Ask::Watch { namespace: held }, Ask::Watch { namespace }) => held == namespace,
+        _ => false,
     }
+}
+
+/// The node speaks another live wire than this client (`what` names the
+/// message and the decode error): said in the log, and the refusal that
+/// ends the requests.
+fn mismatch(what: String) -> Error {
+    tracing::warn!(target: "ducktape::app", reason = "wire_mismatch", %what, "the node's live message does not decode: it speaks another live wire");
     Error::new(
         refusal::NODE_FAILED,
         format!("the node speaks another live wire: {what}"),
@@ -694,7 +964,7 @@ async fn dial(rpc: &RpcClient, client: Weak<Inner>) -> Result<Arc<Conn>, Error> 
             )
         }
     };
-    let datagrams = tokio::time::timeout(HELLO_WAIT, handshake(&mut link, hello, &client))
+    let datagrams = tokio::time::timeout(HELLO_WAIT, handshake(&mut link, hello))
         .await
         .map_err(|_| unavailable("the node did not finish the live handshake in time"))??;
     let conn = Arc::new(Conn {
@@ -739,10 +1009,10 @@ enum Link {
 
 /// `Hello` → `Challenge` → `Proof` → `Welcome`: whether the path carries
 /// datagrams, or the node's refusal.
-async fn handshake(link: &mut Link, hello: Hello, client: &Weak<Inner>) -> Result<bool, Error> {
+async fn handshake(link: &mut Link, hello: Hello) -> Result<bool, Error> {
     let (chain, key) = (hello.chain, hello.key.clone());
     link.send(&Control::Hello(hello)).await?;
-    let heard = link.recv().await.map_err(|unread| unread.refusal(client))?;
+    let heard = link.recv().await.map_err(Unread::refusal)?;
     let Control::Challenge(challenge) = heard else {
         return Err(unavailable("the node did not challenge the hello"));
     };
@@ -755,7 +1025,7 @@ async fn handshake(link: &mut Link, hello: Hello, client: &Weak<Inner>) -> Resul
         ));
     }
     link.send(&Control::Proof(Proof { signature })).await?;
-    match link.recv().await.map_err(|unread| unread.refusal(client))? {
+    match link.recv().await.map_err(Unread::refusal)? {
         Control::Welcome(welcome) => Ok(welcome.datagrams),
         Control::Refused { code, .. } => Err(Error::new(
             code.as_str(),
@@ -844,7 +1114,7 @@ impl Link {
                             }
                             Err(Unread::Closed(_)) => break "the control stream closed",
                             Err(Unread::Mismatch(what)) => {
-                                return reader.fail(mismatch(&reader.client, what));
+                                return reader.fail(mismatch(what));
                             }
                         }
                     };
@@ -909,17 +1179,16 @@ impl Link {
                                 end,
                             }) => heard_slice(&conn, header, objects, end),
                             Ok(WsFrame::Datagram { header, payload }) => {
-                                if let Some((_, latest)) = conn.data(header.alias) {
-                                    latest.put(Data::Object {
-                                        group: header.group,
-                                        object: header.object,
-                                        body: payload,
-                                    });
-                                }
+                                let object = Data::Object {
+                                    group: header.group,
+                                    object: header.object,
+                                    body: payload,
+                                };
+                                conn.deliver_latest(header.alias, object);
                             }
                             Err(error) => {
                                 let what = undecoded("frame", &bytes, error);
-                                return conn.fail(mismatch(&conn.client, what));
+                                return conn.fail(mismatch(what));
                             }
                         }
                     };
@@ -961,10 +1230,6 @@ async fn read_group(conn: Arc<Conn>, mut stream: quinn::RecvStream) {
     let Ok(header) = abi::decode::<GroupHeader>(&head) else {
         return;
     };
-    let Some((data, _)) = conn.data(header.alias) else {
-        let _ = stream.stop(0u32.into());
-        return;
-    };
     let group = header.group;
     let mut object = 0u32;
     let complete = loop {
@@ -988,12 +1253,20 @@ async fn read_group(conn: Arc<Conn>, mut stream: quinn::RecvStream) {
             object,
             body,
         };
-        if data.send(item).await.is_err() {
+        // nothing follows the track any more: the node is told to stop
+        let Some(readers) = conn.deliver(header.alias, &item) else {
+            let _ = stream.stop(0u32.into());
             return;
+        };
+        for reader in readers {
+            let _ = reader.send(item.clone()).await;
         }
         object += 1;
     };
-    let _ = data.send(Data::GroupEnd { group, complete }).await;
+    let end = Data::GroupEnd { group, complete };
+    for reader in conn.deliver(header.alias, &end).unwrap_or_default() {
+        let _ = reader.send(end.clone()).await;
+    }
 }
 
 fn heard_datagram(conn: &Conn, bytes: &[u8]) {
@@ -1003,13 +1276,12 @@ fn heard_datagram(conn: &Conn, bytes: &[u8]) {
     let Ok(header) = abi::decode::<DatagramHeader>(head) else {
         return;
     };
-    if let Some((_, latest)) = conn.data(header.alias) {
-        latest.put(Data::Object {
-            group: header.group,
-            object: header.object,
-            body: payload.to_vec(),
-        });
-    }
+    let object = Data::Object {
+        group: header.group,
+        object: header.object,
+        body: payload.to_vec(),
+    };
+    conn.deliver_latest(header.alias, object);
 }
 
 /// A slice of a group over the websocket: its objects numbered on from the
@@ -1024,9 +1296,26 @@ fn heard_slice(conn: &Conn, header: GroupHeader, objects: Vec<Vec<u8>>, end: boo
     let Some(entry) = table.requests.get_mut(&id) else {
         return;
     };
+    let hand = |entry: &mut Entry, data: Data| {
+        for reader in entry.keep(&data) {
+            if reader.data.try_send(data.clone()).is_err() {
+                reader.latest.dropped.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    };
     let mut next = match entry.counted {
         Some((group, next)) if group == header.group => next,
-        _ => 0,
+        // the node starts the next group without ending this one: it was
+        // cut short (an object refused, the track ended), not malformed
+        Some((group, _)) => {
+            let cut = Data::GroupEnd {
+                group,
+                complete: false,
+            };
+            hand(entry, cut);
+            0
+        }
+        None => 0,
     };
     for body in objects {
         let item = Data::Object {
@@ -1034,20 +1323,16 @@ fn heard_slice(conn: &Conn, header: GroupHeader, objects: Vec<Vec<u8>>, end: boo
             object: next,
             body,
         };
-        if entry.data.try_send(item).is_err() {
-            entry.latest.dropped.fetch_add(1, Ordering::Relaxed);
-        }
+        hand(entry, item);
         next += 1;
     }
-    entry.counted = Some((header.group, next));
+    entry.counted = (!end).then_some((header.group, next));
     if end {
         let item = Data::GroupEnd {
             group: header.group,
             complete: true,
         };
-        if entry.data.try_send(item).is_err() {
-            entry.latest.dropped.fetch_add(1, Ordering::Relaxed);
-        }
+        hand(entry, item);
     }
 }
 
