@@ -180,6 +180,7 @@ fn a_start_with_a_staged_release_execs_it_in_the_same_process_with_its_link() {
             previous: installed,
             boots: 0,
             pinned_sequence: pin + 1,
+            display: "0.0.0+next".into(),
         })
     );
 }
@@ -198,6 +199,7 @@ fn a_start_after_a_release_that_never_rendered_execs_the_one_before() {
         previous: before,
         boots: 1,
         pinned_sequence: pin,
+        display: "0.0.0+installed".into(),
     }));
     let (pid, record) = rig.start(&["duck://garage/forge"]);
     assert_eq!(record, format!("{pid} duck://garage/forge"));

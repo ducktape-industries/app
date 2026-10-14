@@ -257,25 +257,27 @@ fn offer_newer(idle: Idle, verified: VerifiedManifest) -> (Phase, Vec<Command>) 
 
 /// The crash-safe flip: `Swapping` persisted BEFORE `Flip`, `PendingHealthy`
 /// AFTER, then `Exec`. Shared by the update and the resumed swap.
-fn swap_into(from: Sha, to: Sha, pinned_sequence: u64) -> (Phase, Vec<Command>) {
+fn swap_into(from: Sha, to: Sha, pinned_sequence: u64, display: String) -> (Phase, Vec<Command>) {
     let swapping = Phase::Swapping(Swapping {
         from,
         to,
         pinned_sequence,
+        display: display.clone(),
     });
-    let (pending, finish) = finish_swap(from, to, pinned_sequence);
+    let (pending, finish) = finish_swap(from, to, pinned_sequence, display);
     let mut commands = vec![Command::Persist(swapping), Command::Flip { from, to }];
     commands.extend(finish);
     (pending, commands)
 }
 
 /// After the flip landed: persist `PendingHealthy{boots: 0}` and exec `to`.
-fn finish_swap(from: Sha, to: Sha, pinned_sequence: u64) -> (Phase, Vec<Command>) {
+fn finish_swap(from: Sha, to: Sha, pinned_sequence: u64, display: String) -> (Phase, Vec<Command>) {
     let pending = Phase::PendingHealthy(PendingHealthy {
         current: to,
         previous: from,
         boots: 0,
         pinned_sequence,
+        display,
     });
     (
         pending.clone(),
@@ -415,7 +417,7 @@ fn staged_qualify_passed(staged: Staged, sha: Sha) -> (Phase, Vec<Command>) {
         return unchanged(Phase::Staged(staged));
     }
     let adopted = staged.pinned_sequence.max(staged.sequence);
-    swap_into(staged.current, staged.staged, adopted)
+    swap_into(staged.current, staged.staged, adopted, staged.display)
 }
 
 /// Refused by its own self-check: keep running `current` and keep the release
@@ -506,16 +508,12 @@ fn swapping_boot(swapping: Swapping) -> (Phase, Vec<Command>) {
 }
 
 fn swapping_resolved(swapping: Swapping, state: SwapState) -> (Phase, Vec<Command>) {
+    let (from, to) = (swapping.from, swapping.to);
+    let (pending, finish) = finish_swap(from, to, swapping.pinned_sequence, swapping.display);
     match state {
-        SwapState::Landed => finish_swap(swapping.from, swapping.to, swapping.pinned_sequence),
+        SwapState::Landed => (pending, finish),
         SwapState::Untouched => {
-            let (pending, finish) =
-                finish_swap(swapping.from, swapping.to, swapping.pinned_sequence);
-            let flip = Command::Flip {
-                from: swapping.from,
-                to: swapping.to,
-            };
-            let mut commands = vec![flip];
+            let mut commands = vec![Command::Flip { from, to }];
             commands.extend(finish);
             (pending, commands)
         }
@@ -540,12 +538,14 @@ fn pending_healthy_boot(pending: PendingHealthy) -> (Phase, Vec<Command>) {
         from: pending.current,
         to: pending.previous,
         pinned_sequence: pending.pinned_sequence,
+        display: String::new(),
     });
     let rolled_back = Phase::RolledBack(RolledBack {
         current: pending.previous,
         failed: pending.current,
         reason: RollbackReason::NeverRendered,
         pinned_sequence: pending.pinned_sequence,
+        display: pending.display,
     });
     let commands = vec![
         Command::Persist(swapping),
@@ -646,6 +646,7 @@ mod tests {
             from: sha(from),
             to: sha(to),
             pinned_sequence: 18,
+            display: format!("0.1.0+{to}"),
         }
     }
 
@@ -655,6 +656,7 @@ mod tests {
             previous: sha(previous),
             boots,
             pinned_sequence: 18,
+            display: format!("0.1.0+{current}"),
         })
     }
 
@@ -664,6 +666,7 @@ mod tests {
             failed: sha(failed),
             reason: RollbackReason::NeverRendered,
             pinned_sequence: 18,
+            display: format!("0.1.0+{failed}"),
         })
     }
 
@@ -679,12 +682,14 @@ mod tests {
             previous: sha(from),
             boots: 0,
             pinned_sequence,
+            display: format!("0.1.0+{to}"),
         });
         let commands = vec![
             Command::Persist(Phase::Swapping(Swapping {
                 from: sha(from),
                 to: sha(to),
                 pinned_sequence,
+                display: format!("0.1.0+{to}"),
             })),
             Command::Flip {
                 from: sha(from),
@@ -1102,7 +1107,11 @@ mod tests {
                 expect: (
                     rolled_back("a", "b"),
                     vec![
-                        Command::Persist(Phase::Swapping(swapping("b", "a"))),
+                        // the swap back: "a" was never offered
+                        Command::Persist(Phase::Swapping(Swapping {
+                            display: String::new(),
+                            ..swapping("b", "a")
+                        })),
                         Command::Flip {
                             from: sha("b"),
                             to: sha("a"),

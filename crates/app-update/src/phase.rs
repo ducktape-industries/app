@@ -88,6 +88,9 @@ pub struct Swapping {
     pub from: Sha,
     pub to: Sha,
     pub pinned_sequence: u64,
+    /// `to`'s version as the person saw it offered ("" when it was not
+    /// offered: the swap back of a rollback).
+    pub display: String,
 }
 
 /// `boots` counts boot steps since the flip. The image the flip `exec`s
@@ -99,6 +102,8 @@ pub struct PendingHealthy {
     pub previous: Sha,
     pub boots: u8,
     pub pinned_sequence: u64,
+    /// `current`'s version as the person saw it offered.
+    pub display: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,6 +112,8 @@ pub struct RolledBack {
     pub failed: Sha,
     pub reason: RollbackReason,
     pub pinned_sequence: u64,
+    /// `failed`'s version as the person saw it offered.
+    pub display: String,
 }
 
 impl Phase {

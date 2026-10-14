@@ -847,10 +847,13 @@ fn status(chosen: Channel, reading: &Reading) -> String {
         _ => {}
     }
     if let Some(rolled_back) = &reading.rolled_back {
-        return format!(
-            "Went back from {}: it never came up",
-            rolled_back.failed.short()
-        );
+        // the version the person saw offered; one no offer named (a swap
+        // back finished after a crash) goes by its digest
+        let failed = match rolled_back.display.is_empty() {
+            true => rolled_back.failed.short(),
+            false => rolled_back.display.clone(),
+        };
+        return format!("Went back from {failed}: it never came up");
     }
     // a pick the loop has not checked yet
     if chosen != reading.channel {

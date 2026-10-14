@@ -89,18 +89,21 @@ mod tests {
                 from: a,
                 to: b,
                 pinned_sequence: 18,
+                display: "0.1.0+b".into(),
             }),
             Phase::PendingHealthy(PendingHealthy {
                 current: b,
                 previous: a,
                 boots: 1,
                 pinned_sequence: 18,
+                display: "0.1.0+b".into(),
             }),
             Phase::RolledBack(RolledBack {
                 current: a,
                 failed: b,
                 reason: RollbackReason::NeverRendered,
                 pinned_sequence: 18,
+                display: "0.1.0+b".into(),
             }),
         ]
     }
@@ -121,6 +124,7 @@ mod tests {
             from: a,
             to: Sha::digest(b"b"),
             pinned_sequence: 3,
+            display: "0.1.0+b".into(),
         }));
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["phase"], "swapping");

@@ -983,6 +983,7 @@ mod linux {
                 from: a,
                 to: b,
                 pinned_sequence: pin + 1,
+                display: format!("0.1.0+{}", b.short()),
             });
             crate::update::persist_phase(&layout, &swapping).unwrap();
             if landed {
@@ -1209,7 +1210,7 @@ mod linux {
         running.start();
         assert_eq!(
             running.shown().status,
-            format!("Went back from {}: it never came up", b.short())
+            format!("Went back from 0.1.0+{}: it never came up", b.short())
         );
         block(running.check(&client()));
         assert_eq!(
