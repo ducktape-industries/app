@@ -390,11 +390,13 @@ fn told(state: &ducktape_av::State, kind: Kind) -> wire::MediaState {
         Status::NoDevice => (wire::MediaStatus::NoDevice, String::new()),
         Status::Failed(why) => (wire::MediaStatus::Failed, why.clone()),
     };
-    // one line, at most 200 bytes, as the wire says
-    let mut detail = crate::runtime::shown_title(&detail);
+    // one line, at most 200 bytes, as the wire says (a window title's
+    // 80 chars would cut a fix line short)
+    let mut detail: String = detail.chars().filter(crate::runtime::plain).collect();
     while detail.len() > 200 {
         detail.pop();
     }
+    let detail = detail.trim().to_owned();
     wire::MediaState {
         status,
         device: crate::runtime::shown_title(&state.device),
@@ -556,6 +558,6 @@ mod tests {
             "camera portal"
         };
         assert!(denied.detail.contains(word), "{}", denied.detail);
-        assert!(denied.detail.len() <= 200);
+        assert!(denied.detail.len() <= 200 && denied.detail.ends_with("then try again."));
     }
 }
