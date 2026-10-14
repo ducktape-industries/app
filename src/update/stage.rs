@@ -153,14 +153,10 @@ pub(super) fn collect(releases_dir: &Path, keep: &[Sha]) {
             continue;
         };
         let kind = if meta.is_dir() { "release" } else { "partial" };
-        let removed = match meta.is_dir() {
-            true => std::fs::remove_dir_all(&path),
-            false => std::fs::remove_file(&path),
-        };
-        match removed {
+        match super::remove_leftover(&path) {
             Ok(()) => info!(target: TARGET, event = "app_update_gc", %sha, kind),
-            Err(error) => {
-                warn!(target: TARGET, event = "app_update_gc_failed", %sha, kind, %error)
+            Err(refusal) => {
+                warn!(target: TARGET, event = "app_update_gc_failed", %sha, kind, detail = %refusal.detail)
             }
         }
     }

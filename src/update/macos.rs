@@ -5,7 +5,7 @@
 //! The installed `<install>/Ducktape.app` is swapped whole against the staged
 //! one with `renamex_np(RENAME_SWAP)` (atomic, same volume), and the old
 //! bundle — now sitting at the staged path — is moved to
-//! `releases/<from>/Ducktape.app`, which `previous` then names. Both paths
+//! `releases.noindex/<from>/Ducktape.app`, which `previous` then names. Both paths
 //! hold a bundle before AND after the swap, so the flip first records the
 //! incoming executable's digest in `<updates>/swap.json`; a boot in
 //! `Swapping` hashes the installed executable against it to learn whether the
@@ -17,6 +17,10 @@
 //! laid down by `install` or adopted is named by that digest already; one
 //! staged from an archive is named by the archive's, so its executable's is
 //! recorded as it stages, in `<updates>/executables.json`.
+//!
+//! The installed bundle is the one app of the install LaunchServices knows:
+//! the swap registers it and unregisters the bundle it parked, which would
+//! otherwise keep the record the installed path had ([`launch_services`]).
 //!
 //! Everything here compiles on every platform so the Linux build type-checks
 //! it; only the swap call itself is macOS's, and the boot step reaches this
@@ -135,6 +139,42 @@ pub(super) fn copy_bundle(from: &Path, to: &Path) -> Result<(), Refusal> {
     Ok(())
 }
 
+/// LaunchServices' own tool, which registers and unregisters apps.
+const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister";
+
+#[cfg(test)]
+thread_local! {
+    /// A test's bundles stay out of LaunchServices unless it asks.
+    pub(super) static LAUNCH_SERVICES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Tell LaunchServices `bundle` is an app to open (`registered`), or no
+/// longer one. Its failure is logged and changes nothing else: the
+/// registration is what Finder and `open` offer, not what the update runs.
+pub(super) fn launch_services(bundle: &Path, registered: bool) {
+    #[cfg(test)]
+    if !LAUNCH_SERVICES.with(std::cell::Cell::get) {
+        return;
+    }
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let flag = match registered {
+        true => "-f",
+        false => "-u",
+    };
+    let status = Command::new(LSREGISTER)
+        .arg(flag)
+        .arg(bundle)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    if !status.as_ref().is_ok_and(std::process::ExitStatus::success) {
+        tracing::warn!(target: super::TARGET, event = "app_update_launch_services_failed", flag, bundle = %bundle.display(), ?status);
+    }
+}
+
 /// What a bundle swap wrote before `RENAME_SWAP`: which release is coming
 /// in, the digest of its executable, and where the outgoing bundle sits
 /// right after the swap.
@@ -183,6 +223,9 @@ fn finish(layout: &Layout, from: Sha, to: Sha, journal: &Journal) -> Result<(), 
             .map_err(|error| Refusal::io("park_failed", &parent, &error))?;
         super::move_tree(&journal.swapped_with, &park)?;
     }
+    // the installed path's record went with the bundle that held it
+    launch_services(&park, false);
+    launch_services(&layout.installed_bundle(), true);
     let _ = std::fs::remove_dir(layout.release_dir(to));
     super::replace_symlink(&layout.previous_link(), &Layout::link_target(from))?;
     let path = layout.journal_path();

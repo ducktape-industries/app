@@ -102,7 +102,7 @@ pub(super) fn rebuild(layout: &Layout, own: &Path) -> Result<Phase, Refusal> {
         .as_deref()
         .and_then(|target| {
             target
-                .strip_prefix("releases")
+                .strip_prefix(super::RELEASES)
                 .ok()?
                 .to_str()?
                 .parse::<Sha>()

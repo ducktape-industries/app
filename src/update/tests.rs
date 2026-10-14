@@ -1413,7 +1413,7 @@ mod macos {
         std::fs::create_dir_all(&download).unwrap();
         crate::update::install::install(&layout, &bundle_exe(&bundle(&download, "a"))).unwrap();
         let pin = state(&layout).pinned_sequence();
-        let built = root.path().join("built");
+        let built = root.join("built");
         std::fs::create_dir_all(&built).unwrap();
         let b = publish_archive(&bucket, pin + 1, pack(&bundle(&built, "b")));
         let updater =
@@ -1444,9 +1444,76 @@ mod macos {
     #[test]
     fn an_installed_bundle_runs_a_newer_signed_bundle_next_start_and_one_that_never_renders_is_swapped_back()
      {
-        let bucket = Bucket::new();
         let (root, layout) = rig();
-        let download = root.path().join("download");
+        swap_in_and_back(root.path(), &layout);
+        // nothing the updates laid down needs a chmod to go
+        std::fs::remove_dir_all(root.path()).unwrap();
+    }
+
+    /// LaunchServices knows one app of the install, the installed bundle:
+    /// after a swap in and a swap back, no staged, parked or collected
+    /// bundle is left registered. It writes to this Mac's LaunchServices,
+    /// so it runs by hand, in `~/tmp` (where Spotlight looks), and
+    /// unregisters what it leaves.
+    #[test]
+    #[ignore = "registers apps with this Mac's LaunchServices"]
+    fn launch_services_knows_only_the_installed_bundle() {
+        let tmp = Path::new(&std::env::var_os("HOME").unwrap()).join("tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let root = tempfile::tempdir_in(&tmp).unwrap();
+        let layout = Layout {
+            updates: root.path().join("cfg/ducktape/updates"),
+            install: root.path().join("apps"),
+            data_home: root.path().join("data"),
+        };
+        crate::update::macos::LAUNCH_SERVICES.with(|on| on.set(true));
+        swap_in_and_back(root.path(), &layout);
+        let registered = registered_under(root.path());
+        for bundle in &registered {
+            crate::update::macos::launch_services(bundle, false);
+        }
+        let left = registered_under(root.path());
+        std::fs::remove_dir_all(root.path()).unwrap();
+        let ours = |path: &&std::path::PathBuf| {
+            path.starts_with(&layout.updates) || path.starts_with(&layout.install)
+        };
+        assert_eq!(
+            registered.iter().filter(ours).collect::<Vec<_>>(),
+            [&layout.installed_bundle()]
+        );
+        assert_eq!(left, Vec::<std::path::PathBuf>::new());
+    }
+
+    /// Every app LaunchServices has registered under `root`.
+    fn registered_under(root: &Path) -> Vec<std::path::PathBuf> {
+        let dump = Command::new(
+            "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister",
+        )
+        .arg("-dump")
+        .output()
+        .unwrap();
+        let mut paths: Vec<_> = String::from_utf8_lossy(&dump.stdout)
+            .lines()
+            .filter_map(|line| line.trim_start().strip_prefix("path:"))
+            .map(|path| {
+                path.trim()
+                    .rsplit_once(" (0x")
+                    .map_or(path.trim(), |(path, _)| path)
+            })
+            .map(std::path::PathBuf::from)
+            .filter(|path| path.starts_with(root))
+            .collect();
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+
+    /// An installed A takes a newer signed B at its next start; B never
+    /// renders, and the start after swaps A back in and collects B.
+    fn swap_in_and_back(root: &Path, layout: &Layout) {
+        let layout = layout.clone();
+        let bucket = Bucket::new();
+        let download = root.join("download");
         std::fs::create_dir_all(&download).unwrap();
         let own = bundle_exe(&bundle(&download, "a"));
         let a = crate::update::install::install(&layout, &own).unwrap();
@@ -1455,7 +1522,7 @@ mod macos {
         let own_a = layout.app_exe();
         assert_eq!(boot_at(&layout, &own_a).unwrap(), Boot::Run(installed));
 
-        let built = root.path().join("built");
+        let built = root.join("built");
         std::fs::create_dir_all(&built).unwrap();
         let b = publish_archive(&bucket, pin + 1, pack(&bundle(&built, "b")));
         let mut running = Updater::new(
@@ -1535,7 +1602,5 @@ mod macos {
         // nothing is kept beside it
         assert_eq!(std::fs::read_dir(layout.releases_dir()).unwrap().count(), 0);
         assert!(std::fs::symlink_metadata(layout.previous_link()).is_err());
-        // nothing the updates laid down needs a chmod to go
-        std::fs::remove_dir_all(root.path()).unwrap();
     }
 }

@@ -31,9 +31,9 @@
 //!   <data>/applications/dev.ducktape.app.desktop  Exec= current/ducktape-app
 //! macOS  (<install> = $DUCKTAPE_INSTALL_DIR, else /Applications):
 //!   <install>/Ducktape.app                        the CURRENT release, whole
-//!   <updates>/releases/<sha>/Ducktape.app         previous and staged releases
-//!   <updates>/releases/<sha>.partial
-//!   <updates>/previous -> releases/<sha>
+//!   <updates>/releases.noindex/<sha>/Ducktape.app previous and staged releases
+//!   <updates>/releases.noindex/<sha>.partial
+//!   <updates>/previous -> releases.noindex/<sha>
 //!   <updates>/swap.json                           the bundle swap's journal
 //!   <updates>/executables.json                    each staged release's executable digest
 //! both   (<updates> = <config>/ducktape/updates, the app's config dir):
@@ -44,7 +44,10 @@
 //!   <updates>/keys/successor.json                 a key rotation this install saw
 //! ```
 //! Every path is absolute under those roots, never relative to the running
-//! executable.
+//! executable. On macOS the installed bundle is the one app LaunchServices
+//! knows of this install: Spotlight skips `releases.noindex`, a swap
+//! registers what it put in place and unregisters what it parked, and a
+//! bundle is unregistered before it is removed ([`macos::launch_services`]).
 
 mod boot;
 mod channel;
@@ -77,6 +80,12 @@ const TARGET: &str = "ducktape::update";
 const APP_EXE: &str = "ducktape-app";
 const BUNDLE: &str = "Ducktape.app";
 const PARTIAL_SUFFIX: &str = ".partial";
+/// The releases dir's name: on macOS one Spotlight never indexes, so no
+/// staged or parked bundle is offered as an app.
+const RELEASES: &str = match cfg!(target_os = "macos") {
+    true => "releases.noindex",
+    false => "releases",
+};
 
 /// The sequence this binary is published at: its commit's committer time
 /// (`build.rs`), 0 for a build without git. An install pins it, so a channel
@@ -151,8 +160,8 @@ impl Layout {
 
     pub(crate) fn releases_dir(&self) -> PathBuf {
         match cfg!(target_os = "macos") {
-            true => self.updates.join("releases"),
-            false => self.install.join("releases"),
+            true => self.updates.join(RELEASES),
+            false => self.install.join(RELEASES),
         }
     }
 
@@ -172,7 +181,7 @@ impl Layout {
         }
     }
 
-    /// macOS: `<updates>/releases/<sha>/Ducktape.app`.
+    /// macOS: `<updates>/releases.noindex/<sha>/Ducktape.app`.
     fn staged_bundle(&self, sha: Sha) -> PathBuf {
         self.release_dir(sha).join(BUNDLE)
     }
@@ -196,7 +205,7 @@ impl Layout {
 
     /// What `current`/`previous` point at: relative, so the root can move.
     pub(crate) fn link_target(sha: Sha) -> PathBuf {
-        PathBuf::from("releases").join(sha.to_string())
+        PathBuf::from(RELEASES).join(sha.to_string())
     }
 
     /// The executable the install path runs: `current/ducktape-app`, or the
@@ -441,11 +450,20 @@ fn require_writable(dir: &Path) -> Result<(), Refusal> {
     }
 }
 
-/// Remove a file, link or tree at `path`; nothing there is fine.
+/// Remove a file, link or tree at `path`; nothing there is fine. On macOS
+/// a bundle it removes (`path` itself, or the `Ducktape.app` in it) is
+/// unregistered first, so LaunchServices keeps no app at a deleted path.
 fn remove_leftover(path: &Path) -> Result<(), Refusal> {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return Ok(());
     };
+    if cfg!(target_os = "macos") && meta.is_dir() {
+        for bundle in [path.to_path_buf(), path.join(BUNDLE)] {
+            if bundle.join("Contents/Info.plist").is_file() {
+                macos::launch_services(&bundle, false);
+            }
+        }
+    }
     let removed = match meta.is_dir() {
         true => std::fs::remove_dir_all(path),
         false => std::fs::remove_file(path),
@@ -591,7 +609,7 @@ mod layout_tests {
         assert_eq!(
             layout.release_exe(sha),
             PathBuf::from(format!(
-                "/s/cfg/ducktape/updates/releases/{sha}/Ducktape.app/Contents/MacOS/ducktape-app"
+                "/s/cfg/ducktape/updates/releases.noindex/{sha}/Ducktape.app/Contents/MacOS/ducktape-app"
             ))
         );
         assert_eq!(
