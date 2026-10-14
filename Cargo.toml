@@ -170,6 +170,19 @@ gpui-pre-macos = { git = "https://github.com/ducktape-industries/gpui-pre", rev 
 # Hangul and Chinese from ibus and drops (does not panic on) text it cannot decode
 zed-xim = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "b38e8b8feec037f15da484f7f703983ae4f8f0de" }
 
+# Symbols are a fifth of the binary and nothing at run time reads them.
+[profile.release]
+strip = true
+
+# What release.yml ships: fat LTO in one codegen unit is 30% smaller than
+# `release` (85 vs 122 MB) at no measured hover or zoom cost, but a clean
+# build takes ~18 min and an app change relinks for ~11, so local release
+# builds (the perf rig) stay on `release`.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+
 # dev/test builds compile wasm guests through cranelift (module-owned view
 # fixtures); unoptimized cranelift is 10-30x slower, so the code generator
 # itself is always built optimized. build-time only.

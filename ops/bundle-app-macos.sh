@@ -44,10 +44,12 @@ case "$sign_via" in
 esac
 [[ "$(uname -s)" == Darwin ]] || { echo "macOS bundling requires macOS" >&2; exit 1; }
 cd "$repo"
-"${CARGO:-cargo}" build --locked --release -p ducktape-app
+# release.yml ships the `dist` profile; a local bundle stays on `release`.
+profile=${DUCKTAPE_CARGO_PROFILE:-release}
+"${CARGO:-cargo}" build --locked --profile "$profile" -p ducktape-app
 version=$(awk '/^\[workspace.package\]/{ package=1; next } /^\[/{ package=0 } package && /^version *=/{ gsub(/"/, "", $3); print $3; exit }' Cargo.toml)
 [[ -n "$version" ]] || { echo "workspace package version missing" >&2; exit 1; }
-release_bin="${CARGO_TARGET_DIR:-$repo/target}/release"
+release_bin="${CARGO_TARGET_DIR:-$repo/target}/$profile"
 mkdir -p "$repo/target/app-bundle"
 stage=$(mktemp -d "$repo/target/app-bundle/stage.XXXXXX")
 app="$stage/Ducktape.app"

@@ -86,7 +86,8 @@ jobs:
     needs: plan
     if: needs.plan.outputs.skip != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # fat LTO links in one thread: ~18 min on a 24-core box, more on a hosted runner
+    timeout-minutes: 120
     env:
       CARGO_BUILD_JOBS: 3
       SHA: ${{ needs.plan.outputs.sha }}
@@ -105,12 +106,12 @@ jobs:
             libfontconfig1-dev libfreetype6-dev \
             mesa-vulkan-drivers libvulkan1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo build --locked --release -p ducktape-app
+      - run: cargo build --locked --profile dist -p ducktape-app
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tar czf "$ASSET" -C target/release ducktape-app
+          tar czf "$ASSET" -C target/dist ducktape-app
           # Both jobs may try to create the release; the loser finds it made.
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
             --prerelease --latest=false --target "$SHA" --title "$TAG" \
@@ -128,7 +129,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.skip != 'true'
     runs-on: [self-hosted, mac-byeongsu]
-    timeout-minutes: 60
+    timeout-minutes: 120
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/../target
       SHA: ${{ needs.plan.outputs.sha }}
@@ -141,6 +142,8 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.sha }}
       - run: ops/bundle-app-macos.sh
+        env:
+          DUCKTAPE_CARGO_PROFILE: dist
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}
