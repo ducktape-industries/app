@@ -243,6 +243,12 @@ impl Render for WindowRoot {
         let toast = deferred(AnyView::from(self.toast.clone()).cached(layer()))
             .with_priority(HOST_BAND + 3);
         let launcher = self.kind == WindowKind::Console && !self.on_desk(cx);
+        // what opens over the window (Settings, ⌘K, a dialog): on the
+        // launcher's screens too, where the menu's Settings… and an update
+        // notice's click open Settings before any network is joined
+        let overlays = self.overlay_layer.clone().map(|layer_view| {
+            deferred(AnyView::from(layer_view).cached(layer())).with_priority(HOST_BAND)
+        });
         let content = match (launcher, &self.launcher) {
             // The launcher (the sign-in and unlock screens) is drawn
             // uncached, against the spec's cached `size_full` (chief,
@@ -254,6 +260,7 @@ impl Render for WindowRoot {
             (true, Some(launcher)) => div()
                 .size_full()
                 .child(launcher.clone())
+                .children(overlays)
                 .child(toast)
                 .into_any_element(),
             _ => {
@@ -267,9 +274,6 @@ impl Render for WindowRoot {
                         false => style.w_full().h(px(BAR)),
                         true => style.w(px(SIDEBAR)).h_full(),
                     })
-                });
-                let overlays = self.overlay_layer.clone().map(|layer_view| {
-                    deferred(AnyView::from(layer_view).cached(layer())).with_priority(HOST_BAND)
                 });
                 let console = div().id("console").size_full().flex();
                 let seat = div().id("seat").flex_1();

@@ -16,8 +16,8 @@
 
 use super::super::WindowKey;
 use super::super::entities::{
-    Account, Entities, Notifications, Observed, Overlay, Overlays, Prefs, Rail, Session, Slice,
-    Spot, Spotlight, WindowEntities,
+    Account, Entities, Notifications, Observed, Overlay, Overlays, Prefs, Rail, Screen, Session,
+    Slice, Spot, Spotlight, WindowEntities,
 };
 use super::fields::NativeInput;
 use super::{Inset, chrome_inset};
@@ -53,6 +53,8 @@ pub(in crate::shell) struct OverlayLayer {
     session: Observed<Session>,
     account: Observed<Account>,
     prefs: Observed<Slice<Prefs>>,
+    /// The launcher's screens have no chrome for a dialog to keep clear of.
+    screen: Observed<Slice<Screen>>,
     /// The window in front on the desk has a frame: Spotlight offers to fill
     /// or move it. Read off the window's `Desk` by an observer that tells
     /// this layer only when it turns, never on a drag's frames.
@@ -160,6 +162,7 @@ impl OverlayLayer {
             session: Observed::new(&session, cx),
             account: Observed::new(&account, cx),
             prefs: Observed::new(&prefs, cx),
+            screen: Observed::new(&app.screen, cx),
             framed: framed(own.desk.read(cx).get()),
             app,
             key,
@@ -178,9 +181,16 @@ impl OverlayLayer {
     }
 
     /// Where the chrome sits, in the layout the prefs pick: the dialogs'
-    /// scrim and room start past it.
+    /// scrim and room start past it. The launcher's screens have none.
     fn inset(&self, cx: &gpui_kit::App) -> Inset {
-        chrome_inset(self.prefs.read(cx).get().layout_or_default())
+        match *self.screen.read(cx).get() == Screen::Desk {
+            true => chrome_inset(self.prefs.read(cx).get().layout_or_default()),
+            false => Inset {
+                top: 0.,
+                left: 0.,
+                menus: 0.,
+            },
+        }
     }
 
     /// The one Tab stop of the tab list or radio group `id`

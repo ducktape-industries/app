@@ -489,6 +489,19 @@ impl Windows {
 
     /// The console brought forward, or opened if there is none (the tray's
     /// Open; a node answering).
+    /// Settings, over the console, raised: on `page`, or where it was last
+    /// left. The launcher's screens draw it too, so it opens before any
+    /// network is joined.
+    pub(crate) fn open_settings(&mut self, page: Option<SettingsPage>, cx: &mut Context<Self>) {
+        self.raise_console(cx);
+        if let Some(own) = self.console_own() {
+            own.overlays.update(cx, |overlays, cx| match page {
+                Some(page) => overlays.open(Overlay::Settings(page), cx),
+                None => overlays.open_settings(cx),
+            });
+        }
+    }
+
     pub(crate) fn raise_console(&mut self, cx: &mut Context<Self>) {
         match self.console {
             Some(key) => self.raise(key, cx),
@@ -813,14 +826,7 @@ impl Windows {
                 self.open_link(&url, cx);
             }
             Posted::Url(url) => cx.open_url(&url),
-            Posted::OpenUpdates => {
-                self.raise_console(cx);
-                if let Some(own) = self.console_own() {
-                    own.overlays.update(cx, |overlays, cx| {
-                        overlays.open(Overlay::Settings(SettingsPage::Updates), cx)
-                    });
-                }
-            }
+            Posted::OpenUpdates => self.open_settings(Some(SettingsPage::Updates), cx),
             Posted::UpdatesMoved => cx.refresh_windows(),
         }
     }
