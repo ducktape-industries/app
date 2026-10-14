@@ -27,7 +27,8 @@
 //!   empty item, at most one per redraw ([`ticked`]).
 //! - `camera.devices`, `microphone.devices` — the devices the system lists
 //!   now (`render/av.rs`), refused `media_unsupported` by a build without
-//!   feature `av`.
+//!   feature `av`; `microphone.chime` — the test chime on a speaker, at a
+//!   press or key, answered once it has sounded (on a blocking thread).
 //!
 //! On the node, as a task on [`handle`] (`node`), each answer waiting in
 //! [`Replies`] for the view's next redraw; transport failures retried for
@@ -379,6 +380,22 @@ pub(super) fn answer(
         // `media_unsupported` by a build without feature `av`)
         (Capability::Camera, "devices") => view.reply(id, crate::render::av::cameras()),
         (Capability::Microphone, "devices") => view.reply(id, crate::render::av::microphones()),
+        // the speaker test: a sound, so only at the person's press or key
+        // (a view on a clock never chimes), answered once it has sounded
+        (Capability::Microphone, "chime") => match methods::decode::<Option<String>>(payload) {
+            Ok(output) => {
+                if !view.take_activation() {
+                    view.refuse(
+                        id,
+                        refusal::NEEDS_GESTURE,
+                        "`microphone.chime` needs a press or key",
+                    );
+                    return true;
+                }
+                node::spawn_reply(view, id, crate::render::av::chime(output));
+            }
+            Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
+        },
         (Capability::Host, "badge") => match methods::decode::<i64>(payload).ok() {
             Some(count) => {
                 view.intents.push(Intent::Badge(count));

@@ -76,12 +76,6 @@ impl Meter {
         *self.feed.ask.lock().expect("feed ask") = Some(Ask::Stop);
     }
 
-    /// Plays the test chime on the speaker; replaces a recording or a
-    /// playback under way.
-    pub fn chime(&self) {
-        *self.feed.ask.lock().expect("feed ask") = Some(Ask::Chime);
-    }
-
     pub fn state(&self) -> &crate::State {
         &self.told
     }

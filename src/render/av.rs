@@ -12,7 +12,8 @@
 //! - a view's frame: [`declared`] refuses a piece from a view whose
 //!   manifest does not declare its capability;
 //! - the methods: [`cameras`] and [`microphones`] answer `camera.devices`
-//!   and `microphone.devices` (`runtime/kernel.rs`).
+//!   and `microphone.devices`, [`chime`] `microphone.chime`
+//!   (`runtime/kernel.rs`).
 
 use super::*;
 use view_wire::methods::{Capability, refusal};
@@ -89,6 +90,25 @@ pub(crate) fn microphones() -> Result<Vec<u8>, wire::Error> {
         .map_err(|error| wire::Error::new(refusal::HOST_FAULT, error));
     #[cfg(not(feature = "av"))]
     Err(unsupported())
+}
+
+/// `microphone.chime`: the test chime on `output` (the system's speaker
+/// when `None`), answered once it has sounded; played on a blocking
+/// thread, apart from any microphone piece.
+pub(crate) async fn chime(output: Option<String>) -> Result<Vec<u8>, wire::Error> {
+    #[cfg(feature = "av")]
+    return match tokio::task::spawn_blocking(move || ducktape_av::play_chime(output.as_deref()))
+        .await
+    {
+        Ok(Ok(())) => Ok(Vec::new()),
+        Ok(Err(error)) => Err(wire::Error::new(refusal::HOST_FAULT, error)),
+        Err(error) => Err(wire::Error::new(refusal::HOST_FAULT, error.to_string())),
+    };
+    #[cfg(not(feature = "av"))]
+    {
+        let _ = output;
+        Err(unsupported())
+    }
 }
 
 /// A listed device as the wire names it, its name cleaned as a window
@@ -331,7 +351,6 @@ impl ViewTree {
                     match command {
                         wire::MicCommand::Record { seconds } => meter.record(*seconds),
                         wire::MicCommand::Stop => meter.stop(),
-                        wire::MicCommand::Chime => meter.chime(),
                     }
                 }
             }
@@ -499,11 +518,12 @@ mod tests {
         assert!(declared(&plain, &[]).is_ok());
     }
 
-    /// Without the feature both methods are refused `media_unsupported`.
+    /// Without the feature the three methods are refused `media_unsupported`.
     #[cfg(not(feature = "av"))]
     #[test]
     fn a_build_without_av_refuses_the_device_lists() {
-        for answer in [cameras(), microphones()] {
+        let chimed = futures::executor::block_on(chime(None));
+        for answer in [cameras(), microphones(), chimed] {
             assert_eq!(answer.unwrap_err().code, refusal::MEDIA_UNSUPPORTED);
         }
     }
