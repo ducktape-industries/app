@@ -55,6 +55,7 @@ async fn node_hearing(
     answer: Answer,
 ) -> (RpcClient, mpsc::UnboundedReceiver<quinn::ConnectionError>) {
     let (cert, key) = certified(cert_key);
+    let node_key = cert_key.public_key().as_ref().to_vec();
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut crypto = rustls::ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
@@ -75,7 +76,7 @@ async fn node_hearing(
             tokio::spawn(async move {
                 let _ = ended.send(closing.closed().await);
             });
-            tokio::spawn(relay(connection, answer));
+            tokio::spawn(relay(connection, node_key.clone(), answer));
         }
     });
     let status = Status {
@@ -137,9 +138,10 @@ async fn write_control(send: &mut quinn::SendStream, control: Control) {
     send.write_all(&bytes).await.unwrap();
 }
 
-/// The node's side of one session: a proof that does not verify is
-/// refused `bad_proof`, as core's relay refuses it.
-async fn relay(connection: quinn::Connection, answer: Answer) {
+/// The node's side of one session: a proof that does not verify against
+/// its own key `node` in the preimage is refused `bad_proof`, as core's
+/// relay refuses it.
+async fn relay(connection: quinn::Connection, node: Vec<u8>, answer: Answer) {
     let (mut send, mut recv) = connection.accept_bi().await.unwrap();
     let Control::Hello(hello) = read(&mut recv).await else {
         panic!("a session opens with a hello")
@@ -149,7 +151,7 @@ async fn relay(connection: quinn::Connection, answer: Answer) {
     let Control::Proof(proof) = read(&mut recv).await else {
         panic!("the challenge is answered with a proof")
     };
-    let preimage = live_wire::proof_preimage(&hello.chain, &nonce, &hello.key);
+    let preimage = live_wire::proof_preimage(&hello.chain, &node, &nonce, &hello.key);
     let signed = Verifier::Ed25519.verify(
         &hello.key,
         live_wire::NAMESPACE,

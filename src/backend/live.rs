@@ -965,7 +965,8 @@ async fn dial(rpc: &RpcClient, client: Weak<Inner>) -> Result<Arc<Conn>, Error> 
             )
         }
     };
-    let datagrams = tokio::time::timeout(HELLO_WAIT, handshake(&mut link, hello))
+    let node = &status.identity;
+    let datagrams = tokio::time::timeout(HELLO_WAIT, handshake(&mut link, hello, node))
         .await
         .map_err(|_| unavailable("the node did not finish the live handshake in time"))??;
     let conn = Arc::new(Conn {
@@ -1009,15 +1010,18 @@ enum Link {
 }
 
 /// `Hello` → `Challenge` → `Proof` → `Welcome`: whether the path carries
-/// datagrams, or the node's refusal.
-async fn handshake(link: &mut Link, hello: Hello) -> Result<bool, Error> {
+/// datagrams, or the node's refusal. The proof signs the node's key too,
+/// the one the client pinned (the QUIC certificate's, which is the key
+/// `/v1/status` names, or that key over the websocket): a proof made for
+/// one node is none to another.
+async fn handshake(link: &mut Link, hello: Hello, node: &[u8]) -> Result<bool, Error> {
     let (chain, key) = (hello.chain, hello.key.clone());
     link.send(&Control::Hello(hello)).await?;
     let heard = link.recv().await.map_err(Unread::refusal)?;
     let Control::Challenge(challenge) = heard else {
         return Err(unavailable("the node did not challenge the hello"));
     };
-    let preimage = live_wire::proof_preimage(&chain, &challenge.nonce, &key);
+    let preimage = live_wire::proof_preimage(&chain, node, &challenge.nonce, &key);
     let (signer, signature) = super::seated_sign(live_wire::NAMESPACE, &preimage).await?;
     if signer != key {
         return Err(Error::new(
