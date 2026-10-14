@@ -37,6 +37,8 @@ ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "4339
 design = { git = "https://github.com/ducktape-industries/modules", rev = "4339899c8f48e3795c13382d0a4af3f7167b7052", package = "design" }
 # `module.describe`: the runner a program's untrusted describe module goes through
 describe = { git = "https://github.com/ducktape-industries/modules", rev = "4339899c8f48e3795c13382d0a4af3f7167b7052", package = "describe", features = ["host"] }
+# the identity program's own types: the app's passkey lane and `crates/noded-client`'s flows
+identity = { git = "https://github.com/ducktape-industries/modules", rev = "4339899c8f48e3795c13382d0a4af3f7167b7052", package = "identity" }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -55,6 +57,8 @@ commonware-cryptography = "2026.9.0"
 commonware-codec = "2026.9.0"
 tempfile = "3"
 zeroize = "1"
+base64 = "0.22"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 # wasmtime — pinned exactly, matching the node's runtime: a module-owned view
 # executes in the same wasm semantics the kernel does.
 wasmtime = "=46.0.3"
@@ -93,11 +97,11 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # pick which passkey signed and to frame its assertion), and the identity
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b", package = "keyscheme" }
-identity = { git = "https://github.com/ducktape-industries/modules", rev = "4339899c8f48e3795c13382d0a4af3f7167b7052", package = "identity" }
+identity.workspace = true
 # The roster's full query surface: its programs and its view-only entries.
 module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "4339899c8f48e3795c13382d0a4af3f7167b7052", package = "module-registry" }
 valset = { git = "https://github.com/ducktape-industries/modules", rev = "4339899c8f48e3795c13382d0a4af3f7167b7052", package = "valset" }
-base64 = "0.22"
+base64.workspace = true
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
 rand.workspace = true
@@ -117,11 +121,14 @@ program.workspace = true
 abi.workspace = true
 borsh.workspace = true
 ducklink.workspace = true
-tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite.workspace = true
 wasmtime.workspace = true
 wasmparser = "0.251"
 libc.workspace = true
 sha1 = "0.10"
+# the node's client, shared with the phone; `commonware`: the device key
+# (commonware's ed25519) signs through it
+noded-client = { path = "crates/noded-client", features = ["commonware"] }
 # feature `web` only: CEF and everything that names it
 ducktape-web = { path = "crates/web", optional = true }
 # self-update: the state machine, the manifest and its signature
