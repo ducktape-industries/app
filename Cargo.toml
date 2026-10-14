@@ -3,12 +3,12 @@
 # The app is a BLIND HOST: it connects to a node, reads the roster, fetches
 # each program's view and renders it. It knows no program by name; every
 # view request names its own target and the app relays the bytes. Source
-# here is the app crate and its boot-time launcher (to return);
+# here is the app crate and its self-update (`crates/updater`);
 # everything else arrives as a cargo git dependency.
 #
-# The self-update lane (app-update, bin/app-launcher, backend/update*) is
-# OUT until the kernel branch stops naming `keyscheme` at sdk `dev`, where it
-# no longer exists; cargo refuses a same-source patch. First thing back.
+# The app updates itself (`src/update.rs`): `crates/updater` is the pure
+# state machine and the release signer, and the one executable runs the boot
+# step (flip, rollback, exec) at the top of its `main`.
 
 [package]
 name = "ducktape-app"
@@ -124,6 +124,11 @@ libc.workspace = true
 sha1 = "0.10"
 # feature `web` only: CEF and everything that names it
 ducktape-web = { path = "crates/web", optional = true }
+# self-update: the state machine, the manifest and its signature
+ducktape-updater = { path = "crates/updater" }
+# the release archive a self-update downloads (`.tar.gz`)
+tar = { version = "0.4", default-features = false }
+flate2 = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tray-icon = { version = "0.24", default-features = false }
@@ -165,6 +170,19 @@ gpui-pre-macos = { git = "https://github.com/ducktape-industries/gpui-pre", rev 
 # Hangul and Chinese from ibus and drops (does not panic on) text it cannot decode
 zed-xim = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "b38e8b8feec037f15da484f7f703983ae4f8f0de" }
 
+# Symbols are a fifth of the binary and nothing at run time reads them.
+[profile.release]
+strip = true
+
+# What release.yml ships: fat LTO in one codegen unit is 30% smaller than
+# `release` (85 vs 122 MB) at no measured hover or zoom cost, but a clean
+# build takes ~18 min and an app change relinks for ~11, so local release
+# builds (the perf rig) stay on `release`.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+
 # dev/test builds compile wasm guests through cranelift (module-owned view
 # fixtures); unoptimized cranelift is 10-30x slower, so the code generator
 # itself is always built optimized. build-time only.
@@ -179,6 +197,11 @@ opt-level = 0
 [profile.test.package.ducktape-app]
 debug = 0
 opt-level = 1
+
+# sha256 over a whole app binary (the self-update's install, and every
+# archive it stages): half a minute unoptimized, under a second optimized.
+[profile.dev.package.sha2]
+opt-level = 3
 
 # Optimize the native render and text stack without slowing unrelated workspace crates.
 [profile.dev.package.gpui-pre]

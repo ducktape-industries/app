@@ -1,33 +1,103 @@
-# Each time `main` moves, the app is built for Linux x86_64 (GitHub's Ubuntu)
-# and macOS arm64 (the self-hosted runner mac-byeongsu) and published on the
-# prerelease bin-<commit>: the Linux binary as a tarball, the Mac app as an
-# ad-hoc signed DMG.
+# The app is built for Linux x86_64 (GitHub's Ubuntu) and macOS arm64 (the
+# self-hosted runner mac-byeongsu) and published twice:
+# - on the prerelease bin-<commit>: the Linux binary as a tarball, the Mac
+#   app as an ad-hoc signed DMG and as a tarball of Ducktape.app;
+# - to the self-update's prefix (dl.ducktape.industries/app/, Cloudflare R2): the
+#   two tarballs named by their sha256, then the channel's one file, its
+#   manifest and the signature over it.
+# Two channels, one signing key, one order: a release's sequence is its
+# commit's committer time, on either channel.
+# - stable: each time `main` moves;
+# - nightly: `dev` once a day (and on demand), skipped when dev's head is
+#   already the published nightly.
+# The signing key and the bucket's credentials live in the `release`
+# environment, which admits runs on `main` only (a scheduled run is one: it
+# runs main's workflow; dispatch it from main too). Only the publish job
+# enters it, and it runs nothing of the built commit: it builds the signer
+# from `main`, and the archives reach it as artifacts of the build jobs,
+# which see no secret.
 name: release
 
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: "17 3 * * *"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.sha }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && 'stable' || 'nightly' }}
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
-  TAG: bin-${{ github.sha }}
 
 jobs:
-  linux:
+  # Which channel, which commit, and whether the bucket already has it.
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    outputs:
+      channel: ${{ steps.plan.outputs.channel }}
+      sha: ${{ steps.plan.outputs.sha }}
+      sequence: ${{ steps.plan.outputs.sequence }}
+      version: ${{ steps.plan.outputs.version }}
+      skip: ${{ steps.plan.outputs.skip }}
+    steps:
+      # a schedule runs on the default branch: the nightly checks out dev
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'push' && github.sha || 'dev' }}
+      - id: plan
+        run: |
+          channel=nightly
+          if [ "$GITHUB_EVENT_NAME" = push ]; then channel=stable; fi
+          sha=$(git rev-parse HEAD)
+          sequence=$(git show -s --format=%ct HEAD)
+          # a committer time is whatever the committer's clock said: one from
+          # the future would pin every install that takes it past every
+          # release until that date comes
+          if [ "$sequence" -gt $(( $(date +%s) + 600 )) ]; then
+            echo "::error::$sha is dated $sequence, in the future: not published"
+            exit 1
+          fi
+          # before the first publish (or with the bucket unreachable) there
+          # is nothing to compare with
+          published=$(curl -fsS --max-time 20 "https://dl.ducktape.industries/app/$channel.json" 2>/dev/null \
+            | jq -r '.manifest | fromjson | .sequence // 0' 2>/dev/null || true)
+          published=${published:-0}
+          skip=false
+          if [ "$published" -ge "$sequence" ]; then
+            skip=true
+            echo "$channel already publishes $published, not older than $sha ($sequence): skipped"
+          fi
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          {
+            echo "channel=$channel"
+            echo "sha=$sha"
+            echo "sequence=$sequence"
+            echo "version=$version"
+            echo "skip=$skip"
+          } >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: plan
+    if: needs.plan.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    # fat LTO links in one thread: ~18 min on a 24-core box, more on a hosted runner
+    timeout-minutes: 120
     env:
       CARGO_BUILD_JOBS: 3
+      SHA: ${{ needs.plan.outputs.sha }}
+      TAG: bin-${{ needs.plan.outputs.sha }}
+      # the release tree, the app at its top: also the update archive
+      ASSET: ducktape-app-x86_64-unknown-linux-gnu.tar.gz
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
       - name: Native build dependencies
         run: |
           sudo apt-get update
@@ -36,37 +106,128 @@ jobs:
             libfontconfig1-dev libfreetype6-dev \
             mesa-vulkan-drivers libvulkan1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo build --locked --release -p ducktape-app
+      - run: cargo build --locked --profile dist -p ducktape-app
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}
-          ASSET: ducktape-app-x86_64-unknown-linux-gnu.tar.gz
         run: |
-          tar czf "$ASSET" -C target/release ducktape-app
+          tar czf "$ASSET" -C target/dist ducktape-app
           # Both jobs may try to create the release; the loser finds it made.
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
-            --prerelease --latest=false --target "$GITHUB_SHA" --title "$TAG" \
-            --notes "The ducktape app built at $GITHUB_SHA." \
+            --prerelease --latest=false --target "$SHA" --title "$TAG" \
+            --notes "The ducktape app built at $SHA." \
             || gh release view "$TAG" >/dev/null
           gh release upload "$TAG" "$ASSET" --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-archive
+          path: ${{ env.ASSET }}
+          retention-days: 7
+          overwrite: true
 
   macos:
+    needs: plan
+    if: needs.plan.outputs.skip != 'true'
     runs-on: [self-hosted, mac-byeongsu]
-    timeout-minutes: 60
+    timeout-minutes: 120
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/../target
+      SHA: ${{ needs.plan.outputs.sha }}
+      TAG: bin-${{ needs.plan.outputs.sha }}
+      # the update archive: Ducktape.app whole, no AppleDouble files and no
+      # extended attributes (its signature lives in its files)
+      APP_ASSET: ducktape-app-aarch64-apple-darwin.app.tar.gz
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
       - run: ops/bundle-app-macos.sh
+        env:
+          DUCKTAPE_CARGO_PROFILE: dist
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}
           ASSET: ducktape-app-aarch64-apple-darwin.dmg
         run: |
           mv target/app-bundle/Ducktape-*.dmg "$ASSET"
+          COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -czf "$APP_ASSET" \
+            -C target/app-bundle Ducktape.app
           # Both jobs may try to create the release; the loser finds it made.
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
-            --prerelease --latest=false --target "$GITHUB_SHA" --title "$TAG" \
-            --notes "The ducktape app built at $GITHUB_SHA." \
+            --prerelease --latest=false --target "$SHA" --title "$TAG" \
+            --notes "The ducktape app built at $SHA." \
             || gh release view "$TAG" >/dev/null
-          gh release upload "$TAG" "$ASSET" --clobber
+          gh release upload "$TAG" "$ASSET" "$APP_ASSET" --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-archive
+          path: ${{ env.APP_ASSET }}
+          retention-days: 7
+          overwrite: true
+
+  # Sign the channel's manifest over both archives and upload: archives
+  # first (immutable, named by their sha256), then the channel's one file,
+  # so a client never reads a manifest whose archive is not there, nor a
+  # manifest beside another one's signature. The one job in the `release`
+  # environment: `main`'s signer over the build jobs' archives. No cache:
+  # the build jobs build whatever commit they are given, and nothing they
+  # leave behind reaches the job that holds the key.
+  publish:
+    needs: [plan, linux, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: read
+    env:
+      CHANNEL: ${{ needs.plan.outputs.channel }}
+      SHA: ${{ needs.plan.outputs.sha }}
+      SEQUENCE: ${{ needs.plan.outputs.sequence }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      TAG: bin-${{ needs.plan.outputs.sha }}
+    steps:
+      # main, on a push and on the schedule alike: never the built commit
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-archive
+          path: assets
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-archive
+          path: assets
+      # built before the key is in the environment: no build script runs
+      # with it
+      - run: cargo build --locked --release -p ducktape-updater --bin publish-release
+      - name: sign
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          target/release/publish-release \
+            --channel "$CHANNEL" \
+            --sequence "$SEQUENCE" \
+            --display "$VERSION+${SHA:0:7}" \
+            --published-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --notes-url "https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG" \
+            --archive linux-x86_64=assets/ducktape-app-x86_64-unknown-linux-gnu.tar.gz \
+            --archive macos-aarch64=assets/ducktape-app-aarch64-apple-darwin.app.tar.gz \
+            --out out > upload-order
+          cat upload-order
+      - name: upload
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          while read -r name; do
+            case "$name" in
+              *.tar.gz) cache="public, max-age=31536000, immutable" ;;
+              *) cache="public, max-age=60" ;;
+            esac
+            aws s3 cp "out/$name" "s3://$BUCKET/app/$name" \
+              --endpoint-url "$ENDPOINT" --cache-control "$cache"
+          done < upload-order

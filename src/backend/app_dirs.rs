@@ -22,6 +22,15 @@ pub(crate) fn config_dir() -> Result<PathBuf, String> {
     platform_dir("XDG_CONFIG_HOME", ".config", "Library/Application Support")
 }
 
+/// the self-update's install on Linux (`update::Layout`).
+pub(crate) fn data_dir() -> Result<PathBuf, String> {
+    platform_dir(
+        "XDG_DATA_HOME",
+        ".local/share",
+        "Library/Application Support",
+    )
+}
+
 /// the app's log.
 pub(crate) fn state_dir() -> Result<PathBuf, String> {
     platform_dir("XDG_STATE_HOME", ".local/state", "Library/Logs")

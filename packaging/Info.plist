@@ -12,5 +12,9 @@
 <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>CFBundleSupportedPlatforms</key><array><string>MacOSX</string></array>
+<key>CFBundleURLTypes</key><array><dict>
+<key>CFBundleURLName</key><string>dev.ducktape.app</string>
+<key>CFBundleURLSchemes</key><array><string>duck</string></array>
+</dict></array>
 <key>NSLocalNetworkUsageDescription</key><string>Ducktape connects to networks hosted on other devices on your local network.</string>
 </dict></plist>

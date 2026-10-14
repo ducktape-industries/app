@@ -2471,7 +2471,9 @@ dependencies = [
  "design",
  "ducklink",
  "ducktape-home",
+ "ducktape-updater",
  "ducktape-web",
+ "flate2",
  "futures",
  "gpui-base",
  "gpui-kit",
@@ -2495,6 +2497,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2 0.10.9",
+ "tar",
  "tempfile",
  "tokio",
  "tokio-tungstenite",
@@ -2516,6 +2519,17 @@ dependencies = [
 name = "ducktape-home"
 version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape?branch=feat%2Fcapable-sandbox#665907ddc65ccada5f3e3ba0a95ae955414bfb3c"
+
+[[package]]
+name = "ducktape-updater"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
 
 [[package]]
 name = "ducktape-web"

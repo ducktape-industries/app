@@ -61,10 +61,6 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 `ducktape-industries/modules` (`crates/sdk`; pinned by rev to modules `dev` until the next `dev` → `main` promotion): `abi`, `view-wire`, `ducklink`, `design`.
 `ducktape` (`feat/capable-sandbox`): `ducktape-home`, `keystore`.
 
-Out until their upstreams settle: the self-update lane (`app-update`,
-`bin/app-launcher`) — the kernel branch names `keyscheme` at an sdk revision
-that no longer carries it, and cargo refuses a same-source patch.
-
 ## Building
 
 The toolchain is pinned in `rust-toolchain.toml`. A fresh Linux machine needs

@@ -114,7 +114,7 @@ impl OverlayLayer {
         let title = words.title;
         let (top, tall) = dialog_fit(
             f32::from(window.viewport_size().height),
-            self.inset(cx),
+            self.inset(window, cx),
             TALL,
             84.,
         );
@@ -125,7 +125,7 @@ impl OverlayLayer {
             Overlay::Consent(ask),
             self.overlays.entity(),
             &self.modal,
-            self.inset(cx),
+            self.inset(window, cx),
             &ink,
             |card| {
                 card.mt(px(top))

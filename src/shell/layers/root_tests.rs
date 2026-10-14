@@ -1701,3 +1701,62 @@ fn a_back_windows_tooltip_stays_under_the_front_window(cx: &mut TestAppContext) 
         "the front window's click reached the back window's tooltip"
     );
 }
+
+/// Before any network is joined the console shows the launcher, and
+/// Settings opens over it all the same: ⌘, (the app menu's Settings…)
+/// opens it, painted on the window's whole height below the title bar the
+/// launcher draws on macOS (it has no other chrome to keep clear of), and
+/// Escape closes it. An update notice's
+/// click sets the same overlay (`windows_tests`).
+#[gpui_kit::test]
+fn settings_opens_over_the_launcher(cx: &mut TestAppContext) {
+    use super::tests::open_now;
+    let (app, _, view, mut native) = open_console(Seed::boot(), cx);
+    set_motion(&app, false, &mut native);
+    native.simulate_keystrokes("secondary-,");
+    assert_eq!(
+        open_now(&view, &mut native),
+        Some(Overlay::Settings(Default::default()))
+    );
+    for _ in 0..3 {
+        frame(&mut native);
+    }
+    let scale = native.update(|window, _| window.scale_factor());
+    let scrim = quads(&mut native)
+        .into_iter()
+        .find(|quad| {
+            quad.background
+                .as_solid()
+                .is_some_and(|color| (color.a - 0.6).abs() < 0.01)
+        })
+        .expect("the scrim paints over the launcher")
+        .bounds;
+    assert_eq!(
+        [
+            scrim.origin.x,
+            scrim.origin.y,
+            scrim.size.width,
+            scrim.size.height,
+        ]
+        .map(|it| it.0 / scale),
+        // the title bar the launcher draws on macOS stays uncovered
+        match cfg!(target_os = "macos") {
+            true => [0., 36., 1280., 764.],
+            false => [0., 0., 1280., 800.],
+        }
+    );
+    let nodes = native.update(|window, cx| {
+        draw(window, cx);
+        serde_json::to_value(crate::ax::snapshot("console", window, true)).unwrap()
+    });
+    assert!(
+        nodes
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["id"] == "console:settings-window"),
+        "Settings is drawn"
+    );
+    native.simulate_keystrokes("escape");
+    assert_eq!(open_now(&view, &mut native), None);
+}

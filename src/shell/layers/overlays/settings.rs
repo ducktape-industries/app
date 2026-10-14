@@ -95,6 +95,7 @@ impl OverlayLayer {
                 SettingsPage::Notifications,
             ),
             ("settings/networks", "Networks", SettingsPage::Networks),
+            ("settings/updates", "Updates", SettingsPage::Updates),
             ("settings/about", "About", SettingsPage::About),
         ];
         let at = pages
@@ -134,6 +135,7 @@ impl OverlayLayer {
             SettingsPage::Appearance => self.appearance_page(&ink, cx),
             SettingsPage::Notifications => self.notifications_page(&ink, cx),
             SettingsPage::Networks => self.networks_page(&ink, cx),
+            SettingsPage::Updates => self.updates_page(&ink, cx),
             SettingsPage::About => about_page(&ink),
         };
         let page = &mut self.settings_rows;
@@ -255,7 +257,7 @@ impl OverlayLayer {
             ));
         let (top, tall) = dialog_fit(
             f32::from(window.viewport_size().height),
-            self.inset(cx),
+            self.inset(window, cx),
             680.,
             74.,
         );
@@ -266,7 +268,7 @@ impl OverlayLayer {
             Overlay::Settings(shown),
             self.overlays.entity(),
             &self.modal,
-            self.inset(cx),
+            self.inset(window, cx),
             &ink,
             |card| {
                 card.mt(px(top))
@@ -628,6 +630,104 @@ impl OverlayLayer {
         }))
     }
 
+    /// Settings › Updates: what runs, the channel it follows, and where the
+    /// updater is, with "Restart to update" once a release waits. A copy
+    /// that is not an installed one updates nothing and says so.
+    fn updates_page(&mut self, ink: &Ink, cx: &gpui_kit::App) -> Vec<gpui_kit::Div> {
+        use crate::update::{Channel, Updates};
+        use gpui_kit::*;
+        let version = match option_env!("DUCKTAPE_APP_BUILD") {
+            Some(build) => format!("{} ({build})", env!("CARGO_PKG_VERSION")),
+            None => env!("CARGO_PKG_VERSION").into(),
+        };
+        let mut rows = vec![heading("Updates", ink), line("Version", version, ink)];
+        // where the updater is, one row however it is
+        let status = |said: String| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(24.))
+                .py(px(16.))
+                .border_b_1()
+                .border_color(ink.line)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(sans(500, 14.).child(words("Status", "Status")))
+                        .child(
+                            sans(400, 13.)
+                                .line_height(px(13. * 1.5))
+                                .text_color(ink.muted)
+                                .child(words("Status/value", said)),
+                        ),
+                )
+        };
+        let shown = match crate::update::updates() {
+            Updates::Here(shown) => shown,
+            Updates::Off => {
+                rows.push(status("Off: this copy is not an installed one".into()));
+                return rows;
+            }
+            // installed, and another of its processes runs the updater
+            Updates::Elsewhere => {
+                rows.push(status(
+                    "Another running Ducktape updates this install".into(),
+                ));
+                return rows;
+            }
+        };
+        let channel = self.segmented(
+            "updates/channel",
+            "Channel",
+            Channel::ALL.map(|channel| {
+                let label = match channel {
+                    Channel::Stable => "Stable",
+                    Channel::Nightly => "Nightly",
+                };
+                let pick: Pick = Rc::new(move |cx| {
+                    crate::update::choose(channel);
+                    cx.refresh_windows();
+                });
+                (label.into(), shown.channel == channel, pick)
+            }),
+            ink,
+            cx,
+        );
+        let windows = self.app.windows.clone();
+        let restart = crate::a11y::keyboard(
+            sans(500, 14.)
+                .id("updates/restart")
+                .control(Role::Button, "Restart to update")
+                .px(px(12.))
+                .py(px(6.))
+                .border_1()
+                .border_color(ink.ink)
+                .cursor_pointer()
+                .on_click(move |_, _, cx| {
+                    // the waiter starts the next start once this one is gone
+                    if crate::update::restart().is_ok() {
+                        windows.update(cx, |windows, cx| windows.quit(cx));
+                    }
+                })
+                .child("Restart to update"),
+            ink.ink,
+        );
+        rows.push(setting(
+            "Channel",
+            "Stable follows each release; Nightly is the newest work, built once a day.",
+            channel,
+            ink,
+        ));
+        rows.push(status(shown.status).when(shown.restart, |row| {
+            row.child(div().flex_shrink_0().child(restart))
+        }));
+        rows
+    }
+
     fn networks_page(&self, ink: &Ink, cx: &gpui_kit::App) -> Vec<gpui_kit::Div> {
         use gpui_kit::*;
         let ink = *ink;
@@ -732,42 +832,44 @@ fn setting(
         .child(div().flex_shrink_0().child(control))
 }
 
+/// A key and its value, each a Label: `Version`, `0.1.0`.
+fn line(key: &'static str, value: String, ink: &Ink) -> gpui_kit::Div {
+    use gpui_kit::*;
+    div()
+        .flex()
+        .gap(px(16.))
+        .py(px(8.))
+        .child(
+            sans(400, 14.)
+                .w(px(120.))
+                .text_color(ink.muted)
+                .child(words(key, key)),
+        )
+        .child(
+            mono(400, 13.)
+                .text_color(ink.muted)
+                .flex_1()
+                .min_w_0()
+                .child(words(SharedString::from(format!("{key}/value")), value)),
+        )
+}
+
 fn about_page(ink: &Ink) -> Vec<gpui_kit::Div> {
     use gpui_kit::*;
     let log = crate::backend::app_log_path()
         .map(|path| path.display().to_string())
         .unwrap_or_default();
-    let muted = ink.muted;
-    // the key and its value, each a Label: `Version`, `0.1.0`
-    let line = |key: &'static str, value: String| {
-        div()
-            .flex()
-            .gap(px(16.))
-            .py(px(8.))
-            .child(
-                sans(400, 14.)
-                    .w(px(120.))
-                    .text_color(muted)
-                    .child(words(key, key)),
-            )
-            .child(
-                mono(400, 13.)
-                    .text_color(muted)
-                    .flex_1()
-                    .min_w_0()
-                    .child(words(SharedString::from(format!("{key}/value")), value)),
-            )
-    };
     vec![
         heading("About", ink),
         sans(400, 22.)
             .pb(px(12.))
             .child(words("product", "Ducktape")),
-        line("Version", env!("CARGO_PKG_VERSION").into()),
+        line("Version", env!("CARGO_PKG_VERSION").into(), ink),
         line(
             "Node contract",
             format!("v{}", crate::backend::noded::NODE_CONTRACT),
+            ink,
         ),
-        line("Log", log),
+        line("Log", log, ink),
     ]
 }

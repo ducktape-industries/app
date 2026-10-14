@@ -560,3 +560,20 @@ fn a_redraws_posts_read_the_prefs_once_and_write_the_log_once() {
     assert_eq!(kept.len(), VIEW_ENTRIES);
     assert_eq!(kept.last().unwrap().title, "255");
 }
+
+/// A banner's request id is new across processes, not only within one:
+/// macOS replaces a delivered banner under the id of a new request, so ids
+/// that restarted with each process took down, unseen, what an earlier one
+/// left standing.
+#[test]
+fn request_ids_differ_within_and_across_processes() {
+    let (first, second) = (super::request_id(), super::request_id());
+    assert_ne!(first, second);
+    let token = |id: &str| id.rsplit_once('-').unwrap().0.to_owned();
+    assert_eq!(token(&first), token(&second), "one process, one token");
+    assert_ne!(token(&first), "ducktape", "a token, not a bare count");
+    let at = std::time::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+    let token_of = super::process_token;
+    assert_ne!(token_of(7, at), token_of(7, at + Duration::from_millis(1)));
+    assert_ne!(token_of(7, at), token_of(8, at));
+}

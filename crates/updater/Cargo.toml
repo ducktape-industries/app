@@ -1,0 +1,23 @@
+[package]
+name = "ducktape-updater"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+# The desktop app's self-update, as a pure library: the update state machine
+# (`Phase` × `Event` → `Phase` + `Command`s), the signed release-manifest
+# codec + ed25519 signature verification, and the `state.json` codec. No I/O,
+# no clock, no network: `ducktape-app` drives `step` at boot (flip, rollback,
+# exec) and while it runs (fetch, download, verify, stage), and the two share
+# nothing but `state.json`. The one binary here, `publish-release`, is the
+# release job's signer.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# sha256: artifact identity and the manifest's `release.sha256_id`.
+sha2 = { workspace = true }
+# the release signature: ed25519 over a namespaced preimage (`release.rs`).
+ed25519-dalek = "2"
+
+[dev-dependencies]
+tempfile = { workspace = true }
