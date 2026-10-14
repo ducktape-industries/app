@@ -213,3 +213,46 @@ fn a_start_after_a_release_that_never_rendered_execs_the_one_before() {
         (before, installed)
     );
 }
+
+/// "Restart to update"'s waiter, the real binary: it waits for the app that
+/// started it to be gone (its stdin closed) and to let the install go (the
+/// lock held here, as the exiting app's is until the kernel closes it),
+/// then becomes the install path's app in its own process, and says so in
+/// app.log.
+#[test]
+fn the_restart_waiter_starts_the_install_path_once_the_old_app_lets_go() {
+    use std::os::unix::io::AsRawFd as _;
+    let rig = Rig::new();
+    rig.install();
+    let next = rig.recorder("next");
+    rig.link("current", next);
+    let lock = std::fs::File::create(rig.path("cfg/ducktape/updates/lock")).unwrap();
+    // SAFETY: an open descriptor and a flag constant.
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+    let mut waiter = rig
+        .command(Path::new(APP))
+        .arg("--restart-waiter")
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(waiter.stdin.take());
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        !rig.path("record").exists(),
+        "it waits while the install is held"
+    );
+    drop(lock);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = waiter.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "the waiter did not end");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(status.success(), "{status}");
+    let record = std::fs::read_to_string(rig.path("record")).unwrap();
+    assert_eq!(record.trim(), waiter.id().to_string(), "the same process");
+    let log = std::fs::read_to_string(rig.path("state/ducktape/app.log")).unwrap();
+    assert!(log.contains("app_update_restart_exec"), "{log}");
+}

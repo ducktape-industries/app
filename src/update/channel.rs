@@ -188,24 +188,17 @@ pub(crate) fn choose(channel: Channel) {
 /// "Restart to update": this app quits (the caller's part) and the install
 /// path's app starts once this process is gone, so the next start's boot
 /// step flips to the staged release with nothing of this one still running.
-/// A waiter holds the read end of a pipe whose write end only this process
-/// has: the kernel closes it as this process exits, and the waiter's `read`
-/// returns. Linux runs `current/ducktape-app`; macOS opens the installed
-/// bundle through LaunchServices.
+/// The waiter ([`restart_waiter`], this same executable) holds the read end
+/// of a pipe whose write end only this process has: the kernel closes it as
+/// this process exits.
 pub(crate) fn restart() -> Result<(), String> {
-    let layout = HOME.get().ok_or("the updater is off")?;
+    HOME.get().ok_or("the updater is off")?;
+    let own = std::env::current_exe().map_err(|error| error.to_string())?;
     if RESTARTING.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
-    let mut start = match cfg!(target_os = "macos") {
-        true => vec!["/usr/bin/open".into(), layout.installed_bundle()],
-        false => vec![layout.app_exe()],
-    };
-    let program = start.remove(0);
-    let waiter = Process::new("/bin/sh")
-        .args(["-c", "read _; exec \"$@\" </dev/null", "sh"])
-        .arg(program)
-        .args(start)
+    let waiter = Process::new(own)
+        .arg(RESTART_WAITER)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -224,6 +217,58 @@ pub(crate) fn restart() -> Result<(), String> {
             Err(error.to_string())
         }
     }
+}
+
+/// The argument that makes this executable the restart's waiter.
+pub(crate) const RESTART_WAITER: &str = "--restart-waiter";
+
+/// The waiter "Restart to update" leaves behind: once the app that started
+/// it is gone and has let go of the install, the install path's app starts.
+/// What happened goes to app.log. Its exit status.
+pub(crate) fn restart_waiter() -> i32 {
+    use std::io::Read as _;
+    // the app's end closes as the app exits
+    let _ = std::io::stdin().read_to_end(&mut Vec::new());
+    let Some(layout) = Layout::host() else {
+        warn!(target: TARGET, event = "app_update_restart_failed", reason = "layout_unresolvable");
+        return 1;
+    };
+    // the next start's boot step must find the install free; the kernel
+    // lets the old process's lock go as it closes its files, in no order
+    // with the pipe
+    if let Err(refusal) = super::await_install(&layout) {
+        warn!(target: TARGET, event = "app_update_restart_failed", reason = refusal.reason, detail = %refusal.detail);
+        return 1;
+    }
+    if cfg!(target_os = "macos") {
+        // a new instance: LaunchServices lists the app that just exited for
+        // a few ms more, and a plain `open` reopens that one (-600,
+        // procNotFound) instead of launching
+        let opened = Process::new("/usr/bin/open")
+            .arg("-n")
+            .arg(layout.installed_bundle())
+            .stdin(Stdio::null())
+            .output();
+        return match opened {
+            Ok(output) if output.status.success() => {
+                info!(target: TARGET, event = "app_update_restart_opened");
+                0
+            }
+            Ok(output) => {
+                let said = String::from_utf8_lossy(&output.stderr);
+                warn!(target: TARGET, event = "app_update_restart_failed", reason = "open_failed", status = %output.status, said = said.trim());
+                1
+            }
+            Err(error) => {
+                warn!(target: TARGET, event = "app_update_restart_failed", reason = "open_failed", %error);
+                1
+            }
+        };
+    }
+    info!(target: TARGET, event = "app_update_restart_exec", exe = %layout.app_exe().display());
+    let error = Process::new(layout.app_exe()).stdin(Stdio::null()).exec();
+    warn!(target: TARGET, event = "app_update_restart_failed", reason = "exec_failed", %error);
+    1
 }
 
 /// connect fast, never hang on a stalled read; no total cap, an archive

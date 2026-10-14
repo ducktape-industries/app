@@ -56,9 +56,11 @@ mod tests;
 
 pub(crate) use app_update::layout::Channel;
 pub(crate) use boot::boot;
+pub(crate) use channel::{
+    RESTART_WAITER, Updates, choose, on_moved, rendered, restart, restart_waiter, updates,
+};
 #[cfg(test)]
 pub(crate) use channel::{Shown, rendered_here, show_here};
-pub(crate) use channel::{Updates, choose, on_moved, rendered, restart, updates};
 pub(crate) use install::install_cli;
 
 use std::fmt;
@@ -486,6 +488,26 @@ fn hold_install(layout: &Layout) -> Result<bool, Refusal> {
     }
     held.push((path, file));
     Ok(true)
+}
+
+/// Wait until no process holds `<updates>/lock`, then let it go: the
+/// restart's waiter hands the install over free.
+fn await_install(layout: &Layout) -> Result<(), Refusal> {
+    let path = layout.updates.join("lock");
+    refuse_symlink(&path)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|error| Refusal::io("lock_failed", &path, &error))?;
+    // SAFETY: an open descriptor and a flag constant; blocks until held,
+    // and closing the file below lets it go.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        let error = std::io::Error::last_os_error();
+        return Err(Refusal::io("lock_failed", &path, &error));
+    }
+    Ok(())
 }
 
 /// rename(2), or a copy and remove across volumes.

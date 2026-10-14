@@ -47,6 +47,11 @@ fn main() {
         }
         // lay down a self-updating install of this binary
         Some("install") => std::process::exit(update::install_cli()),
+        // "Restart to update"'s waiter: starts the app once this one is gone
+        Some(update::RESTART_WAITER) => {
+            install_log();
+            std::process::exit(update::restart_waiter());
+        }
         Some("--help" | "-h") => {
             println!("usage: ducktape-app [--version | --help]");
             println!("       ducktape-app install  (install this binary; it then updates itself)");

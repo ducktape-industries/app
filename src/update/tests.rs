@@ -245,6 +245,35 @@ fn release_of(exe: Vec<u8>) -> Vec<Item> {
     vec![Item::File(APP_EXE, exe, 0o755)]
 }
 
+// ---- the restart -----------------------------------------------------------
+
+/// The restart's waiter hands the install over free: it waits while another
+/// process holds `<updates>/lock` (the app that pressed Restart, as the
+/// kernel closes its files), and goes on once it is let go, holding nothing.
+#[test]
+fn the_restart_waiter_waits_until_the_install_is_let_go() {
+    use std::os::unix::io::AsRawFd as _;
+    use std::time::Duration;
+    let (_root, layout) = rig();
+    std::fs::create_dir_all(&layout.updates).unwrap();
+    let old = std::fs::File::create(layout.updates.join("lock")).unwrap();
+    // SAFETY: an open descriptor and a flag constant.
+    assert_eq!(unsafe { libc::flock(old.as_raw_fd(), libc::LOCK_EX) }, 0);
+    let (done, waited) = std::sync::mpsc::channel();
+    let waiting = layout.clone();
+    std::thread::spawn(move || done.send(super::await_install(&waiting).is_ok()).unwrap());
+    assert!(
+        waited.recv_timeout(Duration::from_millis(300)).is_err(),
+        "it waits while the old process holds the install"
+    );
+    drop(old);
+    assert!(waited.recv_timeout(Duration::from_secs(10)).unwrap());
+    assert!(
+        super::hold_install(&layout).unwrap(),
+        "the next start takes it"
+    );
+}
+
 // ---- the channel: fetch and download ----------------------------------------
 
 /// Each channel is one file, its manifest and the signature over it, read
