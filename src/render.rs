@@ -264,6 +264,9 @@ pub struct ViewTree {
     /// held focus as it opened, which gets focus back if focus went with
     /// the dialog.
     opener: Option<(FocusHandle, WeakFocusHandle)>,
+    /// The keys a node heard go down and has not heard come up, each told
+    /// it came up if the keyboard leaves the node first (`interactivity`).
+    held_keys: Vec<interactivity::HeldKey>,
 
     // Pictures by the guest's content hash: the seat's bytes, which a node
     // that names a hash alone draws from, and the rasters decoded from them.
@@ -331,6 +334,7 @@ impl ViewTree {
             drags: HashMap::new(),
             dialogs: HashMap::new(),
             opener: None,
+            held_keys: Vec::new(),
             sensors: HashMap::new(),
             webs: Default::default(),
             pictures: Default::default(),

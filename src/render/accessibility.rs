@@ -373,11 +373,14 @@ impl ViewTree {
         // whether the guest has built the node's tooltip
         let tooltip_held = (interactivity.tooltip.as_ref())
             .is_some_and(|tooltip| self.tooltips.contains_key(&tooltip.request));
+        // only a node with an id of its own is found again by its path
+        let path = node.identity().is_some().then_some(&self.authored_path);
         element = super::interactivity::apply(
             element,
             interactivity,
             &self.styles,
             focus_handle,
+            path,
             tooltip_held,
             cx,
         );
