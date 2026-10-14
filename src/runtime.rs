@@ -33,6 +33,9 @@ pub(crate) use kernel::{day, local_offset};
 // av pieces a device's name (render/av.rs)
 #[cfg(any(feature = "web", feature = "av"))]
 pub(crate) use kernel::shown_title;
+// a device's state line, kept whole up to the wire's bound (render/av.rs)
+#[cfg(feature = "av")]
+pub(crate) use kernel::plain;
 pub use roster::{Link, RailRow, connected, deployments_checked, props, valid_route};
 pub(crate) use roster::{Roster, changes_channel, roster};
 pub use seat::override_views_from;
