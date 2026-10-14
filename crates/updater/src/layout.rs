@@ -4,9 +4,9 @@
 //! and an archive's name is derived from that content and the platform.
 //!
 //! ```text
-//! https://dl.ducktape.industries/stable.json                            a channel's manifest and its signature
-//! https://dl.ducktape.industries/nightly.json                           the other channel's
-//! https://dl.ducktape.industries/Ducktape-<sha256>-<os>-<arch>.tar.gz   one archive per platform
+//! https://dl.ducktape.industries/app/stable.json                        a channel's manifest and its signature
+//! https://dl.ducktape.industries/app/nightly.json                       the other channel's
+//! https://dl.ducktape.industries/app/Ducktape-<sha256>-<os>-<arch>.tar.gz   one archive per platform
 //! ```
 //!
 //! A channel is ONE file ([`crate::SignedManifest`]): an upload replaces
@@ -17,8 +17,9 @@
 
 use crate::sha::Sha;
 
-/// The bucket every release file is published under.
-pub const BASE_URL: &str = "https://dl.ducktape.industries/";
+/// Where every app release file is published: the app's prefix in a
+/// bucket other repos (modules, modules-lab) publish into as well.
+pub const BASE_URL: &str = "https://dl.ducktape.industries/app/";
 
 /// A release channel: its own signed manifest under [`BASE_URL`], signed by
 /// the same key as the other. Stable is `main`, nightly is `dev` once a day.
