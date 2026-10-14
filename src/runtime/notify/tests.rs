@@ -577,3 +577,21 @@ fn request_ids_differ_within_and_across_processes() {
     assert_ne!(token_of(7, at), token_of(7, at + Duration::from_millis(1)));
     assert_ne!(token_of(7, at), token_of(8, at));
 }
+
+/// The consent line: a view's first live track puts it on its window, a
+/// second does not draw it again, and once put away it stays away for the
+/// run.
+#[test]
+fn a_views_live_line_shows_once_a_run() {
+    let mut center = Center::default();
+    assert!(center.went_live("chat"));
+    assert!(center.sharing.contains("chat"));
+    assert!(
+        !center.went_live("chat"),
+        "a second track drew the line again"
+    );
+    center.put_away_live("chat");
+    assert!(!center.sharing.contains("chat"));
+    assert!(!center.went_live("chat"), "a line put away came back");
+    assert!(!center.sharing.contains("chat"));
+}

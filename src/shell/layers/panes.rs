@@ -749,8 +749,11 @@ impl Render for PaneView {
         // Every window has a title bar, so a view owns all of its
         // rectangle: nothing floats over its corners. The strip is cached
         // at the title bar's height; while its view asks to notify it
-        // grows a bar of its words' height, and draws uncached
-        let asking = pane.is_view() && self.notifications.read(cx).asking(pane.module);
+        // grows a bar of its words' height, and draws uncached; so while it
+        // says it shares live data
+        let notifications = self.notifications.read(cx);
+        let asking = pane.is_view()
+            && (notifications.asking(pane.module) || notifications.sharing(pane.module));
         let filled =
             self.kind == WindowKind::Console && pane.frame.is_some() && layout.fills(index);
         let strip = match asking {
@@ -822,7 +825,8 @@ impl Shown {
 
 /// A pane's strip: its title bar (the handle it is held by on the desk,
 /// its name, its buttons at the right end) and, while its view asks to
-/// notify, the permission bar. A cached view: it observes the rail (its
+/// notify, the permission bar; while it shares live data, the live line.
+/// A cached view: it observes the rail (its
 /// name), the notifications (the ask), the prefs (dark, the burst) and
 /// reads its desk through a compared `Shown`. In a window of its own it
 /// names the OS window too.
@@ -1077,6 +1081,70 @@ impl Strip {
             .into_any_element()
     }
 
+    /// The consent line: the view opened a live track, so its window says
+    /// in one line where that data goes, until the person puts it away. It
+    /// asks nothing: no modal, and the tracks are open already.
+    fn live_bar(
+        &self,
+        module: &'static str,
+        ink: &super::super::ink::Ink,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use super::super::ink::*;
+        let name = panes::label(self.rail.read(cx).rows(), module);
+        let line =
+            format!("{name} shares live data with the people in its rooms, through your node.");
+        let notifications = self.notifications.entity().clone();
+        let ok = crate::a11y::keyboard(
+            sans(500, 14.)
+                .id(SharedString::from(format!("live-line/{module}/ok")))
+                .control(Role::Button, "OK")
+                .h(px(tall(30.)))
+                .px(px(12.))
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .cursor_pointer()
+                .border(px(1.5))
+                .border_color(ink.ink)
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    notifications.update(cx, |notifications, cx| {
+                        notifications.put_away_live(module, cx)
+                    });
+                })
+                .child("OK"),
+            ink.ring(false),
+        );
+        // announced as it appears: nothing else says the data leaves
+        crate::a11y::live(
+            div()
+                .id(SharedString::from(format!("live-line/{module}")))
+                .role(Role::Group),
+            accesskit::Live::Polite,
+            line.clone(),
+        )
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .gap(px(12.))
+        .px(px(14.))
+        .py(px(10.))
+        .bg(ink.surface)
+        .border_b_1()
+        .border_color(ink.line)
+        .child(
+            sans(500, 14.)
+                .flex_1()
+                .min_w_0()
+                .text_color(ink.ink)
+                .child(line),
+        )
+        .child(ok)
+        .into_any_element()
+    }
+
     /// The NotifPermission board: a view posted before the person said
     /// anything about its notices, so its window asks, at the top. Until
     /// they answer its notices wait in Notifications, silently.
@@ -1219,6 +1287,8 @@ impl Render for Strip {
         let title = self.title_bar(&ink, window, cx);
         let asking = (is_view && self.notifications.read(cx).asking(module))
             .then(|| self.permission_bar(module, &ink, cx));
+        let sharing = (is_view && self.notifications.read(cx).sharing(module))
+            .then(|| self.live_bar(module, &ink, cx));
         div()
             .w_full()
             .flex_shrink_0()
@@ -1226,6 +1296,7 @@ impl Render for Strip {
             .flex_col()
             .child(title)
             .children(asking)
+            .children(sharing)
             .into_any_element()
     }
 }

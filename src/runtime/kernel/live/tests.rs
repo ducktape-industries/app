@@ -400,3 +400,25 @@ fn a_room_or_a_name_outside_the_rule_is_malformed() {
         );
     }
 }
+
+/// A view's first live request puts the consent line on its window and
+/// asks nothing: the request goes on to the node.
+#[test]
+fn a_first_live_request_puts_the_line_on_the_window() {
+    let _serial = serial();
+    let (mut guest, opens) = live_guest();
+    ask(
+        &mut guest,
+        1,
+        "live.tracks",
+        methods::encode(&"lobby".to_owned()),
+    );
+    assert!(
+        crate::runtime::notify::center()
+            .lock()
+            .sharing
+            .contains("request-test"),
+        "the view went live and its window said nothing"
+    );
+    assert!(matches!(opened(&opens).0, Ask::Watch { .. }));
+}

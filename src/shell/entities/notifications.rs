@@ -1,5 +1,6 @@
 //! The notification centre as the bar and the panes draw it: the unread
-//! count, the views asking for permission, and the log's revision, so a
+//! count, the views asking for permission, the views sharing live data,
+//! and the log's revision, so a
 //! change that leaves the count alone (clearing read rows) still moves it.
 //! Read off the centre by `refresh`: after each of the centre's methods
 //! here, on a view's `Intent::Notified` (`Seats`), after a banner's click
@@ -33,6 +34,7 @@ pub(crate) fn permission(
 pub(crate) struct Notifications {
     unread: usize,
     asking: BTreeSet<String>,
+    sharing: BTreeSet<String>,
     entries_rev: u64,
     /// What it is read off; not compared.
     center: CenterHandle,
@@ -40,18 +42,24 @@ pub(crate) struct Notifications {
 
 impl Notifications {
     pub(crate) fn new(center: CenterHandle) -> Self {
-        let (unread, asking, entries_rev) = Self::read(&center);
+        let (unread, asking, sharing, entries_rev) = Self::read(&center);
         Self {
             unread,
             asking,
+            sharing,
             entries_rev,
             center,
         }
     }
 
-    fn read(center: &CenterHandle) -> (usize, BTreeSet<String>, u64) {
+    fn read(center: &CenterHandle) -> (usize, BTreeSet<String>, BTreeSet<String>, u64) {
         let center = center.lock();
-        (center.unread(), center.asking.clone(), center.rev())
+        (
+            center.unread(),
+            center.asking.clone(),
+            center.sharing.clone(),
+            center.rev(),
+        )
     }
 
     /// Read again each time the session connects: the centre has just
@@ -78,6 +86,12 @@ impl Notifications {
     /// The views waiting for a word on their notices.
     pub(crate) fn asking(&self, module: &str) -> bool {
         self.asking.contains(module)
+    }
+
+    /// The views whose window says they share live data (the consent
+    /// line).
+    pub(crate) fn sharing(&self, module: &str) -> bool {
+        self.sharing.contains(module)
     }
 
     /// The log's rows, newest first, as the bell lists them.
@@ -126,6 +140,13 @@ impl Notifications {
         self.refresh(cx);
     }
 
+    /// "OK" on a view's live line: it goes for this run.
+    pub(crate) fn put_away_live(&mut self, module: &str, cx: &mut Context<Self>) {
+        let _timed = timed();
+        self.center.lock().put_away_live(module);
+        self.refresh(cx);
+    }
+
     /// The views asking, put back as they stood (the door's walk,
     /// `layers::Kept::restore`).
     #[cfg(any(test, feature = "ax-door"))]
@@ -136,11 +157,14 @@ impl Notifications {
 
     /// Read off the centre again; notifies only when something moved.
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) -> bool {
-        let (unread, asking, entries_rev) = Self::read(&self.center);
-        if (unread, &asking, entries_rev) == (self.unread, &self.asking, self.entries_rev) {
+        let (unread, asking, sharing, entries_rev) = Self::read(&self.center);
+        if (unread, &asking, &sharing, entries_rev)
+            == (self.unread, &self.asking, &self.sharing, self.entries_rev)
+        {
             return false;
         }
-        (self.unread, self.asking, self.entries_rev) = (unread, asking, entries_rev);
+        (self.unread, self.asking, self.sharing, self.entries_rev) =
+            (unread, asking, sharing, entries_rev);
         cx.notify();
         true
     }

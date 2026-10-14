@@ -19,6 +19,10 @@
 //! - `live.tracks` `<room>` — items `LiveAnnounce`: the room's tracks up
 //!   now, then each one that comes or goes.
 //!
+//! A view's first live request puts a line on its window (the consent
+//! line, `Notifications::sharing`): it shares live data with the people in
+//! its rooms, through the person's node. Nothing waits on it.
+//!
 //! The host stamps every room `<chain>/<module>/<room>`: the session's chain
 //! id and the view's own module, so a view names only its module's rooms.
 //! A lost session (the node restarting, the path breaking) is opened again
@@ -47,6 +51,8 @@ use wire::methods::{
 #[derive(Default)]
 pub(in crate::runtime) struct Live {
     publications: Vec<Publication>,
+    /// The view's window has said it went live.
+    told: bool,
 }
 
 struct Publication {
@@ -150,9 +156,24 @@ fn stamped(guest: &mut Guest, id: u64, room: &str, name: &str) -> Option<Track> 
     })
 }
 
+/// A view's first live request: its window says it shares live data.
+fn went_live(guest: &mut Guest) {
+    if std::mem::replace(&mut guest.live.told, true) {
+        return;
+    }
+    if crate::runtime::notify::center()
+        .lock()
+        .went_live(guest.module)
+    {
+        // the window's strip redraws with the line
+        guest.intents.push(Intent::Notified);
+    }
+}
+
 /// The session to open a request on, or the request refused: the view's
 /// connection is stale or gone (`connected`).
 fn ready(guest: &mut Guest, id: u64) -> Option<Arc<dyn Session>> {
+    went_live(guest);
     connected(guest, id)?;
     let session = session(&guest.connection);
     if session.is_none() {
