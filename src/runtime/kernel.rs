@@ -107,7 +107,7 @@ const MAX_SUBSCRIPTIONS: usize = 256;
 /// bytes; exceeding either stops the view for good. The bytes are what one
 /// node answer may carry at most: a bigger one is refused unread.
 const MAX_REPLY_EVENTS: usize = 1024;
-const MAX_REPLY_BYTES: usize = backend::noded::MAX_BODY_BYTES;
+const MAX_REPLY_BYTES: usize = noded_client::MAX_BODY_BYTES;
 /// The share of the reply budget SUBSCRIPTIONS may fill before they stop
 /// reading their sources: a request answers once, a subscription forever,
 /// against a queue only a redraw empties.
@@ -418,7 +418,10 @@ pub(super) fn answer(
                 && prefix.len() <= MAX_ID_PREFIX
                 && prefix.bytes().all(|byte| byte.is_ascii_alphanumeric());
             match named {
-                true => guest.reply(id, Ok(methods::encode(&backend::fresh_id(prefix)))),
+                true => guest.reply(
+                    id,
+                    Ok(methods::encode(&noded_client::ids::fresh_id(prefix))),
+                ),
                 false => guest.refuse(id, refusal::MALFORMED_REQUEST, "`host.id` names no prefix"),
             }
         }

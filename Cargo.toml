@@ -121,7 +121,6 @@ program.workspace = true
 abi.workspace = true
 borsh.workspace = true
 ducklink.workspace = true
-tokio-tungstenite.workspace = true
 wasmtime.workspace = true
 wasmparser = "0.251"
 libc.workspace = true
@@ -155,6 +154,8 @@ zbus = "5"
 wat = "1"
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tempfile.workspace = true
+# a fake node's changes socket (`runtime/kernel/node/tests.rs`)
+tokio-tungstenite.workspace = true
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b", package = "keyscheme", features = ["testkit"] }
 p256 = "0.13"
 guest = { git = "https://github.com/ducktape-industries/modules", rev = "4339899c8f48e3795c13382d0a4af3f7167b7052", package = "guest" }

@@ -8,8 +8,10 @@ use commonware_codec::DecodeExt as _;
 use commonware_cryptography::{Signer as _, ed25519};
 use view_wire::methods::refusal;
 
-use super::noded::Layer;
-use super::{RpcClient, hex_decode, hex_encode, query_frame, refused};
+use noded_client::hex::{hex_decode, hex_encode};
+use noded_client::wire::Layer;
+
+use super::{RpcClient, query_frame, refused};
 
 const NODE_KEY: &str = "identity.key";
 const DAY_MS: u64 = 24 * 60 * 60 * 1000;

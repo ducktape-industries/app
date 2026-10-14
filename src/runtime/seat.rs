@@ -738,7 +738,7 @@ pub(super) fn log_source(
     tracing::info!(
         target: "ducktape::app",
         module,
-        hash = %hash.map_or_else(|| "-".to_owned(), |hash| crate::backend::hex_encode(hash)),
+        hash = %hash.map_or_else(|| "-".to_owned(), |hash| noded_client::hex::hex_encode(hash)),
         state,
         gen = generation,
         reason = %if reason.is_empty() { "-" } else { reason },
@@ -782,9 +782,10 @@ impl LoadTiming {
     pub(super) fn log(&self, module: &str) {
         let ms = |duration: Duration| duration.as_millis();
         let word = |word: &'static str| if word.is_empty() { "-" } else { word };
-        let hash = self
-            .hash
-            .map_or_else(|| "-".to_owned(), |hash| crate::backend::hex_encode(&hash));
+        let hash = self.hash.map_or_else(
+            || "-".to_owned(),
+            |hash| noded_client::hex::hex_encode(&hash),
+        );
         let first_frame = self
             .first_frame
             .map_or_else(|| "-".to_owned(), |frame| ms(frame).to_string());

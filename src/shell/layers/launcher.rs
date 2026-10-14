@@ -452,7 +452,7 @@ impl LauncherLayer {
     /// The node reached, as the drawing's caption: "testkit · 127.0.0.1:8844".
     fn node_caption(&self, cx: &App) -> String {
         let session = self.session.read(cx).get();
-        let host = crate::backend::host_of(&session.connected_rpc);
+        let host = noded_client::endpoint::host_of(&session.connected_rpc);
         format!("{} · {host}", session.network)
     }
 }

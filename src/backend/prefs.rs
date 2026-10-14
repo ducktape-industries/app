@@ -49,7 +49,7 @@ fn edit_prefs_at(path: &std::path::Path, change: impl FnOnce(&mut serde_json::Va
     }
     serde_json::to_vec_pretty(&prefs)
         .ok()
-        .is_some_and(|bytes| super::atomic_write(path, &bytes, false).is_ok())
+        .is_some_and(|bytes| noded_client::fs::atomic_write(path, &bytes, false).is_ok())
 }
 
 #[cfg(test)]

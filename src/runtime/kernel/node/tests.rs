@@ -54,7 +54,7 @@ fn status_at(anchor: noded::Tip) -> noded::Status {
         identity: Vec::new(),
         contract: noded::NODE_CONTRACT,
         genesis: [0; 32],
-        roles: noded::test_roles(),
+        roles: crate::backend::test_roles(),
     }
 }
 
@@ -114,11 +114,13 @@ async fn a_submit_whose_answer_was_lost_is_not_submitted_again() {
     let _seat = backend::seat_serial();
     backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
     let (node, submits) = applying_node_with_a_lost_answer(noded::route::SUBMIT);
-    let (answer, attempts) =
-        until_answered(NODE_RETRY_BUDGET, noded::ANSWER_DEADLINE, unsent, || {
-            submit(node.clone(), call_registry())
-        })
-        .await;
+    let (answer, attempts) = until_answered(
+        NODE_RETRY_BUDGET,
+        noded_client::ANSWER_DEADLINE,
+        unsent,
+        || submit(node.clone(), call_registry()),
+    )
+    .await;
     assert_eq!(attempts, 1);
     assert_eq!(
         answer.unwrap_err().code,
@@ -145,11 +147,13 @@ async fn a_submit_whose_anchor_read_was_lost_is_asked_again() {
     let _seat = backend::seat_serial();
     backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
     let (node, submits) = applying_node_with_a_lost_answer(noded::route::STATUS);
-    let (answer, attempts) =
-        until_answered(NODE_RETRY_BUDGET, noded::ANSWER_DEADLINE, unsent, || {
-            submit(node.clone(), call_registry())
-        })
-        .await;
+    let (answer, attempts) = until_answered(
+        NODE_RETRY_BUDGET,
+        noded_client::ANSWER_DEADLINE,
+        unsent,
+        || submit(node.clone(), call_registry()),
+    )
+    .await;
     assert_eq!(
         answer,
         Ok(Vec::new()),
@@ -250,11 +254,13 @@ async fn a_redirected_submit_goes_nowhere_else() {
         ),
         (noded::route::SUBMIT, Mode::Redirect(to)),
     ]);
-    let (answer, attempts) =
-        until_answered(NODE_RETRY_BUDGET, noded::ANSWER_DEADLINE, unsent, || {
-            submit(node.node.clone(), call_registry())
-        })
-        .await;
+    let (answer, attempts) = until_answered(
+        NODE_RETRY_BUDGET,
+        noded_client::ANSWER_DEADLINE,
+        unsent,
+        || submit(node.node.clone(), call_registry()),
+    )
+    .await;
     assert_eq!(
         elsewhere.accepted.load(std::sync::atomic::Ordering::SeqCst),
         0,
@@ -270,11 +276,13 @@ async fn a_redirected_submit_goes_nowhere_else() {
 async fn a_node_that_hangs_up_is_asked_again_within_the_budget() {
     let fake = fake_node(vec![(noded::route::QUERY, Mode::Close)]);
     let budget = std::time::Duration::from_millis(1500);
-    let (answer, attempts) =
-        until_answered(budget, noded::ANSWER_DEADLINE, transport_failed, || {
-            query(fake.node.clone(), call_registry())
-        })
-        .await;
+    let (answer, attempts) = until_answered(
+        budget,
+        noded_client::ANSWER_DEADLINE,
+        transport_failed,
+        || query(fake.node.clone(), call_registry()),
+    )
+    .await;
     assert_eq!(answer.unwrap_err().code, refusal::RPC_CLIENT);
     assert_eq!(attempts, 2, "asked at once and a second later");
     assert_eq!(fake.accepted.load(std::sync::atomic::Ordering::SeqCst), 2);

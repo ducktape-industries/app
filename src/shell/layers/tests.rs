@@ -30,7 +30,7 @@ pub(in crate::shell) struct Seed {
     /// A new recovery key's words, on the phrase screens.
     pub(in crate::shell) phrase: Option<Secret>,
     /// The request "Add a device…" found.
-    pub(in crate::shell) found: Option<crate::backend::join::Request>,
+    pub(in crate::shell) found: Option<noded_client::join::Request>,
     /// This device's prefs (a test's file starts empty: System, motion on,
     /// no layout picked).
     pub(in crate::shell) prefs: Prefs,

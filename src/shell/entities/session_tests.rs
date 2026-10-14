@@ -110,7 +110,10 @@ fn a_node_not_reached_is_said_and_a_new_try_clears_it(cx: &mut TestAppContext) {
     assert!(state(&session, cx).error.is_empty());
     session.update(cx, |session, cx| session.submit(cx));
     let refused = state(&session, cx);
-    assert_eq!(refused.endpoint_error, crate::backend::ENDPOINT_REFUSAL);
+    assert_eq!(
+        refused.endpoint_error,
+        noded_client::endpoint::ENDPOINT_REFUSAL
+    );
     assert!(!refused.connecting, "a refused address was tried");
 }
 

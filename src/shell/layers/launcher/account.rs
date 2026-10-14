@@ -194,8 +194,8 @@ impl LauncherLayer {
     fn link_waiting(&self, window: &mut Window, cx: &App) -> AnyElement {
         let account = self.account.read(cx).get();
         let ink = Ink::of(self.prefs.read(cx).get().dark());
-        let fingerprint = crate::backend::hex_decode(&account.signer_key)
-            .map(|key| crate::backend::join::fingerprint(&key))
+        let fingerprint = noded_client::hex::hex_decode(&account.signer_key)
+            .map(|key| noded_client::join::fingerprint(&key))
             .unwrap_or_default();
         let big = |id: &'static str, name: &'static str, text: String| {
             div()

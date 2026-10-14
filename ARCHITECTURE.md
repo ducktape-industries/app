@@ -90,7 +90,7 @@ main
      │  │                   └──► runtime (Roster, connected, notify)
      │  └─► runtime::Seat ──► render::ViewTree ──► a11y
      │          ├─► runtime::guest (wasmtime)
-     │          └─► runtime::kernel ──► backend::noded / session / views
+     │          └─► runtime::kernel ──► noded_client / backend::session / views
      ├─► a11y, fonts, tray, ax
      └─► ax ──► (reads the GPUI a11y tree of every window)
 ```
@@ -608,7 +608,8 @@ Connect ─► /v1/status ─► contract check ─► bind_keyring ─► devic
      passkey on a phone joins through the browser's own cross-device
      sign-in. **Sign in with a passkey** (`passkey_sign_in` → `passkey::sign_in`): an existing
      passkey asserts, then `AddKey`s this device's key to its account.
-   - **Join from another device** (`backend/join.rs`): `link_start` shows
+   - **Join from another device** (`backend/join.rs` over
+     `noded_client::join`): `link_start` shows
      a Crockford code (`new_code`); `join_from_device` posts the request to
      the relay and waits for consent. On a device already on the account,
      "Add a device…" (`shell/layers/overlays/approve.rs`,
@@ -740,13 +741,13 @@ House words, and where one word means several things.
 
 - **blind host** — the app: it hosts views without knowing the programs.
 - **node** — the `noded` process the app talks to over `/v1`
-  (`backend/noded.rs`). Not a `wire::Node`, which is one element of a
+  (`crates/noded-client`). Not a `wire::Node`, which is one element of a
   view's tree. `kernel/node.rs`'s `Node` is the client + network pair a
   view's request goes to.
 - **network / chain** — `network` is the bare label signed into frames;
   the **chain id** is `<network>#<salt>` from the genesis
   (`ducklink::ChainId`), used for links, the view store and the notify log.
-- **contract** — `noded::NODE_CONTRACT`, the `/v1` version; a node with
+- **contract** — `noded_client::wire::NODE_CONTRACT`, the `/v1` version; a node with
   another is refused at connect. Also "the kernel contract" (§4).
 - **roster / registry** — the node's program list
   (`backend::views::programs`, kept in a `Roster`: the app's one is
@@ -886,7 +887,8 @@ House words, and where one word means several things.
   (`shell/figure.rs`); **spin** is the widget that tumbles and drags it
   (`shell/spin.rs`). In `runtime/kernel.rs` "spin" means busy per-frame
   work on the window thread.
-- **keyring** — two meanings. (1) `backend::Keyring` (`backend/key_dir.rs`):
+- **keyring** — two meanings. (1) `noded_client::keyring::Keyring`
+  (bound by `backend/key_dir.rs`):
   the *directory name* under `<ducktape home>/remotes/` holding this
   network's keys (`<network>` or `<network>+<founded>`). (2) the `keyring`
   crate: the OS credential store `backend/device_key.rs` uses.

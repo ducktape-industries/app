@@ -182,10 +182,10 @@ pub(crate) fn on_open_url(open: fn(String)) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::noded::{FRAME_NAMESPACE, Tip};
     use super::super::passkey::{passkey_body, passkey_frame};
     use super::*;
     use keyscheme::testkit;
+    use noded_client::wire::{FRAME_NAMESPACE, Tip};
 
     const RP: &str = "auth.ducktape.industries";
 

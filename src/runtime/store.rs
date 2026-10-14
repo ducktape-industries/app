@@ -2,7 +2,7 @@
 //!
 //! One file per view per network, `<config>/store/<chain>/<module>.borsh`:
 //! a borsh map of key → bytes, rewritten whole through
-//! `backend::atomic_write`, at most [`MAX_KEYS`] keys and [`MAX_BYTES`]. A
+//! `noded_client::fs::atomic_write`, at most [`MAX_KEYS`] keys and [`MAX_BYTES`]. A
 //! view names keys, never paths — the chain and the module come from the
 //! host — so no view reaches another view's file or another network's.
 //!
@@ -160,7 +160,7 @@ fn set(path: &Path, payload: &[u8]) -> Answer {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        crate::backend::atomic_write(path, &bytes, false)
+        noded_client::fs::atomic_write(path, &bytes, false)
     };
     write().map_err(|error| refusal(methods::refusal::HOST_FAULT, error))?;
     Ok(methods::encode(&()))

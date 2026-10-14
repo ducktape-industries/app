@@ -231,7 +231,7 @@ pub(super) mod tests {
             .join(abi::hex(code.digest()));
         let _ = std::fs::remove_file(&cached);
         let node = fake_node(vec![(
-            crate::backend::noded::route::BLOB_GET,
+            noded_client::wire::route::BLOB_GET,
             Mode::Answer(abi::encode(&Some(framed))),
         )]);
         let asks = futures::future::join_all((0..8).map(|_| module(&node.node, code))).await;
@@ -269,7 +269,7 @@ pub(super) mod tests {
 #[cfg(test)]
 mod stage {
     use super::*;
-    use crate::backend::noded::{Blocks, TxAsk, TxRef};
+    use noded_client::wire::{Blocks, TxAsk, TxRef};
 
     #[tokio::test]
     #[ignore = "reads a running stage: DESCRIBE_STAGE=http://<listen>"]

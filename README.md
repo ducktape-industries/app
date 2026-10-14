@@ -48,7 +48,7 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 
 | Path | What |
 |---|---|
-| `src/backend/noded.rs` | the node's `/v1` wire and the signed frame, mirrored from the kernel branch |
+| `crates/noded-client` | the node's `/v1` wire and the signed frame, mirrored from the kernel branch, and the flows onto an account; shared with the phone |
 | `src/backend/views.rs` | roster → blob → `ducktape.view` section |
 | `src/backend/session.rs` | the seated key, its frames, preferences |
 | `src/runtime.rs`, `runtime/` | the wasm view runtime: seats, loads, swaps, the kernel relay |

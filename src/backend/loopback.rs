@@ -277,8 +277,8 @@ mod tests {
     /// otherwise is a failure with a sentence, not a status.
     #[tokio::test]
     async fn the_status_source_reads_a_node_over_loopback() {
-        use crate::backend::noded::{NODE_CONTRACT, Status};
         use crate::shell::entities::Session;
+        use noded_client::wire::{NODE_CONTRACT, Status};
         let status = Status {
             network: "loopback".into(),
             time: 1,
@@ -291,7 +291,7 @@ mod tests {
             identity: vec![7],
             contract: NODE_CONTRACT,
             genesis: [8; 32],
-            roles: crate::backend::noded::test_roles(),
+            roles: crate::backend::test_roles(),
         };
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await

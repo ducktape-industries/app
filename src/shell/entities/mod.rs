@@ -243,9 +243,9 @@ pub(crate) mod tests {
             root: abi::Root([0; 32]),
             epoch: 0,
             identity: Vec::new(),
-            contract: crate::backend::noded::NODE_CONTRACT,
+            contract: noded_client::wire::NODE_CONTRACT,
             genesis: [0; 32],
-            roles: crate::backend::noded::test_roles(),
+            roles: crate::backend::test_roles(),
         }
     }
 }
