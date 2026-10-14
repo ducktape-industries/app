@@ -664,3 +664,17 @@ fn a_card_follows_its_request_off(cx: &mut TestAppContext) {
     );
     assert_eq!(consent::front(), None);
 }
+
+/// A window's first frame is the self-update's healthy signal: the window
+/// asks for it as it opens, and it is sent once that frame comes round.
+#[gpui_kit::test]
+fn a_windows_first_frame_tells_the_updater_it_rendered(cx: &mut TestAppContext) {
+    let before = crate::update::rendered_here();
+    let (app, key) = console(cx);
+    let handle = app
+        .windows
+        .read_with(cx, |windows, _| windows.handles()[&key]);
+    cx.update_window(handle, |_, window, cx| window.simulate_next_frame(cx))
+        .unwrap();
+    assert_eq!(crate::update::rendered_here(), before + 1);
+}

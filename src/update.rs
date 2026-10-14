@@ -56,7 +56,7 @@ mod tests;
 pub(crate) use app_update::layout::Channel;
 pub(crate) use boot::boot;
 #[cfg(test)]
-pub(crate) use channel::{Shown, show_here};
+pub(crate) use channel::{Shown, rendered_here, show_here};
 pub(crate) use channel::{Updates, choose, on_moved, rendered, restart, updates};
 pub(crate) use install::install_cli;
 

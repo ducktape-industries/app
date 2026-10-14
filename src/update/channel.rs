@@ -126,6 +126,8 @@ pub(crate) fn on_moved(moved: fn()) {
 /// A window's first frame: the healthy signal, then the checks. Only the
 /// first call does anything, and nothing without an armed updater.
 pub(crate) fn rendered() {
+    #[cfg(test)]
+    RENDERED_HERE.with(|count| count.set(count.get() + 1));
     let Some(mut updater) = lock(&ARMED).take() else {
         return;
     };
@@ -683,6 +685,13 @@ pub(crate) struct Shown {
 #[cfg(test)]
 thread_local! {
     static SHOWN_HERE: std::cell::RefCell<Option<Updates>> = const { std::cell::RefCell::new(None) };
+    static RENDERED_HERE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times [`rendered`] was called on this test's thread.
+#[cfg(test)]
+pub(crate) fn rendered_here() -> usize {
+    RENDERED_HERE.with(std::cell::Cell::get)
 }
 
 /// What Settings › Updates shows on this test's thread, in place of the
