@@ -5,11 +5,17 @@ use std::sync::mpsc as std_mpsc;
 use wire::methods::{LiveItem, LiveSend, LiveSubscribe};
 
 /// A session the test speaks for: every request it opens, in order, with
-/// the ends the node would hold.
-struct Fake(Mutex<std_mpsc::Sender<(Ask, Ends)>>);
+/// the ends the node would hold; the refusals in `refusing` come first.
+struct Fake(
+    Mutex<std_mpsc::Sender<(Ask, Ends)>>,
+    Mutex<Vec<wire::Error>>,
+);
 
 impl Session for Fake {
     fn open(&self, ask: Ask) -> futures::future::BoxFuture<'static, Result<Request, wire::Error>> {
+        if let Some(refused) = self.1.lock().unwrap().pop() {
+            return Box::pin(async move { Err(refused) });
+        }
         let (request, ends) = client::request(|| {});
         self.0.lock().unwrap().send((ask, ends)).unwrap();
         Box::pin(async move { Ok(request) })
@@ -35,7 +41,10 @@ fn live_guest() -> (Guest, std_mpsc::Receiver<(Ask, Ends)>) {
         rev: guest.connection.rev,
     };
     let (opened, opens) = std_mpsc::channel();
-    install(guest.connection.rev, Arc::new(Fake(Mutex::new(opened))));
+    install(
+        guest.connection.rev,
+        Arc::new(Fake(Mutex::new(opened), Mutex::new(Vec::new()))),
+    );
     (guest, opens)
 }
 
@@ -354,7 +363,10 @@ fn a_reconnect_opens_a_live_subscription_again_on_the_new_session() {
     ));
     let rev = guest.connection.rev + 1;
     let (reopened, reopens) = std_mpsc::channel();
-    install(rev, Arc::new(Fake(Mutex::new(reopened))));
+    install(
+        rev,
+        Arc::new(Fake(Mutex::new(reopened), Mutex::new(Vec::new()))),
+    );
     let connection = super::super::super::Connection {
         rev,
         ..guest.connection.clone()
@@ -421,4 +433,48 @@ fn a_first_live_request_puts_the_line_on_the_window() {
         "the view went live and its window said nothing"
     );
     assert!(matches!(opened(&opens).0, Ask::Watch { .. }));
+}
+
+/// A key whose account the node has not confirmed yet is refused
+/// `no_account`: the subscription waits and asks again rather than ending,
+/// and opens once the node knows the account.
+#[test]
+fn a_session_refused_no_account_is_asked_again() {
+    let _serial = serial();
+    let (mut guest, opens) = live_guest();
+    let (opened_again, opens_again) = std_mpsc::channel();
+    let fake = Fake(
+        Mutex::new(opened_again),
+        Mutex::new(vec![wire::Error::new(
+            Code::NoAccount.as_str(),
+            "the node refused this key a live session",
+        )]),
+    );
+    install(guest.connection.rev, Arc::new(fake));
+    drop(opens);
+    let mut changes = guest.replies.changes();
+    let subscribe = LiveSubscribe {
+        track: track("presence/7"),
+        latest: true,
+    };
+    ask(&mut guest, 1, "live.subscribe", methods::encode(&subscribe));
+    let (asked, ends) = opened(&opens_again);
+    assert!(matches!(asked, Ask::Subscribe { .. }));
+    let mut pending = Vec::new();
+    guest.replies.drain_into(&mut pending).unwrap();
+    assert!(
+        pending.is_empty(),
+        "the refusal reached the view: {pending:?}"
+    );
+    ends.heard
+        .send(Heard::Subscribed {
+            by: 7,
+            mode: Mode::Datagram,
+            latest: None,
+        })
+        .unwrap();
+    let (id, opened, done) = item::<LiveItem>(next(&guest, &mut changes));
+    assert_eq!(id, 1);
+    assert!(matches!(opened, Ok(LiveItem::Opened { by: 7, .. })));
+    assert!(!done);
 }

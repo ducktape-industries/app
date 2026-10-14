@@ -244,7 +244,7 @@ async fn publishing(
 ) {
     let mut lost = 0;
     loop {
-        let mut request = match session.open(open.clone()).await {
+        let mut request = match opened(&session, open.clone()).await {
             Ok(request) => request,
             Err(refusal) => return items.last(refusal),
         };
@@ -282,6 +282,26 @@ async fn publishing(
         }
         lost += 1;
         tokio::time::sleep(backend::retry_delay(lost)).await;
+    }
+}
+
+/// `ask` opened on the session. The node reads accounts on its confirmed
+/// layer, so a session for an account whose creating block has not applied
+/// there yet is refused `no_account`: that is asked again, a block or so
+/// on and longer each time (`retry_delay`, the client's own hold-off
+/// alike), for as long as the view holds the request. Any other refusal
+/// is the request's last word.
+async fn opened(session: &Arc<dyn Session>, ask: Ask) -> Result<client::Request, wire::Error> {
+    let mut refused = 0;
+    loop {
+        match session.open(ask.clone()).await {
+            Err(refusal) if refusal.code == client::Code::NoAccount.as_str() => {
+                refused += 1;
+                tracing::debug!(target: "ducktape::app", reason = "no_account", attempt = refused, "the node has no account for this key yet; the live session waits a block");
+                tokio::time::sleep(backend::retry_delay(refused)).await;
+            }
+            opened => return opened,
+        }
     }
 }
 
@@ -397,7 +417,7 @@ async fn subscribing(
             track: track.clone(),
             from,
         };
-        let mut request = match session.open(open).await {
+        let mut request = match opened(&session, open).await {
             Ok(request) => request,
             Err(refusal) => return items.last(refusal),
         };
@@ -486,7 +506,7 @@ async fn watching(session: Arc<dyn Session>, namespace: String, mut items: Items
         let open = Ask::Watch {
             namespace: namespace.clone(),
         };
-        let mut heard = match session.open(open).await {
+        let mut heard = match opened(&session, open).await {
             Ok(request) => request,
             Err(refusal) => return items.last(refusal),
         };
