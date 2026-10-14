@@ -13,7 +13,7 @@ pub(super) fn resident_mib() -> f64 {
 
 thread_local! {
     /// The style table of the test on this thread: every style one of its
-    /// nodes names, as the guest numbers them and the host holds them.
+    /// nodes names, as the view numbers them and the host holds them.
     static STYLES: RefCell<(wire::Interner, wire::Styles)> = Default::default();
 }
 
@@ -21,9 +21,9 @@ thread_local! {
 pub(crate) fn test_style(
     style: impl std::borrow::Borrow<gpui_kit::StyleRefinement>,
 ) -> wire::StyleId {
-    STYLES.with_borrow_mut(|(guest, host)| {
-        let id = guest.intern(style.borrow());
-        host.extend(guest.unsent()).expect("a style the host takes");
+    STYLES.with_borrow_mut(|(view, host)| {
+        let id = view.intern(style.borrow());
+        host.extend(view.unsent()).expect("a style the host takes");
         id
     })
 }
@@ -38,7 +38,7 @@ pub(crate) fn test_styles() -> wire::Styles {
     STYLES.with_borrow(|(_, host)| host.clone())
 }
 
-/// `frame` as a guest sends it: a whole one carries this test's table.
+/// `frame` as a view sends it: a whole one carries this test's table.
 pub(crate) fn sent(mut frame: wire::Frame) -> wire::Frame {
     if frame.root.is_some() {
         let held = test_styles();
@@ -49,7 +49,7 @@ pub(crate) fn sent(mut frame: wire::Frame) -> wire::Frame {
     frame
 }
 
-/// A whole `frame` through the sanitizer, as the host takes one a guest
+/// A whole `frame` through the sanitizer, as the host takes one a view
 /// sent.
 pub(crate) fn sanitize_whole(
     frame: &mut wire::Frame,
@@ -197,7 +197,7 @@ fn axis_container(
     })
 }
 
-/// A one-line field holding "hunter2", its caret at the end, as the guest's
+/// A one-line field holding "hunter2", its caret at the end, as the view's
 /// `TextField::new` leaves one.
 fn input(label: &str, secure: bool, disabled: bool) -> wire::Node {
     wire::Node::Field {
@@ -332,7 +332,7 @@ fn draw(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> Vec<crate::ax::A
     })
 }
 
-/// A view mounted the way a program seat mounts a guest: a cached view under
+/// A view mounted the way a program seat mounts a view: a cached view under
 /// a full-size div, not as the window root (which gpui stretches).
 pub(super) struct Seat(pub(super) Entity<ViewTree>);
 

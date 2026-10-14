@@ -518,7 +518,7 @@ fn a_misspelled_id_is_left_off_the_roster() {
 }
 
 /// Claim: the consent card names the program whose view asks by the seat
-/// that view runs in (`guest.program`), and a seat is only made from the
+/// that view runs in (`view.program`), and a seat is only made from the
 /// roster: a program listed as `"\nSystem"`, whose card would end the line
 /// after "Program " and read "System asks …" below it, gets no seat, so no
 /// view is ever loaded to ask as it.
@@ -801,10 +801,10 @@ fn a_claimed_seat_starts_the_code_it_compiled() {
     };
     // as `mounted` starts it, on the claiming thread
     claim(7).land(|load, timing| {
-        Guest::start(load.program, load.code, load.generation, &load.seat, timing)
+        View::start(load.program, load.code, load.generation, &load.seat, timing)
     });
     assert!(
-        matches!(&lock(&seat).slot, Slot::Ready(guest) if guest.name == "Quick" && guest.instance == 7),
+        matches!(&lock(&seat).slot, Slot::Ready(view) if view.name == "Quick" && view.instance == 7),
         "the claim did not start the compiled view"
     );
     // as a loader starts a seat claimed while its preload was on the way
@@ -812,7 +812,7 @@ fn a_claimed_seat_starts_the_code_it_compiled() {
     queue(claim(8));
     eventually(
         "the loader started the compiled view",
-        || matches!(&lock(&seat).slot, Slot::Ready(guest) if guest.instance == 8),
+        || matches!(&lock(&seat).slot, Slot::Ready(view) if view.instance == 8),
     );
 }
 
@@ -851,7 +851,7 @@ fn a_pane_opens_its_compiled_view_at_once() {
         });
     lock(registry()).insert((PROGRAM, 0), seat);
     let opened = mounted(PROGRAM, 7101);
-    let started = matches!(&lock(&opened).slot, Slot::Ready(guest) if guest.name == "At once");
+    let started = matches!(&lock(&opened).slot, Slot::Ready(view) if view.name == "At once");
     lock(registry()).remove(&(PROGRAM, 7101));
     super::super::roster::roster()
         .lock()

@@ -1058,7 +1058,7 @@ async fn arrow_probe(
 /// delivered when the outermost update ends): the arrow probe of
 /// `GET /audit` presses each arrow in an update of its own and reads after
 /// it, so a list whose arrows move its active row passes AX-107. A view
-/// that moves its active row a while after it heard the arrow (a guest
+/// that moves its active row a while after it heard the arrow (a view
 /// ticks on a later draw) passes too: the probe reads again until the row
 /// has moved, before it presses the next arrow.
 #[gpui_kit::test]

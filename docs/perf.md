@@ -51,11 +51,11 @@ claim comes from another session's measurement it says so.
   and the draw, input and task-poll paths take timestamps whenever the
   feature is compiled in. It is the only way to get present time and
   gpui-level long-frame causes.
-- **Not measured from inside the guest.** A view has no clock: its only wasm
-  import is the panic hook the host binds in `Guest::instantiate`
-  (`src/runtime/guest/lifecycle.rs`), and `clock.ticks` items carry an empty
+- **Not measured from inside the view.** A view has no clock: its only wasm
+  import is the panic hook the host binds in `View::instantiate`
+  (`src/runtime/view/lifecycle.rs`), and `clock.ticks` items carry an empty
   payload (`kernel::ticked`, `src/runtime/kernel.rs`). Every timing here is
-  host-side. Guest-side counters could travel through the `host.log` request
+  host-side. View-side counters could travel through the `host.log` request
   at one request per tick; fuel, frame bytes and the `Frame` fields already
   cover the continuous signal, so this design does not ask for it.
 - **Not a per-frame line in app.log.** The file writer is a `Mutex<File>`
@@ -89,40 +89,40 @@ loop runs on the window thread inside `Seat::turn`
 | Stage | Measured today | Hook point | Metric | Held |
 |---|---|---|---|---|
 | Roster read (per block) | nothing | `roster::spawn_roster_read` around `backend::views::programs` | H `roster` (W) | free |
-| Fetch the blob | `LoadTiming.fetch` (`seat.rs`), logged by `LoadTiming::log` as `fetch_ms`; disk-cache hit and node read are not told apart | `Guest::load` (`guest/lifecycle.rs`) around `backend::views::view_of`; source from `backend::views::program_bytes` (cache path vs `client.blob`) | H `fetch` (W), C `fetch.source{disk,node}` (D), G `view_bytes` (D) | a3 for the wall time in `Guest::load`; free for source and bytes in `program_bytes` (`backend/views.rs`) |
-| Compile: memory hit / disk-cache hit / cold | `LoadTiming.compile` as `compile_ms`, one number for all three | `Guest::compile` → `guest::compiled_view` (owns the static `ViewCodeCache`) → `guest::compile_view`: in-process cache hit before `Module::new`; disk vs cold from a `wasmtime::Cache::cache_hits`/`cache_misses` delta around `Module::new`. `guest::engine` moves its `Cache` into `config.cache(..)`; `Cache` is `Clone`, so keep a clone beside the `Engine` to read the counters. They are process-global and loaders compile concurrently on purpose, so the delta is approximate — `ponytail:` note | H `compile` (W), C `compile.source{memory,disk,cold}` (D) | a3 (`guest.rs`) |
-| Instantiate | lumped into `init_ms` | `Guest::instantiate` (`guest/lifecycle.rs`): `Linker::instantiate` plus `Exports::bind`; fuel is armed there too, so `FUEL_PER_TICK - get_fuel()` after it is the start function's fuel | H `instantiate` (W), H `fuel.instantiate` (D) | a3 |
-| Snapshot of the old view (swap only) | lumped into `init_ms`, and runs under the seat mutex the window thread needs | `Guest::load` where it calls `old.snapshot()` (`Guest::snapshot` → `Exports::snapshot`) | H `snapshot` (W), G `snapshot_bytes` (D), H `fuel.snapshot` (D) | a3 |
-| Restore | lumped into `init_ms` | `Guest::restore` → `Exports::restore` | H `restore` (W), H `fuel.restore` (D) | a3 |
-| Init | `init_ms` = instantiate + snapshot + restore + init together | `Guest::init` → `Exports::init` | H `init` (W), H `fuel.init` (D) | a3 |
-| First frame of a swap | `first_frame_ms` | `Guest::first_frame` | H `first_frame` (W) | a3 |
-| Install | nothing: `LoadTiming::log` runs before the loader takes the seat lock in `Load::land` | `seat::Load::land`, after `Guest::load` returns: lock wait, then the match on `Loaded` through `locked.wake.send_replace(())`; a swap also drops the old `Guest` (its `Store`, up to `MEMORY_LIMIT` of memory) under the lock | H `install.lock_wait`, H `install` (W) | free |
-| First tree of a fresh view | nothing. A fresh load only calls `init`; the first `tick` runs on the window thread at the first redraw, after `view_load` was logged. A preloaded seat (`roster::read_roster`) is only compiled: the pane that claims it starts its code (`Guest::start`, `view_load` with `blob=seat code=seat`), so a first open pays only instantiate and `init`; "from load start" is still not what a user feels | end of the first `Guest::tick` (`Guest.ticks == 0` in `Guest::redraw`), measured from the start of the `Seat::turn` that ticks it | H `first_tree` (W, ms) | a3 / 70 |
-| Tick: fuel | `tracing::debug!(target: "ducktape::perf", used, limit)` in `Guest::tick` (`guest/requests.rs`) | same site | H `fuel.tick` (D) | a3 |
-| Tick: wall | nothing | `Guest::tick`: the `arm` → `Exports::tick` → `shape` chain is one expression today and has to be split to time the call and the decode apart | H `tick.call`, H `tick.decode` (W) | a3 |
-| Requests per tick | nothing (a frame over `view_wire::MAX_REQUESTS` does not decode) | `Guest::redraw`, the loop over `frame.requests` and `frame.cancels` | H `requests`, H `cancels` (D) | a3 |
+| Fetch the blob | `LoadTiming.fetch` (`seat.rs`), logged by `LoadTiming::log` as `fetch_ms`; disk-cache hit and node read are not told apart | `View::load` (`view/lifecycle.rs`) around `backend::views::view_of`; source from `backend::views::program_bytes` (cache path vs `client.blob`) | H `fetch` (W), C `fetch.source{disk,node}` (D), G `view_bytes` (D) | a3 for the wall time in `View::load`; free for source and bytes in `program_bytes` (`backend/views.rs`) |
+| Compile: memory hit / disk-cache hit / cold | `LoadTiming.compile` as `compile_ms`, one number for all three | `View::compile` → `view::compiled_view` (owns the static `ViewCodeCache`) → `view::compile_view`: in-process cache hit before `Module::new`; disk vs cold from a `wasmtime::Cache::cache_hits`/`cache_misses` delta around `Module::new`. `view::engine` moves its `Cache` into `config.cache(..)`; `Cache` is `Clone`, so keep a clone beside the `Engine` to read the counters. They are process-global and loaders compile concurrently on purpose, so the delta is approximate — `ponytail:` note | H `compile` (W), C `compile.source{memory,disk,cold}` (D) | a3 (`view.rs`) |
+| Instantiate | lumped into `init_ms` | `View::instantiate` (`view/lifecycle.rs`): `Linker::instantiate` plus `Exports::bind`; fuel is armed there too, so `FUEL_PER_TICK - get_fuel()` after it is the start function's fuel | H `instantiate` (W), H `fuel.instantiate` (D) | a3 |
+| Snapshot of the old view (swap only) | lumped into `init_ms`, and runs under the seat mutex the window thread needs | `View::load` where it calls `old.snapshot()` (`View::snapshot` → `Exports::snapshot`) | H `snapshot` (W), G `snapshot_bytes` (D), H `fuel.snapshot` (D) | a3 |
+| Restore | lumped into `init_ms` | `View::restore` → `Exports::restore` | H `restore` (W), H `fuel.restore` (D) | a3 |
+| Init | `init_ms` = instantiate + snapshot + restore + init together | `View::init` → `Exports::init` | H `init` (W), H `fuel.init` (D) | a3 |
+| First frame of a swap | `first_frame_ms` | `View::first_frame` | H `first_frame` (W) | a3 |
+| Install | nothing: `LoadTiming::log` runs before the loader takes the seat lock in `Load::land` | `seat::Load::land`, after `View::load` returns: lock wait, then the match on `Loaded` through `locked.wake.send_replace(())`; a swap also drops the old `View` (its `Store`, up to `MEMORY_LIMIT` of memory) under the lock | H `install.lock_wait`, H `install` (W) | free |
+| First tree of a fresh view | nothing. A fresh load only calls `init`; the first `tick` runs on the window thread at the first redraw, after `view_load` was logged. A preloaded seat (`roster::read_roster`) is only compiled: the pane that claims it starts its code (`View::start`, `view_load` with `blob=seat code=seat`), so a first open pays only instantiate and `init`; "from load start" is still not what a user feels | end of the first `View::tick` (`View.ticks == 0` in `View::redraw`), measured from the start of the `Seat::turn` that ticks it | H `first_tree` (W, ms) | a3 / 70 |
+| Tick: fuel | `tracing::debug!(target: "ducktape::perf", used, limit)` in `View::tick` (`view/requests.rs`) | same site | H `fuel.tick` (D) | a3 |
+| Tick: wall | nothing | `View::tick`: the `arm` → `Exports::tick` → `shape` chain is one expression today and has to be split to time the call and the decode apart | H `tick.call`, H `tick.decode` (W) | a3 |
+| Requests per tick | nothing (a frame over `view_wire::MAX_REQUESTS` does not decode) | `View::redraw`, the loop over `frame.requests` and `frame.cancels` | H `requests`, H `cancels` (D) | a3 |
 | Host-call latency and attempts | nothing (a warn when the 60 s retry budget runs out, `node::until_answered`) | `kernel::node::spawn_call`: `Instant` before the spawned future, record when `replies.item` is called; attempts from `until_answered`; the kind is the `(Capability, operation)` pair `kernel::answer` matched on. Also `node::spawn_device` | H `host_call.<kind>` (W), C `host_call.<kind>.attempts` (D) | free |
 | Reply backlog at drain | nothing | `Replies::drain_into` (`kernel/replies.rs`): `events.len()` before the append | H `backlog` (D) | free |
-| Frame bytes | nothing (the `MAX_FRAME_BYTES` refusal in `guest::shape`) | `Exports::tick` answer length; `wire::encode(&events)` length in `Guest::tick` | H `frame_bytes`, H `events_bytes` (D) | a3 |
-| Frame kind, busy, node count | nothing | after `guest::shape` in `Guest::tick`: `frame.root.is_some()`, `frame.patches.len()`, `frame.unchanged`, `frame.busy`; the node count from a `root.for_each_mut` walk (view-wire has no `count`), only when `frame_rev` bumps (O(n), so only when on) | C `frame.{full,patch,unchanged}`, C `busy_ticks`, G `nodes` (D) | a3 |
-| Sanitize truncations | a `frame_cut` warn (`Guest::report_display_truncation`) | the `SanitizeReport` after `guest::shape` | C `truncations` (D) | a3 |
-| Tree merge and replace | nothing | `guest::merge` (patch frames clone the held tree before applying); `Seat::turn`, the `fresh` branch: root clone (`Guest::drawn`; picture bytes are shared, not cloned), `native_root`, `ViewTree::replace` (`src/render/commands.rs`) | H `merge`, H `replace` (W) | a3 / 70 |
+| Frame bytes | nothing (the `MAX_FRAME_BYTES` refusal in `view::shape`) | `Exports::tick` answer length; `wire::encode(&events)` length in `View::tick` | H `frame_bytes`, H `events_bytes` (D) | a3 |
+| Frame kind, busy, node count | nothing | after `view::shape` in `View::tick`: `frame.root.is_some()`, `frame.patches.len()`, `frame.unchanged`, `frame.busy`; the node count from a `root.for_each_mut` walk (view-wire has no `count`), only when `frame_rev` bumps (O(n), so only when on) | C `frame.{full,patch,unchanged}`, C `busy_ticks`, G `nodes` (D) | a3 |
+| Sanitize truncations | a `frame_cut` warn (`View::report_display_truncation`) | the `SanitizeReport` after `view::shape` | C `truncations` (D) | a3 |
+| Tree merge and replace | nothing | `view::merge` (patch frames clone the held tree before applying); `Seat::turn`, the `fresh` branch: root clone (`View::drawn`; picture bytes are shared, not cloned), `native_root`, `ViewTree::replace` (`src/render/commands.rs`) | H `merge`, H `replace` (W) | a3 / 70 |
 | ViewTree render | `ViewTree.renders`, `#[cfg(test)]` only (`src/render.rs`) | `ViewTree::render` (`Render` impl); promote the counter out of `cfg(test)` | C `renders` (D), H `render` (W) | 70 |
 | Cache hit / miss per view | nothing | On the cached path (`layers::PaneView` draws the seat's tree as a cached `AnyView`, with or without a11y) gpui reuses the last prepaint when bounds, content mask and text style match, the entity is not dirty and the window is not refreshing (`gpui:src/view.rs`, the `AnyView` `prepaint` reuse branch); otherwise it calls `ViewTree::render` again. So `draws` = `PaneView` draws of the seat, `misses` = `ViewTree` renders, `hits = draws − misses`. Before #347 every draw was a miss | C `draws` (D); `misses`, `hits` derived | 70 |
 | Full redraws per interaction | nothing (#347 measured it with temporary spans: 57–67 per window switch before, 11–14 after) | the `misses` delta between two door reads around the interaction | derived (D) | 70 |
 | Refresh causes | nothing | every `window.refresh()` caller in `src` is a cache-buster for all cached views in that window (`gpui:src/view.rs`, `!window.refreshing`). Today there are two, both in `src/render/text.rs`: the selection path (post-#347 `refresh_on_change`, only when the shown selection changes; before it, gpui-base's `refresh_window_on_change`) and the drag mouse-up handler (`MouseUpEvent` while `DRAG_CLIP` is set). `Window::activate_a11y` also refreshes, and so does gpui when the input turns from the pointer to the keys or back (the focus ring follows it). A focus move does not: the pinned fork (gpui-pre#9) draws the view that drew the old focus and the one that draws the new, with their ancestors, so a view that reads at its render a focus handle drawn outside its own subtree (neither by it nor by a view under it) stays stale unless it observes focus (`on_focus`/`on_blur`); no view in `src` draws from such a read (audited 2026-10-01). The two views' draw is held by `shell::layers::root_tests::a_focus_move_re_renders_two_layers_not_the_window`. Count per site | C `refresh.<site>` (D) | free (`text.rs`) |
-| gpui layout / paint per view | nothing. gpui's own histograms are behind the fork's `profiler` feature (§1) | `render::deferred::Layer`, the element `ViewTree::render` puts every element of the tree under, timed under the seat's key. A pane draws the tree as a cached view, so on a miss gpui runs, in a row, `ViewTree::render`, `layout_as_root` and `prepaint_at` (`gpui:src/view.rs`, `prepaint_view`), and the paint later in the frame; `render` holds the first alone. `layout.request`: `request_layout` of every element (its style resolved, its element state read, one taffy node made; nothing solved). `layout.solve`: from that call's return to the tree's prepaint, which is gpui's `compute_layout` (the taffy solve of the view's own tree with its text measures), and with it one taffy node and the prepaint entry of the host's clip box. `prepaint`: bounds from the solved layout, element state again, hitboxes, the closure of the canvas over a node that claims (`ViewTree::reveals`), and the rows of a list, which gpui builds and lays out as the list prepaints. `paint`: element state a third time, quads, text, the frame's listeners, a canvas's commands. A guest `Deferred`'s content and a tooltip are prepainted and painted later in the frame, in neither sample. One timer a pass for the whole tree, nothing for a node; a draw the cache answers runs no pass and leaves no sample | H `layout.request`, H `layout.solve`, H `prepaint`, H `paint` (W) | a3 |
+| gpui layout / paint per view | nothing. gpui's own histograms are behind the fork's `profiler` feature (§1) | `render::deferred::Layer`, the element `ViewTree::render` puts every element of the tree under, timed under the seat's key. A pane draws the tree as a cached view, so on a miss gpui runs, in a row, `ViewTree::render`, `layout_as_root` and `prepaint_at` (`gpui:src/view.rs`, `prepaint_view`), and the paint later in the frame; `render` holds the first alone. `layout.request`: `request_layout` of every element (its style resolved, its element state read, one taffy node made; nothing solved). `layout.solve`: from that call's return to the tree's prepaint, which is gpui's `compute_layout` (the taffy solve of the view's own tree with its text measures), and with it one taffy node and the prepaint entry of the host's clip box. `prepaint`: bounds from the solved layout, element state again, hitboxes, the closure of the canvas over a node that claims (`ViewTree::reveals`), and the rows of a list, which gpui builds and lays out as the list prepaints. `paint`: element state a third time, quads, text, the frame's listeners, a canvas's commands. A view `Deferred`'s content and a tooltip are prepainted and painted later in the frame, in neither sample. One timer a pass for the whole tree, nothing for a node; a draw the cache answers runs no pass and leaves no sample | H `layout.request`, H `layout.solve`, H `prepaint`, H `paint` (W) | a3 |
 | Pictures | nothing | `Pictures::adopt` (`src/runtime/pictures.rs`) keeps a running byte total, held under `MAX_PICTURE_BYTES` (64 MiB) by eviction | G `picture_bytes` (D) | free |
-| Linear memory | nothing (the `MEMORY_LIMIT` trap) | `Exports.memory.data_size(&store)` after `Guest::tick` | G `memory` max (D) | a3 |
-| Snapshot on the way out | nothing | `Guest::snapshot` (covered above) | | a3 |
-| Faults | warns `program_view_trapped` (`Guest::tick`), `program_view_unloadable` (`Mounted::load_failed`) | same sites | C `faults` (D) | a3 / free |
+| Linear memory | nothing (the `MEMORY_LIMIT` trap) | `Exports.memory.data_size(&store)` after `View::tick` | G `memory` max (D) | a3 |
+| Snapshot on the way out | nothing | `View::snapshot` (covered above) | | a3 |
+| Faults | warns `program_view_trapped` (`View::tick`), `program_view_unloadable` (`Mounted::load_failed`) | same sites | C `faults` (D) | a3 / free |
 
 Two findings the table depends on:
 
-- **There is no time budget.** `guest::engine` sets only
+- **There is no time budget.** `view::engine` sets only
   `cranelift_opt_level`, `consume_fuel(true)` and the disk cache; no
   `epoch_interruption`, `set_epoch_deadline` or `increment_epoch` appears in
-  `src`. The only bound is `FUEL_PER_TICK`, re-armed by `guest::arm` before
+  `src`. The only bound is `FUEL_PER_TICK`, re-armed by `view::arm` before
   every call. The owner kept it that way (§7), and the `src/runtime.rs`
   module doc now says so.
 - **`LoadTiming` had already lost `status` and `check`** by the time phase
@@ -153,13 +153,13 @@ there.
 | RSS | nothing | `libc::getrusage(RUSAGE_SELF).ru_maxrss` (libc is already a dependency): KiB on Linux, bytes on macOS; current RSS from `/proc/self/statm` on Linux only, skipped on macOS. Sampled by the same 1 s task that writes the summary | G `rss.peak`, G `rss.current` (bytes) | free |
 
 Where the shell's biggest window-thread costs sit, for the record, all
-verified: wasm ticks and frame decode (`Guest::tick`, `guest::shape`);
-deep tree clones on every patch (`guest::merge`), change
+verified: wasm ticks and frame decode (`View::tick`, `view::shape`);
+deep tree clones on every patch (`view::merge`), change
 (`Seat::turn`) and render (`ViewTree::render` clones `root`);
 `rail()` once per roster change; `read_prefs` in render paths through
 `notify::Settings::load` (the permission bar in `layers::PaneView`, Settings ›
 Notifications); file I/O in
-the entities' methods (`Prefs::set_*`) and guest requests. The `reducer.<domain>` and I/O histograms above
+the entities' methods (`Prefs::set_*`) and view requests. The `reducer.<domain>` and I/O histograms above
 are what will show which of these matter.
 
 ---
@@ -211,12 +211,12 @@ pub(crate) fn retire(program: &'static str, instance: u64) // one `view_perf` li
 - Keyed by **(program, instance)**, not program: the seat registry is
   `(program, instance)` (`seat::mounted`, `Seat::new`), and two
   windows can show the same view. The seat carries its instance
-  (`Mounted.instance`, `Guest.instance`), so the loader thread and the
+  (`Mounted.instance`, `View.instance`), so the loader thread and the
   window thread write under one key; a preloaded seat's load stages land
   under instance 0 until a tab claims it. `/perf` aggregates by program
   unless `?by=instance`.
-- Why not on `Guest`: stats must survive a swap and cover load stages that
-  run before the `Guest` exists. The registry is a leaf lock; reading it
+- Why not on `View`: stats must survive a swap and cover load stages that
+  run before the `View` exists. The registry is a leaf lock; reading it
   never takes a seat lock.
 - Windows are keyed by `WindowKey` (`src/runtime.rs`). The door names
   windows `console`, `console2`, … (`Windows::served`: the console
@@ -236,7 +236,7 @@ only when on and only when the tree changed.
 ### 3.2 One tracing target
 
 - `ducktape::perf` carries the per-event debug stream: the per-tick fuel
-  event in `Guest::tick`, plus one debug event per registry sample.
+  event in `View::tick`, plus one debug event per registry sample.
   Callsite-filtered, so it costs nothing unless
   `RUST_LOG=ducktape::perf=debug` (the filter is `info` plus `RUST_LOG`,
   `install_log`). There is no `ducktape::fuel` target and no alias; the
@@ -315,7 +315,7 @@ only when on and only when the tree changed.
   `cx.on_app_quit` in `shell::launch::run` — the one hook every quit path
   reaches (`Windows::quit` runs only for the tray's and the menu's Quit).
 - One `view_perf` info line per instance when it retires — swap, retry and
-  roster removal all drop the old `Guest`, so it is `impl Drop for Guest`,
+  roster removal all drop the old `View`, so it is `impl Drop for View`,
   skipping instances whose `installed_generation` is `None`.
 - Same stable field names as the `/perf` JSON, so a log line and a door
   reply are the same numbers.
@@ -324,7 +324,7 @@ only when on and only when the tree changed.
 
 - **`perf` on Linux.** `DUCKTAPE_WASM_PROFILER=perfmap|jitdump` sets
   `Config::profiler(ProfilingStrategy::PerfMap | JitDump)` in
-  `guest::engine`. The strategy is not part of the compile-cache key
+  `view::engine`. The strategy is not part of the compile-cache key
   (`HashedEngineCompileEnv` in wasmtime's `compile/code_builder.rs` hashes
   the compiler triple, flags, isa flags, tunables, features, `wmemcheck` and
   `module_version`), so the disk cache stays warm and every module registers
@@ -332,7 +332,7 @@ only when on and only when the tree changed.
   its defaults.
 - **`GuestProfiler` (Firefox-profiler JSON).** `DUCKTAPE_WASM_PROFILE=<program>`.
   It needs `Config::epoch_interruption(true)`, a ticker calling
-  `Engine::increment_epoch`, `Store::set_epoch_deadline` in `guest::arm`
+  `Engine::increment_epoch`, `Store::set_epoch_deadline` in `view::arm`
   and `Store::epoch_deadline_callback` to call `GuestProfiler::sample` and
   continue; `GuestProfiler::finish` writes the file. `epoch_interruption` is
   a **tunable**, so it is in the cache key: the one process-wide `Engine`
@@ -366,11 +366,11 @@ only when on and only when the tree changed.
 |---|---|---|
 | `FUEL_PER_TICK` | 250M | trap → fault, "This view stopped" |
 | `MEMORY_LIMIT` | 64 MiB | trap on grow |
-| `MAX_FRAME_BYTES` | 8 MiB | refused in `guest::shape` → fault |
-| `MAX_REQUESTS` (view-wire) | 256 | refused in `guest::shape` → fault |
+| `MAX_FRAME_BYTES` | 8 MiB | refused in `view::shape` → fault |
+| `MAX_REQUESTS` (view-wire) | 256 | refused in `view::shape` → fault |
 | `MAX_NODES` (view-wire) | 8192 | truncation, not a kill |
 | `MAX_PATCHES` (view-wire) | 1024 | patch refused, `Resync` asked |
-| `MAX_SNAPSHOT_BYTES` (view-wire) | 8 MiB | checked by `wire::Snapshot::decode` in `Guest::load` |
+| `MAX_SNAPSHOT_BYTES` (view-wire) | 8 MiB | checked by `wire::Snapshot::decode` in `View::load` |
 
 ### 4.2 Initial budgets
 
@@ -409,7 +409,7 @@ Measured so far (fold in, attribute, do not over-trust):
   | idle drawing over 5 s | 979 ms | 334 ms |
   | idle frames/s (status-dot pulse, motion on) | ~20 | ~20, now cheap |
 
-  Root causes, both "cached guest trees never stayed cached": an id-less
+  Root causes, both "cached view trees never stayed cached": an id-less
   container measured on its named ancestor's path and flagged a change
   ~2,900 times per 2 s (`ViewTree::measure`, gone since: nothing records a
   node's bounds, and only a node that claims has a canvas over it,
@@ -424,10 +424,10 @@ Measured so far (fold in, attribute, do not over-trust):
 - members-view sits at 98.5% of its wasm size limit (owner's number; the
   programs tooling enforces no limit — `tools/view-gate.sh` prints
   `name  bytes` and nothing else). Its top
-  guest-side cost is `view_wire::Node` serialize/clone/eq. The host cannot
-  time guest encode, but it sees the result: track `bytes.view` (the
+  view-side cost is `view_wire::Node` serialize/clone/eq. The host cannot
+  time view encode, but it sees the result: track `bytes.view` (the
   `view_section` length per load) and `bytes.frame` per tick as D metrics,
-  and `tick.call` as the encode time's upper bound — the guest settles,
+  and `tick.call` as the encode time's upper bound — the view settles,
   diffs and encodes inside the one `Exports::tick` call, so `bytes.frame`
   and `tick.call` together are the tracked pair.
 
@@ -577,7 +577,7 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by program and by window:
      run late, two unshared clocks can stay under it. What an animation
      frame redraws is judged by the lines above, in this window too: a
      pulse that dirties the cached bar breaches `renders.chrome`, and a
-     cached guest tree redrawn on each frame breaches `renders ≤ ticks +
+     cached view tree redrawn on each frame breaches `renders ≤ ticks +
      2`. Measured by the
      census (release, Xvfb 1280×800, a seeded stage at 1 s blocks, the
      empty desk at its end, 2 s windows, 2026-10-01): with the dot and
@@ -645,8 +645,8 @@ press: it measures what a person sees.
 ### 4.3 The a11y trap, and measuring with the cache on
 
 Until the fork carried a cached view's nodes through reuse (gpui-pre#8),
-the app drew every layer and guest view uncached while a11y was active, or
-the tree would have lost their nodes: every draw of a guest view was a full
+the app drew every layer and view uncached while a11y was active, or
+the tree would have lost their nodes: every draw of a view was a full
 `ViewTree::render`, `misses == draws` by construction, and the whole #347
 class of bug (a cached tree that never stays cached) was invisible to a
 gate driven through `/tree`, `/act` or `/wait`. Now the layers and trees
@@ -728,7 +728,7 @@ Design:
   `kit seed` fills a stage with data and deploys no view), tick, switch and
   idle in one pass.
 - **`cargo test` counts**, already in CI. An idle ViewTree renders zero
-  times across N frames (#347's `an_unchanged_guest_tree_is_not_drawn_again`
+  times across N frames (#347's `an_unchanged_view_tree_is_not_drawn_again`
   in `src/render/tests/layout.rs`, on the `cfg(test)` field
   `ViewTree.renders`). A seated view drawing #347's tree shape renders no
   more than it ticks, read off the registry's `renders` and `ticks` as
@@ -792,20 +792,20 @@ Phase 0, as listed:
   source back with the bytes), `host_call.<capability>.<operation>` and its
   `.attempts` (`kernel/node.rs`, one literal stage per `kernel::answer`
   arm), `backlog` (`Replies::drain_into` answers the count), `install` and
-  `install.lock_wait`, the `view_perf` retire line (`impl Drop for Guest`)
+  `install.lock_wait`, the `view_perf` retire line (`impl Drop for View`)
   and `view_load` after install (`seat.rs`), `roster`, `picture_bytes`
   (`Pictures::bytes`).
 - Same PR: the `FUEL_PER_TICK` doc names `ducktape::perf`; the runtime
   module doc no longer claims a time budget; ARCHITECTURE.md follows.
 
 Phase 1, as listed:
-- `Guest::tick` split (`tick.call`, `tick.decode`, `merge`), the fuel
+- `View::tick` split (`tick.call`, `tick.decode`, `merge`), the fuel
   event on `ducktape::perf`, `frame.{full,patch,unchanged}`,
   `frame_bytes`, `events_bytes`, `nodes`, `requests`, `cancels`,
   `truncations`, `memory`, `faults`, `ticks`, `busy_ticks`
-  (`guest/requests.rs`); the load-stage split with fuel per call and
-  `snapshot_bytes` (`guest/lifecycle.rs`); `compile.{memory,disk,cold}`
-  from the in-process cache and wasmtime's hit counter (`guest.rs`,
+  (`view/requests.rs`); the load-stage split with fuel per call and
+  `snapshot_bytes` (`view/lifecycle.rs`); `compile.{memory,disk,cold}`
+  from the in-process cache and wasmtime's hit counter (`view.rs`,
   approximate under concurrent loads, said so in code).
 - `Seat`: `replace`, `first_tree`, `first_seated.<program>` (`seat/entity.rs`);
   `draws` (`shell/layers/panes.rs`, `PaneView`); `ViewTree::render` `renders`
@@ -874,7 +874,7 @@ design, not merged. What still informs:
    `/perf` carries each window's frame and input histograms and the
    `first_present` mark (§3.5). A default build compiles none of it.
 2. **A time budget.** The `src/runtime.rs` doc claimed one; none exists.
-   Either add epoch interruption (always on; then the guest profiler no
+   Either add epoch interruption (always on; then the view profiler no
    longer splits the compile cache) or delete the claim.
 
    **Answered (owner, 2026-09-28): delete the claim.** Fuel

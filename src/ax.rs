@@ -323,7 +323,7 @@ pub(crate) type Served = (String, crate::runtime::WindowKey, AnyWindowHandle);
 pub(crate) struct Door<'a> {
     /// The windows it serves, by name.
     pub(crate) windows: &'a dyn Fn(&App) -> Vec<Served>,
-    /// Turns every seat, called before each read: a reply the guest has
+    /// Turns every seat, called before each read: a reply the view has
     /// answered is in the tree the read draws, as the draw itself took it
     /// in before the seat left the draw path (`Seats::settle`).
     pub(crate) settle: &'a dyn Fn(&mut App),
@@ -927,10 +927,10 @@ mod tests {
         }
     }
 
-    /// A read turns the seats first: what a guest has answered since its
+    /// A read turns the seats first: what a view has answered since its
     /// last turn is in the tree the read draws, as the draw itself took it
-    /// in while the guest was stepped on the draw path. Here the seat's
-    /// guest holds an intent its next turn hands over; the read delivers
+    /// in while the view was stepped on the draw path. Here the seat's
+    /// view holds an intent its next turn hands over; the read delivers
     /// it, the same request with the seats left alone does not.
     #[gpui_kit::test]
     async fn a_read_turns_the_seats_first(cx: &mut gpui_kit::TestAppContext) {

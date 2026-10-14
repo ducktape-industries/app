@@ -12,21 +12,21 @@
 //! kernel contract (`kernel`) alone; its props are the session basics every
 //! view gets.
 //!
-//! This file is also the submodules' PRELUDE: `guest`, `roster`, `seat`,
+//! This file is also the submodules' PRELUDE: `view`, `roster`, `seat`,
 //! `input` and `display_diagnostics` open with `use super::*;`,
-//! so every private `use` below (`Guest`, `Connection`, `Mounted`, `Slot`,
+//! so every private `use` below (`View`, `Connection`, `Mounted`, `Slot`,
 //! `Instant`, `wire`, the wasmtime types...) and every constant is theirs
 //! too. A name a child uses without importing it comes from here. `kernel`,
 //! `clipboard`, `notify` and `store` import what they need by name.
 
 mod clipboard;
 pub(crate) mod consent;
-mod guest;
 mod kernel;
 pub(crate) mod notify;
 mod roster;
 mod seat;
 mod store;
+mod view;
 
 pub(crate) use kernel::{day, local_offset};
 // the web view cleans a page's title as a window's (render/web.rs)
@@ -37,12 +37,12 @@ pub(crate) use roster::{Roster, changes_channel, roster};
 pub use seat::override_views_from;
 pub(crate) use seat::{Failure, NODE_UNREACHABLE, Seat};
 
-use guest::Guest;
 use roster::{Connection, code_digest, connection, rail_moved};
 use seat::{
     Load, LoadTiming, Loaded, Mounted, Registry, Slot, Unloaded, ViewCode, log_source, queue,
     registry, view_override,
 };
+use view::View;
 
 /// Shared HTTP connections need a continuously driven I/O runtime. Loader
 /// threads compile between requests; their own parked runtimes would strand
@@ -226,7 +226,7 @@ pub(crate) fn min_width(program: &str) -> Option<f32> {
         .iter()
         .filter(|((name, _), _)| *name == program)
         .find_map(|(_, seat)| match &lock(seat).slot {
-            Slot::Ready(guest) => Some(guest.min_width as f32),
+            Slot::Ready(view) => Some(view.min_width as f32),
             Slot::Compiled(view) => Some(view.min_width as f32),
             _ => None,
         })
@@ -276,7 +276,7 @@ pub(crate) fn seat_frame_for_test(program: &'static str, min_width: u32, frame: 
     let (bytes, len) = wat_frame(&frame);
     let tick = wire::abi::pack(65536, len);
     let code = Module::new(
-        guest::engine(),
+        view::engine(),
         format!(
             r#"(module
             (memory (export "memory") 2)
@@ -337,7 +337,7 @@ pub(crate) fn frames_code(first: &wire::Frame, first_ticks: u32, then: &wire::Fr
     let first_tick = wire::abi::pack(65536, first_len);
     let then_tick = wire::abi::pack(69632, then_len);
     Module::new(
-        guest::engine(),
+        view::engine(),
         format!(
             r#"(module
             (memory (export "memory") 2)
@@ -359,7 +359,7 @@ pub(crate) fn frames_code(first: &wire::Frame, first_ticks: u32, then: &wire::Fr
 
 /// [`seat_for_test`], its view answering `frames` in order, one per tick,
 /// and the last one on every tick after: an `unchanged` frame after a full
-/// one is a guest with nothing new to show.
+/// one is a view with nothing new to show.
 #[cfg(test)]
 pub(crate) fn seat_ticking_for_test(program: &'static str, min_width: u32, frames: &[wire::Frame]) {
     assert!(!frames.is_empty(), "a view answers at least one frame");
@@ -382,7 +382,7 @@ pub(crate) fn seat_ticking_for_test(program: &'static str, min_width: u32, frame
         }
     }
     let code = Module::new(
-        guest::engine(),
+        view::engine(),
         format!(
             r#"(module
             (memory (export "memory") 2)
@@ -407,10 +407,10 @@ pub(crate) fn seat_ticking_for_test(program: &'static str, min_width: u32, frame
 pub(crate) fn intent_for_test(program: &str, instance: u64, intent: Intent) {
     let registry = registry().lock().unwrap();
     let seat = &registry[&(program, instance)];
-    let Slot::Ready(guest) = &mut seat.lock().unwrap().slot else {
+    let Slot::Ready(view) = &mut seat.lock().unwrap().slot else {
         panic!("{program} is not seated");
     };
-    guest.intents.push(intent);
+    view.intents.push(intent);
 }
 
 /// `program`'s seat `instance` listens for routes, as its view's
@@ -418,17 +418,17 @@ pub(crate) fn intent_for_test(program: &str, instance: u64, intent: Intent) {
 #[cfg(test)]
 pub(crate) fn listen_for_routes_for_test(program: &str, instance: u64) {
     let registry = registry().lock().unwrap();
-    let Slot::Ready(guest) = &mut registry[&(program, instance)].lock().unwrap().slot else {
+    let Slot::Ready(view) = &mut registry[&(program, instance)].lock().unwrap().slot else {
         panic!("{program} is not seated");
     };
-    guest.route_subscriptions.push(99);
+    view.route_subscriptions.push(99);
 }
 
 /// The routes `program`'s seat `instance` was handed, in order.
 #[cfg(test)]
 pub(crate) fn routes_for_test(program: &str, instance: u64) -> Vec<String> {
     let registry = registry().lock().unwrap();
-    let Slot::Ready(guest) = &registry[&(program, instance)].lock().unwrap().slot else {
+    let Slot::Ready(view) = &registry[&(program, instance)].lock().unwrap().slot else {
         panic!("{program} is not seated");
     };
     let routed = |event: &wire::Event| match event {
@@ -436,11 +436,10 @@ pub(crate) fn routes_for_test(program: &str, instance: u64) -> Vec<String> {
             id,
             result: Ok(item),
             ..
-        } if guest.route_subscriptions.contains(id) => wire::methods::decode(item).ok(),
+        } if view.route_subscriptions.contains(id) => wire::methods::decode(item).ok(),
         _ => None,
     };
-    guest
-        .ticked_with
+    view.ticked_with
         .iter()
         .flatten()
         .filter_map(routed)
@@ -453,23 +452,23 @@ pub(crate) fn routes_for_test(program: &str, instance: u64) -> Vec<String> {
 pub(crate) fn name_for_test(program: &str, name: &str) {
     for ((seated, _), seat) in lock(registry()).iter() {
         if *seated == program
-            && let Slot::Ready(guest) = &mut lock(seat).slot
+            && let Slot::Ready(view) = &mut lock(seat).slot
         {
-            guest.name = name.into();
+            view.name = name.into();
         }
     }
 }
 
-/// `program`'s seat `instance` traps: its guest keeps its tree but shows a
+/// `program`'s seat `instance` traps: its view keeps its tree but shows a
 /// fault from now on, and the seat is woken as a trapping tick would.
 #[cfg(test)]
 pub(crate) fn fault_for_test(program: &str, instance: u64) {
     let registry = registry().lock().unwrap();
     let mut locked = registry[&(program, instance)].lock().unwrap();
-    let Slot::Ready(guest) = &mut locked.slot else {
+    let Slot::Ready(view) = &mut locked.slot else {
         panic!("{program} is not seated");
     };
-    guest.fault = Some("trapped for the test".into());
+    view.fault = Some("trapped for the test".into());
     locked.wake.send_replace(());
 }
 
@@ -477,19 +476,19 @@ pub(crate) fn fault_for_test(program: &str, instance: u64) {
 /// what the view knew when it drew each frame.
 #[cfg(test)]
 pub(crate) fn ticks_for_test(program: &str) -> Vec<Vec<wire::Event>> {
-    seated_for_test(program, |guest| guest.ticked_with.clone())
+    seated_for_test(program, |view| view.ticked_with.clone())
 }
 
 /// Whether `program`'s seated view was last told it is on screen
 /// (`host.visible`).
 #[cfg(test)]
 pub(crate) fn visible_for_test(program: &str) -> bool {
-    seated_for_test(program, |guest| guest.visible)
+    seated_for_test(program, |view| view.visible)
 }
 
-/// `read` off the guest of `program`'s first seat; it panics unless seated.
+/// `read` off the view of `program`'s first seat; it panics unless seated.
 #[cfg(test)]
-fn seated_for_test<T>(program: &str, read: impl FnOnce(&Guest) -> T) -> T {
+fn seated_for_test<T>(program: &str, read: impl FnOnce(&View) -> T) -> T {
     let registry = registry().lock().unwrap();
     let seat = registry
         .iter()
@@ -497,7 +496,7 @@ fn seated_for_test<T>(program: &str, read: impl FnOnce(&Guest) -> T) -> T {
         .map(|(_, seat)| seat.clone())
         .expect("a seat of the program");
     match &seat.lock().unwrap().slot {
-        Slot::Ready(guest) => read(guest),
+        Slot::Ready(view) => read(view),
         _ => panic!("{program} is not seated"),
     }
 }
@@ -505,9 +504,9 @@ fn seated_for_test<T>(program: &str, read: impl FnOnce(&Guest) -> T) -> T {
 #[cfg(test)]
 pub(crate) fn seat_code_for_test(program: &'static str, min_width: u32, code: Module) {
     let ready = || {
-        let mut guest = Guest::instantiate(program, &code, program).unwrap();
-        guest.min_width = min_width;
-        Slot::Ready(Box::new(guest))
+        let mut view = View::instantiate(program, &code, program).unwrap();
+        view.min_width = min_width;
+        Slot::Ready(Box::new(view))
     };
     let mut registry = registry().lock().unwrap();
     let mut seats: Vec<_> = registry

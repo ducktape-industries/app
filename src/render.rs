@@ -1,5 +1,5 @@
 //! GPUI rendering of the existing WASM tree. Widget identities retain native
-//! input state; interaction uses the same semantic events the guests consume.
+//! input state; interaction uses the same semantic events the views consume.
 
 use gpui_base::StyledExt as _;
 use gpui_kit::MouseUpEvent;
@@ -152,8 +152,8 @@ fn keeps_words_unselected(role: gpui_kit::Role) -> bool {
 }
 
 /// Native widget state worth carrying into a fresh `ViewTree` when a view's
-/// guest is re-instantiated: plain data only, no entity or handler id, since
-/// the new guest's handler ids mean different things. Taken by
+/// view is re-instantiated: plain data only, no entity or handler id, since
+/// the new view's handler ids mean different things. Taken by
 /// `ViewTree::presentation`, consumed by the new tree's first frame.
 #[derive(Default)]
 pub(crate) struct NativePresentation {
@@ -164,7 +164,7 @@ pub(crate) struct NativePresentation {
 }
 
 /// A text field as its user left it: restored only onto a field the new
-/// guest gives the same value and secrecy.
+/// view gives the same value and secrecy.
 struct InputPresentation {
     value: String,
     secure: bool,
@@ -180,7 +180,7 @@ pub(crate) struct Tree {
     pub(crate) styles: wire::Styles,
 }
 
-/// The style `id` names in `styles`, as the app draws it: a guest names the
+/// The style `id` names in `styles`, as the app draws it: a view names the
 /// design crate's faces, and the app's stand in for them
 /// ([`crate::fonts::app_family`]). Every node's style is read through here.
 fn drawn_style(styles: &wire::Styles, id: wire::StyleId) -> Arc<gpui_kit::StyleRefinement> {
@@ -197,7 +197,7 @@ fn drawn_style(styles: &wire::Styles, id: wire::StyleId) -> Arc<gpui_kit::StyleR
     Arc::new(style)
 }
 
-/// The gpui entity that draws one guest view's wire tree and keeps the
+/// The gpui entity that draws one view's wire tree and keeps the
 /// native state that outlives a frame, keyed by [`AuthoredPath`]. `replace`
 /// adopts each new root and retains every map to the paths it still mounts.
 pub struct ViewTree {
@@ -217,7 +217,7 @@ pub struct ViewTree {
     /// Where the row a virtualized list draws next sits in its set
     /// (1-based position, set size); `node` hands it to that row alone.
     next_row: Option<(usize, usize)>,
-    /// The drawn node's place in its list's set, for `guest_aria`: set on
+    /// The drawn node's place in its list's set, for `view_aria`: set on
     /// entering a list's row, cleared on entering any other node.
     row: Option<(usize, usize)>,
     /// The document order the next rich paragraph registers for selection.
@@ -230,7 +230,7 @@ pub struct ViewTree {
     // Native widgets, one per mounted node.
     fields: HashMap<AuthoredPath, Field>,
     /// The one keystroke interceptor the fields share, once one is mounted:
-    /// a guest's claim on a key runs before the engine's own bindings.
+    /// a view's claim on a key runs before the engine's own bindings.
     keystrokes: Option<Subscription>,
     /// A rich text with links: its Tab stop and the link its arrows picked.
     links: HashMap<AuthoredPath, text::links::Links>,
@@ -253,10 +253,10 @@ pub struct ViewTree {
 
     // Focus: two systems. A container enters the native focus path only on
     // an explicit Focus widget command (keyed by path, with the node kind
-    // it was granted as); a guest `Interactivity::focus_handle` is a handle
-    // the guest names by number.
+    // it was granted as); a view `Interactivity::focus_handle` is a handle
+    // the view names by number.
     focus_targets: HashMap<AuthoredPath, (std::mem::Discriminant<wire::Node>, FocusHandle)>,
-    guest_focus_targets: HashMap<u64, FocusHandle>,
+    view_focus_targets: HashMap<u64, FocusHandle>,
     /// The overlays showing a dialog: where focus enters each, and what
     /// held focus as it opened.
     dialogs: HashMap<AuthoredPath, (FocusHandle, Option<WeakFocusHandle>)>,
@@ -268,23 +268,23 @@ pub struct ViewTree {
     /// it came up if the keyboard leaves the node first (`interactivity`).
     held_keys: Vec<interactivity::HeldKey>,
 
-    // Pictures by the guest's content hash: the seat's bytes, which a node
+    // Pictures by the view's content hash: the seat's bytes, which a node
     // that names a hash alone draws from, and the rasters decoded from them.
     pictures: Arc<PictureBytes>,
     images: SharedRasters,
-    /// What the guest built for the tree's tooltip routes, by route
+    /// What the view built for the tree's tooltip routes, by route
     /// (`wire::TooltipResponse`): beside the tree, never written into it,
     /// kept while the tree holds the route (`tooltip_responses`).
     tooltips: HashMap<u32, TooltipContent>,
 
     // Plumbing.
-    /// State carried over from the previous guest instance's tree; emptied by the first render.
+    /// State carried over from the previous view instance's tree; emptied by the first render.
     presentation: NativePresentation,
     /// When the host last received a real press or key aimed at this tree
     /// (`activate`): the view's transient activation, which the seat takes
-    /// to its guest on the next turn.
+    /// to its view on the next turn.
     activation: std::cell::Cell<Option<std::time::Instant>>,
-    /// Whether the guest whose tree this is may move the keys
+    /// Whether the view whose tree this is may move the keys
     /// (`Seat::keys_free`, mirrored here): a dialog that opens in it takes
     /// the keyboard only then.
     keys_grant: bool,
@@ -321,7 +321,7 @@ impl ViewTree {
             root,
             styles,
             focus_targets: HashMap::new(),
-            guest_focus_targets: HashMap::new(),
+            view_focus_targets: HashMap::new(),
             fields: HashMap::new(),
             keystrokes: None,
             links: HashMap::new(),
@@ -367,10 +367,10 @@ impl ViewTree {
         })
     }
 
-    /// The native handle behind a guest focus handle, for a test to ask who has the keys.
+    /// The native handle behind a view focus handle, for a test to ask who has the keys.
     #[cfg(test)]
-    pub(crate) fn guest_focus_for_test(&self, handle: u64) -> Option<FocusHandle> {
-        self.guest_focus_targets.get(&handle).cloned()
+    pub(crate) fn view_focus_for_test(&self, handle: u64) -> Option<FocusHandle> {
+        self.view_focus_targets.get(&handle).cloned()
     }
 
     /// The style `id` names in the table of the tree being drawn, shared:
@@ -550,8 +550,8 @@ impl Render for ViewTree {
                 let _ = tree.update(cx, |tree, _| tree.presentation = Default::default());
             });
         }
-        // Host-owned clip box around the guest root (guest style never
-        // reaches it): the pane's mask, which the guest's layer (its
+        // Host-owned clip box around the view root (view style never
+        // reaches it): the pane's mask, which the view's layer (its
         // tooltips and deferred draws) is fitted and clipped to.
         div()
             .relative()

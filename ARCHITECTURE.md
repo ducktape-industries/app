@@ -25,11 +25,11 @@ Three things cross between a view and the app, and only three:
   already holds, requests and cancels. The tree is MessagePack with no
   names in it (a struct is its fields in order), and a node names its style
   by id in the frame's style table, which the host holds beside the tree
-  (`Guest::styles`): a whole frame's table replaces it, a patch frame's
+  (`View::styles`): a whole frame's table replaces it, a patch frame's
   entries join it. The host sanitizes the tree and the table (a style no
   entry stands for refuses the frame) and draws them with real GPUI
   controls.
-  Events go back the other way as `wire::Event` values carrying the guest's
+  Events go back the other way as `wire::Event` values carrying the view's
   own handler ids.
 - **The kernel contract** (`src/runtime/kernel.rs`): the fixed set of
   methods every view may call, named `<capability>.<operation>`, request
@@ -73,7 +73,7 @@ view's tree lowers onto GPUI elements one to one.
 | `main.rs` | CLI flags (`--version`, `ax`, debug `--render-tree`), `app.log` + panic hook, fd limit, `DUCKTAPE_VIEWS_DIR`, then `shell::run` | process start |
 | `shell.rs`, `shell/` | the native chrome. `shell.rs` is the module root (`run`, `WindowKind`, `chord_label`); `shell/launch.rs` starts the app and wires what arrives from outside to the entity it moves. The entities (`shell/entities/`: `Session`, `Account`, `Chain`, `Screen`, `Windows` and each window's `Desk`, `Overlays`, `Spotlight`, `Front`, `DotSlot`; `Toast`, `Prefs`, `Notifications`, `Rail`, `Seats`), `layers::WindowRoot` (one per OS window, laying its layers out: `LauncherLayer`, `Chrome`, `PaneLayer`, `OverlayLayer`, `StatusDot`, `ToastView`), launcher, desk, menu bar, panes, overlays, keys, theme, fonts glue | window thread |
 | `ui.rs`, `ui/` | the pure pane geometry (`ui/layout.rs`: `Layout`, `Pane`, `PaneMessage`), which each window's `Desk` holds | window thread |
-| `runtime.rs`, `runtime/` | seats, guests (wasmtime), the kernel relay, replies, notify, store, clipboard, roster, `Seat` | ticks on the window thread, off the draw path; loads on loader threads; node calls on `views-kernel` |
+| `runtime.rs`, `runtime/` | seats, views (wasmtime), the kernel relay, replies, notify, store, clipboard, roster, `Seat` | ticks on the window thread, off the draw path; loads on loader threads; node calls on `views-kernel` |
 | `render.rs`, `render/` | `ViewTree`: one wire tree drawn as GPUI elements, retained native state keyed by `AuthoredPath`, `wire::Event` out, accessibility mapping | window thread |
 | `render/web.rs`, `crates/web` | the web piece. With feature `web`, a page per `Node::Web` through CEF off-screen rendering (`crates/web` holds every CEF name; `render/web.rs` maps the piece onto it and picks the view that declares `web` for an https link); without it the piece draws a line and links go to the system browser | window thread (CEF's pump turns there) |
 | `backend/` | everything that crosses the process boundary: `noded` client and signed `Frame`, `session` (seated key, prefs, recent nodes), `device_key`, `passkey`, `join`, `views`, `app_dirs` | async, polled where the caller polls (see below) |
@@ -89,7 +89,7 @@ main
      │  ├─► shell::entities ──► backend (connect, keys, prefs)
      │  │                   └──► runtime (Roster, connected, notify)
      │  └─► runtime::Seat ──► render::ViewTree ──► a11y
-     │          ├─► runtime::guest (wasmtime)
+     │          ├─► runtime::view (wasmtime)
      │          └─► runtime::kernel ──► noded_client / backend::session / views
      ├─► a11y, fonts, tray, ax
      └─► ax ──► (reads the GPUI a11y tree of every window)
@@ -106,7 +106,7 @@ quit) are `Windows`' methods.
 |---|---|---|
 | **window / main** (GPUI foreground) | every entity method and the timers the entities and layers own (`Session`'s status poll, `Toast`'s dismiss, an open menu's ages in `layers::Chrome`, a `Seat`'s clocks); every `WindowRoot` render and its layers'; `Seat::turn`, so every wasm **tick**; `ViewTree` layout and paint; AX door answers (`ax::serve`); the entities' own `Task` futures (connect, status poll, sign-in) — polled on the GPUI foreground inside `runtime.enter()` (`spawn_on_runtime`), so their HTTP bodies are decoded here | `shell/launch.rs` |
 | **`views-kernel`** (one tokio current-thread runtime) | the I/O driver for every `reqwest`/WebSocket; view-originated node calls (`kernel/node.rs` `spawn_retrying`/`spawn_retrying_unsent`/`spawn_no_retry`, `changes`, `heads`); the banner queue (`notify::in_order`); its blocking pool runs `program.describe`, OS banners and device-key opening | `kernel::handle` |
-| **`view-loader` threads** (at most `LOADERS`, 4) | each takes the next queued load: fetch, verify, compile, instantiate, snapshot/restore (`Guest::load`), then the install; a pane's load goes ahead of the preloads | `seat::queue` |
+| **`view-loader` threads** (at most `LOADERS`, 4) | each takes the next queued load: fetch, verify, compile, instantiate, snapshot/restore (`View::load`), then the install; a pane's load goes ahead of the preloads | `seat::queue` |
 | **`roster` thread** | `/v1/programs` and the seat reconciliation on connect and on each new block; it queues the loads and returns, never waiting on one | `roster::spawn_roster_read` |
 | **`ax-door`** | TCP accept and HTTP parsing, one request per connection in turn (a long `/wait` holds the next caller; a connection has 5 s to send its request, whose head is capped at 16 KiB before the token is read); each request is forwarded to the window thread | `ax/http.rs` |
 | **freedesktop listener** (non-macOS) | banner clicks off the session bus | `runtime/notify/freedesktop.rs` |
@@ -132,7 +132,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    asked of this node), then returns: nothing waits on a load. Each new block (`Session::status_answered` with a moved
    height → `runtime::deployments_checked`) repeats it, one read in flight
    at a time. A load that finds the drawn view already current
-   (`Loaded::Unchanged`) only calls `Guest::reconnect`: its node
+   (`Loaded::Unchanged`) only calls `View::reconnect`: its node
    subscriptions open again on the new connection (a `program.changes`
    follower is told to re-read first), and its other tasks of the previous
    connection are refused `stale_connection`.
@@ -143,12 +143,12 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    checks the hash, strips the git-style header (`unframe`) and returns the
    `ducktape.view` custom section (`views::VIEW_SECTION`) — or the whole
    blob for a **bare** entry (a view with no program behind it).
-3. **Compile.** `Guest::load` on the loader thread: `DUCKTAPE_VIEWS_DIR`
+3. **Compile.** `View::load` on the loader thread: `DUCKTAPE_VIEWS_DIR`
    override first (`seat::view_override`, unverified, logged), else the
-   network's bytes. Either way `Guest::compile` reads the manifest
+   network's bytes. Either way `View::compile` reads the manifest
    (upstream `view_wire::manifest::read_manifest`), checks its `wire_id`
    against `view_wire::WIRE_ID`, then `compiled_view` compiles through the one
-   `Engine` (`guest::engine`: `consume_fuel(true)`, opt level Speed, a
+   `Engine` (`view::engine`: `consume_fuel(true)`, opt level Speed, a
    wasmtime disk cache under `cache_dir()/view-code`); `runtime::manifest_of`
    reads the same manifest again for the tab's name and icon and the
    capabilities.
@@ -156,7 +156,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    (16 modules, 32 MiB of source).
 4. **Seat / mount.** A **seat** is `seat::Mounted`, one per
    `(program, instance)` in `seat::registry`, holding a `Slot`:
-   `Loading → Fetching → Compiling → Compiled | Ready(Guest) | Empty | Failed(Failure)`,
+   `Loading → Fetching → Compiling → Compiled | Ready(View) | Empty | Failed(Failure)`,
    and a `wake` (`watch::Sender<()>`) the loader signals when a load
    installs, a stage shows or a retry is asked. A pane's entity is
    `runtime::Seat` (`seat/entity.rs`), made by `Seats::reconcile`
@@ -169,16 +169,16 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    `Compiled(ViewCode)` keeps the code, the blob it came out of and the
    manifest (name, icon and minimum width, which the rail and the layout
    read), and no instance exists and no `init` runs for a program nobody
-   opened. The pane that claims it starts that code (`Guest::start`:
+   opened. The pane that claims it starts that code (`View::start`:
    instantiate and `init`, nothing fetched or compiled again) right in
    `seat::mounted` on the window thread, where every tick runs on the same
    fuel, when the blob is still the one the roster lists; any other claim
    is queued as a load. A seat claimed while its preload is on the way gets
    its load once the preload lands, and that load starts the code the same
    way.
-   `Guest::instantiate` builds a store with `StoreLimits` (`MEMORY_LIMIT`)
+   `View::instantiate` builds a store with `StoreLimits` (`MEMORY_LIMIT`)
    and binds `Exports` (`memory`, `alloc`, `init`, `tick`, `snapshot`,
-   `restore`); `Guest::load` then runs `init` on a fresh view, or `restore`
+   `restore`); `View::load` then runs `init` on a fresh view, or `restore`
    on a replacement.
 5. **Turn / tick.** A seat is never stepped inside a draw. Every wake ends in
    one `Seat::turn`: a kernel reply (`Replies::changes`), a due
@@ -193,19 +193,19 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    tree and holds the seat until it has drawn (`render::Drawn`, sent by
    every render), and a turn asked for meanwhile runs right after the
    draw; a tick that answered `unchanged` and moved no document dirties
-   nothing and holds nothing. So every frame the guest makes is drawn
+   nothing and holds nothing. So every frame the view makes is drawn
    before the next, as when it ticked on the draw path: the first draw of
    a fresh view shows its first frame (the keys a pane hands its first
    control go by it) and a reply's chain of ticks advances one frame per
    draw. The AX door turns
    every seat before a read
-   (`Seats::settle`), so the tree it draws has what the guest has answered,
+   (`Seats::settle`), so the tree it draws has what the view has answered,
    as the draw itself took in; the door's task yields to no reply wake
    between a press and its read.
-   `turn` → `Guest::redraw`: it merges pending inputs, drains
+   `turn` → `View::redraw`: it merges pending inputs, drains
    kernel `Replies`, fires due `clock.ticks`, syncs visibility, offset and
    route subscriptions, and — only if something is pending, the frame said
-   `busy`, or there was never a first tree — calls `Guest::tick`: `arm`
+   `busy`, or there was never a first tree — calls `View::tick`: `arm`
    refills `FUEL_PER_TICK`, `Exports::tick` runs the wasm with the encoded
    events, `shape` decodes and bound-checks the returned `Frame`
    (`MAX_FRAME_BYTES`, request and cancel counts, sanitize, the frame's
@@ -215,14 +215,14 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    requests (or `MAX_CANCELS` cancels) does not decode, so `shape` refuses
    it whole and the view faults; the view SDK sends at most that many a
    frame and keeps the rest for the next. A patch `merge` refuses does not fault: the held root stays,
-   `frame_rev` bumps and `Event::Resync` asks the guest for a full tree.
+   `frame_rev` bumps and `Event::Resync` asks the view for a full tree.
 6. **Frame → render.** When `frame_rev` moved, `turn` takes the held
    tree, its pictures named by hash alone, with the seat's picture bytes
-   to resolve them (`Guest::drawn`; the tree draws a hash through
+   to resolve them (`View::drawn`; the tree draws a hash through
    `ViewTree::set_pictures`), wraps the root in
    `native_root` (an id-less full-size container: giving it an id would
    shift every `AuthoredPath`) and either `ViewTree::replace`s the existing
-   tree or, for a new guest instance, builds `ViewTree::new(root)
+   tree or, for a new view instance, builds `ViewTree::new(root)
    .with_presentation(old.presentation())`; the seat notifies, and the
    pane (`layers::PaneView`)
    draws `seat.tree()` cached (with a11y on too) inside the
@@ -237,33 +237,33 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    (`render/commands.rs`) walks the new root and `retain`s each map to the
    paths it still mounts.
 7. **Input back.** Element listeners (`render/interactivity.rs`,
-   `render/inputs.rs`, …) `cx.emit(wire::Event)` with the guest's handler
+   `render/inputs.rs`, …) `cx.emit(wire::Event)` with the view's handler
    ids; `Seat` subscribes (`runtime/seat/entity.rs`), drops an event
    addressed to a generation or revision no longer seated, pushes the event
-   onto `guest.pending` and turns. The listeners also stamp the tree's
+   onto `view.pending` and turns. The listeners also stamp the tree's
    **transient activation** (`ViewTree::activate`: a press, a key but
    Escape, typing, an AT press), which the turn carries to
-   `guest.activation`: `link.open` (four a minute) and
+   `view.activation`: `link.open` (four a minute) and
    `clipboard.read`/`write` need it fresh (5 s) and take it, one input
    admitting one call. Every focus-moving `host.widget` command and a
    dialog's auto-focus need the pane's keys free instead (`Seat::keys_free`),
-   judged as the command runs. A guest hears only what its elements' own
+   judged as the command runs. A view hears only what its elements' own
    listeners emit: no window-wide input (pointer moves, keys, IME, file
    drops) reaches it.
    A text field (`Node::Field`, one line or many) is the kit's editing
    engine's (`render/inputs.rs`): every key, selection, IME preedit and
-   undo is the engine's, the guest hears each change as `Event::Text` at
+   undo is the engine's, the view hears each change as `Event::Text` at
    the host's `revision`, and asks for an edit with `host.widget`'s
    `Replace` against the revision it has seen; a stale ask is carried over
-   what was typed since (`view_wire::rebase`), never dropped. The guest's
+   what was typed since (`view_wire::rebase`), never dropped. The view's
    own text is adopted only on a fresh mount or when its `generation`
-   moves. A key the guest claimed reaches it as `Event::KeyDown` on the
+   moves. A key the view claimed reaches it as `Event::KeyDown` on the
    field's `on_key` and never the engine; Backspace, Delete, Tab and undo
    are never claimed.
-   Imperative guest requests (`host.widget`: focus, scroll, cursor, a
+   Imperative view requests (`host.widget`: focus, scroll, cursor, a
    field's edit) are refused at once when their target is not in the tree
-   the guest shows now (`invalid_widget_command`); admitted ones queue in
-   `guest.widget_commands`, then run in the pane's window one frame after the draw
+   the view shows now (`invalid_widget_command`); admitted ones queue in
+   `view.widget_commands`, then run in the pane's window one frame after the draw
    that mounts the tree (`Seat::run_widget_commands`: an `on_next_frame`
    inside an `on_next_frame`, since a next-frame callback runs before the
    draw), through `ViewTree::execute_widget_command`, re-checked for mount
@@ -280,7 +280,7 @@ carries the old instance's `alive` token and tick count; `Load::land`
 installs it only if the seat's `generation` is still the one it was asked
 for, the app is still on the node it was asked of (`Connection.rev`), and
 the drawn instance is the one the snapshot came from, at the same tick
-count and still settled. The new guest is `staged`: its first tree is
+count and still settled. The new view is `staged`: its first tree is
 already in `frame`, so the next redraw routes its requests without a tick.
 Pictures move over. A new instance means a new `generation` on
 `Seat`: handler ids are fresh, and only `NativePresentation`
@@ -300,14 +300,14 @@ not run, or a load overtaken), `Wire` (built against another wire than
 this app's). A failed candidate is held off
 `RETRY_FIRST` doubling to `RETRY_MAX` while the same bytes keep failing
 (`seat::Retry`). At run time a trap, a frame past
-`MAX_FRAME_BYTES` or a `Replies` overflow latch `guest.fault`: the view never
+`MAX_FRAME_BYTES` or a `Replies` overflow latch `view.fault`: the view never
 ticks again and the standin shows the message. `Fetching`'s byte counts are
 written once at zero and never advanced.
 
 ## 4. Life of a request
 
 ```
-view ─ Request{id, kind, payload} ─► Guest::answer ─► kernel::answer ─► handler
+view ─ Request{id, kind, payload} ─► View::answer ─► kernel::answer ─► handler
                                         │ capability gate                    │
                                         └─ host.widget/session/log locally   ▼
 view ◄─ Event::Response{id, done} ◄── Replies (drained at next redraw) ◄─ views-kernel task
@@ -317,28 +317,28 @@ Every code the host refuses a request with below (`unknown_request`,
 `stale_connection`, …) is a const in `view_wire::methods::refusal`, with
 its meaning; the host and the views name the const, never the string.
 
-1. **Ask.** The view's `tick` returns requests in its `Frame`. `Guest::answer`
-   (`runtime/guest/requests.rs`) caps the payload (`MAX_PAYLOAD_BYTES`;
+1. **Ask.** The view's `tick` returns requests in its `Frame`. `View::answer`
+   (`runtime/view/requests.rs`) caps the payload (`MAX_PAYLOAD_BYTES`;
    `MAX_OP_BYTES` plus the envelope for `op.submit` and `program.describe`),
    splits the kind with `Capability::of_kind` (a kind that does not split is
    `unknown_request`), and refuses `undeclared_capability` when the
    manifest did not declare it (logged once per capability).
-2. **Route.** `kernel::answer(guest, capability, operation, id, payload)`
+2. **Route.** `kernel::answer(view, capability, operation, id, payload)`
    tries `clipboard::answer`, `notify::answer`, `store::answer`, then its own
    arms: host methods (`host.visible`, `host.badge`, `host.title`,
    `host.route`, `host.offset`, `host.id`, `link.open`, `clock.ticks`) are
    answered at once from app state; node methods are spawned. Three kinds
-   never reach the kernel and are handled in `Guest::answer` after it
+   never reach the kernel and are handled in `View::answer` after it
    returns `false`: `host.widget` (the one MessagePack method: a `WidgetCommand`),
    `host.session` (the props subscription) and `host.log`.
 3. **Relay.** `kernel/node.rs` `spawn_method`, behind `spawn_retrying`,
    `spawn_retrying_unsent` and `spawn_no_retry`, first checks in `connected`
-   that the guest's own connection (`Guest.connection`, taken at start and
+   that the view's own connection (`View.connection`, taken at start and
    at each reconnect) is still the current `roster::connection()`'s `rev`
    (else `stale_connection`), and asks the node that connection names (else
    `not_connected`); then `start` admits
    the call against `MAX_IN_FLIGHT` (`in_flight_limit`) and runs the handler
-   as a tokio task on `views-kernel`, owned by `guest.tasks` as a `NodeTask`
+   as a tokio task on `views-kernel`, owned by `view.tasks` as a `NodeTask`
    that aborts on drop (cancel, swap, teardown). A read (`spawn_retrying`)
    retries transport refusals (`rpc_client`, `node_failed`) with
    `backend::retry_delay` backoff for `NODE_RETRY_BUDGET` (60 s), then
@@ -368,8 +368,8 @@ its meaning; the host and the views name the const, never the string.
 5. **Reply.** The handler pushes into `kernel::Replies`, a per-view queue
    bounded by `MAX_REPLY_EVENTS` / `MAX_REPLY_BYTES`; overflow latches a
    fault that ends the view. `Seat` awaits `Replies::changes`
-   and turns; `Guest::redraw` drains the queue into
-   `guest.pending` as `Event::Response` values, so the answer reaches the
+   and turns; `View::redraw` drains the queue into
+   `view.pending` as `Event::Response` values, so the answer reaches the
    view on its next tick. Nothing wakes the wasm from another thread.
 6. **Subscriptions.** `program.changes <program>` (`live`: one WebSocket
    `/v1/changes/<program>` per subscription), `chain.heads` (`heads`: polls
@@ -646,15 +646,15 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   read-only);
   `accessible(node)` builds it per node kind and `announce` writes it onto
   the element through `a11y::aria`, the three field states through one
-  `a11y::Patch`. `ViewTree::guest_aria` is the one aria
-  mapper for the nodes that carry the guest's own `Interactivity`
+  `a11y::Patch`. `ViewTree::view_aria` is the one aria
+  mapper for the nodes that carry the view's own `Interactivity`
   (Container, Image, Svg, UniformList, List, ResizeHandle): gpui's setters,
   one `a11y::Patch` for the aria gpui has none for, `on_click`, which is
   AccessKit's Click on the node too (gpui-pre runs an element's own click
   listeners for it, as a keyboard click on its bounds). A List the
   view roled or wired is a box in its place (gpui's list is not
   interactive). `ViewTree::presentation` and
-  `with_presentation` (the `NativePresentation` copy across guest
+  `with_presentation` (the `NativePresentation` copy across view
   instances) also live in this file for now; the struct itself is in
   `render.rs`.
 - **The door** (`src/ax.rs`, `src/ax/{http,tree,actions}.rs`). Built only
@@ -695,7 +695,7 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
 ## 8. Performance facts
 
 - **Fuel.** `FUEL_PER_TICK` (`runtime.rs`, 250M instructions) is armed by
-  `guest::arm` before every entry into a view: `init`, `tick`, `snapshot`,
+  `view::arm` before every entry into a view: `init`, `tick`, `snapshot`,
   `restore`, and instantiate. There is no wall-clock or epoch budget.
   `RUST_LOG=ducktape::perf=debug` logs fuel used per tick, and
   `DUCKTAPE_PERF=1` keeps the counters `GET /perf` reads (docs/perf.md).
@@ -758,7 +758,8 @@ House words, and where one word means several things.
   interned to `&'static str` (`runtime::intern`) and used as the view's
   key.
 - **view** — a program's UI: the wasm in its blob's `ducktape.view`
-  section. **guest** — one running instance of it (`runtime::Guest`); "guest-owned" means the wasm decides it.
+  section. A **view instance** is one running copy of it
+  (`runtime::View`); "view-owned" means the wasm decides it.
 - **seat** — four meanings. (1) `seat::Mounted`: the per-`(program,
   instance)` slot a view is loaded into, in `runtime/seat.rs`.
   (2) the **seated key**: the signing key in `backend/session.rs`'s
@@ -767,17 +768,17 @@ House words, and where one word means several things.
   (`shell/windows.rs`). (4) the element id `seat` of the pane area
   (`shell/layers/root.rs`). Also `runtime::Seat` (`seat/entity.rs`): the
   entity one pane's view lives in, made and dropped by `Seats`, stepping
-  its guest from its wakes (`turn`).
+  its view from its wakes (`turn`).
 - **slot** — `seat::Slot`, what a seat holds (Loading … Ready … Failed).
   Also the **pane layer** in `render/`: the pane box a view's tree, its
   tooltips and its deferred draws are clipped to (`deferred::Layer`, a gpui
-  `TooltipLayer` at `GUEST_CEILING`).
+  `TooltipLayer` at `VIEW_CEILING`).
 - **generation** — the seat's load counter; a finished load installs only
   if it is still current, and `Seat.generation` names the
-  guest instance it drew. Unrelated: the `generation` the identity program
+  view instance it drew. Unrelated: the `generation` the identity program
   answers for a key (`passkey::generation`, `Reply::Generation`), which an
   `AddKey` names.
-- **tick / redraw / turn** — `Guest::tick` is one wasm call; `Guest::redraw`
+- **tick / redraw / turn** — `View::tick` is one wasm call; `View::redraw`
   is one host step (deliver, maybe tick, route requests); a **turn**
   (`Seat::turn`) is the seat's step, run on a wake and never by a draw.
 - **frame** — three meanings. (1) `wire::Frame`: what a tick returns.
@@ -787,22 +788,22 @@ House words, and where one word means several things.
   pair a swap uses. (2) `ax::snapshot`: a read of a window's AccessKit
   tree. (3) `tray`'s rendered-menu snapshot.
 - **presentation / NativePresentation** — host-side native state copied
-  into a fresh `ViewTree` across guest instances.
+  into a fresh `ViewTree` across view instances.
 - **authored path / AuthoredPath** — the wire ids of a node and its
   identified ancestors, root first: the key for all retained native state.
   **native_id** — the GPUI `ElementId` lowered
   from a wire id.
-- **handler / message (wire)** — u32 ids the guest attaches to callbacks;
-  the host echoes them in `wire::Event`. Fresh per guest instance.
+- **handler / message (wire)** — u32 ids the view attaches to callbacks;
+  the host echoes them in `wire::Event`. Fresh per view instance.
 - **activation** — the view's transient user activation, as the web has
   it: when the host last received a real press or key aimed at its tree
   (`ViewTree::activate`; tooltips forward it to their source tree), carried
-  to `guest.activation` by the seat's turn, fresh for `ACTIVATION_EXPIRY`
-  (5 s) and taken by the first gated call (`Guest::take_activation`):
+  to `view.activation` by the seat's turn, fresh for `ACTIVATION_EXPIRY`
+  (5 s) and taken by the first gated call (`View::take_activation`):
   `link.open` and the clipboard are refused `needs_gesture` without it.
 - **widget command** — a `host.widget` request acting on a native control
   (focus, next/previous, scroll, cursor, a field's edit); its **target** is
-  a whole authored path, as the guest SDK names it from the frame it
+  a whole authored path, as the view SDK names it from the frame it
   lowered (`ViewTree::input_command`, `src/render/commands.rs`).
 - **method / capability / operation** — a request kind is
   `<capability>.<operation>`; `Capability` is the typed part before the dot
@@ -912,17 +913,17 @@ House words, and where one word means several things.
   changing after an act; nodes with a name, value, state or action; one
   (id, action, label) triple from `/actions`; what an act changed; near
   ids returned with a 404.
-- **field words** — **generation** (the guest's text, as adopted by the
+- **field words** — **generation** (the view's text, as adopted by the
   engine), **revision** (the host's count of the engine's changes),
-  **claim** (a key the guest hears instead of the engine), **Replace**
-  (the guest's ask for an edit, carried over the edits since the revision
+  **claim** (a key the view hears instead of the engine), **Replace**
+  (the view's ask for an edit, carried over the edits since the revision
   it read).
 - **pictures / hash-only frame** — the seat's image and SVG bytes
   (`runtime/pictures.rs`): bytes cross once, later frames name them by
   hash; `adopt` moves them out of the tree into the store, each held once
   (`Arc`) and shared with every tree the seat draws (`render::PictureBytes`).
   Past the seat's budget (`MAX_PICTURE_BYTES`, `MAX_PICTURES`) the store
-  keeps what the current tree names and evicts the rest, and the guest is
+  keeps what the current tree names and evicts the rest, and the view is
   sent `Event::Resync` so it sends what it draws again.
 
 ## 10. Where to start

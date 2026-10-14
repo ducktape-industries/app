@@ -207,7 +207,7 @@ impl PaneLayer {
 
     /// The desk, the seats or what is open over the desk moved: a view for
     /// every pane, none for a pane that left, and each seat told whether
-    /// its guest may move the keys (a compare, never a turn): its pane in
+    /// its view may move the keys (a compare, never a turn): its pane in
     /// front, nothing open over the desk, no hold. A
     /// view pane whose seat is not there yet gets its view when `Seats`
     /// says the seat came.
@@ -545,14 +545,14 @@ impl PaneView {
                         standin.element(seat.program(), seat.instance(), seat.ax_mark())
                     }
                     (None, Some(tree)) => {
-                        let guest =
+                        let view =
                             AnyView::from(tree).cached(StyleRefinement::default().size_full());
                         let mut context = KeyContext::default();
-                        context.set("ducktape_guest", format!("view{}", seat.instance()));
+                        context.set("ducktape_view", format!("view{}", seat.instance()));
                         // A view owns its own inset: a split pane runs to the
                         // edges. Narrower than its minimum, it scrolls sideways
                         // rather than being squeezed and cut at the window's
-                        // edge. The layer occludes: a guest under another one
+                        // edge. The layer occludes: a view under another one
                         // is never hovered, as if each were its own window.
                         div()
                             .id(seat.ax_mark())
@@ -565,7 +565,7 @@ impl PaneView {
                                     .size_full()
                                     .min_w(px(seat.min_width()))
                                     .occlude()
-                                    .child(guest),
+                                    .child(view),
                             )
                             .into_any_element()
                     }

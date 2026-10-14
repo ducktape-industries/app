@@ -1,34 +1,34 @@
-//! A guest's layer: its deferred draws and its tooltips, drawn among the
-//! window's deferred draws at a guest priority and inside its pane.
+//! A view's layer: its deferred draws and its tooltips, drawn among the
+//! window's deferred draws at a view priority and inside its pane.
 //! GPUI's generic Deferred intentionally passes no mask; that behavior would
-//! let guest overlays draw above host chrome after the slot has been painted.
+//! let view overlays draw above host chrome after the slot has been painted.
 //!
 //! [`Layer`] sets the pane's [`TooltipLayer`] around a view's tree: gpui
-//! draws every tooltip registered inside it at [`GUEST_CEILING`], fitted
-//! and clipped to the pane, and a guest `Deferred` takes the same mask. A
+//! draws every tooltip registered inside it at [`VIEW_CEILING`], fitted
+//! and clipped to the pane, and a view `Deferred` takes the same mask. A
 //! masked deferred draw paints and takes clicks only inside its mask
 //! (gpui-pre `window.rs`, `prepaint_deferred_draws`, `Frame::hit_test`).
 //!
-//! A guest `Deferred` met inside another draws in place, so the depth
-//! stays one whatever the guest nests (gpui asserts it under ten).
+//! A view `Deferred` met inside another draws in place, so the depth
+//! stays one whatever the view nests (gpui asserts it under ten).
 use super::*;
 use gpui_kit::TooltipLayer;
 use std::cell::Cell;
 
-/// The host's band, over every window's rank and every priority a guest
-/// asks for: each window draws at its rank (`PaneLayer`), and a guest's
+/// The host's band, over every window's rank and every priority a view
+/// asks for: each window draws at its rank (`PaneLayer`), and a view's
 /// draws inside its window's; the host's layers over the desk (its dialogs,
 /// the bar's menus, the footer) defer at `HOST_BAND + n`, so no window and
-/// no guest draw paints or takes a click above them.
+/// no view draw paints or takes a click above them.
 pub(crate) const HOST_BAND: usize = 1000;
 const _: () = assert!(crate::ui::layout::MAX_PANES <= HOST_BAND);
 
-/// The highest priority a guest draw takes: a `Deferred` asks for at most
-/// this, and a guest tooltip draws at it.
-pub(super) const GUEST_CEILING: usize = 16;
+/// The highest priority a view draw takes: a `Deferred` asks for at most
+/// this, and a view tooltip draws at it.
+pub(super) const VIEW_CEILING: usize = 16;
 
 thread_local! {
-    /// A guest deferral is prepainting now: a `Deferred` met inside it
+    /// A view deferral is prepainting now: a `Deferred` met inside it
     /// draws in place.
     static INSIDE: Cell<bool> = const { Cell::new(false) };
 }
@@ -53,11 +53,11 @@ impl ViewTree {
 pub(super) fn deferred(child: AnyElement, priority: usize) -> SlotDeferred {
     SlotDeferred {
         child: Some(Inside(child).into_any_element()),
-        priority: priority.min(GUEST_CEILING),
+        priority: priority.min(VIEW_CEILING),
     }
 }
 
-/// A guest `Deferred`: its child drawn after the window's other draws,
+/// A view `Deferred`: its child drawn after the window's other draws,
 /// inside its pane (the [`Layer`]'s mask), or in place when met inside
 /// another deferral.
 pub(super) struct SlotDeferred {
@@ -119,7 +119,7 @@ impl Element for SlotDeferred {
         let child = self.child.take().expect("deferred child is drawn once");
         let pane = window
             .tooltip_layer()
-            .expect("a guest deferral draws inside its view's layer")
+            .expect("a view deferral draws inside its view's layer")
             .mask;
         window.defer_draw(child, window.element_offset(), self.priority, Some(pane));
     }
@@ -220,7 +220,7 @@ impl Element for Clipped {
 }
 
 /// A view's tree in its pane's layer: the tooltips registered and the
-/// `Deferred`s met inside it draw at [`GUEST_CEILING`] at most, fitted and
+/// `Deferred`s met inside it draw at [`VIEW_CEILING`] at most, fitted and
 /// clipped to the content mask the tree is drawn in (the pane's).
 ///
 /// Every element of the tree is under it, so with the seat's perf key it
@@ -280,7 +280,7 @@ impl Element for Layer {
         drop(solving.take());
         let _timed = self.time("prepaint");
         let layer = TooltipLayer {
-            priority: GUEST_CEILING,
+            priority: VIEW_CEILING,
             mask: window.content_mask(),
         };
         window.with_tooltip_layer(Some(layer), |window| self.0.prepaint(window, cx));
@@ -301,7 +301,7 @@ impl Element for Layer {
     }
 }
 
-/// Runs `f` inside a guest deferral, then restores the outer state, on
+/// Runs `f` inside a view deferral, then restores the outer state, on
 /// unwind too: a panic caught mid-frame (the gpui test harness catches
 /// one per test) leaves no later frame drawing in place.
 pub(super) fn inside<R>(f: impl FnOnce() -> R) -> R {
@@ -315,7 +315,7 @@ pub(super) fn inside<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
-/// A deferred guest child: prepaints as inside a deferral (`INSIDE`).
+/// A deferred view child: prepaints as inside a deferral (`INSIDE`).
 struct Inside(AnyElement);
 
 impl IntoElement for Inside {
@@ -396,7 +396,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn deferred_guest_paint_keeps_slot_mask(cx: &mut gpui_kit::TestAppContext) {
+    fn deferred_view_paint_keeps_slot_mask(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
         let window = cx.open_window(size(px(200.), px(200.)), |_, _| Clipped);
         cx.update_window(window.into(), |_, window, cx| {
@@ -406,7 +406,7 @@ mod tests {
                 .into_iter()
                 .filter(|quad| quad.background.as_solid() == Some(rgb(0xff00ff).into()))
                 .collect();
-            assert!(!quads.is_empty(), "the deferred guest child must paint");
+            assert!(!quads.is_empty(), "the deferred view child must paint");
             let bound = gpui_kit::ScaledPixels(40. * window.scale_factor());
             for quad in quads {
                 assert!(
@@ -466,12 +466,12 @@ mod tests {
         assert_eq!(samples(), [1; 5], "a cached draw runs no pass");
     }
 
-    /// Eleven nested guest `Deferred`s, as the sanitizer passes them, draw
+    /// Eleven nested view `Deferred`s, as the sanitizer passes them, draw
     /// without tripping gpui's deferred-depth assert, and the innermost
     /// paints: nested directly, and through list rows (drawn as the list
     /// prepaints, after the tree has rendered).
     #[gpui_kit::test]
-    fn nested_guest_deferrals_draw_in_place(cx: &mut gpui_kit::TestAppContext) {
+    fn nested_view_deferrals_draw_in_place(cx: &mut gpui_kit::TestAppContext) {
         const DEPTH: usize = 11;
         fn leaf() -> wire::Node {
             let style = gpui_kit::StyleRefinement::default()

@@ -66,7 +66,7 @@ pub(super) async fn described(
         return Ok(None);
     };
     let described = tokio::task::spawn_blocking(move || {
-        ::describe::host::run(super::super::guest::engine(), &module, &op)
+        ::describe::host::run(super::super::view::engine(), &module, &op)
     })
     .await
     .ok()
@@ -105,7 +105,7 @@ async fn module(node: &Node, code: abi::BlobId) -> Result<Option<Arc<Module>>, w
             Ok(tokio::task::spawn_blocking(move || {
                 ::describe::host::section(&bytes)
                     .and_then(|section| {
-                        ::describe::host::compile(super::super::guest::engine(), section)
+                        ::describe::host::compile(super::super::view::engine(), section)
                     })
                     .map(Arc::new)
             })
@@ -145,7 +145,7 @@ pub(super) mod tests {
             });
         let module = wat.and_then(|wat| {
             ::describe::host::compile(
-                super::super::super::guest::engine(),
+                super::super::super::view::engine(),
                 &wat::parse_str(wat).unwrap(),
             )
         });

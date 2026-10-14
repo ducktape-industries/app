@@ -27,7 +27,7 @@ pub(super) fn configure_native_theme(cx: &mut gpui_kit::App) {
     let theme = Theme::global_mut(cx);
     theme.light_theme = light;
     theme.dark_theme = dark;
-    // Every scrollbar in the app shows, as a guest view's scroller shows its
+    // Every scrollbar in the app shows, as a view's scroller shows its
     // own (`render::layout`): a height-capped composer with no scrollbar
     // reads as a message cut short. `Theme::change` projects this onto the
     // base theme on every switch.

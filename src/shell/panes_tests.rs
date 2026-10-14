@@ -1833,7 +1833,7 @@ fn the_window_takes_the_keys_when_its_last_pane_leaves(cx: &mut TestAppContext) 
 }
 
 /// A pane whose seat holds both a tree and a standin draws the standin: a
-/// guest that traps after its tree mounted shows "This view stopped" and
+/// view that traps after its tree mounted shows "This view stopped" and
 /// its Retry, not the frozen tree.
 #[gpui_kit::test]
 fn a_trapped_view_shows_its_standin(cx: &mut TestAppContext) {
@@ -1871,7 +1871,7 @@ fn a_trapped_view_shows_its_standin(cx: &mut TestAppContext) {
 }
 
 /// A popped-out pane's seat is placed in the new window as soon as that
-/// window opens, not at the next dispatch: a guest's Focus right after
+/// window opens, not at the next dispatch: a view's Focus right after
 /// the pop-out runs in the window the pane is in.
 #[gpui_kit::test]
 fn a_popped_out_seat_moves_into_its_window_when_it_opens(cx: &mut TestAppContext) {
@@ -1906,7 +1906,7 @@ fn a_popped_out_seat_moves_into_its_window_when_it_opens(cx: &mut TestAppContext
 }
 
 /// A pane picked in Spotlight hands the keys by its view's first frame, as
-/// the draw that showed that frame did while the guest ticked on the draw
+/// the draw that showed that frame did while the view ticked on the draw
 /// path: a view whose first frame has no control keeps them on the pane's
 /// box even though its second frame, ticked before that draw (props, a
 /// reply, a busy frame), has a field. The seat holds that second tick

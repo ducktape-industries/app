@@ -14,8 +14,8 @@ struct Root {
     /// The desk's selection layer, whose sweep of a cached frame's
     /// paragraphs refreshed the window on every frame before #347.
     selection_layer: bool,
-    /// `(ticks, frame_rev)` of the seated guest at each draw that shows its
-    /// tree: which of the guest's frames the window drew, read off the log.
+    /// `(ticks, frame_rev)` of the seated view at each draw that shows its
+    /// tree: which of the view's frames the window drew, read off the log.
     drawn: Vec<(u64, u64)>,
     _watch: Subscription,
 }
@@ -30,8 +30,8 @@ impl Render for Root {
         let seat = self.seat.read(cx);
         if seat.standin().is_none() && seat.tree().is_some() {
             let mounted = registry().lock().unwrap()[&(seat.program(), seat.instance())].clone();
-            if let Slot::Ready(guest) = &mounted.lock().unwrap().slot {
-                self.drawn.push((guest.ticks, guest.frame_rev));
+            if let Slot::Ready(view) = &mounted.lock().unwrap().slot {
+                self.drawn.push((view.ticks, view.frame_rev));
             }
         }
         let body = match (seat.standin(), seat.tree()) {
@@ -95,7 +95,7 @@ fn mounted_of(seat: &Entity<Seat>, cx: &TestAppContext) -> Arc<Mutex<Mounted>> {
 
 fn ticks_of(seat: &Entity<Seat>, cx: &TestAppContext) -> u64 {
     match &mounted_of(seat, cx).lock().unwrap().slot {
-        Slot::Ready(guest) => guest.ticks,
+        Slot::Ready(view) => view.ticks,
         _ => panic!("not seated"),
     }
 }
@@ -124,7 +124,7 @@ fn same_program_instances_receive_independent_props(cx: &mut TestAppContext) {
         });
     }
     cx.run_until_parked();
-    // what the guest is handed: `Mounted.props`, the slot `redraw` reads
+    // what the view is handed: `Mounted.props`, the slot `redraw` reads
     let props = |seat: &Entity<Seat>, cx: &TestAppContext| {
         mounted_of(seat, cx).lock().unwrap().props.clone()
     };
@@ -314,7 +314,7 @@ fn a_one_line_field_blinks_only_while_focused(cx: &mut TestAppContext) {
     assert_eq!(blurred, 0, "blurring stops the blink");
 }
 
-/// A guest out of budget (`frame.busy`) is turned again a frame later
+/// A view out of budget (`frame.busy`) is turned again a frame later
 /// (`BUSY_FRAME`), never back to back, and not a third time without a wake.
 #[gpui_kit::test]
 fn a_busy_frame_turns_once_per_frame(cx: &mut TestAppContext) {
@@ -326,7 +326,7 @@ fn a_busy_frame_turns_once_per_frame(cx: &mut TestAppContext) {
     assert_eq!(
         ticks_of(&seat, cx),
         1,
-        "a busy guest is not turned back to back"
+        "a busy view is not turned back to back"
     );
     cx.executor().advance_clock(Duration::from_millis(16));
     cx.run_until_parked();
@@ -476,7 +476,7 @@ fn a_stage_change_and_a_retry_each_turn_the_seat_once(cx: &mut TestAppContext) {
     );
 }
 
-/// A guest whose frame both mounts a `TextInput` and asks `Focus` on it:
+/// A view whose frame both mounts a `TextInput` and asks `Focus` on it:
 /// the input is created in the draw that mounts the tree, so the command
 /// runs a frame after that draw, and the input has the keys after two
 /// frames with no "focus handle is not mounted" refusal. Then the same
@@ -507,10 +507,10 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
     };
     let focus_it = |instance| {
         let registry = registry().lock().unwrap();
-        let Slot::Ready(guest) = &mut registry[&(PROGRAM, instance)].lock().unwrap().slot else {
+        let Slot::Ready(view) = &mut registry[&(PROGRAM, instance)].lock().unwrap().slot else {
             panic!("seated");
         };
-        guest.widget_commands.push((
+        view.widget_commands.push((
             7,
             wire::WidgetCommand::Focus {
                 target: vec![wire::ElementIdWire::Name("filter".into())],
@@ -598,7 +598,7 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
     );
 }
 
-/// A guest moves the keys only while its keys are free (`Seat::keys_free`,
+/// A view moves the keys only while its keys are free (`Seat::keys_free`,
 /// as `PaneLayer` says it: its pane in front, nothing open over the desk,
 /// no hold), on the real command path, and is judged as the command RUNS:
 /// a `Focus` or `FocusHandle` asked while the keys were free and run once
@@ -644,10 +644,10 @@ fn a_view_moves_the_keys_only_while_its_keys_are_free(cx: &mut TestAppContext) {
     let queue = |seat: &Entity<Seat>, native: &mut VisualTestContext, command| {
         let mounted = mounted_of(seat, native);
         let mut locked = mounted.lock().unwrap();
-        let Slot::Ready(guest) = &mut locked.slot else {
+        let Slot::Ready(view) = &mut locked.slot else {
             panic!("seated")
         };
-        guest.widget_commands.push((7, command));
+        view.widget_commands.push((7, command));
     };
     let run = |seat: &Entity<Seat>, native: &mut VisualTestContext| {
         let woken = seat.clone();
@@ -682,7 +682,7 @@ fn a_view_moves_the_keys_only_while_its_keys_are_free(cx: &mut TestAppContext) {
         native.update(|window, cx| {
             let tree = seat.read(cx).tree().expect("mounted");
             tree.read(cx)
-                .guest_focus_for_test(9)
+                .view_focus_for_test(9)
                 .expect("drawn")
                 .is_focused(window)
         })
@@ -729,33 +729,33 @@ fn a_view_moves_the_keys_only_while_its_keys_are_free(cx: &mut TestAppContext) {
     );
 }
 
-/// The host's stamp reaches the guest: a press or key the tree received
-/// (`ViewTree::activate`) is the guest's activation at its next turn, and
+/// The host's stamp reaches the view: a press or key the tree received
+/// (`ViewTree::activate`) is the view's activation at its next turn, and
 /// the tree's is taken (one input, one stamp).
 #[gpui_kit::test]
-fn a_trees_activation_reaches_its_guest_on_the_next_turn(cx: &mut TestAppContext) {
+fn a_trees_activation_reaches_its_view_on_the_next_turn(cx: &mut TestAppContext) {
     const PROGRAM: &str = "activation-carry-test";
     crate::runtime::seat_for_test(PROGRAM, 320);
     let (seat, _, mut native) = open(cx, PROGRAM, false);
     let tree = seat.read_with(&native, |seat, _| seat.tree().expect("mounted"));
-    let guest_activation = |native: &VisualTestContext| {
+    let view_activation = |native: &VisualTestContext| {
         let mounted = mounted_of(&seat, native);
         let locked = mounted.lock().unwrap();
-        let Slot::Ready(guest) = &locked.slot else {
+        let Slot::Ready(view) = &locked.slot else {
             panic!("seated")
         };
-        guest.activation
+        view.activation
     };
     assert!(
-        guest_activation(&native).is_none(),
+        view_activation(&native).is_none(),
         "activated before any input"
     );
     tree.update(&mut native, |tree, _| tree.activate());
     seat.update(&mut native, |seat, cx| seat.wake(cx));
     native.run_until_parked();
     assert!(
-        guest_activation(&native).is_some(),
-        "the tree's activation did not reach the guest"
+        view_activation(&native).is_some(),
+        "the tree's activation did not reach the view"
     );
     assert!(
         tree.read_with(&native, |tree, _| tree.take_activation().is_none()),
@@ -764,9 +764,9 @@ fn a_trees_activation_reaches_its_guest_on_the_next_turn(cx: &mut TestAppContext
 }
 
 /// A view's own `host.widget` cursor command on its field is no input: the
-/// guest ends its turn with no activation to spend on the clipboard or a link.
+/// view ends its turn with no activation to spend on the clipboard or a link.
 #[gpui_kit::test]
-fn a_guests_own_cursor_command_grants_it_no_activation(cx: &mut TestAppContext) {
+fn a_views_own_cursor_command_grants_it_no_activation(cx: &mut TestAppContext) {
     const PROGRAM: &str = "self-stamp-test";
     let target = vec![wire::ElementIdWire::Name("document".into())];
     let root = wire::Node::Field {
@@ -788,18 +788,18 @@ fn a_guests_own_cursor_command_grants_it_no_activation(cx: &mut TestAppContext) 
     };
     crate::runtime::seat_drawing_for_test(PROGRAM, 320, root);
     let (seat, _, mut native) = open(cx, PROGRAM, false);
-    let with_guest = |native: &VisualTestContext, f: &mut dyn FnMut(&mut Guest)| {
+    let with_view = |native: &VisualTestContext, f: &mut dyn FnMut(&mut View)| {
         let mounted = mounted_of(&seat, native);
         let mut locked = mounted.lock().unwrap();
-        let Slot::Ready(guest) = &mut locked.slot else {
+        let Slot::Ready(view) = &mut locked.slot else {
             panic!("seated")
         };
-        f(guest)
+        f(view)
     };
     native.run_until_parked();
     let mut activation = None;
-    with_guest(&native, &mut |guest| {
-        guest.widget_commands.push((
+    with_view(&native, &mut |view| {
+        view.widget_commands.push((
             7,
             wire::WidgetCommand::SelectAll {
                 target: target.clone(),
@@ -812,13 +812,13 @@ fn a_guests_own_cursor_command_grants_it_no_activation(cx: &mut TestAppContext) 
         native.update(|window, cx| window.draw(cx).clear(cx));
         native.run_until_parked();
     }
-    with_guest(&native, &mut |guest| {
-        assert!(guest.widget_commands.is_empty(), "SelectAll was never run");
-        activation = guest.activation;
+    with_view(&native, &mut |view| {
+        assert!(view.widget_commands.is_empty(), "SelectAll was never run");
+        activation = view.activation;
     });
     assert!(
         activation.is_none(),
-        "the guest's own SelectAll gave it an activation"
+        "the view's own SelectAll gave it an activation"
     );
 }
 
@@ -911,10 +911,10 @@ fn a_route_reaches_an_open_view(cx: &mut TestAppContext) {
     {
         let mounted = mounted_of(&seat, &native);
         let mut locked = mounted.lock().unwrap();
-        let Slot::Ready(guest) = &mut locked.slot else {
+        let Slot::Ready(view) = &mut locked.slot else {
             panic!("seated")
         };
-        guest.route_subscriptions.push(99);
+        view.route_subscriptions.push(99);
     }
     let instance = seat.read_with(&native, |seat, _| seat.instance());
     crate::runtime::route_to(PROGRAM, instance, "somewhere".into());
@@ -927,7 +927,7 @@ fn a_route_reaches_an_open_view(cx: &mut TestAppContext) {
 }
 
 /// A clipboard answer is pushed by `clipboard::mount` after `redraw` has
-/// decided whether the guest wants another frame: the answer still counts.
+/// decided whether the view wants another frame: the answer still counts.
 #[gpui_kit::test]
 fn a_clipboard_answer_reaches_the_view(cx: &mut TestAppContext) {
     const PROGRAM: &str = "clipboard-test";
@@ -945,12 +945,12 @@ fn a_clipboard_answer_reaches_the_view(cx: &mut TestAppContext) {
     crate::runtime::seat_code_for_test(PROGRAM, 320, code);
     {
         let registry = registry().lock().unwrap();
-        let Slot::Ready(guest) = &mut registry[&(PROGRAM, 0)].lock().unwrap().slot else {
+        let Slot::Ready(view) = &mut registry[&(PROGRAM, 0)].lock().unwrap().slot else {
             panic!("seated")
         };
-        guest.capabilities.push(Capability::Clipboard);
+        view.capabilities.push(Capability::Clipboard);
         // the read is asked on the first redraw, under a fresh activation
-        guest.activation = Some(std::time::Instant::now());
+        view.activation = Some(std::time::Instant::now());
     }
     let (seat, _, native) = open(cx, PROGRAM, false);
     native.run_until_parked();
@@ -965,7 +965,7 @@ fn a_clipboard_answer_reaches_the_view(cx: &mut TestAppContext) {
 
 /// One tick per draw: two wakes in one flush (moved props and a route)
 /// tick twice, but the second tick waits until the first's frame has
-/// drawn, so every frame the guest produced is drawn once, in order, and
+/// drawn, so every frame the view produced is drawn once, in order, and
 /// none is skipped past on the way to the draw.
 #[gpui_kit::test]
 fn a_seat_ticks_once_per_draw_of_its_tree(cx: &mut TestAppContext) {
@@ -981,11 +981,11 @@ fn a_seat_ticks_once_per_draw_of_its_tree(cx: &mut TestAppContext) {
     {
         let mounted = mounted_of(&seat, &native);
         let mut locked = mounted.lock().unwrap();
-        let Slot::Ready(guest) = &mut locked.slot else {
+        let Slot::Ready(view) = &mut locked.slot else {
             panic!("seated")
         };
-        guest.props_subscription = Some(98);
-        guest.route_subscriptions.push(99);
+        view.props_subscription = Some(98);
+        view.route_subscriptions.push(99);
     }
     // the props turn is deferred; the route lands after it has run, still
     // before any draw, and asks for a turn of its own
@@ -1008,7 +1008,7 @@ fn a_seat_ticks_once_per_draw_of_its_tree(cx: &mut TestAppContext) {
     assert_eq!(
         ticks_of(&seat, &native),
         3,
-        "the props and the route each ticked the guest"
+        "the props and the route each ticked the view"
     );
     assert_eq!(
         renders_of(PROGRAM),
@@ -1017,7 +1017,7 @@ fn a_seat_ticks_once_per_draw_of_its_tree(cx: &mut TestAppContext) {
     );
 }
 
-/// A tick the guest answers `unchanged` gives the tree nothing to draw: the
+/// A tick the view answers `unchanged` gives the tree nothing to draw: the
 /// tree is not re-rendered for it (before, every tick notified the tree, so
 /// an idle view's whole tree was rebuilt per clock item and per reply with
 /// nothing to show), and the seat holds nothing for it, so the next wake
@@ -1046,16 +1046,16 @@ fn an_unchanged_tick_redraws_nothing_and_holds_nothing(cx: &mut TestAppContext) 
     });
     native.run_until_parked();
     assert_eq!((ticks_of(&seat, &native), renders_of(PROGRAM)), (1, 1));
-    // a props move ticks only a guest subscribed to them (`redraw`'s
+    // a props move ticks only a view subscribed to them (`redraw`'s
     // `quiet` gate): subscribe it, as `a_seat_ticks_once_per_draw_of_its_tree`
     // does
     {
         let mounted = mounted_of(&seat, &native);
         let mut locked = mounted.lock().unwrap();
-        let Slot::Ready(guest) = &mut locked.slot else {
+        let Slot::Ready(view) = &mut locked.slot else {
             panic!("seated")
         };
-        guest.props_subscription = Some(98);
+        view.props_subscription = Some(98);
     }
     // no draw asked for here: the harness draws a window only once
     // something dirtied it (a notified tree did, before)
@@ -1068,7 +1068,7 @@ fn an_unchanged_tick_redraws_nothing_and_holds_nothing(cx: &mut TestAppContext) 
     assert_eq!(
         ticks_of(&seat, &native),
         3,
-        "moved props tick the guest; an unchanged tick holds no turn back"
+        "moved props tick the view; an unchanged tick holds no turn back"
     );
     assert_eq!(renders_of(PROGRAM), 1, "an unchanged tick dirties nothing");
     // a draw asked for by something else leaves the cached tree alone too
@@ -1094,7 +1094,7 @@ fn row() -> wire::Node {
 }
 
 /// A 2,000-row uniform list filling the view, carrying `rows` and, as the
-/// guest always does, the measurement row 0.
+/// view always does, the measurement row 0.
 fn uniform(rows: std::ops::Range<u32>) -> wire::Node {
     let id = wire::ElementIdWire::Name("rows".into());
     let mut indices: Vec<u32> = rows.collect();
@@ -1121,7 +1121,7 @@ fn uniform(rows: std::ops::Range<u32>) -> wire::Node {
 
 /// A uniform list's first frame carries one row. The layout that draws it
 /// asks for the rows (a tick, drawn next) and reports the list's scroll
-/// state (`UniformListState`), a third tick the guest answers `unchanged`:
+/// state (`UniformListState`), a third tick the view answers `unchanged`:
 /// that one draws nothing, so the open costs two draws, the one-row frame
 /// and the rows. Before, every tick notified the tree, and the state tick
 /// drew the same rows a third time.

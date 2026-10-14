@@ -400,7 +400,7 @@ fn canvas_path(shape: &wire::CanvasShape) -> String {
 }
 
 /// The most `A` segments one arc is cut into: one per half turn is what
-/// the SVG arc command needs to stay unambiguous, and a guest cannot ask
+/// the SVG arc command needs to stay unambiguous, and a view cannot ask
 /// for a path longer than this by sweeping many turns.
 const MAX_ARC_SEGMENTS: f32 = 128.;
 

@@ -290,7 +290,7 @@ fn a_cached_layer_keeps_its_nodes_under_a11y(cx: &mut TestAppContext) {
         frame(&mut native);
     }
     // the strip and the view name no node of their own: their controls
-    // and the guest's text are theirs
+    // and the view's text are theirs
     let names = [
         "menubar",
         "rail-rows",
@@ -1155,7 +1155,7 @@ fn a_views_deferred_draw_stays_under_a_dialog(cx: &mut TestAppContext) {
         }
         let quads = quads(&mut native);
         let scale = native.update(|window, _| window.scale_factor());
-        let guest = quads
+        let drawn = quads
             .iter()
             .find(|quad| quad.background.as_solid() == Some(gpui_kit::rgb(MAGENTA).into()))
             .unwrap_or_else(|| panic!("{program}: the view's deferred draw paints"));
@@ -1168,16 +1168,16 @@ fn a_views_deferred_draw_stays_under_a_dialog(cx: &mut TestAppContext) {
             })
             .expect("the dialog's scrim paints");
         assert!(
-            guest.order < scrim.order,
+            drawn.order < scrim.order,
             "{program}: the view's draw {} over the scrim {}",
-            guest.order,
+            drawn.order,
             scrim.order
         );
         // the view's bottom-left corner: inside its draw, under the scrim,
         // away from the dialog's card
         let at = gpui_kit::point(
-            gpui_kit::px(guest.bounds.origin.x.0 / scale + 8.),
-            gpui_kit::px((guest.bounds.origin.y.0 + guest.bounds.size.height.0) / scale - 8.),
+            gpui_kit::px(drawn.bounds.origin.x.0 / scale + 8.),
+            gpui_kit::px((drawn.bounds.origin.y.0 + drawn.bounds.size.height.0) / scale - 8.),
         );
         native.simulate_click(at, gpui_kit::Modifiers::none());
         frame(&mut native);

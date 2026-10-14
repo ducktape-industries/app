@@ -1,4 +1,4 @@
-//! One pane's guest, stepped off the draw path: every wake (a reply, a
+//! One pane's view, stepped off the draw path: every wake (a reply, a
 //! clock item, a `ViewTree` event, moved props, the theme, a load landing,
 //! a busy frame) ends in one `turn`, never in a draw. What the pane draws
 //! is read off the seat: its `ViewTree`, or the `Standin` to show instead.
@@ -6,18 +6,18 @@
 //! One tick per draw: a turn whose tick gave the tree something to draw (a
 //! new tree, or a moved editor document) dirties the tree and holds the
 //! seat until it has drawn (`render::Drawn`); a turn asked for meanwhile
-//! runs right after the draw. So every frame the guest makes is drawn
+//! runs right after the draw. So every frame the view makes is drawn
 //! before it makes the next, as when it ticked on the draw path: the first
 //! draw of a fresh view shows its first frame (the keys a pane hands its
 //! first control go by it), and a reply's chain of ticks advances one
 //! frame per draw. A tick that answered `unchanged` and moved no document
 //! draws nothing and holds nothing: the tree the pane shows is the tree the
-//! guest would send.
+//! view would send.
 use super::standin::{Standin, stage_words};
 use super::*;
 use gpui_kit::{AnyWindowHandle, Context, Entity, EventEmitter, Subscription};
 
-/// Frame pacing for a busy guest (`frame.busy`): one more turn, a frame later.
+/// Frame pacing for a busy view (`frame.busy`): one more turn, a frame later.
 const BUSY_FRAME: Duration = Duration::from_millis(16);
 
 pub(crate) struct Seat {
@@ -28,7 +28,7 @@ pub(crate) struct Seat {
     /// through `place`. Widget commands and the carried presentation need it.
     window: Option<AnyWindowHandle>,
     /// The body the pane lays the view out in, as the layout has it before
-    /// the draw (`place`): the guest hears it ahead of every tick, so its
+    /// the draw (`place`): the view hears it ahead of every tick, so its
     /// first frame is laid out to its pane. None until the pane's desk is
     /// drawn, and the view is not ticked until then (`turn`).
     body: Option<(f32, f32)>,
@@ -47,7 +47,7 @@ pub(crate) struct Seat {
     alive: Option<Arc<()>>,
     revision: u64,
     props: Option<Vec<u8>>,
-    /// Whether a guest here may move the keys: its pane in front, nothing
+    /// Whether a view here may move the keys: its pane in front, nothing
     /// open over the desk, no keyboard hold (`PaneLayer` says; `false`
     /// until it has). The web's rule: a background document takes no focus.
     /// Every focus-moving widget command is judged by it as it runs, and
@@ -69,7 +69,7 @@ pub(crate) struct Seat {
 
 impl EventEmitter<Intent> for Seat {}
 
-/// The guest's root, sized to the seat: a wire root that names no size
+/// The view's root, sized to the seat: a wire root that names no size
 /// would otherwise take its content's, and a Fill-sized pane inside it
 /// (a room, a document) collapses to zero height.
 ///
@@ -199,7 +199,7 @@ impl Seat {
         }
     }
 
-    /// `PaneLayer` says whether a guest here may move the keys (see
+    /// `PaneLayer` says whether a view here may move the keys (see
     /// `keys_free`); the tree hears it too. Nothing draws from it, so no
     /// notify.
     pub(crate) fn set_keys_free(&mut self, keys_free: bool, cx: &mut Context<Self>) {
@@ -240,22 +240,22 @@ impl Seat {
         let mounted = self.mounted.clone();
         let mut locked = lock(&mounted);
         let Mounted { slot, props, .. } = &mut *locked;
-        let Slot::Ready(guest) = slot else {
+        let Slot::Ready(view) = slot else {
             return Vec::new();
         };
-        let owns = self.generation == guest.seated_generation()
+        let owns = self.generation == view.seated_generation()
             && self
                 .alive
                 .as_ref()
-                .is_some_and(|alive| Arc::ptr_eq(alive, &guest.alive));
+                .is_some_and(|alive| Arc::ptr_eq(alive, &view.alive));
         // a view never stepped here has nothing to hand over; one that was
         // gets its last update whether or not its window was in front
-        if !owns || guest.ticks == 0 {
+        if !owns || view.ticks == 0 {
             return Vec::new();
         }
-        guest.set_visible(false);
-        guest.redraw(props);
-        std::mem::take(&mut guest.intents)
+        view.set_visible(false);
+        view.redraw(props);
+        std::mem::take(&mut view.intents)
     }
 
     /// Every wake ends here: a reply, a clock item, a `ViewTree` event,
@@ -263,7 +263,7 @@ impl Seat {
     /// before a read (`Seats::settle`). Never a draw, never a window
     /// callback (those go through `wake`). While a tick that changed what
     /// the tree draws waits for its draw, the turn waits too (`Drawn` runs
-    /// it): one tick per draw, as when the guest ticked on the draw path.
+    /// it): one tick per draw, as when the view ticked on the draw path.
     pub(crate) fn turn(&mut self, cx: &mut Context<Self>) {
         if self.holding {
             self.owed = true;
@@ -279,8 +279,8 @@ impl Seat {
         let shown = Instant::now();
         let program = self.program;
         let Mounted { slot, props, .. } = &mut *locked;
-        let guest = match slot {
-            Slot::Ready(guest) => guest,
+        let view = match slot {
+            Slot::Ready(view) => view,
             Slot::Empty => {
                 drop(locked);
                 let words = format!(
@@ -311,54 +311,54 @@ impl Seat {
         let Some((width, height)) = self.body else {
             return;
         };
-        guest.instance = self.instance;
+        view.instance = self.instance;
         // the press or key the host last received for this tree is the
         // view's activation for the requests this redraw answers
         if let Some(tree) = &self.tree
             && let Some(at) = tree.read(cx).take_activation()
         {
-            guest.activation = Some(at);
+            view.activation = Some(at);
         }
         *props = self.props.clone();
-        let ticks = guest.ticks;
-        guest.set_visible(self.in_front);
-        guest.sync_theme(gpui_kit::component::Theme::global(cx).is_dark());
+        let ticks = view.ticks;
+        view.set_visible(self.in_front);
+        view.sync_theme(gpui_kit::component::Theme::global(cx).is_dark());
         // the view is never laid out narrower than its own minimum
         // (`layers/panes.rs` gives its body `min_w`)
-        guest.sync_viewport(width.max(guest.min_width as f32), height);
-        let again = guest.redraw(props);
-        clipboard::mount(guest, cx);
+        view.sync_viewport(width.max(view.min_width as f32), height);
+        let again = view.redraw(props);
+        clipboard::mount(view, cx);
         // a clipboard answer lands after `redraw` judged the frame: it is
         // still a reason to turn again
-        let again = again || !guest.pending.is_empty();
-        let next_tick = kernel::next_tick(&guest.clocks);
-        if let Some(fault) = &guest.fault {
+        let again = again || !view.pending.is_empty();
+        let next_tick = kernel::next_tick(&view.clocks);
+        if let Some(fault) = &view.fault {
             let standin = Standin::from(&Failure::Trapped(fault.clone()));
             drop(locked);
             return self.show_standin(standin, cx);
         }
-        let generation = guest.seated_generation();
-        let key = guest.perf_key();
+        let generation = view.seated_generation();
+        let key = view.perf_key();
         let same = self.generation == generation
             && self
                 .alive
                 .as_ref()
-                .is_some_and(|alive| Arc::ptr_eq(alive, &guest.alive));
-        let fresh = (!same || self.revision != guest.frame_rev).then(|| {
-            let (tree, pictures) = guest.drawn();
-            (native_root(tree), pictures, guest.frame_rev)
+                .is_some_and(|alive| Arc::ptr_eq(alive, &view.alive));
+        let fresh = (!same || self.revision != view.frame_rev).then(|| {
+            let (tree, pictures) = view.drawn();
+            (native_root(tree), pictures, view.frame_rev)
         });
         let adopt = (!same).then(|| {
             (
-                guest.alive.clone(),
-                guest.replies.changes(),
-                guest.replies.answer_owed(),
+                view.alive.clone(),
+                view.replies.changes(),
+                view.replies.answer_owed(),
             )
         });
-        let commands = guest.widget_commands.len();
+        let commands = view.widget_commands.len();
         // the field edits still queued, which run frames from now against
         // the text they read: the tree keeps the edits since for them
-        let asked: Vec<(wire::WidgetTarget, u64)> = guest
+        let asked: Vec<(wire::WidgetTarget, u64)> = view
             .widget_commands
             .iter()
             .filter_map(|(_, command)| match command {
@@ -368,10 +368,10 @@ impl Seat {
                 _ => None,
             })
             .collect();
-        let intents = std::mem::take(&mut guest.intents);
-        let tooltips = std::mem::take(&mut guest.tooltip_responses);
-        let min_width = guest.min_width as f32;
-        let first_tree = ticks == 0 && guest.ticks == 1;
+        let intents = std::mem::take(&mut view.intents);
+        let tooltips = std::mem::take(&mut view.tooltip_responses);
+        let min_width = view.min_width as f32;
+        let first_tree = ticks == 0 && view.ticks == 1;
         drop(locked);
 
         // a pane draws a placed seat's tree; nothing draws an unplaced one,
@@ -417,7 +417,7 @@ impl Seat {
             cx.emit(intent);
         }
         self.arm_clock(next_tick, cx);
-        // frame-paced, never back to back: the guest ran out of budget and
+        // frame-paced, never back to back: the view ran out of budget and
         // wants the next tick soon, not now
         if again && self.busy.is_none() {
             self.busy = Some(cx.spawn(async move |this, cx| {
@@ -441,7 +441,7 @@ impl Seat {
 
     /// A first tree, or a new deployment's: a fresh `ViewTree` carrying the
     /// old presentation, its editor store, a wake on replies and the route
-    /// of its events back into the guest.
+    /// of its events back into the view.
     fn mount(
         &mut self,
         root: crate::render::Tree,
@@ -488,13 +488,13 @@ impl Seat {
         self._tree_events = Some(
             cx.subscribe(&tree, move |this, _, event: &wire::Event, cx| {
                 let mut locked = lock(&seat);
-                let Slot::Ready(guest) = &mut locked.slot else {
+                let Slot::Ready(view) = &mut locked.slot else {
                     return;
                 };
                 let current =
-                    guest.seated_generation() == generation && Arc::ptr_eq(&alive, &guest.alive);
+                    view.seated_generation() == generation && Arc::ptr_eq(&alive, &view.alive);
                 if current {
-                    guest.pending.push(event.clone());
+                    view.pending.push(event.clone());
                 }
                 drop(locked);
                 this.turn(cx);
@@ -515,7 +515,7 @@ impl Seat {
         }
     }
 
-    /// A timer for the guest's next `clock.ticks`, re-armed when it moves.
+    /// A timer for the view's next `clock.ticks`, re-armed when it moves.
     fn arm_clock(&mut self, next: Option<Instant>, cx: &mut Context<Self>) {
         if self.clock.as_ref().map(|(due, _)| *due) == next {
             return;
@@ -532,7 +532,7 @@ impl Seat {
         });
     }
 
-    /// The guest's runnable `host.widget` commands, run in the pane's window
+    /// The view's runnable `host.widget` commands, run in the pane's window
     /// one frame after the tree they target has drawn (the #110 rule: an
     /// input or menu the new tree mounts is created in that draw, so a
     /// `Focus` before it has no handle). A next-frame callback runs before
@@ -548,18 +548,18 @@ impl Seat {
                 window.on_next_frame(move |window, cx| {
                     let _ = this.update(cx, |this, cx| {
                         let mut locked = lock(&seat);
-                        let Slot::Ready(guest) = &mut locked.slot else {
+                        let Slot::Ready(view) = &mut locked.slot else {
                             return;
                         };
-                        // the GUEST has to be the one that asked: a
+                        // the VIEW has to be the one that asked: a
                         // replacement or a reseat takes its queue with it.
                         // The FRAME does not: each command is judged
                         // against the tree standing now.
-                        let same = guest.seated_generation() == generation
+                        let same = view.seated_generation() == generation
                             && this
                                 .alive
                                 .as_ref()
-                                .is_some_and(|alive| Arc::ptr_eq(alive, &guest.alive));
+                                .is_some_and(|alive| Arc::ptr_eq(alive, &view.alive));
                         if !same {
                             return;
                         }
@@ -568,8 +568,8 @@ impl Seat {
                         };
                         // judged as it runs, not as it was asked: a command
                         // the view held back answers to the desk as it is now
-                        guest.execute_widget_commands(|command| {
-                            if Guest::moves_keys(&command) && !this.keys_free {
+                        view.execute_widget_commands(|command| {
+                            if View::moves_keys(&command) && !this.keys_free {
                                 return Err("view is not focused".into());
                             }
                             tree.update(cx, |tree, cx| {

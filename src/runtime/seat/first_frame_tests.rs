@@ -1,8 +1,8 @@
-//! A view's first frame, in the seat harness: what the guest knew when it
-//! drew it. Every test logs the guest's `ticks` and `frame_rev` at each
+//! A view's first frame, in the seat harness: what the view knew when it
+//! drew it. Every test logs the view's `ticks` and `frame_rev` at each
 //! render of its tree (`render::Drawn`), so "which frame was drawn, and
 //! when" is read off the log, not reasoned, and reads the events each
-//! tick carried (`Guest::ticked_with`).
+//! tick carried (`View::ticked_with`).
 use super::*;
 use crate::ui::layout::Pane;
 use gpui_kit::{
@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-/// `(ticks, frame_rev)` of the seated guest as the window draws: logged by
+/// `(ticks, frame_rev)` of the seated view as the window draws: logged by
 /// the root's render, which gpui runs first in every draw, so it is the
 /// state the seat's tree renders from in that draw.
 type DrawnLog = Rc<RefCell<Vec<(u64, u64)>>>;
@@ -35,11 +35,11 @@ impl Render for Root {
         cx: &mut gpui_kit::Context<Self>,
     ) -> impl IntoElement {
         let seat = self.seat.read(cx);
-        if let Slot::Ready(guest) = &lock(&self.mounted).slot
+        if let Slot::Ready(view) = &lock(&self.mounted).slot
             && seat.tree().is_some()
             && seat.standin().is_none()
         {
-            self.drawn.borrow_mut().push((guest.ticks, guest.frame_rev));
+            self.drawn.borrow_mut().push((view.ticks, view.frame_rev));
         }
         let body = match (seat.standin(), seat.tree()) {
             (Some(standin), _) => standin.element(seat.program(), seat.instance(), seat.ax_mark()),
@@ -101,15 +101,15 @@ struct Opened {
 
 fn ticks_of(mounted: &Mutex<Mounted>) -> u64 {
     match &lock(mounted).slot {
-        Slot::Ready(guest) => guest.ticks,
+        Slot::Ready(view) => view.ticks,
         _ => panic!("not seated"),
     }
 }
 
-/// The events each tick of the seated guest carried.
+/// The events each tick of the seated view carried.
 fn ticked_with(mounted: &Mutex<Mounted>) -> Vec<Vec<wire::Event>> {
     match &lock(mounted).slot {
-        Slot::Ready(guest) => guest.ticked_with.clone(),
+        Slot::Ready(view) => view.ticked_with.clone(),
         _ => panic!("not seated"),
     }
 }
@@ -132,7 +132,7 @@ fn facts(events: &[wire::Event]) -> (Option<bool>, Option<(f32, f32)>, Option<i3
 /// tick after. `snapshot` hands over one empty state and `restore` takes
 /// any, so the same code serves as a swap's old and new instance.
 fn frames_in_order(program: &'static str, min_width: u32, frames: &[wire::Frame]) {
-    let code = Module::new(crate::runtime::guest::engine(), frames_wat(frames)).unwrap();
+    let code = Module::new(crate::runtime::view::engine(), frames_wat(frames)).unwrap();
     crate::runtime::seat_code_for_test(program, min_width, code);
 }
 
@@ -217,7 +217,7 @@ fn a_view_is_not_ticked_before_its_pane_has_a_body(cx: &mut TestAppContext) {
 }
 
 /// A view is never laid out narrower than its own minimum: the pane gives
-/// its body `min_w`, and the viewport the guest hears is that width.
+/// its body `min_w`, and the viewport the view hears is that width.
 #[gpui_kit::test]
 fn a_views_viewport_is_never_narrower_than_its_minimum(cx: &mut TestAppContext) {
     const PROGRAM: &str = "first-frame-min-width-test";
@@ -230,7 +230,7 @@ fn a_views_viewport_is_never_narrower_than_its_minimum(cx: &mut TestAppContext) 
 
 /// A deployment swap: the replacement's first tree is made by
 /// `first_frame` knowing the theme, the body and the reader's offset the
-/// drawn view had (`Guest::seed`), so the tree the install turn mounts is
+/// drawn view had (`View::seed`), so the tree the install turn mounts is
 /// the one the reader sees, and no corrective tick follows it: the install
 /// draws once, at frame_rev 2, and the view has ticked once.
 #[gpui_kit::test]
@@ -254,7 +254,7 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
     // replacement of the same shape
     let program = Arc::new(
         Module::new(
-            crate::runtime::guest::engine(),
+            crate::runtime::view::engine(),
             frames_wat(&[full(boxed("card"))]),
         )
         .unwrap(),
@@ -270,10 +270,10 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
     let first_tick = Rc::new(RefCell::new(None));
     let seen = first_tick.clone();
     load.land(|load, timing| {
-        let mut fresh = Guest::instantiate(load.program, &program, load.program).unwrap();
+        let mut fresh = View::instantiate(load.program, &program, load.program).unwrap();
         fresh.min_width = 320;
         let mut ticks = 0;
-        let fresh = Guest::replacement(
+        let fresh = View::replacement(
             fresh,
             &alive,
             &mut ticks,

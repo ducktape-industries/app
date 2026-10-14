@@ -9,7 +9,7 @@ const MAX_PENDING_WIDGET_COMMANDS: usize = wire::MAX_REQUESTS;
 
 /// Whether `target` is the whole authored path of a node mounted in
 /// `root` (the ancestry `crate::render::enter_scope` walks). A view names a
-/// command's target by the id it holds; the guest SDK, which lowered every
+/// command's target by the id it holds; the view SDK, which lowered every
 /// id above it, sends the whole path, so two scopes holding one id are two
 /// targets and neither is taken for the other.
 pub(crate) fn target_names_mounted_node(root: &wire::Node, target: &[wire::ElementIdWire]) -> bool {
@@ -33,7 +33,7 @@ pub(crate) fn target_names_mounted_node(root: &wire::Node, target: &[wire::Eleme
     contains(root, None, &mut Vec::new(), target)
 }
 
-impl Guest {
+impl View {
     pub(crate) fn sync_theme(&mut self, dark: bool) {
         if self.theme_dark != Some(dark) {
             self.theme_dark = Some(dark);
@@ -46,7 +46,7 @@ impl Guest {
     }
 
     /// The body the view is laid out in, as the pane has it before the
-    /// draw: the guest's `Window::viewport_size()`. Sent when it moved;
+    /// draw: the view's `Window::viewport_size()`. Sent when it moved;
     /// the latest size wins the tick.
     pub(crate) fn sync_viewport(&mut self, width: f32, height: f32) {
         if self.viewport_sent != Some((width, height)) {
@@ -70,8 +70,8 @@ impl Guest {
     }
 
     /// One redraw: tick if there is anything to deliver — or never was a
-    /// first frame — answer the requests, and say whether the guest is due
-    /// again at once. A guest with nothing to deliver is left alone: the
+    /// first frame — answer the requests, and say whether the view is due
+    /// again at once. A view with nothing to deliver is left alone: the
     /// tree the host has is the tree it would send.
     pub(crate) fn redraw(&mut self, props: &Option<Vec<u8>>) -> bool {
         if self.fault.is_some() {
@@ -218,7 +218,7 @@ impl Guest {
         }
     }
 
-    /// The host's own refusal, in the shape a guest gets a node's: a stable
+    /// The host's own refusal, in the shape a view gets a node's: a stable
     /// snake_case token it may branch on, and the sentence it may show.
     pub(crate) fn refuse(&mut self, id: u64, reason: &'static str, message: impl Into<String>) {
         self.reply(id, Err(wire::Error::new(reason, message)));
@@ -265,7 +265,7 @@ impl Guest {
         }
     }
 
-    /// Whether the typed path this command names is in the tree the guest is
+    /// Whether the typed path this command names is in the tree the view is
     /// showing RIGHT NOW. A press is answered a frame or more after it was
     /// made, and a live view replaces its frame between the two — so the
     /// question a queued command has to pass is whether its target is still
@@ -294,7 +294,7 @@ impl Guest {
                 return Err("too many pending widget requests".into());
             }
             if !self.target_is_mounted(&command) {
-                return Err("widget target is outside this guest tree".into());
+                return Err("widget target is outside this view tree".into());
             }
             Ok(command)
         })();
@@ -304,7 +304,7 @@ impl Guest {
         }
     }
 
-    /// Called on this guest's mounted tree with the queued commands. A
+    /// Called on this view's mounted tree with the queued commands. A
     /// command whose target left the tree in the meantime is answered with
     /// that, never performed.
     pub(crate) fn execute_widget_commands(
@@ -412,7 +412,7 @@ impl Guest {
                         reports.merge(report);
                         self.frame_rev += 1;
                         if let Some(root) = &mut frame.root {
-                            // The guest remembers its tree without the
+                            // The view remembers its tree without the
                             // picture bytes; the tree its patches build on
                             // has to be that one.
                             if self.pictures.adopt(root, self.program) {
@@ -542,7 +542,7 @@ mod tests {
         )
     }
 
-    /// The guest SDK names a nested field by its whole path, which the
+    /// The view SDK names a nested field by its whole path, which the
     /// host finds; the field's own key alone names no node, since a second
     /// composer could hold it too.
     #[test]

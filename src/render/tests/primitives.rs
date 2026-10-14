@@ -393,7 +393,7 @@ impl Render for Shifted {
 }
 
 /// A pane that moves in the window moves the view in it without a new
-/// frame from the guest: the view is cached and its tree is as it was. The
+/// frame from the view: the view is cached and its tree is as it was. The
 /// sensor tells where its child is now all the same, or a pointer would be
 /// placed by where the pane used to be.
 #[gpui_kit::test]

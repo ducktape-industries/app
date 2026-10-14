@@ -360,7 +360,7 @@ impl Center {
     /// The log handed to the disk if it moved since it last was: once per
     /// person's action here (open, mark all read, clear read), and once at
     /// the end of each view redraw for whatever its requests logged
-    /// (`Guest::redraw`), never per post. Written whole through
+    /// (`View::redraw`), never per post. Written whole through
     /// `noded_client::fs::atomic_write` on the blocking pool, one write after
     /// another (`kernel::in_order` under the log's path).
     pub(crate) fn flush(&mut self) {

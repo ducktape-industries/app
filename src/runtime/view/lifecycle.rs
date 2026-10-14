@@ -9,16 +9,16 @@ const FIRST_FRAME_TICK_LIMIT: usize = 3;
 const MAX_TABLES: usize = 4;
 const MAX_TABLE_ELEMENTS: usize = 1 << 20;
 /// How much of a panic message the host keeps: this many bytes read from
-/// the guest, the first line, at most this many chars.
+/// the view, the first line, at most this many chars.
 const MAX_PANIC_BYTES: u32 = 1024;
 
-/// The host's facts a drawn view holds for its replacement (`Guest::ambient`).
+/// The host's facts a drawn view holds for its replacement (`View::ambient`).
 pub(crate) struct Ambient {
     pub(crate) theme_dark: Option<bool>,
     pub(crate) viewport: Option<(f32, f32)>,
 }
 
-impl Guest {
+impl View {
     /// Reusing identical code over a new connection: the node subscriptions
     /// go on, opened on it, and the rest of the work started on the old one
     /// is retired (`kernel::reconnected`).
@@ -80,7 +80,7 @@ impl Guest {
                 return Ok(Loaded::Compiled(Box::new(view)));
             }
             return Self::load_from(program, &path)
-                .map(|guest| Loaded::Fresh(Box::new(guest)))
+                .map(|view| Loaded::Fresh(Box::new(view)))
                 .map_err(|reason| before_any_candidate(Failure::Refused(reason)));
         }
         let Some(client) = asked_of.client.as_ref() else {
@@ -384,7 +384,7 @@ impl Guest {
     /// clean, with a warn saying why. One with work unfinished refuses the
     /// replacement until its next turns finish it, and the seat asks again:
     /// the host's own (an event, a widget command, an editor transfer), or
-    /// the guest's, in its own words (busy, a request in flight).
+    /// the view's, in its own words (busy, a request in flight).
     fn handover(&mut self, to: &Self, timing: &mut LoadTiming) -> Result<Option<Vec<u8>>, Failure> {
         if self.ticks == 0 {
             return Ok(None);
@@ -428,7 +428,7 @@ impl Guest {
     }
 
     /// `fresh` started from `state`, a drawn view's handover: restored, or
-    /// `init`ed in its place when there is none, when the guest refuses it
+    /// `init`ed in its place when there is none, when the view refuses it
     /// as not its own, or when the restore traps (on a new instance of
     /// `code` then: a trapped one is not entered again). Its first tree is
     /// verified.
@@ -481,7 +481,7 @@ impl Guest {
 
     /// A new instance of `code`, named and manifested as `load` made this
     /// one, nothing run in it yet. Every field is named here, so one added
-    /// to `Guest` is a compile error until it says whether a sibling
+    /// to `View` is a compile error until it says whether a sibling
     /// carries it: what `load` set (the seat, the manifest, the deployment)
     /// is carried, and what the instance ran into starts fresh.
     fn sibling(&self, code: &Module, shown: &str) -> Result<Self, String> {
@@ -579,7 +579,7 @@ impl Guest {
 
     /// Everything this instance was asked to do is done: nothing pending,
     /// no request the host has yet to route, no trap. Busy (out of budget,
-    /// ticking again soon) is the guest's to weigh: its snapshot says
+    /// ticking again soon) is the view's to weigh: its snapshot says
     /// whether it can hand its state over mid-work. A replacement not
     /// yet redrawn is settled too: the only requests its first tree
     /// carries are the subscriptions its restore rebuilt, which its own
@@ -593,7 +593,7 @@ impl Guest {
             && (self.staged || self.frame.requests.is_empty())
     }
 
-    /// The guest's state, or why it does not hand it over now. A trap ends
+    /// The view's state, or why it does not hand it over now. A trap ends
     /// the instance as one in `tick` does: the fault keeps it from being
     /// entered again.
     pub(crate) fn snapshot(&mut self) -> Result<Snapshot, String> {
@@ -680,17 +680,17 @@ impl Guest {
         shown: &str,
     ) -> Result<Self, String> {
         let code = Self::compile(bytes, shown).map_err(|failure| failure.to_string())?;
-        let mut guest = Self::instantiate(program, &code, shown)?;
+        let mut view = Self::instantiate(program, &code, shown)?;
         (
-            guest.name,
-            guest.capabilities,
-            guest.min_width,
-            guest.targets,
-            guest.icon,
+            view.name,
+            view.capabilities,
+            view.min_width,
+            view.targets,
+            view.icon,
         ) = manifest_of(bytes);
-        crate::render::web::seen(program, &guest.capabilities);
-        guest.init(shown)?;
-        Ok(guest)
+        crate::render::web::seen(program, &view.capabilities);
+        view.init(shown)?;
+        Ok(view)
     }
 
     /// The view's bytes checked and compiled — the cranelift stage of
@@ -817,8 +817,8 @@ impl Guest {
         })
     }
 
-    /// Hands the guest the props the app holds, if they moved since the
-    /// guest last saw them. Before the guest has subscribed they wait here.
+    /// Hands the view the props the app holds, if they moved since the
+    /// view last saw them. Before the view has subscribed they wait here.
     pub(crate) fn sync_props(&mut self, props: &Option<Vec<u8>>) {
         let Some(id) = self.props_subscription else {
             return;

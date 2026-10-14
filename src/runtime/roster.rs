@@ -197,7 +197,7 @@ pub struct RailRow {
 /// program by its readiest seat.
 fn readiness(slot: &Slot) -> u8 {
     match slot {
-        Slot::Ready(guest) if !guest.name.is_empty() => 0,
+        Slot::Ready(view) if !view.name.is_empty() => 0,
         Slot::Compiled(view) if !view.name.is_empty() => 1,
         Slot::Ready(_) | Slot::Compiled(_) => 2,
         Slot::Empty => 3,
@@ -230,8 +230,8 @@ impl Roster {
                     .min_by_key(|((_, instance), seat)| (readiness(&lock(seat).slot), *instance))
                     .map(|(_, seat)| lock(seat));
                 let (label, note, empty) = match seat.as_ref().map(|seat| &seat.slot) {
-                    Some(Slot::Ready(guest)) if !guest.name.is_empty() => {
-                        (guest.name.clone(), None, false)
+                    Some(Slot::Ready(view)) if !view.name.is_empty() => {
+                        (view.name.clone(), None, false)
                     }
                     // compiled, not started: as ready to open as a drawn view
                     Some(Slot::Compiled(view)) if !view.name.is_empty() => {
@@ -247,7 +247,7 @@ impl Roster {
                 };
                 // the manifest's, as the name is: none before it is read
                 let icon = match seat.as_ref().map(|seat| &seat.slot) {
-                    Some(Slot::Ready(guest)) => guest.icon.clone(),
+                    Some(Slot::Ready(view)) => view.icon.clone(),
                     Some(Slot::Compiled(view)) => view.icon.clone(),
                     _ => String::new(),
                 };

@@ -149,7 +149,7 @@ impl ViewTree {
         let interactivity = interactivity
             .as_deref()
             .unwrap_or(wire::Interactivity::none());
-        let element = self.guest_aria(element, node, interactivity, cx);
+        let element = self.view_aria(element, node, interactivity, cx);
         #[cfg(test)]
         let element = {
             use gpui_kit::test::TestSupportExt as _;

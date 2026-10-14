@@ -289,13 +289,13 @@ fn container_interactivity_emits_native_pointer_and_key_payloads(
     )));
 }
 
-/// A guest tree that did not change is not drawn again: the seat's cache
+/// A view tree that did not change is not drawn again: the seat's cache
 /// holds from one frame to the next. An id-less box measured on its named
 /// ancestor's path, and a paragraph's selection refreshed the window each
-/// time a cached frame swept it, so every guest on the desk was drawn in
+/// time a cached frame swept it, so every view on the desk was drawn in
 /// full on every frame. The named box keeps its own bounds.
 #[gpui_kit::test]
-fn an_unchanged_guest_tree_is_not_drawn_again(cx: &mut gpui_kit::TestAppContext) {
+fn an_unchanged_view_tree_is_not_drawn_again(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     let bare = |children: Vec<wire::Node>| {
         wire::Node::Container(view_wire::ContainerNode {

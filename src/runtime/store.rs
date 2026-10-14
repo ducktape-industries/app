@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use super::Guest;
+use super::View;
 use super::kernel::{Answer, in_order, spawn_reply};
 use super::wire::{self, methods, methods::Capability};
 
@@ -25,7 +25,7 @@ const MAX_BYTES: usize = 4 << 20;
 const MAX_KEYS: usize = 1024;
 
 pub(super) fn answer(
-    guest: &mut Guest,
+    view: &mut View,
     capability: Capability,
     operation: &str,
     id: u64,
@@ -36,9 +36,9 @@ pub(super) fn answer(
         (Capability::Store, "set") => ("io.store.set", set),
         _ => return false,
     };
-    match file(guest) {
-        Ok(path) => ask(guest, id, path, method, payload.to_vec()),
-        Err(refused) => guest.reply(id, Err(refused)),
+    match file(view) {
+        Ok(path) => ask(view, id, path, method, payload.to_vec()),
+        Err(refused) => view.reply(id, Err(refused)),
     }
     true
 }
@@ -49,9 +49,9 @@ type Method = (&'static str, fn(&Path, &[u8]) -> Answer);
 /// `method` on the file at `path`, queued behind the view's earlier
 /// requests on it and answered as a reply; nothing touches the file for a
 /// request refused `in_flight_limit`.
-fn ask(guest: &mut Guest, id: u64, path: PathBuf, (stage, run): Method, payload: Vec<u8>) {
+fn ask(view: &mut View, id: u64, path: PathBuf, (stage, run): Method, payload: Vec<u8>) {
     let (tell, told) = tokio::sync::oneshot::channel();
-    let admitted = spawn_reply(guest, id, async move {
+    let admitted = spawn_reply(view, id, async move {
         told.await
             .unwrap_or_else(|_| Err(refusal(methods::refusal::HOST_FAULT, "the store job died")))
     });
@@ -68,9 +68,9 @@ fn ask(guest: &mut Guest, id: u64, path: PathBuf, (stage, run): Method, payload:
 /// This view's file on its own connection's network; a view from before
 /// the app's last (re)connect is refused, so it never writes into the next
 /// network's.
-fn file(guest: &Guest) -> Result<PathBuf, wire::Error> {
+fn file(view: &View) -> Result<PathBuf, wire::Error> {
     let rev = super::connection().lock().expect("views rpc").rev;
-    let connection = &guest.connection;
+    let connection = &view.connection;
     if connection.rev != rev {
         return Err(wire::Error::new(
             methods::refusal::STALE_CONNECTION,
@@ -85,7 +85,7 @@ fn file(guest: &Guest) -> Result<PathBuf, wire::Error> {
     }
     let config = crate::backend::config_dir()
         .map_err(|error| refusal(methods::refusal::HOST_FAULT, error))?;
-    Ok(path(&config, &connection.chain, guest.program))
+    Ok(path(&config, &connection.chain, view.program))
 }
 
 fn path(config: &Path, chain: &str, program: &str) -> PathBuf {
@@ -284,12 +284,12 @@ mod tests {
     fn a_get_behind_a_set_reads_it_off_the_window_thread() {
         let config = scratch();
         let file = path(&config, "dev#01", "chat");
-        let mut guest = crate::runtime::kernel::tests::guest();
+        let mut view = crate::runtime::kernel::tests::view();
         for nth in 0..20u64 {
             let value = nth.to_string().into_bytes();
             let asked = methods::encode(&("reads".to_owned(), Some(value)));
             ask(
-                &mut guest,
+                &mut view,
                 2 * nth,
                 file.clone(),
                 ("io.store.set", set),
@@ -297,7 +297,7 @@ mod tests {
             );
             let asked = methods::encode(&"reads".to_owned());
             ask(
-                &mut guest,
+                &mut view,
                 2 * nth + 1,
                 file.clone(),
                 ("io.store.get", get),
@@ -305,14 +305,14 @@ mod tests {
             );
         }
         assert!(
-            guest.pending.is_empty(),
+            view.pending.is_empty(),
             "answered on the window thread: {:?}",
-            guest.pending
+            view.pending
         );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut answered = Vec::new();
         while answered.len() < 40 && std::time::Instant::now() < deadline {
-            guest.replies.drain_into(&mut answered).unwrap();
+            view.replies.drain_into(&mut answered).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         let mut gets: Vec<(u64, Option<Vec<u8>>)> = answered
@@ -338,10 +338,10 @@ mod tests {
     fn the_quit_drain_waits_for_a_queued_set() {
         let config = scratch();
         let file = path(&config, "dev#01", "chat");
-        let mut guest = crate::runtime::kernel::tests::guest();
+        let mut view = crate::runtime::kernel::tests::view();
         let release = crate::runtime::kernel::tests::held(&file.to_string_lossy());
         let asked = methods::encode(&("last".to_owned(), Some(b"word".to_vec())));
-        ask(&mut guest, 0, file.clone(), ("io.store.set", set), asked);
+        ask(&mut view, 0, file.clone(), ("io.store.set", set), asked);
         assert!(!file.exists(), "the set waits behind the held job");
 
         let mut drained = std::pin::pin!(crate::runtime::kernel::drain());

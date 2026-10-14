@@ -293,7 +293,7 @@ impl Seats {
     }
 
     /// Every seat turned now. The AX door calls this before a read: a reply
-    /// the guest has answered is then in the tree the read draws (or, with
+    /// the view has answered is then in the tree the read draws (or, with
     /// a tick still to draw, in the next one), as the draw itself took
     /// it in before the seat left the draw path. The door's task yields to
     /// no other between a press and its read, so the seats' own reply wakes

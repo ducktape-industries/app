@@ -9,9 +9,9 @@ pub(super) struct HostState {
     pub(super) panic: Option<String>,
 }
 
-/// The guest's exports and the memory their bytes cross in (`wire::abi`).
+/// The view's exports and the memory their bytes cross in (`wire::abi`).
 pub(super) struct Exports {
-    /// read directly by the guest tests that poke a view's memory
+    /// read directly by the view tests that poke a view's memory
     pub(super) memory: Memory,
     alloc: TypedFunc<u32, u32>,
     init: TypedFunc<(), ()>,
@@ -37,7 +37,7 @@ impl Exports {
         })
     }
 
-    /// `bytes` in a buffer the guest allocated and owns from the next call on.
+    /// `bytes` in a buffer the view allocated and owns from the next call on.
     fn give(&self, store: &mut Store<HostState>, bytes: &[u8]) -> wasmtime::Result<(u32, u32)> {
         let len = u32::try_from(bytes.len())?;
         let ptr = self.alloc.call(&mut *store, len)?;
@@ -45,7 +45,7 @@ impl Exports {
         Ok((ptr, len))
     }
 
-    /// The bytes an answer names, copied out before the guest is entered
+    /// The bytes an answer names, copied out before the view is entered
     /// again; nothing about the pair is trusted.
     fn answer(&self, store: &Store<HostState>, packed: u64) -> wasmtime::Result<Vec<u8>> {
         let (ptr, len) = wire::abi::unpack(packed);
@@ -84,7 +84,7 @@ impl Exports {
     }
 
     /// The view's state, held to `MAX_SNAPSHOT_BYTES` on the length the
-    /// guest names, before the host copies a byte of it.
+    /// view names, before the host copies a byte of it.
     pub(super) fn snapshot(&self, store: &mut Store<HostState>) -> wasmtime::Result<Snapshot> {
         let packed = self.snapshot.call(&mut *store, ())?;
         // the answer's first byte is its result tag

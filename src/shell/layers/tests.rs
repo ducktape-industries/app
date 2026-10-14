@@ -326,7 +326,7 @@ pub(in crate::shell) fn frame(native: &mut VisualTestContext) {
     native.run_until_parked();
 }
 
-/// A guest tree's one line of text, 20px tall.
+/// A view tree's one line of text, 20px tall.
 pub(in crate::shell) fn line(text: &str) -> wire::Node {
     wire::Node::RichText {
         id: Some(wire::ElementIdWire::Name("line".into())),

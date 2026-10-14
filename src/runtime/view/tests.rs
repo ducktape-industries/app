@@ -1,7 +1,7 @@
 use super::*;
 
-fn label(guest: &Guest) -> (String, u32) {
-    match guest.frame.root.as_ref().expect("a tree") {
+fn label(view: &View) -> (String, u32) {
+    match view.frame.root.as_ref().expect("a tree") {
         wire::Node::Container(wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name(id)),
             interactivity: Some(interactivity),
@@ -46,8 +46,8 @@ fn an_unchanged_frame_takes_the_held_tree_without_walking_it() {
 }
 
 /// A view in WAT whose every tick answers the frame [`draw`] last wrote
-/// into its memory: the test plays the guest one frame at a time.
-fn scripted_view() -> Guest {
+/// into its memory: the test plays the view one frame at a time.
+fn scripted_view() -> View {
     let module = wasmtime::Module::new(
         engine(),
         r#"(module
@@ -59,13 +59,13 @@ fn scripted_view() -> Guest {
             (func (export "restore") (param i32 i32) (result i64) unreachable))"#,
     )
     .unwrap();
-    Guest::instantiate("scripted", &module, "scripted").unwrap()
+    View::instantiate("scripted", &module, "scripted").unwrap()
 }
 
-/// One tick of `guest`, answering with a frame whose tree is `children`.
-fn draw(guest: &mut Guest, children: Vec<wire::Node>) {
+/// One tick of `view`, answering with a frame whose tree is `children`.
+fn draw(view: &mut View, children: Vec<wire::Node>) {
     answer(
-        guest,
+        view,
         &crate::render::sent(wire::Frame {
             root: Some(wire::Node::Container(view_wire::ContainerNode {
                 id: None,
@@ -76,20 +76,20 @@ fn draw(guest: &mut Guest, children: Vec<wire::Node>) {
             ..Default::default()
         }),
     );
-    assert_eq!(guest.fault, None);
+    assert_eq!(view.fault, None);
 }
 
-/// One tick of `guest`, answering with `frame` as it stands.
-fn answer(guest: &mut Guest, frame: &wire::Frame) {
+/// One tick of `view`, answering with `frame` as it stands.
+fn answer(view: &mut View, frame: &wire::Frame) {
     let frame = wire::encode(frame);
-    let memory = guest.exports.memory;
-    let at = memory.data_size(&guest.store) - frame.len();
-    memory.write(&mut guest.store, at, &frame).unwrap();
+    let memory = view.exports.memory;
+    let at = memory.data_size(&view.store) - frame.len();
+    memory.write(&mut view.store, at, &frame).unwrap();
     let answer = wire::abi::pack(at as u32, frame.len() as u32);
     memory
-        .write(&mut guest.store, 8, &answer.to_le_bytes())
+        .write(&mut view.store, 8, &answer.to_le_bytes())
         .unwrap();
-    guest.tick();
+    view.tick();
 }
 
 /// The host holds the style table of the tree it holds: a whole frame's
@@ -114,9 +114,9 @@ fn the_host_holds_a_trees_styles_and_refuses_a_style_it_does_not_hold() {
         styles: vec![wide.clone()],
         ..Default::default()
     };
-    let mut guest = scripted_view();
-    answer(&mut guest, &whole(0));
-    assert_eq!((guest.fault.as_deref(), guest.styles.len()), (None, 1));
+    let mut view = scripted_view();
+    answer(&mut view, &whole(0));
+    assert_eq!((view.fault.as_deref(), view.styles.len()), (None, 1));
 
     let patch = wire::Frame {
         patches: vec![wire::Patch::Replace {
@@ -126,30 +126,30 @@ fn the_host_holds_a_trees_styles_and_refuses_a_style_it_does_not_hold() {
         styles: vec![tall],
         ..Default::default()
     };
-    answer(&mut guest, &patch);
-    assert_eq!((guest.fault.as_deref(), guest.styles.len()), (None, 2));
-    assert_eq!(guest.frame.root, Some(boxed(1)));
+    answer(&mut view, &patch);
+    assert_eq!((view.fault.as_deref(), view.styles.len()), (None, 2));
+    assert_eq!(view.frame.root, Some(boxed(1)));
     assert_eq!(
-        guest.styles[wire::StyleId(1)].size.height,
+        view.styles[wire::StyleId(1)].size.height,
         gpui_kit::div().h_full().style().size.height,
         "the patch's node names the entry the patch brought"
     );
 
-    answer(&mut guest, &whole(0));
+    answer(&mut view, &whole(0));
     assert_eq!(
-        (guest.fault.as_deref(), guest.styles.len()),
+        (view.fault.as_deref(), view.styles.len()),
         (None, 1),
         "a whole frame's table is the table"
     );
 
     // the id the patch's entry had, in a table that no longer holds it
-    answer(&mut guest, &whole(1));
+    answer(&mut view, &whole(1));
     assert_eq!(
-        guest.fault.as_deref(),
+        view.fault.as_deref(),
         Some("a node names a style its table does not hold")
     );
     assert_eq!(
-        guest.frame.root,
+        view.frame.root,
         Some(boxed(0)),
         "the refused tree is not held"
     );
@@ -198,10 +198,10 @@ fn inline_picture_bytes(mut root: wire::Node) -> usize {
 #[test]
 fn a_picture_named_by_every_node_is_held_once() {
     const PICTURE: usize = wire::MAX_PICTURE_BYTES_PER_FRAME;
-    let mut guest = scripted_view();
-    draw(&mut guest, vec![image(1, Some(PICTURE))]);
-    draw(&mut guest, (0..8_000).map(|_| image(1, None)).collect());
-    let (tree, held) = guest.drawn();
+    let mut view = scripted_view();
+    draw(&mut view, vec![image(1, Some(PICTURE))]);
+    draw(&mut view, (0..8_000).map(|_| image(1, None)).collect());
+    let (tree, held) = view.drawn();
     assert_eq!(tree.root.count(), 8_001);
     assert_eq!(
         inline_picture_bytes(tree.root),
@@ -209,9 +209,9 @@ fn a_picture_named_by_every_node_is_held_once() {
         "the tree drawn names the picture by hash alone"
     );
     assert_eq!(held.raster.len(), 1);
-    assert_eq!(guest.pictures.bytes(), PICTURE as u64);
+    assert_eq!(view.pictures.bytes(), PICTURE as u64);
     assert!(
-        Arc::ptr_eq(&held, &guest.pictures.held()),
+        Arc::ptr_eq(&held, &view.pictures.held()),
         "the renderer reads the store's own bytes"
     );
 }
@@ -224,16 +224,16 @@ fn a_picture_named_by_every_node_is_held_once() {
 fn a_view_drawing_a_fresh_picture_every_tick_stays_in_its_budget() {
     use crate::runtime::pictures::MAX_PICTURE_BYTES;
     const PICTURE: usize = wire::MAX_PICTURE_BYTES_PER_FRAME;
-    let mut guest = scripted_view();
+    let mut view = scripted_view();
     let mut told = None;
     for hash in 0..MAX_PICTURE_BYTES / PICTURE as u64 + 2 {
-        draw(&mut guest, vec![image(hash, Some(PICTURE))]);
+        draw(&mut view, vec![image(hash, Some(PICTURE))]);
         assert!(
-            guest.pictures.bytes() <= MAX_PICTURE_BYTES,
+            view.pictures.bytes() <= MAX_PICTURE_BYTES,
             "{} bytes held after picture {hash}",
-            guest.pictures.bytes()
+            view.pictures.bytes()
         );
-        if told.is_none() && guest.pending.contains(&wire::Event::Resync) {
+        if told.is_none() && view.pending.contains(&wire::Event::Resync) {
             told = Some(hash);
         }
     }
@@ -243,31 +243,31 @@ fn a_view_drawing_a_fresh_picture_every_tick_stays_in_its_budget() {
         MAX_PICTURE_BYTES / PICTURE as u64,
         "the first picture past it"
     );
-    let held = guest.pictures.held();
+    let held = view.pictures.held();
     assert!(held.raster.contains_key(&told), "what the tree names stays");
     assert!(
         !held.raster.contains_key(&0),
         "what it no longer names went"
     );
 
-    draw(&mut guest, vec![image(0, Some(PICTURE))]);
+    draw(&mut view, vec![image(0, Some(PICTURE))]);
     assert!(
-        guest.pictures.held().raster.contains_key(&0),
+        view.pictures.held().raster.contains_key(&0),
         "drawn again, held again"
     );
 }
 
-/// Every export of a real view, through guest memory and the swap a
+/// Every export of a real view, through view memory and the swap a
 /// deployment takes: the drawn view ticked, its state carried into a fresh
 /// instance of the same code, and that instance's first tree drawn from
-/// it. The bytes are view-guest's `exported_view` example built for wasm32
+/// it. The bytes are the view crate's `exported_view` example built for wasm32
 /// by the programs repo's `make view-wasm-check`, named by `DUCKTAPE_VIEW_PROBE`.
 #[test]
 #[ignore = "needs DUCKTAPE_VIEW_PROBE=<exported_view.wasm>"]
 fn a_ticked_view_survives_a_swap_with_its_state() {
     let path = std::env::var("DUCKTAPE_VIEW_PROBE").expect("DUCKTAPE_VIEW_PROBE");
     let bytes = std::fs::read(path).expect("probe bytes");
-    let mut old = Guest::from_bytes("probe", &bytes, "probe").expect("loads");
+    let mut old = View::from_bytes("probe", &bytes, "probe").expect("loads");
     assert_eq!(old.name, "Exported");
     assert_eq!(old.min_width, 480, "the probe declares none: the default");
     old.tick();
@@ -294,13 +294,13 @@ fn a_ticked_view_survives_a_swap_with_its_state() {
     let alive = old.alive.clone();
     let mounted = Mounted::seat();
     mounted.lock().unwrap().slot = Slot::Ready(Box::new(old));
-    let code = Guest::compile(&bytes, "probe")
+    let code = View::compile(&bytes, "probe")
         .map_err(|f| f.to_string())
         .expect("compiles");
-    let fresh = Guest::instantiate("probe", &code, "probe").expect("instantiates");
+    let fresh = View::instantiate("probe", &code, "probe").expect("instantiates");
     let mut ticks = 0;
     let mut timing = LoadTiming::default();
-    let fresh = Guest::replacement(
+    let fresh = View::replacement(
         fresh,
         &alive,
         &mut ticks,
@@ -314,8 +314,8 @@ fn a_ticked_view_survives_a_swap_with_its_state() {
     assert!(fresh.staged && fresh.fault.is_none());
     assert_eq!(label(&fresh).0, "1", "drawn from the state it was handed");
 
-    // a state that is not the view's own is the guest's refusal, not a trap
-    let mut next = Guest::instantiate("probe", &code, "probe").expect("instantiates");
+    // a state that is not the view's own is the view's refusal, not a trap
+    let mut next = View::instantiate("probe", &code, "probe").expect("instantiates");
     assert!(matches!(
         next.restore(b"not a snapshot", "probe"),
         Ok(Restored::Refused(_))
@@ -334,9 +334,9 @@ fn a_view_says_its_min_width_once_it_is_drawn() {
     assert_eq!(min_width("min-width-seat"), None, "loading");
     seat.lock().unwrap().slot = Slot::Compiled(ViewCode::for_test("", "", 640));
     assert_eq!(min_width("min-width-seat"), Some(640.), "its manifest's");
-    let mut guest = wat_view("unreachable", "unreachable", None);
-    guest.min_width = 680;
-    seat.lock().unwrap().slot = Slot::Ready(Box::new(guest));
+    let mut view = wat_view("unreachable", "unreachable", None);
+    view.min_width = 680;
+    seat.lock().unwrap().slot = Slot::Ready(Box::new(view));
     assert_eq!(min_width("min-width-seat"), Some(680.));
     registry().lock().unwrap().remove(&("min-width-seat", 7));
     assert_eq!(min_width("min-width-seat"), None, "gone");
@@ -398,21 +398,21 @@ fn wat_code(snapshot: &str, restore: &str, tick: Option<&[u8]>) -> wasmtime::Mod
 }
 
 /// A drawn instance of [`wat_code`].
-fn wat_view(snapshot: &str, restore: &str, tick: Option<&[u8]>) -> Guest {
-    Guest::instantiate("wat", &wat_code(snapshot, restore, tick), "wat").unwrap()
+fn wat_view(snapshot: &str, restore: &str, tick: Option<&[u8]>) -> View {
+    View::instantiate("wat", &wat_code(snapshot, restore, tick), "wat").unwrap()
 }
 
 /// An instance of `code` prepared as the replacement of `old`, seated as a
 /// drawn view that ticked.
-fn swap(mut old: Guest, code: wasmtime::Module) -> (Result<Guest, Failure>, Arc<Mutex<Mounted>>) {
+fn swap(mut old: View, code: wasmtime::Module) -> (Result<View, Failure>, Arc<Mutex<Mounted>>) {
     old.ticks = 1;
     let alive = old.alive.clone();
     let mounted = Mounted::seat();
     mounted.lock().unwrap().slot = Slot::Ready(Box::new(old));
-    let fresh = Guest::instantiate("wat", &code, "wat").unwrap();
+    let fresh = View::instantiate("wat", &code, "wat").unwrap();
     let mut ticks = 0;
     let mut timing = LoadTiming::default();
-    let swapped = Guest::replacement(
+    let swapped = View::replacement(
         fresh,
         &alive,
         &mut ticks,
@@ -424,12 +424,12 @@ fn swap(mut old: Guest, code: wasmtime::Module) -> (Result<Guest, Failure>, Arc<
     (swapped, mounted)
 }
 
-fn init_ran(guest: &Guest) -> bool {
-    guest.exports.memory.data(&guest.store)[2] == 1
+fn init_ran(view: &View) -> bool {
+    view.exports.memory.data(&view.store)[2] == 1
 }
 
-/// Every arm of `Guest::replacement` a real view cannot be made to take on
-/// demand: the state past its budget, the guest refusing the state, the
+/// Every arm of `View::replacement` a real view cannot be made to take on
+/// demand: the state past its budget, the view refusing the state, the
 /// restore trapping and the drawn view's own snapshot trapping (each of
 /// those starts clean), and the first frame trapping (no replacement).
 #[test]
@@ -461,7 +461,7 @@ fn a_replacement_takes_the_state_it_is_handed_or_says_why_not() {
     let fresh = swapped.expect("a full budget carries over");
     assert!(fresh.staged && !init_ran(&fresh), "restored, not inited");
 
-    // the guest refuses the state as not its own: it inits instead
+    // the view refuses the state as not its own: it inits instead
     let (swapped, _) = swap(
         wat_view(&ok(1), &ok(1), Some(&frame)),
         wat_code(&ok(1), &refused, Some(&frame)),
@@ -528,7 +528,7 @@ fn a_stopped_view_is_replaced_by_the_next_deployment() {
     assert!(fresh.staged && init_ran(&fresh), "started clean");
 }
 
-/// The host leaves busy (out of budget, ticking again soon) to the guest:
+/// The host leaves busy (out of budget, ticking again soon) to the view:
 /// a view whose snapshot answers mid-work swaps with its state, and one
 /// that says it cannot hand it over yet holds its replacement off, its
 /// state kept, in its own words.
@@ -581,7 +581,7 @@ fn counting_code() -> Module {
     let state = wire::abi::pack(32, 2);
     let restored = wire::abi::pack(48, 1);
     Module::new(
-        guest::engine(),
+        view::engine(),
         format!(
             r#"(module
             (memory (export "memory") 2)
@@ -607,8 +607,8 @@ fn counting_code() -> Module {
 }
 
 /// The count a [`counting_code`] view holds.
-fn count(guest: &Guest) -> u8 {
-    guest.exports.memory.data(&guest.store)[16]
+fn count(view: &View) -> u8 {
+    view.exports.memory.data(&view.store)[16]
 }
 
 /// A seat holding a [`counting_code`] view of `program`, inited and drawn
@@ -616,7 +616,7 @@ fn count(guest: &Guest) -> u8 {
 /// load a block would start for a new deployment of it.
 fn counting_seat(program: &'static str) -> (Arc<Module>, Arc<()>, Load) {
     let code = Arc::new(counting_code());
-    let mut old = Guest::instantiate(program, &code, program).unwrap();
+    let mut old = View::instantiate(program, &code, program).unwrap();
     old.capabilities = vec![Capability::Clock];
     old.init(program).unwrap();
     old.redraw(&None);
@@ -656,11 +656,11 @@ fn a_view_ticking_on_a_clock_swaps_to_new_code_with_its_state() {
     let (code, alive, load) = counting_seat("ticking-swap");
     let seat = load.seat.clone();
     load.land(|load, timing| {
-        let mut fresh = Guest::instantiate(load.program, &code, load.program).unwrap();
+        let mut fresh = View::instantiate(load.program, &code, load.program).unwrap();
         // as `load` seats the manifest's targets on what it prepares
         fresh.targets = vec!["chat".into()];
         let mut ticks = 0;
-        let fresh = Guest::replacement(
+        let fresh = View::replacement(
             fresh,
             &alive,
             &mut ticks,
@@ -713,9 +713,9 @@ fn a_swap_refused_at_install_is_asked_again() {
     let (code, alive) = (&code, &alive);
     let prepared = |event: bool| {
         move |load: &Load, timing: &mut LoadTiming| {
-            let fresh = Guest::instantiate(load.program, code, load.program).unwrap();
+            let fresh = View::instantiate(load.program, code, load.program).unwrap();
             let mut ticks = 0;
-            let fresh = Guest::replacement(
+            let fresh = View::replacement(
                 fresh,
                 alive,
                 &mut ticks,
@@ -786,10 +786,10 @@ fn a_swap_refused_at_install_is_asked_again() {
 fn the_hold_of_a_swap_handed_over_again() {
     let path = std::env::var("DUCKTAPE_VIEW_PROBE").expect("DUCKTAPE_VIEW_PROBE");
     let bytes = std::fs::read(path).expect("probe bytes");
-    let code = Guest::compile(&bytes, "probe")
+    let code = View::compile(&bytes, "probe")
         .map_err(|f| f.to_string())
         .expect("compiles");
-    let mut old = Guest::from_bytes("probe", &bytes, "probe").expect("loads");
+    let mut old = View::from_bytes("probe", &bytes, "probe").expect("loads");
     // turned as the window thread turns it until it hands its state over:
     // its first requests answered (refused, with no node) and taken in
     let settled_by = Instant::now() + Duration::from_secs(5);
@@ -808,12 +808,12 @@ fn the_hold_of_a_swap_handed_over_again() {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    let like = Guest::instantiate("probe", &code, "probe").expect("instantiates");
+    let like = View::instantiate("probe", &code, "probe").expect("instantiates");
     let mut held: Vec<_> = (0..20)
         .map(|_| {
             let mut timing = LoadTiming::default();
             let taken = Instant::now();
-            let fresh = Guest::prepared_again(&mut old, &like, &code, "probe", &mut timing)
+            let fresh = View::prepared_again(&mut old, &like, &code, "probe", &mut timing)
                 .expect("handed over again");
             let held = taken.elapsed();
             assert!(fresh.staged && fresh.fault.is_none());
@@ -852,14 +852,14 @@ fn resident_at_the_picture_budget(picture: usize) {
         children.extend((0..8_000).map(|_| image(0, None)));
         children
     };
-    let mut guest = scripted_view();
-    draw(&mut guest, Vec::new());
+    let mut view = scripted_view();
+    draw(&mut view, Vec::new());
     let before = resident_mib();
     for last in 0..full {
-        draw(&mut guest, tree(last));
+        draw(&mut view, tree(last));
     }
     let filled = resident_mib();
-    let drawn = guest.drawn();
+    let drawn = view.drawn();
     let handed = resident_mib();
     let (nodes, held) = (
         drawn.0.root.count(),
@@ -873,7 +873,7 @@ fn resident_at_the_picture_budget(picture: usize) {
     // the seat hands its tree the store's bytes anew with every frame
     drop(drawn);
     for last in full..2 * full {
-        draw(&mut guest, vec![image(last, Some(picture))]);
+        draw(&mut view, vec![image(last, Some(picture))]);
     }
     let churned = resident_mib();
     println!(
@@ -881,7 +881,7 @@ fn resident_at_the_picture_budget(picture: usize) {
         filled - before,
         handed - before,
         churned - before,
-        guest.pictures.bytes(),
+        view.pictures.bytes(),
     );
 }
 
@@ -914,20 +914,19 @@ fn a_web_piece_from_a_view_without_the_web_capability_ends_the_view() {
     declaring.capabilities = vec![Capability::Web];
     draw(&mut declaring, vec![page()]);
 
-    let mut guest = scripted_view();
+    let mut view = scripted_view();
     answer(
-        &mut guest,
+        &mut view,
         &crate::render::sent(wire::Frame {
             root: Some(page()),
             ..Default::default()
         }),
     );
     assert!(
-        guest
-            .fault
+        view.fault
             .as_deref()
             .is_some_and(|fault| fault.contains("`web`")),
         "{:?}",
-        guest.fault
+        view.fault
     );
 }

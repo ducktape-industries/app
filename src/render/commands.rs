@@ -1,4 +1,4 @@
-//! What a guest asks of the mounted tree between frames: widget commands
+//! What a view asks of the mounted tree between frames: widget commands
 //! (`host.widget`: focus, cursor, scroll, a field's edit) on the node at
 //! the whole authored path they name, the walk that names those paths, the
 //! user-activation mark an event may spend, the entry a dialog gives the
@@ -120,7 +120,7 @@ impl ViewTree {
         self.activation.set(Some(std::time::Instant::now()));
     }
 
-    /// The activation, taken: the seat moves it to the guest.
+    /// The activation, taken: the seat moves it to the view.
     pub(crate) fn take_activation(&self) -> Option<std::time::Instant> {
         self.activation.take()
     }
@@ -147,7 +147,7 @@ impl ViewTree {
         match command {
             C::FocusHandle { handle } => {
                 let focus = self
-                    .guest_focus_targets
+                    .view_focus_targets
                     .get(&handle)
                     .ok_or_else(|| "focus handle is not mounted".to_string())?
                     .clone();
@@ -202,7 +202,7 @@ impl ViewTree {
     }
 
     /// Runs a focus, cursor, selection or editor command on the node at
-    /// `target`: a whole authored path, as the guest SDK names it from the
+    /// `target`: a whole authored path, as the view SDK names it from the
     /// frame it lowered, so two scopes holding one id are two targets. A
     /// node that cannot take the command answers so.
     pub(super) fn input_command(
@@ -237,7 +237,7 @@ impl ViewTree {
                 return Ok(());
             }
         }
-        // a field's edit is the guest's ask of the engine; a cursor command
+        // a field's edit is the view's ask of the engine; a cursor command
         // moves the caret where it is; only Focus takes the keys
         if let Some(field) = self.fields.get_mut(target) {
             let event = match command {

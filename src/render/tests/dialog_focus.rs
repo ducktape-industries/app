@@ -1,7 +1,7 @@
 //! A view dialog gives the keyboard back to what opened it (AX-120).
 use super::*;
 
-/// `button`, which the guest names by focus `handle`.
+/// `button`, which the view names by focus `handle`.
 fn handled(key: &str, name: &str, handle: u64) -> wire::Node {
     let mut node = button(key, name);
     if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut node {
@@ -53,7 +53,7 @@ fn close_gives_focus_back_to_the_opener(cx: &mut gpui_kit::TestAppContext, fallb
         })
     });
     let opener = tree
-        .read_with(&native, |tree, _| tree.guest_focus_targets.get(&1).cloned())
+        .read_with(&native, |tree, _| tree.view_focus_targets.get(&1).cloned())
         .expect("the opener is drawn");
     let show = |native: &mut gpui_kit::VisualTestContext, open: bool| {
         tree.update(native, |tree, cx| tree.replace(screen(open), &[], cx));
@@ -95,7 +95,7 @@ fn a_closed_dialog_gives_focus_back_under_a_focus_lost_fallback(cx: &mut gpui_ki
     close_gives_focus_back_to_the_opener(cx, true);
 }
 
-/// A dialog whose guest may not move the keys (`ViewTree::keys_grant`
+/// A dialog whose view may not move the keys (`ViewTree::keys_grant`
 /// false: a background pane, or under Spotlight, with no gesture) opens
 /// without taking them: the keys stay where they were.
 #[gpui_kit::test]
@@ -108,7 +108,7 @@ fn a_dialog_takes_no_keys_without_the_grant(cx: &mut gpui_kit::TestAppContext) {
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| window.render_frame(cx));
     let opener = tree
-        .read_with(&native, |tree, _| tree.guest_focus_targets.get(&1).cloned())
+        .read_with(&native, |tree, _| tree.view_focus_targets.get(&1).cloned())
         .expect("the opener is drawn");
     native.update(|window, cx| opener.focus(window, cx));
     tree.update(&mut native, |tree, cx| tree.replace(screen(true), &[], cx));
@@ -121,14 +121,14 @@ fn a_dialog_takes_no_keys_without_the_grant(cx: &mut gpui_kit::TestAppContext) {
     );
 }
 
-/// The guest focus handle that has the keys, if one has.
+/// The view focus handle that has the keys, if one has.
 fn holder(
     tree: &gpui_kit::Entity<ViewTree>,
     native: &mut gpui_kit::VisualTestContext,
 ) -> Option<u64> {
     let focused = native.update(|window, cx| window.focused(cx))?;
     tree.read_with(native, |tree, _| {
-        tree.guest_focus_targets
+        tree.view_focus_targets
             .iter()
             .find_map(|(handle, focus)| (*focus == focused).then_some(*handle))
     })
@@ -153,7 +153,7 @@ fn tab_goes_round_a_view_dialog_and_never_out(cx: &mut gpui_kit::TestAppContext)
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| window.render_frame(cx));
     let opener = tree
-        .read_with(&native, |tree, _| tree.guest_focus_targets.get(&1).cloned())
+        .read_with(&native, |tree, _| tree.view_focus_targets.get(&1).cloned())
         .expect("the opener is drawn");
     native.update(|window, cx| opener.focus(window, cx));
     tree.update(&mut native, |tree, cx| tree.replace(screen(true), &[], cx));
@@ -180,7 +180,7 @@ fn tab_goes_round_a_view_dialog_and_never_out(cx: &mut gpui_kit::TestAppContext)
 
 /// A screen whose dialog the view wraps around it only once it opens
 /// (chat's Create channel, chat-view `ui/mod.rs` `with_create`): the
-/// opener, a button with no guest focus handle, moves under the overlay,
+/// opener, a button with no view focus handle, moves under the overlay,
 /// so its path changes — and its host focus handle dies — as it opens.
 fn wrapped(open: bool) -> wire::Node {
     let base = container("base", [button("open", "New channel")]);
@@ -325,7 +325,7 @@ fn a_popover_dialog_takes_the_keys_and_keeps_them(cx: &mut gpui_kit::TestAppCont
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| window.render_frame(cx));
     let opener = tree
-        .read_with(&native, |tree, _| tree.guest_focus_targets.get(&1).cloned())
+        .read_with(&native, |tree, _| tree.view_focus_targets.get(&1).cloned())
         .expect("the opener is drawn");
     native.update(|window, cx| opener.focus(window, cx));
     tree.update(&mut native, |tree, cx| tree.replace(popover(true), &[], cx));

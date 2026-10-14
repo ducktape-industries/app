@@ -165,7 +165,7 @@ pub(super) enum Slot {
     /// view's code and what its manifest says, which the rail and the
     /// layout read. The pane that claims it starts that code.
     Compiled(Box<ViewCode>),
-    Ready(Box<Guest>),
+    Ready(Box<View>),
     /// The active deployment verified, and it ships no view.
     Empty,
     Failed(Failure),
@@ -197,7 +197,7 @@ impl ViewCode {
         Box::new(ViewCode {
             blob: None,
             hash: [0; 32],
-            code: Arc::new(Module::new(guest::engine(), "(module)").unwrap()),
+            code: Arc::new(Module::new(view::engine(), "(module)").unwrap()),
             name: name.into(),
             icon: icon.into(),
             min_width,
@@ -290,7 +290,7 @@ pub(super) fn registry() -> &'static Registry {
     MOUNTED.get_or_init(Mutex::default)
 }
 
-/// Claim a preloaded seat or create a distinct guest for this view instance.
+/// Claim a preloaded seat or create a distinct view for this view instance.
 pub(super) fn mounted(program: &'static str, instance: u64) -> Arc<Mutex<Mounted>> {
     let code = roster().code(program);
     let mut registry = lock(registry());
@@ -299,8 +299,8 @@ pub(super) fn mounted(program: &'static str, instance: u64) -> Arc<Mutex<Mounted
     let snapshot = connection().lock().expect("views rpc").clone();
     let mut locked = lock(&seat);
     locked.instance = instance;
-    if let Slot::Ready(guest) = &mut locked.slot {
-        guest.instance = instance;
+    if let Slot::Ready(view) = &mut locked.slot {
+        view.instance = instance;
     }
     let first = locked.generation == 0;
     let asked = snapshot.client.is_some() || view_override(program).is_some();
@@ -323,7 +323,7 @@ pub(super) fn mounted(program: &'static str, instance: u64) -> Arc<Mutex<Mounted
     drop(registry);
     match load {
         Some(load) if here => load.land(|load, timing| {
-            Guest::start(load.program, load.code, load.generation, &load.seat, timing)
+            View::start(load.program, load.code, load.generation, &load.seat, timing)
         }),
         Some(load) => queue(load),
         None => {}
@@ -345,7 +345,7 @@ pub(crate) fn retry(program: &'static str, instance: u64) {
     };
     let snapshot = connection().lock().expect("views rpc").clone();
     let mut locked = lock(&seat);
-    let stopped = matches!(&locked.slot, Slot::Ready(guest) if guest.fault.is_some());
+    let stopped = matches!(&locked.slot, Slot::Ready(view) if view.fault.is_some());
     if stopped || matches!(locked.slot, Slot::Failed(_)) {
         locked.slot = Slot::Loading;
     }
@@ -452,10 +452,10 @@ fn next_load() -> Option<Load> {
 }
 
 impl Load {
-    /// The load itself, on a loader: [`Guest::load`], landed.
+    /// The load itself, on a loader: [`View::load`], landed.
     fn run(self) {
         self.land(|load, timing| {
-            Guest::load(
+            View::load(
                 load.program,
                 load.code,
                 &load.asked_of,
@@ -569,7 +569,7 @@ fn panicked(doing: &str, panic: &(dyn std::any::Any + Send)) -> Failure {
 
 /// Puts what a load came back with into the seat, if the seat still waits
 /// for this very load and, for a network's view, the app is still on the
-/// node it was asked of. A swap also drops the old `Guest` here, its store
+/// node it was asked of. A swap also drops the old `View` here, its store
 /// and memory with it. `true` when what it put there is `Compiled`: a seat
 /// no pane held when the load began, which a pane may hold by now.
 fn install(
@@ -611,15 +611,15 @@ fn install(
         ..
     } = &mut *locked;
     match loaded {
-        Loaded::Fresh(mut guest) => {
-            guest.instance = *instance;
-            guest.installed_generation = Some(generation);
-            guest.report_display_truncation();
-            *slot = Slot::Ready(guest);
+        Loaded::Fresh(mut view) => {
+            view.instance = *instance;
+            view.installed_generation = Some(generation);
+            view.report_display_truncation();
+            *slot = Slot::Ready(view);
         }
         Loaded::Unchanged => {
-            if let Slot::Ready(guest) = slot {
-                guest.reconnect(&current);
+            if let Slot::Ready(view) = slot {
+                view.reconnect(&current);
             }
         }
         Loaded::Empty => {
@@ -667,13 +667,13 @@ fn install(
 /// race it. Why there is no replacement, if there is none.
 fn swapped(
     slot: &mut Slot,
-    mut fresh: Box<Guest>,
+    mut fresh: Box<View>,
     alive: &Arc<()>,
     ticks: u64,
     code: &Module,
     shown: &str,
     timing: &mut LoadTiming,
-) -> Result<Box<Guest>, String> {
+) -> Result<Box<View>, String> {
     let Slot::Ready(old) = slot else {
         return Err("the view left while its replacement was prepared".into());
     };
@@ -681,7 +681,7 @@ fn swapped(
         return Err("the view changed while its replacement was prepared".into());
     }
     if old.ticks != ticks || !old.settled() {
-        fresh = Guest::prepared_again(old, &fresh, code, shown, timing)
+        fresh = View::prepared_again(old, &fresh, code, shown, timing)
             .map(Box::new)
             .map_err(|failure| failure.to_string())?;
     }
@@ -700,7 +700,7 @@ fn swapped(
 /// What a load came back with.
 pub(super) enum Loaded {
     /// A view where there was none.
-    Fresh(Box<Guest>),
+    Fresh(Box<View>),
     /// The view already drawn is the active deployment's.
     Unchanged,
     /// A prepared replacement for the view drawn: restored from its
@@ -708,7 +708,7 @@ pub(super) enum Loaded {
     /// instance it was prepared against, and `code`, named `shown`, is what
     /// it is an instance of.
     Swap {
-        fresh: Box<Guest>,
+        fresh: Box<View>,
         alive: Arc<()>,
         ticks: u64,
         code: Arc<Module>,
