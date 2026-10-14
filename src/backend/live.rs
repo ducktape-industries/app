@@ -56,7 +56,8 @@ const DATA_BACKLOG: usize = 64;
 /// Objects one publication holds: before the node took it, and while its
 /// stream is behind. Past it a send is refused `in_flight_limit`.
 pub(crate) const OUTBOX: usize = 64;
-/// The keep-alive and idle limit of a session: halo's.
+/// The keep-alive and idle limit of a session, on QUIC and the websocket
+/// alike: halo's.
 const KEEP_ALIVE: Duration = Duration::from_secs(10);
 const IDLE: Duration = Duration::from_secs(30);
 /// How long a quitting app waits for its session's close to leave, so the
@@ -1136,67 +1137,86 @@ impl Link {
             }
             Link::Ws {
                 socket,
-                mut queue,
-                mut controls,
-            } => {
-                let (mut sink, mut stream) = (*socket).split();
-                let writer = conn.clone();
-                tokio::spawn(async move {
-                    loop {
-                        // control first: an answer never waits behind a group
-                        let frame = tokio::select! {
-                            biased;
-                            Some(control) = controls.recv() => WsFrame::Control(control),
-                            Some(frame) = queue.recv() => frame,
-                            else => break,
-                        };
-                        if sink
-                            .send(Message::Binary(abi::encode(&frame)))
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    writer.close("the live socket closed");
-                });
-                tokio::spawn(async move {
-                    let why = loop {
-                        let bytes = match stream.next().await {
-                            Some(Ok(Message::Binary(bytes))) => bytes,
-                            Some(Ok(_)) => continue,
-                            _ => break "the live socket closed",
-                        };
-                        match abi::decode::<WsFrame>(&bytes) {
-                            Ok(WsFrame::Control(control)) => {
-                                if let Err(why) = conn.heard(control) {
-                                    break why;
-                                }
-                            }
-                            Ok(WsFrame::Group {
-                                header,
-                                objects,
-                                end,
-                            }) => heard_slice(&conn, header, objects, end),
-                            Ok(WsFrame::Datagram { header, payload }) => {
-                                let object = Data::Object {
-                                    group: header.group,
-                                    object: header.object,
-                                    body: payload,
-                                };
-                                conn.deliver_latest(header.alias, object);
-                            }
-                            Err(error) => {
-                                let what = undecoded("frame", &bytes, error);
-                                return conn.fail(mismatch(what));
-                            }
-                        }
-                    };
-                    conn.close(why);
-                });
-            }
+                queue,
+                controls,
+            } => run_ws(*socket, queue, controls, conn),
         }
     }
+}
+
+/// The websocket's two halves for a session. Out: frames, control first,
+/// and a ping every [`KEEP_ALIVE`], so no proxy on the way sees the socket
+/// idle (Cloudflare's tunnel closes one after about two minutes). In:
+/// frames, and the session ends after [`IDLE`] with nothing heard, the
+/// node's pongs included: the QUIC path's keep-alive and idle limit. The
+/// writer stops at its first tick after the session closed.
+fn run_ws<S>(
+    socket: tokio_tungstenite::WebSocketStream<S>,
+    mut queue: mpsc::UnboundedReceiver<WsFrame>,
+    mut controls: mpsc::UnboundedReceiver<Control>,
+    conn: Arc<Conn>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let (mut sink, mut stream) = socket.split();
+    let writer = conn.clone();
+    tokio::spawn(async move {
+        let mut ping = tokio::time::interval(KEEP_ALIVE);
+        loop {
+            // control first: an answer never waits behind a group
+            let message = tokio::select! {
+                biased;
+                Some(control) = controls.recv() => {
+                    Message::Binary(abi::encode(&WsFrame::Control(control)))
+                }
+                Some(frame) = queue.recv() => Message::Binary(abi::encode(&frame)),
+                _ = ping.tick() => match writer.closed.load(Ordering::SeqCst) {
+                    true => break,
+                    false => Message::Ping(Vec::new()),
+                },
+            };
+            if sink.send(message).await.is_err() {
+                break;
+            }
+        }
+        let _ = sink.close().await;
+        writer.close("the live socket closed");
+    });
+    tokio::spawn(async move {
+        let why = loop {
+            let bytes = match tokio::time::timeout(IDLE, stream.next()).await {
+                Ok(Some(Ok(Message::Binary(bytes)))) => bytes,
+                Ok(Some(Ok(_))) => continue,
+                Ok(_) => break "the live socket closed",
+                Err(_) => break "the live socket went quiet",
+            };
+            match abi::decode::<WsFrame>(&bytes) {
+                Ok(WsFrame::Control(control)) => {
+                    if let Err(why) = conn.heard(control) {
+                        break why;
+                    }
+                }
+                Ok(WsFrame::Group {
+                    header,
+                    objects,
+                    end,
+                }) => heard_slice(&conn, header, objects, end),
+                Ok(WsFrame::Datagram { header, payload }) => {
+                    let object = Data::Object {
+                        group: header.group,
+                        object: header.object,
+                        body: payload,
+                    };
+                    conn.deliver_latest(header.alias, object);
+                }
+                Err(error) => {
+                    let what = undecoded("frame", &bytes, error);
+                    return conn.fail(mismatch(what));
+                }
+            }
+        };
+        conn.close(why);
+    });
 }
 
 /// One length-prefixed control message: a stream that ends or breaks is

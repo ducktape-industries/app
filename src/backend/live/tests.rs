@@ -853,3 +853,35 @@ fn the_newest_unread_object_replaces_the_one_before_and_is_counted() {
     assert_eq!(latest.dropped(), 1);
     assert_eq!(latest.dropped(), 0);
 }
+
+/// Over the websocket the app pings every `KEEP_ALIVE`, so no proxy on the
+/// way sees the socket idle; a node that answers the pings keeps the
+/// session past `IDLE`, and one that falls silent ends it at `IDLE`.
+#[tokio::test(start_paused = true)]
+async fn the_websocket_is_kept_alive_and_a_silent_one_ends() {
+    use tokio_tungstenite::{WebSocketStream, tungstenite::protocol::Role};
+    let (app, node) = tokio::io::duplex(1 << 16);
+    let app = WebSocketStream::from_raw_socket(app, Role::Client, None).await;
+    let mut node = WebSocketStream::from_raw_socket(node, Role::Server, None).await;
+    let (control, controls) = mpsc::unbounded_channel();
+    let (frames, queue) = mpsc::unbounded_channel();
+    let conn = Arc::new(Conn {
+        path: Path::Ws(frames),
+        udp: None,
+        control,
+        table: Mutex::new(Table::default()),
+        next: AtomicU64::new(1),
+        closed: AtomicBool::new(false),
+        client: Weak::new(),
+    });
+    run_ws(app, queue, controls, conn.clone());
+    // the node reads, and reading answers each ping
+    for _ in 0..4 {
+        let heard = tokio::time::timeout(KEEP_ALIVE * 2, node.next()).await;
+        assert!(matches!(heard, Ok(Some(Ok(Message::Ping(_))))));
+    }
+    assert!(!conn.closed.load(Ordering::SeqCst));
+    // the node stops reading: its last pong left a ping ago
+    tokio::time::sleep(IDLE).await;
+    assert!(conn.closed.load(Ordering::SeqCst));
+}
