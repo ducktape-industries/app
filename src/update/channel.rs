@@ -384,7 +384,18 @@ impl Updater {
                     }
                     self.banner = Some(banner);
                 }
-                Command::Gc { keep } => stage::collect(&self.layout.releases_dir(), &keep),
+                Command::Gc { keep } => {
+                    stage::collect(&self.layout.releases_dir(), &keep);
+                    // `previous` naming a release that went goes with it
+                    let previous = self.layout.previous_link();
+                    let named = super::read_link(&previous).ok().flatten();
+                    let gone = named.is_some_and(|target| {
+                        !keep.iter().any(|sha| target == Layout::link_target(*sha))
+                    });
+                    if gone && let Err(refusal) = super::remove_leftover(&previous) {
+                        warn!(target: TARGET, event = "app_update_gc_failed", reason = refusal.reason, detail = %refusal.detail);
+                    }
+                }
                 // the boot step's; no event the running app raises leads here
                 command @ (Command::Qualify(_)
                 | Command::ResolveSwap { .. }

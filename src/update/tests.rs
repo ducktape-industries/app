@@ -530,6 +530,10 @@ mod linux {
             (a, b, pin + 1, pin)
         );
         assert_eq!(updater.phase(), &Phase::Staged(staged));
+        assert!(
+            !layout.releases_dir().join(format!("{b}.partial")).exists(),
+            "the partial it was extracted from went"
+        );
         for path in [layout.release_dir(b), layout.release_exe(b)] {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o200, 0o200, "{} is read-only", path.display());
@@ -1024,6 +1028,11 @@ mod linux {
         let Boot::Run(phase @ Phase::RolledBack(_)) = booted else {
             panic!("{booted:?}");
         };
+        // what an earlier flip left, and a download that never finished
+        let earlier = layout.release_dir(Sha::digest(b"earlier"));
+        std::fs::create_dir_all(&earlier).unwrap();
+        let partial = layout.releases_dir().join(format!("{b}.partial"));
+        std::fs::write(&partial, b"part").unwrap();
 
         // A runs, reads the rollback, and the channel's B is not taken again
         let mut running =
@@ -1038,12 +1047,19 @@ mod linux {
             state(&layout),
             Phase::Idle(Idle {
                 current: a,
-                previous: Some(b),
+                previous: None,
                 pinned_sequence: pin + 1
             })
         );
         let archive = layout::archive_name(&b, &Platform::HOST.key());
         assert_eq!(bucket.asked_for(&archive), 1, "B was downloaded once");
+        // the rollback's leftovers went: only what runs is on disk
+        let left: Vec<_> = std::fs::read_dir(layout.releases_dir())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(left, [std::ffi::OsString::from(a.to_string())]);
+        assert!(std::fs::symlink_metadata(layout.previous_link()).is_err());
     }
 }
 
@@ -1302,12 +1318,16 @@ mod macos {
             state(&layout),
             Phase::Idle(Idle {
                 current: a,
-                previous: Some(b),
+                previous: None,
                 pinned_sequence: pin + 1
             })
         );
         let archive = layout::archive_name(&b, &Platform::HOST.key());
         assert_eq!(bucket.asked_for(&archive), 1, "B was downloaded once");
+        // the failed bundle and its partial went: A is installed, and
+        // nothing is kept beside it
+        assert_eq!(std::fs::read_dir(layout.releases_dir()).unwrap().count(), 0);
+        assert!(std::fs::symlink_metadata(layout.previous_link()).is_err());
         // nothing the updates laid down needs a chmod to go
         std::fs::remove_dir_all(root.path()).unwrap();
     }

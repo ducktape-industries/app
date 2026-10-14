@@ -13,7 +13,7 @@
 //!   with a host artifact that is not `current` → `Downloading` +
 //!   `Download`; equal to the pin → `Banner(UpToDate)`; older →
 //!   `Refused(SequenceNotNewer)`. `DownloadFinished` → `Verify`; `Verified` →
-//!   (`PinSuccessor`) → `Staged` + `Banner(Ready)`.
+//!   (`PinSuccessor`) → `Staged` + `Gc` (the partial) + `Banner(Ready)`.
 //! - `Boot` while `Staged` → `Qualify`; `QualifyPassed` → `Persist(Swapping)`
 //!   → `Flip` → `Persist(PendingHealthy{boots: 0})` → `Exec`, the swap
 //!   adopting the staged sequence as the pin; `QualifyFailed` → stay
@@ -30,7 +30,9 @@
 //!   `RolledBack` → `Exec`. `Boot` while `Swapping` → `ResolveSwap`;
 //!   `SwapResolved` finishes the swap from whichever side landed.
 //!   `pinned_sequence` never lowers, so the release rolled back from is not
-//!   downloaded again: a newer sequence supersedes it.
+//!   downloaded again: a newer sequence supersedes it. The app reads the
+//!   rollback (`DismissRollbackNotice`) → `Idle` + `Gc`: the failed release
+//!   and whatever the flip left go.
 //! - `ChannelChanged` drops a release the old channel offered: `Downloading`
 //!   or `Staged` → `Persist(Idle)` + `Gc`. What runs and its pin stay, so a
 //!   switch never downgrades: the next check takes the new channel's release
@@ -316,7 +318,9 @@ fn downloading_download_failed(
     abandon_download(downloading, banner)
 }
 
-/// Verified: record any announced successor key, and offer the restart. The pin stays: it advances at the flip.
+/// Verified: record any announced successor key, collect the partial it was
+/// extracted from, and offer the restart. The pin stays: it advances at the
+/// flip.
 fn downloading_verified(downloading: Downloading, sha: Sha) -> (Phase, Vec<Command>) {
     let is_stale = sha != downloading.target;
     if is_stale {
@@ -341,6 +345,11 @@ fn downloading_verified(downloading: Downloading, sha: Sha) -> (Phase, Vec<Comma
         .into_iter()
         .collect();
     commands.push(Command::Persist(staged.clone()));
+    let keep = [downloading.current, downloading.target]
+        .into_iter()
+        .chain(downloading.previous)
+        .collect();
+    commands.push(Command::Gc { keep });
     commands.push(Command::Banner(banner));
     (staged, commands)
 }
@@ -563,15 +572,20 @@ fn pending_healthy_rendered(pending: PendingHealthy) -> (Phase, Vec<Command>) {
 
 // --- RolledBack ------------------------------------------------------------
 
-/// Read: `failed` stays as `previous`, and the pin keeps its sequence, so it
-/// is not downloaded again; a newer sequence supersedes it.
+/// Read: only what runs is kept. The failed release never came up, so it is
+/// nothing to go back to, and it goes with whatever the flip left (the
+/// release before the last one, a partial). The pin keeps its sequence, so
+/// it is not downloaded again; a newer sequence supersedes it.
 fn rolled_back_dismiss(rolled_back: RolledBack) -> (Phase, Vec<Command>) {
     let idle = Phase::Idle(Idle {
         current: rolled_back.current,
-        previous: Some(rolled_back.failed),
+        previous: None,
         pinned_sequence: rolled_back.pinned_sequence,
     });
-    (idle.clone(), vec![Command::Persist(idle)])
+    let gc = Command::Gc {
+        keep: vec![rolled_back.current],
+    };
+    (idle.clone(), vec![Command::Persist(idle), gc])
 }
 
 #[cfg(test)]
@@ -839,13 +853,16 @@ mod tests {
                 ),
             },
             Case {
-                name: "downloading verified stages, the pin kept for the flip",
+                name: "downloading verified stages and collects its partial, the pin kept for the flip",
                 phase: Phase::Downloading(downloading("b", 18)),
                 event: Event::Verified(sha("b")),
                 expect: (
                     staged_ready.clone(),
                     vec![
                         Command::Persist(staged_ready.clone()),
+                        Command::Gc {
+                            keep: vec![sha("a"), sha("b"), sha("z")],
+                        },
                         Command::Banner(UpdateBanner::Ready {
                             staged: sha("b"),
                             display: "0.1.0+b".into(),
@@ -1111,12 +1128,17 @@ mod tests {
             },
             // ---- RolledBack
             Case {
-                name: "rolled back dismiss keeps the failed release as previous",
+                name: "rolled back dismiss keeps only what runs and collects the rest",
                 phase: rolled_back("a", "b"),
                 event: Event::DismissRollbackNotice,
                 expect: (
-                    idle("a", Some("b"), 18),
-                    vec![Command::Persist(idle("a", Some("b"), 18))],
+                    idle("a", None, 18),
+                    vec![
+                        Command::Persist(idle("a", None, 18)),
+                        Command::Gc {
+                            keep: vec![sha("a")],
+                        },
+                    ],
                 ),
             },
             Case {
