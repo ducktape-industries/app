@@ -106,3 +106,32 @@ fn a_views_first_tick_carries_the_body_its_pane_lays_it_out_in(cx: &mut TestAppC
         "the root is laid out in the body the tick named"
     );
 }
+
+/// A window one view fills (`--live`, a pop-out) lays its pane out edge
+/// to edge, so the body its seat is placed in is the window's: the desk
+/// less the title bar, never the frame share the layout keeps for a
+/// console's desk. (`--live` names its window the app's console for the
+/// dialogs' sake; its pane is still drawn filling it.)
+#[gpui_kit::test]
+fn a_live_windows_view_is_laid_out_in_the_whole_window(cx: &mut TestAppContext) {
+    const MODULE: &str = "first-frame-live-test";
+    let mut seed = Seed::boot();
+    seed.roster = Default::default();
+    seed.center = Default::default();
+    seed.screen = Screen::Desk;
+    let (app, _key, view, mut native) = super::layers::tests::open_live(seed, MODULE, cx);
+    let layout = native.update(|_, cx| view.read(cx).layout(cx));
+    let desk = layout.desk.expect("the desk is measured");
+    assert_eq!(layout.panes.len(), 1, "the live view is seeded");
+    let pane = layout.panes[0].clone();
+    assert!(pane.frame.is_some(), "the layout keeps a frame for it");
+    let seat = app
+        .seats
+        .read_with(&native, |seats, _| seats.seat(pane.instance))
+        .expect("the pane's seat is placed");
+    assert_eq!(
+        seat.read_with(&native, |seat, _| seat.body()),
+        Some((desk.0, desk.1 - TITLE)),
+        "the body is the window's, not the frame's share of the desk"
+    );
+}

@@ -4,6 +4,7 @@
 //! when" is read off the log, not reasoned, and reads the events each
 //! tick carried (`Guest::ticked_with`).
 use super::*;
+use crate::ui::layout::Pane;
 use gpui_kit::{
     Entity, IntoElement, ParentElement as _, Render, Styled as _, Subscription, TestAppContext,
     VisualTestContext, div, px, size,
@@ -71,7 +72,7 @@ fn open_in(
     let drawn: DrawnLog = Default::default();
     let log = drawn.clone();
     let window = cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
-        let seat = cx.new(|cx| Seat::new(module, cx));
+        let seat = cx.new(|cx| Seat::new(module, Pane::new(module).instance, cx));
         let key = seat.read(cx);
         let mounted = registry().lock().unwrap()[&(key.module(), key.instance())].clone();
         seat.update(cx, |seat, cx| {

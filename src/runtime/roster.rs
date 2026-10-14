@@ -191,6 +191,19 @@ pub struct RailRow {
     pub empty: bool,
 }
 
+/// How far a seat's view has come, readiest first: the rail names a
+/// program by its readiest seat.
+fn readiness(slot: &Slot) -> u8 {
+    match slot {
+        Slot::Ready(guest) if !guest.name.is_empty() => 0,
+        Slot::Compiled(view) if !view.name.is_empty() => 1,
+        Slot::Ready(_) | Slot::Compiled(_) => 2,
+        Slot::Empty => 3,
+        Slot::Failed(_) => 4,
+        Slot::Loading | Slot::Fetching { .. } | Slot::Compiling => 5,
+    }
+}
+
 impl Roster {
     pub(crate) fn rail(&self) -> Vec<RailRow> {
         let _timed = crate::perf::time(crate::perf::Key::Shell, "rail");
@@ -206,21 +219,23 @@ impl Roster {
         programs
             .into_iter()
             .map(|module| {
+                // one seat a pane: the row is the readiest one's, so two
+                // panes of a program, one still loading, never flip the row
+                // between their names as the map's order happens to fall
                 let seat = registry
                     .iter()
-                    .find_map(|((name, _), seat)| (*name == module).then_some(seat))
-                    .map(|seat| lock(seat));
+                    .filter(|((name, _), _)| *name == module)
+                    .min_by_key(|((_, instance), seat)| (readiness(&lock(seat).slot), *instance))
+                    .map(|(_, seat)| lock(seat));
                 let (label, note, empty) = match seat.as_ref().map(|seat| &seat.slot) {
                     Some(Slot::Ready(guest)) if !guest.name.is_empty() => {
                         (guest.name.clone(), None, false)
                     }
                     // compiled, not started: as ready to open as a drawn view
-                    Some(Slot::Compiled { name, .. }) if !name.is_empty() => {
-                        (name.clone(), None, false)
+                    Some(Slot::Compiled(view)) if !view.name.is_empty() => {
+                        (view.name.clone(), None, false)
                     }
-                    Some(Slot::Ready(_) | Slot::Compiled { .. }) => {
-                        (module.to_owned(), None, false)
-                    }
+                    Some(Slot::Ready(_) | Slot::Compiled(_)) => (module.to_owned(), None, false),
                     Some(Slot::Empty) => (module.to_owned(), None, true),
                     Some(Slot::Failed(_)) => (module.to_owned(), Some("Failed"), false),
                     // No seat yet (a pane just let go of it, the roster hasn't
@@ -231,7 +246,7 @@ impl Roster {
                 // the manifest's, as the name is: none before it is read
                 let icon = match seat.as_ref().map(|seat| &seat.slot) {
                     Some(Slot::Ready(guest)) => guest.icon.clone(),
-                    Some(Slot::Compiled { icon, .. }) => icon.clone(),
+                    Some(Slot::Compiled(view)) => view.icon.clone(),
                     _ => String::new(),
                 };
                 RailRow {
@@ -669,11 +684,7 @@ mod rail_tests {
     fn a_compiled_seat_is_listed_by_its_manifest_name() {
         let module = "rail-tests-compiled";
         let seat = Mounted::seat();
-        lock(&seat).slot = Slot::Compiled {
-            name: "Compiled view".into(),
-            icon: String::new(),
-            min_width: 320,
-        };
+        lock(&seat).slot = Slot::Compiled(ViewCode::for_test("Compiled view", "", 320));
         lock(registry()).insert((module, 0), seat);
         let row = Roster::listing(&[module])
             .rail()
@@ -683,6 +694,40 @@ mod rail_tests {
         lock(registry()).remove(&(module, 0));
         assert_eq!((row.label.as_str(), row.note), ("Compiled view", None));
         assert!(!row.empty);
+    }
+
+    /// Two panes of one program hold a seat each; while one is still on
+    /// its way the row keeps the name the other's view gives itself, on
+    /// every read, whatever order the seats are kept in: it flipped
+    /// between "Nodes" and "Valset · Loading" as the map's order fell.
+    #[test]
+    fn a_program_with_two_seats_is_named_by_its_readiest() {
+        let module = "rail-tests-two-seats";
+        let named = Mounted::seat();
+        lock(&named).slot = Slot::Compiled(ViewCode::for_test("Nodes", "", 320));
+        let instances = 1..=16u64;
+        {
+            let mut registry = lock(registry());
+            for instance in instances.clone() {
+                registry.insert((module, instance), Mounted::seat());
+            }
+            registry.insert((module, 9), named);
+        }
+        let roster = Roster::listing(&[module]);
+        let rows: Vec<RailRow> = (0..8)
+            .flat_map(|_| roster.rail())
+            .filter(|row| row.module == module)
+            .collect();
+        {
+            let mut registry = lock(registry());
+            for instance in instances {
+                registry.remove(&(module, instance));
+            }
+        }
+        assert_eq!(rows.len(), 8);
+        for row in rows {
+            assert_eq!((row.label.as_str(), row.note), ("Nodes", None));
+        }
     }
 
     /// A view-only entry (no program behind it) is a rail row like any

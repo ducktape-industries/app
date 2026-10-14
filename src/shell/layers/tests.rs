@@ -74,6 +74,33 @@ pub(in crate::shell) fn open_console(
     seed: impl Into<Seed>,
     cx: &mut TestAppContext,
 ) -> (Entities, WindowKey, Entity<WindowRoot>, VisualTestContext) {
+    let at = Bounds::new(point(px(0.), px(0.)), size(px(WINDOW.0), px(WINDOW.1)));
+    open_with(seed, cx, |windows, cx| {
+        windows.open(WindowKind::Console, Some(at), cx)
+    })
+}
+
+/// A `--live` window over `seed`: `module`'s view alone in a window of its
+/// own, which is also the app's console (`Windows::open_live`), drawn once
+/// as [`open_console`] draws.
+pub(in crate::shell) fn open_live(
+    seed: impl Into<Seed>,
+    module: &'static str,
+    cx: &mut TestAppContext,
+) -> (Entities, WindowKey, Entity<WindowRoot>, VisualTestContext) {
+    open_with(seed, cx, |windows, cx| {
+        windows.open_live(module, cx);
+        windows.console().expect("the live window is the console")
+    })
+}
+
+/// The app booted from `seed`, its one window opened by `open` and drawn
+/// once, its first frame's callbacks delivered.
+fn open_with(
+    seed: impl Into<Seed>,
+    cx: &mut TestAppContext,
+    open: impl FnOnce(&mut entities::Windows, &mut gpui_kit::Context<entities::Windows>) -> WindowKey,
+) -> (Entities, WindowKey, Entity<WindowRoot>, VisualTestContext) {
     let Seed {
         roster,
         center,
@@ -114,10 +141,7 @@ pub(in crate::shell) fn open_console(
         app.windows.update(cx, |it, _| it.set_active(active));
         app
     });
-    let at = Bounds::new(point(px(0.), px(0.)), size(px(WINDOW.0), px(WINDOW.1)));
-    let key = app.windows.update(cx, |windows, cx| {
-        windows.open(WindowKind::Console, Some(at), cx)
-    });
+    let key = app.windows.update(cx, open);
     if let Some(layout) = layout {
         let desk = entities::tests::desk_of(&app, key, cx);
         desk.update(cx, |desk, cx| {

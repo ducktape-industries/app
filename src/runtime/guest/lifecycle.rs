@@ -23,10 +23,10 @@ impl Guest {
     /// go on, opened on it, and the rest of the work started on the old one
     /// is retired (`kernel::reconnected`).
     pub(crate) fn reconnect(&mut self, connection: &Connection) {
-        if self.connection_rev == connection.rev {
+        if self.connection.rev == connection.rev {
             return;
         }
-        self.connection_rev = connection.rev;
+        self.connection = connection.clone();
         self.clipboard = Default::default();
         kernel::reconnected(self, connection);
     }
@@ -36,8 +36,8 @@ impl Guest {
     /// and no file is ever opened for it unless the developer's override
     /// ([`override_views_from`]) supplies one. A seat no pane holds yet
     /// (instance 0) stops at the compiled code: `Compiled`, its manifest
-    /// read, nothing instantiated or run; the pane that claims it loads it
-    /// again, past that. Over an empty seat a pane holds the view
+    /// read, nothing instantiated or run; the pane that claims it starts
+    /// that code ([`Self::start`]). Over an empty seat a pane holds the view
     /// is `init`ed. With a view of the module already drawn, the same code
     /// is `Unchanged`, and different code is prepared as its replacement
     /// (`replacement`): instantiated without `init`, restored from the drawn
@@ -71,14 +71,13 @@ impl Guest {
                 let bytes = std::fs::read(&path).map_err(|error| {
                     before_any_candidate(Failure::Refused(format!("{shown}: {error}")))
                 })?;
-                Self::compile(&bytes, &shown).map_err(before_any_candidate)?;
-                let (name, capabilities, min_width, _, icon) = manifest_of(&bytes);
-                crate::render::web::seen(module, &capabilities);
-                return Ok(Loaded::Compiled {
-                    name,
-                    icon,
-                    min_width,
-                });
+                let code = Self::compile(&bytes, &shown).map_err(before_any_candidate)?;
+                let hash = {
+                    use sha2::Digest as _;
+                    sha2::Sha256::digest(&bytes).into()
+                };
+                let view = view_code(module, None, hash, code, &bytes);
+                return Ok(Loaded::Compiled(Box::new(view)));
             }
             return Self::load_from(module, &path)
                 .map(|guest| Loaded::Fresh(Box::new(guest)))
@@ -91,11 +90,17 @@ impl Guest {
                 reason.to_owned(),
             )));
         };
-        let Some((code, bare)) = code else {
+        let Some((blob, bare)) = code else {
             let reason = format!("this network's roster does not list {module}");
             logged(None, "Failed", &reason);
             return Err(before_any_candidate(Failure::NotListed(reason)));
         };
+        // compiled for this pane's seat out of this very blob: started as it
+        // is. A seat no pane holds is never started, however often it loads
+        let startable = instance != 0 && lock(mounted).slot.startable(code);
+        if startable {
+            return Self::start(module, code, generation, mounted, timing);
+        }
         let runtime = handle();
         timing.started = Some(Instant::now());
         timing.path = "first";
@@ -106,7 +111,7 @@ impl Guest {
             total: None,
         });
         let fetched = Instant::now();
-        let bytes = runtime.block_on(crate::backend::views::view_of(client, &code, bare));
+        let bytes = runtime.block_on(crate::backend::views::view_of(client, &blob, bare));
         timing.fetch = fetched.elapsed();
         crate::perf::record(key, "fetch", timing.fetch.as_micros() as u64);
         let bytes = match bytes {
@@ -118,17 +123,17 @@ impl Guest {
                 return Err(before_any_candidate(failure));
             }
         };
-        let Some((view_bytes, blob)) = bytes else {
-            let hash = code_digest(&code);
+        let Some((view_bytes, from)) = bytes else {
+            let hash = code_digest(&blob);
             logged(Some(&hash), "Missing", "");
             timing.hash = Some(hash);
             timing.outcome = "Missing";
             return Ok(Loaded::Empty);
         };
-        timing.blob = blob;
+        timing.blob = from;
         crate::perf::count(
             key,
-            match blob {
+            match from {
                 "disk" => "fetch.disk",
                 _ => "fetch.node",
             },
@@ -139,8 +144,7 @@ impl Guest {
             use sha2::Digest as _;
             sha2::Sha256::digest(&view_bytes).into()
         };
-        // the first six bytes: how a view is named in logs and errors
-        let shown = format!("{module} view @ {}", crate::backend::hex_encode(&hash[..6]));
+        let shown = shown_as(module, &hash);
         let outcome = (|| -> Result<Loaded, Failure> {
             // the instance in the slot, if the deployment is a new one for
             // it: the replacement is seated only against that very
@@ -172,34 +176,19 @@ impl Guest {
                 },
                 1,
             );
-            let (name, capabilities, min_width, targets, icon) = manifest_of(&view_bytes);
-            crate::render::web::seen(module, &capabilities);
+            let view = view_code(module, Some(blob), hash, code, &view_bytes);
             // a seat no pane holds stops here: the rail reads its name and
             // its icon off the manifest, and the pane that claims it starts it
             if instance == 0 && against.is_none() {
-                return Ok(Loaded::Compiled {
-                    name,
-                    icon,
-                    min_width,
-                });
+                return Ok(Loaded::Compiled(Box::new(view)));
             }
-            let instantiated = Instant::now();
-            let mut fresh = Self::instantiate(module, &code, &shown).map_err(Failure::Refused)?;
-            timing.instantiate = instantiated.elapsed();
-            fresh.instance = instance;
-            crate::perf::record(key, "instantiate", timing.instantiate.as_micros() as u64);
-            crate::perf::record(key, "fuel.instantiate", fresh.fuel_used());
-            fresh.name = name;
-            fresh.icon = icon;
-            fresh.capabilities = capabilities;
-            fresh.targets = targets;
-            fresh.min_width = min_width;
-            fresh.deployed(hash);
+            let fresh = Self::instance_of(module, instance, &view, &shown, timing)?;
             let fresh = match &mut against {
                 Some((alive, ticks)) => {
-                    Self::replacement(fresh, alive, ticks, mounted, &code, &shown, timing)?
+                    Self::replacement(fresh, alive, ticks, mounted, &view.code, &shown, timing)?
                 }
                 None => {
+                    let mut fresh = fresh;
                     fresh.timed_init(&shown, timing)?;
                     fresh
                 }
@@ -209,7 +198,7 @@ impl Guest {
                     fresh: Box::new(fresh),
                     alive,
                     ticks,
-                    code,
+                    code: view.code,
                     shown,
                 },
                 None => Loaded::Fresh(Box::new(fresh)),
@@ -222,7 +211,7 @@ impl Guest {
                 "Ready"
             }
             Ok(Loaded::Unchanged) => "Unchanged",
-            Ok(Loaded::Compiled { .. }) => {
+            Ok(Loaded::Compiled(_)) => {
                 logged(Some(&hash), "Compiled", "");
                 "Compiled"
             }
@@ -236,6 +225,86 @@ impl Guest {
             hash: Some(hash),
             failure,
         })
+    }
+
+    /// The view a seat holds compiled out of the blob `code` names, started
+    /// for the pane that claimed it: an instance and its `init`, nothing
+    /// fetched or compiled again, which the window thread runs as it runs a
+    /// tick (`mounted`). A seat that moved on meanwhile (a newer load, the
+    /// program gone) has nothing here to start: the load is stale, and its
+    /// failure lands nowhere.
+    pub(crate) fn start(
+        module: &'static str,
+        code: Option<(::abi::BlobId, bool)>,
+        generation: u64,
+        mounted: &Arc<Mutex<Mounted>>,
+        timing: &mut LoadTiming,
+    ) -> Result<Loaded, Unloaded> {
+        let (view, instance) = {
+            let locked = lock(mounted);
+            match &locked.slot {
+                Slot::Compiled(view) if locked.slot.startable(code) => {
+                    ((**view).clone(), locked.instance)
+                }
+                _ => {
+                    return Err(Unloaded {
+                        hash: None,
+                        failure: Failure::Refused(
+                            "the seat moved on before its view started".into(),
+                        ),
+                    });
+                }
+            }
+        };
+        timing.started = Some(Instant::now());
+        timing.path = "first";
+        timing.blob = "seat";
+        timing.code = "seat";
+        timing.hash = Some(view.hash);
+        let shown = shown_as(module, &view.hash);
+        let started =
+            Self::instance_of(module, instance, &view, &shown, timing).and_then(|mut fresh| {
+                fresh.timed_init(&shown, timing)?;
+                Ok(fresh)
+            });
+        let (state, reason) = match &started {
+            Ok(_) => ("Ready", String::new()),
+            Err(failure) => ("Failed", failure.to_string()),
+        };
+        log_source(module, Some(&view.hash), state, generation, &reason);
+        timing.outcome = state;
+        started
+            .map(|fresh| Loaded::Fresh(Box::new(fresh)))
+            .map_err(|failure| Unloaded {
+                hash: Some(view.hash),
+                failure,
+            })
+    }
+
+    /// An instance of `view` for the pane `instance`, its manifest's facts
+    /// on it, nothing run yet: `init`ed fresh, or `restore`d as a
+    /// replacement.
+    fn instance_of(
+        module: &'static str,
+        instance: u64,
+        view: &ViewCode,
+        shown: &str,
+        timing: &mut LoadTiming,
+    ) -> Result<Self, Failure> {
+        let instantiated = Instant::now();
+        let mut fresh = Self::instantiate(module, &view.code, shown).map_err(Failure::Refused)?;
+        timing.instantiate = instantiated.elapsed();
+        fresh.instance = instance;
+        let key = fresh.perf_key();
+        crate::perf::record(key, "instantiate", timing.instantiate.as_micros() as u64);
+        crate::perf::record(key, "fuel.instantiate", fresh.fuel_used());
+        fresh.name = view.name.clone();
+        fresh.icon = view.icon.clone();
+        fresh.capabilities = view.capabilities.clone();
+        fresh.targets = view.targets.clone();
+        fresh.min_width = view.min_width;
+        fresh.deployed(view.hash);
+        Ok(fresh)
     }
 
     /// A once-valid view carries its state over to `fresh`, prepared as its
@@ -425,7 +494,7 @@ impl Guest {
             targets,
             min_width,
             hash,
-            connection_rev: _,
+            connection: _,
             activation: _,
             links: _,
             undeclared_logged: _,
@@ -700,7 +769,7 @@ impl Guest {
         let exports =
             Exports::bind(&mut store, &instance).map_err(|error| format!("{shown}: {error}"))?;
         Ok(Self {
-            connection_rev: connection().lock().expect("views rpc").rev,
+            connection: connection().lock().expect("views rpc").clone(),
             activation: None,
             links: Vec::new(),
             module,
@@ -770,13 +839,13 @@ impl Guest {
         self.visibility_change = Some(visible);
     }
 
-    /// A route a link left for this module goes to its first route
+    /// A route a link left for this seat goes to its first route
     /// subscriber, once; with no subscriber it waits.
     pub(crate) fn sync_route(&mut self) {
         let Some(&id) = self.route_subscriptions.first() else {
             return;
         };
-        if let Some(route) = crate::runtime::take_route(self.module) {
+        if let Some(route) = crate::runtime::take_route(self.module, self.instance) {
             self.stream_item(id, wire::methods::encode(&route));
         }
     }
@@ -788,5 +857,34 @@ impl Guest {
         for id in self.visibility_subscriptions.clone() {
             self.stream_item(id, wire::methods::encode(&visible));
         }
+    }
+}
+
+/// How a view is named in logs and errors: its module and the first six
+/// bytes of its hash.
+fn shown_as(module: &str, hash: &[u8; 32]) -> String {
+    format!("{module} view @ {}", crate::backend::hex_encode(&hash[..6]))
+}
+
+/// The view `bytes`, compiled to `code` out of `blob`, with what their
+/// manifest says: what a pane starts it from.
+fn view_code(
+    module: &'static str,
+    blob: Option<::abi::BlobId>,
+    hash: [u8; 32],
+    code: Arc<Module>,
+    bytes: &[u8],
+) -> ViewCode {
+    let (name, capabilities, min_width, targets, icon) = manifest_of(bytes);
+    crate::render::web::seen(module, &capabilities);
+    ViewCode {
+        blob,
+        hash,
+        code,
+        name,
+        icon,
+        min_width,
+        capabilities,
+        targets,
     }
 }

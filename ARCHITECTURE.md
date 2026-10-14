@@ -137,7 +137,9 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    follower is told to re-read first), and its other tasks of the previous
    connection are refused `stale_connection`.
 2. **Blob → section.** `backend::views::view_of` fetches the program's code
-   blob (`/v1/blob/get`, a disk cache under `cache_dir()/programs/`),
+   blob (`/v1/blob/get`, a disk cache under `cache_dir()/programs/` that
+   keeps it framed as the node does, `program <len>\0<body>`, since its id
+   hashes the frame and the id alone cannot give the kind back),
    checks the hash, strips the git-style header (`unframe`) and returns the
    `ducktape.view` custom section (`views::VIEW_SECTION`) — or the whole
    blob for a **bare** entry (a view with no program behind it).
@@ -164,12 +166,16 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    pane. `Seat::new` claims
    seat `(module, 0)` or makes a new one and subscribes to its `wake`.
    A preloaded seat (instance 0, no pane) stops at the compiled code:
-   `Compiled` keeps the manifest's name, icon and minimum width, which the
-   rail and the layout read, and no instance exists and no `init` runs for a
-   program nobody opened. The pane that claims it loads it again (the
-   blob and the code come from the caches), past that point; a seat
-   claimed while its preload is on the way gets that load once the
-   preload lands.
+   `Compiled(ViewCode)` keeps the code, the blob it came out of and the
+   manifest (name, icon and minimum width, which the rail and the layout
+   read), and no instance exists and no `init` runs for a program nobody
+   opened. The pane that claims it starts that code (`Guest::start`:
+   instantiate and `init`, nothing fetched or compiled again) right in
+   `seat::mounted` on the window thread, where every tick runs on the same
+   fuel, when the blob is still the one the roster lists; any other claim
+   is queued as a load. A seat claimed while its preload is on the way gets
+   its load once the preload lands, and that load starts the code the same
+   way.
    `Guest::instantiate` builds a store with `StoreLimits` (`MEMORY_LIMIT`)
    and binds `Exports` (`memory`, `alloc`, `init`, `tick`, `snapshot`,
    `restore`); `Guest::load` then runs `init` on a fresh view, or `restore`
@@ -327,8 +333,10 @@ its meaning; the host and the views name the const, never the string.
    `host.session` (the props subscription) and `host.log`.
 3. **Relay.** `kernel/node.rs` `spawn_method`, behind `spawn_retrying`,
    `spawn_retrying_unsent` and `spawn_no_retry`, first checks in `connected`
-   that the guest still belongs to the current `roster::connection()` (else
-   `stale_connection`, or `not_connected` with no node); then `start` admits
+   that the guest's own connection (`Guest.connection`, taken at start and
+   at each reconnect) is still the current `roster::connection()`'s `rev`
+   (else `stale_connection`), and asks the node that connection names (else
+   `not_connected`); then `start` admits
    the call against `MAX_IN_FLIGHT` (`in_flight_limit`) and runs the handler
    as a tokio task on `views-kernel`, owned by `guest.tasks` as a `NodeTask`
    that aborts on drop (cancel, swap, teardown). A read (`spawn_retrying`)
@@ -460,7 +468,10 @@ draws nothing.
   show and a pop-out does brings the pop-out forward), `select_view`,
   `open_help` / `help_asked`, `open_link` (read against `Session`'s
   chain: this chain's link routes its view, another chain's opens the
-  seat and says why, an unlisted view toasts, a web link goes to the OS),
+  seat and says why, an unlisted view toasts, a web link goes to the OS;
+  the route is for one seat: the one `open_program` brings forward, or,
+  for a view's link into its own program, that view's own, with nothing
+  brought forward),
   `open_notice`, `sync_appearance`
   (the theme, and the OS's dark word back into `Prefs`), `swap_console`
   (the launcher and the desk are one window, resized in place; from an
@@ -491,7 +502,7 @@ draws nothing.
   <title>", compared before it sets it), `Notified` →
   `Notifications::refresh`, `Seated` → every desk holding the view
   settles (a window placed before its view came widens to it), `OpenLink`
-  → `Windows::open_link`. `Seats` holds `Windows` weakly.
+  → `Windows::open_link`, from that pane. `Seats` holds `Windows` weakly.
 - **Start** (`shell/launch.rs::run`). Makes the entities over the app's
   roster and notification centre (`Entities::new`), the tray (`tray.rs`:
   an entity observing `Session`, `Chain` and `Prefs`, drawn once at start;
@@ -810,8 +821,8 @@ House words, and where one word means several things.
 - **props / session** — the session facts every view gets on
   `host.session` (`wire::methods::Session`, built by `runtime::props`).
 - **route** — two meanings. (1) the path part of a `duck://<view>/<route>`
-  link, held in `runtime::route_to` until the view's first `host.route`
-  subscriber (`take_route`). (2) a closure-local name for a cloned
+  link, held for one seat by `runtime::route_to` until that seat's view
+  first subscribes to `host.route` (`take_route`). (2) a closure-local name for a cloned
   authored path in `render/`.
 - **link** — a `duck://` URL (`Roster::parse_link`, `Link`), or, in
   sign-in, "link from another device" (`join_from_device`). Unrelated.
@@ -836,7 +847,8 @@ House words, and where one word means several things.
   two things: an OS window (`WindowRoot`, `WindowKey`, `WindowKind`) and
   a pane.
 - **instance** — a pane's unique u64 (`Pane.instance`), the key for
-  `Seats`; `Seat.instance` is its own counter.
+  `Seats`; its seat keeps it (`Seat.instance`), the seat's key in the
+  runtime registry and the one a link's route waits under.
 - **split / cycle / fill / measure** — pane geometry operations in
   `ui/layout.rs`. `split` adds a pane.
 - **rail / RailRow** — the roster-ordered program list the menu bar shows

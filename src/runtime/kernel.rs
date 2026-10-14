@@ -45,9 +45,12 @@
 //!   lost answer is reported ([`refusal::NODE_FAILED`]), never followed by
 //!   a second submission.
 //! - `chain.status` — node status as `NodeStatus`.
-//! - `chain.blocks` `BlockPage` — finalized blocks, newest first, from the
-//!   node's block archive (`/v1/blocks`); `chain.block` `BlockRef` — one by
-//!   height or id (`/v1/block`).
+//! - `chain.blocks` `BlockPage` — finalized blocks, newest first, as the
+//!   node lists them (`/v1/blocks`): each transaction's size, its payload
+//!   only when short, and the lowest height the node lists; `chain.block`
+//!   `BlockRef` — one by height or id (`/v1/block`); `chain.tx` `TxAsk` —
+//!   one transaction by its place or hash, its payload when at most `most`
+//!   bytes (`/v1/tx`).
 //! - `blob.get` `<id>` — a blob by `sha256:<hex>` or `sha1:<hex>` id, unframed.
 //! - `module.describe` `(program, op)` — the op as the program's own
 //!   describe module reads it, or `None` (`describe`).
@@ -134,7 +137,7 @@ mod replies;
 pub(super) use node::{NodeTask, reconnected, spawn_reply};
 use node::{
     blob_get, block, blocks, changes, heads, invite, network, query, spawn_no_retry,
-    spawn_retrying, spawn_retrying_unsent, status, submit,
+    spawn_retrying, spawn_retrying_unsent, status, submit, tx,
 };
 use replies::InFlight;
 pub(super) use replies::Replies;
@@ -284,6 +287,7 @@ pub(super) fn answer(
         (Capability::Chain, "block") => {
             spawn_retrying(guest, id, payload, block, "host_call.chain.block")
         }
+        (Capability::Chain, "tx") => spawn_retrying(guest, id, payload, tx, "host_call.chain.tx"),
         // the node's key signs an invite: only a role's own view asks
         // for one (a view no vote reviewed could hand it to its program)
         (Capability::Invite, "create") => {

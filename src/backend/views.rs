@@ -171,10 +171,11 @@ pub async fn program_bytes(
 ) -> Result<(Vec<u8>, &'static str), Fetch> {
     let cached = cache_path(code);
     if let Some(path) = &cached
-        && let Ok(bytes) = tokio::fs::read(path).await
-        && hashes_to(&bytes, code)
+        && let Ok(framed) = tokio::fs::read(path).await
+        && hashes_to(&framed, code)
+        && let Some(body) = super::noded::unframe(&framed)
     {
-        return Ok((bytes, "disk"));
+        return Ok((body.to_vec(), "disk"));
     }
     let framed = client
         .blob(*code, MAX_PROGRAM_BYTES)
@@ -191,7 +192,7 @@ pub async fn program_bytes(
         if let Some(parent) = path.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
-        let _ = tokio::fs::write(path, &body).await;
+        let _ = tokio::fs::write(path, &framed).await;
     }
     Ok((body, "node"))
 }
@@ -205,20 +206,15 @@ fn cache_path(code: &BlobId) -> Option<PathBuf> {
     )
 }
 
-/// A blob id names the FRAMED bytes (`kind len\0body`), as git's does; the
-/// cache holds the body, which is re-framed as a blob before the check.
-fn hashes_to(bytes: &[u8], code: &BlobId) -> bool {
+/// A blob id names the FRAMED bytes (`kind len\0body`), as git's does, and
+/// the cache keeps them framed: the kind is the node's word (a program is
+/// `program`), which the id alone cannot give back.
+fn hashes_to(framed: &[u8], code: &BlobId) -> bool {
     use sha2::Digest as _;
-    // The cache holds a bare body, the store a git-framed blob; a body is
-    // not told apart by its bytes (a wasm body opens with a NUL, exactly
-    // where a frame ends), so both readings are hashed and either may match.
-    let mut framed = format!("blob {}\0", bytes.len()).into_bytes();
-    framed.extend_from_slice(bytes);
-    let matches = |candidate: &[u8]| match code.kind() {
-        abi::HashKind::Sha1 => sha1::Sha1::digest(candidate)[..] == *code.digest(),
-        abi::HashKind::Sha256 => sha2::Sha256::digest(candidate)[..] == *code.digest(),
-    };
-    matches(bytes) || matches(&framed)
+    match code.kind() {
+        abi::HashKind::Sha1 => sha1::Sha1::digest(framed)[..] == *code.digest(),
+        abi::HashKind::Sha256 => sha2::Sha256::digest(framed)[..] == *code.digest(),
+    }
 }
 
 /// The bytes of the [`VIEW_SECTION`] custom section, out of a core module or
@@ -262,20 +258,5 @@ mod tests {
         module.extend_from_slice(&section);
         assert_eq!(view_section(&module).as_deref(), Some(&body[..]));
         assert_eq!(view_section(b"\0asm\x01\0\0\0"), None);
-    }
-
-    /// A cached body hashes to the framed blob's id, framed or bare; a
-    /// wasm body, which opens with a NUL, must not pass for a framed one.
-    #[test]
-    fn a_cached_body_hashes_like_the_framed_blob() {
-        use sha2::Digest as _;
-        for body in [&b"hello"[..], b"\0asm\x01\0\0\0"] {
-            let mut framed = format!("blob {}\0", body.len()).into_bytes();
-            framed.extend_from_slice(body);
-            let id = BlobId::Sha256(sha2::Sha256::digest(&framed).into());
-            assert!(hashes_to(body, &id), "{body:?}");
-            assert!(hashes_to(&framed, &id), "{body:?}");
-            assert!(!hashes_to(b"other", &id));
-        }
     }
 }

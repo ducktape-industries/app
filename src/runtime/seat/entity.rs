@@ -95,9 +95,9 @@ pub(super) fn native_root(tree: crate::render::Tree) -> crate::render::Tree {
 }
 
 impl Seat {
-    pub(crate) fn new(module: &'static str, cx: &mut Context<Self>) -> Self {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let instance = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    /// The seat of the pane with this layout `instance`, which is its key
+    /// in the registry: a link's route waits for it by that key.
+    pub(crate) fn new(module: &'static str, instance: u64, cx: &mut Context<Self>) -> Self {
         let theme = cx.observe_global::<gpui_kit::component::Theme>(|this, cx| this.turn(cx));
         let mounted = mounted(module, instance);
         let mut woken = lock(&mounted).wake.subscribe();
@@ -141,7 +141,7 @@ impl Seat {
         self.module
     }
 
-    /// The seat's own instance number (its perf key), not the pane's.
+    /// Its pane's layout instance (its perf key).
     pub(crate) fn instance(&self) -> u64 {
         self.instance
     }
@@ -590,6 +590,8 @@ impl Seat {
 impl Drop for Seat {
     fn drop(&mut self) {
         lock(registry()).remove(&(self.module, self.instance));
+        // a route its view never read goes with it: no seat takes its key again
+        _ = take_route(self.module, self.instance);
         // the module's row may now be read off another seat, or say Loading
         rail_moved();
     }
