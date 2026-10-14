@@ -502,6 +502,81 @@ fn a_click_that_drifts_leaves_no_anchor_behind(cx: &mut gpui_kit::TestAppContext
     );
 }
 
+/// A drift that crosses the middle of a glyph selects that glyph, as a
+/// browser does: a selection of one character, kept like any other, so a
+/// shift-click extends from it. What drops a click's anchor is the
+/// characters it took in, not how far it drifted: the same 2+1 px drift
+/// from another spot crosses no middle and leaves nothing.
+#[gpui_kit::test]
+fn a_drift_across_a_glyphs_middle_selects_that_glyph(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let root = container_with_style(
+        "pane",
+        div().w(px(150.)).h_full().flex().flex_col().style().clone(),
+        [
+            paragraph("alpha", "alpha beta"),
+            paragraph("gamma", "gamma"),
+        ],
+    );
+    let window = cx.open_window(size(px(300.), px(100.)), |_, cx| Window2 {
+        tree: cx.new(|_| ViewTree::new(root)),
+    });
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    let drift = |native: &mut gpui_kit::VisualTestContext, x: f32| {
+        let (down, up) = (point(px(x), px(10.)), point(px(x + 2.), px(11.)));
+        native.simulate_mouse_move(down, None, Default::default());
+        native.simulate_mouse_down(down, MouseButton::Left, Default::default());
+        native.simulate_mouse_move(up, Some(MouseButton::Left), Default::default());
+        native.simulate_mouse_up(up, MouseButton::Left, Default::default());
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            gpui_kit::base::TextSelection::selected_text(window, cx)
+        })
+    };
+    let kept: Vec<(f32, String)> = (0..30)
+        .map(|step| step as f32 + 0.5)
+        .map(|x| (x, drift(&mut native, x)))
+        .collect();
+    assert!(
+        kept.iter().all(|(_, text)| text.chars().count() <= 1),
+        "a 2+1 px drift takes in one character at most: {kept:?}"
+    );
+    assert!(
+        kept.iter().any(|(_, text)| text.is_empty()),
+        "some drifts cross no middle: {kept:?}"
+    );
+    let (x, glyph) = kept
+        .iter()
+        .find(|(_, text)| !text.is_empty())
+        .cloned()
+        .unwrap_or_else(|| panic!("some drifts cross a middle: {kept:?}"));
+    assert_eq!(drift(&mut native, x), glyph);
+    let below = point(px(140.), px(30.));
+    native.simulate_mouse_move(below, None, Default::default());
+    native.simulate_event(MouseDownEvent {
+        button: MouseButton::Left,
+        position: below,
+        modifiers: gpui_kit::Modifiers::shift(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    native.simulate_event(MouseUpEvent {
+        button: MouseButton::Left,
+        position: below,
+        modifiers: gpui_kit::Modifiers::shift(),
+        click_count: 1,
+    });
+    let extended = native.update(|window, cx| {
+        window.render_frame(cx);
+        gpui_kit::base::TextSelection::selected_text(window, cx)
+    });
+    assert!(
+        extended.starts_with(&glyph) && extended.ends_with("gamma"),
+        "a shift-click after the drift that selected {glyph:?}: {extended:?}"
+    );
+}
+
 /// A press that lands before the frame after a click (a quick hand, or a
 /// script driving the pointer) begins a gesture of its own: the click's
 /// weighing, which waits for that frame, must not drop the new press's
