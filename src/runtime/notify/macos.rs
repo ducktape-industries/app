@@ -138,8 +138,21 @@ pub(super) fn post(notice: &Notice, click: Option<Click>) -> bool {
         // takes its place. Not by reusing its identifier: two requests
         // under one identifier added a moment apart cancel each other in
         // the centre (a burst's second "N more" took both down).
-        let identifier = super::request_id();
-        if !notice.tag.is_empty() {
+        // The host's notice (the one a click opens Updates from) stands
+        // under one identifier for the install instead: any process takes
+        // it down or puts the next one in its place.
+        // ponytail: two host notices added a moment apart would cancel
+        // each other as above; one per staged release never comes close.
+        let host = click == Some(Click::Updates);
+        let identifier = match host {
+            true => HOST_NOTICE.to_string(),
+            false => super::request_id(),
+        };
+        if host {
+            let standing = NSArray::from_vec(vec![NSString::from_str(&identifier)]);
+            centre.removePendingNotificationRequestsWithIdentifiers(&standing);
+            centre.removeDeliveredNotificationsWithIdentifiers(&standing);
+        } else if !notice.tag.is_empty() {
             let standing = standing()
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -203,6 +216,23 @@ pub(super) fn withdraw(tag: &str) {
     unsafe {
         let centre = UNUserNotificationCenter::currentNotificationCenter();
         let standing = NSArray::from_vec(vec![NSString::from_str(&standing)]);
+        centre.removePendingNotificationRequestsWithIdentifiers(&standing);
+        centre.removeDeliveredNotificationsWithIdentifiers(&standing);
+    }
+}
+
+/// The host notice's request identifier: one for the install.
+const HOST_NOTICE: &str = "ducktape-update";
+
+/// The host's notice down, whichever process raised it.
+pub(super) fn withdraw_host() {
+    if !bundled() {
+        return;
+    }
+    // SAFETY: as in `post`.
+    unsafe {
+        let centre = UNUserNotificationCenter::currentNotificationCenter();
+        let standing = NSArray::from_vec(vec![NSString::from_str(HOST_NOTICE)]);
         centre.removePendingNotificationRequestsWithIdentifiers(&standing);
         centre.removeDeliveredNotificationsWithIdentifiers(&standing);
     }

@@ -220,11 +220,18 @@ fn clicked(click: Click) {
 }
 
 /// The host's own notice: up if the device's banners are on, a click
-/// opening Settings › Updates; a newer one under the same tag replaces it.
-/// Blocks on the OS call, so the caller is a thread of its own. Whether it
-/// went up.
+/// opening Settings › Updates. One stands for the install, whichever of its
+/// processes raised it: a newer one takes its place, and [`withdraw_host`]
+/// takes it down. Blocks on the OS call, so the caller is a thread of its
+/// own. Whether it went up.
 pub(crate) fn post_host(notice: &Notice) -> bool {
     Settings::load().banners && platform::post(notice, Some(Click::Updates))
+}
+
+/// The host's notice down, whichever process raised it. Blocks on the OS
+/// call, as [`post_host`] does.
+pub(crate) fn withdraw_host() {
+    platform::withdraw_host();
 }
 
 /// A banner request's identifier, new across processes and not only within

@@ -374,6 +374,11 @@ impl Updater {
             self.rolled_back = Some(rolled_back.clone());
             self.apply(Event::DismissRollbackNotice);
         }
+        // a flip, a rollback or a dropped release since the notice went up
+        // (by this process or the one before): nothing waits for a restart
+        if !matches!(self.phase, Phase::Staged(_)) {
+            self.notice(None);
+        }
     }
 
     /// Follow `channel` from the next check on: a release the old one
@@ -434,8 +439,8 @@ impl Updater {
                 }
                 Command::Banner(banner) => {
                     note_banner(&banner);
-                    if let (true, UpdateBanner::Ready { display, .. }) = (self.published, &banner) {
-                        notify_ready(display);
+                    if let UpdateBanner::Ready { display, .. } = &banner {
+                        self.notice(Some(display));
                     }
                     self.banner = Some(banner);
                 }
@@ -449,9 +454,34 @@ impl Updater {
                 }
             }
         }
+        let unstaged = matches!(self.phase, Phase::Staged(_)) && !matches!(phase, Phase::Staged(_));
         self.phase = phase;
+        if unstaged {
+            self.notice(None);
+        }
         self.publish();
         job
+    }
+
+    /// The desktop notice follows the staged release: up as one is staged
+    /// (`ready`, its display), down whenever none is.
+    fn notice(&self, ready: Option<&str>) {
+        #[cfg(test)]
+        NOTICED_HERE.with(|noticed| {
+            noticed
+                .borrow_mut()
+                .push(ready.map_or("withdrawn".into(), |display| format!("ready {display}")));
+        });
+        if !self.published {
+            return;
+        }
+        match ready {
+            Some(display) => notify_ready(display),
+            None => {
+                crate::runtime::notify::withdraw_host();
+                debug!(target: TARGET, event = "app_update_notice_withdrawn");
+            }
+        }
     }
 
     /// One job; `None` is a check that did not happen (unreachable, nothing
@@ -528,7 +558,7 @@ fn moved() {
     }
 }
 
-/// The desktop notice for a staged release: one per release, the next
+/// The desktop notice for a staged release: one for the install, the next
 /// replacing it. The device's banners switch decides; a click opens
 /// Settings › Updates.
 fn notify_ready(display: &str) {
@@ -743,6 +773,14 @@ pub(crate) struct Shown {
 thread_local! {
     static SHOWN_HERE: std::cell::RefCell<Option<Updates>> = const { std::cell::RefCell::new(None) };
     static RENDERED_HERE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static NOTICED_HERE: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// What this test thread's updaters put up and took down since the last
+/// call, published or not: `ready <display>`, `withdrawn`.
+#[cfg(test)]
+pub(crate) fn noticed_here() -> Vec<String> {
+    NOTICED_HERE.with(|noticed| std::mem::take(&mut *noticed.borrow_mut()))
 }
 
 /// How many times [`rendered`] was called on this test's thread.

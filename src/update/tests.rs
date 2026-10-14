@@ -1101,6 +1101,48 @@ mod linux {
         assert!(layout.release_dir(a).exists() && layout.release_dir(b).exists());
     }
 
+    /// The "is ready" notice stands exactly while a release is staged: up as
+    /// one is, down when a switch drops it, and down at the start after the
+    /// flip (or a rollback); a start that still has it staged leaves it up.
+    #[test]
+    fn the_ready_notice_stands_while_a_release_is_staged_and_goes_with_it() {
+        use crate::update::boot::{Boot, boot_at};
+        use crate::update::channel::noticed_here;
+        let bucket = Bucket::new();
+        let (root, layout) = rig();
+        let (a, installed) = install(root.path(), &layout, &script("a"));
+        let pin = installed.pinned_sequence();
+        let b = publish(&bucket, Channel::Stable, pin + 1, &release_of(script("b")));
+        let ready = format!("ready 0.1.0+{}", b.short());
+        noticed_here();
+
+        let mut running = updater(&layout, &bucket, Channel::Stable);
+        running.start();
+        block(running.check(&client()));
+        assert_eq!(noticed_here(), ["withdrawn", ready.as_str()]);
+
+        crate::update::channel::keep_channel(&layout, Channel::Nightly).unwrap();
+        running.switch(Channel::Nightly);
+        assert_eq!(noticed_here(), ["withdrawn"], "the switch dropped it");
+
+        crate::update::channel::keep_channel(&layout, Channel::Stable).unwrap();
+        let mut running = updater(&layout, &bucket, Channel::Stable);
+        block(running.check(&client()));
+        assert_eq!(noticed_here(), [ready.as_str()]);
+        updater(&layout, &bucket, Channel::Stable).start();
+        assert_eq!(noticed_here(), Vec::<String>::new(), "still staged");
+
+        assert_eq!(
+            boot_at(&layout, &layout.release_exe(a)).unwrap(),
+            Boot::Exec(layout.app_exe())
+        );
+        let Boot::Run(phase) = boot_at(&layout, &layout.release_exe(b)).unwrap() else {
+            panic!("B does not run");
+        };
+        Updater::new(layout.clone(), phase, keys(), Channel::Stable, &bucket.base).start();
+        assert_eq!(noticed_here(), ["withdrawn"], "the flip took it over");
+    }
+
     /// The headline. An installed app checks the channel, finds a newer signed
     /// release and stages it; the next start flips to it and runs it. That
     /// release never renders a frame: the start after flips back to the one
