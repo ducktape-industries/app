@@ -40,8 +40,8 @@ pub(crate) use seat::{Failure, NODE_UNREACHABLE, Seat};
 use guest::Guest;
 use roster::{Connection, code_digest, connection, rail_moved};
 use seat::{
-    Load, LoadTiming, Loaded, Mounted, Registry, Slot, Unloaded, log_source, queue, registry,
-    view_override,
+    Load, LoadTiming, Loaded, Mounted, Registry, Slot, Unloaded, ViewCode, log_source, queue,
+    registry, view_override,
 };
 
 /// Shared HTTP connections need a continuously driven I/O runtime. Loader
@@ -227,7 +227,7 @@ pub(crate) fn min_width(module: &str) -> Option<f32> {
         .filter(|((name, _), _)| *name == module)
         .find_map(|(_, seat)| match &lock(seat).slot {
             Slot::Ready(guest) => Some(guest.min_width as f32),
-            Slot::Compiled { min_width, .. } => Some(*min_width as f32),
+            Slot::Compiled(view) => Some(view.min_width as f32),
             _ => None,
         })
 }
@@ -245,11 +245,7 @@ pub(crate) fn seat_for_test(module: &'static str, min_width: u32) {
 #[cfg(test)]
 pub(crate) fn seat_compiled_for_test(module: &'static str, name: &str, icon: &str) {
     let seat = Mounted::seat();
-    lock(&seat).slot = Slot::Compiled {
-        name: name.into(),
-        icon: icon.into(),
-        min_width: 320,
-    };
+    lock(&seat).slot = Slot::Compiled(ViewCode::for_test(name, icon, 320));
     lock(registry()).insert((module, 0), seat);
 }
 

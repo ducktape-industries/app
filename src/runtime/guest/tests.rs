@@ -332,11 +332,7 @@ fn a_view_says_its_min_width_once_it_is_drawn() {
         .unwrap()
         .insert(("min-width-seat", 7), seat.clone());
     assert_eq!(min_width("min-width-seat"), None, "loading");
-    seat.lock().unwrap().slot = Slot::Compiled {
-        name: String::new(),
-        icon: String::new(),
-        min_width: 640,
-    };
+    seat.lock().unwrap().slot = Slot::Compiled(ViewCode::for_test("", "", 640));
     assert_eq!(min_width("min-width-seat"), Some(640.), "its manifest's");
     let mut guest = wat_view("unreachable", "unreachable", None);
     guest.min_width = 680;
