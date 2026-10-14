@@ -489,6 +489,7 @@ mod tests {
             programs: "programs-b".into(),
             validators: "valset-b".into(),
             identity: "identity-b".into(),
+            blobs: "blobs-b".into(),
         };
         for program in ["programs-b", "valset-b", "identity-b"] {
             assert_eq!(
@@ -519,6 +520,7 @@ mod tests {
             programs: "programs".into(),
             validators: "valset".into(),
             identity: identity::PROGRAM.into(),
+            blobs: "blobs".into(),
         };
         let asked = |program: &str| {
             needed(program, Some(&roles), identity::PROGRAM, &suspend, Some(7)).unwrap()
@@ -552,6 +554,7 @@ mod tests {
             programs: "programs".into(),
             validators: "valset".into(),
             identity: identity::PROGRAM.into(),
+            blobs: "blobs".into(),
         };
         let op = [1, 2, 3];
         let add_key = abi::encode(&identity::Op::AddKey {

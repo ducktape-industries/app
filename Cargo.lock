@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "abi"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=2fd601ceae68dbb25e974480653ac888625cdc01#2fd601ceae68dbb25e974480653ac888625cdc01"
+source = "git+https://github.com/ducktape-industries/programs?rev=21f86b273df9beaa17a231d22881718f22cf0e02#21f86b273df9beaa17a231d22881718f22cf0e02"
 dependencies = [
  "borsh",
  "design",
@@ -865,6 +865,29 @@ dependencies = [
  "constant_time_eq",
  "cpufeatures 0.3.1",
  "zeroize",
+]
+
+[[package]]
+name = "blob"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/ducktape?rev=abaf912fe9507673bc010c40c8b22ec64bb63882#abaf912fe9507673bc010c40c8b22ec64bb63882"
+dependencies = [
+ "abi",
+ "borsh",
+ "sha1",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "blobs"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/programs?rev=21f86b273df9beaa17a231d22881718f22cf0e02#21f86b273df9beaa17a231d22881718f22cf0e02"
+dependencies = [
+ "abi",
+ "blob",
+ "borsh",
+ "describe",
+ "program",
 ]
 
 [[package]]
@@ -2271,7 +2294,7 @@ dependencies = [
 [[package]]
 name = "describe"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=2fd601ceae68dbb25e974480653ac888625cdc01#2fd601ceae68dbb25e974480653ac888625cdc01"
+source = "git+https://github.com/ducktape-industries/programs?rev=21f86b273df9beaa17a231d22881718f22cf0e02#21f86b273df9beaa17a231d22881718f22cf0e02"
 dependencies = [
  "borsh",
  "serde",
@@ -2281,7 +2304,7 @@ dependencies = [
 [[package]]
 name = "design"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=2fd601ceae68dbb25e974480653ac888625cdc01#2fd601ceae68dbb25e974480653ac888625cdc01"
+source = "git+https://github.com/ducktape-industries/programs?rev=21f86b273df9beaa17a231d22881718f22cf0e02#21f86b273df9beaa17a231d22881718f22cf0e02"
 
 [[package]]
 name = "digest"
@@ -2451,7 +2474,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 [[package]]
 name = "ducklink"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=2fd601ceae68dbb25e974480653ac888625cdc01#2fd601ceae68dbb25e974480653ac888625cdc01"
+source = "git+https://github.com/ducktape-industries/programs?rev=21f86b273df9beaa17a231d22881718f22cf0e02#21f86b273df9beaa17a231d22881718f22cf0e02"
 dependencies = [
  "abi",
  "program",
@@ -2463,6 +2486,7 @@ version = "0.1.0"
 dependencies = [
  "abi",
  "base64 0.22.1",
+ "blobs",
  "block2 0.5.1",
  "borsh",
  "commonware-codec",
@@ -2817,13 +2841,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
 name = "error"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=2fd601ceae68dbb25e974480653ac888625cdc01#2fd601ceae68dbb25e974480653ac888625cdc01"
+source = "git+https://github.com/ducktape-industries/programs?rev=21f86b273df9beaa17a231d22881718f22cf0e02#21f86b273df9beaa17a231d22881718f22cf0e02"
 dependencies = [
  "borsh",
  "serde",
@@ -4760,7 +4784,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.58.0",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -4864,7 +4888,7 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 [[package]]
 name = "identity"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=2fd601ceae68dbb25e974480653ac888625cdc01#2fd601ceae68dbb25e974480653ac888625cdc01"
+source = "git+https://github.com/ducktape-industries/programs?rev=21f86b273df9beaa17a231d22881718f22cf0e02#21f86b273df9beaa17a231d22881718f22cf0e02"
 dependencies = [
  "abi",
  "borsh",
@@ -7128,7 +7152,7 @@ dependencies = [
 [[package]]
 name = "program"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=2fd601ceae68dbb25e974480653ac888625cdc01#2fd601ceae68dbb25e974480653ac888625cdc01"
+source = "git+https://github.com/ducktape-industries/programs?rev=21f86b273df9beaa17a231d22881718f22cf0e02#21f86b273df9beaa17a231d22881718f22cf0e02"
 dependencies = [
  "abi",
  "borsh",
@@ -7141,7 +7165,7 @@ dependencies = [
 [[package]]
 name = "program-derive"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=2fd601ceae68dbb25e974480653ac888625cdc01#2fd601ceae68dbb25e974480653ac888625cdc01"
+source = "git+https://github.com/ducktape-industries/programs?rev=21f86b273df9beaa17a231d22881718f22cf0e02#21f86b273df9beaa17a231d22881718f22cf0e02"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7151,9 +7175,10 @@ dependencies = [
 [[package]]
 name = "programs"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=2fd601ceae68dbb25e974480653ac888625cdc01#2fd601ceae68dbb25e974480653ac888625cdc01"
+source = "git+https://github.com/ducktape-industries/programs?rev=21f86b273df9beaa17a231d22881718f22cf0e02#21f86b273df9beaa17a231d22881718f22cf0e02"
 dependencies = [
  "abi",
+ "blob",
  "borsh",
  "describe",
  "program",
@@ -7327,7 +7352,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -7970,7 +7995,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -8691,7 +8716,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "store"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=2fd601ceae68dbb25e974480653ac888625cdc01#2fd601ceae68dbb25e974480653ac888625cdc01"
+source = "git+https://github.com/ducktape-industries/programs?rev=21f86b273df9beaa17a231d22881718f22cf0e02#21f86b273df9beaa17a231d22881718f22cf0e02"
 dependencies = [
  "abi",
  "borsh",
@@ -8957,7 +8982,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -9798,7 +9823,7 @@ dependencies = [
 [[package]]
 name = "valset"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=2fd601ceae68dbb25e974480653ac888625cdc01#2fd601ceae68dbb25e974480653ac888625cdc01"
+source = "git+https://github.com/ducktape-industries/programs?rev=21f86b273df9beaa17a231d22881718f22cf0e02#21f86b273df9beaa17a231d22881718f22cf0e02"
 dependencies = [
  "abi",
  "borsh",
@@ -9823,7 +9848,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "view-wire"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=2fd601ceae68dbb25e974480653ac888625cdc01#2fd601ceae68dbb25e974480653ac888625cdc01"
+source = "git+https://github.com/ducktape-industries/programs?rev=21f86b273df9beaa17a231d22881718f22cf0e02#21f86b273df9beaa17a231d22881718f22cf0e02"
 dependencies = [
  "accesskit 0.25.1",
  "borsh",
@@ -10675,7 +10700,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

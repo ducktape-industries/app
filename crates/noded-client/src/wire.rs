@@ -16,7 +16,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::{SignError, Signer};
 
-pub const NODE_CONTRACT: u32 = 4;
+pub const NODE_CONTRACT: u32 = 5;
 pub const FRAME_NAMESPACE: &[u8] = b"ducktape:frame";
 
 pub mod route {
@@ -396,7 +396,7 @@ mod tests {
         bytes.extend([1, 0, 0, 0, 8]);
         bytes.extend(NODE_CONTRACT.to_le_bytes());
         bytes.extend([9; 32]);
-        for role in ["r", "v", "i"] {
+        for role in ["r", "v", "i", "b"] {
             bytes.extend(text(role));
         }
         let status = Status {
@@ -415,6 +415,7 @@ mod tests {
                 programs: "r".into(),
                 validators: "v".into(),
                 identity: "i".into(),
+                blobs: "b".into(),
             },
         };
         assert_eq!(abi::decode::<Status>(&bytes).unwrap(), status);

@@ -61,6 +61,7 @@ pub(crate) fn test_roles() -> abi::Roles {
         programs: "programs".into(),
         validators: "valset".into(),
         identity: "identity".into(),
+        blobs: "blobs".into(),
     }
 }
 
