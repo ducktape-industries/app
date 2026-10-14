@@ -1414,7 +1414,7 @@ mod macos {
         std::fs::create_dir_all(&download).unwrap();
         crate::update::install::install(&layout, &bundle_exe(&bundle(&download, "a"))).unwrap();
         let pin = state(&layout).pinned_sequence();
-        let built = root.join("built");
+        let built = root.path().join("built");
         std::fs::create_dir_all(&built).unwrap();
         let b = publish_archive(&bucket, pin + 1, pack(&bundle(&built, "b")));
         let updater =

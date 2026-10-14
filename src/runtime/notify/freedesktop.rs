@@ -182,15 +182,14 @@ pub(super) fn withdraw_host() {
 }
 
 /// Where the host's banner id is kept for the session's other processes:
-/// `<boot id> <banner id>` in the app's state dir (made at `main`'s start,
-/// with the log). The daemon numbers banners per boot, so an id from
-/// another boot is none of ours.
+/// `<boot id> <banner id>` beside the app's log (whose dir `main` makes at
+/// its start). The daemon numbers banners per boot, so an id from another
+/// boot is none of ours.
 // ponytail: a daemon restarted within one boot numbers afresh, and a kept
 // id may then name another app's banner; the boot id guards a reboot only.
 fn host_banner_path() -> Option<std::path::PathBuf> {
-    crate::backend::state_dir()
-        .ok()
-        .map(|dir| dir.join("update-notice"))
+    let log = crate::backend::app_log_path().ok()?;
+    Some(log.with_file_name("update-notice"))
 }
 
 fn boot_id() -> String {
