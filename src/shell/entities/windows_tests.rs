@@ -632,8 +632,8 @@ fn the_windows_follow_what_opens_over_a_desk(cx: &mut TestAppContext) {
     app.account.update(cx, |account, cx| {
         let key = vec![7; 32];
         let mut state = account.get().clone();
-        state.approve = Some(crate::backend::join::fingerprint(&key));
-        let found = crate::backend::join::Request {
+        state.approve = Some(noded_client::join::fingerprint(&key));
+        let found = noded_client::join::Request {
             network: "testkit".into(),
             key,
         };

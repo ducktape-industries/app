@@ -867,7 +867,7 @@ fn about_page(ink: &Ink) -> Vec<gpui_kit::Div> {
         line("Version", env!("CARGO_PKG_VERSION").into(), ink),
         line(
             "Node contract",
-            format!("v{}", crate::backend::noded::NODE_CONTRACT),
+            format!("v{}", noded_client::wire::NODE_CONTRACT),
             ink,
         ),
         line("Log", log, ink),

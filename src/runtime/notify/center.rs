@@ -361,7 +361,7 @@ impl Center {
     /// person's action here (open, mark all read, clear read), and once at
     /// the end of each view redraw for whatever its requests logged
     /// (`Guest::redraw`), never per post. Written whole through
-    /// `backend::atomic_write` on the blocking pool, one write after
+    /// `noded_client::fs::atomic_write` on the blocking pool, one write after
     /// another (`kernel::in_order` under the log's path).
     pub(crate) fn flush(&mut self) {
         if self.saved == self.rev {
@@ -379,7 +379,7 @@ impl Center {
                 let _ = std::fs::create_dir_all(parent);
             }
             if let Ok(bytes) = serde_json::to_vec(&entries) {
-                let _ = crate::backend::atomic_write(&path, &bytes, false);
+                let _ = noded_client::fs::atomic_write(&path, &bytes, false);
             }
         });
     }

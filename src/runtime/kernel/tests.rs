@@ -971,7 +971,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     handle().block_on(backend::seat_key(key));
     // garbage for the frame's anchor read, on this view's own connection
     let node = fake_node(vec![(
-        backend::noded::route::STATUS,
+        noded_client::wire::route::STATUS,
         Mode::Answer(b"not a status".to_vec()),
     )]);
     guest.connection = super::super::Connection {
@@ -1101,7 +1101,7 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
     guest.name = "acl-valset".into();
     guest.targets = vec!["acl-valset".into(), "acl-registry".into()];
     let node = fake_node(vec![(
-        backend::noded::route::STATUS,
+        noded_client::wire::route::STATUS,
         Mode::Answer(b"not a status".to_vec()),
     )]);
     guest.connection = super::super::Connection {

@@ -205,8 +205,8 @@ fn answer(mut stream: std::net::TcpStream, answers: &Answers, held: &Mutex<Held>
         return respond(&mut stream, "200 OK", &abi::encode(&status(0)));
     }
     if line.starts_with("POST /v1/query ") {
-        let query: crate::backend::noded::Query = abi::decode(&body).unwrap();
-        let frame: crate::backend::noded::Frame = abi::decode(&query.frame).unwrap();
+        let query: noded_client::wire::Query = abi::decode(&body).unwrap();
+        let frame: noded_client::wire::Frame = abi::decode(&query.frame).unwrap();
         let reply = match abi::decode(&frame.body.payload).unwrap() {
             module_registry::Query::Roster => module_registry::Reply::Roster {
                 height: 1,
@@ -241,8 +241,8 @@ fn answer(mut stream: std::net::TcpStream, answers: &Answers, held: &Mutex<Held>
     respond(&mut stream, "404 Not Found", b"gone");
 }
 
-fn status(height: u64) -> crate::backend::noded::Status {
-    use crate::backend::noded;
+fn status(height: u64) -> noded_client::wire::Status {
+    use noded_client::wire as noded;
     noded::Status {
         network: "fake-network".into(),
         time: 1,
@@ -255,7 +255,7 @@ fn status(height: u64) -> crate::backend::noded::Status {
         identity: Vec::new(),
         contract: noded::NODE_CONTRACT,
         genesis: [0; 32],
-        roles: noded::test_roles(),
+        roles: crate::backend::test_roles(),
     }
 }
 
@@ -369,8 +369,8 @@ fn serve_registry(stream: &mut std::net::TcpStream, registry: &::guest::MockHost
     if !line.starts_with("POST /v1/query ") {
         return respond(stream, "200 OK", &abi::encode(&None::<Vec<u8>>));
     }
-    let query: crate::backend::noded::Query = abi::decode(&body).unwrap();
-    let frame: crate::backend::noded::Frame = abi::decode(&query.frame).unwrap();
+    let query: noded_client::wire::Query = abi::decode(&body).unwrap();
+    let frame: noded_client::wire::Frame = abi::decode(&query.frame).unwrap();
     let asked = abi::decode(&frame.body.payload).unwrap();
     let env = registry_env(tip + 1, ::guest::Origin::Signed(frame.body.signer));
     let reply = module_registry::Modules::query(&registry.query(env), asked).unwrap();

@@ -2486,6 +2486,7 @@ dependencies = [
  "keystore",
  "libc",
  "module-registry",
+ "noded-client",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "objc2-user-notifications 0.2.2",
@@ -5895,6 +5896,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "418abd1b6d34fbf6cae440dc874771b0525a604428704c76e48b29a5e67b8003"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "noded-client"
+version = "0.1.0"
+dependencies = [
+ "abi",
+ "base64 0.22.1",
+ "borsh",
+ "commonware-cryptography",
+ "futures",
+ "identity",
+ "rand 0.8.8",
+ "reqwest",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
 ]
 
 [[package]]

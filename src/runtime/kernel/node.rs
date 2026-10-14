@@ -6,7 +6,7 @@
 //! task is a [`NodeTask`] in `guest.tasks`, aborted when dropped.
 use super::super::consent;
 use super::*;
-use crate::backend::noded;
+use noded_client::wire as noded;
 
 pub(super) type Answered = std::pin::Pin<Box<dyn std::future::Future<Output = Answer> + Send>>;
 /// One node-backed method: the node to ask and the request's payload in,
@@ -38,7 +38,7 @@ fn unsent(refusal: &wire::Error) -> bool {
 }
 
 /// The answer, and how many times the node was asked for it: each ask
-/// given `per_attempt` to answer ([`noded::ANSWER_DEADLINE`], never the
+/// given `per_attempt` to answer ([`noded_client::ANSWER_DEADLINE`], never the
 /// budget's remainder, which would cut a recovering node's held answer
 /// short), asked again while `retry_on` the refusal and `budget` lasts. An
 /// ask cut at its deadline may have reached the node: `node_failed`, which
@@ -282,9 +282,12 @@ fn spawn_method(
         }
         let (result, attempts) = match retry_on {
             Some(retry_on) => {
-                until_answered(NODE_RETRY_BUDGET, noded::ANSWER_DEADLINE, retry_on, || {
-                    method(node.clone(), ask.clone())
-                })
+                until_answered(
+                    NODE_RETRY_BUDGET,
+                    noded_client::ANSWER_DEADLINE,
+                    retry_on,
+                    || method(node.clone(), ask.clone()),
+                )
                 .await
             }
             None => (method(node, ask).await, 1),
@@ -608,7 +611,10 @@ fn follow_heads(guest: &mut Guest, id: u64, node: Node) {
 
 /// The heads past `last` (the tip alone at the first read), oldest first,
 /// and the node's block time.
-async fn next_heads(node: &Node, last: Option<u64>) -> noded::Result<(Vec<methods::Head>, u64)> {
+async fn next_heads(
+    node: &Node,
+    last: Option<u64>,
+) -> noded_client::Result<(Vec<methods::Head>, u64)> {
     let status = node.client.status().await?;
     let tip = status.height;
     if last.is_some_and(|last| last >= tip) {
@@ -755,7 +761,7 @@ pub(super) fn blob_get(node: Node, ask: Vec<u8>) -> Answered {
         let (kind, hex) = id
             .split_once(':')
             .ok_or_else(|| malformed("id is `sha256:<hex>` or `sha1:<hex>`"))?;
-        let digest = backend::hex_decode(hex).map_err(malformed)?;
+        let digest = noded_client::hex::hex_decode(hex).map_err(malformed)?;
         let id = match (kind, digest.len()) {
             ("sha256", 32) => abi::BlobId::Sha256(digest.try_into().expect("32 bytes")),
             ("sha1", 20) => abi::BlobId::Sha1(digest.try_into().expect("20 bytes")),
@@ -769,7 +775,7 @@ pub(super) fn blob_get(node: Node, ask: Vec<u8>) -> Answered {
             return Ok(methods::encode(&None::<Vec<u8>>));
         };
         let body =
-            backend::noded::unframe(&framed).ok_or_else(|| host_fault("blob has no header"))?;
+            noded_client::wire::unframe(&framed).ok_or_else(|| host_fault("blob has no header"))?;
         if body.len() > MAX_BLOB_BYTES {
             return Err(wire::Error::new(
                 refusal::TOO_LARGE,
@@ -811,7 +817,7 @@ pub(super) fn network(node: Node, ask: Vec<u8>) -> Answered {
             return Err(malformed("chain.network takes no payload"));
         }
         let network = node.client.network().await.map_err(|error| match error {
-            noded::Error::Failed { status: 404, .. } => wire::Error::new(
+            noded_client::Error::Failed { status: 404, .. } => wire::Error::new(
                 refusal::UNKNOWN_REQUEST,
                 "This node doesn't report its validators' votes. Update the node.",
             ),

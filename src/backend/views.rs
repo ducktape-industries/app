@@ -15,8 +15,8 @@ use std::path::PathBuf;
 
 use abi::BlobId;
 
-use super::noded::Layer;
 use super::{RpcClient, cache_dir};
+use noded_client::wire::{Layer, unframe};
 
 pub const VIEW_SECTION: &str = "ducktape.view";
 
@@ -173,7 +173,7 @@ pub async fn program_bytes(
     if let Some(path) = &cached
         && let Ok(framed) = tokio::fs::read(path).await
         && hashes_to(&framed, code)
-        && let Some(body) = super::noded::unframe(&framed)
+        && let Some(body) = unframe(&framed)
     {
         return Ok((body.to_vec(), "disk"));
     }
@@ -182,7 +182,7 @@ pub async fn program_bytes(
         .await
         .map_err(fetch_error)?
         .ok_or(Fetch::NotHeld)?;
-    let body = super::noded::unframe(&framed)
+    let body = unframe(&framed)
         .ok_or_else(|| Fetch::Refused("the blob carries no git header".into()))?
         .to_vec();
     if !hashes_to(&framed, code) {
@@ -230,12 +230,12 @@ pub fn view_section(bytes: &[u8]) -> Option<Vec<u8>> {
     None
 }
 
-fn fetch_error(error: super::noded::Error) -> Fetch {
+fn fetch_error(error: noded_client::Error) -> Fetch {
     match error {
-        super::noded::Error::Refused(refusal) | super::noded::Error::Decode(refusal) => {
+        noded_client::Error::Refused(refusal) | noded_client::Error::Decode(refusal) => {
             Fetch::Refused(refusal.sentence)
         }
-        error @ super::noded::Error::TooLarge { .. } => Fetch::Refused(error.to_string()),
+        error @ noded_client::Error::TooLarge { .. } => Fetch::Refused(error.to_string()),
         other => Fetch::Unreachable(other.to_string()),
     }
 }

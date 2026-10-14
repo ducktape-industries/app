@@ -10,8 +10,9 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use keyscheme::KeyScheme;
+use noded_client::relay::url_encode;
 
-use super::loopback::{Listener, url_encode};
+use super::loopback::Listener;
 
 /// The live page. Its host IS the RP ID every passkey is scoped to.
 const AUTH_PAGE: &str = "https://auth.ducktape.industries/";
@@ -182,10 +183,10 @@ pub(crate) fn on_open_url(open: fn(String)) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::noded::{FRAME_NAMESPACE, Tip};
     use super::super::passkey::{passkey_body, passkey_frame};
     use super::*;
     use keyscheme::testkit;
+    use noded_client::wire::{FRAME_NAMESPACE, Tip};
 
     const RP: &str = "auth.ducktape.industries";
 

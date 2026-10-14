@@ -225,7 +225,7 @@ pub(super) fn needed(
                 format!(
                     "{by} asks to remove a key from your account. Approve only if you meant to."
                 ),
-                Some(crate::backend::join::fingerprint(&key)),
+                Some(noded_client::join::fingerprint(&key)),
             )),
             identity::Op::RemoveKey { account, key } => Some(words(
                 format!(
@@ -233,7 +233,7 @@ pub(super) fn needed(
                 ),
                 Some(format!(
                     "#{account} · {}",
-                    crate::backend::join::fingerprint(&key)
+                    noded_client::join::fingerprint(&key)
                 )),
             )),
             identity::Op::Revoke { account } => Some(words(
@@ -332,7 +332,7 @@ fn value(shown: &describe::Value) -> String {
     match shown {
         Value::Text(text) | Value::Module(text) => text.clone(),
         Value::Account(number) => format!("#{number}"),
-        Value::Key(key) => crate::backend::join::fingerprint(key),
+        Value::Key(key) => noded_client::join::fingerprint(key),
         Value::Hash(bytes) => short(bytes),
         Value::Amount { value, decimals } => match 10u128.checked_pow(u32::from(*decimals)) {
             Some(scale) if *decimals > 0 => format!(
@@ -418,7 +418,7 @@ mod tests {
             account: 7,
             key: vec![1, 2, 3],
         };
-        let fingerprint = crate::backend::join::fingerprint(&[1, 2, 3]);
+        let fingerprint = noded_client::join::fingerprint(&[1, 2, 3]);
         let removed = asked(&remove).unwrap();
         assert!(
             removed

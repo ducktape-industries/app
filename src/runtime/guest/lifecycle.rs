@@ -549,7 +549,7 @@ impl Guest {
         tracing::warn!(
             target: "ducktape::app",
             module = self.module,
-            hash = %crate::backend::hex_encode(self.hash.as_ref().map_or(&[][..], |hash| hash)),
+            hash = %noded_client::hex::hex_encode(self.hash.as_ref().map_or(&[][..], |hash| hash)),
             reason,
             refusal = %refusal,
             "view_state_dropped"
@@ -863,7 +863,10 @@ impl Guest {
 /// How a view is named in logs and errors: its module and the first six
 /// bytes of its hash.
 fn shown_as(module: &str, hash: &[u8; 32]) -> String {
-    format!("{module} view @ {}", crate::backend::hex_encode(&hash[..6]))
+    format!(
+        "{module} view @ {}",
+        noded_client::hex::hex_encode(&hash[..6])
+    )
 }
 
 /// The view `bytes`, compiled to `code` out of `blob`, with what their

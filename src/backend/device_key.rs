@@ -156,7 +156,7 @@ fn save_in(
 fn save_file(path: &Path, seed: &[u8]) -> Result<(), String> {
     path.parent()
         .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| super::atomic_write(path, seed, true))
+        .and_then(|()| noded_client::fs::atomic_write(path, seed, true))
         .map_err(|error| format!("this device's key could not be kept: {error}"))
 }
 

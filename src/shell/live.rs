@@ -50,7 +50,7 @@ pub(crate) fn boot(live: Live, entities: &Entities, cx: &mut gpui_kit::App) {
     let signer = runtime.block_on(crate::backend::seat_key(ed25519::PrivateKey::from_seed(
         live.seed,
     )));
-    let client = crate::backend::RpcClient::new(live.endpoint.clone());
+    let client = crate::backend::rpc_client(live.endpoint.clone());
     let status = match runtime.block_on(client.status()) {
         Ok(status) => status,
         Err(error) => {
