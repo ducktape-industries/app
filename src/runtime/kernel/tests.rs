@@ -327,6 +327,7 @@ fn acl_roles() -> AclRoles {
         programs: "acl-programs".into(),
         validators: "acl-valset".into(),
         identity: "acl-identity".into(),
+        blobs: "acl-blobs".into(),
     }));
     AclRoles
 }

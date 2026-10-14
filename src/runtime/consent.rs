@@ -26,8 +26,6 @@ use std::sync::{Mutex, OnceLock};
 
 /// The card's title for an op to the person's account (identity's).
 pub(crate) const ACCOUNT: &str = "Confirm a change to your account";
-/// The card's title for an op to the network: to the programs role, or to the
-/// validators' program.
 pub(crate) const NETWORK: &str = "Confirm a change to the network";
 
 /// What the dialog says for one op: its title ([`ACCOUNT`] or
@@ -268,6 +266,8 @@ pub(super) fn needed(
         (NETWORK, "vote in the validators' program")
     } else if target == roles.identity {
         (ACCOUNT, "sign an identity operation")
+    } else if target == roles.blobs {
+        (NETWORK, "sign an op on the blobs role")
     } else {
         return None;
     };
@@ -284,9 +284,14 @@ pub(super) fn needed(
 /// the node's programs role answers them): never while no bindings are known.
 pub(super) fn bound(program: &str, roles: Option<&abi::Roles>) -> bool {
     roles.is_some_and(|roles| {
-        [&roles.programs, &roles.validators, &roles.identity]
-            .iter()
-            .any(|role| role.as_str() == program)
+        [
+            &roles.programs,
+            &roles.validators,
+            &roles.identity,
+            &roles.blobs,
+        ]
+        .iter()
+        .any(|role| role.as_str() == program)
     })
 }
 
@@ -489,8 +494,9 @@ mod tests {
             programs: "programs-b".into(),
             validators: "valset-b".into(),
             identity: "identity-b".into(),
+            blobs: "blobs-b".into(),
         };
-        for program in ["programs-b", "valset-b", "identity-b"] {
+        for program in ["programs-b", "valset-b", "identity-b", "blobs-b"] {
             assert_eq!(
                 said(program, Some(&roles)),
                 "System asks to suspend agent #12. It stops acting until it is resumed."
@@ -519,6 +525,7 @@ mod tests {
             programs: "programs".into(),
             validators: "valset".into(),
             identity: identity::PROGRAM.into(),
+            blobs: "blobs".into(),
         };
         let asked = |program: &str| {
             needed(program, Some(&roles), identity::PROGRAM, &suspend, Some(7)).unwrap()
@@ -552,6 +559,7 @@ mod tests {
             programs: "programs".into(),
             validators: "valset".into(),
             identity: identity::PROGRAM.into(),
+            blobs: "blobs".into(),
         };
         let op = [1, 2, 3];
         let add_key = abi::encode(&identity::Op::AddKey {
@@ -586,6 +594,7 @@ mod tests {
                 ACCOUNT,
                 "sign an identity operation",
             ),
+            ("blobs", &op[..], NETWORK, "sign an op on the blobs role"),
         ] {
             let words = asked("chat", target, body).expect(target);
             assert_eq!(
@@ -601,7 +610,7 @@ mod tests {
                 },
                 "{target}"
             );
-            for own in ["valset", "programs", identity::PROGRAM] {
+            for own in ["valset", "programs", identity::PROGRAM, "blobs"] {
                 assert_eq!(asked(own, target, body), None, "{own} to {target}");
             }
             assert_eq!(

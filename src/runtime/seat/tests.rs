@@ -322,7 +322,7 @@ fn programs_env(height: u64, origin: ::program::Origin) -> ::program::Env {
 }
 
 fn programs_swapping(program: &str, at: u64) -> (::program::MockHost, abi::BlobId, abi::BlobId) {
-    use ::program::{Blob, HashKind, MockHost, Origin, Program as _};
+    use ::program::{HashKind, MockHost, Origin, Program as _, Sibling};
     use ::programs::{CODE_KIND, Change, Entry, Genesis, Op, Programs, Scheduled};
     let store = MockHost::default();
     let entry = |code| Entry {
@@ -342,19 +342,19 @@ fn programs_swapping(program: &str, at: u64) -> (::program::MockHost, abi::BlobI
     )
     .unwrap();
     let body = b"scheduled code";
-    let code = ::program::blob_id(HashKind::Sha256, CODE_KIND, body).unwrap();
-    let blob = Blob {
-        kind: CODE_KIND.into(),
-        body: body.to_vec(),
-    };
-    store.borrow_mut().blobs.insert(code, blob);
-    let publish = Op::Publish { code };
-    Programs::execute(
-        &store.exec(programs_env(1, Origin::Signed(vec![1; 32]))),
-        publish,
-    )
-    .unwrap();
-    let scheduled: abi::BlobId = abi::decode(&store.take_output()).unwrap();
+    let scheduled = ::program::blob_id(HashKind::Sha256, CODE_KIND, body).unwrap();
+    let held: Sibling = Box::new(move |_, _| {
+        Ok(abi::encode(&::blobs::Reply::Held(Some(::blobs::Holding {
+            bundle: 0,
+            len: body.len() as u64,
+            kind: CODE_KIND.into(),
+            since: 1,
+        }))))
+    });
+    store
+        .borrow_mut()
+        .siblings
+        .insert(MockHost::roles().blobs, held);
     let swap = Op::Schedule(Scheduled {
         height: at,
         change: Change::Set(entry(scheduled)),
@@ -436,6 +436,7 @@ fn the_roles_come_with_the_roster_and_are_asked_once() {
         programs: "roles-programs".into(),
         validators: "roles-valset".into(),
         identity: "roles-identity".into(),
+        blobs: "roles-blobs".into(),
     };
     let node = FakeNode::with_roles(
         vec![listed("roles-programs", "roles")],

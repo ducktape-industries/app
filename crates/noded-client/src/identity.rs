@@ -287,6 +287,7 @@ mod tests {
                 programs: "r".into(),
                 validators: "v".into(),
                 identity: "i".into(),
+                blobs: "b".into(),
             },
         };
         let client = fake_node("200 OK", abi::encode(&status)).await;
