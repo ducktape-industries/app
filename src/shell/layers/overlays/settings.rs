@@ -641,16 +641,43 @@ impl OverlayLayer {
             None => env!("CARGO_PKG_VERSION").into(),
         };
         let mut rows = vec![heading("Updates", ink), line("Version", version, ink)];
-        let off = |mut rows: Vec<Div>, status: &str| {
-            rows.push(line("Status", status.into(), ink));
-            rows
+        // where the updater is, one row however it is
+        let status = |said: String| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(24.))
+                .py(px(16.))
+                .border_b_1()
+                .border_color(ink.line)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(sans(500, 14.).child(words("Status", "Status")))
+                        .child(
+                            sans(400, 13.)
+                                .line_height(px(13. * 1.5))
+                                .text_color(ink.muted)
+                                .child(words("Status/value", said)),
+                        ),
+                )
         };
         let shown = match crate::update::updates() {
             Updates::Here(shown) => shown,
-            Updates::Off => return off(rows, "Off: this copy is not an installed one"),
+            Updates::Off => {
+                rows.push(status("Off: this copy is not an installed one".into()));
+                return rows;
+            }
             // installed, and another of its processes runs the updater
             Updates::Elsewhere => {
-                return off(rows, "Another running Ducktape updates this install");
+                rows.push(status(
+                    "Another running Ducktape updates this install".into(),
+                ));
+                return rows;
             }
         };
         let channel = self.segmented(
@@ -691,37 +718,13 @@ impl OverlayLayer {
         );
         rows.push(setting(
             "Channel",
-            "Stable follows each release; Nightly is the newest work, built once a day. Switching never goes back to an older version: this one stays until the channel has a newer one.",
+            "Stable follows each release; Nightly is the newest work, built once a day.",
             channel,
             ink,
         ));
-        rows.push(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(24.))
-                .py(px(16.))
-                .border_b_1()
-                .border_color(ink.line)
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(4.))
-                        .child(sans(500, 14.).child(words("Status", "Status")))
-                        .child(
-                            sans(400, 13.)
-                                .line_height(px(13. * 1.5))
-                                .text_color(ink.muted)
-                                .child(words("Status/value", shown.status)),
-                        ),
-                )
-                .when(shown.restart, |row| {
-                    row.child(div().flex_shrink_0().child(restart))
-                }),
-        );
+        rows.push(status(shown.status).when(shown.restart, |row| {
+            row.child(div().flex_shrink_0().child(restart))
+        }));
         rows
     }
 
