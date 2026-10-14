@@ -257,7 +257,7 @@ impl OverlayLayer {
             ));
         let (top, tall) = dialog_fit(
             f32::from(window.viewport_size().height),
-            self.inset(cx),
+            self.inset(window, cx),
             680.,
             74.,
         );
@@ -268,7 +268,7 @@ impl OverlayLayer {
             Overlay::Settings(shown),
             self.overlays.entity(),
             &self.modal,
-            self.inset(cx),
+            self.inset(window, cx),
             &ink,
             |card| {
                 card.mt(px(top))

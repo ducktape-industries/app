@@ -1704,8 +1704,9 @@ fn a_back_windows_tooltip_stays_under_the_front_window(cx: &mut TestAppContext) 
 
 /// Before any network is joined the console shows the launcher, and
 /// Settings opens over it all the same: ⌘, (the app menu's Settings…)
-/// opens it, painted on the window's whole height (the launcher has no
-/// chrome to keep clear of), and Escape closes it. An update notice's
+/// opens it, painted on the window's whole height below the title bar the
+/// launcher draws on macOS (it has no other chrome to keep clear of), and
+/// Escape closes it. An update notice's
 /// click sets the same overlay (`windows_tests`).
 #[gpui_kit::test]
 fn settings_opens_over_the_launcher(cx: &mut TestAppContext) {
@@ -1738,7 +1739,11 @@ fn settings_opens_over_the_launcher(cx: &mut TestAppContext) {
             scrim.size.height,
         ]
         .map(|it| it.0 / scale),
-        [0., 0., 1280., 800.]
+        // the title bar the launcher draws on macOS stays uncovered
+        match cfg!(target_os = "macos") {
+            true => [0., 36., 1280., 764.],
+            false => [0., 0., 1280., 800.],
+        }
     );
     let nodes = native.update(|window, cx| {
         draw(window, cx);

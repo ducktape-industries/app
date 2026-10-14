@@ -149,7 +149,7 @@ impl OverlayLayer {
         // the field, the longest list and the key hints
         let (top, tall) = dialog_fit(
             f32::from(window.viewport_size().height),
-            self.inset(cx),
+            self.inset(window, cx),
             490.,
             84.,
         );
@@ -160,7 +160,7 @@ impl OverlayLayer {
             Overlay::Spotlight,
             self.overlays.entity(),
             &self.modal,
-            self.inset(cx),
+            self.inset(window, cx),
             &ink,
             |card| {
                 card.mt(px(top))

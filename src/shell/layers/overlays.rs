@@ -14,13 +14,13 @@
 //! (`entered`), when its first control is in the frame `focus_next` walks.
 //! Also the scrim and card every dialog on it is dressed in (`scrim`).
 
-use super::super::WindowKey;
 use super::super::entities::{
     Account, Entities, Notifications, Observed, Overlay, Overlays, Prefs, Rail, Screen, Session,
     Slice, Spot, Spotlight, WindowEntities,
 };
+use super::super::{WindowKey, theme};
 use super::fields::NativeInput;
-use super::{Inset, chrome_inset};
+use super::{BAR, Inset, chrome_inset};
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, FocusHandle, IntoElement, ParentElement as _,
@@ -181,12 +181,13 @@ impl OverlayLayer {
     }
 
     /// Where the chrome sits, in the layout the prefs pick: the dialogs'
-    /// scrim and room start past it. The launcher's screens have none.
-    fn inset(&self, cx: &gpui_kit::App) -> Inset {
+    /// scrim and room start past it. The launcher's screens have only the
+    /// title bar the canvas draws on macOS, which stays uncovered.
+    fn inset(&self, window: &Window, cx: &gpui_kit::App) -> Inset {
         match *self.screen.read(cx).get() == Screen::Desk {
             true => chrome_inset(self.prefs.read(cx).get().layout_or_default()),
             false => Inset {
-                top: 0.,
+                top: theme::traffic_lights(window).map_or(0., |_| BAR),
                 left: 0.,
                 menus: 0.,
             },
