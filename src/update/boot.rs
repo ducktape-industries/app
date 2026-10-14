@@ -97,14 +97,16 @@ pub(super) fn boot_at(layout: &Layout, own: &Path) -> Result<Boot, Refusal> {
     };
     // macOS adopts the bundle that runs from the install dir when no state
     // describes it ([`super::install::adopt`]): none, as for a bundle dragged
-    // in from the DMG, or one pinned below the bundle's own sequence, as for
-    // one dragged over an installed one, which a check would otherwise take
-    // back to the channel's older release. On Linux a bare binary runs from
-    // anywhere, and `install` is the way in.
-    let described = phase
-        .as_ref()
-        .is_some_and(|phase| phase.pinned_sequence() >= super::own_sequence());
-    let phase = match (phase, cfg!(target_os = "macos") && !described) {
+    // in from the DMG, or one that names another bundle, as for one dragged
+    // over an installed one, older or newer (`macos::describes`, by the
+    // executable's digest). On Linux a bare binary runs from anywhere, and
+    // `install` is the way in.
+    let adopting = cfg!(target_os = "macos")
+        && match &phase {
+            Some(phase) => !super::macos::describes(layout, phase, super::digest_file(own)?),
+            None => true,
+        };
+    let phase = match (phase, adopting) {
         (_, true) => super::install::adopt(layout, own)?,
         (Some(phase), false) => phase,
         (None, false) => {

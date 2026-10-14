@@ -35,6 +35,7 @@
 //!   <updates>/releases/<sha>.partial
 //!   <updates>/previous -> releases/<sha>
 //!   <updates>/swap.json                           the bundle swap's journal
+//!   <updates>/executables.json                    each staged release's executable digest
 //! both   (<updates> = <config>/ducktape/updates, the app's config dir):
 //!   <updates>/state.json                          the machine's phase
 //!   <updates>/channel                             the channel picked (stable when absent)
@@ -139,6 +140,11 @@ impl Layout {
     /// macOS: what a bundle swap wrote before `RENAME_SWAP`.
     fn journal_path(&self) -> PathBuf {
         self.updates.join("swap.json")
+    }
+
+    /// macOS: each kept release's executable digest ([`macos::describes`]).
+    fn executables_path(&self) -> PathBuf {
+        self.updates.join("executables.json")
     }
 
     pub(crate) fn releases_dir(&self) -> PathBuf {

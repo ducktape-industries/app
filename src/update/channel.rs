@@ -386,6 +386,11 @@ impl Updater {
                 }
                 Command::Gc { keep } => {
                     stage::collect(&self.layout.releases_dir(), &keep);
+                    if cfg!(target_os = "macos")
+                        && let Err(refusal) = super::macos::forget_executables(&self.layout, &keep)
+                    {
+                        warn!(target: TARGET, event = "app_update_gc_failed", reason = refusal.reason, detail = %refusal.detail);
+                    }
                     // `previous` naming a release that went goes with it
                     let previous = self.layout.previous_link();
                     let named = super::read_link(&previous).ok().flatten();
@@ -620,7 +625,15 @@ pub(super) async fn download(
 /// so the next offer of the same release costs no second download.
 pub(super) fn verify(layout: &Layout, sha: Sha) -> Event {
     let release_dir = layout.release_dir(sha);
-    match stage::stage(&layout.partial_path(sha), sha, &release_dir) {
+    // macOS: its executable recorded, for the start that finds it installed
+    let staged = stage::stage(&layout.partial_path(sha), sha, &release_dir).and_then(|()| {
+        match cfg!(target_os = "macos") {
+            true => super::macos::record_executable(layout, sha)
+                .map_err(|refusal| refusal.reason.to_string()),
+            false => Ok(()),
+        }
+    });
+    match staged {
         Ok(()) => {
             info!(target: TARGET, event = "app_update_verified", %sha);
             Event::Verified(sha)

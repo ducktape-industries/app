@@ -11,6 +11,13 @@
 //! `Swapping` hashes the installed executable against it to learn whether the
 //! swap landed, then finishes the bookkeeping.
 //!
+//! A bundle dragged over the installed one (from a DMG, older or newer) is
+//! not the release the state names, and the boot step adopts it
+//! ([`describes`]). It tells by the running executable's digest: a release
+//! laid down by `install` or adopted is named by that digest already; one
+//! staged from an archive is named by the archive's, so its executable's is
+//! recorded as it stages, in `<updates>/executables.json`.
+//!
 //! Everything here compiles on every platform so the Linux build type-checks
 //! it; only the swap call itself is macOS's, and the boot step reaches this
 //! module on macOS alone.
@@ -20,7 +27,9 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use app_update::{Sha, SwapState};
+use std::collections::BTreeMap;
+
+use app_update::{Phase, Sha, SwapState};
 
 use super::{Layout, Refusal};
 
@@ -43,6 +52,53 @@ pub(super) fn verify_bundle(bundle: &Path) -> Result<(), Refusal> {
             format!("{} failed codesign --verify ({status})", bundle.display()),
         )),
     }
+}
+
+/// Whether the bundle that runs, `own` its executable's digest, is one the
+/// state names: the release it says runs, or, mid-swap, either side.
+pub(super) fn describes(layout: &Layout, phase: &Phase, own: Sha) -> bool {
+    let known = executables(layout);
+    let runs = |release: Sha| known.get(&release).copied().unwrap_or(release) == own;
+    match phase {
+        Phase::Swapping(swapping) => runs(swapping.from) || runs(swapping.to),
+        phase => runs(phase.current()),
+    }
+}
+
+/// A staged release's executable, recorded: after the swap it is the one
+/// [`describes`] looks for in the install dir.
+pub(super) fn record_executable(layout: &Layout, release: Sha) -> Result<(), Refusal> {
+    let mut known = executables(layout);
+    known.insert(release, super::digest_file(&layout.release_exe(release))?);
+    keep_executables(layout, &known)
+}
+
+/// Forget the executables of every release not in `keep` (the collector's).
+pub(super) fn forget_executables(layout: &Layout, keep: &[Sha]) -> Result<(), Refusal> {
+    let mut known = executables(layout);
+    let before = known.len();
+    known.retain(|release, _| keep.contains(release));
+    match known.len() == before {
+        true => Ok(()),
+        false => keep_executables(layout, &known),
+    }
+}
+
+/// What `<updates>/executables.json` holds; nothing when it is missing or
+/// unreadable. A release with no entry is matched by its own name, which
+/// is its executable's digest unless it came from an archive: then the
+/// start adopts the bundle, and the state names it by its digest from then
+/// on.
+fn executables(layout: &Layout) -> BTreeMap<Sha, Sha> {
+    std::fs::read_to_string(layout.executables_path())
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn keep_executables(layout: &Layout, known: &BTreeMap<Sha, Sha>) -> Result<(), Refusal> {
+    let text = serde_json::to_string_pretty(known).expect("digests serialize");
+    super::persist(&layout.executables_path(), text.as_bytes())
 }
 
 /// A whole bundle, copied with `/usr/bin/ditto`: the one copier that keeps

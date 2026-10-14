@@ -216,10 +216,11 @@ fn install_macos(layout: &Layout, own: &Path, sha: Sha) -> Result<(), Refusal> {
 }
 
 /// macOS: no release beside the installed bundle, no `previous`, no swap
-/// journal.
+/// journal, no executable recorded for a release that is gone.
 fn keep_nothing_macos(layout: &Layout) -> Result<(), Refusal> {
     super::remove_leftover(&layout.previous_link())?;
     super::remove_leftover(&layout.journal_path())?;
+    super::remove_leftover(&layout.executables_path())?;
     keep_only(&layout.releases_dir(), None)
 }
 

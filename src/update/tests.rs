@@ -1194,42 +1194,79 @@ mod macos {
         assert_eq!(state(&layout), adopted(&own));
     }
 
-    /// A newer bundle dragged over an installed one finds a state pinned
-    /// below it, which no longer describes what runs: the start adopts the
-    /// bundle, and a release the older state had staged is dropped, never
-    /// swapped in over it.
+    /// A bundle dragged over an installed one (from a DMG, older or newer)
+    /// is not the release the state names: the start adopts it, and a
+    /// release the old state had staged is dropped, never swapped in over it.
     #[test]
-    fn a_newer_bundle_dragged_over_an_install_is_not_taken_back() {
+    fn a_bundle_dragged_over_an_install_is_adopted() {
         let (root, layout) = rig();
         let download = root.path().join("download");
         std::fs::create_dir_all(&download).unwrap();
         let a =
             crate::update::install::install(&layout, &bundle_exe(&bundle(&download, "a"))).unwrap();
         let own = layout.app_exe();
-        let sequence = crate::update::own_sequence();
-        assert!(sequence > 100, "the test build knows its commit's time");
         let older = Sha::digest(b"older");
         bundle(&layout.release_dir(older), "older");
-        let behind = Phase::Staged(app_update::Staged {
+        let staged = Phase::Staged(app_update::Staged {
             current: a,
             previous: None,
-            pinned_sequence: sequence - 100,
+            pinned_sequence: crate::update::own_sequence(),
             staged: older,
-            sequence: sequence - 50,
+            sequence: crate::update::own_sequence() + 1,
             display: "0.1.0+older".into(),
             refused: None,
         });
-        crate::update::persist_phase(&layout, &behind).unwrap();
+        crate::update::persist_phase(&layout, &staged).unwrap();
+        bundle(&layout.install, "n");
         assert_eq!(boot_at(&layout, &own).unwrap(), Boot::Run(adopted(&own)));
         assert!(
             !layout.release_dir(older).exists(),
-            "the older release is dropped"
+            "the staged release is dropped"
         );
         let output = Command::new(&own).arg("--version").output().unwrap();
         assert_eq!(
             String::from_utf8_lossy(&output.stdout).trim(),
-            "ducktape-app 0.0.0+a"
+            "ducktape-app 0.0.0+n"
         );
+    }
+
+    /// The Mac live test's F3: an older bundle dragged over an updated
+    /// install. The state names a release staged from an archive, so the
+    /// bundle the update put in place is known by the executable recorded
+    /// as it staged: it starts as itself, and the older one over it is
+    /// adopted, so the channel's newer releases are offered to it again.
+    #[test]
+    fn an_older_bundle_dragged_over_an_updated_install_is_adopted() {
+        let bucket = Bucket::new();
+        let (root, layout) = rig();
+        let download = root.path().join("download");
+        std::fs::create_dir_all(&download).unwrap();
+        crate::update::install::install(&layout, &bundle_exe(&bundle(&download, "a"))).unwrap();
+        let pin = state(&layout).pinned_sequence();
+        let built = root.path().join("built");
+        std::fs::create_dir_all(&built).unwrap();
+        let b = publish_archive(&bucket, pin + 1, pack(&bundle(&built, "b")));
+        let updater =
+            |phase| Updater::new(layout.clone(), phase, keys(), Channel::Stable, &bucket.base);
+        let mut running = updater(state(&layout));
+        running.start();
+        block(running.check(&client()));
+        let own = layout.app_exe();
+        assert_eq!(boot_at(&layout, &own).unwrap(), Boot::Exec(own.clone()));
+        let booted = boot_at(&layout, &own).unwrap();
+        let Boot::Run(phase @ Phase::PendingHealthy(_)) = booted else {
+            panic!("{booted:?}");
+        };
+        updater(phase).start();
+        let updated = state(&layout);
+        assert!(
+            matches!(updated, Phase::Idle(ref idle) if idle.current == b),
+            "{updated:?}"
+        );
+        assert_eq!(boot_at(&layout, &own).unwrap(), Boot::Run(updated));
+
+        bundle(&layout.install, "old");
+        assert_eq!(boot_at(&layout, &own).unwrap(), Boot::Run(adopted(&own)));
     }
 
     /// The headline on macOS: install, stage a newer signed bundle, the next
