@@ -777,8 +777,9 @@ thread_local! {
 }
 
 /// What this test thread's updaters put up and took down since the last
-/// call, published or not: `ready <display>`, `withdrawn`.
-#[cfg(test)]
+/// call, published or not: `ready <display>`, `withdrawn`. Read by the
+/// Linux flow's test only.
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) fn noticed_here() -> Vec<String> {
     NOTICED_HERE.with(|noticed| std::mem::take(&mut *noticed.borrow_mut()))
 }
