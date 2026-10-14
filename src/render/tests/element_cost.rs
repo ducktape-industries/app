@@ -385,6 +385,51 @@ fn a_text_keeps_its_number_when_a_box_before_it_takes_an_id(cx: &mut gpui_kit::T
     );
 }
 
+/// An id-less text is numbered within the nearest box that has an id, so
+/// its number does not move when a box before it grows (a chat row that
+/// gains its action strip, a list that measures its rows in another order):
+/// what gpui keeps under the number (its place in a text selection) stays.
+#[gpui_kit::test]
+fn a_text_keeps_its_number_when_a_box_before_it_grows(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let plain = |content: &str| {
+        wire::Node::Text(view_wire::TextNode {
+            id: None,
+            style: crate::render::test_style(gpui_kit::StyleRefinement::default()),
+            content: content.into(),
+        })
+    };
+    let card = |first: usize| {
+        container(
+            "card",
+            [
+                container("first", (0..first).map(|n| plain(&format!("line {n}")))),
+                container("second", [plain("leaf")]),
+            ],
+        )
+    };
+    let window = cx.open_window(size(px(300.), px(300.)), |_, _| ViewTree::new(card(1)));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let number = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            (0..8).find(|n| {
+                let id = crate::render::host_id(format!("text-{n}"));
+                window.within("second").try_find(id).is_some()
+            })
+        })
+    };
+    let before = number(&mut native);
+    assert!(before.is_some(), "the leaf has a host number");
+    tree.update(&mut native, |tree, cx| tree.replace(card(3), &[], cx));
+    assert_eq!(
+        number(&mut native),
+        before,
+        "the box before it grew: the leaf keeps its number"
+    );
+}
+
 /// A scroller of ten rows, each with an id, the first `first` px tall;
 /// `claim` is the row that claims.
 fn rows(claim: Option<usize>, first: f32) -> wire::Node {

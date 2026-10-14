@@ -110,6 +110,47 @@ pub(crate) fn enter_scope(node: &wire::Node, row: Option<usize>, path: &mut Auth
     }
 }
 
+/// Whether a node of `role` is a control: what is pressed, toggled, picked
+/// or slid. Its words are its label, and a label is not text to read: as a
+/// browser's button and a native app's controls do, it stays out of the
+/// window's text selection, so a press on it that drifts is its press and
+/// a double-click on it selects no word. A link, a list's option, a row or
+/// a cell holds content (an address, a name) and stays selectable.
+fn is_control(role: gpui_kit::Role) -> bool {
+    use gpui_kit::Role::*;
+    matches!(
+        role,
+        Button
+            | DefaultButton
+            | CheckBox
+            | RadioButton
+            | Switch
+            | Tab
+            | MenuItem
+            | MenuItemCheckBox
+            | MenuItemRadio
+            | MenuListOption
+            | ComboBox
+            | EditableComboBox
+            | Slider
+            | SpinButton
+            | Splitter
+            | ScrollBar
+            | ColorWell
+            | DisclosureTriangle
+    )
+}
+
+/// Whether the words inside a node of `role` stay out of the window's text
+/// selection: a control's label (`is_control`), and a list marker: the
+/// bullet or number before an item, a code line's number, a diff line's
+/// +/−. A marker is drawn beside the content and is not part of it, as a
+/// browser leaves an ordered list's numbers out of a selection and its copy:
+/// a drag down a file copies its code, not its line numbers.
+fn keeps_words_unselected(role: gpui_kit::Role) -> bool {
+    is_control(role) || role == gpui_kit::Role::ListMarker
+}
+
 /// Native widget state worth carrying into a fresh `ViewTree` when a view's
 /// guest is re-instantiated: plain data only, no entity or handler id, since
 /// the new guest's handler ids mean different things. Taken by
@@ -167,7 +208,8 @@ pub struct ViewTree {
     /// The path of the node `node()` is drawing; pushed and popped on the way.
     authored_path: AuthoredPath,
     /// Counts the nodes of a render the view gave no id, each by its place
-    /// in the walk: the number of the host id one takes (`container-N`,
+    /// under its nearest identified node (`node` restarts the count inside
+    /// each one): the number of the host id one takes (`container-N`,
     /// `text-N`, `rich-N`, `primitive-N`). A container that makes no id
     /// (`container`) is counted too, so a number never depends on what an
     /// earlier node sets.
@@ -180,6 +222,10 @@ pub struct ViewTree {
     row: Option<(usize, usize)>,
     /// The document order the next rich paragraph registers for selection.
     selection_order: std::rc::Rc<std::cell::Cell<u64>>,
+    /// Whether the node being drawn sits inside a control or a list marker
+    /// (`keeps_words_unselected`): its words are a label or a marker, not
+    /// text to read, and stay out of the window's text selection.
+    unselected: bool,
 
     // Native widgets, one per mounted node.
     fields: HashMap<AuthoredPath, Field>,
@@ -218,6 +264,9 @@ pub struct ViewTree {
     /// held focus as it opened, which gets focus back if focus went with
     /// the dialog.
     opener: Option<(FocusHandle, WeakFocusHandle)>,
+    /// The keys a node heard go down and has not heard come up, each told
+    /// it came up if the keyboard leaves the node first (`interactivity`).
+    held_keys: Vec<interactivity::HeldKey>,
 
     // Pictures by the guest's content hash: the seat's bytes, which a node
     // that names a hash alone draws from, and the rasters decoded from them.
@@ -285,6 +334,7 @@ impl ViewTree {
             drags: HashMap::new(),
             dialogs: HashMap::new(),
             opener: None,
+            held_keys: Vec::new(),
             sensors: HashMap::new(),
             webs: Default::default(),
             pictures: Default::default(),
@@ -295,6 +345,7 @@ impl ViewTree {
             next_row: None,
             row: None,
             selection_order: Default::default(),
+            unselected: false,
             perf_key: None,
             #[cfg(test)]
             renders: 0,
@@ -343,6 +394,18 @@ impl ViewTree {
         self.row = self.next_row.take();
         let index = self.row.map(|(position, _)| position - 1);
         let entered_scope = enter_scope(node, index, &mut self.authored_path);
+        // The host numbers id-less nodes within the nearest id'd node, from
+        // zero: gpui files them under that node's id, so a number only has
+        // to be unique there, and so it does not move when something is
+        // added before this node elsewhere, or when a list measures its
+        // rows in another order. Element state keyed under the number (a
+        // paragraph's place in the selection) survives both.
+        let outer_index = entered_scope.then(|| std::mem::take(&mut self.render_index));
+        let outer_unselected = self.unselected;
+        self.unselected |= node
+            .interactivity()
+            .and_then(|interactivity| interactivity.role)
+            .is_some_and(keeps_words_unselected);
         use wire::Node;
         let element = match node {
             Node::Text(view_wire::TextNode { .. }) => self.text(node),
@@ -365,6 +428,10 @@ impl ViewTree {
         if entered_scope {
             self.authored_path.pop();
         }
+        if let Some(outer) = outer_index {
+            self.render_index = outer;
+        }
+        self.unselected = outer_unselected;
         // a row with no id of its own is drawn under the index it is filed
         // under, so gpui files its ids (and their accessibility nodes and
         // element state) under the row too

@@ -299,6 +299,11 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             on_desk(Overlay::Settings(SettingsPage::Networks)),
         ),
         (
+            "settings-updates",
+            false,
+            on_desk(Overlay::Settings(SettingsPage::Updates)),
+        ),
+        (
             "settings-about",
             false,
             on_desk(Overlay::Settings(SettingsPage::About)),
@@ -341,6 +346,11 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             "settings-networks-sidebar",
             false,
             over(Overlay::Settings(SettingsPage::Networks), in_sidebar(desk)),
+        ),
+        (
+            "settings-updates-sidebar",
+            false,
+            over(Overlay::Settings(SettingsPage::Updates), in_sidebar(desk)),
         ),
         (
             "settings-about-sidebar",

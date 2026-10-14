@@ -3,7 +3,7 @@
 //! each desktop answers through its own daemon. Pure Rust, and no new
 //! dependency — zbus is already in this binary's graph.
 
-use super::Notice;
+use super::{Click, Notice};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -46,14 +46,14 @@ pub(super) fn markup_escaped(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// The centre row each clickable banner stands for, by banner id.
-fn clicks() -> &'static Mutex<HashMap<u32, u64>> {
-    static CLICKS: OnceLock<Mutex<HashMap<u32, u64>>> = OnceLock::new();
+/// What a click on each clickable banner opens, by banner id.
+fn clicks() -> &'static Mutex<HashMap<u32, Click>> {
+    static CLICKS: OnceLock<Mutex<HashMap<u32, Click>>> = OnceLock::new();
     CLICKS.get_or_init(Mutex::default)
 }
 
 /// One thread for the life of the process, hearing the daemon say a
-/// banner was clicked: its row is opened as if picked in the centre.
+/// banner was clicked: what it names is opened.
 fn listen(bus: &'static zbus::blocking::Connection) {
     static LISTENING: OnceLock<()> = OnceLock::new();
     LISTENING.get_or_init(|| {
@@ -78,13 +78,13 @@ fn listen(bus: &'static zbus::blocking::Connection) {
                     let Ok((banner, action)) = message.body().deserialize::<(u32, String)>() else {
                         continue;
                     };
-                    let entry = clicks()
+                    let click = clicks()
                         .lock()
                         .expect("banner clicks")
                         .get(&banner)
                         .copied();
-                    if let Some(entry) = entry.filter(|_| action == "default") {
-                        super::clicked(entry);
+                    if let Some(click) = click.filter(|_| action == "default") {
+                        super::clicked(click);
                     }
                 }
             });
@@ -94,28 +94,34 @@ fn listen(bus: &'static zbus::blocking::Connection) {
     });
 }
 
-pub(super) fn post(notice: &Notice, entry: Option<u64>) -> bool {
+pub(super) fn post(notice: &Notice, click: Option<Click>) -> bool {
     let Some(bus) = session_bus() else {
         return false;
     };
-    if entry.is_some() {
+    if click.is_some() {
         listen(bus);
     }
     // held across the call: two notices under one tag posted at once
     // would otherwise both read "none standing" and stack
     let mut standing = standing().lock().expect("standing notices");
-    let replaces = match notice.tag.is_empty() {
-        true => 0,
-        false => standing.get(&notice.tag).copied().unwrap_or(0),
+    // the host's notice (a click opens Updates) replaces the one any of
+    // this session's processes left standing
+    let host = click == Some(Click::Updates);
+    let replaces = match (host, notice.tag.is_empty()) {
+        (true, _) => host_banner().unwrap_or(0),
+        (false, true) => 0,
+        (false, false) => standing.get(&notice.tag).copied().unwrap_or(0),
     };
-    match notify(bus, notice, replaces, entry.is_some()) {
+    match notify(bus, notice, replaces, click.is_some()) {
         Ok(raised) => {
-            if !notice.tag.is_empty() {
+            if host {
+                keep_host_banner(Some(raised));
+            } else if !notice.tag.is_empty() {
                 standing.insert(notice.tag.clone(), raised);
             }
             let mut clicks = clicks().lock().expect("banner clicks");
-            match entry {
-                Some(entry) => clicks.insert(raised, entry),
+            match click {
+                Some(click) => clicks.insert(raised, click),
                 None => clicks.remove(&raised),
             };
             true
@@ -151,6 +157,63 @@ pub(super) fn withdraw(tag: &str) {
     if let Err(error) = closed {
         tracing::debug!(target: "ducktape::app", %error, "a standing banner was not closed");
     }
+}
+
+/// The host's notice down, whichever of this session's processes raised it.
+pub(super) fn withdraw_host() {
+    let Some(banner) = host_banner() else {
+        return;
+    };
+    keep_host_banner(None);
+    clicks().lock().expect("banner clicks").remove(&banner);
+    let Some(bus) = session_bus() else {
+        return;
+    };
+    let closed = bus.call_method(
+        Some("org.freedesktop.Notifications"),
+        "/org/freedesktop/Notifications",
+        Some("org.freedesktop.Notifications"),
+        "CloseNotification",
+        &(banner,),
+    );
+    if let Err(error) = closed {
+        tracing::debug!(target: "ducktape::app", %error, "the host's banner was not closed");
+    }
+}
+
+/// Where the host's banner id is kept for the session's other processes:
+/// `<boot id> <banner id>` beside the app's log (whose dir `main` makes at
+/// its start). The daemon numbers banners per boot, so an id from another
+/// boot is none of ours.
+// ponytail: a daemon restarted within one boot numbers afresh, and a kept
+// id may then name another app's banner; the boot id guards a reboot only.
+fn host_banner_path() -> Option<std::path::PathBuf> {
+    let log = crate::backend::app_log_path().ok()?;
+    Some(log.with_file_name("update-notice"))
+}
+
+fn boot_id() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+/// The host's banner standing in this boot, if one is.
+fn host_banner() -> Option<u32> {
+    let text = std::fs::read_to_string(host_banner_path()?).ok()?;
+    let (boot, banner) = text.trim().split_once(' ')?;
+    (boot == boot_id()).then(|| banner.parse().ok()).flatten()
+}
+
+fn keep_host_banner(banner: Option<u32>) {
+    let Some(path) = host_banner_path() else {
+        return;
+    };
+    let _ = match banner {
+        Some(banner) => std::fs::write(&path, format!("{} {banner}\n", boot_id())),
+        None => std::fs::remove_file(&path),
+    };
 }
 
 /// One `Notify` request: `(app_name, replaces_id, app_icon, summary,

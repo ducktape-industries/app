@@ -370,16 +370,18 @@ impl ViewTree {
                 .or_insert_with(|| cx.focus_handle());
             tabbed(handle.clone(), interactivity)
         });
-        // the content the guest built for the node's tooltip, if it has
-        let tooltip = (interactivity.tooltip.as_ref())
-            .and_then(|tooltip| self.tooltips.get(&tooltip.request))
-            .map(|held| (held.content.clone(), held.styles.clone()));
+        // whether the guest has built the node's tooltip
+        let tooltip_held = (interactivity.tooltip.as_ref())
+            .is_some_and(|tooltip| self.tooltips.contains_key(&tooltip.request));
+        // only a node with an id of its own is found again by its path
+        let path = node.identity().is_some().then_some(&self.authored_path);
         element = super::interactivity::apply(
             element,
             interactivity,
             &self.styles,
             focus_handle,
-            tooltip,
+            path,
+            tooltip_held,
             cx,
         );
         // assistive technology's press is this click too: gpui-pre answers
@@ -393,7 +395,21 @@ impl ViewTree {
         if let Some(handler) = interactivity.on_click {
             let consumes = interactivity.consumes_click;
             element = element.on_click(cx.listener(
-                move |this, event: &gpui_kit::ClickEvent, _, cx| {
+                move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                    // gpui answers a press and a release on one box with a
+                    // click however far the pointer went between them; a
+                    // release that ended a drag selecting words pressed
+                    // nothing (as the links in a paragraph say)
+                    if let gpui_kit::ClickEvent::Mouse(click) = event
+                        && super::text::dragged_over_words(
+                            click.down.position,
+                            click.up.position,
+                            window,
+                            cx,
+                        )
+                    {
+                        return;
+                    }
                     this.activate();
                     cx.emit(wire::Event::Click {
                         handler,

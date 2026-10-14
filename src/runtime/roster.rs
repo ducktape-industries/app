@@ -196,8 +196,8 @@ pub struct RailRow {
 fn readiness(slot: &Slot) -> u8 {
     match slot {
         Slot::Ready(guest) if !guest.name.is_empty() => 0,
-        Slot::Compiled { name, .. } if !name.is_empty() => 1,
-        Slot::Ready(_) | Slot::Compiled { .. } => 2,
+        Slot::Compiled(view) if !view.name.is_empty() => 1,
+        Slot::Ready(_) | Slot::Compiled(_) => 2,
         Slot::Empty => 3,
         Slot::Failed(_) => 4,
         Slot::Loading | Slot::Fetching { .. } | Slot::Compiling => 5,
@@ -232,12 +232,10 @@ impl Roster {
                         (guest.name.clone(), None, false)
                     }
                     // compiled, not started: as ready to open as a drawn view
-                    Some(Slot::Compiled { name, .. }) if !name.is_empty() => {
-                        (name.clone(), None, false)
+                    Some(Slot::Compiled(view)) if !view.name.is_empty() => {
+                        (view.name.clone(), None, false)
                     }
-                    Some(Slot::Ready(_) | Slot::Compiled { .. }) => {
-                        (module.to_owned(), None, false)
-                    }
+                    Some(Slot::Ready(_) | Slot::Compiled(_)) => (module.to_owned(), None, false),
                     Some(Slot::Empty) => (module.to_owned(), None, true),
                     Some(Slot::Failed(_)) => (module.to_owned(), Some("Failed"), false),
                     // No seat yet (a pane just let go of it, the roster hasn't
@@ -248,7 +246,7 @@ impl Roster {
                 // the manifest's, as the name is: none before it is read
                 let icon = match seat.as_ref().map(|seat| &seat.slot) {
                     Some(Slot::Ready(guest)) => guest.icon.clone(),
-                    Some(Slot::Compiled { icon, .. }) => icon.clone(),
+                    Some(Slot::Compiled(view)) => view.icon.clone(),
                     _ => String::new(),
                 };
                 RailRow {
@@ -686,11 +684,7 @@ mod rail_tests {
     fn a_compiled_seat_is_listed_by_its_manifest_name() {
         let module = "rail-tests-compiled";
         let seat = Mounted::seat();
-        lock(&seat).slot = Slot::Compiled {
-            name: "Compiled view".into(),
-            icon: String::new(),
-            min_width: 320,
-        };
+        lock(&seat).slot = Slot::Compiled(ViewCode::for_test("Compiled view", "", 320));
         lock(registry()).insert((module, 0), seat);
         let row = Roster::listing(&[module])
             .rail()
@@ -710,11 +704,7 @@ mod rail_tests {
     fn a_program_with_two_seats_is_named_by_its_readiest() {
         let module = "rail-tests-two-seats";
         let named = Mounted::seat();
-        lock(&named).slot = Slot::Compiled {
-            name: "Nodes".into(),
-            icon: String::new(),
-            min_width: 320,
-        };
+        lock(&named).slot = Slot::Compiled(ViewCode::for_test("Nodes", "", 320));
         let instances = 1..=16u64;
         {
             let mut registry = lock(registry());

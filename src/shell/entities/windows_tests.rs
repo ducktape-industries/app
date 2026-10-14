@@ -276,6 +276,24 @@ fn an_https_link_opens_in_the_web_view_else_in_the_system_browser(cx: &mut TestA
     assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/c"));
 }
 
+/// A click on the update notice (`runtime::notify` posts `OpenUpdates`):
+/// Settings opens on the console, on its Updates page.
+#[gpui_kit::test]
+fn the_update_notice_opens_settings_on_updates(cx: &mut TestAppContext) {
+    let (app, key) = console(cx);
+    let overlays = app
+        .windows
+        .read_with(cx, |windows, _| windows.own(key).unwrap().overlays.clone());
+    app.windows.update(cx, |windows, cx| {
+        windows.posted(super::windows::Posted::OpenUpdates, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        overlays.read_with(cx, |it, _| *it.get()),
+        Some(Overlay::Settings(super::SettingsPage::Updates))
+    );
+}
+
 /// Two windows of one program: a link from outside them (a notice,
 /// Spotlight, the OS) goes to the one `open_program` brings forward and
 /// to no other; with the program only in a pop-out, to the pop-out it
@@ -724,4 +742,18 @@ fn a_card_follows_its_request_off(cx: &mut TestAppContext) {
         "the card went with its request"
     );
     assert_eq!(consent::front(), None);
+}
+
+/// A window's first frame is the self-update's healthy signal: the window
+/// asks for it as it opens, and it is sent once that frame comes round.
+#[gpui_kit::test]
+fn a_windows_first_frame_tells_the_updater_it_rendered(cx: &mut TestAppContext) {
+    let before = crate::update::rendered_here();
+    let (app, key) = console(cx);
+    let handle = app
+        .windows
+        .read_with(cx, |windows, _| windows.handles()[&key]);
+    cx.update_window(handle, |_, window, cx| window.simulate_next_frame(cx))
+        .unwrap();
+    assert_eq!(crate::update::rendered_here(), before + 1);
 }

@@ -161,22 +161,58 @@ pub(super) enum Slot {
     },
     /// Verified; its code compiles.
     Compiling,
-    /// Compiled, and not started: a seat no pane has claimed keeps only
-    /// what its view's manifest says, the name the rail lists it by, the
-    /// icon its tab draws folded (empty: it declares none) and the
-    /// narrowest it is laid out. The pane that claims it starts it.
-    Compiled {
-        name: String,
-        icon: String,
-        min_width: u32,
-    },
+    /// Compiled, and not started: a seat no pane has claimed keeps its
+    /// view's code and what its manifest says, which the rail and the
+    /// layout read. The pane that claims it starts that code.
+    Compiled(Box<ViewCode>),
     Ready(Box<Guest>),
     /// The active deployment verified, and it ships no view.
     Empty,
     Failed(Failure),
 }
 
+/// A view compiled and not started: its code, out of the `blob` the
+/// roster lists (none for the developer's override, which a pane reads
+/// again), the hash of its bytes, and what its manifest says: the name
+/// the rail lists it by, the icon its tab draws folded (empty: it declares
+/// none), the narrowest it is laid out, its capabilities and its targets.
+/// All a pane needs to start it, with nothing fetched or compiled again.
+#[derive(Clone)]
+pub(super) struct ViewCode {
+    pub(super) blob: Option<abi::BlobId>,
+    pub(super) hash: [u8; 32],
+    pub(super) code: Arc<Module>,
+    pub(super) name: String,
+    pub(super) icon: String,
+    pub(super) min_width: u32,
+    pub(super) capabilities: Vec<Capability>,
+    pub(super) targets: Vec<String>,
+}
+
+#[cfg(test)]
+impl ViewCode {
+    /// An empty module no blob lists, its manifest saying `name`, `icon`
+    /// and `min_width`: a seat's compiled view no pane starts as it is.
+    pub(super) fn for_test(name: &str, icon: &str, min_width: u32) -> Box<Self> {
+        Box::new(ViewCode {
+            blob: None,
+            hash: [0; 32],
+            code: Arc::new(Module::new(guest::engine(), "(module)").unwrap()),
+            name: name.into(),
+            icon: icon.into(),
+            min_width,
+            capabilities: Vec::new(),
+            targets: Vec::new(),
+        })
+    }
+}
+
 impl Slot {
+    /// Compiled out of the blob `code` names: a pane starts it as it is.
+    pub(super) fn startable(&self, code: Option<(abi::BlobId, bool)>) -> bool {
+        matches!(self, Slot::Compiled(view) if view.blob.is_some() && view.blob == code.map(|(blob, _)| blob))
+    }
+
     /// On its way: one of the stages a load shows before it lands.
     pub(super) fn loading(&self) -> bool {
         matches!(
@@ -268,8 +304,11 @@ pub(super) fn mounted(module: &'static str, instance: u64) -> Arc<Mutex<Mounted>
     }
     let first = locked.generation == 0;
     let asked = snapshot.client.is_some() || view_override(module).is_some();
-    // a seat preloaded only as far as compiled: this pane's load starts it
-    let compiled = matches!(locked.slot, Slot::Compiled { .. });
+    // a seat preloaded only as far as compiled: this pane's load starts
+    // it, right here when it holds the code the roster lists: an instance
+    // and its `init`, on the one tick's fuel every tick here runs on
+    let compiled = matches!(locked.slot, Slot::Compiled(_));
+    let here = locked.slot.startable(code);
     let load = (first && asked || compiled).then(|| {
         locked.rev = snapshot.rev;
         Load {
@@ -282,8 +321,12 @@ pub(super) fn mounted(module: &'static str, instance: u64) -> Arc<Mutex<Mounted>
     });
     drop(locked);
     drop(registry);
-    if let Some(load) = load {
-        queue(load);
+    match load {
+        Some(load) if here => load.land(|load, timing| {
+            Guest::start(load.module, load.code, load.generation, &load.seat, timing)
+        }),
+        Some(load) => queue(load),
+        None => {}
     }
     // the module's row may now be read off this seat
     rail_moved();
@@ -580,16 +623,8 @@ fn install(
         Loaded::Empty => {
             *slot = Slot::Empty;
         }
-        Loaded::Compiled {
-            name,
-            icon,
-            min_width,
-        } => {
-            *slot = Slot::Compiled {
-                name,
-                icon,
-                min_width,
-            };
+        Loaded::Compiled(view) => {
+            *slot = Slot::Compiled(view);
             return true;
         }
         // the same tab, the same surface handle, the same host-side
@@ -680,11 +715,7 @@ pub(super) enum Loaded {
     /// The deployment ships no view.
     Empty,
     /// The view compiles, and was not started: no pane holds the seat.
-    Compiled {
-        name: String,
-        icon: String,
-        min_width: u32,
-    },
+    Compiled(Box<ViewCode>),
 }
 
 /// A load that came back with no view, and the view bytes it failed on —
@@ -718,6 +749,7 @@ pub(super) fn log_source(
 /// How long each stage of one module-owned load took, and where its bytes
 /// and code came from: `fetch` is the node's answer (`blob`: `disk` or
 /// `node`), `compile` is cranelift (`code`: `memory`, `disk` or `cold`),
+/// both `seat` for a claimed seat started from the code it compiled,
 /// then `instantiate`, a swap's `snapshot` of the old view and `restore`
 /// into the new, `init` for a fresh start, `first_frame` the tree a
 /// replacement proves (a fresh view draws its first on the window thread),

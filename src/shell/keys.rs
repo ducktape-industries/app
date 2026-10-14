@@ -38,6 +38,8 @@ gpui_kit::actions!(
         HoldPane,
         /// ⌘K.
         ToggleSpotlight,
+        /// ⌘, : Settings, on any screen.
+        OpenSettings,
         /// ⌘/: the app's help, in a window on the desk.
         OpenHelp,
         /// Tab in an empty window's field: what it searches (Module | Chat).
@@ -81,6 +83,7 @@ pub(crate) fn bind(cx: &mut gpui_kit::App) {
         KeyBinding::new("ctrl-tab", CycleForward, DESK),
         KeyBinding::new("ctrl-shift-tab", CycleBack, DESK),
         KeyBinding::new("secondary-k", ToggleSpotlight, Some("Ducktape && on_desk")),
+        KeyBinding::new("secondary-,", OpenSettings, Some(CONTEXT)),
         KeyBinding::new("escape", CloseOverlay, Some("Ducktape && overlay")),
         // over the kit's own Tab, which would move the keys and leave the
         // menu open behind them
@@ -110,7 +113,11 @@ pub(crate) fn menus(cx: &mut gpui_kit::App) {
         return;
     }
     cx.set_menus(vec![
-        Menu::new("Ducktape").items([MenuItem::action("Quit Ducktape", Quit)]),
+        Menu::new("Ducktape").items([
+            MenuItem::action("Settings…", OpenSettings),
+            MenuItem::separator(),
+            MenuItem::action("Quit Ducktape", Quit),
+        ]),
         Menu::new("View").items([MenuItem::action("Search", ToggleSpotlight)]),
         Menu::new("Window").items([
             MenuItem::action("New Window", NewWindow),
@@ -190,6 +197,14 @@ impl WindowRoot {
                     .clone()
                     .update(cx, |overlays, cx| overlays.toggle(Overlay::Spotlight, cx));
             }))
+            .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {
+                // raising the console reaches into this very root: after
+                // this listener
+                let windows = this.app.windows.clone();
+                cx.defer(move |cx| {
+                    windows.update(cx, |windows, cx| windows.open_settings(None, cx))
+                });
+            }))
             .on_action(cx.listener(|this, _: &OpenHelp, _, cx| {
                 // a menu it was asked from (the app menu's Help) is done
                 this.overlays.entity().update(cx, |overlays, cx| {
@@ -265,6 +280,25 @@ mod tests {
             Some("desk::CloseOverlay")
         );
         assert_eq!(resolve("escape", &[desk], cx), None);
+    }
+
+    /// ⌘, opens Settings on every screen: the launcher's (before any
+    /// network), the desk, and over what is open.
+    #[gpui_kit::test]
+    fn settings_answers_on_every_screen(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(bind);
+        for context in [
+            "Ducktape console",
+            "Ducktape console on_desk desk",
+            "Ducktape console on_desk overlay",
+            "Ducktape",
+        ] {
+            assert_eq!(
+                resolve("secondary-,", &[context], cx).as_deref(),
+                Some("desk::OpenSettings"),
+                "{context}"
+            );
+        }
     }
 
     /// ⌘⇧↩ fills and ⌘⇧M holds, on the desk only, and neither takes the

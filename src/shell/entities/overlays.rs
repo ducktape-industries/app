@@ -42,6 +42,7 @@ pub(crate) enum SettingsPage {
     Appearance,
     Notifications,
     Networks,
+    Updates,
     About,
 }
 

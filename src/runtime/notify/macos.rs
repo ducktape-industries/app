@@ -3,7 +3,7 @@
 //! caller can catch, the process dies. `cargo test`, `cargo run` and any
 //! bare binary are exactly that process, so the identifier is read first.
 
-use super::Notice;
+use super::{Click, Notice};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{ClassType, DeclaredClass, declare_class, msg_send_id, mutability};
@@ -15,9 +15,12 @@ use objc2_user_notifications::{
     UNUserNotificationCenterDelegate,
 };
 
-/// The userInfo key a banner carries its centre row under: macOS does
-/// not hand `targetContentIdentifier` back in a click's response.
+/// The userInfo key a banner carries what a click opens under (its centre
+/// row's id, or [`UPDATES`]): macOS does not hand `targetContentIdentifier`
+/// back in a click's response.
 const ROW: &str = "row";
+/// The `ROW` of the host's update notice.
+const UPDATES: &str = "updates";
 
 fn bundled() -> bool {
     // SAFETY: reading the main bundle's identifier is valid on any thread.
@@ -72,9 +75,12 @@ declare_class!(
             };
             // SAFETY: a framework constant.
             let default = &*action == unsafe { UNNotificationDefaultActionIdentifier };
-            let entry = row.and_then(|row| row.parse::<u64>().ok());
-            if let Some(entry) = entry.filter(|_| default) {
-                super::clicked(entry);
+            let click = row.and_then(|row| match row.as_str() {
+                UPDATES => Some(Click::Updates),
+                row => row.parse::<u64>().ok().map(Click::Row),
+            });
+            if let Some(click) = click.filter(|_| default) {
+                super::clicked(click);
             }
             done.call(());
         }
@@ -94,7 +100,7 @@ fn listen(centre: &UNUserNotificationCenter) {
     });
 }
 
-pub(super) fn post(notice: &Notice, entry: Option<u64>) -> bool {
+pub(super) fn post(notice: &Notice, click: Option<Click>) -> bool {
     if !bundled() {
         tracing::debug!(
             target: "ducktape::app",
@@ -114,11 +120,15 @@ pub(super) fn post(notice: &Notice, entry: Option<u64>) -> bool {
         if !notice.tag.is_empty() {
             content.setThreadIdentifier(&NSString::from_str(&notice.tag));
         }
-        // the row a click opens
-        if let Some(entry) = entry {
+        // what a click opens
+        if let Some(click) = click {
+            let opens = match click {
+                Click::Row(entry) => entry.to_string(),
+                Click::Updates => UPDATES.to_string(),
+            };
             let row = NSDictionary::<NSString, NSString>::from_vec(
                 &[&*NSString::from_str(ROW)],
-                vec![NSString::from_str(&entry.to_string())],
+                vec![NSString::from_str(&opens)],
             );
             // a dictionary of strings is a property list, as userInfo holds
             content.setUserInfo(&Retained::cast::<NSDictionary>(row));
@@ -128,8 +138,21 @@ pub(super) fn post(notice: &Notice, entry: Option<u64>) -> bool {
         // takes its place. Not by reusing its identifier: two requests
         // under one identifier added a moment apart cancel each other in
         // the centre (a burst's second "N more" took both down).
-        let identifier = format!("ducktape-{}", fresh());
-        if !notice.tag.is_empty() {
+        // The host's notice (the one a click opens Updates from) stands
+        // under one identifier for the install instead: any process takes
+        // it down or puts the next one in its place.
+        // ponytail: two host notices added a moment apart would cancel
+        // each other as above; one per staged release never comes close.
+        let host = click == Some(Click::Updates);
+        let identifier = match host {
+            true => HOST_NOTICE.to_string(),
+            false => super::request_id(),
+        };
+        if host {
+            let standing = NSArray::from_vec(vec![NSString::from_str(&identifier)]);
+            centre.removePendingNotificationRequestsWithIdentifiers(&standing);
+            centre.removeDeliveredNotificationsWithIdentifiers(&standing);
+        } else if !notice.tag.is_empty() {
             let standing = standing()
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -198,16 +221,27 @@ pub(super) fn withdraw(tag: &str) {
     }
 }
 
+/// The host notice's request identifier: one for the install.
+const HOST_NOTICE: &str = "ducktape-update";
+
+/// The host's notice down, whichever process raised it.
+pub(super) fn withdraw_host() {
+    if !bundled() {
+        return;
+    }
+    // SAFETY: as in `post`.
+    unsafe {
+        let centre = UNUserNotificationCenter::currentNotificationCenter();
+        let standing = NSArray::from_vec(vec![NSString::from_str(HOST_NOTICE)]);
+        centre.removePendingNotificationRequestsWithIdentifiers(&standing);
+        centre.removeDeliveredNotificationsWithIdentifiers(&standing);
+    }
+}
+
 /// The banner each tag is standing under, by its request identifier.
 fn standing() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
     static STANDING: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<String, String>>,
     > = std::sync::OnceLock::new();
     STANDING.get_or_init(Default::default)
-}
-
-fn fresh() -> u64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    NEXT.fetch_add(1, Ordering::Relaxed)
 }
