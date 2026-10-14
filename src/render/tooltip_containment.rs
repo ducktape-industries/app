@@ -70,7 +70,11 @@ mod tests {
     const TOOLTIP_COLOR: u32 = 0xff00ff;
 
     fn node(size: f32, handler: Option<u32>) -> wire::Node {
-        let mut element = div().size(px(size)).bg(rgb(TOOLTIP_COLOR));
+        colored(size, TOOLTIP_COLOR, handler)
+    }
+
+    fn colored(size: f32, color: u32, handler: Option<u32>) -> wire::Node {
+        let mut element = div().size(px(size)).bg(rgb(color));
         let interactivity = wire::Interactivity {
             on_click: handler,
             ..Default::default()
@@ -123,10 +127,14 @@ mod tests {
     }
 
     fn tooltip_painted(window: &mut Window) -> bool {
+        painted(window, TOOLTIP_COLOR)
+    }
+
+    fn painted(window: &mut Window, color: u32) -> bool {
         window
             .painted_quads()
             .iter()
-            .any(|quad| quad.background.as_solid() == Some(rgb(TOOLTIP_COLOR).into()))
+            .any(|quad| quad.background.as_solid() == Some(rgb(color).into()))
     }
 
     struct TooltipFixture {
@@ -393,6 +401,125 @@ mod tests {
             assert!(
                 tooltip_painted(window),
                 "the props change closed the tooltip"
+            );
+        });
+    }
+
+    /// gpui shows a tooltip with the builder of the frame the hover began
+    /// in, and the guest answers that hover's request during the show
+    /// delay: the tooltip shows the answer, not what the tree held when the
+    /// hover began.
+    #[gpui_kit::test]
+    fn a_tooltip_shows_the_answer_that_landed_during_its_delay(cx: &mut gpui_kit::TestAppContext) {
+        const OLD: u32 = 0x00ff00;
+        const NEW: u32 = 0x0000ff;
+        struct Host(Entity<ViewTree>);
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size(px(60.)).overflow_hidden().child(self.0.clone())
+            }
+        }
+        cx.update(gpui_kit::init);
+        let window = cx.open_window(size(px(200.), px(200.)), |_, cx| {
+            let tree = cx.new(|_| ViewTree::new(ordinary_source(71)));
+            tree.update(cx, |tree, cx| {
+                tree.tooltip_responses(answered([answer(71, colored(20., OLD, None))]), cx)
+            });
+            Host(tree)
+        });
+        let tree = window
+            .root(cx)
+            .unwrap()
+            .read_with(cx, |host, _| host.0.clone());
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| window.render_frame(cx));
+        // the hover begins with OLD held, then the answer lands
+        native.simulate_mouse_move(point(px(10.), px(10.)), None, Default::default());
+        native.update(|window, cx| {
+            tree.update(cx, |tree, cx| {
+                tree.tooltip_responses(answered([answer(71, colored(20., NEW, None))]), cx)
+            });
+            window.render_frame(cx);
+        });
+        native.executor().advance_clock(Duration::from_millis(11));
+        native.run_until_parked();
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(painted(window, NEW), "the tooltip shows the answer");
+            assert!(!painted(window, OLD), "the tooltip shows what it held");
+        });
+    }
+
+    /// What the user sees: a tooltip whose content changed (a button's
+    /// label, say) shows the new content on the first hover after the
+    /// change, as the guest answers each hover's request.
+    #[gpui_kit::test]
+    fn the_first_hover_after_a_tooltip_changed_shows_the_new_one(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        const FIRST: u32 = 0x00ff00;
+        const SECOND: u32 = 0x0000ff;
+        struct Host {
+            tree: Entity<ViewTree>,
+            _guest: Subscription,
+        }
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size(px(200.)).child(
+                    div()
+                        .size(px(40.))
+                        .overflow_hidden()
+                        .child(self.tree.clone()),
+                )
+            }
+        }
+        cx.update(gpui_kit::init);
+        // what the guest would build for the tooltip now
+        let says = Rc::new(Cell::new(FIRST));
+        let guest = says.clone();
+        let window = cx.open_window(size(px(200.), px(200.)), move |_, cx| {
+            let tree = cx.new(|_| ViewTree::new(ordinary_source(71)));
+            let subscription = cx.subscribe(&tree, move |_, source, event: &wire::Event, cx| {
+                if !matches!(event, wire::Event::TooltipRequest { request: 71, .. }) {
+                    return;
+                }
+                let (source, color) = (source.downgrade(), guest.get());
+                cx.defer(move |cx| {
+                    let _ = source.update(cx, |tree, cx| {
+                        let content = colored(20., color, None);
+                        tree.tooltip_responses(answered([answer(71, content)]), cx)
+                    });
+                });
+            });
+            Host {
+                tree,
+                _guest: subscription,
+            }
+        });
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let hover = |native: &mut gpui_kit::VisualTestContext, at: f32| {
+            native.update(|window, cx| window.render_frame(cx));
+            native.simulate_mouse_move(point(px(at), px(at)), None, Default::default());
+            native.run_until_parked();
+            native.update(|window, cx| window.render_frame(cx));
+            native.executor().advance_clock(Duration::from_millis(11));
+            native.run_until_parked();
+            native.update(|window, cx| window.render_frame(cx));
+        };
+        hover(&mut native, 10.);
+        native.update(|window, _| assert!(painted(window, FIRST), "the first tooltip shows"));
+        hover(&mut native, 150.);
+        native.update(|window, _| assert!(!painted(window, FIRST), "it closes off the source"));
+        says.set(SECOND);
+        hover(&mut native, 10.);
+        native.update(|window, _| {
+            assert!(
+                painted(window, SECOND),
+                "the tooltip shows what it says now"
+            );
+            assert!(
+                !painted(window, FIRST),
+                "the tooltip shows what it said before"
             );
         });
     }
