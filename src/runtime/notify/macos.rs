@@ -138,7 +138,7 @@ pub(super) fn post(notice: &Notice, click: Option<Click>) -> bool {
         // takes its place. Not by reusing its identifier: two requests
         // under one identifier added a moment apart cancel each other in
         // the centre (a burst's second "N more" took both down).
-        let identifier = format!("ducktape-{}", fresh());
+        let identifier = super::request_id();
         if !notice.tag.is_empty() {
             let standing = standing()
                 .lock()
@@ -214,10 +214,4 @@ fn standing() -> &'static std::sync::Mutex<std::collections::HashMap<String, Str
         std::sync::Mutex<std::collections::HashMap<String, String>>,
     > = std::sync::OnceLock::new();
     STANDING.get_or_init(Default::default)
-}
-
-fn fresh() -> u64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    NEXT.fetch_add(1, Ordering::Relaxed)
 }

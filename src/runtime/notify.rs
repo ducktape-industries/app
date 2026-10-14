@@ -227,6 +227,33 @@ pub(crate) fn post_host(notice: &Notice) -> bool {
     Settings::load().banners && platform::post(notice, Some(Click::Updates))
 }
 
+/// A banner request's identifier, new across processes and not only within
+/// one: macOS replaces a delivered banner when a new request carries its
+/// identifier, so one that restarts with every process takes down, unseen,
+/// a banner an earlier process left standing. This process's token, then a
+/// count within it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn request_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static PROCESS: OnceLock<String> = OnceLock::new();
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let process =
+        PROCESS.get_or_init(|| process_token(std::process::id(), std::time::SystemTime::now()));
+    format!(
+        "ducktape-{process}-{}",
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// A process told apart from every other: its pid and when it started (a
+/// pid alone is reused).
+fn process_token(pid: u32, started: std::time::SystemTime) -> String {
+    let nanos = started
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    format!("{pid:x}-{nanos:x}")
+}
+
 // Each platform module exposes `post(&Notice, click: Option<Click>) -> raised`
 // and `withdraw(tag)`. Both block on OS calls; a view's run only through
 // `in_order` under the view's module, on the blocking pool, and the host's
