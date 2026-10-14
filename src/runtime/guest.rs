@@ -126,6 +126,8 @@ pub(super) struct Guest {
     /// The guest's `module.changes` subscriptions and the program each one
     /// watches: told on every block that wrote to that program.
     pub(crate) live_subscriptions: Vec<(u64, String)>,
+    /// The tracks this view publishes, where its `live.send`s go.
+    pub(crate) live: kernel::live::Live,
     /// Pending host requests and subscriptions, each owned by this guest
     /// the kernel opened for it: retired with the cancel, and with the guest.
     pub(crate) tasks: Vec<(u64, kernel::NodeTask)>,

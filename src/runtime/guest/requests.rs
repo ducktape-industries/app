@@ -120,6 +120,7 @@ impl Guest {
                 self.props_subscription = None;
             }
             self.live_subscriptions.retain(|(live, _)| *live != id);
+            self.live.cancel(id);
             self.visibility_subscriptions
                 .retain(|subscription| *subscription != id);
             self.route_subscriptions

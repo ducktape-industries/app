@@ -301,7 +301,7 @@ fn spawn_method(
 
 /// Every task starts here: an in-flight slot ([`admit`]) — or the request
 /// refused `in_flight_limit`, and `false` — then [`run`].
-fn start(
+pub(super) fn start(
     guest: &mut Guest,
     id: u64,
     follows: Option<Follow>,
@@ -407,7 +407,7 @@ pub(in crate::runtime) fn spawn_reply(
 /// The node to ask, the one the view's own connection names, or `None`
 /// with the request REFUSED: `stale_connection` for a view from before the
 /// app's last (re)connect, `not_connected` without a node.
-fn connected(guest: &mut Guest, id: u64) -> Option<Node> {
+pub(super) fn connected(guest: &mut Guest, id: u64) -> Option<Node> {
     let rev = super::super::connection().lock().expect("views rpc").rev;
     if rev != guest.connection.rev {
         guest.refuse(
@@ -457,6 +457,7 @@ pub(in crate::runtime) fn reconnected(guest: &mut Guest, connection: &super::sup
                 follow_changes(guest, id, node, program);
             }
             (Some(Follow::Heads), Some(node)) => follow_heads(guest, id, node),
+            (Some(Follow::Live(follows)), Some(_)) => super::live::reopen(guest, id, follows),
             _ => guest.refuse(id, refusal::STALE_CONNECTION, "network connection changed"),
         }
     }
@@ -655,11 +656,13 @@ pub(in crate::runtime) struct NodeTask {
 }
 
 /// A node subscription, as a reconnect opens it again.
-enum Follow {
+pub(super) enum Follow {
     /// `module.changes` of this program.
     Changes(String),
     /// `chain.heads`.
     Heads,
+    /// A `live.*` request (`live.rs`).
+    Live(super::live::Follows),
 }
 
 impl Drop for NodeTask {
