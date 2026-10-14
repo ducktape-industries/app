@@ -6,9 +6,8 @@
 # path of `ducktape-app` — a desktop session does not inherit a shell's
 # PATH.
 #
-# macOS is NOT covered here: it registers a scheme through the bundle's
-# CFBundleURLTypes plus an open-URL event, neither of which a .desktop file
-# reaches.
+# The macOS half is the bundle's CFBundleURLTypes (packaging/Info.plist),
+# delivered as an open-URL event (`on_open_urls` in src/shell/launch.rs).
 #
 # The file's name and `StartupWMClass` are both `dev.ducktape.app`, the id each
 # native window declares through its WindowOptions in `app/src/shell.rs`.
