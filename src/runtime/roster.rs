@@ -34,6 +34,9 @@ pub(super) struct Connection {
     /// The chain id (`<network>#<salt>`) a view's `store` is kept under.
     pub(super) chain: String,
     pub(super) rev: u64,
+    /// The node's live session (`backend::live`), one per connection: the
+    /// one before closes when its last holder lets go.
+    pub(super) live: Option<Arc<dyn crate::backend::live::Session>>,
 }
 
 pub(super) fn connection() -> &'static Mutex<Connection> {
@@ -277,6 +280,7 @@ pub fn connected(client: &crate::backend::RpcClient, network: &str, chain: &str)
         connection.client = Some(client.clone());
         connection.network = network.to_owned();
         connection.chain = chain.to_owned();
+        connection.live = Some(Arc::new(crate::backend::live::Client::new(client.clone())));
         connection.clone()
     };
     spawn_roster_read(snapshot, || {});

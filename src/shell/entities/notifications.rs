@@ -1,7 +1,7 @@
 //! The notification centre as the bar and the panes draw it: the unread
 //! count, the views asking for permission, the views sharing live data,
-//! and the log's revision, so a
-//! change that leaves the count alone (clearing read rows) still moves it.
+//! and the log's revision, so a change that leaves the count alone
+//! (clearing read rows) still moves it.
 //! Read off the centre by `refresh`: after each of the centre's methods
 //! here, on a view's `Intent::Notified` (`Seats`), after a banner's click
 //! (`Windows`), and as the session connects (`follow`).
@@ -90,8 +90,8 @@ impl Notifications {
 
     /// The views whose window says they share live data (the consent
     /// line).
-    pub(crate) fn sharing(&self, module: &str) -> bool {
-        self.sharing.contains(module)
+    pub(crate) fn sharing(&self, program: &str) -> bool {
+        self.sharing.contains(program)
     }
 
     /// The log's rows, newest first, as the bell lists them.
@@ -141,9 +141,9 @@ impl Notifications {
     }
 
     /// "OK" on a view's live line: it goes for this run.
-    pub(crate) fn put_away_live(&mut self, module: &str, cx: &mut Context<Self>) {
+    pub(crate) fn put_away_live(&mut self, program: &str, cx: &mut Context<Self>) {
         let _timed = timed();
-        self.center.lock().put_away_live(module);
+        self.center.lock().put_away_live(program);
         self.refresh(cx);
     }
 

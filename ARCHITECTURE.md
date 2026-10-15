@@ -374,7 +374,7 @@ its meaning; the host and the views name the const, never the string.
    and turns; `View::redraw` drains the queue into
    `view.pending` as `Event::Response` values, so the answer reaches the
    view on its next tick. Nothing wakes the wasm from another thread.
-6. **Subscriptions.** `program.changes <program>` (`live`: one WebSocket
+6. **Subscriptions.** `program.changes <program>` (`follow_changes`: one WebSocket
    `/v1/changes/<program>` per subscription), `chain.heads` (`heads`: polls
    status and pages `/v1/blocks`), `clock.ticks`, `host.session`,
    `host.route`, `host.offset`, `host.visible` answer many times with

@@ -304,7 +304,7 @@ fn spawn_method(
 
 /// Every task starts here: an in-flight slot ([`admit`]) — or the request
 /// refused `in_flight_limit`, and `false` — then [`run`].
-pub(super) fn start(
+fn start(
     view: &mut View,
     id: u64,
     follows: Option<Follow>,
@@ -355,7 +355,7 @@ fn run(
 /// item goes through the same backlog park as a node socket's, so a source
 /// that outruns the redraw waits instead of growing the reply queue into a
 /// fault.
-struct Items {
+pub(super) struct Items {
     replies: std::sync::Arc<Replies>,
     drained: tokio::sync::watch::Receiver<()>,
     id: u64,
@@ -365,10 +365,15 @@ impl Items {
     /// One more item. `false` when the view is gone or its reply queue
     /// faulted, and the subscription should end — the caller returns, and
     /// everything it holds is dropped.
-    async fn send(&mut self, result: Answer) -> bool {
+    pub(super) async fn send(&mut self, result: Answer) -> bool {
         self.replies
             .subscription_item(&mut self.drained, self.id, result)
             .await
+    }
+
+    /// The refusal that ends the subscription.
+    pub(super) fn last(&self, refusal: wire::Error) {
+        self.replies.item(self.id, Err(refusal), true);
     }
 }
 
@@ -376,7 +381,7 @@ impl Items {
 /// the node for them). The body owns whatever it holds open, so dropping
 /// the task releases it: a cancel drops the [`NodeTask`], and so do a
 /// view's teardown, swap and trap, which drop the whole `tasks` list.
-fn spawn_subscription<Body, Fut>(view: &mut View, id: u64, follows: Follow, body: Body)
+pub(super) fn spawn_subscription<Body, Fut>(view: &mut View, id: u64, follows: Follow, body: Body)
 where
     Body: FnOnce(Items) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -666,7 +671,7 @@ pub(super) enum Follow {
     /// `chain.heads`.
     Heads,
     /// A `live.*` request (`live.rs`).
-    Live(super::live::Follows),
+    Live(super::live::LiveFollow),
 }
 
 impl Drop for NodeTask {

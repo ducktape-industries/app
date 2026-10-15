@@ -127,7 +127,7 @@ pub(super) struct View {
     /// watches: told on every block that wrote to that program.
     pub(crate) live_subscriptions: Vec<(u64, String)>,
     /// The tracks this view publishes, where its `live.send`s go.
-    pub(crate) live: kernel::live::Live,
+    pub(crate) tracks: kernel::live::Tracks,
     /// Pending host requests and subscriptions, each owned by this view
     /// the kernel opened for it: retired with the cancel, and with the view.
     pub(crate) tasks: Vec<(u64, kernel::NodeTask)>,

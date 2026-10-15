@@ -42,7 +42,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use super::node::{Follow, connected};
+use super::node::{Follow, Items, connected, spawn_subscription};
 use super::*;
 use crate::backend::live::{self as client, Ask, Data, Heard, Mode, Object, Session, Start, Track};
 use wire::methods::{
@@ -52,7 +52,7 @@ use wire::methods::{
 
 /// The live tracks a view publishes: where its `live.send`s go, by track.
 #[derive(Default)]
-pub(in crate::runtime) struct Live {
+pub(in crate::runtime) struct Tracks {
     publications: Vec<Publication>,
     /// The view's window has said it went live.
     told: bool,
@@ -66,13 +66,13 @@ struct Publication {
 }
 
 /// What a live request follows, as a reconnect opens it again.
-pub(super) enum Follows {
+pub(super) enum LiveFollow {
     Publish(LivePublish),
     Subscribe(LiveTrack),
     Tracks(String),
 }
 
-impl Live {
+impl Tracks {
     /// The view dropped request `id`: if it was a publication, its sends
     /// have nowhere to go.
     pub(in crate::runtime) fn cancel(&mut self, id: u64) {
@@ -80,38 +80,17 @@ impl Live {
     }
 }
 
-/// The live session of the connection in hand: one per connection rev, the
-/// one before it closed with it.
-fn session(connection: &super::super::Connection) -> Option<Arc<dyn Session>> {
-    let mut held = sessions();
-    match held.as_ref() {
-        Some((rev, session)) if *rev == connection.rev => Some(session.clone()),
-        _ => {
-            let client = connection.client.clone()?;
-            let session: Arc<dyn Session> = Arc::new(client::Client::new(client));
-            *held = Some((connection.rev, session.clone()));
-            Some(session)
-        }
-    }
-}
-
-type Held = Option<(u64, Arc<dyn Session>)>;
-
-fn sessions() -> std::sync::MutexGuard<'static, Held> {
-    static SESSIONS: OnceLock<Mutex<Held>> = OnceLock::new();
-    SESSIONS
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 /// The app quits (`runtime::quitting`): the connection's live session
 /// closes so the node hears it at once, not at its idle limit, and a quit
 /// opponent's tracks end for the others now.
 pub(in crate::runtime) fn quit() -> impl Future<Output = ()> {
-    let held = sessions().take();
+    let held = super::super::connection()
+        .lock()
+        .expect("views rpc")
+        .live
+        .take();
     let closed = super::handle().spawn(async move {
-        if let Some((_, session)) = held {
+        if let Some(session) = held {
             session.quit().await;
         }
     });
@@ -120,15 +99,9 @@ pub(in crate::runtime) fn quit() -> impl Future<Output = ()> {
     }
 }
 
-/// A test's session for connection rev `rev`, in place of the node's.
-#[cfg(test)]
-pub(in crate::runtime) fn install(rev: u64, session: Arc<dyn Session>) {
-    *sessions() = Some((rev, session));
-}
-
-/// `room` as the node names it, `<chain>/<program>/<room>`, with `name` held
-/// to the node's rule; `None` with the request refused `malformed_request`.
-fn stamped(view: &mut View, id: u64, room: &str, name: &str) -> Option<Track> {
+/// `room` as the node names it, `<chain>/<program>/<room>`; `None` with
+/// the request refused `malformed_request`.
+fn stamped_room(view: &mut View, id: u64, room: &str) -> Option<String> {
     let namespace = format!("{}/{}/{room}", view.connection.chain, view.program);
     let room_holds = !room.is_empty() && room.chars().all(|c| plain(&c));
     if !room_holds || namespace.len() > live_wire::MAX_NAMESPACE {
@@ -142,6 +115,13 @@ fn stamped(view: &mut View, id: u64, room: &str, name: &str) -> Option<Track> {
         );
         return None;
     }
+    Some(namespace)
+}
+
+/// `name` on the track's stamped room, held to the node's rule; `None`
+/// with the request refused `malformed_request`.
+fn stamped(view: &mut View, id: u64, room: &str, name: &str) -> Option<Track> {
+    let namespace = stamped_room(view, id, room)?;
     if !live_wire::well_named(name) {
         view.refuse(
             id,
@@ -161,7 +141,7 @@ fn stamped(view: &mut View, id: u64, room: &str, name: &str) -> Option<Track> {
 
 /// A view's first live request: its window says it shares live data.
 fn went_live(view: &mut View) {
-    if std::mem::replace(&mut view.live.told, true) {
+    if std::mem::replace(&mut view.tracks.told, true) {
         return;
     }
     if crate::runtime::notify::center()
@@ -178,7 +158,7 @@ fn went_live(view: &mut View) {
 fn ready(view: &mut View, id: u64) -> Option<Arc<dyn Session>> {
     went_live(view);
     connected(view, id)?;
-    let session = session(&view.connection);
+    let session = view.connection.live.clone();
     if session.is_none() {
         view.refuse(id, refusal::NOT_CONNECTED, "not connected to a node");
     }
@@ -216,7 +196,7 @@ fn open_publication(view: &mut View, id: u64, session: Arc<dyn Session>, ask: Li
         return;
     };
     let (outbox, objects) = mpsc::channel(client::OUTBOX);
-    view.live.publications.push(Publication {
+    view.tracks.publications.push(Publication {
         id,
         track: ask.track.clone(),
         mode: ask.mode,
@@ -227,12 +207,12 @@ fn open_publication(view: &mut View, id: u64, session: Arc<dyn Session>, ask: Li
         mode: mode_of(ask.mode),
         priority: ask.priority,
     };
-    let (replies, key) = (view.replies.clone(), view.perf_key());
-    super::node::start(
+    let key = view.perf_key();
+    spawn_subscription(
         view,
         id,
-        Some(Follow::Live(Follows::Publish(ask))),
-        publishing(session, open, objects, Items::new(replies, id), key),
+        Follow::Live(LiveFollow::Publish(ask)),
+        move |items| publishing(session, open, objects, items, key),
     );
 }
 
@@ -322,7 +302,7 @@ pub(super) fn send(view: &mut View, id: u64, payload: &[u8]) {
         Err(error) => return view.refuse(id, refusal::MALFORMED_REQUEST, error),
     };
     let Some(publication) = view
-        .live
+        .tracks
         .publications
         .iter()
         .rev()
@@ -366,7 +346,7 @@ pub(super) fn send(view: &mut View, id: u64, payload: &[u8]) {
             view.replies.item(publication_id, Err(refused), false);
         }
         Err(mpsc::error::TrySendError::Closed(_)) => {
-            view.live.cancel(publication_id);
+            view.tracks.cancel(publication_id);
             view.refuse(
                 id,
                 refusal::LIVE_NOT_PUBLISHED,
@@ -402,12 +382,12 @@ fn open_subscription(
     let Some(stamped) = stamped(view, id, &track.room, &track.name) else {
         return;
     };
-    let (replies, key) = (view.replies.clone(), view.perf_key());
-    super::node::start(
+    let key = view.perf_key();
+    spawn_subscription(
         view,
         id,
-        Some(Follow::Live(Follows::Subscribe(track))),
-        subscribing(session, stamped, from, Items::new(replies, id), key),
+        Follow::Live(LiveFollow::Subscribe(track)),
+        move |items| subscribing(session, stamped, from, items, key),
     );
 }
 
@@ -501,16 +481,14 @@ pub(super) fn tracks(view: &mut View, id: u64, payload: &[u8]) {
 }
 
 fn open_watch(view: &mut View, id: u64, session: Arc<dyn Session>, room: String) {
-    // a room's list is held to the room's rule alone: any name stands in
-    let Some(Track { namespace, .. }) = stamped(view, id, &room, "list") else {
+    let Some(namespace) = stamped_room(view, id, &room) else {
         return;
     };
-    let replies = view.replies.clone();
-    super::node::start(
+    spawn_subscription(
         view,
         id,
-        Some(Follow::Live(Follows::Tracks(room))),
-        watching(session, namespace, Items::new(replies, id)),
+        Follow::Live(LiveFollow::Tracks(room)),
+        move |items| watching(session, namespace, items),
     );
 }
 
@@ -583,48 +561,17 @@ async fn watching(session: Arc<dyn Session>, namespace: String, mut items: Items
 /// A connect inside the network: the request opened again on the new
 /// connection's session, as it was asked (a subscription from the group the
 /// node holds).
-pub(super) fn reopen(view: &mut View, id: u64, follows: Follows) {
-    let Some(session) = session(&view.connection) else {
+pub(super) fn reopen(view: &mut View, id: u64, follows: LiveFollow) {
+    let Some(session) = view.connection.live.clone() else {
         return view.refuse(id, refusal::NOT_CONNECTED, "not connected to a node");
     };
     match follows {
-        Follows::Publish(ask) => {
-            view.live.cancel(id);
+        LiveFollow::Publish(ask) => {
+            view.tracks.cancel(id);
             open_publication(view, id, session, ask);
         }
-        Follows::Subscribe(track) => open_subscription(view, id, session, track, Start::Latest),
-        Follows::Tracks(room) => open_watch(view, id, session, room),
-    }
-}
-
-/// A live request's items, through the same backlog park as every
-/// subscription's.
-struct Items {
-    replies: Arc<Replies>,
-    drained: tokio::sync::watch::Receiver<()>,
-    id: u64,
-}
-
-impl Items {
-    fn new(replies: Arc<Replies>, id: u64) -> Items {
-        Items {
-            drained: replies.drains(),
-            replies,
-            id,
-        }
-    }
-
-    /// One more item; `false` when the view is gone and the request
-    /// should end.
-    async fn send(&mut self, result: Answer) -> bool {
-        self.replies
-            .subscription_item(&mut self.drained, self.id, result)
-            .await
-    }
-
-    /// The refusal that ends the request.
-    fn last(&self, refusal: wire::Error) {
-        self.replies.item(self.id, Err(refusal), true);
+        LiveFollow::Subscribe(track) => open_subscription(view, id, session, track, Start::Latest),
+        LiveFollow::Tracks(room) => open_watch(view, id, session, room),
     }
 }
 

@@ -22,30 +22,32 @@ impl Session for Fake {
     }
 }
 
-/// The live tests share the one session slot: one at a time.
-fn serial() -> std::sync::MutexGuard<'static, ()> {
-    static SERIAL: Mutex<()> = Mutex::new(());
-    SERIAL
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 /// A view on a connection to chain `net#1`, its live session a [`Fake`]:
 /// the view, and each request it opens as the fake sees it.
 fn live_guest() -> (View, std_mpsc::Receiver<(Ask, Ends)>) {
+    live_guest_refusing(Vec::new())
+}
+
+/// [`live_guest`], its fake refusing the first opens with `refusing`.
+fn live_guest_refusing(refusing: Vec<wire::Error>) -> (View, std_mpsc::Receiver<(Ask, Ends)>) {
     let mut view = view();
-    view.connection = super::super::super::Connection {
+    let (opened, opens) = std_mpsc::channel();
+    view.connection = fake_connection(view.connection.rev, opened, refusing);
+    (view, opens)
+}
+
+fn fake_connection(
+    rev: u64,
+    opened: std_mpsc::Sender<(Ask, Ends)>,
+    refusing: Vec<wire::Error>,
+) -> super::super::super::Connection {
+    super::super::super::Connection {
         client: Some(RpcClient::new("http://127.0.0.1:1")),
         network: "net".into(),
         chain: "net#1".into(),
-        rev: view.connection.rev,
-    };
-    let (opened, opens) = std_mpsc::channel();
-    install(
-        view.connection.rev,
-        Arc::new(Fake(Mutex::new(opened), Mutex::new(Vec::new()))),
-    );
-    (view, opens)
+        rev,
+        live: Some(Arc::new(Fake(Mutex::new(opened), Mutex::new(refusing)))),
+    }
 }
 
 fn ask(view: &mut View, id: u64, kind: &str, payload: Vec<u8>) {
@@ -109,14 +111,13 @@ fn send(view: &mut View, id: u64, object: u32) {
 }
 
 /// The headline of the kernel's side: a publication is stamped
-/// `<chain>/<module>/<room>`, a send before the node took it waits and goes
+/// `<chain>/<program>/<room>`, a send before the node took it waits and goes
 /// out once it did, the count reaches the view, an object the node dropped
 /// is an item that does not end the track, the node's refusal ends it, and
 /// a send after that is refused `live_not_published`. No send is answered
 /// otherwise.
 #[test]
 fn a_publication_is_stamped_and_its_sends_wait_for_the_node() {
-    let _serial = serial();
     let (mut view, opens) = live_guest();
     let mut changes = view.replies.changes();
     let publish = LivePublish {
@@ -164,9 +165,7 @@ fn a_publication_is_stamped_and_its_sends_wait_for_the_node() {
     let (_, ended, done) = item::<Publishing>(next(&view, &mut changes));
     assert_eq!((ended, done), (Err(refusal::NOT_GRANTED.into()), true));
     // the publication's queue went with its task
-    while !ends.objects.is_closed() {
-        std::thread::yield_now();
-    }
+    assert!(ends.objects.blocking_recv().is_none());
     send(&mut view, 3, 1);
     assert_eq!(
         refusal_of(&mut view, 3),
@@ -189,7 +188,6 @@ fn refusal_of(view: &mut View, wanted: u64) -> Option<String> {
 /// on; a send to a track the view does not publish is refused at once.
 #[test]
 fn a_send_too_large_or_to_no_track_is_refused() {
-    let _serial = serial();
     let (mut view, opens) = live_guest();
     let mut changes = view.replies.changes();
     let publish = LivePublish {
@@ -228,7 +226,6 @@ fn a_send_too_large_or_to_no_track_is_refused() {
 /// node's end in the view's word.
 #[test]
 fn a_subscription_hears_the_track_and_its_end() {
-    let _serial = serial();
     let (mut view, opens) = live_guest();
     let mut changes = view.replies.changes();
     let subscribe = LiveSubscribe {
@@ -293,7 +290,6 @@ fn a_subscription_hears_the_track_and_its_end() {
 /// it.
 #[test]
 fn a_request_the_node_holds_hears_it_waits_and_goes_on() {
-    let _serial = serial();
     let (mut view, opens) = live_guest();
     let mut changes = view.replies.changes();
     let publish = LivePublish {
@@ -414,7 +410,6 @@ fn every_code_the_node_says_is_a_word_a_view_knows() {
 /// down every track it had up before it opens the list again.
 #[test]
 fn a_lost_session_takes_a_rooms_tracks_down_and_opens_the_list_again() {
-    let _serial = serial();
     let (mut view, opens) = live_guest();
     let mut changes = view.replies.changes();
     ask(
@@ -467,7 +462,6 @@ fn a_lost_session_takes_a_rooms_tracks_down_and_opens_the_list_again() {
 /// refused.
 #[test]
 fn a_reconnect_opens_a_live_subscription_again_on_the_new_session() {
-    let _serial = serial();
     let (mut view, opens) = live_guest();
     let subscribe = LiveSubscribe {
         track: track("doc"),
@@ -482,16 +476,8 @@ fn a_reconnect_opens_a_live_subscription_again_on_the_new_session() {
             ..
         }
     ));
-    let rev = view.connection.rev + 1;
     let (reopened, reopens) = std_mpsc::channel();
-    install(
-        rev,
-        Arc::new(Fake(Mutex::new(reopened), Mutex::new(Vec::new()))),
-    );
-    let connection = super::super::super::Connection {
-        rev,
-        ..view.connection.clone()
-    };
+    let connection = fake_connection(view.connection.rev + 1, reopened, Vec::new());
     view.reconnect(&connection);
     assert_eq!(view.pending, [], "the subscription was not refused");
     let (again, _ends) = opened(&reopens);
@@ -510,7 +496,6 @@ fn a_reconnect_opens_a_live_subscription_again_on_the_new_session() {
 /// A room or a track name the node would not take is refused here.
 #[test]
 fn a_room_or_a_name_outside_the_rule_is_malformed() {
-    let _serial = serial();
     let (mut view, _opens) = live_guest();
     for (id, room, name) in [(1, "", "doc"), (2, "lobby", "a//b"), (3, "lob\nby", "doc")] {
         let subscribe = LiveSubscribe {
@@ -533,7 +518,6 @@ fn a_room_or_a_name_outside_the_rule_is_malformed() {
 /// asks nothing: the request goes on to the node.
 #[test]
 fn a_first_live_request_puts_the_line_on_the_window() {
-    let _serial = serial();
     let (mut view, opens) = live_guest();
     ask(
         &mut view,
@@ -556,18 +540,10 @@ fn a_first_live_request_puts_the_line_on_the_window() {
 /// and opens once the node knows the account.
 #[test]
 fn a_session_refused_no_account_is_asked_again() {
-    let _serial = serial();
-    let (mut view, opens) = live_guest();
-    let (opened_again, opens_again) = std_mpsc::channel();
-    let fake = Fake(
-        Mutex::new(opened_again),
-        Mutex::new(vec![wire::Error::new(
-            Code::NoAccount.as_str(),
-            "the node refused this key a live session",
-        )]),
-    );
-    install(view.connection.rev, Arc::new(fake));
-    drop(opens);
+    let (mut view, opens_again) = live_guest_refusing(vec![wire::Error::new(
+        Code::NoAccount.as_str(),
+        "the node refused this key a live session",
+    )]);
     let mut changes = view.replies.changes();
     let subscribe = LiveSubscribe {
         track: track("presence/7"),

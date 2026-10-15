@@ -180,6 +180,7 @@ impl FakeNode {
                 network: "fake-network".into(),
                 chain: "fake-network#0".into(),
                 rev: connection().lock().unwrap().rev,
+                live: None,
             },
             held,
         }
@@ -288,6 +289,7 @@ impl ProgramsNode {
                 network: "fake-network".into(),
                 chain: "fake-network#0".into(),
                 rev: connection().lock().unwrap().rev,
+                live: None,
             },
             tip,
             running,

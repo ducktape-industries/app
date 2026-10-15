@@ -752,11 +752,11 @@ impl Render for PaneView {
         // grows a bar of its words' height, and draws uncached; so while it
         // says it shares live data
         let notifications = self.notifications.read(cx);
-        let asking = pane.is_view()
+        let strip_grows = pane.is_view()
             && (notifications.asking(pane.program) || notifications.sharing(pane.program));
         let filled =
             self.kind == WindowKind::Console && pane.frame.is_some() && layout.fills(index);
-        let strip = match asking {
+        let strip = match strip_grows {
             true => self.strip.clone().into_any_element(),
             false => AnyView::from(self.strip.clone())
                 .cached(
@@ -826,10 +826,9 @@ impl Shown {
 /// A pane's strip: its title bar (the handle it is held by on the desk,
 /// its name, its buttons at the right end) and, while its view asks to
 /// notify, the permission bar; while it shares live data, the live line.
-/// A cached view: it observes the rail (its
-/// name), the notifications (the ask), the prefs (dark, the burst) and
-/// reads its desk through a compared `Shown`. In a window of its own it
-/// names the OS window too.
+/// A cached view: it observes the rail (its name), the notifications (the
+/// ask), the prefs (dark, the burst) and reads its desk through a compared
+/// `Shown`. In a window of its own it names the OS window too.
 pub(in crate::shell) struct Strip {
     key: WindowKey,
     kind: WindowKind,
@@ -1086,18 +1085,18 @@ impl Strip {
     /// asks nothing: no modal, and the tracks are open already.
     fn live_bar(
         &self,
-        module: &'static str,
+        program: &'static str,
         ink: &super::super::ink::Ink,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         use super::super::ink::*;
-        let name = panes::label(self.rail.read(cx).rows(), module);
+        let name = panes::label(self.rail.read(cx).rows(), program);
         let line =
             format!("{name} shares live data with the people in its rooms, through your node.");
         let notifications = self.notifications.entity().clone();
         let ok = crate::a11y::keyboard(
             sans(500, 14.)
-                .id(SharedString::from(format!("live-line/{module}/ok")))
+                .id(SharedString::from(format!("live-line/{program}/ok")))
                 .control(Role::Button, "OK")
                 .h(px(tall(30.)))
                 .px(px(12.))
@@ -1111,7 +1110,7 @@ impl Strip {
                 .on_click(move |_, _, cx| {
                     cx.stop_propagation();
                     notifications.update(cx, |notifications, cx| {
-                        notifications.put_away_live(module, cx)
+                        notifications.put_away_live(program, cx)
                     });
                 })
                 .child("OK"),
@@ -1120,7 +1119,7 @@ impl Strip {
         // announced as it appears: nothing else says the data leaves
         crate::a11y::live(
             div()
-                .id(SharedString::from(format!("live-line/{module}")))
+                .id(SharedString::from(format!("live-line/{program}")))
                 .role(Role::Group),
             accesskit::Live::Polite,
             line.clone(),
