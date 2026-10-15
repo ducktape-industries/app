@@ -38,14 +38,16 @@ pub enum Fetch {
     /// The bytes came, and do not hash to the id asked for.
     Corrupt,
     Collision(BlobId),
-    /// The node answered something this app does not read.
     Refused(String),
+    Unreadable(String),
 }
 
 impl std::fmt::Display for Fetch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Fetch::Unreachable(reason) | Fetch::Refused(reason) => f.write_str(reason),
+            Fetch::Unreachable(reason) | Fetch::Refused(reason) | Fetch::Unreadable(reason) => {
+                f.write_str(reason)
+            }
             Fetch::NotHeld => f.write_str("the node does not hold the program's code yet"),
             Fetch::Corrupt => f.write_str("the program's bytes do not hash to its blob id"),
             Fetch::Collision(code) => write!(
@@ -70,7 +72,7 @@ pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>,
         programs, views, ..
     } = ask(client, network, Query::Roster).await?
     else {
-        return Err(Fetch::Refused(
+        return Err(Fetch::Unreadable(
             "the programs role answered no roster".into(),
         ));
     };
@@ -116,7 +118,10 @@ pub async fn roles(client: &RpcClient, network: &str) -> Result<Option<abi::Role
     use ::programs::{Query, Reply};
     match ask(client, network, Query::Roles).await {
         Ok(Reply::Roles(roles)) => Ok(Some(roles)),
-        Ok(_) | Err(Fetch::Refused(_)) => Ok(None),
+        Ok(_) => Err(Fetch::Unreadable(
+            "the programs role answered the roles question with another reply".into(),
+        )),
+        Err(Fetch::Refused(_)) => Ok(None),
         Err(error) => Err(error),
     }
 }
@@ -131,7 +136,7 @@ async fn ask(
         .query(Layer::Preconfirmed, frame)
         .await
         .map_err(fetch_error)?;
-    abi::decode(&answer).map_err(|refusal| Fetch::Refused(refusal.sentence))
+    abi::decode(&answer).map_err(|refusal| Fetch::Unreadable(refusal.sentence))
 }
 
 /// The view inside `code`'s blob, or `None` when the program ships none; a
@@ -169,7 +174,7 @@ pub async fn program_bytes(
         .map_err(fetch_error)?
         .ok_or(Fetch::NotHeld)?;
     let body = unframe(&framed)
-        .ok_or_else(|| Fetch::Refused("the blob carries no git header".into()))?
+        .ok_or_else(|| Fetch::Unreadable("the blob carries no git header".into()))?
         .to_vec();
     if !hashes_to(&framed, code)? {
         return Err(Fetch::Corrupt);
@@ -215,9 +220,8 @@ pub fn view_section(bytes: &[u8]) -> Option<Vec<u8>> {
 
 fn fetch_error(error: noded_client::Error) -> Fetch {
     match error {
-        noded_client::Error::Refused(refusal) | noded_client::Error::Decode(refusal) => {
-            Fetch::Refused(refusal.sentence)
-        }
+        noded_client::Error::Refused(refusal) => Fetch::Refused(refusal.sentence),
+        noded_client::Error::Decode(refusal) => Fetch::Unreadable(refusal.sentence),
         other => Fetch::Unreachable(other.to_string()),
     }
 }

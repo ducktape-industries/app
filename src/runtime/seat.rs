@@ -244,7 +244,7 @@ impl Failure {
         match error {
             Fetch::Unreachable(_) | Fetch::NotHeld => Failure::Unreachable(reason),
             Fetch::Corrupt | Fetch::Collision(_) => Failure::HashMismatch(reason),
-            Fetch::Refused(_) => Failure::Refused(reason),
+            Fetch::Refused(_) | Fetch::Unreadable(_) => Failure::Refused(reason),
         }
     }
 }

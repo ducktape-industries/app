@@ -105,8 +105,14 @@ struct Held {
 struct Answers {
     programs: Vec<::programs::Entry>,
     views: Vec<::programs::View>,
-    roles: Option<abi::Roles>,
+    roles: RolesAnswer,
     blobs: Vec<(abi::BlobId, Vec<u8>)>,
+}
+
+enum RolesAnswer {
+    Bound(abi::Roles),
+    Refused,
+    Unreadable,
 }
 
 impl FakeNode {
@@ -115,13 +121,13 @@ impl FakeNode {
         views: Vec<::programs::View>,
         blobs: Vec<Vec<u8>>,
     ) -> Self {
-        Self::with_roles(programs, views, None, blobs)
+        Self::with_roles(programs, views, RolesAnswer::Refused, blobs)
     }
 
     fn with_roles(
         programs: Vec<::programs::Entry>,
         views: Vec<::programs::View>,
-        roles: Option<abi::Roles>,
+        roles: RolesAnswer,
         blobs: Vec<Vec<u8>>,
     ) -> Self {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -184,11 +190,17 @@ fn answer(mut stream: std::net::TcpStream, answers: &Answers, held: &Mutex<Held>
             },
             ::programs::Query::Roles => {
                 held.lock().unwrap().roles_asked += 1;
-                let Some(roles) = answers.roles.clone() else {
-                    let refused = abi::Refusal::new("invalid_input", "Query did not decode");
-                    return respond(&mut stream, "400 Bad Request", &abi::encode(&refused));
-                };
-                ::programs::Reply::Roles(roles)
+                match &answers.roles {
+                    RolesAnswer::Bound(roles) => ::programs::Reply::Roles(roles.clone()),
+                    RolesAnswer::Refused => {
+                        let refused = abi::Refusal::new("invalid_input", "Query did not decode");
+                        return respond(&mut stream, "400 Bad Request", &abi::encode(&refused));
+                    }
+                    RolesAnswer::Unreadable => {
+                        let newer = [abi::encode(&::programs::Reply::Roles(roles())), vec![1]];
+                        return respond(&mut stream, "200 OK", &abi::encode(&newer.concat()));
+                    }
+                }
             }
             other => panic!("unexpected programs query: {other:?}"),
         };
@@ -399,20 +411,24 @@ fn listed(name: &str, seed: &str) -> ::programs::Entry {
 /// roster stands, and again once it moved; a programs role that predates the
 /// question refuses it, and the roster is still listed, with no bindings
 /// known.
-#[test]
-fn the_roles_come_with_the_roster_and_are_asked_once() {
-    let roles = abi::Roles {
+fn roles() -> abi::Roles {
+    abi::Roles {
         programs: "roles-programs".into(),
         validators: "roles-valset".into(),
         identity: "roles-identity".into(),
         blobs: "roles-blobs".into(),
         awaits: "roles-awaits".into(),
         egress: None,
-    };
+    }
+}
+
+#[test]
+fn the_roles_come_with_the_roster_and_are_asked_once() {
+    let roles = roles();
     let node = FakeNode::with_roles(
         vec![listed("roles-programs", "roles")],
         Vec::new(),
-        Some(roles.clone()),
+        RolesAnswer::Bound(roles.clone()),
         Vec::new(),
     );
     let (roster, registry) = (Roster::default(), Registry::default());
@@ -425,7 +441,7 @@ fn the_roles_come_with_the_roster_and_are_asked_once() {
     let upgraded = FakeNode::with_roles(
         vec![listed("roles-programs", "upgraded")],
         Vec::new(),
-        Some(roles.clone()),
+        RolesAnswer::Bound(roles.clone()),
         Vec::new(),
     );
     read_roster(upgraded.asked_of.clone(), &roster, &registry);
@@ -444,6 +460,26 @@ fn the_roles_come_with_the_roster_and_are_asked_once() {
 /// Claim: a roles answer with no bindings (a programs role that refuses the
 /// question: an old one, or a node's 400 that reads the same) pins nothing
 /// for the connection: the next read, the roster unmoved, asks again.
+#[test]
+fn a_roles_answer_this_app_cannot_read_lists_no_program() {
+    let node = FakeNode::with_roles(
+        vec![listed("roles-newer", "roles")],
+        Vec::new(),
+        RolesAnswer::Unreadable,
+        Vec::new(),
+    );
+    let (roster, registry) = (Roster::default(), Registry::default());
+    read_roster(node.asked_of.clone(), &roster, &registry);
+    assert_eq!(roster.roles(), None);
+    assert!(
+        roster.lock().is_empty(),
+        "no view loads while the role bindings cannot be read"
+    );
+    assert!(lock(&registry).is_empty());
+    read_roster(node.asked_of.clone(), &roster, &registry);
+    assert_eq!(node.held.lock().unwrap().roles_asked, 2, "asked again");
+}
+
 #[test]
 fn a_refused_roles_answer_is_asked_again_on_the_next_read() {
     let old = FakeNode::new(
