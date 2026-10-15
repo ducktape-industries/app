@@ -38,14 +38,16 @@ impl Spotlight {
     /// What ⌘K offers for the text typed, in the order shown: the
     /// network's programs, the other networks this device reached, then
     /// things to do (the window rows while the desk's front window has a
-    /// frame, `framed`). A row matches when its title or detail holds the
-    /// text, ignoring case.
+    /// frame, `framed`; Keep on Top, saying whether the console is
+    /// (`on_top`), wherever the platform can keep a window on top). A row
+    /// matches when its title or detail holds the text, ignoring case.
     pub(crate) fn rows(
         &self,
         rail: &Rail,
         session: &SessionState,
         account: &AccountState,
         framed: bool,
+        on_top: Option<bool>,
     ) -> Vec<SpotRow> {
         let row = |group, title: String, meta: String, spot| SpotRow {
             group,
@@ -116,6 +118,15 @@ impl Spotlight {
             ] {
                 rows.push(row("Actions", title.into(), "this desk".into(), spot));
             }
+        }
+        if let Some(on) = on_top {
+            let state = if on { "on" } else { "off" };
+            rows.push(row(
+                "Actions",
+                "Keep on top".into(),
+                format!("this window, {state}"),
+                Spot::KeepOnTop,
+            ));
         }
         for (title, mode) in [
             ("Light appearance", crate::backend::Appearance::Light),

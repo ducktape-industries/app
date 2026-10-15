@@ -143,6 +143,9 @@ ducktape-updater = { path = "crates/updater" }
 # the release archive a self-update downloads (`.tar.gz`)
 tar = { version = "0.4", default-features = false }
 flate2 = "1"
+# an OS window's native handle, for what gpui does not do itself (Keep on
+# Top: `shell/windows.rs`); gpui's own, already in the graph
+raw-window-handle = "0.6"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tray-icon = { version = "0.24", default-features = false }
@@ -156,6 +159,11 @@ objc2-user-notifications = { version = "0.2", default-features = false, features
 # under the accessibility stack; this only names it.
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 zbus = "5"
+
+# Keep on Top on X11 (`shell/windows.rs`): one EWMH request on gpui's own
+# XCB connection. Already in the graph under gpui-pre-linux, with this feature.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
 
 [dev-dependencies]
 # hand-written wasm for the describe method's hostile-section tests

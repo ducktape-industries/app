@@ -39,7 +39,7 @@ fn start(boot: Boot) {
         crate::perf::mark("gpui");
         gpui_kit::init(cx);
         keys::bind(cx);
-        keys::menus(cx);
+        keys::menus(false, cx);
         initialize_rendering(cx);
         crate::perf::mark("fonts");
         let mut posted = entities::posted();
