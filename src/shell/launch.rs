@@ -126,7 +126,7 @@ fn start(boot: Boot) {
                 // the first window is the console; it draws the connect
                 // screen until a node answers
                 windows.update(cx, |windows, cx| {
-                    windows.open(WindowKind::Console, None, cx);
+                    windows.open(WindowKind::Console, None, None, cx);
                 });
                 // the first thing to do: reach the node last used, if there
                 // was one

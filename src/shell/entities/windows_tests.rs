@@ -22,7 +22,7 @@ fn console(cx: &mut TestAppContext) -> (Entities, WindowKey) {
     });
     let at = Bounds::new(point(px(0.), px(0.)), size(px(1280.), px(800.)));
     let key = app.windows.update(cx, |windows, cx| {
-        windows.open(WindowKind::Console, Some(at), cx)
+        windows.open(WindowKind::Console, Some(at), None, cx)
     });
     cx.run_until_parked();
     desk_of(&app, key, cx).update(cx, |desk, cx| {
@@ -106,8 +106,9 @@ fn pop_out_and_back_in_keep_the_pane(cx: &mut TestAppContext) {
     let desk = desk_of(&app, console, cx);
     desk.update(cx, |desk, cx| desk.split("files", cx));
     let files = desk.read_with(cx, |desk, _| desk.get().panes[1].instance);
-    app.windows
-        .update(cx, |windows, cx| windows.pop_out(console, 1, None, cx));
+    app.windows.update(cx, |windows, cx| {
+        windows.pop_out(console, 1, None, None, cx)
+    });
     cx.run_until_parked();
     assert_eq!(programs(&app, console, cx), ["chat"]);
     let popped_key = popped(&app, console, cx);
@@ -139,7 +140,7 @@ fn pop_out_and_back_in_keep_the_pane(cx: &mut TestAppContext) {
     desk.update(cx, |desk, cx| desk.split(EMPTY, cx));
     let focused = desk.read_with(cx, |desk, _| desk.get().focused);
     app.windows.update(cx, |windows, cx| {
-        windows.pop_out(console, focused, None, cx)
+        windows.pop_out(console, focused, None, None, cx)
     });
     cx.run_until_parked();
     assert_eq!(window_count(&app, cx), 1);
@@ -153,8 +154,9 @@ fn a_window_keeps_its_door_name(cx: &mut TestAppContext) {
     let (app, console) = console(cx);
     let desk = desk_of(&app, console, cx);
     desk.update(cx, |desk, cx| desk.split("files", cx));
-    app.windows
-        .update(cx, |windows, cx| windows.pop_out(console, 1, None, cx));
+    app.windows.update(cx, |windows, cx| {
+        windows.pop_out(console, 1, None, None, cx)
+    });
     cx.run_until_parked();
     let popped_key = popped(&app, console, cx);
     let names = |cx: &TestAppContext| {
@@ -342,8 +344,9 @@ fn an_outside_link_reaches_only_the_window_it_brings_forward(cx: &mut TestAppCon
     let index = at(other, cx).unwrap();
     desk.update(cx, |desk, cx| _ = desk.close(index, cx));
     let index = at(forward, cx).unwrap();
-    app.windows
-        .update(cx, |windows, cx| windows.pop_out(console, index, None, cx));
+    app.windows.update(cx, |windows, cx| {
+        windows.pop_out(console, index, None, None, cx)
+    });
     cx.run_until_parked();
     assert_eq!(programs(&app, console, cx), ["chat"]);
     open(cx);
@@ -876,4 +879,235 @@ fn search_keeps_the_console_on_top(cx: &mut TestAppContext) {
     native.run_until_parked();
     assert!(on_top(&app, console, &native));
     assert_eq!(told_above().len(), 1);
+}
+
+// ---------- a view's float ----------
+
+/// The huddle's float: its view laid out 320 by 200, never under 240 by
+/// 150, kept on top.
+const FLOAT: view_wire::methods::Float = view_wire::methods::Float {
+    width: 320,
+    height: 200,
+    min_width: 240,
+    min_height: 150,
+    on_top: true,
+};
+
+/// A console showing `program`'s view, its own minimum 560 (the huddle's),
+/// alone on the desk and seated: the app, the console, its root, the
+/// window, and the pane's instance.
+fn floating_console(
+    program: &'static str,
+    cx: &mut TestAppContext,
+) -> (
+    Entities,
+    WindowKey,
+    gpui_kit::Entity<crate::shell::WindowRoot>,
+    VisualTestContext,
+    u64,
+) {
+    use crate::shell::PaneMessage;
+    use crate::shell::layers::tests::pane;
+    let (app, console, view, mut native) = crate::shell::panes_tests::console(cx);
+    crate::runtime::seat_for_test(program, 560);
+    pane(&view, PaneMessage::Select(program), &mut native);
+    turn(&app, &mut native);
+    let instance = native.update(|_, cx| {
+        let layout = view.read(cx).layout(cx);
+        layout.panes[layout.focused].instance
+    });
+    (app, console, view, native, instance)
+}
+
+/// Every seat turned, what they asked for routed, every window drawn.
+fn turn(app: &Entities, native: &mut VisualTestContext) {
+    for _ in 0..3 {
+        app.seats.update(native, |seats, cx| seats.settle(cx));
+        native.run_until_parked();
+        let handles: Vec<_> = app.windows.read_with(native, |windows, _| {
+            windows.handles().values().copied().collect()
+        });
+        for handle in handles {
+            let _ = native.update(|_, cx| {
+                handle.update(cx, |_, window, cx| {
+                    window.draw(cx).clear(cx);
+                    window.simulate_next_frame(cx);
+                })
+            });
+        }
+        native.run_until_parked();
+    }
+}
+
+/// The pane with `instance`: the window it is in and its seat's entity id.
+fn pane_at(app: &Entities, instance: u64, native: &mut VisualTestContext) -> (WindowKey, u64) {
+    native.update(|_, cx| {
+        let windows = app.windows.read(cx);
+        let key = windows
+            .by_window()
+            .iter()
+            .find(|(_, own)| {
+                own.desk
+                    .read(cx)
+                    .get()
+                    .panes
+                    .iter()
+                    .any(|pane| pane.instance == instance)
+            })
+            .map(|(key, _)| *key)
+            .expect("the pane is on a desk");
+        let seat = app.seats.read(cx).seat(instance).expect("seated");
+        (key, seat.entity_id().as_u64())
+    })
+}
+
+/// THE HEADLINE: Join floats the huddle. The view's `host.float` takes its
+/// pane, seat and all (the call's state lives there), into a window of its
+/// own kept above every other app's; its view hears it floats and is laid
+/// out at the float's 320 by 200, not at its own 560. The pin (a float
+/// while floating) only lets it among the others and back. Leave
+/// (`host.unfloat`) puts the pane back on the desk, the same seat, the
+/// window gone, the view told.
+#[gpui_kit::test]
+fn a_view_floats_its_pane_on_top_and_unfloat_puts_it_back(cx: &mut TestAppContext) {
+    use crate::runtime::{Intent, intent_for_test, placement_for_test};
+    use view_wire::methods::Placement;
+    const PROGRAM: &str = "float-view";
+    let (app, console, _, mut native, instance) = floating_console(PROGRAM, cx);
+    let (_, seat) = pane_at(&app, instance, &mut native);
+    assert_eq!(placement_for_test(PROGRAM).0, Placement::default());
+    told_above();
+
+    intent_for_test(PROGRAM, instance, Intent::Float(FLOAT));
+    turn(&app, &mut native);
+    let (floated, carried) = pane_at(&app, instance, &mut native);
+    assert_ne!(floated, console, "the pane is in a window of its own");
+    assert_eq!(
+        carried, seat,
+        "the same seat: the view's state went with it"
+    );
+    assert!(programs(&app, console, &native).is_empty());
+    let handle = app
+        .windows
+        .read_with(&native, |windows, _| windows.handles()[&floated]);
+    assert!(on_top(&app, floated, &native), "kept on top");
+    assert_eq!(told_above(), [(handle.window_id(), true)]);
+    let (placement, laid_out) = placement_for_test(PROGRAM);
+    assert_eq!(
+        placement,
+        Placement {
+            floating: true,
+            on_top: true
+        }
+    );
+    assert_eq!(laid_out, Some((320., 200.)), "the float's size, not 560");
+
+    // the pin: floating already, Keep on Top alone follows
+    let off = view_wire::methods::Float {
+        on_top: false,
+        ..FLOAT
+    };
+    intent_for_test(PROGRAM, instance, Intent::Float(off));
+    turn(&app, &mut native);
+    assert_eq!(pane_at(&app, instance, &mut native).0, floated);
+    assert!(!on_top(&app, floated, &native));
+    assert_eq!(told_above(), [(handle.window_id(), false)]);
+    assert_eq!(
+        placement_for_test(PROGRAM).0,
+        Placement {
+            floating: true,
+            on_top: false
+        },
+        "the pin follows"
+    );
+    // the Window menu's Keep on Top (⌘⇧T) reaches the view too
+    app.windows.update(&mut native, |windows, cx| {
+        windows.toggle_on_top(floated, cx)
+    });
+    turn(&app, &mut native);
+    assert!(placement_for_test(PROGRAM).0.on_top, "the menu's toggle");
+
+    intent_for_test(PROGRAM, instance, Intent::Unfloat);
+    turn(&app, &mut native);
+    let (back, carried) = pane_at(&app, instance, &mut native);
+    assert_eq!(back, console, "back on the desk");
+    assert_eq!(carried, seat, "the same seat");
+    assert_eq!(app.windows.read_with(&native, |w, _| w.handles().len()), 1);
+    assert!(!on_top(&app, floated, &native), "the float is forgotten");
+    assert_eq!(placement_for_test(PROGRAM).0, Placement::default());
+    // a second unfloat does nothing
+    intent_for_test(PROGRAM, instance, Intent::Unfloat);
+    turn(&app, &mut native);
+    assert_eq!(pane_at(&app, instance, &mut native).0, console);
+}
+
+/// The float's own close button does not end what is in it: the pane
+/// goes back on the desk as the window closes. The next float opens where
+/// that one was left.
+#[gpui_kit::test]
+fn closing_a_float_puts_its_pane_back_and_the_next_opens_there(cx: &mut TestAppContext) {
+    use crate::runtime::{Intent, intent_for_test};
+    const PROGRAM: &str = "float-close-view";
+    let (app, console, _, mut native, instance) = floating_console(PROGRAM, cx);
+    intent_for_test(PROGRAM, instance, Intent::Float(FLOAT));
+    turn(&app, &mut native);
+    let (floated, _) = pane_at(&app, instance, &mut native);
+    let handle = app
+        .windows
+        .read_with(&native, |windows, _| windows.handles()[&floated]);
+    let mut window = VisualTestContext::from_window(handle, &native);
+    let moved = Bounds::new(point(px(40.), px(60.)), size(px(400.), px(282.)));
+    window.update(|window, _| window.set_bounds(moved));
+    window.run_until_parked();
+    assert!(window.simulate_close(), "the window closes");
+    turn(&app, &mut native);
+    assert_eq!(pane_at(&app, instance, &mut native).0, console, "back");
+    // the platform closes it (the test platform only asks)
+    window.update(|window, _| window.remove_window());
+    turn(&app, &mut native);
+    assert_eq!(app.windows.read_with(&native, |w, _| w.handles().len()), 1);
+
+    intent_for_test(PROGRAM, instance, Intent::Float(FLOAT));
+    turn(&app, &mut native);
+    let (again, _) = pane_at(&app, instance, &mut native);
+    let handle = app
+        .windows
+        .read_with(&native, |windows, _| windows.handles()[&again]);
+    let bounds = native.update(|_, cx| handle.update(cx, |_, window, _| window.bounds()).unwrap());
+    assert_eq!(bounds, moved, "where the last one was left");
+}
+
+/// A pop-out's close closes it, its pane with it: only a float's pane
+/// goes back.
+#[gpui_kit::test]
+fn a_popouts_close_takes_its_pane(cx: &mut TestAppContext) {
+    let (app, console, view, mut native) = crate::shell::panes_tests::console(cx);
+    let before = programs(&app, console, &native).len();
+    let (popped, handle, _) =
+        crate::shell::layers::tests::pop_out(&app, console, &view, &mut native);
+    let mut window = VisualTestContext::from_window(handle, &native);
+    assert!(window.simulate_close());
+    native.run_until_parked();
+    assert_eq!(programs(&app, console, &native).len(), before - 1);
+    assert_eq!(programs(&app, popped, &native).len(), 1, "still its own");
+}
+
+/// A view popped out by hand floats from its pop-out: the pane moves to
+/// the float, and the pop-out, its one pane gone, goes with it.
+#[gpui_kit::test]
+fn a_float_from_a_popout_leaves_no_empty_window(cx: &mut TestAppContext) {
+    use crate::runtime::{Intent, intent_for_test};
+    const PROGRAM: &str = "float-popout-view";
+    let (app, console, view, mut native, instance) = floating_console(PROGRAM, cx);
+    let (popped, _, _) = crate::shell::layers::tests::pop_out(&app, console, &view, &mut native);
+    turn(&app, &mut native);
+    assert_eq!(pane_at(&app, instance, &mut native).0, popped);
+    intent_for_test(PROGRAM, instance, Intent::Float(FLOAT));
+    turn(&app, &mut native);
+    let (floated, _) = pane_at(&app, instance, &mut native);
+    assert!(floated != popped && floated != console);
+    let keys: Vec<WindowKey> = app.windows.read_with(&native, |windows, _| {
+        windows.handles().keys().copied().collect()
+    });
+    assert_eq!(keys, [console, floated], "the emptied pop-out went");
 }

@@ -39,7 +39,7 @@ pub(crate) use kernel::plain;
 pub use roster::{Link, RailRow, connected, deployments_checked, props, valid_route};
 pub(crate) use roster::{Roster, changes_channel, roster};
 pub use seat::override_views_from;
-pub(crate) use seat::{Failure, NODE_UNREACHABLE, Seat};
+pub(crate) use seat::{Failure, NODE_UNREACHABLE, Placed, Seat};
 
 use roster::{Connection, code_digest, connection, rail_moved};
 use seat::{
@@ -107,7 +107,8 @@ impl WindowKey {
 }
 
 /// What a view asked the app itself to do: `host.badge`, `host.title`,
-/// `link.open`, or a `notify.post` that changed the centre. An `op.submit`
+/// `link.open`, `host.float`, `host.unfloat`, or a `notify.post` that
+/// changed the centre. An `op.submit`
 /// waiting on the person's yes wakes the shell itself (`consent`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
@@ -123,6 +124,10 @@ pub enum Intent {
     /// A view was seated in its tab, first or after a new deployment: its
     /// minimum width is known, and the desk widens a window under it.
     Seated,
+    /// `host.float`: its pane in a window of its own, at a press or key.
+    Float(wire::methods::Float),
+    /// `host.unfloat`: its pane back on the desk it left.
+    Unfloat,
 }
 
 /// Instruction budget for one call into a view: a ceiling that ends a
@@ -488,6 +493,13 @@ pub(crate) fn ticks_for_test(program: &str) -> Vec<Vec<wire::Event>> {
 #[cfg(test)]
 pub(crate) fn visible_for_test(program: &str) -> bool {
     seated_for_test(program, |view| view.visible)
+}
+
+/// Where `program`'s seated view was last told its pane is
+/// (`host.placement`), and the body it was last laid out in.
+#[cfg(test)]
+pub(crate) fn placement_for_test(program: &str) -> (wire::methods::Placement, Option<(f32, f32)>) {
+    seated_for_test(program, |view| (view.placement, view.viewport_sent))
 }
 
 /// `read` off the view of `program`'s first seat; it panics unless seated.

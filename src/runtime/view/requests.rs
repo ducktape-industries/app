@@ -90,6 +90,7 @@ impl View {
         // Queued results precede becoming visible, so a view can distinguish
         // arrivals while hidden from data received after it returns to screen.
         self.sync_visibility();
+        self.sync_placement();
         self.sync_offset(kernel::offset_minutes());
         self.sync_route();
         if self.staged {
@@ -121,6 +122,8 @@ impl View {
             }
             self.live_subscriptions.retain(|(live, _)| *live != id);
             self.visibility_subscriptions
+                .retain(|subscription| *subscription != id);
+            self.placement_subscriptions
                 .retain(|subscription| *subscription != id);
             self.route_subscriptions
                 .retain(|subscription| *subscription != id);

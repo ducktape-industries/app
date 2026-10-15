@@ -12,6 +12,11 @@
 //! Here, in [`answer`], from app state, on the window thread:
 //! - `host.visible` — a subscription to whether the person is looking at
 //!   the view: its pane is on a desk of the window in front.
+//! - `host.float` — the view's pane in a window of its own, kept above
+//!   other windows where the platform can (`shell` does it), at a press or
+//!   key ([`View::take_activation`]); `host.unfloat` — back on the desk;
+//!   `host.placement` — a subscription to where the pane is (floating, kept
+//!   on top), as the seat places it.
 //! - `host.route` — a subscription that gets the route a `duck://` link
 //!   asked of this view (`explorer/tx/<hash>` → `tx/<hash>`), once,
 //!   DECODED: the link's `%XX` escapes read back (`chat/forge%3Aweb%3A3`
@@ -117,6 +122,9 @@ const MAX_REPLY_BYTES: usize = noded_client::MAX_BODY_BYTES;
 /// against a queue only a redraw empties.
 const MAX_STREAM_BACKLOG_EVENTS: usize = MAX_REPLY_EVENTS / 2;
 const MAX_STREAM_BACKLOG_BYTES: usize = MAX_REPLY_BYTES / 2;
+/// The widest and tallest a `host.float` may ask its view laid out: a
+/// window past any display is no float.
+const MAX_FLOAT: u32 = 8192;
 /// `link.open`s one view may have admitted in the last `LINK_WINDOW`,
 /// each on its own activation; past it a request is refused `link_limit`.
 const MAX_LINKS_PER_WINDOW: usize = 4;
@@ -262,6 +270,56 @@ pub(super) fn answer(
                 done: false,
             });
         }
+        (Capability::Host, "placement") => {
+            if !payload.is_empty() {
+                view.refuse(
+                    id,
+                    refusal::MALFORMED_REQUEST,
+                    "placement subscription takes no payload",
+                );
+                return true;
+            }
+            view.placement_subscriptions.push(id);
+            view.stream_item(id, methods::encode(&view.placement));
+        }
+        // a window above every other app's: only at the person's press or
+        // key (a view on a clock never raises one), taken by the ask. The
+        // reply is what the platform allows; `host.placement` follows with
+        // what it did
+        (Capability::Host, "float") => match methods::decode::<methods::Float>(payload) {
+            Ok(float) if floatable(&float) => {
+                if !view.take_activation() {
+                    view.refuse(
+                        id,
+                        refusal::NEEDS_GESTURE,
+                        "`host.float` needs a press or key",
+                    );
+                    return true;
+                }
+                view.intents.push(Intent::Float(float));
+                let placement = methods::Placement {
+                    floating: true,
+                    on_top: float.on_top && view.keeps_above,
+                };
+                view.reply(id, Ok(methods::encode(&placement)));
+            }
+            Ok(_) => view.refuse(
+                id,
+                refusal::MALFORMED_REQUEST,
+                format!(
+                    "`host.float` names a size from its minimum (at least 1) up to {MAX_FLOAT}"
+                ),
+            ),
+            Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
+        },
+        // it only takes a window away: no press needed
+        (Capability::Host, "unfloat") => match methods::decode::<()>(payload) {
+            Ok(()) => {
+                view.intents.push(Intent::Unfloat);
+                view.reply(id, Ok(Vec::new()));
+            }
+            Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
+        },
         (Capability::Host, "route") => {
             if !payload.is_empty() {
                 view.refuse(
@@ -476,6 +534,15 @@ pub(crate) fn plain(c: &char) -> bool {
     !(c.is_control()
         || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
         || matches!(c, '\u{2028}' | '\u{2029}'))
+}
+
+/// Whether a `host.float` names a size a window can have: each side at
+/// least its minimum, the minimum at least 1, nothing past [`MAX_FLOAT`].
+fn floatable(float: &methods::Float) -> bool {
+    (1..=float.width).contains(&float.min_width)
+        && (1..=float.height).contains(&float.min_height)
+        && float.width <= MAX_FLOAT
+        && float.height <= MAX_FLOAT
 }
 
 /// Whether `link.open` may open `link`: `duck://` or `https://` with

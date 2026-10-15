@@ -6,9 +6,10 @@
 //! It follows `Windows` and every window's `Desk` (`reconcile`), and
 //! routes what a seat asks for: a badge to `Rail`, a title to the desk
 //! holding its pane, a notice to `Notifications`, a view seated to the
-//! desks holding it, a link to `Windows`.
+//! desks holding it, a link or a float to `Windows`. Each seat is told
+//! where its pane sits beyond its window (floated, kept on top).
 use super::{Account, Notifications, Rail, Session, Windows};
-use crate::runtime::{Intent, Seat, WindowKey};
+use crate::runtime::{Intent, Placed, Seat, WindowKey};
 use crate::shell::WindowKind;
 use crate::shell::layers::view_body;
 use crate::ui::layout::Layout;
@@ -16,14 +17,14 @@ use gpui_kit::{AnyWindowHandle, App, AppContext as _, Context, Entity, Subscript
 use std::collections::BTreeMap;
 
 /// A pane's seat and the routes out of it.
-struct Placed {
+struct Routed {
     seat: Entity<Seat>,
     /// Its intents, routed here; dropping it unsubscribes.
     _intents: Subscription,
 }
 
 pub(crate) struct Seats {
-    map: BTreeMap<u64, Placed>,
+    map: BTreeMap<u64, Routed>,
     session: Entity<Session>,
     account: Entity<Account>,
     rail: Entity<Rail>,
@@ -138,8 +139,23 @@ impl Seats {
         let Some(windows) = self.windows.upgrade() else {
             return;
         };
-        let (layouts, handles, front) = {
+        let keeps_above = crate::shell::windows::can_keep_above(cx);
+        let (layouts, handles, front, placed) = {
             let windows = windows.read(cx);
+            // what each window is beyond holding its panes: floated by a
+            // view, kept on top
+            let placed: BTreeMap<WindowKey, Placed> = windows
+                .by_window()
+                .keys()
+                .map(|key| {
+                    let placed = Placed {
+                        float_min: windows.float_min(*key),
+                        on_top: windows.on_top(*key),
+                        keeps_above,
+                    };
+                    (*key, placed)
+                })
+                .collect();
             // the body is the frame's on a console's desk, where the pane
             // is drawn framed; a window one view fills (a pop-out, `--live`)
             // lays its pane out edge to edge, whatever frame the layout keeps
@@ -151,11 +167,12 @@ impl Seats {
                     (*key, (own.desk.read(cx).get().clone(), on_desk))
                 })
                 .collect();
-            (layouts, windows.handles().clone(), windows.front())
+            (layouts, windows.handles().clone(), windows.front(), placed)
         };
         type Place = (
             &'static str,
             Option<(AnyWindowHandle, Option<(f32, f32)>, bool)>,
+            Placed,
         );
         let wanted: BTreeMap<u64, Place> = layouts
             .iter()
@@ -163,6 +180,7 @@ impl Seats {
                 let window = handles.get(key).copied();
                 let on_desk = *on_desk;
                 let in_front = front == Some(*key);
+                let placed = placed.get(key).copied().unwrap_or_default();
                 layout
                     .panes
                     .iter()
@@ -172,7 +190,11 @@ impl Seats {
                         let body = view_body(on_desk, layout, index);
                         (
                             pane.instance,
-                            (pane.program, window.map(|window| (window, body, in_front))),
+                            (
+                                pane.program,
+                                window.map(|window| (window, body, in_front)),
+                                placed,
+                            ),
                         )
                     })
             })
@@ -184,9 +206,9 @@ impl Seats {
             .copied()
             .collect();
         let mut moved = !gone.is_empty();
-        for (instance, (program, window)) in wanted {
+        for (instance, (program, window, placed)) in wanted {
             let props = &self.props;
-            let placed = self.map.entry(instance).or_insert_with(|| {
+            let seat_placed = self.map.entry(instance).or_insert_with(|| {
                 moved = true;
                 let seat = cx.new(|cx| Seat::new(program, instance, cx));
                 let _intents = cx.subscribe(&seat, move |this, _, intent: &Intent, cx| {
@@ -194,12 +216,13 @@ impl Seats {
                 });
                 // the session as it stands, before its first turn
                 seat.update(cx, |seat, cx| seat.set_props(props.clone(), cx));
-                Placed { seat, _intents }
+                Routed { seat, _intents }
             });
             if let Some((window, body, in_front)) = window {
-                placed
-                    .seat
-                    .update(cx, |seat, cx| seat.place(window, body, in_front, cx));
+                seat_placed.seat.update(cx, |seat, cx| {
+                    seat.place(window, body, in_front, cx);
+                    seat.set_placed(placed, cx);
+                });
             }
         }
         let mut hidden = Vec::new();
@@ -279,6 +302,17 @@ impl Seats {
                     .collect();
                 for desk in desks {
                     desk.update(cx, |desk, cx| desk.settle(cx));
+                }
+            }
+            // its own pane into a window of its own, or back
+            Intent::Float(float) => {
+                if let Some(windows) = self.windows.upgrade() {
+                    windows.update(cx, |windows, cx| windows.float(instance, float, cx));
+                }
+            }
+            Intent::Unfloat => {
+                if let Some(windows) = self.windows.upgrade() {
+                    windows.update(cx, |windows, cx| windows.unfloat(instance, cx));
                 }
             }
             // from this pane: a link into its own program stays in it

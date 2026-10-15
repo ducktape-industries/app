@@ -775,7 +775,7 @@ fn desktop(cx: &mut TestAppContext) -> (Entities, WindowKey) {
     });
     let at = Bounds::new(point(px(0.), px(0.)), size(px(1280.), px(800.)));
     let key = entities.windows.update(cx, |windows, cx| {
-        windows.open(WindowKind::Console, Some(at), cx)
+        windows.open(WindowKind::Console, Some(at), None, cx)
     });
     cx.run_until_parked();
     desk_of(&entities, key, cx).update(cx, |desk, cx| {
