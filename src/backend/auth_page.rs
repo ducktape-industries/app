@@ -12,12 +12,9 @@ use noded_client::relay::url_encode;
 
 use super::loopback::Listener;
 
-/// The live page. Its host IS the RP ID every passkey is scoped to.
-const AUTH_PAGE: &str = "https://auth.ducktape.industries/";
-
-pub(super) fn auth_page() -> String {
-    std::env::var("DUCKTAPE_AUTH_PAGE").unwrap_or_else(|_| AUTH_PAGE.to_owned())
-}
+#[cfg(test)]
+use ducktape_host::backend::AUTH_PAGE;
+use ducktape_host::backend::auth_page;
 
 pub(super) enum Request {
     /// `navigator.credentials.create()`; the challenge is pass-through.

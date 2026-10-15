@@ -161,9 +161,12 @@ fn start(boot: Boot) {
                 let settle = move |cx: &mut gpui_kit::App| {
                     let _ = door_seats.update(cx, |seats, cx| seats.settle(cx));
                 };
+                let keep = super::kept_restore;
                 let door = crate::ax::Door {
                     windows: &windows,
                     settle: &settle,
+                    keep: &keep,
+                    chords: &chords,
                 };
                 crate::ax::serve(calls, door, cx).await;
             })
