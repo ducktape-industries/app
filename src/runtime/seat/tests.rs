@@ -130,6 +130,7 @@ struct Held {
     most: usize,
     released: bool,
     roles_asked: usize,
+    scheduled_asked: usize,
 }
 
 /// What a fake node answers.
@@ -221,7 +222,9 @@ fn answer(mut stream: std::net::TcpStream, answers: &Answers, held: &Mutex<Held>
                 };
                 ::programs::Reply::Roles(roles)
             }
+            // answered, and counted: a roster read never asks it
             ::programs::Query::Scheduled { .. } => {
+                held.lock().unwrap().scheduled_asked += 1;
                 ::programs::Reply::Scheduled(::programs::PageResponse {
                     height: 1,
                     items: Vec::new(),
@@ -457,6 +460,11 @@ fn the_roles_come_with_the_roster_and_are_asked_once() {
     read_roster(node.asked_of.clone(), &roster, &registry);
     let asked = node.held.lock().unwrap().roles_asked;
     assert_eq!(asked, 1, "not every block");
+    assert_eq!(
+        node.held.lock().unwrap().scheduled_asked,
+        0,
+        "the scheduled list is a view's ask (blob.manifest), never a roster read's"
+    );
     // the roster moved (a programs upgrade moves its code): asked again
     let upgraded = FakeNode::with_roles(
         vec![listed("roles-programs", "upgraded")],

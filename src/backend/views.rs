@@ -139,8 +139,9 @@ pub async fn roles(client: &RpcClient, network: &str) -> Result<Option<abi::Role
 
 /// The code every scheduled change brings (a program set, a view set), in
 /// the programs role's order, whatever height it lands at: what the
-/// network is about to run, so a view may ask about it before it does.
-/// Empty from a programs role that predates the question.
+/// network is about to run, so a view may ask about it (`blob.manifest`)
+/// before it does. Read for that ask, not per block. Empty from a programs
+/// role that predates the question.
 pub async fn coming(client: &RpcClient, network: &str) -> Result<Vec<BlobId>, Fetch> {
     use ::programs::{PageRequest, Query, Reply};
     let mut codes = Vec::new();

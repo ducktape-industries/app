@@ -388,9 +388,10 @@ answers `None` on any failure but a transport one, which becomes
 `rpc_client` and is retried like any node call.
 
 `blob.manifest` (`kernel/node.rs`) reads a code blob the same way: only
-one the roster names (a listed program's, a view-only entry's, or one a
-scheduled change brings; any other id is refused `undeclared_target`
-before the node is asked), through the seat path's cache
+one the programs role names (a listed program's, a view-only entry's, or
+one a scheduled change brings: the roster answers the first two, the
+scheduled list is read for the ask, never per block; any other id is
+refused `undeclared_target`, never fetched), through the seat path's cache
 (`views::program_bytes`), and answers the blob's size, whether it carries
 a view (its `ducktape.view` section, or the blob itself when it is a
 view-only entry, known by its manifest section) and that view's manifest

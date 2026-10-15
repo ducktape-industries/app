@@ -768,13 +768,14 @@ fn blob_id(ask: &[u8]) -> Result<abi::BlobId, wire::Error> {
 }
 
 /// `blob.manifest`: a blob the programs role names (a listed program's
-/// code, a view-only entry's, or one a scheduled change brings), read as a
-/// seat reads it (`views::program_bytes`, cached under its id); the view in
-/// its `ducktape.view` section or the blob itself for a view-only entry,
-/// and that view's manifest as `manifest_of` would read it. A blob is a
-/// view by its manifest section, read or not: one this host cannot read is
-/// a view with no manifest, never a program that draws nothing. The bytes
-/// stay on the host. An id the roster does not name is refused as
+/// code, a view-only entry's, or one a scheduled change brings: the
+/// scheduled list is read for the ask, never per block), read as a seat
+/// reads it (`views::program_bytes`, cached under its id); the view in its
+/// `ducktape.view` section or the blob itself for a view-only entry, and
+/// that view's manifest as `manifest_of` would read it. A blob is a view by
+/// its manifest section, read or not: one this host cannot read is a view
+/// with no manifest, never a program that draws nothing. The bytes stay on
+/// the host. An id the roster does not name is refused as
 /// `undeclared_target`, never fetched: `None` is the node's word that it
 /// holds no such blob, and a view asks the host only about code the chain
 /// names, as a node method names only a program its manifest declares.
@@ -783,7 +784,16 @@ pub(super) fn blob_manifest(node: Node, ask: Vec<u8>) -> Answered {
         use backend::views::{Fetch, VIEW_SECTION, program_bytes, section};
         use view_wire::manifest::{MANIFEST_SECTION, read_manifest};
         let id = blob_id(&ask)?;
-        if !super::super::roster::roster().names_code(&id) {
+        let named = super::super::roster::roster().names_code(&id)
+            || match backend::views::coming(&node.client, &node.network).await {
+                Ok(coming) => coming.contains(&id),
+                // the transport, as a blob read's: the node method's loop retries
+                Err(Fetch::Unreachable(reason)) => {
+                    return Err(wire::Error::new(refusal::RPC_CLIENT, reason));
+                }
+                Err(error) => return Err(host_fault(error)),
+            };
+        if !named {
             return Err(wire::Error::new(
                 refusal::UNDECLARED_TARGET,
                 "the programs role names no such code",

@@ -524,10 +524,11 @@ fn listed(code: abi::BlobId) {
 }
 
 /// `blob.manifest` reads only code the programs role names: a listed
-/// program's, a view-only entry's, or what a scheduled change brings. An
-/// id it does not name is refused before the node is asked; a named one is
-/// read as a seat reads it, kept under its id, so the next ask reads the
-/// disk, not the node.
+/// program's, a view-only entry's, or what a scheduled change brings, the
+/// scheduled list read for the ask. An id none of them name is refused,
+/// the node asked for the list and nothing else; a scheduled code is read
+/// as a seat reads it, kept under its id, so the next ask reads the disk,
+/// not the node.
 #[tokio::test]
 async fn blob_manifest_reads_only_code_the_roster_names() {
     use sha2::Digest as _;
@@ -537,25 +538,49 @@ async fn blob_manifest_reads_only_code_the_roster_names() {
     let id = abi::BlobId::Sha256(sha2::Sha256::digest(&framed).into());
     let kept = crate::backend::views::cache_path(&id).unwrap();
     let _ = std::fs::remove_file(&kept);
-    let held = fake_node(vec![(
-        noded_client::wire::route::BLOB_GET,
-        Mode::Answer(abi::encode(&Some(framed.clone()))),
-    )]);
+    let scheduled = |items: Vec<::programs::Pending>| {
+        let reply = ::programs::Reply::Scheduled(::programs::PageResponse {
+            height: 12,
+            items,
+            next: None,
+        });
+        (
+            noded_client::wire::route::QUERY,
+            Mode::Answer(abi::encode(&abi::encode(&reply))),
+        )
+    };
+    let brings = ::programs::Pending {
+        height: 20,
+        change: ::programs::Change::Set(::programs::Entry {
+            program: "later".into(),
+            code: id,
+            params: Vec::new(),
+        }),
+        by: None,
+    };
     let ask = methods::encode(&format!(
         "sha256:{}",
         noded_client::hex::hex_encode(id.digest())
     ));
-    let refusal = blob_manifest(held.node.clone(), ask.clone())
+    // nothing scheduled: refused, the node asked for the list alone
+    let nothing = fake_node(vec![scheduled(Vec::new())]);
+    let refusal = blob_manifest(nothing.node.clone(), ask.clone())
         .await
         .unwrap_err();
     assert_eq!(refusal.code, refusal::UNDECLARED_TARGET);
     assert_eq!(
-        held.accepted.load(std::sync::atomic::Ordering::SeqCst),
-        0,
+        nothing.accepted.load(std::sync::atomic::Ordering::SeqCst),
+        1,
         "an unnamed code reached the node"
     );
-    // a scheduled change brings it: named, read, kept
-    crate::runtime::roster::roster().come(vec![id]);
+    // a scheduled change brings it: read, kept
+    let held = fake_node(vec![
+        scheduled(vec![brings.clone()]),
+        (
+            noded_client::wire::route::BLOB_GET,
+            Mode::Answer(abi::encode(&Some(framed.clone()))),
+        ),
+    ]);
     let size = |answer: Vec<u8>| {
         methods::decode::<Option<methods::Manifested>>(&answer)
             .unwrap()
@@ -565,8 +590,8 @@ async fn blob_manifest_reads_only_code_the_roster_names() {
     assert_eq!(size(answer), Some(program.len() as u64));
     assert!(kept.exists(), "a named code's read was not kept");
     // the next ask reads the disk: a node with no blob route answers it
-    let dead = fake_node(Vec::new());
-    let answer = blob_manifest(dead.node.clone(), ask).await;
+    let listed_only = fake_node(vec![scheduled(vec![brings])]);
+    let answer = blob_manifest(listed_only.node.clone(), ask).await;
     let _ = std::fs::remove_file(&kept);
     assert_eq!(
         answer.map(size),
