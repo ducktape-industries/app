@@ -237,6 +237,9 @@ impl ViewTree {
             .get(&path)
             .is_none_or(|piece| piece.opened != opened)
         {
+            // the old device let go before the new one opens, which waits
+            // for it to have closed (ducktape-av's one holder at a time)
+            self.media.pieces.remove(&path);
             let route = std::rc::Rc::new(std::cell::Cell::new(on_state));
             let heard = route.clone();
             let tell = move |_: &mut Self, state: &ducktape_av::State, cx: &mut Context<Self>| {

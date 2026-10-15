@@ -8,7 +8,7 @@
 //! whole surface.
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _};
@@ -105,6 +105,90 @@ fn set(status: &Mutex<(Status, String)>, to: Status) {
     status.lock().expect("feed status").0 = to;
 }
 
+// ---------- one holder of a device at a time ----------
+
+/// A piece's feed, as its thread's hold on a device reads it: whether the
+/// piece let the device go.
+trait Held: Send + Sync {
+    fn let_go(&self) -> bool;
+}
+
+impl Held for CameraFeed {
+    fn let_go(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+}
+
+impl Held for MicFeed {
+    fn let_go(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+}
+
+/// The threads of one kind of piece that hold a device or are opening
+/// one, by their feeds. A thread opens its device only once every thread
+/// whose piece let go has closed its own: a piece made again (Try again,
+/// its view's layout moving it to another place or window, another device
+/// picked) never finds this process still holding the device, which an
+/// exclusive one (ALSA's `hw`, a UVC camera) refuses as busy. A piece's
+/// drop only asks its thread to stop (the window thread never waits on a
+/// device), so the order is kept here, where the next one opens.
+struct Holders {
+    held: Mutex<Vec<Arc<dyn Held>>>,
+    closed: Condvar,
+}
+
+static CAMERAS: Holders = Holders::new();
+static MICROPHONES: Holders = Holders::new();
+
+/// The longest a thread waits for the ones let go to close: past it, it
+/// opens anyway, and the device says what it says.
+const LET_GO: Duration = Duration::from_secs(2);
+
+impl Holders {
+    const fn new() -> Self {
+        Self {
+            held: Mutex::new(Vec::new()),
+            closed: Condvar::new(),
+        }
+    }
+
+    /// Once every holder whose piece let go has closed its device (at
+    /// most [`LET_GO`]), `feed` holds one until the guard drops: after
+    /// its own device has.
+    fn hold(&'static self, feed: Arc<dyn Held>) -> Holding {
+        let deadline = Instant::now() + LET_GO;
+        let mut held = self.held.lock().expect("holders");
+        while held.iter().any(|holder| holder.let_go()) {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            held = self.closed.wait_timeout(held, left).expect("holders").0;
+        }
+        held.push(feed.clone());
+        Holding {
+            holders: self,
+            feed,
+        }
+    }
+}
+
+/// A thread's hold on its device: dropped once the device is closed, it
+/// lets the next opener go.
+struct Holding {
+    holders: &'static Holders,
+    feed: Arc<dyn Held>,
+}
+
+impl Drop for Holding {
+    fn drop(&mut self) {
+        let mut held = self.holders.held.lock().expect("holders");
+        held.retain(|holder| !Arc::ptr_eq(holder, &self.feed));
+        self.holders.closed.notify_all();
+    }
+}
+
 // ---------- cameras ----------
 
 /// The cameras the system lists now; the first is the default.
@@ -119,13 +203,20 @@ pub fn cameras() -> Result<Vec<Device>, String> {
 pub fn start_camera(device: Option<String>, feed: Arc<CameraFeed>) {
     let spawned = std::thread::Builder::new()
         .name("av-camera".into())
-        .spawn(move || run_camera(device, &feed));
+        .spawn(move || run_camera(device, feed));
     if let Err(error) = spawned {
         tracing_error("camera thread", &error);
     }
 }
 
-fn run_camera(device: Option<String>, feed: &CameraFeed) {
+fn run_camera(device: Option<String>, feed: Arc<CameraFeed>) {
+    // dropped last, after the camera
+    let _held = CAMERAS.hold(feed.clone());
+    // its piece went before this opened anything: nothing to open
+    if feed.let_go() {
+        return;
+    }
+    let feed = &*feed;
     let listed = cameras().unwrap_or_default();
     let found = match &device {
         Some(id) => listed.iter().find(|d| &d.id == id),
@@ -321,6 +412,12 @@ fn audio_fault(error: &cpal::Error, open: bool) -> Status {
 }
 
 fn run_microphone(device: Option<String>, output: Option<String>, feed: &Arc<MicFeed>) {
+    // dropped last, after the microphone and the speaker
+    let _held = MICROPHONES.hold(feed.clone());
+    // its piece went before this opened anything: nothing to open
+    if feed.let_go() {
+        return;
+    }
     #[cfg(target_os = "macos")]
     if !crate::mac::allowed(crate::mac::AUDIO) {
         return set(&feed.status, Status::Denied);
@@ -703,6 +800,40 @@ mod tests {
             (196..=199).contains(&crossings(high)),
             "{}",
             crossings(high)
+        );
+    }
+
+    /// THE ROOT FIX: a piece made again while its old self's thread is
+    /// still closing the device (Try again, the pane moved, another place
+    /// in its view) opens only once that one has closed it; a holder whose
+    /// piece is still there holds nobody up.
+    #[test]
+    fn a_device_opens_only_once_the_one_let_go_has_closed() {
+        static HOLDERS: Holders = Holders::new();
+        let old = Arc::new(MicFeed::default());
+        let closing = HOLDERS.hold(old.clone());
+        // its piece let go; its thread has not closed the device yet
+        old.stop.store(true, Ordering::Relaxed);
+        let (opened, heard) = std::sync::mpsc::channel();
+        let next = std::thread::spawn(move || {
+            let held = HOLDERS.hold(Arc::new(MicFeed::default()));
+            opened.send(Instant::now()).unwrap();
+            held
+        });
+        assert!(
+            heard.recv_timeout(Duration::from_millis(200)).is_err(),
+            "opened while the old one still held the device"
+        );
+        let closed = Instant::now();
+        drop(closing);
+        let at = heard.recv_timeout(Duration::from_secs(1)).expect("opens");
+        assert!(at >= closed);
+        let _live = next.join().unwrap();
+        let waited = Instant::now();
+        let _other = HOLDERS.hold(Arc::new(MicFeed::default()));
+        assert!(
+            waited.elapsed() < Duration::from_millis(100),
+            "a live holder held another up"
         );
     }
 
