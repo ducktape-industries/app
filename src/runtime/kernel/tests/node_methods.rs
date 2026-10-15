@@ -119,7 +119,7 @@ async fn system_status_preserves_borsh_and_refusals() {
         root: abi::Root([3; 32]),
         epoch: 2,
         identity: vec![4; 32],
-        contract: 1,
+        contract: noded_client::wire::NODE_CONTRACT,
         genesis: [5; 32],
         roles: crate::backend::test_roles(),
     };
@@ -136,7 +136,12 @@ async fn system_status_preserves_borsh_and_refusals() {
             decoded.root,
             decoded.contract
         ),
-        ("test-network", 201, [3; 32], 1)
+        (
+            "test-network",
+            201,
+            [3; 32],
+            noded_client::wire::NODE_CONTRACT
+        )
     );
     server.join().unwrap();
     assert_eq!(
