@@ -837,7 +837,7 @@ fn ws_conn() -> (Conn, Request) {
         kind: Kind::Subscribe {
             track: track("doc"),
             alias: Some(9),
-            counted: None,
+            counted: HashMap::new(),
             opened: None,
             in_flight: None,
         },
@@ -858,29 +858,34 @@ fn drain(request: &mut Request) -> Vec<Data> {
     got
 }
 
-/// Over the websocket a group the node cut short (an object refused, the
-/// track ended) has no end of its own: the next group starts. It ends
-/// incomplete, not malformed.
+/// Over the websocket the node sends a group's end in the order its
+/// session loop took it, which can be after the next group's first
+/// objects (the publisher FINs one and opens the next back to back). Each
+/// group is counted on its own: a late end neither restarts the newer
+/// group's numbering nor ends it, and ends the one it names, complete.
 #[test]
-fn a_group_the_next_one_cuts_short_ends_incomplete() {
+fn a_late_end_of_the_old_group_leaves_the_new_groups_count_alone() {
     let (conn, mut request) = ws_conn();
     let header = |group| GroupHeader { alias: 9, group };
     heard_slice(&conn, header(1), vec![b"a".to_vec()], false);
-    heard_slice(&conn, header(2), vec![b"b".to_vec()], true);
-    let object = |group, body: &[u8]| Data::Object {
+    heard_slice(&conn, header(2), vec![b"b".to_vec()], false);
+    heard_slice(&conn, header(1), vec![], true);
+    heard_slice(&conn, header(2), vec![b"c".to_vec()], true);
+    let object = |group, object, body: &[u8]| Data::Object {
         group,
-        object: 0,
+        object,
         body: body.to_vec(),
     };
     assert_eq!(
         drain(&mut request),
         [
-            object(1, b"a"),
+            object(1, 0, b"a"),
+            object(2, 0, b"b"),
             Data::GroupEnd {
                 group: 1,
-                complete: false
+                complete: true
             },
-            object(2, b"b"),
+            object(2, 1, b"c"),
             Data::GroupEnd {
                 group: 2,
                 complete: true
@@ -1014,18 +1019,26 @@ fn a_full_datagram_queue_drops_the_oldest_and_a_closed_one_refuses() {
     assert_eq!(futures::executor::block_on(outbox.take()), None);
 }
 
+/// The newest wins: a newer unread datagram replaces the held one and is
+/// counted; an older one, reordered on the path, leaves the held one and
+/// counts for nothing.
 #[test]
 fn the_newest_unread_object_replaces_the_one_before_and_is_counted() {
     let latest = Latest::default();
-    let object = |object| Data::Object {
-        group: 1,
+    let object = |group, object| Data::Object {
+        group,
         object,
         body: Vec::new(),
     };
-    latest.put(object(0));
-    latest.put(object(1));
-    assert_eq!(futures::executor::block_on(latest.take()), object(1));
+    latest.put(object(1, 0));
+    latest.put(object(1, 1));
+    assert_eq!(futures::executor::block_on(latest.take()), object(1, 1));
     assert_eq!(latest.dropped(), 1);
+    assert_eq!(latest.dropped(), 0);
+    latest.put(object(2, 5));
+    latest.put(object(2, 4));
+    latest.put(object(1, 9));
+    assert_eq!(futures::executor::block_on(latest.take()), object(2, 5));
     assert_eq!(latest.dropped(), 0);
 }
 

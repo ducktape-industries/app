@@ -288,7 +288,8 @@ impl PartialEq for Outbox {
 
 /// The newest datagram-mode object a subscription has not read. A newer
 /// one replaces it, which is the datagram's own rule (the newest wins), and
-/// is counted: the drop-oldest park of a view that is behind.
+/// is counted: the drop-oldest park of a view that is behind. An older one
+/// (datagrams reorder on the path) is nothing.
 #[derive(Default)]
 pub(crate) struct Latest {
     slot: Mutex<Option<Data>>,
@@ -296,11 +297,25 @@ pub(crate) struct Latest {
     dropped: AtomicU64,
 }
 
+/// A datagram's place in its track: the publisher's numbering, exact.
+fn numbered(data: &Data) -> (u64, u32) {
+    match data {
+        Data::Object { group, object, .. } => (*group, *object),
+        Data::GroupEnd { group, .. } => (*group, u32::MAX),
+    }
+}
+
 impl Latest {
     pub(crate) fn put(&self, data: Data) {
-        if lock(&self.slot).replace(data).is_some() {
+        let mut slot = lock(&self.slot);
+        if let Some(held) = slot.as_ref() {
+            if numbered(held) >= numbered(&data) {
+                return;
+            }
             self.dropped.fetch_add(1, Ordering::Relaxed);
         }
+        *slot = Some(data);
+        drop(slot);
         self.ready.notify_one();
     }
 
@@ -528,9 +543,11 @@ enum Kind {
     Subscribe {
         track: Track,
         alias: Option<Alias>,
-        /// Over the websocket, the group the subscription is in and its
-        /// next object's number: the stream's implicit count.
-        counted: Option<(u64, u32)>,
+        /// Over the websocket, each group the subscription has open and
+        /// its next object's number: the stream's implicit count, per
+        /// group, since a late end of one group follows the next one's
+        /// first objects.
+        counted: HashMap<u64, u32>,
         /// The publisher and mode, once the node answered: a later
         /// reader's `Subscribed`.
         opened: Option<(u64, Mode)>,
@@ -911,7 +928,7 @@ impl Conn {
                 Kind::Subscribe {
                     track: track.clone(),
                     alias: None,
-                    counted: None,
+                    counted: HashMap::new(),
                     opened: None,
                     in_flight: None,
                 },
@@ -1647,19 +1664,9 @@ fn heard_slice(conn: &Conn, header: GroupHeader, objects: Vec<Vec<u8>>, end: boo
     let Kind::Subscribe { counted, .. } = &mut entry.kind else {
         return;
     };
-    let mut next = match *counted {
-        Some((group, next)) if group == header.group => next,
-        // the node starts the next group without ending this one: it was
-        // cut short (an object refused, the track ended), not malformed
-        Some((group, _)) => {
-            let cut = Data::GroupEnd {
-                group,
-                complete: false,
-            };
-            hand(entry, cut);
-            0
-        }
-        None => 0,
+    let mut next = match end {
+        true => counted.remove(&header.group).unwrap_or_default(),
+        false => *counted.entry(header.group).or_default(),
     };
     for body in objects {
         let item = Data::Object {
@@ -1671,7 +1678,9 @@ fn heard_slice(conn: &Conn, header: GroupHeader, objects: Vec<Vec<u8>>, end: boo
         next += 1;
     }
     if let Kind::Subscribe { counted, .. } = &mut entry.kind {
-        *counted = (!end).then_some((header.group, next));
+        if let Some(count) = counted.get_mut(&header.group) {
+            *count = next;
+        }
     }
     if end {
         let item = Data::GroupEnd {
