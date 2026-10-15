@@ -2,6 +2,7 @@
 //! the one live session of the connection (`backend::live`):
 //!
 //! - `live.publish` `LivePublish` — a subscription that is the track: items
+//!   `Publishing::Waiting` while the room's program has not granted it, then
 //!   `Publishing::Subscribers(n)`; an object the node dropped is an `Err`
 //!   item that does not end it; the node's refusal ends it.
 //! - `live.send` `LiveSend` — one object onto a track this view publishes.
@@ -11,13 +12,14 @@
 //!   the publication's queue (`in_flight_limit`) is refused on the track's
 //!   `live.publish` instead, as the node's own refusals of an object are.
 //!   Objects sent before the node took the publication wait in that queue.
-//! - `live.subscribe` `LiveSubscribe` — items `LiveItem`: `Opened`, then the
-//!   group the node holds (with `latest`), then each object and each
-//!   group's end. A datagram-mode track keeps only its newest unread object
+//! - `live.subscribe` `LiveSubscribe` — items `LiveItem`: `Waiting` while
+//!   the room's program has not granted it, then `Opened`, the group the
+//!   node holds (with `latest`), then each object and each group's end. A datagram-mode track keeps only its newest unread object
 //!   while the view is behind (drop-oldest, counted `live.dropped_behind`);
 //!   a stream-mode one holds its group back.
-//! - `live.tracks` `<room>` — items `LiveAnnounce`: the room's tracks up
-//!   now, then each one that comes or goes.
+//! - `live.tracks` `<room>` — items `Watching`: `Waiting` while the room's
+//!   program has not granted watching it, then an `Announce` per track up
+//!   now and per one that comes or goes.
 //!
 //! A view's first live request puts a line on its window (the consent
 //! line, `Notifications::sharing`): it shares live data with the people in

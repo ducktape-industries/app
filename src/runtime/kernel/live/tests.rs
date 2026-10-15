@@ -292,7 +292,7 @@ fn a_subscription_hears_the_track_and_its_end() {
 /// item, and goes on when the node answers. A publication's sends wait for
 /// it.
 #[test]
-fn a_request_the_node_holds_hears_not_granted_and_goes_on() {
+fn a_request_the_node_holds_hears_it_waits_and_goes_on() {
     let _serial = serial();
     let (mut view, opens) = live_guest();
     let mut changes = view.replies.changes();

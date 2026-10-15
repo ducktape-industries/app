@@ -45,9 +45,6 @@ const QUIC_ANSWER: Duration = Duration::from_secs(2);
 const QUIC_RETRY: Duration = Duration::from_secs(60);
 /// How long the handshake may take: the node's own deadline.
 const HELLO_WAIT: Duration = Duration::from_secs(5);
-/// A control message is names and numbers: past this the node is not
-/// speaking the wire, and the session ends.
-const MAX_CONTROL: usize = 16 << 10;
 /// Stream-mode objects one subscription holds for its view. Past it the
 /// group's QUIC stream waits, which holds the node back by flow control;
 /// over the websocket, which carries every track on one socket, the object
@@ -1261,9 +1258,12 @@ async fn read_control(recv: &mut quinn::RecvStream) -> Result<Control, Unread> {
     let mut length = [0u8; 4];
     recv.read_exact(&mut length).await.map_err(closed)?;
     let length = u32::from_le_bytes(length) as usize;
-    if length > MAX_CONTROL {
+    // Past the wire's own cap the node is not speaking the wire, and the
+    // session ends.
+    if length > live_wire::CONTROL_BYTES as usize {
         return Err(Unread::Mismatch(format!(
-            "a control message of {length} bytes, over {MAX_CONTROL}"
+            "a control message of {length} bytes, over {}",
+            live_wire::CONTROL_BYTES
         )));
     }
     let mut bytes = vec![0; length];
