@@ -438,6 +438,7 @@ fn the_roles_come_with_the_roster_and_are_asked_once() {
         identity: "roles-identity".into(),
         blobs: "roles-blobs".into(),
         awaits: "roles-awaits".into(),
+        egress: None,
         halo: "roles-halo".into(),
     };
     let node = FakeNode::with_roles(

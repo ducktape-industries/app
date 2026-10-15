@@ -64,6 +64,7 @@ pub(crate) fn test_roles() -> abi::Roles {
         identity: "identity".into(),
         blobs: "blobs".into(),
         awaits: "awaits".into(),
+        egress: None,
         halo: "halo".into(),
     }
 }

@@ -494,6 +494,7 @@ mod tests {
             identity: "identity-b".into(),
             blobs: "blobs-b".into(),
             awaits: "awaits-b".into(),
+            egress: Some("egress-b".into()),
             halo: "halo-b".into(),
         };
         for program in [
@@ -502,6 +503,7 @@ mod tests {
             "identity-b",
             "blobs-b",
             "awaits-b",
+            "egress-b",
             "halo-b",
         ] {
             assert_eq!(
@@ -534,6 +536,7 @@ mod tests {
             identity: identity::PROGRAM.into(),
             blobs: "blobs".into(),
             awaits: "awaits".into(),
+            egress: None,
             halo: "halo".into(),
         };
         let asked = |program: &str| {
@@ -570,6 +573,7 @@ mod tests {
             identity: identity::PROGRAM.into(),
             blobs: "blobs".into(),
             awaits: "awaits".into(),
+            egress: None,
             halo: "halo".into(),
         };
         let op = [1, 2, 3];

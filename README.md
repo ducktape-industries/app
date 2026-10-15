@@ -14,6 +14,47 @@ DUCKTAPE_RPC=http://127.0.0.1:8844 cargo run -p ducktape-app   # skip the connec
 DUCKTAPE_VIEWS_DIR=/path/to/views cargo run -p ducktape-app     # a view developer's override
 ```
 
+## Install
+
+Releases are published to `https://dl.ducktape.industries/app/`: one
+channel file per channel (`stable.json` is `main`, `nightly.json` is `dev`
+once a day) naming each platform's archive by its sha256. An installed app
+keeps itself up to date from there; Settings › Updates picks the channel.
+For nightly, read `nightly.json` instead of `stable.json` below.
+
+**macOS (Apple silicon).** Needs `jq`. The archive is `Ducktape.app`, ad-hoc
+signed; a copy fetched with `curl` carries no quarantine, so Gatekeeper lets
+it open. At its first start from `/Applications` it adopts itself as the
+install the updater owns.
+
+```bash
+sha=$(curl -fsS https://dl.ducktape.industries/app/stable.json \
+  | jq -r .manifest | jq -r '.artifacts["macos-aarch64"].sha256')
+curl -fLo /tmp/ducktape.tar.gz "https://dl.ducktape.industries/app/Ducktape-$sha-macos-aarch64.tar.gz"
+echo "$sha  /tmp/ducktape.tar.gz" | shasum -a 256 -c
+tar xzf /tmp/ducktape.tar.gz -C /Applications
+open /Applications/Ducktape.app
+```
+
+The DMG on a commit's GitHub prerelease (`bin-<commit>`) works too, but a
+browser download is quarantined: after dragging it to `/Applications`, run
+`xattr -dr com.apple.quarantine /Applications/Ducktape.app` once.
+
+**Linux (x86_64).** Needs `jq`, and at runtime `libxcb1`,
+`libxkbcommon-x11-0` and a Vulkan driver (`libvulkan1` and
+`mesa-vulkan-drivers` on Ubuntu). `ducktape-app install` puts the binary
+under `~/.local/share/ducktape/` and registers a desktop entry; the
+extracted copy can be deleted after.
+
+```bash
+sha=$(curl -fsS https://dl.ducktape.industries/app/stable.json \
+  | jq -r .manifest | jq -r '.artifacts["linux-x86_64"].sha256')
+curl -fLo /tmp/ducktape.tar.gz "https://dl.ducktape.industries/app/Ducktape-$sha-linux-x86_64.tar.gz"
+echo "$sha  /tmp/ducktape.tar.gz" | sha256sum -c
+tar xzf /tmp/ducktape.tar.gz -C /tmp
+/tmp/ducktape-app install
+```
+
 ## What the app does
 
 - **Connect.** A node URL. `/v1/status` answers the network the node serves
@@ -85,4 +126,5 @@ are what CI runs.
 
 Each commit on `main` also has a built app: the prerelease `bin-<commit>`
 carries `ducktape-app-x86_64-unknown-linux-gnu.tar.gz` and an ad-hoc signed
-`ducktape-app-aarch64-apple-darwin.dmg` (`.github/workflows/release.yml`).
+`ducktape-app-aarch64-apple-darwin.dmg` (`.github/workflows/release.yml`);
+the same build is what the stable channel publishes (see [Install](#install)).

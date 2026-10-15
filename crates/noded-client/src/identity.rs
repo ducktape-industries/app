@@ -146,7 +146,7 @@ pub async fn submit_signed(
 
 pub async fn submit(client: &Client, frame: Vec<u8>) -> Result<Vec<u8>, String> {
     let receipt = client
-        .submit(frame)
+        .preconfirm(frame)
         .await
         .map_err(|error| node_error(error.to_string()))?;
     match receipt.outcome {
@@ -310,6 +310,7 @@ mod tests {
                 identity: "i".into(),
                 blobs: "b".into(),
                 awaits: "a".into(),
+                egress: None,
                 halo: "h".into(),
             },
         };
