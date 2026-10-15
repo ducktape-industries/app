@@ -593,6 +593,43 @@ async fn a_quitting_app_closes_its_session_and_the_node_hears_it_at_once() {
         matches!(&heard, quinn::ConnectionError::ApplicationClosed(close) if close.reason == "quit"),
         "the node heard {heard:?}"
     );
+    assert!(
+        lock(&client.0.not_before).is_none(),
+        "a quit is no failure: the next dial does not wait"
+    );
+}
+
+/// A session the node closes is lost: its requests end (their channels
+/// close), and the next dial waits, the client's one wait, so a node that
+/// drops every session is not dialed in a loop.
+#[tokio::test]
+async fn a_lost_session_ends_its_requests_and_holds_the_next_dial_off() {
+    let _seat = seated().await;
+    let node_key = ed25519::PrivateKey::from_seed(14);
+    let identity = node_key.public_key().as_ref().to_vec();
+    let (rpc, mut ended) = node_hearing(&node_key, identity, Answer::Welcome).await;
+    let client = Client::new(rpc);
+    let mut watch = client
+        .open(Ask::Watch {
+            namespace: "loopback#1/echo/lobby".into(),
+        })
+        .await
+        .unwrap();
+    let conn = client.0.conn.lock().await.clone().unwrap();
+    let Path::Quic(connection) = &conn.path else {
+        panic!("the test needs the QUIC path")
+    };
+    // the node's side goes: as a restart looks from here
+    connection.close(1u32.into(), b"node restart");
+    assert!(
+        watch.heard.recv().await.is_none(),
+        "the request's channel closes"
+    );
+    let _ = ended.recv().await;
+    assert!(
+        lock(&client.0.not_before).is_some_and(|until| until > Instant::now()),
+        "a lost session is redialed at once"
+    );
 }
 
 /// A client on a test node with a stream track `doc` published, its

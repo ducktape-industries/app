@@ -37,7 +37,11 @@
 //! subscription subscribes again from the group the node holds and its view
 //! hears a fresh `Opened`, a room's list says every track it had up went
 //! down and announces again what is up. A connect inside the network does
-//! the same on the new connection (`reconnected`).
+//! the same on the new connection (`reconnected`): the list's tracks up
+//! ride on its `LiveFollow`, so the downs are said before it opens again.
+//! The wait before a dial is the client's alone (`backend::live::Client`
+//! holds off after a failure and on the node's `GoAway`): a request asks
+//! again at once and blocks in the dial.
 //!
 //! Tick wake: nothing new. An item a live task writes is an answer in
 //! [`Replies`] like any other: `Replies::item` fires the seat's `changed`
@@ -81,7 +85,35 @@ impl Drop for Publication {
 pub(super) enum LiveFollow {
     Publish(LivePublish),
     Subscribe(LiveTrack),
-    Tracks(String),
+    /// A room's list, and the tracks it has up: what goes down before it
+    /// opens again.
+    Tracks {
+        room: String,
+        up: Up,
+    },
+}
+
+/// The tracks a room's list has up, kept where the list's task and a
+/// reconnect both reach it.
+type Up = Arc<Mutex<Vec<LiveAnnounce>>>;
+
+/// Every track `up` has up goes down: the items that say so.
+fn downs(up: &Up) -> Vec<Answer> {
+    std::mem::take(&mut *lock(up))
+        .into_iter()
+        .map(|gone| {
+            Ok(methods::encode(&Watching::Announce(LiveAnnounce {
+                up: false,
+                ..gone
+            })))
+        })
+        .collect()
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl Tracks {
@@ -259,7 +291,6 @@ fn open_publication(view: &mut View, id: u64, session: Arc<dyn Session>, ask: Li
 /// new session, whose writer takes the queue over (the session's `open`
 /// holds the queue, in the ask).
 async fn publishing(session: Arc<dyn Session>, open: Ask, mut items: Items, key: crate::perf::Key) {
-    let mut lost = 0;
     loop {
         let mut request = match opened(&session, open.clone()).await {
             Ok(request) => request,
@@ -268,7 +299,6 @@ async fn publishing(session: Arc<dyn Session>, open: Ask, mut items: Items, key:
         while let Some(heard) = request.heard.recv().await {
             let item = match heard {
                 Heard::Published => {
-                    lost = 0;
                     crate::perf::count(key, "live.tracks", 1);
                     continue;
                 }
@@ -277,10 +307,7 @@ async fn publishing(session: Arc<dyn Session>, open: Ask, mut items: Items, key:
                     code.as_str(),
                     "the node dropped an object of this track",
                 )),
-                Heard::Waiting => {
-                    lost = 0;
-                    Ok(methods::encode(&Publishing::Waiting))
-                }
+                Heard::Waiting => Ok(methods::encode(&Publishing::Waiting)),
                 Heard::Closed(refusal) => return items.last(refusal),
                 Heard::Subscribed { .. } | Heard::Announce { .. } => continue,
             };
@@ -288,8 +315,6 @@ async fn publishing(session: Arc<dyn Session>, open: Ask, mut items: Items, key:
                 return;
             }
         }
-        lost += 1;
-        tokio::time::sleep(backend::retry_delay(lost)).await;
     }
 }
 
@@ -409,7 +434,6 @@ async fn subscribing(
     mut items: Items,
     key: crate::perf::Key,
 ) {
-    let mut lost = 0;
     loop {
         let open = Ask::Subscribe {
             track: track.clone(),
@@ -424,13 +448,9 @@ async fn subscribing(
                 biased;
                 heard = request.heard.recv() => match heard {
                     Some(Heard::Subscribed { by, mode, latest }) => {
-                        lost = 0;
                         LiveItem::Opened { by, mode: live_mode(mode), latest }
                     }
-                    Some(Heard::Waiting) => {
-                        lost = 0;
-                        LiveItem::Waiting
-                    }
+                    Some(Heard::Waiting) => LiveItem::Waiting,
                     Some(Heard::Closed(refusal)) => return items.last(refusal),
                     Some(
                         Heard::Published
@@ -457,8 +477,6 @@ async fn subscribing(
             }
         }
         from = Start::Latest;
-        lost += 1;
-        tokio::time::sleep(backend::retry_delay(lost)).await;
     }
 }
 
@@ -486,27 +504,26 @@ pub(super) fn tracks(view: &mut View, id: u64, payload: &[u8]) {
     let Some(session) = ready(view, id) else {
         return;
     };
-    open_watch(view, id, session, room);
+    open_watch(view, id, session, room, Up::default());
 }
 
-fn open_watch(view: &mut View, id: u64, session: Arc<dyn Session>, room: String) {
+fn open_watch(view: &mut View, id: u64, session: Arc<dyn Session>, room: String, up: Up) {
     let Some(namespace) = stamped_room(view, id, &room) else {
         return;
     };
+    let kept = up.clone();
     spawn_subscription(
         view,
         id,
-        Follow::Live(LiveFollow::Tracks(room)),
-        move |items| watching(session, namespace, items),
+        Follow::Live(LiveFollow::Tracks { room, up }),
+        move |items| watching(session, namespace, kept, items),
     );
 }
 
 /// A room's track list for as long as the view holds it. On a new session
 /// every track it had up goes down first: the node announces again what is
 /// up, and what went down meanwhile is not left standing.
-async fn watching(session: Arc<dyn Session>, namespace: String, mut items: Items) {
-    let mut up: Vec<LiveAnnounce> = Vec::new();
-    let mut lost = 0;
+async fn watching(session: Arc<dyn Session>, namespace: String, up: Up, mut items: Items) {
     loop {
         let open = Ask::Watch {
             namespace: namespace.clone(),
@@ -529,7 +546,6 @@ async fn watching(session: Arc<dyn Session>, namespace: String, mut items: Items
                     up,
                 },
                 Heard::Waiting => {
-                    lost = 0;
                     if !items.send(Ok(methods::encode(&Watching::Waiting))).await {
                         return;
                     }
@@ -541,10 +557,12 @@ async fn watching(session: Arc<dyn Session>, namespace: String, mut items: Items
                 | Heard::Subscribed { .. }
                 | Heard::Dropped(_) => continue,
             };
-            lost = 0;
-            up.retain(|held| held.name != announce.name);
-            if announce.up {
-                up.push(announce.clone());
+            {
+                let mut up = lock(&up);
+                up.retain(|held| held.name != announce.name);
+                if announce.up {
+                    up.push(announce.clone());
+                }
             }
             if !items
                 .send(Ok(methods::encode(&Watching::Announce(announce))))
@@ -553,23 +571,18 @@ async fn watching(session: Arc<dyn Session>, namespace: String, mut items: Items
                 return;
             }
         }
-        for gone in std::mem::take(&mut up) {
-            let down = LiveAnnounce { up: false, ..gone };
-            if !items
-                .send(Ok(methods::encode(&Watching::Announce(down))))
-                .await
-            {
+        for down in downs(&up) {
+            if !items.send(down).await {
                 return;
             }
         }
-        lost += 1;
-        tokio::time::sleep(backend::retry_delay(lost)).await;
     }
 }
 
 /// A connect inside the network: the request opened again on the new
 /// connection's session, as it was asked (a subscription from the group the
-/// node holds).
+/// node holds; a room's list after every track it had up went down, the
+/// same sweep a lost session makes).
 pub(super) fn reopen(view: &mut View, id: u64, follows: LiveFollow) {
     let Some(session) = view.connection.live.clone() else {
         return view.refuse(id, refusal::NOT_CONNECTED, "not connected to a node");
@@ -580,7 +593,12 @@ pub(super) fn reopen(view: &mut View, id: u64, follows: LiveFollow) {
             open_publication(view, id, session, ask);
         }
         LiveFollow::Subscribe(track) => open_subscription(view, id, session, track, Start::Latest),
-        LiveFollow::Tracks(room) => open_watch(view, id, session, room),
+        LiveFollow::Tracks { room, up } => {
+            for down in downs(&up) {
+                view.replies.item(id, down, false);
+            }
+            open_watch(view, id, session, room, up);
+        }
     }
 }
 

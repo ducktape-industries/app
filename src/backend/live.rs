@@ -409,14 +409,15 @@ struct Inner {
     /// client holds off after a failure ([`Inner::hold_off`]).
     not_before: Mutex<Option<Instant>>,
     /// Failures since the last session opened: dials that failed (the
-    /// node refused, was busy or was not there) and sessions ended as a
-    /// wire mismatch. Each holds the next dial off longer.
+    /// node refused, was busy or was not there) and sessions lost. Each
+    /// holds the next dial off longer.
     failures: AtomicU32,
 }
 
 impl Inner {
     /// The next dial waits [`super::retry_delay`] of the failures so far:
-    /// a refusal, a busy node or a wire mismatch is never redialed at once.
+    /// a refusal, a busy node, a wire mismatch or a lost session is never
+    /// redialed at once. The requests ask again at once and wait here.
     fn hold_off(&self) {
         let failures = self.failures.fetch_add(1, Ordering::SeqCst) + 1;
         *lock(&self.not_before) = Some(Instant::now() + super::retry_delay(failures));
@@ -880,12 +881,18 @@ impl Conn {
     }
 
     /// Ends the session: every request's channels close, which its reader
-    /// hears as the session gone.
+    /// hears as the session gone. A session lost (not quit, not the
+    /// connection changing, not the node's own `GoAway`, which names its
+    /// wait) holds the next dial off: the one wait before a dial.
     fn close(&self, why: Close) {
         if self.closed.swap(true, Ordering::SeqCst) {
             return;
         }
         tracing::info!(target: "ducktape::app", event = "live_session", reason = why.as_str(), "a live session closed");
+        let lost = !matches!(why, Close::Quit | Close::ConnectionChanged | Close::GoAway);
+        if let Some(client) = self.client.upgrade().filter(|_| lost) {
+            client.hold_off();
+        }
         *lock(&self.table) = Table::default();
         self.aliased.notify_waiters();
         if let Path::Quic(connection) = &self.path {
@@ -899,9 +906,6 @@ impl Conn {
     fn fail(&self, refusal: Error) {
         for (_, entry) in lock(&self.table).requests.drain() {
             entry.tell(Heard::Closed(refusal.clone()));
-        }
-        if let Some(client) = self.client.upgrade() {
-            client.hold_off();
         }
         self.close(Close::WireMismatch);
     }

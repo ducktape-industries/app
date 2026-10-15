@@ -522,6 +522,59 @@ fn a_lost_session_takes_a_rooms_tracks_down_and_opens_the_list_again() {
     assert_eq!(again, asked);
 }
 
+/// A connect inside the network: a room's list says every track it had up
+/// went down before it opens again on the new connection's session, as it
+/// does when the session is lost.
+#[test]
+fn a_reconnect_inside_the_network_takes_a_rooms_tracks_down_first() {
+    let (mut view, opens) = live_guest();
+    let mut changes = view.replies.changes();
+    ask(
+        &mut view,
+        1,
+        "live.tracks",
+        methods::encode(&"lobby".to_owned()),
+    );
+    let (_asked, ends) = opened(&opens);
+    ends.heard
+        .send(Heard::Announce {
+            track: Track {
+                namespace: "net#1/request-test/lobby".into(),
+                name: "echo/7".into(),
+            },
+            by: 7,
+            mode: Mode::Stream,
+            up: true,
+        })
+        .unwrap();
+    let (_, got, _) = item::<Watching>(next(&view, &mut changes));
+    assert!(matches!(
+        got,
+        Ok(Watching::Announce(LiveAnnounce { up: true, .. }))
+    ));
+    let (reopened, reopens) = std_mpsc::channel();
+    let connection = fake_connection(view.connection.rev + 1, reopened, Vec::new());
+    view.reconnect(&connection);
+    let (again, _ends) = opened(&reopens);
+    assert!(matches!(again, Ask::Watch { .. }));
+    let mut events = Vec::new();
+    view.replies.drain_into(&mut events).unwrap();
+    let downs: Vec<String> = events
+        .into_iter()
+        .filter_map(|event| match item::<Watching>(event) {
+            (
+                1,
+                Ok(Watching::Announce(LiveAnnounce {
+                    up: false, name, ..
+                })),
+                false,
+            ) => Some(name),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(downs, ["echo/7"], "echo/7 went down on the reconnect");
+}
+
 /// A connect inside the network: a live subscription opens again on the
 /// new connection's session, from the group the node holds, and is not
 /// refused.
