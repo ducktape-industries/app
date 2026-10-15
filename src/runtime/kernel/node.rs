@@ -784,12 +784,15 @@ fn receipt_of(receipt: noded::Receipt) -> methods::Receipt {
 /// `chain.blocks`: a page of finalized blocks from the node's archive.
 pub(super) fn blocks(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
-        let methods::BlockPage { before, limit } =
-            methods::ChainBlocks::decode_request(&ask).map_err(malformed)?;
+        let methods::BlockPage {
+            before,
+            limit,
+            most,
+        } = methods::ChainBlocks::decode_request(&ask).map_err(malformed)?;
         let page = noded::Blocks {
             before,
             limit,
-            most: 0,
+            most,
         };
         let page = node.client.blocks(&page).await.map_err(refused)?;
         Ok(methods::encode(&methods::BlockList {
@@ -802,11 +805,13 @@ pub(super) fn blocks(node: Node, ask: Vec<u8>) -> Answered {
 /// `chain.block`: one finalized block by height or id, if the node has it.
 pub(super) fn block(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
-        let by = match methods::ChainBlock::decode_request(&ask).map_err(malformed)? {
+        let methods::BlockAsk { by, most } =
+            methods::ChainBlock::decode_request(&ask).map_err(malformed)?;
+        let by = match by {
             methods::BlockRef::Height(height) => noded::BlockRef::Height(height),
             methods::BlockRef::Id(id) => noded::BlockRef::Id(id),
         };
-        let ask = noded::BlockAsk { by, most: 0 };
+        let ask = noded::BlockAsk { by, most };
         let block = node.client.block(&ask).await.map_err(refused)?;
         Ok(methods::encode(&block.map(block_of)))
     })

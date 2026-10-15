@@ -345,12 +345,12 @@ fn programs_swapping(program: &str, at: u64) -> (::program::MockHost, abi::BlobI
     store
         .borrow_mut()
         .siblings
-        .insert(MockHost::roles().blobs, held);
+        .insert(MockHost::role(abi::role::BLOBS), held);
     let swap = Op::Schedule(Scheduled {
         height: at,
         change: Change::Set(entry(scheduled)),
     });
-    let validators = Origin::Program(MockHost::roles().validators);
+    let validators = Origin::Program(MockHost::role(abi::role::VALIDATORS));
     Programs::execute(&store.exec(programs_env(1, validators)), swap).unwrap();
     (store, running, scheduled)
 }
@@ -417,14 +417,13 @@ fn listed(name: &str, seed: &str) -> ::programs::Entry {
 }
 
 fn roles() -> abi::Roles {
-    abi::Roles {
-        programs: "roles-programs".into(),
-        validators: "roles-valset".into(),
-        identity: "roles-identity".into(),
-        blobs: "roles-blobs".into(),
-        awaits: "roles-awaits".into(),
-        egress: None,
-    }
+    abi::Roles::from_iter([
+        (abi::role::PROGRAMS, "roles-programs"),
+        (abi::role::VALIDATORS, "roles-valset"),
+        (abi::role::IDENTITY, "roles-identity"),
+        (abi::role::BLOBS, "roles-blobs"),
+        (abi::role::AWAITS, "roles-awaits"),
+    ])
 }
 
 #[test]

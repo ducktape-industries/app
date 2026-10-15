@@ -259,20 +259,11 @@ pub(super) fn needed(
     }
     // a view no vote reviewed, writing to a role
     let roles = roles.filter(|_| !bound(program))?;
-    let (title, what) = if target == roles.programs {
-        (NETWORK, "sign an op on the programs role")
-    } else if target == roles.validators {
-        (NETWORK, "vote in the validators' program")
-    } else if target == roles.identity {
-        (ACCOUNT, "sign an identity operation")
-    } else if target == roles.blobs {
-        (NETWORK, "sign an op on the blobs role")
-    } else if target == roles.awaits {
-        (NETWORK, "sign an op on the awaits role")
-    } else if roles.egress.as_deref() == Some(target) {
-        (NETWORK, "sign an op on the egress role")
-    } else {
-        return None;
+    let (role, _) = roles.iter().find(|(_, bound)| *bound == target)?;
+    let (title, what) = match role {
+        abi::role::VALIDATORS => (NETWORK, "vote in the validators' program".to_owned()),
+        abi::role::IDENTITY => (ACCOUNT, "sign an identity operation".to_owned()),
+        other => (NETWORK, format!("sign an op on the {other} role")),
     };
     Some(Words {
         title,
@@ -286,18 +277,7 @@ pub(super) fn needed(
 /// Whether genesis bound `program` to a role the kernel calls (`roles`, as
 /// the node's programs role answers them): never while no bindings are known.
 pub(super) fn bound(program: &str, roles: Option<&abi::Roles>) -> bool {
-    roles.is_some_and(|roles| {
-        [
-            &roles.programs,
-            &roles.validators,
-            &roles.identity,
-            &roles.blobs,
-            &roles.awaits,
-        ]
-        .into_iter()
-        .chain(roles.egress.as_ref())
-        .any(|role| role.as_str() == program)
-    })
+    roles.is_some_and(|roles| roles.iter().any(|(_, bound)| bound == program))
 }
 
 /// What the card shows for an op its target describes: the program's own
@@ -495,14 +475,14 @@ mod tests {
                 .unwrap()
                 .said
         };
-        let roles = abi::Roles {
-            programs: "programs-b".into(),
-            validators: "valset-b".into(),
-            identity: "identity-b".into(),
-            blobs: "blobs-b".into(),
-            awaits: "awaits-b".into(),
-            egress: Some("egress-b".into()),
-        };
+        let roles = abi::Roles::from_iter([
+            (abi::role::PROGRAMS, "programs-b"),
+            (abi::role::VALIDATORS, "valset-b"),
+            (abi::role::IDENTITY, "identity-b"),
+            (abi::role::BLOBS, "blobs-b"),
+            (abi::role::AWAITS, "awaits-b"),
+            (abi::role::EGRESS, "egress-b"),
+        ]);
         for program in [
             "programs-b",
             "valset-b",
@@ -525,10 +505,10 @@ mod tests {
             );
         }
         assert!(said("programs-b", None).starts_with("Program programs-b asks"));
-        let unbound = abi::Roles {
-            egress: None,
-            ..roles
-        };
+        let unbound: abi::Roles = roles
+            .iter()
+            .filter(|(role, _)| *role != abi::role::EGRESS)
+            .collect();
         assert!(said("egress-b", Some(&unbound)).starts_with("Program egress-b asks"));
     }
 
@@ -540,14 +520,14 @@ mod tests {
     #[test]
     fn no_program_id_asks_as_the_system() {
         let suspend = abi::encode(&identity::Op::Suspend { account: 12 });
-        let roles = abi::Roles {
-            programs: "programs".into(),
-            validators: "valset".into(),
-            identity: identity::PROGRAM.into(),
-            blobs: "blobs".into(),
-            awaits: "awaits".into(),
-            egress: Some("egress".into()),
-        };
+        let roles = abi::Roles::from_iter([
+            (abi::role::PROGRAMS, "programs"),
+            (abi::role::VALIDATORS, "valset"),
+            (abi::role::IDENTITY, identity::PROGRAM),
+            (abi::role::BLOBS, "blobs"),
+            (abi::role::AWAITS, "awaits"),
+            (abi::role::EGRESS, "egress"),
+        ]);
         let asked = |program: &str| {
             needed(program, Some(&roles), identity::PROGRAM, &suspend, Some(7)).unwrap()
         };
@@ -576,14 +556,14 @@ mod tests {
     /// words for both.
     #[test]
     fn a_view_no_vote_reviewed_asks_for_every_op_to_a_role() {
-        let roles = abi::Roles {
-            programs: "programs".into(),
-            validators: "valset".into(),
-            identity: identity::PROGRAM.into(),
-            blobs: "blobs".into(),
-            awaits: "awaits".into(),
-            egress: Some("egress".into()),
-        };
+        let roles = abi::Roles::from_iter([
+            (abi::role::PROGRAMS, "programs"),
+            (abi::role::VALIDATORS, "valset"),
+            (abi::role::IDENTITY, identity::PROGRAM),
+            (abi::role::BLOBS, "blobs"),
+            (abi::role::AWAITS, "awaits"),
+            (abi::role::EGRESS, "egress"),
+        ]);
         let op = [1, 2, 3];
         let add_key = abi::encode(&identity::Op::AddKey {
             scheme: abi::Scheme::Ed25519,
