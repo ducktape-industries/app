@@ -17,7 +17,7 @@
 //!
 //! Nothing here knows a view: a track's namespace comes stamped.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -47,11 +47,11 @@ const QUIC_RETRY: Duration = Duration::from_secs(60);
 const HELLO_WAIT: Duration = Duration::from_secs(5);
 /// Stream-mode objects one subscription holds for its view. Past it the
 /// group's QUIC stream waits, which holds the node back by flow control;
-/// over the websocket, which carries every track on one socket, the object
-/// is dropped and counted instead.
+/// over the websocket, which carries every track on one socket, the
+/// reader's group is cut instead ([`Reader::offer`]).
 const DATA_BACKLOG: usize = 64;
 /// Objects one publication holds: before the node took it, and while its
-/// stream is behind. Past it a send is refused `in_flight_limit`.
+/// path is behind. What happens at it is the mode's rule ([`Outbox::push`]).
 pub(crate) const OUTBOX: usize = 64;
 /// The keep-alive and idle limit of a session, on QUIC and the websocket
 /// alike: the node's QUIC transport's.
@@ -89,6 +89,8 @@ pub(crate) enum Ask {
         track: Track,
         mode: Mode,
         priority: Priority,
+        /// The publication's objects, as the view sends them.
+        objects: Arc<Outbox>,
     },
     Subscribe {
         track: Track,
@@ -151,6 +153,139 @@ pub(crate) struct Object {
     pub(crate) end: bool,
 }
 
+/// A publication's one queue to the node, the kernel's: the view's sends
+/// go in on its thread, the session's writer takes them out, and it
+/// outlives a session (a new session's writer takes over where the last
+/// left). At [`OUTBOX`] the mode's rule holds, as the node's does for a
+/// group it cannot take: in stream mode the group is abandoned, never a
+/// single object (the queued rest of it goes, the writer resets its
+/// stream, the view hears [`Pushed::Cut`] once and its later sends of the
+/// group are dropped; a newer group starts clean); in datagram mode the
+/// oldest queued datagram goes (the newest wins), nothing told.
+pub(crate) struct Outbox {
+    mode: Mode,
+    state: Mutex<Queued>,
+    ready: Notify,
+}
+
+#[derive(Default)]
+struct Queued {
+    out: VecDeque<Out>,
+    /// The stream group abandoned, while the view still sends onto it.
+    cut: Option<u64>,
+    closed: bool,
+}
+
+/// What the writer takes from an [`Outbox`].
+#[derive(Debug, PartialEq)]
+pub(crate) enum Out {
+    Object(Object),
+    /// The group was abandoned: its stream is reset.
+    Cut(u64),
+}
+
+/// What became of a pushed object.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Pushed {
+    Queued,
+    /// The queue was full: the object's stream group is abandoned, this
+    /// once.
+    Cut(u64),
+    /// Onto a group abandoned before: dropped, as told then.
+    Dropped,
+    /// The publication ended: nothing takes objects any more.
+    Closed,
+}
+
+impl Outbox {
+    pub(crate) fn new(mode: Mode) -> Arc<Outbox> {
+        Arc::new(Outbox {
+            mode,
+            state: Mutex::new(Queued::default()),
+            ready: Notify::new(),
+        })
+    }
+
+    pub(crate) fn push(&self, object: Object) -> Pushed {
+        let mut state = lock(&self.state);
+        if state.closed {
+            return Pushed::Closed;
+        }
+        let group = object.group;
+        let queued = state
+            .out
+            .iter()
+            .filter(|out| matches!(out, Out::Object(_)))
+            .count();
+        let pushed = match self.mode {
+            Mode::Stream if state.cut == Some(group) => return Pushed::Dropped,
+            Mode::Stream if queued >= OUTBOX => {
+                state
+                    .out
+                    .retain(|out| !matches!(out, Out::Object(held) if held.group == group));
+                state.out.push_back(Out::Cut(group));
+                state.cut = Some(group);
+                Pushed::Cut(group)
+            }
+            Mode::Stream => {
+                state.cut = None;
+                state.out.push_back(Out::Object(object));
+                Pushed::Queued
+            }
+            Mode::Datagram => {
+                if queued >= OUTBOX {
+                    state.out.pop_front();
+                }
+                state.out.push_back(Out::Object(object));
+                Pushed::Queued
+            }
+        };
+        self.ready.notify_one();
+        pushed
+    }
+
+    /// The next thing to write; `None` once the publication ended and the
+    /// queue is empty.
+    pub(crate) async fn take(&self) -> Option<Out> {
+        loop {
+            {
+                let mut state = lock(&self.state);
+                if let Some(out) = state.out.pop_front() {
+                    return Some(out);
+                }
+                if state.closed {
+                    return None;
+                }
+            }
+            self.ready.notified().await;
+        }
+    }
+
+    /// The publication ended: a push is refused, and the writer stops
+    /// once it took what was queued.
+    pub(crate) fn close(&self) {
+        lock(&self.state).closed = true;
+        self.ready.notify_one();
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        lock(&self.state).closed
+    }
+}
+
+impl std::fmt::Debug for Outbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Outbox({:?})", self.mode)
+    }
+}
+
+/// Two asks of one publication name the one queue.
+impl PartialEq for Outbox {
+    fn eq(&self, other: &Outbox) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+
 /// The newest datagram-mode object a subscription has not read. A newer
 /// one replaces it, which is the datagram's own rule (the newest wins), and
 /// is counted: the drop-oldest park of a view that is behind.
@@ -184,13 +319,12 @@ impl Latest {
     }
 }
 
-/// One open request: what it hears, and for a publication where its
-/// objects go. Dropping it withdraws the request from the node.
+/// One open request: what it hears. Dropping it withdraws the request
+/// from the node.
 pub(crate) struct Request {
     pub(crate) heard: mpsc::UnboundedReceiver<Heard>,
     pub(crate) data: mpsc::Receiver<Data>,
     pub(crate) latest: Arc<Latest>,
-    pub(crate) objects: mpsc::Sender<Object>,
     withdraw: Option<Box<dyn FnOnce() + Send>>,
 }
 
@@ -207,7 +341,6 @@ pub(crate) struct Ends {
     pub(crate) heard: mpsc::UnboundedSender<Heard>,
     pub(crate) data: mpsc::Sender<Data>,
     pub(crate) latest: Arc<Latest>,
-    pub(crate) objects: mpsc::Receiver<Object>,
 }
 
 /// A request and its session's ends; `withdraw` runs when the request is
@@ -221,20 +354,17 @@ pub(crate) fn request(withdraw: impl FnOnce() + Send + 'static) -> (Request, End
 fn request_holding(withdraw: impl FnOnce() + Send + 'static, replayed: usize) -> (Request, Ends) {
     let (heard, hears) = mpsc::unbounded_channel();
     let (data, datas) = mpsc::channel(DATA_BACKLOG + replayed);
-    let (objects, outbox) = mpsc::channel(OUTBOX);
     let latest = Arc::new(Latest::default());
     let request = Request {
         heard: hears,
         data: datas,
         latest: latest.clone(),
-        objects,
         withdraw: Some(Box::new(withdraw)),
     };
     let ends = Ends {
         heard,
         data,
         latest,
-        objects: outbox,
     };
     (request, ends)
 }
@@ -426,6 +556,16 @@ struct Reader {
     /// Where it asked to start: with `Next` the group the node replays
     /// first (`Subscribed.latest`) is not its.
     from: Start,
+    /// Over the websocket, each stream group it has an object of.
+    groups: HashMap<u64, Taking>,
+}
+
+/// A websocket reader's standing in a group.
+enum Taking {
+    /// It has objects of the group, and the slot its end goes in.
+    Owed(mpsc::OwnedPermit<Data>),
+    /// The group was cut for it: the rest is dropped.
+    Cut,
 }
 
 impl Reader {
@@ -437,6 +577,57 @@ impl Reader {
             latest: ends.latest.clone(),
             after: None,
             from,
+            groups: HashMap::new(),
+        }
+    }
+
+    /// One stream-mode item over the websocket, which carries every track
+    /// on one socket: a reader that is behind cannot hold it. A group the
+    /// reader cannot take an object of is cut for it (it hears
+    /// `GroupEnd { complete: false }` once, in the slot reserved with the
+    /// group's first object, and the rest of the group is dropped), never
+    /// a single object: no one sees a hole as a complete group.
+    fn offer(&mut self, data: Data) {
+        match data {
+            Data::Object { group, .. } => match self.groups.get(&group) {
+                Some(Taking::Cut) => {}
+                Some(Taking::Owed(_)) => {
+                    if self.data.try_send(data).is_err() {
+                        self.cut(group);
+                    }
+                }
+                None => match self.data.clone().try_reserve_owned() {
+                    Ok(end) => {
+                        self.groups.insert(group, Taking::Owed(end));
+                        if self.data.try_send(data).is_err() {
+                            self.cut(group);
+                        }
+                    }
+                    // nothing of the group reached it: no end is owed
+                    Err(_) => {
+                        self.groups.insert(group, Taking::Cut);
+                    }
+                },
+            },
+            Data::GroupEnd { group, .. } => match self.groups.remove(&group) {
+                Some(Taking::Owed(end)) => {
+                    end.send(data);
+                }
+                Some(Taking::Cut) => {}
+                // a group of no objects
+                None => {
+                    let _ = self.data.try_send(data);
+                }
+            },
+        }
+    }
+
+    fn cut(&mut self, group: u64) {
+        if let Some(Taking::Owed(end)) = self.groups.insert(group, Taking::Cut) {
+            end.send(Data::GroupEnd {
+                group,
+                complete: false,
+            });
         }
     }
 
@@ -496,7 +687,7 @@ impl Entry {
 
     /// One item of the subscription's data: kept in the group in flight,
     /// and the readers it is for.
-    fn keep(&mut self, data: &Data) -> impl Iterator<Item = &Reader> {
+    fn keep(&mut self, data: &Data) -> impl Iterator<Item = &mut Reader> {
         if let Kind::Subscribe {
             opened, in_flight, ..
         } = &mut self.kind
@@ -535,7 +726,9 @@ impl Entry {
                 Data::GroupEnd { .. } => *in_flight = None,
             }
         }
-        self.readers.iter().filter(|reader| reader.follows(data))
+        self.readers
+            .iter_mut()
+            .filter(|reader| reader.follows(data))
     }
 
     /// A later request that follows this subscription: it hears what the
@@ -697,9 +890,10 @@ impl Conn {
                 track,
                 mode,
                 priority,
+                objects,
             } => {
                 let (taken, alias) = oneshot::channel();
-                tokio::spawn(write(self.clone(), alias, ends.objects, mode));
+                tokio::spawn(write(self.clone(), alias, objects, mode));
                 (
                     Kind::Publish {
                         track: track.clone(),
@@ -1435,8 +1629,8 @@ fn heard_datagram(conn: &Conn, bytes: &[u8]) {
 
 /// A slice of a group over the websocket: its objects numbered on from the
 /// slice before, and the group's end if it carries it. One socket carries
-/// every track, so a subscription that is behind loses the object (counted
-/// in its `Latest`) rather than holding the socket.
+/// every track, so a reader that is behind has its group cut
+/// ([`Reader::offer`]) rather than holding the socket.
 fn heard_slice(conn: &Conn, header: GroupHeader, objects: Vec<Vec<u8>>, end: bool) {
     let mut table = lock(&conn.table);
     let Some(id) = table.aliases.get(&header.alias).copied() else {
@@ -1447,9 +1641,7 @@ fn heard_slice(conn: &Conn, header: GroupHeader, objects: Vec<Vec<u8>>, end: boo
     };
     let hand = |entry: &mut Entry, data: Data| {
         for reader in entry.keep(&data) {
-            if reader.data.try_send(data.clone()).is_err() {
-                reader.latest.dropped.fetch_add(1, Ordering::Relaxed);
-            }
+            reader.offer(data.clone());
         }
     };
     let Kind::Subscribe { counted, .. } = &mut entry.kind else {
@@ -1492,29 +1684,35 @@ fn heard_slice(conn: &Conn, header: GroupHeader, objects: Vec<Vec<u8>>, end: boo
 
 /// A publication's writer: once the node took it (`alias`), each object
 /// out as its mode says. Over QUIC a stream-mode group is one stream, ended
-/// (FIN) by `end` or by the first object of a newer group; a datagram-mode
-/// object is one datagram, dropped when the path will not take it. Over the
-/// websocket each is one frame.
-async fn write(
-    conn: Arc<Conn>,
-    alias: oneshot::Receiver<Alias>,
-    mut objects: mpsc::Receiver<Object>,
-    mode: Mode,
-) {
+/// (FIN) by `end` or by the first object of a newer group, and RESET when
+/// the queue abandoned it (the node then ends it short for everyone); a
+/// datagram-mode object is one datagram, dropped when the path will not
+/// take it. Over the websocket each is one frame.
+async fn write(conn: Arc<Conn>, alias: oneshot::Receiver<Alias>, objects: Arc<Outbox>, mode: Mode) {
     let Ok(alias) = alias.await else {
         return;
     };
     let mut open: Option<(u64, Option<quinn::SendStream>)> = None;
-    while let Some(Object {
-        group,
-        object,
-        body,
-        end,
-    }) = objects.recv().await
-    {
+    while let Some(out) = objects.take().await {
         if conn.closed() {
             return;
         }
+        let Object {
+            group,
+            object,
+            body,
+            end,
+        } = match out {
+            Out::Object(object) => object,
+            Out::Cut(group) => {
+                if let Some((_, stream)) = open.take_if(|(at, _)| *at == group) {
+                    if let Some(mut stream) = stream {
+                        let _ = stream.reset(0u32.into());
+                    }
+                }
+                continue;
+            }
+        };
         match (&conn.path, mode) {
             (Path::Quic(connection), Mode::Datagram) => {
                 let mut datagram = abi::encode(&DatagramHeader {

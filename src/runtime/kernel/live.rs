@@ -4,14 +4,19 @@
 //! - `live.publish` `LivePublish` — a subscription that is the track: items
 //!   `Publishing::Waiting` while the room's program has not granted it, then
 //!   `Publishing::Subscribers(n)`; an object the node dropped is an `Err`
-//!   item that does not end it; the node's refusal ends it.
+//!   item that does not end it; the node's refusal ends it. A view
+//!   publishes a track once: a second `live.publish` of it is refused
+//!   `duplicate_track`.
 //! - `live.send` `LiveSend` — one object onto a track this view publishes.
 //!   Answered only when the view publishes no such track
 //!   (`live_not_published`) or it does not decode: a 60 Hz sender pays no
-//!   reply per frame. An object over its mode's cap (`too_large`) or past
-//!   the publication's queue (`in_flight_limit`) is refused on the track's
-//!   `live.publish` instead, as the node's own refusals of an object are.
-//!   Objects sent before the node took the publication wait in that queue.
+//!   reply per frame. An object over its mode's cap (`too_large`) is
+//!   refused on the track's `live.publish` instead, as the node's own
+//!   refusals of an object are. Objects wait in the publication's one
+//!   queue (`backend::live::Outbox`) until the node took the publication
+//!   and its path takes them; at the queue's capacity a stream group is
+//!   abandoned whole (`Publishing::Cut`, once) and a datagram track drops
+//!   its oldest.
 //! - `live.subscribe` `LiveSubscribe` — items `LiveItem`: `Waiting` while
 //!   the room's program has not granted it, then `Opened`, the group the
 //!   node holds (with `latest`), then each object and each group's end. A datagram-mode track keeps only its newest unread object
@@ -40,11 +45,11 @@
 //! so an object that arrives wakes its view at once.
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
-
 use super::node::{Follow, Items, connected, spawn_subscription};
 use super::*;
-use crate::backend::live::{self as client, Ask, Data, Heard, Mode, Object, Session, Start, Track};
+use crate::backend::live::{
+    self as client, Ask, Data, Heard, Mode, Object, Outbox, Pushed, Session, Start, Track,
+};
 use wire::methods::{
     LiveAnnounce, LiveItem, LiveMode, LivePublish, LiveSend, LiveStart, LiveSubscribe, LiveTrack,
     Publishing, Watching,
@@ -62,7 +67,14 @@ struct Publication {
     id: u64,
     track: LiveTrack,
     mode: LiveMode,
-    outbox: mpsc::Sender<Object>,
+    outbox: Arc<Outbox>,
+}
+
+impl Drop for Publication {
+    /// The view let the publication go: its writer stops.
+    fn drop(&mut self) {
+        self.outbox.close();
+    }
 }
 
 /// What a live request follows, as a reconnect opens it again.
@@ -77,6 +89,19 @@ impl Tracks {
     /// have nowhere to go.
     pub(in crate::runtime) fn cancel(&mut self, id: u64) {
         self.publications.retain(|publication| publication.id != id);
+    }
+
+    /// Publications whose task ended (the node ended the track, or refused
+    /// it) are retired: their queue is closed.
+    fn retire(&mut self) {
+        self.publications
+            .retain(|publication| !publication.outbox.is_closed());
+    }
+
+    fn publication(&self, track: &LiveTrack) -> Option<&Publication> {
+        self.publications
+            .iter()
+            .find(|publication| publication.track == *track)
     }
 }
 
@@ -195,78 +220,72 @@ fn open_publication(view: &mut View, id: u64, session: Arc<dyn Session>, ask: Li
     let Some(track) = stamped(view, id, &ask.track.room, &ask.track.name) else {
         return;
     };
-    let (outbox, objects) = mpsc::channel(client::OUTBOX);
+    // one publisher per track in the app: the view knows before the node
+    view.tracks.retire();
+    if view.tracks.publication(&ask.track).is_some() {
+        return view.refuse(
+            id,
+            refusal::DUPLICATE_TRACK,
+            "this view publishes this track already",
+        );
+    }
+    let objects = Outbox::new(mode_of(ask.mode));
     view.tracks.publications.push(Publication {
         id,
         track: ask.track.clone(),
         mode: ask.mode,
-        outbox,
+        outbox: objects.clone(),
     });
     let open = Ask::Publish {
         track,
         mode: mode_of(ask.mode),
         priority: ask.priority,
+        objects: objects.clone(),
     };
     let key = view.perf_key();
     spawn_subscription(
         view,
         id,
         Follow::Live(LiveFollow::Publish(ask)),
-        move |items| publishing(session, open, objects, items, key),
+        move |items| async move {
+            publishing(session, open, items, key).await;
+            // the task ended: nothing takes the view's sends any more
+            objects.close();
+        },
     );
 }
 
 /// A publication for as long as the view holds it: published again on each
-/// new session, its queued objects going out once the node took it.
-async fn publishing(
-    session: Arc<dyn Session>,
-    open: Ask,
-    mut objects: mpsc::Receiver<Object>,
-    mut items: Items,
-    key: crate::perf::Key,
-) {
+/// new session, whose writer takes the queue over (the session's `open`
+/// holds the queue, in the ask).
+async fn publishing(session: Arc<dyn Session>, open: Ask, mut items: Items, key: crate::perf::Key) {
     let mut lost = 0;
     loop {
         let mut request = match opened(&session, open.clone()).await {
             Ok(request) => request,
             Err(refusal) => return items.last(refusal),
         };
-        let mut published = false;
-        loop {
-            tokio::select! {
-                biased;
-                heard = request.heard.recv() => match heard {
-                    Some(Heard::Published) => {
-                        published = true;
-                        lost = 0;
-                        crate::perf::count(key, "live.tracks", 1);
-                    }
-                    Some(Heard::Subscribers(count)) => {
-                        if !items.send(Ok(methods::encode(&Publishing::Subscribers(count)))).await {
-                            return;
-                        }
-                    }
-                    Some(Heard::Dropped(code)) => {
-                        let refused = wire::Error::new(code.as_str(), "the node dropped an object of this track");
-                        if !items.send(Err(refused)).await {
-                            return;
-                        }
-                    }
-                    Some(Heard::Waiting) => {
-                        lost = 0;
-                        if !items.send(Ok(methods::encode(&Publishing::Waiting))).await {
-                            return;
-                        }
-                    }
-                    Some(Heard::Closed(refusal)) => return items.last(refusal),
-                    Some(Heard::Subscribed { .. } | Heard::Announce { .. }) => {}
-                    None => break,
-                },
-                Some(object) = objects.recv(), if published => {
-                    if request.objects.send(object).await.is_err() {
-                        break;
-                    }
+        while let Some(heard) = request.heard.recv().await {
+            let item = match heard {
+                Heard::Published => {
+                    lost = 0;
+                    crate::perf::count(key, "live.tracks", 1);
+                    continue;
                 }
+                Heard::Subscribers(count) => Ok(methods::encode(&Publishing::Subscribers(count))),
+                Heard::Dropped(code) => Err(wire::Error::new(
+                    code.as_str(),
+                    "the node dropped an object of this track",
+                )),
+                Heard::Waiting => {
+                    lost = 0;
+                    Ok(methods::encode(&Publishing::Waiting))
+                }
+                Heard::Closed(refusal) => return items.last(refusal),
+                Heard::Subscribed { .. } | Heard::Announce { .. } => continue,
+            };
+            if !items.send(item).await {
+                return;
             }
         }
         lost += 1;
@@ -294,20 +313,15 @@ async fn opened(session: &Arc<dyn Session>, ask: Ask) -> Result<client::Request,
     }
 }
 
-/// `live.send`: into the publication's queue, refused on the publication
-/// when it does not fit.
+/// `live.send`: into the publication's queue; an object over its cap is
+/// refused on the publication, a stream group the queue abandoned is told
+/// on it once.
 pub(super) fn send(view: &mut View, id: u64, payload: &[u8]) {
     let send = match methods::decode::<LiveSend>(payload) {
         Ok(send) => send,
         Err(error) => return view.refuse(id, refusal::MALFORMED_REQUEST, error),
     };
-    let Some(publication) = view
-        .tracks
-        .publications
-        .iter()
-        .rev()
-        .find(|publication| publication.track == send.track)
-    else {
+    let Some(publication) = view.tracks.publication(&send.track) else {
         return view.refuse(
             id,
             refusal::LIVE_NOT_PUBLISHED,
@@ -333,19 +347,14 @@ pub(super) fn send(view: &mut View, id: u64, payload: &[u8]) {
         body: send.body,
         end: send.end,
     };
-    match publication.outbox.try_send(object) {
-        Ok(()) => crate::perf::count(view.perf_key(), "live.objects_out", 1),
-        Err(mpsc::error::TrySendError::Full(_)) => {
-            let refused = wire::Error::new(
-                refusal::IN_FLIGHT_LIMIT,
-                format!(
-                    "{} objects of this track wait to go out already",
-                    client::OUTBOX
-                ),
-            );
-            view.replies.item(publication_id, Err(refused), false);
+    match publication.outbox.push(object) {
+        Pushed::Queued => crate::perf::count(view.perf_key(), "live.objects_out", 1),
+        Pushed::Cut(group) => {
+            let cut = methods::encode(&Publishing::Cut { group });
+            view.replies.item(publication_id, Ok(cut), false);
         }
-        Err(mpsc::error::TrySendError::Closed(_)) => {
+        Pushed::Dropped => {}
+        Pushed::Closed => {
             view.tracks.cancel(publication_id);
             view.refuse(
                 id,

@@ -1,5 +1,5 @@
 use super::*;
-use crate::backend::live::{Code, Ends, Request};
+use crate::backend::live::{Code, Ends, Out, Request};
 use crate::runtime::kernel::tests::view;
 use std::sync::mpsc as std_mpsc;
 use wire::methods::{LiveItem, LiveSend, LiveSubscribe};
@@ -126,27 +126,34 @@ fn a_publication_is_stamped_and_its_sends_wait_for_the_node() {
         priority: 9,
     };
     ask(&mut view, 1, "live.publish", methods::encode(&publish));
-    let (asked, mut ends) = opened(&opens);
+    let (asked, ends) = opened(&opens);
+    let Ask::Publish {
+        track: stamped,
+        mode,
+        priority,
+        objects,
+    } = asked
+    else {
+        panic!("a publication")
+    };
     assert_eq!(
-        asked,
-        Ask::Publish {
-            track: Track {
+        (stamped, mode, priority),
+        (
+            Track {
                 namespace: "net#1/request-test/lobby".into(),
                 name: "presence/7".into(),
             },
-            mode: Mode::Datagram,
-            priority: 9,
-        }
+            Mode::Datagram,
+            9
+        )
     );
     send(&mut view, 2, 0);
     assert_eq!(view.pending, [], "a send is not answered");
-    assert!(
-        ends.objects.try_recv().is_err(),
-        "nothing goes out before the node took it"
-    );
-    ends.heard.send(Heard::Published).unwrap();
-    let out = ends.objects.blocking_recv().unwrap();
+    let Some(Out::Object(out)) = handle().block_on(objects.take()) else {
+        panic!("the send is in the publication's queue")
+    };
     assert_eq!((out.group, out.object, out.body), (1, 0, vec![0]));
+    ends.heard.send(Heard::Published).unwrap();
     ends.heard.send(Heard::Subscribers(2)).unwrap();
     let (id, count, done) = item::<Publishing>(next(&view, &mut changes));
     assert_eq!(
@@ -164,12 +171,73 @@ fn a_publication_is_stamped_and_its_sends_wait_for_the_node() {
         .unwrap();
     let (_, ended, done) = item::<Publishing>(next(&view, &mut changes));
     assert_eq!((ended, done), (Err(refusal::NOT_GRANTED.into()), true));
-    // the publication's queue went with its task
-    assert!(ends.objects.blocking_recv().is_none());
+    // the publication's queue closed with its task
+    assert!(handle().block_on(objects.take()).is_none());
     send(&mut view, 3, 1);
     assert_eq!(
         refusal_of(&mut view, 3),
         Some(refusal::LIVE_NOT_PUBLISHED.into())
+    );
+}
+
+/// A stream publication's queue at its capacity: the group is abandoned
+/// whole, never an object. The view hears `Publishing::Cut` once, the
+/// queued rest of the group goes and the writer is told to reset its
+/// stream, later sends of the group are dropped quiet, and a newer group
+/// starts clean. A second `live.publish` of the track is refused
+/// `duplicate_track` by the view's own host.
+#[test]
+fn a_full_stream_queue_cuts_the_group_whole_and_a_newer_one_starts_clean() {
+    let (mut view, opens) = live_guest();
+    let mut changes = view.replies.changes();
+    let publish = LivePublish {
+        track: track("presence/7"),
+        mode: LiveMode::Stream,
+        priority: 128,
+    };
+    ask(&mut view, 1, "live.publish", methods::encode(&publish));
+    let (asked, _ends) = opened(&opens);
+    let Ask::Publish { objects, .. } = asked else {
+        panic!("a publication")
+    };
+    ask(&mut view, 2, "live.publish", methods::encode(&publish));
+    assert_eq!(
+        refusal_of(&mut view, 2),
+        Some(refusal::DUPLICATE_TRACK.into())
+    );
+    for object in 0..=crate::backend::live::OUTBOX as u32 + 1 {
+        send(&mut view, 10 + u64::from(object), object);
+    }
+    assert_eq!(
+        item(next(&view, &mut changes)),
+        (1, Ok(Publishing::Cut { group: 1 }), false)
+    );
+    let mut rest = Vec::new();
+    view.replies.drain_into(&mut rest).unwrap();
+    assert_eq!(rest, [], "the cut is told once");
+    let next_send = LiveSend {
+        track: track("presence/7"),
+        group: 2,
+        object: 0,
+        body: vec![9],
+        end: false,
+    };
+    ask(&mut view, 99, "live.send", methods::encode(&next_send));
+    assert_eq!(
+        handle().block_on(objects.take()),
+        Some(Out::Cut(1)),
+        "the queued rest of the cut group goes with it"
+    );
+    let Some(Out::Object(out)) = handle().block_on(objects.take()) else {
+        panic!("the newer group goes out")
+    };
+    assert_eq!((out.group, out.body), (2, vec![9]));
+    assert!(
+        view.pending
+            .iter()
+            .all(|event| matches!(event, wire::Event::Response { id: 2, .. })),
+        "a send was answered: {:?}",
+        view.pending
     );
 }
 
@@ -298,17 +366,14 @@ fn a_request_the_node_holds_hears_it_waits_and_goes_on() {
         priority: 128,
     };
     ask(&mut view, 1, "live.publish", methods::encode(&publish));
-    let (_, mut published) = opened(&opens);
+    let (_, published) = opened(&opens);
     send(&mut view, 2, 0);
     published.heard.send(Heard::Waiting).unwrap();
     assert_eq!(
         item(next(&view, &mut changes)),
         (1, Ok(Publishing::Waiting), false)
     );
-    assert!(published.objects.try_recv().is_err(), "a send waits too");
     published.heard.send(Heard::Published).unwrap();
-    let out = published.objects.blocking_recv().unwrap();
-    assert_eq!((out.group, out.object), (1, 0));
     published.heard.send(Heard::Subscribers(1)).unwrap();
     assert_eq!(
         item(next(&view, &mut changes)),

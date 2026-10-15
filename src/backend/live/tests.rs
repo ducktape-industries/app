@@ -189,9 +189,12 @@ async fn relay(connection: quinn::Connection, node: Vec<u8>, answer: Answer) {
                     ..header
                 };
                 out.write_all(&abi::encode(&header)).await.unwrap();
-                // as the bytes come, so a group is in flight while it runs
-                let _ = tokio::io::copy(&mut incoming, &mut out).await;
-                let _ = out.finish();
+                // as the bytes come, so a group is in flight while it runs;
+                // a group the publisher reset ends short, as core's does
+                match tokio::io::copy(&mut incoming, &mut out).await {
+                    Ok(_) => out.finish().unwrap(),
+                    Err(_) => out.reset(0u32.into()).unwrap(),
+                }
             });
         }
     });
@@ -340,11 +343,13 @@ async fn a_track_published_over_quic_is_heard_back_whole() {
     let node_key = ed25519::PrivateKey::from_seed(1);
     let identity = node_key.public_key().as_ref().to_vec();
     let client = Client::new(node(&node_key, identity, Answer::Welcome).await);
+    let objects = Outbox::new(Mode::Stream);
     let mut published = client
         .open(Ask::Publish {
             track: track("doc"),
             mode: Mode::Stream,
             priority: 128,
+            objects: objects.clone(),
         })
         .await
         .unwrap();
@@ -374,7 +379,7 @@ async fn a_track_published_over_quic_is_heard_back_whole() {
             body,
             end,
         };
-        published.objects.send(object).await.unwrap();
+        assert_eq!(objects.push(object), Pushed::Queued);
     }
     let mut got = Vec::new();
     for _ in 0..3 {
@@ -409,11 +414,13 @@ async fn a_datagram_object_lands_as_the_newest() {
     let node_key = ed25519::PrivateKey::from_seed(2);
     let identity = node_key.public_key().as_ref().to_vec();
     let client = Client::new(node(&node_key, identity, Answer::Welcome).await);
+    let objects = Outbox::new(Mode::Datagram);
     let mut published = client
         .open(Ask::Publish {
             track: track("cursor/7"),
             mode: Mode::Datagram,
             priority: 128,
+            objects: objects.clone(),
         })
         .await
         .unwrap();
@@ -435,7 +442,7 @@ async fn a_datagram_object_lands_as_the_newest() {
         body: vec![1, 2, 3],
         end: false,
     };
-    published.objects.send(object).await.unwrap();
+    objects.push(object);
     assert_eq!(
         heard.latest.take().await,
         Data::Object {
@@ -524,6 +531,7 @@ async fn a_message_that_does_not_decode_ends_the_session_as_a_wire_mismatch() {
             track: track("doc"),
             mode: Mode::Stream,
             priority: 128,
+            objects: Outbox::new(Mode::Stream),
         })
         .await
         .unwrap();
@@ -569,6 +577,7 @@ async fn a_quitting_app_closes_its_session_and_the_node_hears_it_at_once() {
             track: track("presence/7"),
             mode: Mode::Datagram,
             priority: 128,
+            objects: Outbox::new(Mode::Datagram),
         })
         .await
         .unwrap();
@@ -587,21 +596,23 @@ async fn a_quitting_app_closes_its_session_and_the_node_hears_it_at_once() {
 }
 
 /// A client on a test node with a stream track `doc` published, its
-/// publication taken.
-async fn publishing(seed: u64) -> (Client, Request) {
+/// publication taken: the client, the publication and its queue.
+async fn publishing(seed: u64) -> (Client, Request, Arc<Outbox>) {
     let node_key = ed25519::PrivateKey::from_seed(seed);
     let identity = node_key.public_key().as_ref().to_vec();
     let client = Client::new(node(&node_key, identity, Answer::Welcome).await);
+    let objects = Outbox::new(Mode::Stream);
     let mut published = client
         .open(Ask::Publish {
             track: track("doc"),
             mode: Mode::Stream,
             priority: 128,
+            objects: objects.clone(),
         })
         .await
         .unwrap();
     assert_eq!(published.heard.recv().await, Some(Heard::Published));
-    (client, published)
+    (client, published, objects)
 }
 
 fn follow(from: Start) -> Ask {
@@ -620,14 +631,14 @@ async fn following(client: &Client, from: Start) -> (Request, Option<u64>) {
     (request, latest)
 }
 
-async fn send(published: &Request, group: u64, object: u32, body: &[u8], end: bool) {
+fn send(published: &Outbox, group: u64, object: u32, body: &[u8], end: bool) {
     let object = Object {
         group,
         object,
         body: body.to_vec(),
         end,
     };
-    published.objects.send(object).await.unwrap();
+    assert_eq!(published.push(object), Pushed::Queued);
 }
 
 /// The next `count` items, bounded: an item that never comes fails the
@@ -656,11 +667,11 @@ fn object(group: u64, object: u32, body: &[u8]) -> Data {
 #[tokio::test]
 async fn two_requests_of_one_track_hear_the_same_objects() {
     let _seat = seated().await;
-    let (client, published) = publishing(9).await;
+    let (client, _published, published) = publishing(9).await;
     let (mut first, _) = following(&client, Start::Latest).await;
     let (mut second, _) = following(&client, Start::Latest).await;
-    send(&published, 4, 0, b"a", false).await;
-    send(&published, 4, 1, b"b", true).await;
+    send(&published, 4, 0, b"a", false);
+    send(&published, 4, 1, b"b", true);
     let whole = [
         object(4, 0, b"a"),
         object(4, 1, b"b"),
@@ -676,6 +687,7 @@ async fn two_requests_of_one_track_hear_the_same_objects() {
             track: track("doc"),
             mode: Mode::Stream,
             priority: 128,
+            objects: Outbox::new(Mode::Stream),
         })
         .await
         .err()
@@ -689,10 +701,10 @@ async fn two_requests_of_one_track_hear_the_same_objects() {
 #[tokio::test]
 async fn a_later_request_is_handed_the_group_in_flight() {
     let _seat = seated().await;
-    let (client, published) = publishing(10).await;
+    let (client, _published, published) = publishing(10).await;
     let (mut first, _) = following(&client, Start::Latest).await;
-    send(&published, 4, 0, b"a", false).await;
-    send(&published, 4, 1, b"b", false).await;
+    send(&published, 4, 0, b"a", false);
+    send(&published, 4, 1, b"b", false);
     assert_eq!(
         heard(&mut first, 2).await,
         [object(4, 0, b"a"), object(4, 1, b"b")]
@@ -709,8 +721,8 @@ async fn a_later_request_is_handed_the_group_in_flight() {
     );
     let (mut next, latest) = following(&client, Start::Next).await;
     assert_eq!(latest, None);
-    send(&published, 4, 2, b"c", true).await;
-    send(&published, 5, 0, b"d", false).await;
+    send(&published, 4, 2, b"c", true);
+    send(&published, 5, 0, b"d", false);
     let rest = [
         object(4, 2, b"c"),
         Data::GroupEnd {
@@ -732,11 +744,11 @@ async fn a_later_request_is_handed_the_group_in_flight() {
 #[tokio::test]
 async fn one_window_withdrawing_leaves_the_other_running() {
     let _seat = seated().await;
-    let (client, published) = publishing(11).await;
+    let (client, _published, published) = publishing(11).await;
     let (first, _) = following(&client, Start::Latest).await;
     let (mut second, _) = following(&client, Start::Latest).await;
     drop(first);
-    send(&published, 4, 0, b"a", true).await;
+    send(&published, 4, 0, b"a", true);
     assert_eq!(
         heard(&mut second, 2).await,
         [
@@ -756,7 +768,7 @@ async fn one_window_withdrawing_leaves_the_other_running() {
 #[tokio::test]
 async fn a_request_the_node_holds_hears_it_waits_and_the_session_goes_on() {
     let _seat = seated().await;
-    let (client, _published) = publishing(9).await;
+    let (client, _published, _objects) = publishing(9).await;
     let mut held = client
         .open(Ask::Subscribe {
             track: track("closed"),
@@ -772,7 +784,7 @@ async fn a_request_the_node_holds_hears_it_waits_and_the_session_goes_on() {
 #[tokio::test]
 async fn a_later_list_of_a_room_is_handed_the_tracks_up() {
     let _seat = seated().await;
-    let (client, _published) = publishing(12).await;
+    let (client, _published, _objects) = publishing(12).await;
     let watch = || Ask::Watch {
         namespace: "loopback#1/echo/lobby".into(),
     };
@@ -804,13 +816,12 @@ fn the_largest_object_framed_fits_the_nodes_websocket_cap() {
     assert!(abi::encode(&frame).len() <= live_wire::WS_MESSAGE);
 }
 
-/// Over the websocket a group the node cut short (an object refused, the
-/// track ended) has no end of its own: the next group starts. It ends
-/// incomplete, not malformed.
-#[test]
-fn a_group_the_next_one_cuts_short_ends_incomplete() {
+/// A websocket session of one subscription, as the table holds it after
+/// the node's `Subscribed`: the connection and the subscription's request.
+fn ws_conn() -> (Conn, Request) {
     let (control, _controls) = mpsc::unbounded_channel();
     let (frames, _queue) = mpsc::unbounded_channel();
+    std::mem::forget((_controls, _queue));
     let conn = Conn {
         path: Path::Ws(frames),
         udp: None,
@@ -820,7 +831,7 @@ fn a_group_the_next_one_cuts_short_ends_incomplete() {
         closed: AtomicBool::new(false),
         client: Weak::new(),
     };
-    let (mut request, ends) = request(|| {});
+    let (request, ends) = request(|| {});
     let entry = Entry {
         readers: vec![Reader::new(1, &ends, Start::Latest)],
         kind: Kind::Subscribe {
@@ -836,20 +847,33 @@ fn a_group_the_next_one_cuts_short_ends_incomplete() {
         table.requests.insert(1, entry);
         table.aliases.insert(9, 1);
     }
-    let header = |group| GroupHeader { alias: 9, group };
-    heard_slice(&conn, header(1), vec![b"a".to_vec()], false);
-    heard_slice(&conn, header(2), vec![b"b".to_vec()], true);
+    (conn, request)
+}
+
+fn drain(request: &mut Request) -> Vec<Data> {
     let mut got = Vec::new();
     while let Ok(data) = request.data.try_recv() {
         got.push(data);
     }
+    got
+}
+
+/// Over the websocket a group the node cut short (an object refused, the
+/// track ended) has no end of its own: the next group starts. It ends
+/// incomplete, not malformed.
+#[test]
+fn a_group_the_next_one_cuts_short_ends_incomplete() {
+    let (conn, mut request) = ws_conn();
+    let header = |group| GroupHeader { alias: 9, group };
+    heard_slice(&conn, header(1), vec![b"a".to_vec()], false);
+    heard_slice(&conn, header(2), vec![b"b".to_vec()], true);
     let object = |group, body: &[u8]| Data::Object {
         group,
         object: 0,
         body: body.to_vec(),
     };
     assert_eq!(
-        got,
+        drain(&mut request),
         [
             object(1, b"a"),
             Data::GroupEnd {
@@ -863,6 +887,131 @@ fn a_group_the_next_one_cuts_short_ends_incomplete() {
             },
         ]
     );
+}
+
+/// A websocket reader that falls behind has its group cut, never a hole:
+/// the objects it took, then `GroupEnd { complete: false }` once, and the
+/// rest of the group (its real end too) is dropped for it. The next group
+/// reaches it whole once it reads again.
+#[test]
+fn a_websocket_reader_behind_has_its_group_cut_not_a_hole() {
+    let (conn, mut request) = ws_conn();
+    let header = |group| GroupHeader { alias: 9, group };
+    let bodies: Vec<Vec<u8>> = (0..=DATA_BACKLOG as u8).map(|i| vec![i]).collect();
+    heard_slice(&conn, header(1), bodies, false);
+    let got = drain(&mut request);
+    // one slot of the backlog holds the group's end
+    let taken = DATA_BACKLOG - 1;
+    assert_eq!(got.len(), taken + 1, "{got:?}");
+    assert!(got[..taken].iter().enumerate().all(|(i, data)| *data
+        == Data::Object {
+            group: 1,
+            object: i as u32,
+            body: vec![i as u8]
+        }));
+    assert_eq!(
+        got[taken],
+        Data::GroupEnd {
+            group: 1,
+            complete: false
+        }
+    );
+    heard_slice(&conn, header(1), vec![vec![200]], true);
+    assert_eq!(
+        drain(&mut request),
+        [],
+        "the rest of a cut group is dropped"
+    );
+    heard_slice(&conn, header(2), vec![vec![1]], true);
+    assert_eq!(
+        drain(&mut request),
+        [
+            Data::Object {
+                group: 2,
+                object: 0,
+                body: vec![1]
+            },
+            Data::GroupEnd {
+                group: 2,
+                complete: true
+            },
+        ]
+    );
+}
+
+/// A publication's queue abandons a stream group: the writer resets the
+/// group's stream, the node ends it short for its subscribers, and the
+/// next group goes out whole.
+#[tokio::test]
+async fn an_abandoned_group_is_reset_and_ends_short_for_subscribers() {
+    let _seat = seated().await;
+    let (client, _published, published) = publishing(13).await;
+    let (mut heard, _) = following(&client, Start::Latest).await;
+    send(&published, 4, 0, b"a", false);
+    assert_eq!(
+        super::tests::heard(&mut heard, 1).await,
+        [object(4, 0, b"a")]
+    );
+    // the queue at its capacity: every further object of the group cuts it
+    for _ in 0..OUTBOX {
+        published.push(Object {
+            group: 4,
+            object: 1,
+            body: b"b".to_vec(),
+            end: false,
+        });
+    }
+    let overflow = Object {
+        group: 4,
+        object: 1,
+        body: b"b".to_vec(),
+        end: false,
+    };
+    assert_eq!(published.push(overflow.clone()), Pushed::Cut(4));
+    assert_eq!(published.push(overflow), Pushed::Dropped);
+    send(&published, 5, 0, b"c", true);
+    assert_eq!(
+        super::tests::heard(&mut heard, 3).await,
+        [
+            Data::GroupEnd {
+                group: 4,
+                complete: false
+            },
+            object(5, 0, b"c"),
+            Data::GroupEnd {
+                group: 5,
+                complete: true
+            },
+        ]
+    );
+}
+
+/// A datagram publication's queue at its capacity drops the oldest
+/// datagram, so the newest goes out; the publication ending closes the
+/// queue, and a push after that says so.
+#[test]
+fn a_full_datagram_queue_drops_the_oldest_and_a_closed_one_refuses() {
+    let outbox = Outbox::new(Mode::Datagram);
+    let object = |object| Object {
+        group: 1,
+        object,
+        body: Vec::new(),
+        end: false,
+    };
+    for i in 0..=OUTBOX as u32 {
+        assert_eq!(outbox.push(object(i)), Pushed::Queued);
+    }
+    let first = futures::executor::block_on(outbox.take());
+    assert_eq!(first, Some(Out::Object(object(1))), "object 0 went");
+    outbox.close();
+    assert_eq!(outbox.push(object(99)), Pushed::Closed);
+    for i in 2..=OUTBOX as u32 {
+        assert_eq!(
+            futures::executor::block_on(outbox.take()),
+            Some(Out::Object(object(i)))
+        );
+    }
+    assert_eq!(futures::executor::block_on(outbox.take()), None);
 }
 
 #[test]
