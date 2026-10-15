@@ -29,8 +29,8 @@ use reqwest::StatusCode;
 use tokio_tungstenite::tungstenite::Message;
 
 use wire::{
-    BlockRef, Blocks, Change, Finalized, Layer, Located, Network, Page, Query, Receipt, Status,
-    Submit, Submitted, TxAsk, route,
+    BlockRef, Blocks, Change, Finalized, Layer, Located, Network, Page, Preconfirm, Query, Receipt,
+    Status, Submit, Submitted, TxAsk, route,
 };
 
 /// What signs a frame or a consent: an ed25519 key, wherever it is kept.
@@ -190,7 +190,7 @@ impl Client {
     pub async fn preconfirm(&self, frame: Vec<u8>) -> Result<Receipt> {
         let submit = Submit {
             frame,
-            preconfirm: true,
+            preconfirm: Preconfirm::On,
         };
         match self.post(route::SUBMIT, &submit).await? {
             Submitted::Preconfirmed(receipt) => Ok(receipt),

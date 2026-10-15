@@ -91,7 +91,11 @@ fn applying_node_with_a_lost_answer(
                 noded::route::STATUS => abi::encode(&status_at(TIP)),
                 noded::route::SUBMIT => {
                     let submit: noded::Submit = abi::decode(&body).unwrap();
-                    assert!(submit.preconfirm, "a view's write is preconfirmed");
+                    assert_eq!(
+                        submit.preconfirm,
+                        noded::Preconfirm::On,
+                        "a view's write is preconfirmed"
+                    );
                     let frame: noded::Frame = abi::decode(&submit.frame).unwrap();
                     assert_eq!(frame.body.anchor, TIP, "anchored at the tip the node named");
                     assert!(frame.body.salt.is_some(), "a write carries a salt");

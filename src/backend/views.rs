@@ -217,23 +217,8 @@ fn cache_path(code: &BlobId) -> Option<PathBuf> {
 /// the cache keeps them framed: the kind is the node's word (a program is
 /// `program`), which the id alone cannot give back.
 fn hashes_to(framed: &[u8], code: &BlobId) -> Result<bool, Fetch> {
-    use sha2::Digest as _;
-    match code.kind() {
-        abi::HashKind::Sha1 => sha1_hashes_to(framed, code),
-        abi::HashKind::Sha256 => Ok(sha2::Sha256::digest(framed)[..] == *code.digest()),
-    }
-}
-
-fn sha1_hashes_to(framed: &[u8], code: &BlobId) -> Result<bool, Fetch> {
-    use sha1_checked::{CollisionResult, Digest as _};
-    let mut hasher = sha1_checked::Sha1::builder().safe_hash(false).build();
-    hasher.update(framed);
-    match hasher.try_finalize() {
-        CollisionResult::Ok(digest) => Ok(digest[..] == *code.digest()),
-        CollisionResult::Collision(_) | CollisionResult::Mitigated(_) => {
-            Err(Fetch::Collision(*code))
-        }
-    }
+    let hashed = blob::id_of(code.kind(), framed).map_err(|_| Fetch::Collision(*code))?;
+    Ok(hashed == *code)
 }
 
 /// The bytes of the [`VIEW_SECTION`] custom section, out of a core module or

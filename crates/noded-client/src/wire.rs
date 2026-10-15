@@ -211,10 +211,16 @@ pub struct PeerStatus {
     pub signed: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum Preconfirm {
+    Off,
+    On,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct Submit {
     pub frame: Vec<u8>,
-    pub preconfirm: bool,
+    pub preconfirm: Preconfirm,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -545,5 +551,17 @@ mod tests {
     fn unframe_drops_the_git_header() {
         assert_eq!(unframe(b"blob 3\0abc"), Some(&b"abc"[..]));
         assert_eq!(unframe(b"no header"), None);
+    }
+
+    #[test]
+    fn a_submit_is_its_frame_then_one_preconfirm_byte() {
+        let submit = |preconfirm| {
+            abi::encode(&Submit {
+                frame: vec![7],
+                preconfirm,
+            })
+        };
+        assert_eq!(submit(Preconfirm::Off), [1, 0, 0, 0, 7, 0]);
+        assert_eq!(submit(Preconfirm::On), [1, 0, 0, 0, 7, 1]);
     }
 }
