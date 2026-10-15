@@ -29,21 +29,21 @@ version = "0.1.0"
 [workspace.dependencies]
 
 # --- sdk-line: crates/sdk of ducktape-industries/programs (abi, view-wire, program, ducklink, design, describe). Every crate of that repo here and below sits on ONE rev, and every view this app seats is built at that rev: its manifest's wire_id must equal `view_wire::WIRE_ID` (`runtime/view.rs` `wire_id`). Which rev and why is in `git log -- Cargo.toml`. ---
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "view-wire" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "539313e42e474c6f6c0b925c9bf1bde335446ce0", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "539313e42e474c6f6c0b925c9bf1bde335446ce0", package = "view-wire" }
 # `program::is_name`: the one spelling of a program id
-program = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "program" }
-ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "design" }
+program = { git = "https://github.com/ducktape-industries/programs", rev = "539313e42e474c6f6c0b925c9bf1bde335446ce0", package = "program" }
+ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "539313e42e474c6f6c0b925c9bf1bde335446ce0", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/programs", rev = "539313e42e474c6f6c0b925c9bf1bde335446ce0", package = "design" }
 # `program.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "describe", features = ["host"] }
+describe = { git = "https://github.com/ducktape-industries/programs", rev = "539313e42e474c6f6c0b925c9bf1bde335446ce0", package = "describe" }
 # the identity program's own types: the app's passkey lane and `crates/noded-client`'s flows
-identity = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/programs", rev = "539313e42e474c6f6c0b925c9bf1bde335446ce0", package = "identity" }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
 keystore = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "keystore" }
-blob = { git = "https://github.com/ducktape-industries/ducktape", rev = "d57fad49bc62250f93f76b2a289b38dc8958a0f2", package = "blob" }
+blob = { git = "https://github.com/ducktape-industries/ducktape", rev = "a4360f6d6ac3b807df95e3fda24d8d8a8b130049", package = "blob" }
 
 # --- external ---
 borsh = { version = "1", default-features = false, features = ["derive", "std"] }
@@ -69,25 +69,25 @@ libc = "0.2"
 # dev and qa builds only (owner, 2026-09-28): gpui's own frame and input
 # histograms and its first present into `GET /perf` (docs/perf.md §3.5).
 # A default build compiles none of it: hdrhistogram is not in its graph.
-perf-deep = ["gpui-kit/profiler"]
+perf-deep = ["gpui-kit/profiler", "ducktape-host/perf-deep"]
 # kit and qa builds only (chief, 2026-10-01, hub audit Q7): the AX door
-# (src/ax) and its `ducktape-app ax` client. A default build compiles none
-# of it: DUCKTAPE_AX_DOOR does nothing there.
-ax-door = []
+# (crates/host/src/ax) and its `ducktape-app ax` client. A default build
+# compiles none of it: DUCKTAPE_AX_DOOR does nothing there.
+ax-door = ["ducktape-host/ax-door"]
 # The web view: a view whose manifest declares `web` draws pages through CEF
-# off-screen rendering (`src/render/web.rs`, `crates/web`), and https links
-# open in it. A default build compiles none of CEF and links no libcef: the
-# web piece says the build has no web view, and https links go to the system
-# browser.
-web = ["dep:ducktape-web", "ducktape-web/cef"]
+# off-screen rendering (`crates/host/src/render/web.rs`, `crates/web`), and
+# https links open in it. A default build compiles none of CEF and links no
+# libcef: the web piece says the build has no web view, and https links go
+# to the system browser.
+web = ["ducktape-host/web"]
 
 [dependencies]
+# the blind host core, shared with the phone
+ducktape-host = { path = "crates/host" }
 gpui-kit = "=0.7.3"
 gpui-base = "=0.7.3"
-unicode-segmentation = "1"
 futures.workspace = true
 design.workspace = true
-describe.workspace = true
 sha2.workspace = true
 ducktape-home.workspace = true
 keystore.workspace = true
@@ -99,9 +99,7 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b", package = "keyscheme" }
 identity.workspace = true
-# The roster's full query surface: its programs and its view-only entries.
-programs = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "programs" }
-valset = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "valset" }
+valset = { git = "https://github.com/ducktape-industries/programs", rev = "539313e42e474c6f6c0b925c9bf1bde335446ce0", package = "valset" }
 base64.workspace = true
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -109,9 +107,6 @@ rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
-# A view SVG's own size, which sets the height gpui rasterises it at
-# (`render/svg_limits.rs`): gpui's own parser, already in the graph.
-usvg = { version = "0.46.0", default-features = false }
 reqwest.workspace = true
 tokio = { version = "1", features = ["fs", "macros", "net", "rt", "sync", "time"] }
 tracing.workspace = true
@@ -122,15 +117,10 @@ program.workspace = true
 abi.workspace = true
 borsh.workspace = true
 ducklink.workspace = true
-wasmtime.workspace = true
-wasmparser = "0.251"
 libc.workspace = true
-blob.workspace = true
 # the node's client, shared with the phone; `commonware`: the device key
 # (commonware's ed25519) signs through it
 noded-client = { path = "crates/noded-client", features = ["commonware"] }
-# feature `web` only: CEF and everything that names it
-ducktape-web = { path = "crates/web", optional = true }
 # self-update: the state machine, the manifest and its signature
 ducktape-updater = { path = "crates/updater" }
 # the release archive a self-update downloads (`.tar.gz`)
@@ -159,23 +149,15 @@ zbus = "5"
 x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
 
 [dev-dependencies]
-# hand-written wasm for the describe method's hostile-section tests
-wat = "1"
+# the host core's test helpers (`*_for_test`, `test_style`, the door)
+ducktape-host = { path = "crates/host", features = ["test-support", "ax-door"] }
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tempfile.workspace = true
-# a fake node's changes socket (`runtime/kernel/node/tests.rs`)
-tokio-tungstenite.workspace = true
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b", package = "keyscheme", features = ["testkit"] }
 p256 = "0.13"
-blobs = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "blobs" }
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-# test-support: its headless renderer, which `render/tests/picture_pixels.rs`
-# reads pixels back from.
-gpui-wgpu = { package = "gpui-pre-wgpu", version = "=0.3.9", features = ["test-support"] }
 
 [patch."https://github.com/ducktape-industries/ducktape"]
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "abi" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "539313e42e474c6f6c0b925c9bf1bde335446ce0", package = "abi" }
 
 [patch.crates-io]
 gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "02724886f436f4f5b01ebfc1fb5cd37c09809a79" }

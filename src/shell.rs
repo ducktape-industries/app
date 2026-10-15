@@ -28,8 +28,17 @@ pub(crate) mod entities;
 mod figure;
 mod help;
 pub(crate) use help::chords;
+
+/// The door walk keeps Settings' choices and puts them back: what the
+/// app's door and the gate test both hand `Door::keep`.
 #[cfg(any(test, feature = "ax-door"))]
-pub(crate) use layers::Kept;
+pub(crate) fn kept_restore(
+    window: &gpui_kit::Window,
+    cx: &gpui_kit::App,
+) -> Option<crate::ax::Restore> {
+    layers::Kept::of(window, cx)
+        .map(|kept| Box::new(move |cx: &mut gpui_kit::App| kept.restore(cx)) as crate::ax::Restore)
+}
 mod ink;
 mod keys;
 mod launch;
@@ -57,8 +66,11 @@ mod spin;
 mod theme;
 
 use crate::fonts::BUNDLED_FACES;
+
+/// Not on macOS: CoreGraphics cannot load Noto's CBDT color font, and macOS
+/// supplies its own emoji.
 #[cfg(not(target_os = "macos"))]
-use crate::fonts::EMOJI_FACE;
+const EMOJI_FACE: &[u8] = include_bytes!("../assets/fonts/NotoColorEmoji.ttf");
 use theme::configure_native_theme;
 
 pub(crate) use crate::runtime::WindowKey;

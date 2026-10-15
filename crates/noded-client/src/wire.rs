@@ -16,7 +16,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::{SignError, Signer};
 
-pub const NODE_CONTRACT: u32 = 8;
+pub const NODE_CONTRACT: u32 = 9;
 pub const FRAME_NAMESPACE: &[u8] = b"ducktape:frame";
 
 pub mod route {
@@ -484,11 +484,19 @@ mod tests {
         bytes.extend([1, 0, 0, 0, 8]);
         bytes.extend(NODE_CONTRACT.to_le_bytes());
         bytes.extend([9; 32]);
-        for role in ["r", "v", "i", "b", "a"] {
+        let rows = [
+            (abi::role::AWAITS, "a"),
+            (abi::role::BLOBS, "b"),
+            (abi::role::EGRESS, "e"),
+            (abi::role::IDENTITY, "i"),
+            (abi::role::PROGRAMS, "r"),
+            (abi::role::VALIDATORS, "v"),
+        ];
+        bytes.extend((rows.len() as u32).to_le_bytes());
+        for (role, program) in rows {
             bytes.extend(text(role));
+            bytes.extend(text(program));
         }
-        bytes.push(1);
-        bytes.extend(text("e"));
         let status = Status {
             network: "n".into(),
             time: 1,
@@ -501,14 +509,14 @@ mod tests {
             identity: vec![8],
             contract: NODE_CONTRACT,
             genesis: [9; 32],
-            roles: abi::Roles {
-                programs: "r".into(),
-                validators: "v".into(),
-                identity: "i".into(),
-                blobs: "b".into(),
-                awaits: "a".into(),
-                egress: Some("e".into()),
-            },
+            roles: abi::Roles::from_iter([
+                (abi::role::PROGRAMS, "r"),
+                (abi::role::VALIDATORS, "v"),
+                (abi::role::IDENTITY, "i"),
+                (abi::role::BLOBS, "b"),
+                (abi::role::AWAITS, "a"),
+                (abi::role::EGRESS, "e"),
+            ]),
         };
         assert_eq!(abi::decode::<Status>(&bytes).unwrap(), status);
     }
