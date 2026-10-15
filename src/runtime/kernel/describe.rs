@@ -264,7 +264,7 @@ pub(super) mod tests {
 #[cfg(test)]
 mod stage {
     use super::*;
-    use noded_client::wire::{Blocks, TxAsk, TxRef};
+    use noded_client::wire::Blocks;
 
     #[tokio::test]
     #[ignore = "reads a running stage: DESCRIBE_STAGE=http://<listen>"]
@@ -278,47 +278,20 @@ mod stage {
         *super::super::super::roster::roster().lock() = programs;
         let node = Node { client, network };
         let mut counts: std::collections::BTreeMap<String, (u64, u64)> = Default::default();
-        let mut before = None;
-        loop {
-            let page = node
-                .client
-                .blocks(&Blocks { before, limit: 100 })
-                .await
-                .expect("a page of blocks")
-                .blocks;
-            let Some(last) = page.last().map(|block| block.height) else {
-                break;
-            };
-            for block in page {
-                for (position, tx) in block.txs.into_iter().enumerate() {
-                    let payload = match tx.payload {
-                        Some(payload) => payload,
-                        None => {
-                            let whole = TxAsk {
-                                tx: TxRef::At {
-                                    height: block.height,
-                                    position: position as u32,
-                                },
-                                most: u32::MAX,
-                            };
-                            let located = node.client.tx(&whole).await.expect("a transaction");
-                            located
-                                .and_then(|located| located.tx.payload)
-                                .expect("its payload")
-                        }
-                    };
-                    let described = described(&node, &tx.target, payload).await.unwrap();
-                    let count = counts.entry(tx.target).or_default();
-                    match described {
-                        Some(_) => count.0 += 1,
-                        None => count.1 += 1,
-                    }
-                }
+        let every = Blocks {
+            before: None,
+            limit: u32::MAX,
+            most: u32::MAX,
+        };
+        let chain = node.client.blocks(&every).await.expect("the blocks");
+        for tx in chain.blocks.into_iter().flat_map(|block| block.txs) {
+            let payload = tx.payload.expect("its payload");
+            let described = described(&node, &tx.target, payload).await.unwrap();
+            let count = counts.entry(tx.target).or_default();
+            match described {
+                Some(_) => count.0 += 1,
+                None => count.1 += 1,
             }
-            if last == 0 {
-                break;
-            }
-            before = Some(last);
         }
         for (program, (described, bytes)) in &counts {
             println!("{program}: {described} described, {bytes} as bytes");

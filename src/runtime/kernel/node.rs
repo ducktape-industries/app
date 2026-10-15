@@ -7,6 +7,7 @@
 use super::super::consent;
 use super::*;
 use noded_client::wire as noded;
+use view_wire::methods::Method as _;
 
 pub(super) type Answered = std::pin::Pin<Box<dyn std::future::Future<Output = Answer> + Send>>;
 /// One node-backed method: the node to ask and the request's payload in,
@@ -459,26 +460,14 @@ async fn next_heads(
         return Ok((Vec::new(), status.block_time_ms));
     }
     let floor = last.map_or(tip, |last| last + 1);
-    let mut before = tip.saturating_add(1);
-    let mut found = Vec::new();
-    while before > floor {
-        let page = noded::Blocks {
-            before: Some(before),
-            limit: u32::try_from(before - floor).unwrap_or(u32::MAX),
-        };
-        let blocks = node.client.blocks(&page).await?.blocks;
-        let Some(lowest) = blocks.iter().map(|block| block.height).min() else {
-            break;
-        };
-        let moved_down = lowest < before;
-        found.extend(blocks.into_iter().filter(|block| block.height >= floor));
-        if !moved_down {
-            break;
-        }
-        before = lowest;
-    }
+    let before = tip.saturating_add(1);
+    let page = noded::Blocks {
+        before: Some(before),
+        limit: u32::try_from(before - floor).unwrap_or(u32::MAX),
+        most: 0,
+    };
+    let mut found = node.client.blocks(&page).await?.blocks;
     found.sort_by_key(|block| block.height);
-    found.dedup_by_key(|block| block.height);
     let mut heads: Vec<methods::Head> = found
         .into_iter()
         .map(|block| methods::Head {
@@ -795,10 +784,12 @@ fn receipt_of(receipt: noded::Receipt) -> methods::Receipt {
 /// `chain.blocks`: a page of finalized blocks from the node's archive.
 pub(super) fn blocks(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
-        let page: methods::BlockPage = methods::decode(&ask).map_err(malformed)?;
+        let methods::BlockPage { before, limit } =
+            methods::ChainBlocks::decode_request(&ask).map_err(malformed)?;
         let page = noded::Blocks {
-            before: page.before,
-            limit: page.limit,
+            before,
+            limit,
+            most: 0,
         };
         let page = node.client.blocks(&page).await.map_err(refused)?;
         Ok(methods::encode(&methods::BlockList {
@@ -811,11 +802,12 @@ pub(super) fn blocks(node: Node, ask: Vec<u8>) -> Answered {
 /// `chain.block`: one finalized block by height or id, if the node has it.
 pub(super) fn block(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
-        let by = match methods::decode::<methods::BlockRef>(&ask).map_err(malformed)? {
+        let by = match methods::ChainBlock::decode_request(&ask).map_err(malformed)? {
             methods::BlockRef::Height(height) => noded::BlockRef::Height(height),
             methods::BlockRef::Id(id) => noded::BlockRef::Id(id),
         };
-        let block = node.client.block(&by).await.map_err(refused)?;
+        let ask = noded::BlockAsk { by, most: 0 };
+        let block = node.client.block(&ask).await.map_err(refused)?;
         Ok(methods::encode(&block.map(block_of)))
     })
 }

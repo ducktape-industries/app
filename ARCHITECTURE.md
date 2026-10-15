@@ -370,8 +370,8 @@ its meaning; the host and the views name the const, never the string.
    view on its next tick. Nothing wakes the wasm from another thread.
 6. **Subscriptions.** `program.changes <program>` (`live`: one WebSocket
    `/v1/changes/<program>` per subscription), `chain.heads` (`heads`: polls
-   status at half the node's block time and pages `/v1/blocks` until the
-   advance is covered), `clock.ticks`, `host.session`,
+   status at half the node's block time and reads the advance from
+   `/v1/blocks`), `clock.ticks`, `host.session`,
    `host.route`, `host.offset`, `host.visible` answer many times with
    `done: false`. After each item a node subscription parks on the
    `drained` watch until a redraw takes the queue
