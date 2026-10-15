@@ -48,6 +48,12 @@ const HELLO_WAIT: Duration = Duration::from_secs(5);
 /// A control message is names and numbers: past this the node is not
 /// speaking the wire, and the session ends.
 const MAX_CONTROL: usize = 16 << 10;
+/// A group stream's first bytes, a `GroupHeader` as borsh writes it: its
+/// alias (4) and group (8).
+const GROUP_HEADER: usize = 12;
+/// A datagram's first bytes, a `DatagramHeader`: its alias (4), group (8)
+/// and object (4).
+const DATAGRAM_HEADER: usize = 16;
 /// Stream-mode objects one subscription holds for its view. Past it the
 /// group's QUIC stream waits, which holds the node back by flow control;
 /// over the websocket, which carries every track on one socket, the object
@@ -651,7 +657,7 @@ impl Conn {
                 mode,
                 priority,
             } => {
-                tokio::spawn(write(self.clone(), alias, ends.objects, mode, priority));
+                tokio::spawn(write(self.clone(), alias, ends.objects, mode));
                 Control::Publish {
                     request: id,
                     track,
@@ -775,13 +781,6 @@ impl Conn {
                     End::TrackEnded => refusal::TRACK_ENDED,
                     End::PublisherGone => refusal::PUBLISHER_GONE,
                     End::GrantRevoked => refusal::NOT_GRANTED,
-                    // the node is going away, not ending the track: the
-                    // request's channels close as a lost session's do, and
-                    // its reader opens it again
-                    End::NodeClosing => {
-                        table.requests.remove(&request);
-                        return Ok(());
-                    }
                 };
                 end(&mut table, request, word);
             }
@@ -1282,7 +1281,7 @@ async fn read_control(recv: &mut quinn::RecvStream) -> Result<Control, Unread> {
 /// One group stream from the node: its objects in order, then whether it
 /// ended whole (FIN) or was cut short (RESET, or a stream that broke).
 async fn read_group(conn: Arc<Conn>, mut stream: quinn::RecvStream) {
-    let mut head = [0u8; 13];
+    let mut head = [0u8; GROUP_HEADER];
     if stream.read_exact(&mut head).await.is_err() {
         return;
     }
@@ -1329,7 +1328,8 @@ async fn read_group(conn: Arc<Conn>, mut stream: quinn::RecvStream) {
 }
 
 fn heard_datagram(conn: &Conn, bytes: &[u8]) {
-    let (Some(head), Some(payload)) = (bytes.get(..16), bytes.get(16..)) else {
+    let (Some(head), Some(payload)) = (bytes.get(..DATAGRAM_HEADER), bytes.get(DATAGRAM_HEADER..))
+    else {
         return;
     };
     let Ok(header) = abi::decode::<DatagramHeader>(head) else {
@@ -1405,7 +1405,6 @@ async fn write(
     alias: oneshot::Receiver<Alias>,
     mut objects: mpsc::Receiver<Object>,
     mode: Mode,
-    priority: Priority,
 ) {
     let Ok(alias) = alias.await else {
         return;
@@ -1447,11 +1446,7 @@ async fn write(
                     if let Some((_, Some(mut stream))) = open.take() {
                         let _ = stream.finish();
                     }
-                    let header = abi::encode(&GroupHeader {
-                        alias,
-                        group,
-                        priority,
-                    });
+                    let header = abi::encode(&GroupHeader { alias, group });
                     let opened = match connection.open_uni().await {
                         Ok(mut stream) => stream.write_all(&header).await.ok().map(|_| stream),
                         Err(_) => return,
@@ -1475,11 +1470,7 @@ async fn write(
                 }
             }
             (Path::Ws(frames), Mode::Stream) => {
-                let header = |group| GroupHeader {
-                    alias,
-                    group,
-                    priority,
-                };
+                let header = |group| GroupHeader { alias, group };
                 if let Some((before, _)) = open.take_if(|(at, _)| *at != group) {
                     let _ = frames.send(WsFrame::Group {
                         header: header(before),

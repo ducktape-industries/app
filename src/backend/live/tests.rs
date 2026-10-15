@@ -179,7 +179,7 @@ async fn relay(connection: quinn::Connection, node: Vec<u8>, answer: Answer) {
         while let Ok(mut incoming) = streams.accept_uni().await {
             let streams = streams.clone();
             tokio::spawn(async move {
-                let mut head = [0u8; 13];
+                let mut head = [0u8; GROUP_HEADER];
                 incoming.read_exact(&mut head).await.unwrap();
                 let header: GroupHeader = abi::decode(&head).unwrap();
                 assert_eq!(header.alias, PUBLISHED);
@@ -198,11 +198,11 @@ async fn relay(connection: quinn::Connection, node: Vec<u8>, answer: Answer) {
     let datagrams = connection.clone();
     tokio::spawn(async move {
         while let Ok(bytes) = datagrams.read_datagram().await {
-            let mut header: DatagramHeader = abi::decode(&bytes[..16]).unwrap();
+            let mut header: DatagramHeader = abi::decode(&bytes[..DATAGRAM_HEADER]).unwrap();
             assert_eq!(header.alias, PUBLISHED);
             header.alias = SUBSCRIBED;
             let mut back = abi::encode(&header);
-            back.extend_from_slice(&bytes[16..]);
+            back.extend_from_slice(&bytes[DATAGRAM_HEADER..]);
             datagrams.send_datagram(back.into()).unwrap();
         }
     });
@@ -788,6 +788,23 @@ async fn a_later_list_of_a_room_is_handed_the_tracks_up() {
     assert_eq!(later.heard.recv().await, Some(up));
 }
 
+/// The headers the readers take off a stream or a datagram are as long as
+/// the wire writes them.
+#[test]
+fn a_header_read_is_as_long_as_the_wire_writes_it() {
+    let group = GroupHeader {
+        alias: u32::MAX,
+        group: u64::MAX,
+    };
+    assert_eq!(abi::encode(&group).len(), GROUP_HEADER);
+    let datagram = DatagramHeader {
+        alias: u32::MAX,
+        group: u64::MAX,
+        object: u32::MAX,
+    };
+    assert_eq!(abi::encode(&datagram).len(), DATAGRAM_HEADER);
+}
+
 /// The websocket door closes a socket on a message over one object's cap
 /// and 1 KiB: the largest object the kernel lets through
 /// (`MAX_STREAM_OBJECT`), framed with its group, fits.
@@ -797,12 +814,11 @@ fn the_largest_object_framed_fits_the_nodes_websocket_cap() {
         header: GroupHeader {
             alias: u32::MAX,
             group: u64::MAX,
-            priority: u8::MAX,
         },
         objects: vec![vec![0; live_wire::MAX_STREAM_OBJECT]],
         end: true,
     };
-    assert!(abi::encode(&frame).len() <= live_wire::MAX_STREAM_OBJECT + (1 << 10));
+    assert!(abi::encode(&frame).len() <= live_wire::WS_MESSAGE);
 }
 
 /// Over the websocket a group the node cut short (an object refused, the
@@ -834,11 +850,7 @@ fn a_group_the_next_one_cuts_short_ends_incomplete() {
         table.requests.insert(1, entry);
         table.aliases.insert(9, 1);
     }
-    let header = |group| GroupHeader {
-        alias: 9,
-        group,
-        priority: 0,
-    };
+    let header = |group| GroupHeader { alias: 9, group };
     heard_slice(&conn, header(1), vec![b"a".to_vec()], false);
     heard_slice(&conn, header(2), vec![b"b".to_vec()], true);
     let mut got = Vec::new();
