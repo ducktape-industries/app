@@ -59,12 +59,10 @@ impl View {
                 let bytes = std::fs::read(&path).map_err(|error| {
                     before_any_candidate(Failure::Refused(format!("{shown}: {error}")))
                 })?;
-                let code = Self::compile(&bytes, &shown).map_err(before_any_candidate)?;
-                let hash = {
-                    use sha2::Digest as _;
-                    sha2::Sha256::digest(&bytes).into()
-                };
-                let view = view_code(program, None, hash, code, &bytes);
+                let runner = crate::contract::runner();
+                let (hash, _) =
+                    Self::prepare(&**runner, &bytes, &shown).map_err(before_any_candidate)?;
+                let view = view_code(program, runner, None, hash, &bytes);
                 return Ok(Loaded::Compiled(Box::new(view)));
             }
             return Self::load_from(program, &path)
@@ -150,10 +148,11 @@ impl View {
             }
             show(Slot::Compiling);
             let compiled = Instant::now();
-            let code = Self::compile_sourced(&view_bytes, &shown);
+            let runner = crate::contract::runner();
+            let code = Self::prepare(&**runner, &view_bytes, &shown);
             timing.compile = compiled.elapsed();
             crate::perf::record(key, "compile", timing.compile.as_micros() as u64);
-            let (code, source) = code?;
+            let (_, source) = code?;
             timing.code = source;
             crate::perf::count(
                 key,
@@ -164,7 +163,7 @@ impl View {
                 },
                 1,
             );
-            let view = view_code(program, Some(blob), hash, code, &view_bytes);
+            let view = view_code(program, runner, Some(blob), hash, &view_bytes);
             // a seat no pane holds stops here: the rail reads its name and
             // its icon off the manifest, and the pane that claims it starts it
             if instance == 0 && against.is_none() {
@@ -173,7 +172,7 @@ impl View {
             let fresh = Self::instance_of(program, instance, &view, &shown, timing)?;
             let fresh = match &mut against {
                 Some((alive, ticks)) => {
-                    Self::replacement(fresh, alive, ticks, mounted, &view.code, &shown, timing)?
+                    Self::replacement(fresh, alive, ticks, mounted, &shown, timing)?
                 }
                 None => {
                     let mut fresh = fresh;
@@ -186,7 +185,6 @@ impl View {
                     fresh: Box::new(fresh),
                     alive,
                     ticks,
-                    code: view.code,
                     shown,
                 },
                 None => Loaded::Fresh(Box::new(fresh)),
@@ -280,7 +278,8 @@ impl View {
         timing: &mut LoadTiming,
     ) -> Result<Self, Failure> {
         let instantiated = Instant::now();
-        let mut fresh = Self::instantiate(program, &view.code, shown).map_err(Failure::Refused)?;
+        let mut fresh =
+            Self::instantiate(program, &view.runner, view.hash, shown).map_err(Failure::Refused)?;
         timing.instantiate = instantiated.elapsed();
         fresh.instance = instance;
         let key = fresh.perf_key();
@@ -305,7 +304,6 @@ impl View {
         alive: &Arc<()>,
         ticks: &mut u64,
         mounted: &Arc<Mutex<Mounted>>,
-        code: &Module,
         shown: &str,
         timing: &mut LoadTiming,
     ) -> Result<Self, Failure> {
@@ -324,22 +322,21 @@ impl View {
             *ticks = old.ticks;
             (old.handover(&fresh, timing)?, old.ambient())
         };
-        Self::prepared(fresh, state, code, shown, timing)
+        Self::prepared(fresh, state, shown, timing)
     }
 
     /// [`Self::replacement`] once more, on a new instance of `like`'s
-    /// `code`, against `old` as it is now: the seat calls it under its lock
+    /// code, against `old` as it is now: the seat calls it under its lock
     /// when the view ticked or took work while `like` was prepared.
     pub fn prepared_again(
         old: &mut Self,
         like: &Self,
-        code: &Module,
         shown: &str,
         timing: &mut LoadTiming,
     ) -> Result<Self, Failure> {
-        let fresh = like.sibling(code, shown).map_err(Failure::Refused)?;
+        let fresh = like.sibling(shown).map_err(Failure::Refused)?;
         let state = (old.handover(&fresh, timing)?, old.ambient());
-        Self::prepared(fresh, state, code, shown, timing)
+        Self::prepared(fresh, state, shown, timing)
     }
 
     /// The host's facts this drawn view holds, for its replacement to draw
@@ -410,13 +407,12 @@ impl View {
 
     /// `fresh` started from `state`, a drawn view's handover: restored, or
     /// `init`ed in its place when there is none, when the view refuses it
-    /// as not its own, or when the restore traps (on a new instance of
-    /// `code` then: a trapped one is not entered again). Its first tree is
+    /// as not its own, or when the restore traps (on a new instance of its
+    /// code then: a trapped one is not entered again). Its first tree is
     /// verified.
     fn prepared(
         mut fresh: Self,
         (state, ambient): (Option<Vec<u8>>, Ambient),
-        code: &Module,
         shown: &str,
         timing: &mut LoadTiming,
     ) -> Result<Self, Failure> {
@@ -436,7 +432,7 @@ impl View {
                     }
                     Err(trap) => {
                         fresh.state_dropped("restore_trapped", &trap);
-                        fresh = fresh.sibling(code, shown).map_err(Failure::Refused)?;
+                        fresh = fresh.sibling(shown).map_err(Failure::Refused)?;
                         false
                     }
                 }
@@ -460,12 +456,12 @@ impl View {
         Ok(fresh)
     }
 
-    /// A new instance of `code`, named and manifested as `load` made this
+    /// A new instance of this one's code, named and manifested as `load` made this
     /// one, nothing run in it yet. Every field is named here, so one added
     /// to `View` is a compile error until it says whether a sibling
     /// carries it: what `load` set (the seat, the manifest, the deployment)
     /// is carried, and what the instance ran into starts fresh.
-    fn sibling(&self, code: &Module, shown: &str) -> Result<Self, String> {
+    fn sibling(&self, shown: &str) -> Result<Self, String> {
         let Self {
             program,
             instance,
@@ -478,8 +474,10 @@ impl View {
             connection: _,
             activation: _,
             undeclared_logged: _,
-            store: _,
-            exports: _,
+            running,
+            runner,
+            landing: _,
+            tick_call: _,
             pending: _,
             theme_dark: _,
             viewport_sent: _,
@@ -512,7 +510,7 @@ impl View {
             alive: _,
             staged: _,
         } = self;
-        let mut sibling = Self::instantiate(program, code, shown)?;
+        let mut sibling = Self::instantiate(program, runner, running.code_hash(), shown)?;
         sibling.instance = *instance;
         sibling.name = name.clone();
         sibling.icon = icon.clone();
@@ -576,37 +574,36 @@ impl View {
     /// the instance as one in `tick` does: the fault keeps it from being
     /// entered again.
     pub fn snapshot(&mut self) -> Result<Snapshot, String> {
-        arm(&mut self.store);
-        self.exports.snapshot(&mut self.store).map_err(|error| {
-            let reason = panic_message(&mut self.store).unwrap_or_else(|| first_line(&error));
-            self.fault = Some(reason.clone());
-            reason
-        })
+        self.running.begin_snapshot();
+        match self.at_once() {
+            Landed::Snapshot(state) => Ok(Snapshot::Taken(state)),
+            Landed::SnapshotRefused(refusal) => Ok(Snapshot::Refused(refusal)),
+            other => {
+                let reason = unexpected(other);
+                self.fault = Some(reason.clone());
+                Err(reason)
+            }
+        }
     }
 
     pub fn restore(&mut self, snapshot: &[u8], shown: &str) -> Result<Restored, String> {
-        arm(&mut self.store);
-        let answered = self
-            .exports
-            .restore(&mut self.store, snapshot)
-            .map_err(|error| {
-                let trap = panic_message(&mut self.store).unwrap_or_else(|| first_line(&error));
-                format!("{shown}: restore trapped: {trap}")
-            })?;
-        Ok(match answered {
-            Ok(()) => Restored::Carried,
-            Err(refusal) => Restored::Refused(refusal),
-        })
+        self.running.begin_restore(snapshot.to_vec());
+        match self.at_once() {
+            Landed::Restored => Ok(Restored::Carried),
+            Landed::RestoreRefused(refusal) => Ok(Restored::Refused(refusal)),
+            other => Err(format!("{shown}: restore trapped: {}", unexpected(other))),
+        }
     }
 
     /// The view's `init` export: a fresh start, with no snapshot to restore.
     pub fn init(&mut self, shown: &str) -> Result<(), String> {
-        arm(&mut self.store);
-        if let Err(error) = self.exports.init(&mut self.store) {
-            let trap = format!("{shown}: init trapped: {}", first_line(&error));
-            return Err(panic_message(&mut self.store).unwrap_or(trap));
+        self.running.begin_init();
+        match self.at_once() {
+            Landed::Inited => Ok(()),
+            // the view's own words, as its panic hook handed them over
+            Landed::Fault(Fault::Panicked(words)) => Err(words),
+            other => Err(format!("{shown}: init trapped: {}", unexpected(other))),
         }
-        Ok(())
     }
 
     /// A restored instance's first ticks, until one leaves nothing owed
@@ -648,8 +645,10 @@ impl View {
 
     /// The view instantiated and mounted; `shown` names it in errors.
     pub fn from_bytes(program: &'static str, bytes: &[u8], shown: &str) -> Result<Self, String> {
-        let code = Self::compile(bytes, shown).map_err(|failure| failure.to_string())?;
-        let mut view = Self::instantiate(program, &code, shown)?;
+        let runner = crate::contract::runner();
+        let (code, _) =
+            Self::prepare(&**runner, bytes, shown).map_err(|failure| failure.to_string())?;
+        let mut view = Self::instantiate(program, runner, code, shown)?;
         (
             view.name,
             view.capabilities,
@@ -662,70 +661,49 @@ impl View {
         Ok(view)
     }
 
-    /// The view's bytes checked and compiled — the cranelift stage of
-    /// a load, measured on its own.
-    pub fn compile(bytes: &[u8], shown: &str) -> Result<Arc<Module>, Failure> {
-        Self::compile_sourced(bytes, shown).map(|(code, _)| code)
-    }
-
-    /// [`Self::compile`], with where the code came from (`compiled_view`).
-    fn compile_sourced(bytes: &[u8], shown: &str) -> Result<(Arc<Module>, &'static str), Failure> {
+    /// The view's bytes checked (its manifest read, its wire this app's)
+    /// and prepared on `runner` — the compile stage of a load, measured on
+    /// its own: their sha256, which instances are seated by, and where the
+    /// code came from (`ViewRunner::prepare`).
+    pub fn prepare(
+        runner: &dyn ViewRunner,
+        bytes: &[u8],
+        shown: &str,
+    ) -> Result<([u8; 32], &'static str), Failure> {
         // refused here, a manifest `manifest_of` would read as empty never
         // reaches a seat
         let manifest = view_wire::manifest::read_manifest(bytes).ok_or_else(|| {
             Failure::Refused(format!("{shown}: the view's manifest cannot be read"))
         })?;
         wire_id(&manifest.wire_id).map_err(|error| Failure::Wire(format!("{shown}: {error}")))?;
-        compiled_view(bytes).map_err(|error| Failure::Refused(format!("{shown}: {error}")))
+        let hash = {
+            use sha2::Digest as _;
+            sha2::Sha256::digest(bytes).into()
+        };
+        let view_bytes =
+            usize::try_from(crate::backend::memory_bounds().view_bytes).unwrap_or(usize::MAX);
+        let source = runner
+            .prepare(hash, bytes, view_bytes)
+            .map_err(|failure| Failure::Refused(format!("{shown}: {failure}")))?;
+        Ok((hash, source))
     }
 
-    /// The module instantiated, its exports bound, nothing run yet: a
-    /// fresh view is `init`ed, a replacement `restore`d.
-    pub fn instantiate(program: &'static str, code: &Module, shown: &str) -> Result<Self, String> {
-        let engine = engine();
-        let budget = crate::backend::memory_bounds().view_bytes;
-        let limits = ViewLimits::new(usize::try_from(budget).unwrap_or(usize::MAX));
-        let mut store = Store::new(
-            engine,
-            HostState {
-                limits,
-                panic: None,
-            },
-        );
-        store.limiter(|state| &mut state.limits);
-        // A view's one import is the panic hook's (`wire::abi`); anything
-        // else the module asks for traps if it is ever called.
-        let mut linker = Linker::<HostState>::new(engine);
-        linker
-            .func_wrap(
-                wire::abi::IMPORT_MODULE,
-                "panicked",
-                |mut caller: Caller<'_, HostState>, ptr: u32, len: u32| {
-                    let message = caller
-                        .get_export("memory")
-                        .and_then(|export| export.into_memory())
-                        .and_then(|memory| {
-                            let start = ptr as usize;
-                            let bytes = memory
-                                .data(&caller)
-                                .get(start..start.saturating_add(len as usize))?;
-                            Some(String::from_utf8_lossy(bytes).into_owned())
-                        })
-                        .unwrap_or_default();
-                    let line = message.lines().next().unwrap_or_default();
-                    caller.data_mut().panic = Some(line.to_owned());
-                },
-            )
-            .map_err(|error| error.to_string())?;
-        linker
-            .define_unknown_imports_as_traps(code)
-            .map_err(|error| error.to_string())?;
-        arm(&mut store);
-        let instance = linker
-            .instantiate(&mut store, code)
-            .map_err(|error| format!("{shown}: {}", first_line(&error)))?;
-        let exports =
-            Exports::bind(&mut store, &instance).map_err(|error| format!("{shown}: {error}"))?;
+    /// An instance of the prepared `code` seated by `runner`, its exports
+    /// bound, nothing run yet: a fresh view is `init`ed, a replacement
+    /// `restore`d.
+    pub fn instantiate(
+        program: &'static str,
+        runner: &Arc<dyn ViewRunner>,
+        code: [u8; 32],
+        shown: &str,
+    ) -> Result<Self, String> {
+        let (land, landing) = Landing::channel();
+        runner.instantiate(code, SeatId(program, 0), land);
+        let running = match landing.try_recv() {
+            Ok(Landed::Seated(running)) => running,
+            Ok(other) => return Err(format!("{shown}: {}", unexpected(other))),
+            Err(_) => return Err(format!("{shown}: the runner did not seat the view at once")),
+        };
         Ok(Self {
             connection: connection().lock().expect("views rpc").clone(),
             activation: None,
@@ -737,8 +715,10 @@ impl View {
             targets: Vec::new(),
             min_width: 0,
             undeclared_logged: Vec::new(),
-            store,
-            exports,
+            running,
+            runner: runner.clone(),
+            landing,
+            tick_call: None,
             pending: Vec::new(),
             theme_dark: None,
             viewport_sent: None,
@@ -826,25 +806,34 @@ fn shown_as(program: &str, hash: &[u8; 32]) -> String {
     )
 }
 
-/// The view `bytes`, compiled to `code` out of `blob`, with what their
-/// manifest says: what a pane starts it from.
+/// The view `bytes`, prepared on `runner` as `hash` out of `blob`, with
+/// what their manifest says: what a pane starts it from.
 fn view_code(
     program: &'static str,
+    runner: &Arc<dyn ViewRunner>,
     blob: Option<::abi::BlobId>,
     hash: [u8; 32],
-    code: Arc<Module>,
     bytes: &[u8],
 ) -> ViewCode {
     let (name, capabilities, min_width, targets, icon) = manifest_of(bytes);
     crate::render::web::seen(program, &capabilities);
     ViewCode {
+        runner: runner.clone(),
         blob,
         hash,
-        code,
         name,
         icon,
         min_width,
         capabilities,
         targets,
+    }
+}
+
+/// What a call answered that is not its answer, as the sentence it fails
+/// with: a fault's words, or the answer it got.
+fn unexpected(landed: Landed) -> String {
+    match landed {
+        Landed::Fault(fault) => fault.to_string(),
+        other => format!("the view answered {other:?}"),
     }
 }

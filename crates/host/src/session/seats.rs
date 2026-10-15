@@ -190,16 +190,21 @@ impl Seats {
         }
     }
 
-    /// Every seat turned now. The AX door calls this before a read: a reply
-    /// the view has answered is then in the tree the read draws (or, with
-    /// a tick still to draw, in the next one), as the draw itself took
-    /// it in before the seat left the draw path. The door's task yields to
-    /// no other between a press and its read, so the seats' own reply wakes
-    /// have not run yet.
+    /// Every seat turned now, and whether every seat's tick has landed.
+    /// The AX door calls this before a read, and parks the read while a
+    /// tick is in flight: a reply the view has answered is then in the tree
+    /// the read draws (or, with a tick still to draw, in the next one), as
+    /// the draw itself took it in before the seat left the draw path. The
+    /// door's task yields to no other between a press and its read, so the
+    /// seats' own reply wakes have not run yet. On the wasmtime runner a
+    /// tick lands inside its turn: this answers `true` at once.
     #[cfg(any(test, feature = "ax-door"))]
-    pub fn settle(&self, cx: &mut Context<Self>) {
+    pub fn settle(&self, cx: &mut Context<Self>) -> bool {
+        let mut landed = true;
         for placed in self.map.values() {
             placed.seat.update(cx, |seat, cx| seat.turn(cx));
+            landed &= !placed.seat.read(cx).in_flight();
         }
+        landed
     }
 }

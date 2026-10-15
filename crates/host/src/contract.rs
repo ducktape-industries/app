@@ -20,8 +20,12 @@
 //! (`crates/phone/src/os/`). A test build with none installed runs on
 //! [`testing::TestOs`].
 //!
-//! The view runner (`ViewRunner`, its own trait handed to [`Boot`] beside
-//! `OsServices`) is the next cut on this file.
+//! The view runner ([`ViewRunner`], its own trait handed to [`Boot`]
+//! beside `OsServices`) runs view code: wasmtime on the desktop and
+//! Android, JavaScriptCore on iOS. Every call into a view is
+//! completion-shaped: it returns at once, and its answer lands on the
+//! seat's [`Landing`], before the call returns (wasmtime) or later (JSC).
+//! A tick completes when its frame lands, never by a timer.
 
 #![deny(missing_docs)]
 
@@ -279,12 +283,242 @@ pub enum Signal {
 pub struct Boot {
     /// The shell's services; `start` installs them.
     pub os: Arc<dyn OsServices>,
+    /// What runs view code; `start` installs it.
+    pub runner: Arc<dyn ViewRunner>,
     /// What opens what a banner click names (a `duck://` link, Settings ›
     /// Updates) in the shell's windows. Called on the GPUI thread.
     pub open: fn(Opened),
 }
 
 static OS: OnceLock<Arc<dyn OsServices>> = OnceLock::new();
+static RUNNER: OnceLock<Arc<dyn ViewRunner>> = OnceLock::new();
+
+/// The shell's view runner, installed once, before the first load (`start`
+/// installs its `Boot`'s). A second, different instance is a bug.
+pub fn install_runner(runner: Arc<dyn ViewRunner>) {
+    let installed = RUNNER.get_or_init(|| runner.clone());
+    assert!(
+        Arc::ptr_eq(installed, &runner),
+        "the shell's ViewRunner is installed once"
+    );
+}
+
+/// The installed view runner. A test build with none installed runs on
+/// wasmtime, as the desktop does.
+pub fn runner() -> &'static Arc<dyn ViewRunner> {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        RUNNER.get_or_init(|| {
+            Arc::new(crate::runner::WasmtimeRunner::new(RunnerConfig {
+                signals_based_traps: true,
+                cache_dir: Some(os().dirs().cache.join("view-code")),
+            }))
+        })
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        RUNNER
+            .get()
+            .expect("the shell installs its ViewRunner before the first load")
+    }
+}
+
+/// Runs view code. One per process; the shell picks it ([`Boot::runner`]).
+///
+/// Threads: `prepare` runs on a loader thread and may block it (wasmtime
+/// compiles; JSC runs the meter pass; neither touches a page). `describe`
+/// may be called from the kernel's blocking pool and may block it, NEVER
+/// from the window thread (a JSC impl posts to main and blocks the pool
+/// thread on a oneshot; main never waits on the pool). `instantiate` is
+/// called on the thread that seats the view; every `begin_*` on the
+/// seat's thread (the window thread), and each answers through the seat's
+/// [`Landing`], at once or later.
+pub trait ViewRunner: Send + Sync + 'static {
+    /// Compile (wasmtime) or validate + meter + cache (JSC) `code`, whose
+    /// sha256 is `hash`, for a view whose linear memory may reach
+    /// `view_bytes` (the `memory.view_bytes` setting). Nothing runs. The
+    /// answer is where the code came from, for the load's log (`memory`,
+    /// `disk`, `cold`, ...).
+    fn prepare(
+        &self,
+        hash: [u8; 32],
+        code: &[u8],
+        view_bytes: usize,
+    ) -> Result<&'static str, Failure>;
+    /// Seat prepared code: lands [`Landed::Seated`] (or a `Fault`) on
+    /// `land`, which the instance keeps for every later answer.
+    fn instantiate(&self, hash: [u8; 32], seat: SeatId, land: Landing);
+    /// `program.describe`: run the import-free describe module `module`
+    /// (sha256 `hash`) on `op`, bounded by the same fuel; `None` on any
+    /// failure.
+    fn describe(
+        &self,
+        hash: [u8; 32],
+        module: &[u8],
+        op: &[u8],
+    ) -> Option<view_wire::methods::Description>;
+}
+
+/// One running view: the five exports (`alloc` and `memory` internal to the
+/// impl). `Send` so the seat registry may hold it; every entry is called
+/// on the seat's thread and is completion-shaped: it returns at once and
+/// the answer lands on the seat's [`Landing`]. `Any` so a test can reach
+/// the impl behind the box.
+pub trait ViewInstance: Send + std::any::Any {
+    /// The sha256 of the code this is an instance of.
+    fn code_hash(&self) -> [u8; 32];
+    /// The `init` export: lands `Inited` or a `Fault`.
+    fn begin_init(&mut self);
+    /// The `tick` export on `events` (an encoded event batch): lands
+    /// `Frame` or a `Fault`.
+    fn begin_tick(&mut self, events: Vec<u8>);
+    /// The `snapshot` export: lands `Snapshot`, `SnapshotRefused` or a
+    /// `Fault`.
+    fn begin_snapshot(&mut self);
+    /// The `restore` export: lands `Restored`, `RestoreRefused` or a
+    /// `Fault`.
+    fn begin_restore(&mut self, snapshot: Vec<u8>);
+    /// The fuel the last landed call used, of [`FUEL_PER_TICK`].
+    fn fuel_used(&self) -> u64;
+    /// The view's linear memory, in bytes.
+    fn memory_bytes(&self) -> usize;
+    /// Ends the instance.
+    fn stop(self: Box<Self>);
+}
+
+/// Which seat an instance is for: (program, instance), the seat registry's
+/// key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SeatId(pub &'static str, pub u64);
+
+/// A seat's answer channel: `Send + Clone`, made by the seat when it asks
+/// for an instance and kept by the instance; a runner `send`s each answer
+/// into it from wherever the answer appears.
+#[derive(Clone, Debug)]
+pub struct Landing(pub async_channel::Sender<Landed>);
+
+impl Landing {
+    /// A landing and the seat's end of it.
+    pub fn channel() -> (Self, async_channel::Receiver<Landed>) {
+        let (sender, receiver) = async_channel::unbounded();
+        (Self(sender), receiver)
+    }
+
+    /// Lands `landed`; one after the seat is gone is dropped.
+    pub fn send(&self, landed: Landed) {
+        let _ = self.0.try_send(landed);
+    }
+}
+
+/// One answer from a view.
+pub enum Landed {
+    /// `instantiate`'s: the running instance.
+    Seated(Box<dyn ViewInstance>),
+    /// `init` ran.
+    Inited,
+    /// A tick's frame, its bytes as the view wrote them.
+    Frame(Vec<u8>),
+    /// The view's state.
+    Snapshot(Vec<u8>),
+    /// The view's own word that it cannot hand its state over now.
+    SnapshotRefused(String),
+    /// The state was taken up.
+    Restored,
+    /// The view's own word that the state is not its own.
+    RestoreRefused(String),
+    /// The call failed; the instance is not entered again.
+    Fault(Fault),
+}
+
+impl std::fmt::Debug for Landed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Seated(instance) => write!(f, "Seated({:02x?})", &instance.code_hash()[..4]),
+            Self::Inited => f.write_str("Inited"),
+            Self::Frame(bytes) => write!(f, "Frame({} bytes)", bytes.len()),
+            Self::Snapshot(bytes) => write!(f, "Snapshot({} bytes)", bytes.len()),
+            Self::SnapshotRefused(why) => write!(f, "SnapshotRefused({why})"),
+            Self::Restored => f.write_str("Restored"),
+            Self::RestoreRefused(why) => write!(f, "RestoreRefused({why})"),
+            Self::Fault(fault) => write!(f, "Fault({fault})"),
+        }
+    }
+}
+
+/// Why a call into a view failed. Every runner produces every variant but
+/// `Runner`, which is a runner's own failure (a refused script, a dead
+/// page before the answer).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Fault {
+    /// The view trapped: the trap's words.
+    Trap(String),
+    /// The view panicked: the words its panic hook
+    /// (`ducktape_view.panicked`) handed over before the trap.
+    Panicked(String),
+    /// The call used all of [`FUEL_PER_TICK`].
+    OutOfFuel,
+    /// A `memory.grow` or `table.grow` past the `memory.view_bytes`
+    /// setting.
+    Memory,
+    /// The runner failed, not the view.
+    Runner(String),
+}
+
+impl std::fmt::Display for Fault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Trap(words) | Self::Panicked(words) | Self::Runner(words) => f.write_str(words),
+            Self::OutOfFuel => f.write_str("all fuel consumed by WebAssembly"),
+            Self::Memory => f.write_str("the view is past the device's view memory setting"),
+        }
+    }
+}
+
+/// `prepare`'s refusals: `Unsupported` names the operator or feature this
+/// runner does not run (the same answer on every runner); `Wire` is the
+/// manifest's `wire_id` against this app's; `Runner` the runner's own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Failure {
+    /// Code this runner does not run.
+    Unsupported(String),
+    /// Built against another wire than this app's.
+    Wire {
+        /// The wire the view was built against.
+        built: String,
+        /// The wire this app speaks.
+        app: String,
+    },
+    /// The runner's own failure.
+    Runner(String),
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsupported(words) | Self::Runner(words) => f.write_str(words),
+            Self::Wire { built, app } => write!(
+                f,
+                "this view was built against wire {built}; this app speaks {app}"
+            ),
+        }
+    }
+}
+
+/// How a shell configures its runner.
+#[derive(Clone, Debug)]
+pub struct RunnerConfig {
+    /// wasmtime's signal-based traps: the desktop's default; off on Android
+    /// (an arm64 guest trap otherwise kills the process).
+    pub signals_based_traps: bool,
+    /// Where compiled code is kept across launches; `None` keeps none.
+    pub cache_dir: Option<PathBuf>,
+}
+
+/// Instruction budget for one call into a view, on every runner: a ceiling
+/// that ends a runaway, not a cost. `RUST_LOG=ducktape::perf=debug` logs
+/// each tick's fuel; docs/perf.md §4.2 has the heaviest ticks measured and
+/// each view's budget, at most half of this ceiling.
+pub const FUEL_PER_TICK: u64 = 250_000_000;
 
 /// The shell's services, installed before the host reads anything
 /// (`start` installs its `Boot`'s; a shell that needs them earlier, or

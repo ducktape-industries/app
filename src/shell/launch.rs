@@ -50,6 +50,14 @@ fn start(boot: Boot, os: Arc<dyn OsServices>) {
         let (host, inbound) = ducktape_host::start::start(
             ducktape_host::contract::Boot {
                 os: os.clone(),
+                // Cranelift, signal-based traps, compiled code kept across
+                // launches under the cache
+                runner: Arc::new(ducktape_host::runner::WasmtimeRunner::new(
+                    ducktape_host::contract::RunnerConfig {
+                        signals_based_traps: true,
+                        cache_dir: Some(os.dirs().cache.join("view-code")),
+                    },
+                )),
                 open: entities::open_banner,
             },
             cx,
@@ -165,7 +173,9 @@ fn start(boot: Boot, os: Arc<dyn OsServices>) {
                         .unwrap_or_default()
                 };
                 let settle = move |cx: &mut gpui_kit::App| {
-                    let _ = door_seats.update(cx, |seats, cx| seats.settle(cx));
+                    door_seats
+                        .update(cx, |seats, cx| seats.settle(cx))
+                        .unwrap_or(true)
                 };
                 let keep = super::kept_restore;
                 let door = crate::ax::Door {

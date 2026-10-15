@@ -138,7 +138,7 @@ fn facts(events: &[wire::Event]) -> (Option<bool>, Option<(f32, f32)>, Option<i3
 /// tick after. `snapshot` hands over one empty state and `restore` takes
 /// any, so the same code serves as a swap's old and new instance.
 fn frames_in_order(program: &'static str, min_width: u32, frames: &[wire::Frame]) {
-    let code = Module::new(crate::runtime::view::engine(), frames_wat(frames)).unwrap();
+    let code = crate::runtime::view::prepared_for_test(frames_wat(frames));
     crate::runtime::seat_code_for_test(program, min_width, code);
 }
 
@@ -258,13 +258,7 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
     assert!(old_theme.is_some(), "the drawn view heard the theme");
     // the new deployment's load, as a block starts it: the same code, a
     // replacement of the same shape
-    let program = Arc::new(
-        Module::new(
-            crate::runtime::view::engine(),
-            frames_wat(&[full(boxed("card"))]),
-        )
-        .unwrap(),
-    );
+    let program = crate::runtime::view::prepared_for_test(frames_wat(&[full(boxed("card"))]));
     let generation = lock(&mounted).start();
     let load = Load {
         program: PROGRAM,
@@ -276,19 +270,17 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
     let first_tick = Rc::new(RefCell::new(None));
     let seen = first_tick.clone();
     load.land(|load, timing| {
-        let mut fresh = View::instantiate(load.program, &program, load.program).unwrap();
+        let mut fresh = View::instantiate(
+            load.program,
+            crate::contract::runner(),
+            program,
+            load.program,
+        )
+        .unwrap();
         fresh.min_width = 320;
         let mut ticks = 0;
-        let fresh = View::replacement(
-            fresh,
-            &alive,
-            &mut ticks,
-            &load.seat,
-            &program,
-            load.program,
-            timing,
-        )
-        .expect("prepared");
+        let fresh = View::replacement(fresh, &alive, &mut ticks, &load.seat, load.program, timing)
+            .expect("prepared");
         assert_eq!(ticks, old_ticks);
         assert!(fresh.staged, "its first tree is made, its requests held");
         assert_eq!(fresh.ticks, 1, "first_frame ticked it once");
@@ -300,7 +292,6 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
             fresh: Box::new(fresh),
             alive: alive.clone(),
             ticks,
-            code: program.clone(),
             shown: load.program.into(),
         })
     });

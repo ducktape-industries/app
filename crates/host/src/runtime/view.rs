@@ -1,16 +1,25 @@
 use super::*;
 
-mod abi;
 mod lifecycle;
 mod requests;
-
-use abi::{Exports, HostState, ViewLimits, first_line, panic_message};
 
 // ---------- the view ----------
 
 /// How long a press or key stays a view's activation: the web's transient
 /// activation duration.
 pub const ACTIVATION_EXPIRY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Where a redraw stands after its first half ([`View::begin_redraw`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Redraw {
+    /// Nothing to deliver: no tick, nothing to answer.
+    Quiet,
+    /// No tick due, the requests still to route (a replacement's first
+    /// tree): [`View::finish_redraw`] next.
+    Ready,
+    /// A tick begun: its frame lands, then [`View::finish_redraw`].
+    Ticking,
+}
 
 /// What a fresh instance did with the state the drawn view left it. A trap
 /// is not one of these — it takes the instance with it and is the load's
@@ -69,8 +78,16 @@ pub(super) struct View {
     pub min_width: u32,
     /// The undeclared capabilities already logged, so each is logged once.
     pub undeclared_logged: Vec<Capability>,
-    store: Store<HostState>,
-    exports: Exports,
+    /// The running instance (`contract::ViewInstance`), and the runner that
+    /// seated it: a sibling (a fresh start after a failed restore) is
+    /// seated by the same one.
+    running: Box<dyn ViewInstance>,
+    runner: Arc<dyn ViewRunner>,
+    /// The instance's answers (`contract::Landing`), drained after each
+    /// call begun.
+    landing: async_channel::Receiver<Landed>,
+    /// The tick in flight's `tick.call` timer: from its call to its landing.
+    tick_call: Option<crate::perf::Timer>,
     /// The view's events for its next tick.
     pub pending: Vec<wire::Event>,
     /// The host's facts as the view last heard them: the theme, the
@@ -154,7 +171,36 @@ impl View {
 
     /// How much of the budget the last call into the view took.
     pub fn fuel_used(&self) -> u64 {
-        FUEL_PER_TICK - self.store.get_fuel().unwrap_or(0)
+        self.running.fuel_used()
+    }
+
+    /// The answer to the call just begun, which this path takes at once (a
+    /// load, a replacement's first frame, a test): the wasmtime runner
+    /// lands it before the call returns.
+    fn at_once(&mut self) -> Landed {
+        self.landing.try_recv().unwrap_or_else(|_| {
+            Landed::Fault(Fault::Runner("the runner did not answer at once".into()))
+        })
+    }
+
+    /// The wasmtime instance's linear memory, for the tests that read it.
+    #[cfg(test)]
+    pub fn memory_for_test(&self) -> &[u8] {
+        let instance: &dyn std::any::Any = &*self.running;
+        instance
+            .downcast_ref::<crate::runner::WasmtimeInstance>()
+            .expect("the view runs on the wasmtime runner")
+            .memory_for_test()
+    }
+
+    /// [`Self::memory_for_test`], for the tests that script it.
+    #[cfg(test)]
+    pub fn memory_mut_for_test(&mut self) -> &mut [u8] {
+        let instance: &mut dyn std::any::Any = &mut *self.running;
+        instance
+            .downcast_mut::<crate::runner::WasmtimeInstance>()
+            .expect("the view runs on the wasmtime runner")
+            .memory_mut_for_test()
     }
 
     /// What the seat hands its tree to draw: the held tree with its style
@@ -179,95 +225,19 @@ impl Drop for View {
     }
 }
 
-/// Compiled view code by the hash of its bytes, held for as long as some
-/// view or seat holds the module; a module no one holds is compiled again
-/// from wasmtime's disk cache.
-#[derive(Default)]
-pub(super) struct ViewCodeCache {
-    entries: HashMap<[u8; 32], std::sync::Weak<Module>>,
-}
-
-impl ViewCodeCache {
-    fn get(&self, hash: &[u8; 32]) -> Option<Arc<Module>> {
-        self.entries.get(hash)?.upgrade()
-    }
-
-    fn insert(&mut self, hash: [u8; 32], module: &Arc<Module>) {
-        self.entries.retain(|_, held| held.strong_count() > 0);
-        self.entries.insert(hash, Arc::downgrade(module));
-    }
-}
-
-/// The view's code, and where it came from: `memory` for the in-process
-/// cache, `disk` for wasmtime's compile cache, `cold` for a cranelift run.
-/// ponytail: the disk/cold split reads wasmtime's process-wide hit counter
-/// around the compile, and loaders compile concurrently on purpose, so a
-/// hit landing from another thread can name a cold compile `disk`.
-pub(super) fn compiled_view(bytes: &[u8]) -> Result<(Arc<Module>, &'static str), String> {
-    static CODE: OnceLock<Mutex<ViewCodeCache>> = OnceLock::new();
-    let (engine, disk) = runtime();
-    let hits_before = disk.as_ref().map(Cache::cache_hits);
-    let (module, compiled) = compile_view(engine, CODE.get_or_init(Mutex::default), bytes)?;
-    let source = match (compiled, hits_before, disk.as_ref().map(Cache::cache_hits)) {
-        (false, _, _) => "memory",
-        (true, Some(before), Some(after)) if after > before => "disk",
-        (true, _, _) => "cold",
-    };
-    Ok((module, source))
-}
-
-// Cache code only: every load still creates its own Store, instance and assets.
-// The cache belongs to this one Engine. Compile outside the lock so unrelated
-// views can prepare concurrently; a competing result adopts the existing entry.
-// The flag says whether this call ran `Module::new`.
-pub(super) fn compile_view(
-    engine: &Engine,
-    cache: &Mutex<ViewCodeCache>,
-    bytes: &[u8],
-) -> Result<(Arc<Module>, bool), String> {
-    use sha2::{Digest, Sha256};
-    let hash = Sha256::digest(bytes).into();
-    if let Some(module) = cache.lock().expect("view code cache").get(&hash) {
-        return Ok((module, false));
-    }
-    let module = Arc::new(Module::new(engine, bytes).map_err(|error| error.to_string())?);
-    let mut cache = cache.lock().expect("view code cache");
-    if let Some(existing) = cache.get(&hash) {
-        return Ok((existing, true));
-    }
-    cache.insert(hash, &module);
-    Ok((module, true))
-}
-
-pub(super) fn engine() -> &'static Engine {
-    &runtime().0
-}
-
-/// The one wasmtime engine, and a handle on its compile cache: `Cache` is
-/// `Clone`, and the clone reads the hit counters the engine's copy writes.
-fn runtime() -> &'static (Engine, Option<Cache>) {
-    static ENGINE: OnceLock<(Engine, Option<Cache>)> = OnceLock::new();
-    ENGINE.get_or_init(|| {
-        let mut config = Config::new();
-        config.cranelift_opt_level(OptLevel::Speed);
-        config.consume_fuel(true);
-        let mut disk = None;
-        let mut cache = CacheConfig::new();
-        cache.with_directory(crate::backend::dirs().cache.join("view-code"));
-        match Cache::new(cache) {
-            Ok(cache) => {
-                disk = Some(cache.clone());
-                config.cache(Some(cache));
-            }
-            Err(error) => tracing::warn!(reason = "view_cache_unavailable", %error),
-        }
-        (Engine::new(&config).expect("wasmtime engine"), disk)
-    })
-}
-
-/// Reset the instruction allowance before entering the view.
-fn arm(store: &mut Store<HostState>) {
-    let _ = store.set_fuel(FUEL_PER_TICK);
+/// `code` (WAT or wasm) prepared on the installed runner, at the default
+/// view memory: what a test instantiates.
+#[cfg(any(test, feature = "test-support"))]
+pub fn prepared_for_test(code: impl AsRef<[u8]>) -> [u8; 32] {
+    use sha2::Digest as _;
+    let code = code.as_ref();
+    let hash = sha2::Sha256::digest(code).into();
+    let view_bytes =
+        usize::try_from(crate::backend::memory_bounds().view_bytes).unwrap_or(usize::MAX);
+    crate::contract::runner()
+        .prepare(hash, code, view_bytes)
+        .expect("the test's code compiles");
+    hash
 }
 
 /// Brings the tree the host holds into `frame`: an `unchanged` frame takes

@@ -13,6 +13,15 @@
 //! frame per draw. A tick that answered `unchanged` and moved no document
 //! draws nothing and holds nothing: the tree the pane shows is the tree the
 //! view would send.
+//!
+//! One tick in flight: a tick completes when its frame lands on the
+//! instance's `Landing` (`contract::ViewInstance`), never by a timer. The
+//! wasmtime runner lands it before `begin_tick` returns, and the turn takes
+//! it right there (`View::landed_now`): the desktop's order. A runner that
+//! answers later leaves the tick in flight; the turn ends, a task of the
+//! seat's waits for the landing and finishes the turn (`landed`), and a
+//! turn asked for meanwhile runs after it, as one asked for during a hold
+//! runs after the draw.
 use super::standin::{Standin, stage_words};
 use super::*;
 use gpui_kit::{AnyWindowHandle, Context, Entity, EventEmitter, Subscription};
@@ -41,8 +50,17 @@ pub struct Seat {
     _tree_drawn: Option<Subscription>,
     /// A tick the tree has not drawn yet: turns wait for that draw.
     holding: bool,
-    /// A turn asked for while holding; it runs once the tree has drawn.
+    /// A turn asked for while holding or while a tick is in flight; it runs
+    /// once the tree has drawn, or the frame has landed.
     owed: bool,
+    /// A tick begun whose frame has not landed: the view's tick count and
+    /// the instant its turn began, which the turn's second half reads.
+    in_flight: Option<(u64, Instant)>,
+    /// The wait on that landing.
+    _landing: Option<gpui_kit::Task<()>>,
+    /// Gone from every desk (`hide`): no turn after, and a frame landing
+    /// after is kept on the view, never drawn.
+    hidden: bool,
     generation: u64,
     alive: Option<Arc<()>>,
     revision: u64,
@@ -120,6 +138,9 @@ impl Seat {
             _tree_drawn: None,
             holding: false,
             owed: false,
+            in_flight: None,
+            _landing: None,
+            hidden: false,
             generation: 0,
             alive: None,
             revision: 0,
@@ -248,14 +269,36 @@ impl Seat {
                 .alive
                 .as_ref()
                 .is_some_and(|alive| Arc::ptr_eq(alive, &view.alive));
+        self.hidden = true;
         // a view never stepped here has nothing to hand over; one that was
         // gets its last update whether or not its window was in front
         if !owns || view.ticks == 0 {
             return Vec::new();
         }
         view.set_visible(false);
-        view.redraw(props);
+        // a tick in flight lands on the view as it is, kept, never drawn
+        // (`landed`); this update's own waits behind it as any turn would
+        if self.in_flight.is_none() {
+            match view.begin_redraw(props) {
+                Redraw::Quiet => {}
+                Redraw::Ready => {
+                    view.finish_redraw(props);
+                }
+                Redraw::Ticking => match view.landed_now() {
+                    Some(landed) => {
+                        view.redraw_landed(landed);
+                        view.finish_redraw(props);
+                    }
+                    None => self.in_flight = Some((view.ticks, Instant::now())),
+                },
+            }
+        }
         std::mem::take(&mut view.intents)
+    }
+
+    /// Whether a tick is in flight: begun, its frame not landed.
+    pub fn in_flight(&self) -> bool {
+        self.in_flight.is_some()
     }
 
     /// Every wake ends here: a reply, a clock item, a `ViewTree` event,
@@ -265,7 +308,10 @@ impl Seat {
     /// the tree draws waits for its draw, the turn waits too (`Drawn` runs
     /// it): one tick per draw, as when the view ticked on the draw path.
     pub fn turn(&mut self, cx: &mut Context<Self>) {
-        if self.holding {
+        if self.hidden {
+            return;
+        }
+        if self.holding || self.in_flight.is_some() {
             self.owed = true;
             return;
         }
@@ -326,7 +372,75 @@ impl Seat {
         // the view is never laid out narrower than its own minimum
         // (`layers/panes.rs` gives its body `min_w`)
         view.sync_viewport(width.max(view.min_width as f32), height);
-        let again = view.redraw(props);
+        let again = match view.begin_redraw(props) {
+            Redraw::Quiet => false,
+            Redraw::Ready => view.finish_redraw(props),
+            Redraw::Ticking => match view.landed_now() {
+                Some(landed) => {
+                    view.redraw_landed(landed);
+                    view.finish_redraw(props)
+                }
+                // the frame lands later: the turn's second half waits for it
+                None => {
+                    let landing = view.landing();
+                    let alive = view.alive.clone();
+                    drop(locked);
+                    self.in_flight = Some((ticks, shown));
+                    self._landing = Some(cx.spawn(async move |this, cx| {
+                        if let Ok(landed) = landing.recv().await {
+                            let _ = this.update(cx, |this, cx| this.landed(&alive, landed, cx));
+                        }
+                    }));
+                    return;
+                }
+            },
+        };
+        self.finish(locked, ticks, shown, again, cx);
+    }
+
+    /// A frame that landed after its turn returned: taken in by the view it
+    /// was asked of, and the turn finished. After `hide` it is kept on the
+    /// view, its requests answered, and nothing is drawn. A turn owed
+    /// meanwhile runs now, unless the tree holds for its draw.
+    fn landed(&mut self, alive: &Arc<()>, landed: Landed, cx: &mut Context<Self>) {
+        let Some((ticks, shown)) = self.in_flight.take() else {
+            return;
+        };
+        self._landing = None;
+        let mounted = self.mounted.clone();
+        let mut locked = lock(&mounted);
+        let Mounted { slot, props, .. } = &mut *locked;
+        // the instance it was asked of is still the seat's
+        let Slot::Ready(view) = slot else {
+            return;
+        };
+        if !Arc::ptr_eq(alive, &view.alive) {
+            return;
+        }
+        view.redraw_landed(landed);
+        let again = view.finish_redraw(props);
+        if self.hidden {
+            return;
+        }
+        self.finish(locked, ticks, shown, again, cx);
+        if self.owed && !self.holding {
+            self.turn(cx);
+        }
+    }
+
+    /// A turn's second half, its tick (if any) landed: what the view asked
+    /// for goes to the tree, the window and the app.
+    fn finish(
+        &mut self,
+        mut locked: std::sync::MutexGuard<'_, Mounted>,
+        ticks: u64,
+        shown: Instant,
+        again: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Slot::Ready(view) = &mut locked.slot else {
+            return;
+        };
         clipboard::mount(view, cx);
         // a clipboard answer lands after `redraw` judged the frame: it is
         // still a reason to turn again

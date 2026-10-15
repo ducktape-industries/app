@@ -23,7 +23,8 @@ pub struct Host {
     pub consent: futures::channel::mpsc::UnboundedReceiver<()>,
 }
 
-/// Installs the shell's services and its banner opener, opens the stores
+/// Installs the shell's services, its view runner and its banner opener,
+/// opens the stores
 /// (the notification centre's log off disk, the roster the node's reads
 /// fill), makes the entities, and spawns the drain: `Lifecycle` to the
 /// session (the status poll stops in the background and resumes in
@@ -31,6 +32,7 @@ pub struct Host {
 /// through `Boot::open`), the rest to `Host::signals`.
 pub fn start(boot: Boot, cx: &mut App) -> (Host, Inbound) {
     contract::install(boot.os);
+    contract::install_runner(boot.runner);
     crate::runtime::notify::on_open(boot.open);
     let consent = crate::runtime::consent::changes_channel();
     let center = crate::runtime::notify::center().clone();

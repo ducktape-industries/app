@@ -149,17 +149,18 @@ pub(super) enum Slot {
     Failed(Failure),
 }
 
-/// A view compiled and not started: its code, out of the `blob` the
-/// roster lists (none for the developer's override, which a pane reads
-/// again), the hash of its bytes, and what its manifest says: the name
+/// A view compiled and not started: its code, prepared on `runner` under
+/// the hash of its bytes, out of the `blob` the roster lists (none for the
+/// developer's override, which a pane reads again), and what its manifest
+/// says: the name
 /// the rail lists it by, the icon its tab draws folded (empty: it declares
 /// none), the narrowest it is laid out, its capabilities and its targets.
 /// All a pane needs to start it, with nothing fetched or compiled again.
 #[derive(Clone)]
 pub(super) struct ViewCode {
+    pub(super) runner: Arc<dyn ViewRunner>,
     pub(super) blob: Option<abi::BlobId>,
     pub(super) hash: [u8; 32],
-    pub(super) code: Arc<Module>,
     pub(super) name: String,
     pub(super) icon: String,
     pub(super) min_width: u32,
@@ -173,9 +174,9 @@ impl ViewCode {
     /// and `min_width`: a seat's compiled view no pane starts as it is.
     pub(super) fn for_test(name: &str, icon: &str, min_width: u32) -> Box<Self> {
         Box::new(ViewCode {
+            runner: crate::contract::runner().clone(),
             blob: None,
             hash: [0; 32],
-            code: Arc::new(Module::new(view::engine(), "(module)").unwrap()),
             name: name.into(),
             icon: icon.into(),
             min_width,
@@ -612,11 +613,10 @@ fn install(
             fresh,
             alive,
             ticks,
-            code,
             shown,
         } => {
             let hash = fresh.hash;
-            match swapped(slot, fresh, &alive, ticks, &code, &shown, timing) {
+            match swapped(slot, fresh, &alive, ticks, &shown, timing) {
                 Ok(mut fresh) => {
                     fresh.instance = *instance;
                     fresh.installed_generation = Some(generation);
@@ -638,7 +638,7 @@ fn install(
 /// at `ticks`, made ready to take its seat: the view's editor projections
 /// and pictures carried over. A view that ticked, or took work, since the
 /// handover `fresh` was prepared from hands over again, here, into a new
-/// instance of `code`: the seat's lock is held, nothing ticks the view
+/// instance of its code: the seat's lock is held, nothing ticks the view
 /// meanwhile, so that second handover is the view as it is and no tick can
 /// race it. Why there is no replacement, if there is none.
 fn swapped(
@@ -646,7 +646,6 @@ fn swapped(
     mut fresh: Box<View>,
     alive: &Arc<()>,
     ticks: u64,
-    code: &Module,
     shown: &str,
     timing: &mut LoadTiming,
 ) -> Result<Box<View>, String> {
@@ -657,7 +656,7 @@ fn swapped(
         return Err("the view changed while its replacement was prepared".into());
     }
     if old.ticks != ticks || !old.settled() {
-        fresh = View::prepared_again(old, &fresh, code, shown, timing)
+        fresh = View::prepared_again(old, &fresh, shown, timing)
             .map(Box::new)
             .map_err(|failure| failure.to_string())?;
     }
@@ -681,13 +680,11 @@ pub(super) enum Loaded {
     Unchanged,
     /// A prepared replacement for the view drawn: restored from its
     /// snapshot, its first tree verified; `alive` and `ticks` name the
-    /// instance it was prepared against, and `code`, named `shown`, is what
-    /// it is an instance of.
+    /// instance it was prepared against, `shown` names it.
     Swap {
         fresh: Box<View>,
         alive: Arc<()>,
         ticks: u64,
-        code: Arc<Module>,
         shown: String,
     },
     /// The deployment ships no view.
