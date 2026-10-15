@@ -61,6 +61,8 @@ pub(crate) enum Spot {
     FillWindow,
     /// The arrows move and size the focused window (⌘⇧M).
     HoldWindow,
+    /// The console's OS window above other apps' windows, or back (⌘⇧T).
+    KeepOnTop,
 }
 
 /// One Spotlight row, under its group's heading.

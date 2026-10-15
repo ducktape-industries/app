@@ -275,11 +275,15 @@ impl OverlayLayer {
 
     /// Spotlight's rows for the text typed.
     fn rows(&self, cx: &gpui_kit::App) -> Vec<super::super::entities::SpotRow> {
+        let windows = self.app.windows.read(cx);
+        let on_top = super::super::windows::can_keep_above(cx)
+            .then(|| windows.console().is_some_and(|key| windows.on_top(key)));
         self.spotlight.read(cx).get().rows(
             self.rail.read(cx),
             self.session.read(cx).get(),
             self.account.read(cx).get(),
             self.framed,
+            on_top,
         )
     }
 }
@@ -349,6 +353,12 @@ pub(super) fn run(
                 desk.update(cx, |desk, cx| desk.hold(index, cx));
             }
         }
+        // Spotlight draws over the console: its window
+        Some(Spot::KeepOnTop) => app.windows.update(cx, |windows, cx| {
+            if let Some(key) = windows.console() {
+                windows.toggle_on_top(key, cx);
+            }
+        }),
         None => {}
     }
 }

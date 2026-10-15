@@ -6,7 +6,7 @@ use super::{Entities, Overlay, SessionState, Windows};
 use crate::runtime::WindowKey;
 use crate::shell::WindowKind;
 use crate::ui::layout::{EMPTY, Frame, MAX_PANES};
-use gpui_kit::{AppContext as _, Bounds, TestAppContext, point, px, size};
+use gpui_kit::{AppContext as _, Bounds, TestAppContext, VisualTestContext, point, px, size};
 
 const DESK: (f32, f32) = (1280., 764.);
 
@@ -756,4 +756,124 @@ fn a_windows_first_frame_tells_the_updater_it_rendered(cx: &mut TestAppContext) 
     cx.update_window(handle, |_, window, cx| window.simulate_next_frame(cx))
         .unwrap();
     assert_eq!(crate::update::rendered_here(), before + 1);
+}
+
+// ---------- Keep on Top ----------
+
+/// What the test platform was told to keep above (window, on), since the
+/// last look.
+fn told_above() -> Vec<(gpui_kit::WindowId, bool)> {
+    crate::shell::windows::KEPT_ABOVE.with_borrow_mut(std::mem::take)
+}
+
+fn on_top(app: &Entities, key: WindowKey, cx: &TestAppContext) -> bool {
+    app.windows.read_with(cx, |windows, _| windows.on_top(key))
+}
+
+/// ⌘⇧T in a pop-out keeps that window above other apps' windows and no
+/// other; pressed again, it lets it back among them.
+#[gpui_kit::test]
+fn keep_on_top_keeps_the_window_it_was_pressed_in_and_no_other(cx: &mut TestAppContext) {
+    let (app, console, view, mut native) = crate::shell::panes_tests::console(cx);
+    let (popped, handle, _) =
+        crate::shell::layers::tests::pop_out(&app, console, &view, &mut native);
+    told_above();
+    let mut window = gpui_kit::VisualTestContext::from_window(handle, &native);
+    window.simulate_keystrokes("secondary-shift-t");
+    window.run_until_parked();
+    assert!(on_top(&app, popped, &window), "the pop-out is kept on top");
+    assert!(
+        !on_top(&app, console, &window),
+        "the console stays among the others"
+    );
+    assert_eq!(told_above(), [(handle.window_id(), true)]);
+    window.simulate_keystrokes("secondary-shift-t");
+    window.run_until_parked();
+    assert!(!on_top(&app, popped, &window));
+    assert_eq!(told_above(), [(handle.window_id(), false)]);
+}
+
+/// A window kept on top stays so as it is raised, loses and gains the
+/// front and has a pane popped out of it and back (the platform is told
+/// nothing again); the macOS menu's check follows the window in front; a
+/// window that closes is forgotten.
+#[gpui_kit::test]
+fn keep_on_top_holds_through_raising_and_panes_moving(cx: &mut TestAppContext) {
+    use crate::shell::layers::tests::pop_out;
+    let (app, console, view, mut native) = crate::shell::panes_tests::console(cx);
+    let console_window = app
+        .windows
+        .read_with(&native, |windows, _| windows.handles()[&console]);
+    native.update(|window, _| window.activate_window());
+    native.run_until_parked();
+    told_above();
+    app.windows.update(&mut native, |windows, cx| {
+        windows.toggle_on_top(console, cx)
+    });
+    native.run_until_parked();
+    let menu = |native: &VisualTestContext| {
+        app.windows
+            .read_with(native, |windows, _| windows.menu_on_top())
+    };
+    assert!(on_top(&app, console, &native));
+    assert!(menu(&native), "the menu checks the window in front");
+    assert_eq!(told_above(), [(console_window.window_id(), true)]);
+
+    let (popped, handle, _) = pop_out(&app, console, &view, &mut native);
+    native.update(|_, cx| {
+        handle
+            .update(cx, |_, window, _| window.activate_window())
+            .unwrap()
+    });
+    native.run_until_parked();
+    assert!(!menu(&native), "the pop-out in front is not on top");
+    app.windows
+        .update(&mut native, |windows, cx| windows.toggle_on_top(popped, cx));
+    native.run_until_parked();
+    assert!(menu(&native));
+
+    app.windows
+        .update(&mut native, |windows, cx| windows.raise(console, cx));
+    native.run_until_parked();
+    assert!(on_top(&app, console, &native));
+    assert!(menu(&native), "the console in front again");
+    app.windows
+        .update(&mut native, |windows, cx| windows.pop_in(popped, cx));
+    native.run_until_parked();
+    assert!(on_top(&app, console, &native), "its pane came back");
+    assert!(
+        !on_top(&app, popped, &native),
+        "the closed window is forgotten"
+    );
+    assert_eq!(
+        told_above(),
+        [(handle.window_id(), true)],
+        "nothing but the pop-out's own Keep on Top told the platform"
+    );
+}
+
+/// Search's "Keep on top" acts on the console, where Search draws, and
+/// reports ⌘⇧T as Help lists it (AX-114).
+#[gpui_kit::test]
+fn search_keeps_the_console_on_top(cx: &mut TestAppContext) {
+    use crate::shell::entities::Spot;
+    use crate::shell::layers::tests::{run_spot, show};
+    let (app, console, view, mut native) = crate::shell::panes_tests::console(cx);
+    show(&view, Some(Overlay::Spotlight), &mut native);
+    let nodes = native.update(crate::shell::panes_tests::draw);
+    let row = nodes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["role"] == "ListBoxOption" && node["name"] == "Keep on top")
+        .unwrap_or_else(|| panic!("no Keep on top row: {nodes}"));
+    assert_eq!(
+        row["keyboard_shortcut"],
+        crate::shell::chord_label("⇧T").as_str()
+    );
+    told_above();
+    run_spot(&view, Spot::KeepOnTop, &mut native);
+    native.run_until_parked();
+    assert!(on_top(&app, console, &native));
+    assert_eq!(told_above().len(), 1);
 }

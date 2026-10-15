@@ -2516,6 +2516,7 @@ dependencies = [
  "program",
  "programs",
  "rand 0.8.8",
+ "raw-window-handle",
  "reqwest",
  "serde",
  "serde_json",
@@ -2535,6 +2536,7 @@ dependencies = [
  "wasmparser 0.251.0",
  "wasmtime",
  "wat",
+ "x11rb",
  "zbus 5.19.0",
  "zeroize",
 ]
