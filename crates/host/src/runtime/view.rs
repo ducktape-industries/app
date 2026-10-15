@@ -88,6 +88,9 @@ pub(super) struct View {
     landing: async_channel::Receiver<Landed>,
     /// The tick in flight's `tick.call` timer: from its call to its landing.
     tick_call: Option<crate::perf::Timer>,
+    /// A tick begun, its frame not landed: whichever seat turns next waits
+    /// for it before it begins another.
+    ticking: bool,
     /// The view's events for its next tick.
     pub pending: Vec<wire::Event>,
     /// The host's facts as the view last heard them: the theme, the
@@ -229,12 +232,21 @@ impl Drop for View {
 /// view memory: what a test instantiates.
 #[cfg(any(test, feature = "test-support"))]
 pub fn prepared_for_test(code: impl AsRef<[u8]>) -> [u8; 32] {
+    prepared_on_for_test(crate::contract::runner(), code)
+}
+
+/// [`prepared_for_test`] on `runner`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn prepared_on_for_test(
+    runner: &Arc<dyn crate::contract::ViewRunner>,
+    code: impl AsRef<[u8]>,
+) -> [u8; 32] {
     use sha2::Digest as _;
     let code = code.as_ref();
     let hash = sha2::Sha256::digest(code).into();
     let view_bytes =
         usize::try_from(crate::backend::memory_bounds().view_bytes).unwrap_or(usize::MAX);
-    crate::contract::runner()
+    runner
         .prepare(hash, code, view_bytes)
         .expect("the test's code compiles");
     hash

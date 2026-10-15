@@ -129,6 +129,11 @@ impl View {
         self.landing.try_recv().ok()
     }
 
+    /// Whether a tick is in flight: begun, its frame not landed.
+    pub fn ticking(&self) -> bool {
+        self.ticking
+    }
+
     /// The instance's answers, for the seat to wait on a tick in flight.
     pub fn landing(&self) -> async_channel::Receiver<Landed> {
         self.landing.clone()
@@ -389,6 +394,7 @@ impl View {
         let bytes = wire::encode(&events);
         crate::perf::record(key, "events_bytes", bytes.len() as u64);
         self.tick_call = crate::perf::time(key, "tick.call");
+        self.ticking = true;
         self.running.begin_tick(bytes);
     }
 
@@ -398,6 +404,7 @@ impl View {
         use crate::perf;
         let key = self.perf_key();
         drop(self.tick_call.take());
+        self.ticking = false;
         let answer = match landed {
             Landed::Frame(frame) => Ok(frame),
             Landed::Fault(fault) => Err(fault.to_string()),

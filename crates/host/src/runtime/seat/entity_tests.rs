@@ -1216,3 +1216,292 @@ fn a_seat_claimed_or_dropped_wakes_the_rail(cx: &mut TestAppContext) {
     crate::runtime::roster::relist(&Roster::default(), vec![listed]);
     assert!(woken() > 0, "a changed roster told the rail nothing");
 }
+
+// ---------- the landed-later gate (SPEC §13.3) ----------
+//
+// The seat's one path for a tick that lands later than its turn, run on
+// Linux through `DeferredRunner`: the wasmtime runner whose answers land
+// when the test's pump releases them (at once, on a later release, or
+// never), as a JSC page's do across its process boundary.
+
+use crate::runner::deferred::{DeferredRunner, Pump};
+
+/// A frame whose tree is a box named `key`: each one a tree of its own.
+fn keyed(key: &str) -> wire::Frame {
+    wire::Frame {
+        root: Some(wire::Node::Container(view_wire::ContainerNode {
+            id: Some(wire::ElementIdWire::Name(key.into())),
+            style: crate::render::test_style(div().size_full().style().clone()),
+            interactivity: Default::default(),
+            children: Vec::new(),
+        })),
+        ..Default::default()
+    }
+}
+
+/// Five frames, each a tree of its own, the last on every tick after.
+fn five_trees() -> Vec<wire::Frame> {
+    ["one", "two", "three", "four", "five"]
+        .into_iter()
+        .map(keyed)
+        .collect()
+}
+
+/// A seat of `program` placed in its window, its view answering `frames`
+/// in order on a [`DeferredRunner`], which lands at once until its pump is
+/// told to hold.
+fn deferred(
+    cx: &mut TestAppContext,
+    program: &'static str,
+    frames: &[wire::Frame],
+) -> (Entity<Seat>, Entity<Root>, VisualTestContext, Pump) {
+    let runner = DeferredRunner::default();
+    let pump = runner.pump.clone();
+    let runner: Arc<dyn ViewRunner> = Arc::new(runner);
+    crate::runtime::seat_ticking_on_for_test(&runner, program, 320, frames);
+    let (seat, root, native) = open(cx, program, false);
+    (seat, root, native, pump)
+}
+
+/// [`deferred`]'s seat on the installed (wasmtime) runner, in the app
+/// [`deferred`] set up.
+fn on_wasmtime(
+    cx: &mut TestAppContext,
+    program: &'static str,
+    frames: &[wire::Frame],
+) -> (Entity<Seat>, Entity<Root>, VisualTestContext) {
+    crate::runtime::seat_ticking_for_test(program, 320, frames);
+    another(cx, program, false)
+}
+
+/// The window draws, and whatever the draw lets go of runs.
+fn draw_now(native: &mut VisualTestContext) {
+    native.update(|window, cx| {
+        window.draw(cx).clear(cx);
+    });
+    native.run_until_parked();
+}
+
+fn in_flight(seat: &Entity<Seat>, cx: &TestAppContext) -> bool {
+    seat.read_with(cx, |seat, _| seat.in_flight())
+}
+
+fn frame_rev_of(seat: &Entity<Seat>, cx: &TestAppContext) -> u64 {
+    match &mounted_of(seat, cx).lock().unwrap().slot {
+        Slot::Ready(view) => view.frame_rev,
+        _ => panic!("not seated"),
+    }
+}
+
+/// Moves the seat's props: a turn with something to deliver.
+fn nudge(seat: &Entity<Seat>, props: &[u8], native: &mut VisualTestContext) {
+    native.update(|_, cx| seat.update(cx, |seat, cx| seat.set_props(props.to_vec(), cx)));
+    native.run_until_parked();
+}
+
+/// The view listens for its props, so moved props are a tick's worth.
+fn subscribe_props(seat: &Entity<Seat>, cx: &TestAppContext) {
+    let mounted = mounted_of(seat, cx);
+    let mut locked = mounted.lock().unwrap();
+    let Slot::Ready(view) = &mut locked.slot else {
+        panic!("seated")
+    };
+    view.props_subscription = Some(98);
+}
+
+/// A turn asked for while a tick is in flight waits, however often it is
+/// asked, and runs once after the frame lands (and draws); the landing
+/// finishes the turn that began the tick, the tree shows the landed frame.
+#[gpui_kit::test]
+fn a_turn_queued_while_a_tick_is_in_flight_runs_once_after_the_landing(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "deferred-queued-turn";
+    let (seat, _, mut native, pump) = deferred(cx, PROGRAM, &five_trees());
+    draw_now(&mut native);
+    assert_eq!(
+        ticks_of(&seat, &native),
+        1,
+        "the first frame landed at once"
+    );
+    subscribe_props(&seat, &native);
+    pump.hold();
+    nudge(&seat, b"one", &mut native);
+    assert!(in_flight(&seat, &native), "the tick waits for its frame");
+    assert_eq!((pump.held(), ticks_of(&seat, &native)), (1, 1));
+    let turns = turns_of(&seat, &native);
+    let rev = frame_rev_of(&seat, &native);
+    // asked for three times while the frame is out: no turn runs
+    nudge(&seat, b"two", &mut native);
+    native.update(|_, cx| {
+        seat.update(cx, |seat, cx| {
+            seat.turn(cx);
+            seat.turn(cx);
+        })
+    });
+    native.run_until_parked();
+    assert_eq!(
+        turns_of(&seat, &native),
+        turns,
+        "a turn ran with a tick in flight"
+    );
+    assert_eq!(
+        pump.held(),
+        1,
+        "a second tick began before the first landed"
+    );
+    // the frame lands: the turn finishes, the tree draws it, the owed turn
+    // runs once and begins the next tick (moved props to deliver)
+    assert_eq!(pump.release_all(), 1);
+    native.run_until_parked();
+    assert_eq!(ticks_of(&seat, &native), 2);
+    assert!(
+        frame_rev_of(&seat, &native) > rev,
+        "the landed frame was not taken in"
+    );
+    draw_now(&mut native);
+    assert_eq!(
+        turns_of(&seat, &native),
+        turns + 1,
+        "the owed turn ran once"
+    );
+    assert_eq!(pump.held(), 1, "the owed turn delivered the moved props");
+    assert_eq!(pump.release_all(), 1);
+    draw_now(&mut native);
+    assert_eq!(ticks_of(&seat, &native), 3);
+    assert!(!in_flight(&seat, &native));
+    assert_eq!(pump.held(), 0, "nothing was left to deliver");
+}
+
+/// The desktop's order: with every answer landing at once, a seat on the
+/// deferred runner draws the same frames, in the same order, with the same
+/// turns and ticks, as one on the wasmtime runner itself.
+#[gpui_kit::test]
+fn the_desktop_order_is_unchanged_when_every_answer_lands_at_once(cx: &mut TestAppContext) {
+    fn script(
+        program: &str,
+        seat: &Entity<Seat>,
+        root: &Entity<Root>,
+        native: &mut VisualTestContext,
+    ) -> (Vec<(u64, u64)>, u64, u64, u64) {
+        draw_now(native);
+        subscribe_props(seat, native);
+        for props in [b"a", b"b", b"c"] {
+            nudge(seat, props, native);
+            draw_now(native);
+        }
+        // two wakes before one draw: one ticks, the other waits for it
+        nudge(seat, b"d", native);
+        nudge(seat, b"e", native);
+        draw_now(native);
+        draw_now(native);
+        (
+            root.read_with(native, |root, _| root.drawn.clone()),
+            turns_of(seat, native),
+            ticks_of(seat, native),
+            renders_of(program),
+        )
+    }
+    let _on = crate::perf::on_for_test();
+    let (seat, root, mut native, pump) = deferred(cx, "order-on-deferred", &five_trees());
+    let at_once = script("order-on-deferred", &seat, &root, &mut native);
+    assert_eq!(pump.held(), 0);
+    let wasmtime = {
+        let (seat, root, mut native) = on_wasmtime(cx, "order-on-wasmtime", &five_trees());
+        script("order-on-wasmtime", &seat, &root, &mut native)
+    };
+    assert_eq!(
+        at_once, wasmtime,
+        "(drawn frames, turns, ticks, renders) moved"
+    );
+    assert!(
+        wasmtime.2 >= 5,
+        "the script ticked every frame: {wasmtime:?}"
+    );
+}
+
+/// The AX door's reads park while a seat's tick is in flight (its settle
+/// says not every tick landed: `Seats::settle`) and go on once the frame
+/// lands, on the polls `/wait` parks on.
+#[gpui_kit::test]
+fn the_doors_settle_parks_a_read_until_the_frame_lands(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "deferred-door-settle";
+    let (seat, _, mut native, pump) = deferred(cx, PROGRAM, &five_trees());
+    draw_now(&mut native);
+    subscribe_props(&seat, &native);
+    pump.hold();
+    nudge(&seat, b"moved", &mut native);
+    assert!(in_flight(&seat, &native));
+    let read = std::rc::Rc::new(std::cell::Cell::new(false));
+    let done = read.clone();
+    let settling = seat.clone();
+    native
+        .spawn(async move |mut cx| {
+            let settle = move |cx: &mut gpui_kit::App| {
+                settling.update(cx, |seat, cx| seat.turn(cx));
+                !settling.read(cx).in_flight()
+            };
+            let door = crate::ax::Door {
+                windows: &|_| Vec::new(),
+                settle: &settle,
+                keep: &|_, _| None,
+                chords: &Vec::new,
+            };
+            crate::ax::settled(&door, &mut cx).await;
+            done.set(true);
+        })
+        .detach();
+    for _ in 0..3 {
+        native.executor().advance_clock(Duration::from_millis(100));
+        native.run_until_parked();
+    }
+    assert!(!read.get(), "the read went on with a tick in flight");
+    assert!(in_flight(&seat, &native));
+    assert_eq!(pump.release_all(), 1);
+    native.run_until_parked();
+    native.executor().advance_clock(Duration::from_millis(100));
+    native.run_until_parked();
+    assert!(read.get(), "the read stayed parked after the frame landed");
+    assert_eq!(ticks_of(&seat, &native), 2);
+}
+
+/// A frame that lands after `hide` is kept on the view (its tick counted,
+/// its tree taken in) and never drawn: the tree the pane last drew stays,
+/// and no turn follows.
+#[gpui_kit::test]
+fn a_landing_after_hide_is_kept_not_drawn(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "deferred-hide";
+    let _on = crate::perf::on_for_test();
+    let (seat, _, mut native, pump) = deferred(cx, PROGRAM, &five_trees());
+    draw_now(&mut native);
+    subscribe_props(&seat, &native);
+    pump.hold();
+    nudge(&seat, b"moved", &mut native);
+    assert!(in_flight(&seat, &native));
+    let renders = renders_of(PROGRAM);
+    let turns = turns_of(&seat, &native);
+    let rev = frame_rev_of(&seat, &native);
+    let tree = seat.read_with(&native, |seat, _| seat.tree());
+    let intents = native.update(|_, cx| seat.update(cx, |seat, _| seat.hide()));
+    assert!(intents.is_empty());
+    assert_eq!(pump.release_all(), 1);
+    draw_now(&mut native);
+    draw_now(&mut native);
+    assert_eq!(ticks_of(&seat, &native), 2, "the landed frame was not kept");
+    assert!(
+        frame_rev_of(&seat, &native) > rev,
+        "the landed tree was not taken in"
+    );
+    assert_eq!(
+        renders_of(PROGRAM),
+        renders,
+        "a frame landing after hide was drawn"
+    );
+    assert_eq!(
+        seat.read_with(&native, |seat, _| seat.tree())
+            .map(|tree| tree.entity_id()),
+        tree.map(|tree| tree.entity_id()),
+        "the hidden seat mounted a new tree"
+    );
+    nudge(&seat, b"again", &mut native);
+    assert_eq!(turns_of(&seat, &native), turns, "a hidden seat turned");
+    assert_eq!(pump.held(), 0);
+}

@@ -277,20 +277,21 @@ impl Seat {
         }
         view.set_visible(false);
         // a tick in flight lands on the view as it is, kept, never drawn
-        // (`landed`); this update's own waits behind it as any turn would
-        if self.in_flight.is_none() {
+        // (`landed`); this update's own waits behind it as any turn would.
+        // One that lands later than this returns is the view's, taken in
+        // by whichever seat turns next (`turn` waits for it)
+        if !view.ticking() {
             match view.begin_redraw(props) {
                 Redraw::Quiet => {}
                 Redraw::Ready => {
                     view.finish_redraw(props);
                 }
-                Redraw::Ticking => match view.landed_now() {
-                    Some(landed) => {
+                Redraw::Ticking => {
+                    if let Some(landed) = view.landed_now() {
                         view.redraw_landed(landed);
                         view.finish_redraw(props);
                     }
-                    None => self.in_flight = Some((view.ticks, Instant::now())),
-                },
+                }
             }
         }
         std::mem::take(&mut view.intents)
@@ -354,6 +355,12 @@ impl Seat {
         // The view lays itself out in its pane's body, and hears it ahead
         // of every tick. A pane with none yet (its desk is not drawn) does
         // not tick: `place` turns the seat when the body comes.
+        // a tick another seat began (one let go of, a `hide`) lands here
+        // first, as this seat's own would
+        if view.ticking() {
+            let ticks = view.ticks;
+            return self.wait(view, ticks, shown, cx);
+        }
         let Some((width, height)) = self.body else {
             return;
         };
@@ -381,28 +388,30 @@ impl Seat {
                     view.finish_redraw(props)
                 }
                 // the frame lands later: the turn's second half waits for it
-                None => {
-                    let landing = view.landing();
-                    let alive = view.alive.clone();
-                    drop(locked);
-                    self.in_flight = Some((ticks, shown));
-                    self._landing = Some(cx.spawn(async move |this, cx| {
-                        if let Ok(landed) = landing.recv().await {
-                            let _ = this.update(cx, |this, cx| this.landed(&alive, landed, cx));
-                        }
-                    }));
-                    return;
-                }
+                None => return self.wait(view, ticks, shown, cx),
             },
         };
         self.finish(locked, ticks, shown, again, cx);
+    }
+
+    /// The turn's second half waits for `view`'s tick in flight: a task of
+    /// the seat's takes the frame when it lands (`landed`).
+    fn wait(&mut self, view: &View, ticks: u64, shown: Instant, cx: &mut Context<Self>) {
+        let landing = view.landing();
+        let alive = view.alive.clone();
+        self.in_flight = Some((ticks, shown));
+        self._landing = Some(cx.spawn(async move |this, cx| {
+            // `None`: the instance stopped, its answer with it
+            let landed = landing.recv().await.ok();
+            let _ = this.update(cx, |this, cx| this.landed(&alive, landed, cx));
+        }));
     }
 
     /// A frame that landed after its turn returned: taken in by the view it
     /// was asked of, and the turn finished. After `hide` it is kept on the
     /// view, its requests answered, and nothing is drawn. A turn owed
     /// meanwhile runs now, unless the tree holds for its draw.
-    fn landed(&mut self, alive: &Arc<()>, landed: Landed, cx: &mut Context<Self>) {
+    fn landed(&mut self, alive: &Arc<()>, landed: Option<Landed>, cx: &mut Context<Self>) {
         let Some((ticks, shown)) = self.in_flight.take() else {
             return;
         };
@@ -410,19 +419,19 @@ impl Seat {
         let mounted = self.mounted.clone();
         let mut locked = lock(&mounted);
         let Mounted { slot, props, .. } = &mut *locked;
-        // the instance it was asked of is still the seat's
-        let Slot::Ready(view) = slot else {
-            return;
-        };
-        if !Arc::ptr_eq(alive, &view.alive) {
-            return;
+        match (slot, landed) {
+            // the instance it was asked of is still the seat's
+            (Slot::Ready(view), Some(landed)) if Arc::ptr_eq(alive, &view.alive) => {
+                view.redraw_landed(landed);
+                let again = view.finish_redraw(props);
+                if self.hidden {
+                    return;
+                }
+                self.finish(locked, ticks, shown, again, cx);
+            }
+            // replaced or stopped meanwhile: the answer went with it
+            _ => drop(locked),
         }
-        view.redraw_landed(landed);
-        let again = view.finish_redraw(props);
-        if self.hidden {
-            return;
-        }
-        self.finish(locked, ticks, shown, again, cx);
         if self.owed && !self.holding {
             self.turn(cx);
         }

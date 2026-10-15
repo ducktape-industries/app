@@ -686,7 +686,7 @@ fn gpui_perf(_: &Window) -> serde_json::Value {
 /// flight (`Door::settle`), on the polls `/wait` parks on. No deadline of
 /// the host's: a tick that never lands is a cause to find, and a client
 /// bounds its own call.
-async fn settled(door: &Door<'_>, cx: &mut AsyncApp) {
+pub(crate) async fn settled(door: &Door<'_>, cx: &mut AsyncApp) {
     while !cx.update(|cx| (door.settle)(cx)) {
         cx.background_executor().timer(POLL).await;
     }

@@ -328,6 +328,17 @@ pub fn frames_code(first: &wire::Frame, first_ticks: u32, then: &wire::Frame) ->
 /// one is a view with nothing new to show.
 #[cfg(any(test, feature = "test-support"))]
 pub fn seat_ticking_for_test(program: &'static str, min_width: u32, frames: &[wire::Frame]) {
+    seat_ticking_on_for_test(crate::contract::runner(), program, min_width, frames)
+}
+
+/// [`seat_ticking_for_test`], its code prepared on and seated by `runner`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seat_ticking_on_for_test(
+    runner: &Arc<dyn ViewRunner>,
+    program: &'static str,
+    min_width: u32,
+    frames: &[wire::Frame],
+) {
     assert!(!frames.is_empty(), "a view answers at least one frame");
     let mut data = String::new();
     let mut arms = String::new();
@@ -347,8 +358,10 @@ pub fn seat_ticking_for_test(program: &'static str, min_width: u32, frames: &[wi
             arms += &format!("i64.const {tick}{}", " end".repeat(nth));
         }
     }
-    let code = view::prepared_for_test(format!(
-        r#"(module
+    let code = view::prepared_on_for_test(
+        runner,
+        format!(
+            r#"(module
             (memory (export "memory") 2)
             (global $n (mut i32) (i32.const 0))
             {data}
@@ -359,8 +372,9 @@ pub fn seat_ticking_for_test(program: &'static str, min_width: u32, frames: &[wi
                 {arms})
             (func (export "snapshot") (result i64) unreachable)
             (func (export "restore") (param i32 i32) (result i64) unreachable))"#
-    ));
-    seat_code_for_test(program, min_width, code);
+        ),
+    );
+    seat_code_on_for_test(runner, program, min_width, code);
 }
 
 /// An intent `program`'s seat `instance` will hand over on its next update,
