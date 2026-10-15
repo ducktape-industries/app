@@ -80,7 +80,7 @@ declare_class!(
                 row => row.parse::<u64>().ok().map(Click::Row),
             });
             if let Some(click) = click.filter(|_| default) {
-                ducktape_host::runtime::notify::clicked(click);
+                super::clicked(click);
             }
             done.call(());
         }

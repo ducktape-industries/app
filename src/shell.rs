@@ -43,6 +43,7 @@ mod ink;
 mod keys;
 mod launch;
 mod layers;
+mod sign_in;
 pub(in crate::shell) use layers::WindowRoot;
 #[cfg(test)]
 mod first_frame_tests;

@@ -122,11 +122,11 @@ pub enum Intent {
 /// fuel; docs/perf.md §4.2 has the heaviest ticks measured and each view's
 /// budget, at most half of this ceiling.
 const FUEL_PER_TICK: u64 = 250_000_000;
-/// How many view loads run at once, each on a loader thread of its own: a
-/// fetch and a cranelift compile each, so a long roster waits its turn
-/// behind one loader a core rather than forking a thread per program.
+/// How many view loads run at once, each on a loader thread of its own
+/// (`Limits::loaders`: the desktop one a core, a phone one), so a long
+/// roster waits its turn rather than forking a thread per program.
 fn loaders() -> usize {
-    std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+    crate::contract::os().limits().loaders
 }
 
 type Routes = Mutex<std::collections::BTreeMap<(&'static str, u64), String>>;

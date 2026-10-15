@@ -18,4 +18,4 @@ pub(crate) mod recovery;
 
 pub(crate) use app_dirs::{app_log_path, cache_dir, config_dir, data_dir};
 pub(crate) use ducktape_host::backend::*;
-pub(crate) use key_dir::{bind_keyring, key_exists, keystore_root, session_key_path};
+pub(crate) use key_dir::{key_exists, keystore_root, session_key_path};

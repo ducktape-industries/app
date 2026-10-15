@@ -33,7 +33,7 @@ fn main() {
         // the test door's client: talks to a running app, opens nothing
         #[cfg(feature = "ax-door")]
         Some("ax") => {
-            install_os();
+            let _ = install_os();
             let args: Vec<String> = std::env::args().skip(2).collect();
             std::process::exit(ax::cli(&args));
         }
@@ -65,7 +65,7 @@ fn main() {
         }
         _ => {}
     }
-    install_os();
+    let os = install_os();
     // the sampler reads the OS facts: after them
     perf::start();
     install_log();
@@ -76,20 +76,26 @@ fn main() {
     raise_open_file_limit();
     #[cfg(debug_assertions)]
     if let Some(live) = live {
-        shell::run_live(live);
+        shell::run_live(live, os.clone());
         render::web::shutdown();
         return;
     }
-    shell::run();
+    shell::run(os);
     render::web::shutdown();
 }
 
 /// The desktop's OS services into the host core, before anything reads a
-/// directory. No home to put them in is a refusal with the sentence that
+/// directory (the host's `start` takes the same services again, as its
+/// `Boot`). No home to put them in is a refusal with the sentence that
 /// names the variable to set, not a GUI that starts and finds nothing.
-fn install_os() {
+fn install_os() -> std::sync::Arc<dyn ducktape_host::contract::OsServices> {
     match os::DesktopOs::new() {
-        Ok(os) => ducktape_host::contract::install(std::sync::Arc::new(os)),
+        Ok(os) => {
+            let os: std::sync::Arc<dyn ducktape_host::contract::OsServices> =
+                std::sync::Arc::new(os);
+            ducktape_host::contract::install(os.clone());
+            os
+        }
         Err(error) => {
             eprintln!("ducktape-app: {error}");
             std::process::exit(2);

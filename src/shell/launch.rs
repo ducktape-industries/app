@@ -7,8 +7,10 @@
 //! (`Windows::quit`). Fonts and the theme are registered here too.
 
 use super::*;
+use ducktape_host::contract::OsServices;
 use futures::StreamExt as _;
 use gpui_kit::AsyncApp;
+use std::sync::Arc;
 
 /// What the first window is: the console (the launcher, then the desk),
 /// or, in a debug build's `--live`, one view on a node already named.
@@ -18,18 +20,18 @@ enum Boot {
     Live(super::Live),
 }
 
-pub(crate) fn run() {
-    start(Boot::Console)
+pub(crate) fn run(os: Arc<dyn OsServices>) {
+    start(Boot::Console, os)
 }
 
 /// `ducktape-app --live`: the app as [`run`] starts it, with the one
 /// view's window in place of the console.
 #[cfg(debug_assertions)]
-pub(crate) fn run_live(live: super::Live) {
-    start(Boot::Live(live))
+pub(crate) fn run_live(live: super::Live, os: Arc<dyn OsServices>) {
+    start(Boot::Live(live), os)
 }
 
-fn start(boot: Boot) {
+fn start(boot: Boot, os: Arc<dyn OsServices>) {
     let application = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
     let (url_sender, mut urls) = futures::channel::mpsc::unbounded::<Vec<String>>();
     application.on_open_urls(move |urls| {
@@ -43,13 +45,12 @@ fn start(boot: Boot) {
         initialize_rendering(cx);
         crate::perf::mark("fonts");
         let mut posted = entities::posted();
-        // the app's two stores: the notification centre (its log read
-        // off disk) and the roster the node's reads fill
-        let center = crate::runtime::notify::center().clone();
-        let roster = crate::runtime::roster().clone();
-        crate::perf::mark("boot");
-        let changes = crate::runtime::changes_channel();
-        let entities = entities::Entities::new(roster, center, changes, cx);
+        // the host's stores and the shared entities; what the OS feeds in
+        // after this goes through `inbound` (the desktop: banner clicks)
+        let (host, inbound) =
+            ducktape_host::start::start(ducktape_host::contract::Boot { os: os.clone() }, cx);
+        crate::os::install_inbound(inbound);
+        let entities = entities::Entities::new(host.shared, cx);
         let (tray, mut tray_events) = crate::tray::init(&entities, cx);
         let windows = entities.windows.clone();
         windows.update(cx, |windows, cx| windows.sync_appearance(cx));

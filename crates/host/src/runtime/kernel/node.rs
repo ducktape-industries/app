@@ -731,10 +731,11 @@ pub(super) fn invite(node: Node, ask: Vec<u8>) -> Answered {
             .map_err(host_fault)?
             .as_millis() as u64;
         let ask = crate::contract::MintInvite {
+            client: node.client.clone(),
             ttl_days: ttl,
             now_ms,
         };
-        let Some(minted) = crate::contract::os().mint_invite(&node.client, ask) else {
+        let Some(minted) = crate::contract::os().mint_invite(ask) else {
             return Err(wire::Error::new(
                 refusal::INVITE_UNSUPPORTED,
                 "Only the machine running this node can mint its invites.",

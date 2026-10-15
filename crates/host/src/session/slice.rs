@@ -5,21 +5,23 @@ use gpui_kit::{App, Context, Entity, Subscription};
 use std::future::Future;
 
 /// A shared value. Its one write compares first: setting an equal value
-/// notifies no observer, so a write that moves nothing draws nothing.
-pub(crate) struct Slice<T: PartialEq>(T);
+/// notifies no observer, so a write that moves nothing draws nothing. The
+/// entity notified is whichever holds it: the slice itself, or a shell's
+/// own entity wrapping one (the desktop's `Desk`).
+pub struct Slice<T: PartialEq>(T);
 
 impl<T: PartialEq + 'static> Slice<T> {
-    pub(crate) fn new(value: T) -> Self {
+    pub fn new(value: T) -> Self {
         Self(value)
     }
 
-    pub(crate) fn get(&self) -> &T {
+    pub fn get(&self) -> &T {
         &self.0
     }
 
     /// Takes `value` and notifies when it differs from the one held;
     /// `true` when it did.
-    pub(crate) fn set(&mut self, value: T, cx: &mut Context<Self>) -> bool {
+    pub fn set<E: 'static>(&mut self, value: T, cx: &mut Context<E>) -> bool {
         if self.0 == value {
             return false;
         }
@@ -29,7 +31,7 @@ impl<T: PartialEq + 'static> Slice<T> {
     }
 
     /// A field-wise edit, compared as a whole once `edit` has run.
-    pub(crate) fn edit(&mut self, edit: impl FnOnce(&mut T), cx: &mut Context<Self>) -> bool
+    pub fn edit<E: 'static>(&mut self, edit: impl FnOnce(&mut T), cx: &mut Context<E>) -> bool
     where
         T: Clone,
     {
@@ -40,7 +42,7 @@ impl<T: PartialEq + 'static> Slice<T> {
 /// Runs `edit` on a copy of `value` and keeps the copy when it differs:
 /// `true`, and a notify of the entity, when it did. A `Slice`'s value and
 /// the state `Session` and `Account` hold are written through it.
-pub(super) fn edit_compared<T: Clone + PartialEq, E: 'static>(
+pub fn edit_compared<T: Clone + PartialEq, E: 'static>(
     value: &mut T,
     edit: impl FnOnce(&mut T),
     cx: &mut Context<E>,
@@ -59,26 +61,26 @@ pub(super) fn edit_compared<T: Clone + PartialEq, E: 'static>(
 /// so a notify of the entity re-renders it: a cached view that reads an
 /// entity without observing it is drawn stale. A view holds these, never a
 /// bare `Entity`.
-pub(crate) struct Observed<T: 'static> {
+pub struct Observed<T: 'static> {
     entity: Entity<T>,
     _observing: Subscription,
 }
 
 impl<T: 'static> Observed<T> {
-    pub(crate) fn new<V: 'static>(entity: &Entity<T>, cx: &mut Context<V>) -> Self {
+    pub fn new<V: 'static>(entity: &Entity<T>, cx: &mut Context<V>) -> Self {
         Self {
             entity: entity.clone(),
             _observing: cx.observe(entity, |_, _, cx| cx.notify()),
         }
     }
 
-    pub(crate) fn read<'a>(&self, cx: &'a App) -> &'a T {
+    pub fn read<'a>(&self, cx: &'a App) -> &'a T {
         self.entity.read(cx)
     }
 
     /// The handle itself, for a write the view owns (a measurement it
     /// commits after the frame).
-    pub(crate) fn entity(&self) -> &Entity<T> {
+    pub fn entity(&self) -> &Entity<T> {
         &self.entity
     }
 }
@@ -86,7 +88,7 @@ impl<T: 'static> Observed<T> {
 /// Polls `work` with the views kernel's tokio runtime entered: its timers
 /// and sockets need the runtime, and the window thread is not one of its
 /// threads.
-pub(crate) async fn on_runtime<R>(work: impl Future<Output = R>) -> R {
+pub async fn on_runtime<R>(work: impl Future<Output = R>) -> R {
     let runtime = crate::runtime::handle();
     let mut work = std::pin::pin!(work);
     std::future::poll_fn(|context| {
@@ -99,7 +101,7 @@ pub(crate) async fn on_runtime<R>(work: impl Future<Output = R>) -> R {
 /// Runs `work` on the window thread inside the kernel's runtime
 /// (`on_runtime`), then hands its output to `land` on the entity.
 /// Dropping the task drops the work; an entity already gone takes nothing.
-pub(crate) fn spawn_on_runtime<E: 'static, R: 'static>(
+pub fn spawn_on_runtime<E: 'static, R: 'static>(
     cx: &mut Context<E>,
     work: impl Future<Output = R> + 'static,
     land: impl FnOnce(&mut E, R, &mut Context<E>) + 'static,
@@ -113,7 +115,7 @@ pub(crate) fn spawn_on_runtime<E: 'static, R: 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::entities::tests::notifies;
+    use crate::session::tests::notifies;
     use gpui_kit::{AppContext as _, TestAppContext};
 
     #[gpui_kit::test]

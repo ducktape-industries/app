@@ -17,7 +17,7 @@ fn timed() -> Option<crate::perf::Timer> {
 /// The person answered `program`'s ask: the word is saved and its bar goes.
 /// Two entities move: the centre (`Notifications`) and the saved settings
 /// (`Prefs`, read off disk again), so the answer is one call here.
-pub(crate) fn permission(
+pub fn permission(
     notifications: &Entity<Notifications>,
     prefs: &Entity<Slice<Prefs>>,
     program: &str,
@@ -30,7 +30,7 @@ pub(crate) fn permission(
     prefs.update(cx, |prefs, cx| prefs.reload_notify(cx));
 }
 
-pub(crate) struct Notifications {
+pub struct Notifications {
     unread: usize,
     asking: BTreeSet<String>,
     entries_rev: u64,
@@ -39,7 +39,7 @@ pub(crate) struct Notifications {
 }
 
 impl Notifications {
-    pub(crate) fn new(center: CenterHandle) -> Self {
+    pub fn new(center: CenterHandle) -> Self {
         let (unread, asking, entries_rev) = Self::read(&center);
         Self {
             unread,
@@ -57,7 +57,7 @@ impl Notifications {
     /// Read again each time the session connects: the centre has just
     /// taken up that chain's log off disk (`Session`, `set_network`), and
     /// no view has posted to say so.
-    pub(crate) fn follow(&self, session: &Entity<Session>, cx: &mut Context<Self>) {
+    pub fn follow(&self, session: &Entity<Session>, cx: &mut Context<Self>) {
         cx.subscribe(session, |this, _, event: &SessionEvent, cx| {
             if let SessionEvent::Connected = event {
                 this.refresh(cx);
@@ -67,46 +67,46 @@ impl Notifications {
     }
 
     /// The centre itself, for whoever tells it which window is in front.
-    pub(crate) fn center(&self) -> &CenterHandle {
+    pub fn center(&self) -> &CenterHandle {
         &self.center
     }
 
-    pub(crate) fn unread(&self) -> usize {
+    pub fn unread(&self) -> usize {
         self.unread
     }
 
     /// The views waiting for a word on their notices.
-    pub(crate) fn asking(&self, program: &str) -> bool {
+    pub fn asking(&self, program: &str) -> bool {
         self.asking.contains(program)
     }
 
     /// The log's rows, newest first, as the bell lists them.
-    pub(crate) fn entries(&self) -> Vec<crate::runtime::notify::Entry> {
+    pub fn entries(&self) -> Vec<crate::runtime::notify::Entry> {
         self.center.lock().entries().cloned().collect()
     }
 
     /// How many notices `program` posted this week, as of the wall second
     /// `wall` (Settings' Notifications page).
-    pub(crate) fn this_week(&self, program: &str, wall: i64) -> u32 {
+    pub fn this_week(&self, program: &str, wall: i64) -> u32 {
         self.center.lock().this_week(program, wall)
     }
 
     /// A row picked in the bell: read, and handed back for the link or
     /// the seat it is about to open (`Windows::open_notice`).
-    pub(crate) fn open(&mut self, id: u64, cx: &mut Context<Self>) -> Option<Entry> {
+    pub fn open(&mut self, id: u64, cx: &mut Context<Self>) -> Option<Entry> {
         let _timed = timed();
         let entry = self.center.lock().open(id);
         self.refresh(cx);
         entry
     }
 
-    pub(crate) fn mark_all_read(&mut self, cx: &mut Context<Self>) {
+    pub fn mark_all_read(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         self.center.lock().mark_all_read();
         self.refresh(cx);
     }
 
-    pub(crate) fn clear_read(&mut self, cx: &mut Context<Self>) {
+    pub fn clear_read(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         self.center.lock().clear_read();
         self.refresh(cx);
@@ -120,7 +120,7 @@ impl Notifications {
     }
 
     /// "Not now": the bar goes for this run; the view asks again next launch.
-    pub(crate) fn not_now(&mut self, program: &str, cx: &mut Context<Self>) {
+    pub fn not_now(&mut self, program: &str, cx: &mut Context<Self>) {
         let _timed = timed();
         notify::not_now(&mut self.center.lock(), program);
         self.refresh(cx);
@@ -129,13 +129,13 @@ impl Notifications {
     /// The views asking, put back as they stood (the door's walk,
     /// `layers::Kept::restore`).
     #[cfg(any(test, feature = "ax-door"))]
-    pub(crate) fn restore_asking(&mut self, asking: BTreeSet<String>, cx: &mut Context<Self>) {
+    pub fn restore_asking(&mut self, asking: BTreeSet<String>, cx: &mut Context<Self>) {
         self.center.lock().asking = asking;
         self.refresh(cx);
     }
 
     /// Read off the centre again; notifies only when something moved.
-    pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) -> bool {
+    pub fn refresh(&mut self, cx: &mut Context<Self>) -> bool {
         let (unread, asking, entries_rev) = Self::read(&self.center);
         if (unread, &asking, entries_rev) == (self.unread, &self.asking, self.entries_rev) {
             return false;
@@ -176,7 +176,7 @@ mod tests {
         post(&center);
         center.lock().mark_all_read();
         let slice = cx.new(|_| Notifications::new(center.clone()));
-        let (seen, _observing) = crate::shell::entities::tests::notifies(&slice, cx);
+        let (seen, _observing) = crate::session::tests::notifies(&slice, cx);
         assert!(!slice.update(cx, |slice, cx| slice.refresh(cx)));
         assert_eq!(seen.get(), 0, "a centre that moved nothing notified");
 
@@ -195,7 +195,7 @@ mod tests {
         let center = CenterHandle::default();
         let app = cx.update(|cx| {
             gpui_kit::init(cx);
-            crate::shell::entities::Entities::for_test(Default::default(), center.clone(), cx)
+            crate::session::Shared::for_test(Default::default(), center.clone(), cx)
         });
         // as `set_network` leaves the centre: a row off disk, unread
         post(&center);

@@ -1,18 +1,17 @@
-//! Every pane's `Seat`, by the pane's layout `instance`: one per view pane
-//! any window holds, placed in that window (and told whether that window
-//! is the one in front), told when it left every desk,
-//! and handed the session as its props (`Session`, `Account` and the
-//! appearance, observed here; a seat turns only when the bytes moved).
-//! It follows `Windows` and every window's `Desk` (`reconcile`), and
-//! routes what a seat asks for: a badge to `Rail`, a title to the desk
-//! holding its pane, a notice to `Notifications`, a view seated to the
-//! desks holding it, a link to `Windows`.
-use super::{Account, Notifications, Rail, Session, Windows};
-use crate::runtime::{Intent, Seat, WindowKey};
-use crate::shell::WindowKind;
-use crate::shell::layers::view_body;
-use crate::ui::layout::Layout;
-use gpui_kit::{AnyWindowHandle, App, AppContext as _, Context, Entity, Subscription, WeakEntity};
+//! Every placed view pane's `Seat`, by the pane's layout `instance`: one
+//! per view pane the shell's windows hold, placed where the shell says
+//! (`place`), told when it left every window, and handed the session as
+//! its props (`Session`, `Account` and the appearance, observed here; a
+//! seat turns only when the bytes moved). It routes what a seat asks for:
+//! a badge to `Rail`, a notice to `Notifications`; what concerns the
+//! shell's windows (a title, a view seated, a link) is a `SeatsEvent`.
+//! Which panes exist, and in which window, is the shell's
+//! (the desktop's `shell::entities::DeskSeats` follows its desks).
+use super::{Account, Notifications, Rail, Session};
+use crate::runtime::{Intent, Seat};
+use gpui_kit::{
+    AnyWindowHandle, App, AppContext as _, Context, Entity, EventEmitter, Subscription,
+};
 use std::collections::BTreeMap;
 
 /// A pane's seat and the routes out of it.
@@ -22,24 +21,40 @@ struct Placed {
     _intents: Subscription,
 }
 
-pub(crate) struct Seats {
+/// Where the shell wants one pane's seat: its program, and the window it
+/// is drawn in with the body it is laid out in and whether that window is
+/// the one in front (`None` while the window is not open yet).
+pub type Place = (
+    &'static str,
+    Option<(AnyWindowHandle, Option<(f32, f32)>, bool)>,
+);
+
+/// What a seat asked for that the shell's windows answer.
+#[derive(Clone, Debug)]
+pub enum SeatsEvent {
+    /// The pane with this layout `instance` named its window.
+    Title(u64, String),
+    /// `program`'s view came: a window placed before it is widened to it.
+    Seated(&'static str),
+    /// From the pane (`program`, `instance`): a link to open.
+    OpenLink(&'static str, u64, String),
+}
+
+pub struct Seats {
     map: BTreeMap<u64, Placed>,
     session: Entity<Session>,
     account: Entity<Account>,
     rail: Entity<Rail>,
     notifications: Entity<Notifications>,
-    /// The windows the seats are placed in (`follow`). Weak: `Windows`
-    /// holds this entity for the roots it opens.
-    windows: WeakEntity<Windows>,
-    /// One observer per window's desk, dropped with the window.
-    desks: BTreeMap<WindowKey, Subscription>,
     /// The session as every seat last heard it, encoded.
     props: Vec<u8>,
     _observing: Vec<Subscription>,
 }
 
+impl EventEmitter<SeatsEvent> for Seats {}
+
 impl Seats {
-    pub(crate) fn new(
+    pub fn new(
         session: &Entity<Session>,
         account: &Entity<Account>,
         rail: &Entity<Rail>,
@@ -57,41 +72,9 @@ impl Seats {
             account: account.clone(),
             rail: rail.clone(),
             notifications: notifications.clone(),
-            windows: WeakEntity::new_invalid(),
-            desks: BTreeMap::new(),
         };
         this.props = this.encode(cx);
         this
-    }
-
-    /// The seats follow `windows` from now on: a window coming or going,
-    /// and every desk's move, reconciles them.
-    pub(crate) fn follow(&mut self, windows: &Entity<Windows>, cx: &mut Context<Self>) {
-        self.windows = windows.downgrade();
-        self._observing
-            .push(cx.observe(windows, |this, windows, cx| {
-                this.windows_moved(&windows, cx)
-            }));
-        self.windows_moved(windows, cx);
-    }
-
-    /// The window list moved: a desk observer for every window that has
-    /// none yet, none for a window that went, and the seats reconciled.
-    fn windows_moved(&mut self, windows: &Entity<Windows>, cx: &mut Context<Self>) {
-        let desks: Vec<_> = windows
-            .read(cx)
-            .by_window()
-            .iter()
-            .map(|(key, own)| (*key, own.desk.clone()))
-            .collect();
-        self.desks
-            .retain(|key, _| desks.iter().any(|(there, _)| there == key));
-        for (key, desk) in desks {
-            self.desks
-                .entry(key)
-                .or_insert_with(|| cx.observe(&desk, |this, _, cx| this.reconcile(cx)));
-        }
-        self.reconcile(cx);
     }
 
     /// What every view is handed as its props: the node the views are on
@@ -124,59 +107,17 @@ impl Seats {
     }
 
     /// The seat of the pane with this layout `instance`.
-    pub(crate) fn seat(&self, instance: u64) -> Option<Entity<Seat>> {
+    pub fn seat(&self, instance: u64) -> Option<Entity<Seat>> {
         self.map.get(&instance).map(|placed| placed.seat.clone())
     }
 
-    /// A seat for every view pane the windows' desks hold, placed in the
-    /// window whose desk holds it, and none for a pane they no longer
-    /// hold: that one is told it is hidden first, its pictures leave the
-    /// windows' atlases, and the intents its last update produced are routed (its subscription is dropped here, so an
+    /// A seat for every pane in `wanted`, placed where it says, and none
+    /// for a pane no longer there: that one is told it is hidden first,
+    /// its pictures leave the windows' atlases, and the intents its last
+    /// update produced are routed (its subscription is dropped here, so an
     /// emit would be lost). Notifies when a seat came or went, never when
     /// one moved: a pane's view observes its own seat.
-    fn reconcile(&mut self, cx: &mut Context<Self>) {
-        let Some(windows) = self.windows.upgrade() else {
-            return;
-        };
-        let (layouts, handles, front) = {
-            let windows = windows.read(cx);
-            // the body is the frame's on a console's desk, where the pane
-            // is drawn framed; a window one view fills (a pop-out, `--live`)
-            // lays its pane out edge to edge, whatever frame the layout keeps
-            let layouts: BTreeMap<WindowKey, (Layout, bool)> = windows
-                .by_window()
-                .iter()
-                .map(|(key, own)| {
-                    let on_desk = own.kind == WindowKind::Console;
-                    (*key, (own.desk.read(cx).get().clone(), on_desk))
-                })
-                .collect();
-            (layouts, windows.handles().clone(), windows.front())
-        };
-        type Place = (
-            &'static str,
-            Option<(AnyWindowHandle, Option<(f32, f32)>, bool)>,
-        );
-        let wanted: BTreeMap<u64, Place> = layouts
-            .iter()
-            .flat_map(|(key, (layout, on_desk))| {
-                let window = handles.get(key).copied();
-                let on_desk = *on_desk;
-                let in_front = front == Some(*key);
-                layout
-                    .panes
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, pane)| pane.is_view())
-                    .map(move |(index, pane)| {
-                        let body = view_body(on_desk, layout, index);
-                        (
-                            pane.instance,
-                            (pane.program, window.map(|window| (window, body, in_front))),
-                        )
-                    })
-            })
-            .collect();
+    pub fn place(&mut self, wanted: BTreeMap<u64, Place>, cx: &mut Context<Self>) {
         let gone: Vec<u64> = self
             .map
             .keys()
@@ -228,7 +169,7 @@ impl Seats {
     }
 
     /// What the view of `program` in the pane with this layout `instance`
-    /// asked for, to the entity it moves.
+    /// asked for, to the entity it moves, or to the shell.
     fn route(
         &mut self,
         program: &'static str,
@@ -240,55 +181,12 @@ impl Seats {
             Intent::Badge(count) => self
                 .rail
                 .update(cx, |rail, cx| rail.set_badge(program, count, cx)),
-            // its own window's name, wherever that pane is now (a pane
-            // gone from every desk names nothing)
-            Intent::Title(title) => {
-                let Some(windows) = self.windows.upgrade() else {
-                    return;
-                };
-                let desk = windows
-                    .read(cx)
-                    .by_window()
-                    .values()
-                    .map(|own| own.desk.clone())
-                    .find(|desk| {
-                        desk.read(cx)
-                            .get()
-                            .panes
-                            .iter()
-                            .any(|pane| pane.instance == instance)
-                    });
-                if let Some(desk) = desk {
-                    desk.update(cx, |desk, cx| desk.set_title(instance, title, cx));
-                }
-            }
+            Intent::Title(title) => cx.emit(SeatsEvent::Title(instance, title)),
             Intent::Notified => self
                 .notifications
                 .update(cx, |notifications, cx| _ = notifications.refresh(cx)),
-            // a window placed before its view came is widened to it
-            Intent::Seated => {
-                let Some(windows) = self.windows.upgrade() else {
-                    return;
-                };
-                let desks: Vec<_> = windows
-                    .read(cx)
-                    .by_window()
-                    .values()
-                    .map(|own| own.desk.clone())
-                    .filter(|desk| desk.read(cx).holds(program))
-                    .collect();
-                for desk in desks {
-                    desk.update(cx, |desk, cx| desk.settle(cx));
-                }
-            }
-            // from this pane: a link into its own program stays in it
-            Intent::OpenLink(link) => {
-                if let Some(windows) = self.windows.upgrade() {
-                    windows.update(cx, |windows, cx| {
-                        windows.open_link(&link, Some((program, instance)), cx)
-                    });
-                }
-            }
+            Intent::Seated => cx.emit(SeatsEvent::Seated(program)),
+            Intent::OpenLink(link) => cx.emit(SeatsEvent::OpenLink(program, instance, link)),
         }
     }
 
@@ -299,7 +197,7 @@ impl Seats {
     /// no other between a press and its read, so the seats' own reply wakes
     /// have not run yet.
     #[cfg(any(test, feature = "ax-door"))]
-    pub(crate) fn settle(&self, cx: &mut Context<Self>) {
+    pub fn settle(&self, cx: &mut Context<Self>) {
         for placed in self.map.values() {
             placed.seat.update(cx, |seat, cx| seat.turn(cx));
         }

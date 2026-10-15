@@ -24,7 +24,7 @@ use zeroize::Zeroizing;
 
 const SERVICE: &str = "dev.ducktape.app";
 
-fn file_only() -> bool {
+pub(crate) fn file_only() -> bool {
     cfg!(test) || std::env::var("DUCKTAPE_DEVICE_KEY_STORE").is_ok_and(|store| store == "file")
 }
 

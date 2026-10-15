@@ -18,8 +18,8 @@
 //! told). A link a banner's click or the passkey page asks for off the
 //! window thread comes over the `Posted` channel (`posted`).
 use super::{
-    AccountEvent, Entities, Front, Listed, Overlay, Overlays, Popped, Screen, SessionEvent,
-    SettingsPage, Shared, Slice, Spotlight, WindowEntities,
+    AccountEvent, Desk, DeskSeats, Entities, Front, Listed, Overlay, Overlays, Popped, Screen,
+    SessionEvent, SettingsPage, Shared, Slice, Spotlight, WindowEntities,
 };
 use crate::runtime::notify::{CenterHandle, Entry};
 use crate::runtime::{Link, WindowKey};
@@ -69,6 +69,8 @@ pub(crate) struct Windows {
     /// The appearance the theme was last synced to.
     appearance: crate::backend::Appearance,
     subscriptions: Vec<Subscription>,
+    /// Follows this list and every desk into the shared seats.
+    desk_seats: Option<Entity<DeskSeats>>,
 }
 
 impl Windows {
@@ -138,6 +140,7 @@ impl Windows {
             launcher,
             appearance,
             subscriptions,
+            desk_seats: None,
         }
     }
 
@@ -147,6 +150,12 @@ impl Windows {
             shared: self.shared.clone(),
             windows: cx.entity(),
         }
+    }
+
+    /// The seats follow this window list from now on (`DeskSeats` lives
+    /// as long as the windows do).
+    pub(crate) fn followed_by(&mut self, desk_seats: Entity<DeskSeats>) {
+        self.desk_seats = Some(desk_seats);
     }
 
     pub(crate) fn console(&self) -> Option<WindowKey> {
@@ -243,13 +252,13 @@ impl Windows {
     /// anything opening over the desk lets go of the keyboard's hold, and
     /// "Add a device…" closing, however it did, forgets what it found.
     fn make_own(&mut self, key: WindowKey, kind: WindowKind, cx: &mut Context<Self>) {
-        let desk = cx.new(|_| Slice::new(Layout::default()));
+        let desk = cx.new(|_| Desk::new(Layout::default()));
         let session = self.shared.session.clone();
         let own = WindowEntities {
             kind,
             front: Front::of_desk(&desk, cx),
             overlays: cx.new(|cx| Overlays::new(&session, cx)),
-            spotlight: cx.new(|_| Slice::new(Spotlight::default())),
+            spotlight: cx.new(|_| Spotlight::default()),
             dot: cx.new(|_| Slice::new(None)),
             desk,
         };
