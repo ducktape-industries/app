@@ -47,6 +47,7 @@ keystore = { git = "https://github.com/ducktape-industries/ducktape", branch = "
 # --- external ---
 borsh = { version = "1", default-features = false, features = ["derive", "std"] }
 tracing = "0.1"
+sha1-checked = { version = "0.10", default-features = false }
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -124,7 +125,7 @@ ducklink.workspace = true
 wasmtime.workspace = true
 wasmparser = "0.251"
 libc.workspace = true
-sha1-checked = { version = "0.10", default-features = false }
+sha1-checked.workspace = true
 # the node's client, shared with the phone; `commonware`: the device key
 # (commonware's ed25519) signs through it
 noded-client = { path = "crates/noded-client", features = ["commonware"] }
