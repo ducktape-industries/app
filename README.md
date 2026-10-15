@@ -69,11 +69,13 @@ tar xzf /tmp/ducktape.tar.gz -C /tmp
   `program.query`/`op.submit` `Call{target, body}`, `program.changes <program>`,
   `program.describe`, `chain.status`/`block`/`blocks`/`heads`, `invite.create`,
   `blob.get`, `link.open`, `host.widget` (the one MessagePack method: a tree
-  command), and the app's own (`host.*`, `clock.ticks`, `clipboard.*`,
-  `notify.*`, `store.*`). A view reaches only the capabilities its manifest
-  declares. The app forwards the bytes to the
-  program the view names and signs writes with the seated key; it never
-  reads a payload.
+  command), `live.*` (`publish`/`send`/`subscribe`/`tracks`: a view's live
+  tracks through the node's relay, off consensus, on one QUIC or websocket
+  session per connection, `src/backend/live.rs`), and the app's own
+  (`host.*`, `clock.ticks`, `clipboard.*`, `notify.*`, `store.*`). A view
+  reaches only the capabilities its manifest declares. The app forwards the
+  bytes to the program the view names and signs writes with the seated key;
+  it never reads a payload.
 - **Sign in.** The key file under `$DUCKTAPE_USER_KEY`, else the network's
   active wallet under `<ducktape home>/remotes/<network>/`. A write is a frame
   anchored at the tip `/v1/status` reports and salted with a random number,
@@ -92,6 +94,7 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 | `crates/noded-client` | the node's `/v1` wire and the signed frame, mirrored from the kernel branch, and the flows onto an account; shared with the phone |
 | `src/backend/views.rs` | roster → blob → `ducktape.view` section |
 | `src/backend/session.rs` | the seated key, its frames, preferences |
+| `src/backend/live.rs`, `src/runtime/kernel/live.rs` | the live session with the node's relay (core's `live-wire`: QUIC, or the websocket) and the `live.*` methods over it |
 | `src/runtime.rs`, `runtime/` | the wasm view runtime: seats, loads, swaps, the kernel relay |
 | `src/render.rs`, `render/` | the wire tree presenter, its text fields the kit's engine holds (IME, caret, clipboard, undo) |
 | `src/shell.rs`, `shell/` | the native chrome: the app's state as entities (`shell/entities/`, each written by its own methods) and each window's root with its layers (`shell/layers/`: launcher, menu bar, panes, dialogs, footer) |

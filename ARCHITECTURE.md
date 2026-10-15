@@ -76,7 +76,7 @@ view's tree lowers onto GPUI elements one to one.
 | `runtime.rs`, `runtime/` | seats, views (wasmtime), the kernel relay, replies, notify, store, clipboard, roster, `Seat` | ticks on the window thread, off the draw path; loads on loader threads; node calls on `views-kernel` |
 | `render.rs`, `render/` | `ViewTree`: one wire tree drawn as GPUI elements, retained native state keyed by `AuthoredPath`, `wire::Event` out, accessibility mapping | window thread |
 | `render/web.rs`, `crates/web` | the web piece. With feature `web`, a page per `Node::Web` through CEF off-screen rendering (`crates/web` holds every CEF name; `render/web.rs` maps the piece onto it and picks the view that declares `web` for an https link); without it the piece draws a line and links go to the system browser | window thread (CEF's pump turns there) |
-| `backend/` | everything that crosses the process boundary: `noded` client and signed `Frame`, `session` (seated key, prefs, recent nodes), `device_key`, `passkey`, `join`, `views`, `app_dirs` | async, polled where the caller polls (see below) |
+| `backend/` | everything that crosses the process boundary: `noded` client and signed `Frame`, `session` (seated key, prefs, recent nodes), `live` (the live session with the node's relay over core's `live-wire`: QUIC on the node's live port, or the websocket `/v1/live`; one per connection, on `Connection.live`, closed at quit), `device_key`, `passkey`, `join`, `views`, `app_dirs` | async, polled where the caller polls (see below) |
 | `a11y.rs` | role/name/keyboard/state helpers for shell and renderer, plus the class markers the AX door reads | window thread |
 | `ax.rs`, `ax/` | the AX test door: loopback HTTP over the AccessKit tree, its CLI client; built with the `ax-door` feature only | `ax-door` accept thread; answers on the window thread |
 | `fonts.rs`, `tray.rs` | bundled faces and fallback chains; the macOS status item (`Tray`, an entity observing `Session`, `Chain` and `Prefs`) | window thread |
@@ -376,7 +376,10 @@ its meaning; the host and the views name the const, never the string.
    view on its next tick. Nothing wakes the wasm from another thread.
 6. **Subscriptions.** `program.changes <program>` (`follow_changes`: one WebSocket
    `/v1/changes/<program>` per subscription), `chain.heads` (`heads`: polls
-   status and pages `/v1/blocks`), `clock.ticks`, `host.session`,
+   status and pages `/v1/blocks`), `live.publish`/`live.subscribe`/
+   `live.tracks` (`kernel/live.rs`: a request on the connection's live
+   session, opened again on a lost session or a reconnect, its items the
+   node's objects and announces), `clock.ticks`, `host.session`,
    `host.route`, `host.offset`, `host.visible` answer many times with
    `done: false`. While the reply queue is past half full
    (`MAX_STREAM_BACKLOG_*`) a subscription parks on the `drained` watch
