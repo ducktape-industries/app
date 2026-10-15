@@ -739,6 +739,75 @@ async fn a_later_request_is_handed_the_group_in_flight() {
     );
 }
 
+/// A window that asks `Latest` after the group ended is handed the last
+/// group whole, its end with it (the node's cache rule, kept here since
+/// the node's one subscription was asked once); a newer group's first
+/// object replaces it.
+#[tokio::test]
+async fn a_later_request_after_the_group_ended_is_handed_it_whole() {
+    let _seat = seated().await;
+    let (client, _published, published) = publishing(21).await;
+    let (mut first, _) = following(&client, Start::Latest).await;
+    send(&published, 4, 0, b"state", true);
+    let whole = [
+        object(4, 0, b"state"),
+        Data::GroupEnd {
+            group: 4,
+            complete: true,
+        },
+    ];
+    assert_eq!(heard(&mut first, 2).await, whole);
+    let (mut later, latest) = following(&client, Start::Latest).await;
+    assert_eq!(latest, Some(4), "the node holds group 4; so does the app");
+    assert_eq!(heard(&mut later, 2).await, whole);
+    send(&published, 5, 0, b"next", false);
+    assert_eq!(heard(&mut later, 1).await, [object(5, 0, b"next")]);
+    let (mut third, latest) = following(&client, Start::Latest).await;
+    assert_eq!(latest, Some(5));
+    assert_eq!(heard(&mut third, 1).await, [object(5, 0, b"next")]);
+}
+
+/// A window that joins an ask the node holds hears that it waits, as the
+/// first did, and the node's answer when it comes.
+#[test]
+fn a_reader_joining_a_waiting_ask_hears_waiting() {
+    let (conn, _request) = ws_conn();
+    {
+        let mut table = lock(&conn.table);
+        let entry = table.requests.get_mut(&1).unwrap();
+        let Kind::Subscribe { alias, .. } = &mut entry.kind else {
+            panic!("a subscription")
+        };
+        *alias = None;
+        table.aliases.clear();
+    }
+    conn.heard(Control::Waiting {
+        request: 1,
+        code: Code::NotGranted,
+    })
+    .unwrap();
+    let conn = Arc::new(conn);
+    let mut later = conn.open(follow(Start::Latest)).unwrap();
+    assert_eq!(later.heard.try_recv().ok(), Some(Heard::Waiting));
+    conn.heard(Control::Subscribed {
+        request: 1,
+        alias: 9,
+        by: ACCOUNT,
+        mode: Mode::Stream,
+        latest: None,
+    })
+    .unwrap();
+    assert!(matches!(
+        later.heard.try_recv().ok(),
+        Some(Heard::Subscribed { .. })
+    ));
+    let mut third = conn.open(follow(Start::Latest)).unwrap();
+    assert!(
+        matches!(third.heard.try_recv().ok(), Some(Heard::Subscribed { .. })),
+        "the ask was answered: a joiner no longer waits"
+    );
+}
+
 /// A window that stops following leaves the others running: the
 /// subscription stays the node's until its last reader goes.
 #[tokio::test]
@@ -834,6 +903,7 @@ fn ws_conn() -> (Conn, Request) {
     let (request, ends) = request(|| {});
     let entry = Entry {
         readers: vec![Reader::new(1, &ends, Start::Latest)],
+        waiting: false,
         kind: Kind::Subscribe {
             track: track("doc"),
             alias: Some(9),

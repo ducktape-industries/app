@@ -529,6 +529,9 @@ struct Table {
 /// reader; a second publisher of a track in the app is refused.
 struct Entry {
     readers: Vec<Reader>,
+    /// The node holds the ask until the room grants it: a reader that
+    /// joins meanwhile hears `Waiting` too.
+    waiting: bool,
     kind: Kind,
 }
 
@@ -551,7 +554,8 @@ enum Kind {
         /// The publisher and mode, once the node answered: a later
         /// reader's `Subscribed`.
         opened: Option<(u64, Mode)>,
-        /// The group in flight, for a later reader that asks `Latest`.
+        /// The group in flight, or the last one whole, for a later reader
+        /// that asks `Latest`.
         in_flight: Option<InFlight>,
     },
     Watch {
@@ -656,10 +660,12 @@ impl Reader {
     }
 }
 
-/// A shared subscription's group in flight, from its first object: what a
+/// A shared subscription's group in flight, from its first object, and
+/// past its end the last group whole (the node's own cache rule): what a
 /// later reader that asks `Latest` is handed. Kept while it fits a group's
-/// cap ([`live_wire::MAX_GROUP_BYTES`]); dropped when the group ends or a
-/// newer one starts. A datagram track keeps its newest object only.
+/// cap ([`live_wire::MAX_GROUP_BYTES`]); dropped when a newer group starts
+/// or the group is cut short. A datagram track keeps its newest object
+/// only.
 struct InFlight {
     group: u64,
     objects: Vec<Data>,
@@ -667,6 +673,20 @@ struct InFlight {
     /// Every object since the group's first: a later reader can be handed
     /// it.
     whole: bool,
+    /// The group ended complete: a later reader is handed its end too.
+    ended: bool,
+}
+
+impl InFlight {
+    /// What a later reader that asks `Latest` is handed: the objects, and
+    /// the end once the group ended.
+    fn replay(&self) -> impl Iterator<Item = Data> + '_ {
+        let end = self.ended.then_some(Data::GroupEnd {
+            group: self.group,
+            complete: true,
+        });
+        self.objects.iter().cloned().chain(end)
+    }
 }
 
 impl Kind {
@@ -725,6 +745,7 @@ impl Entry {
                             objects: Vec::new(),
                             bytes: 0,
                             whole: datagram || *object == 0,
+                            ended: false,
                         });
                     }
                     let in_flight = in_flight.as_mut().expect("kept just now");
@@ -740,7 +761,14 @@ impl Entry {
                         }
                     }
                 }
-                Data::GroupEnd { .. } => *in_flight = None,
+                Data::GroupEnd { group, complete } => {
+                    let ended = in_flight.as_mut().filter(|held| held.group == *group);
+                    match ended {
+                        Some(held) if *complete && held.whole => held.ended = true,
+                        Some(_) => *in_flight = None,
+                        None => {}
+                    }
+                }
             }
         }
         self.readers
@@ -748,8 +776,9 @@ impl Entry {
             .filter(|reader| reader.follows(data))
     }
 
-    /// A later request that follows this subscription: it hears what the
-    /// node answered, and with `Latest` the group in flight first.
+    /// A later request that follows this subscription: it hears that the
+    /// ask waits, or what the node answered, and with `Latest` the group
+    /// held (in flight, or the last one whole) first.
     fn join_subscription(&mut self, reader: Reader, ends: &Ends) {
         let mut reader = reader;
         let Kind::Subscribe {
@@ -758,6 +787,9 @@ impl Entry {
         else {
             return;
         };
+        if self.waiting {
+            let _ = reader.heard.send(Heard::Waiting);
+        }
         if let Some((by, mode)) = *opened {
             let replay = match reader.from {
                 Start::Latest => in_flight.as_ref().filter(|in_flight| in_flight.whole),
@@ -768,12 +800,12 @@ impl Entry {
             };
             let latest = replay.map(|in_flight| in_flight.group);
             let _ = reader.heard.send(Heard::Subscribed { by, mode, latest });
-            for data in replay.iter().flat_map(|in_flight| &in_flight.objects) {
+            for data in replay.iter().flat_map(|in_flight| in_flight.replay()) {
                 match mode {
-                    Mode::Datagram => ends.latest.put(data.clone()),
+                    Mode::Datagram => ends.latest.put(data),
                     Mode::Stream => {
                         // the data path holds the replay (`request_holding`)
-                        let _ = ends.data.try_send(data.clone());
+                        let _ = ends.data.try_send(data);
                     }
                 }
             }
@@ -781,9 +813,12 @@ impl Entry {
         self.readers.push(reader);
     }
 
-    /// A later request that follows this room's list: the tracks up now
-    /// first.
+    /// A later request that follows this room's list: that the ask waits,
+    /// or the tracks up now, first.
     fn join_list(&mut self, reader: Reader) {
+        if self.waiting {
+            let _ = reader.heard.send(Heard::Waiting);
+        }
         if let Kind::Watch { up, .. } = &self.kind {
             for announce in up {
                 let _ = reader.heard.send(announce.clone());
@@ -882,7 +917,7 @@ impl Conn {
                         Kind::Subscribe {
                             in_flight: Some(in_flight),
                             ..
-                        } => in_flight.objects.len(),
+                        } => in_flight.replay().count(),
                         _ => 0,
                     };
                     let (request, ends) = request_holding(withdraw, replayed);
@@ -953,6 +988,7 @@ impl Conn {
             id,
             Entry {
                 readers: vec![reader],
+                waiting: false,
                 kind,
             },
         );
@@ -1006,7 +1042,8 @@ impl Conn {
                         let _ = taken.send(alias);
                     }
                 }
-                if let Some(entry) = table.requests.get(&request) {
+                if let Some(entry) = table.requests.get_mut(&request) {
+                    entry.waiting = false;
                     entry.tell(Heard::Published);
                 }
             }
@@ -1019,6 +1056,7 @@ impl Conn {
             } => {
                 if let Some(Entry {
                     readers,
+                    waiting,
                     kind:
                         Kind::Subscribe {
                             alias: held,
@@ -1027,6 +1065,7 @@ impl Conn {
                         },
                 }) = table.requests.get_mut(&request)
                 {
+                    *waiting = false;
                     *held = Some(alias);
                     *opened = Some((by, mode));
                     for reader in readers {
@@ -1056,6 +1095,7 @@ impl Conn {
                 up,
             } => {
                 if let Some(entry) = table.requests.get_mut(&request) {
+                    entry.waiting = false;
                     let announce = Heard::Announce {
                         track: track.clone(),
                         by,
@@ -1082,7 +1122,8 @@ impl Conn {
                 end(&mut table, request, word);
             }
             Control::Waiting { request, .. } => {
-                if let Some(entry) = table.requests.get(&request) {
+                if let Some(entry) = table.requests.get_mut(&request) {
+                    entry.waiting = true;
                     entry.tell(Heard::Waiting);
                 }
             }
