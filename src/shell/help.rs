@@ -80,7 +80,7 @@ pub(super) fn help_view(welcome: bool, dark: bool, side: bool) -> gpui_kit::AnyE
             "{n} opens an empty window: type part of a program's name, pick it \
                  with ↑↓ and open it with ↵.{}",
             match super::layers::CHAT_READY {
-                true => " Tab switches what the field searches, Module or Chat.",
+                true => " Tab switches what the field searches, Program or Chat.",
                 false => "",
             }
         ),

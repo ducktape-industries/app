@@ -1,7 +1,7 @@
 //! The UniformList node: a gpui `uniform_list` over a host-owned viewport.
-//! The guest sends the rows of a window around what the host shows, keyed
+//! The view sends the rows of a window around what the host shows, keyed
 //! by index, sized from the viewport and the row height the host measured
-//! (`UniformListRange`); a row a far scroll reaches before the guest's
+//! (`UniformListRange`); a row a far scroll reaches before the view's
 //! next frame draws as a placeholder of `PLACEHOLDER_HEIGHT`. The host draws
 //! the list's scroll bar in a gutter it keeps beside the list.
 use super::*;
@@ -21,13 +21,13 @@ pub(super) struct UniformListHostState {
     /// the frames that carry it on (the reader's wheel keeps its place).
     pub(super) revision: Option<u64>,
     pub(super) count: usize,
-    /// The rows the guest sent for the range it was asked, by index.
+    /// The rows the view sent for the range it was asked, by index.
     pub(super) rows: HashMap<usize, wire::Node>,
     /// How many rows were taken as sent (new, or not the one held).
     #[cfg(test)]
     pub(super) replaced: usize,
     pub(super) scroll: gpui_kit::UniformListScrollHandle,
-    /// The last range asked of the guest; asked again only when it changes.
+    /// The last range asked of the view; asked again only when it changes.
     pub(super) requested: Option<Range<usize>>,
     /// The last (top index, scrollable, scrolled to end) reported.
     observed: Option<(usize, bool, Option<bool>)>,
@@ -51,7 +51,7 @@ impl UniformListHostState {
 
 /// Not a visual decoration: `compute` is the one per-layout hook gpui's
 /// uniform_list gives with the visible range, so it reports the range and
-/// the scroll state to the guest (`UniformListRange`, `UniformListState`)
+/// the scroll state to the view (`UniformListRange`, `UniformListState`)
 /// and draws nothing.
 struct RangeObserver {
     tree: gpui_kit::WeakEntity<ViewTree>,
@@ -342,7 +342,7 @@ impl ViewTree {
         let interactivity = interactivity
             .as_deref()
             .unwrap_or(wire::Interactivity::none());
-        let list = self.guest_aria(list, node, interactivity, cx);
+        let list = self.view_aria(list, node, interactivity, cx);
         beside_its_bar(room, list, &native_id, &scroll, cx.entity_id()).into_any_element()
     }
 }

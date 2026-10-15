@@ -85,7 +85,7 @@ impl ViewTree {
                         }
                     }));
             }
-            // a dialog takes the keyboard when it opens, if its guest may
+            // a dialog takes the keyboard when it opens, if its view may
             // move the keys (`Seat::keys_free`); a popup's view moves
             // focus itself (widget commands)
             if let Some(entry) = entry.as_ref().filter(|_| opened && self.keys_grant) {

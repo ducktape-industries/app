@@ -36,7 +36,7 @@ pub(super) const UNANSWERED_ENTRIES: usize = 5;
 pub(crate) struct Entry {
     pub(crate) id: u64,
     /// The program whose view posted (its roster name).
-    pub(crate) module: String,
+    pub(crate) program: String,
     /// That view's own name when it posted.
     pub(crate) view: String,
     pub(crate) title: String,
@@ -113,19 +113,19 @@ pub(crate) fn wall() -> i64 {
 }
 
 impl Center {
-    /// What to do with one notice from `module` (named `view`): the answer
+    /// What to do with one notice from `program` (named `view`): the answer
     /// for the view, and the banner to raise, if any — the notice's own, or
     /// the view's "N more" once it is past its burst.
     pub(crate) fn post(
         &mut self,
         settings: &Settings,
-        module: &str,
+        program: &str,
         view: &str,
         post: Notification,
         now: Instant,
         wall: i64,
     ) -> (Delivery, Option<Notice>) {
-        let permission = settings.views.get(module).copied();
+        let permission = settings.views.get(program).copied();
         if permission == Some(Permission::Block) {
             return (Delivery::Blocked, None);
         }
@@ -135,30 +135,30 @@ impl Center {
             body: post.body.clone(),
             tag: match post.tag.is_empty() {
                 true => String::new(),
-                false => format!("{module}/{}", post.tag),
+                false => format!("{program}/{}", post.tag),
             },
         };
         let share = match permission {
             None => UNANSWERED_ENTRIES,
             Some(_) => VIEW_ENTRIES,
         };
-        self.log(module, view, post, wall, share);
+        self.log(program, view, post, wall, share);
         match permission {
             None => {
-                if !self.not_now.contains(module) {
-                    self.asking.insert(module.to_owned());
+                if !self.not_now.contains(program) {
+                    self.asking.insert(program.to_owned());
                 }
                 return (Delivery::Logged, None);
             }
             Some(Permission::Silent) => return (Delivery::Logged, None),
             _ => {}
         }
-        let in_front = self.front.is_some_and(|(_, focused)| focused == module);
+        let in_front = self.front.is_some_and(|(_, focused)| focused == program);
         if !settings.banners || (in_front && !settings.in_front) {
             return (Delivery::Logged, None);
         }
         let burst = f64::from(settings.burst.max(1));
-        let bucket = self.buckets.entry(module.to_owned()).or_insert(Bucket {
+        let bucket = self.buckets.entry(program.to_owned()).or_insert(Bucket {
             tokens: burst,
             at: now,
         });
@@ -167,15 +167,15 @@ impl Center {
         bucket.at = now;
         if bucket.tokens >= 1. {
             bucket.tokens -= 1.;
-            self.more.remove(module);
+            self.more.remove(program);
             return (Delivery::Banner, Some(notice));
         }
-        let more = self.more.entry(module.to_owned()).or_default();
+        let more = self.more.entry(program.to_owned()).or_default();
         *more += 1;
         let more = Notice {
             title: format!("{more} more from {view}"),
             body: "They're waiting in Notifications.".into(),
-            tag: format!("more/{module}"),
+            tag: format!("more/{program}"),
         };
         (Delivery::Logged, Some(more))
     }
@@ -184,12 +184,12 @@ impl Center {
     /// folds into that row and brings it back to the top, unread. Past the
     /// view's `share` of rows its own oldest go, never another view's.
     /// Written at the end of the view's redraw ([`Center::flush`]).
-    fn log(&mut self, module: &str, view: &str, post: Notification, wall: i64, share: usize) {
+    fn log(&mut self, program: &str, view: &str, post: Notification, wall: i64, share: usize) {
         let folded = (!post.tag.is_empty())
             .then(|| {
                 self.entries
                     .iter()
-                    .position(|entry| entry.module == module && entry.tag == post.tag)
+                    .position(|entry| entry.program == program && entry.tag == post.tag)
             })
             .flatten();
         let entry = match folded {
@@ -208,7 +208,7 @@ impl Center {
                 self.next += 1;
                 Entry {
                     id: self.next,
-                    module: module.to_owned(),
+                    program: program.to_owned(),
                     view: view.to_owned(),
                     title: post.title,
                     body: post.body,
@@ -224,11 +224,11 @@ impl Center {
         let mut over = self
             .entries
             .iter()
-            .filter(|entry| entry.module == module)
+            .filter(|entry| entry.program == program)
             .count()
             .saturating_sub(share);
         self.entries.retain(|entry| {
-            let gone = over > 0 && entry.module == module;
+            let gone = over > 0 && entry.program == program;
             over -= usize::from(gone);
             !gone
         });
@@ -267,13 +267,13 @@ impl Center {
         Some(entry)
     }
 
-    /// `module` says the reader has seen what it posted under `tag`: its
+    /// `program` says the reader has seen what it posted under `tag`: its
     /// rows under it are read, and no other view's. Whether any changed.
     /// Written at the end of the view's redraw ([`Center::flush`]).
-    pub(crate) fn read_tag(&mut self, module: &str, tag: &str) -> bool {
+    pub(crate) fn read_tag(&mut self, program: &str, tag: &str) -> bool {
         let mut changed = false;
         for entry in &mut self.entries {
-            if !tag.is_empty() && entry.module == module && entry.tag == tag && !entry.read {
+            if !tag.is_empty() && entry.program == program && entry.tag == tag && !entry.read {
                 entry.read = true;
                 changed = true;
             }
@@ -298,36 +298,36 @@ impl Center {
         self.flush();
     }
 
-    /// Whether `module`'s window shows the permission bar.
+    /// Whether `program`'s window shows the permission bar.
     #[cfg(test)]
-    pub(crate) fn asking(&self, module: &str) -> bool {
-        self.asking.contains(module)
+    pub(crate) fn asking(&self, program: &str) -> bool {
+        self.asking.contains(program)
     }
 
-    /// `module`'s window asks, with nothing logged: the permission bar
+    /// `program`'s window asks, with nothing logged: the permission bar
     /// drawn without an unread count on the bell.
     #[cfg(test)]
-    pub(crate) fn ask_for_test(&mut self, module: &str) {
-        self.asking.insert(module.to_owned());
+    pub(crate) fn ask_for_test(&mut self, program: &str) {
+        self.asking.insert(program.to_owned());
     }
 
-    /// `module` opened a live track: its window says so in a line, once a
+    /// `program` opened a live track: its window says so in a line, once a
     /// run. `true` when the line is new.
-    pub(crate) fn went_live(&mut self, module: &str) -> bool {
-        !self.told.contains(module) && self.sharing.insert(module.to_owned())
+    pub(crate) fn went_live(&mut self, program: &str) -> bool {
+        !self.told.contains(program) && self.sharing.insert(program.to_owned())
     }
 
-    /// The person read `module`'s live line: it goes for this run.
-    pub(crate) fn put_away_live(&mut self, module: &str) {
-        self.sharing.remove(module);
-        self.told.insert(module.to_owned());
+    /// The person read `program`'s live line: it goes for this run.
+    pub(crate) fn put_away_live(&mut self, program: &str) {
+        self.sharing.remove(program);
+        self.told.insert(program.to_owned());
     }
 
-    /// Notices from `module` this past week, folded ones counted.
-    pub(crate) fn this_week(&self, module: &str, wall: i64) -> u32 {
+    /// Notices from `program` this past week, folded ones counted.
+    pub(crate) fn this_week(&self, program: &str, wall: i64) -> u32 {
         self.entries
             .iter()
-            .filter(|entry| entry.module == module && wall - entry.at <= 7 * 86_400)
+            .filter(|entry| entry.program == program && wall - entry.at <= 7 * 86_400)
             .map(|entry| entry.count)
             .sum()
     }
@@ -377,8 +377,8 @@ impl Center {
     /// The log handed to the disk if it moved since it last was: once per
     /// person's action here (open, mark all read, clear read), and once at
     /// the end of each view redraw for whatever its requests logged
-    /// (`Guest::redraw`), never per post. Written whole through
-    /// `backend::atomic_write` on the blocking pool, one write after
+    /// (`View::redraw`), never per post. Written whole through
+    /// `noded_client::fs::atomic_write` on the blocking pool, one write after
     /// another (`kernel::in_order` under the log's path).
     pub(crate) fn flush(&mut self) {
         if self.saved == self.rev {
@@ -396,7 +396,7 @@ impl Center {
                 let _ = std::fs::create_dir_all(parent);
             }
             if let Ok(bytes) = serde_json::to_vec(&entries) {
-                let _ = crate::backend::atomic_write(&path, &bytes, false);
+                let _ = noded_client::fs::atomic_write(&path, &bytes, false);
             }
         });
     }

@@ -1,11 +1,11 @@
 //! `Node::Field`: every text field a view draws, one line or many, held by
 //! the kit's editing engine. The engine owns the text: every key, selection,
-//! IME preedit and undo is its own work, and the guest hears each change as
-//! `Event::Text` at the host's `revision`. The guest asks for an edit with
+//! IME preedit and undo is its own work, and the view hears each change as
+//! `Event::Text` at the host's `revision`. The view asks for an edit with
 //! `WidgetCommand::Replace` against the revision it has seen, and a stale
 //! ask is carried over what was typed since (`wire::rebase`), never
-//! dropped, so no key waits on the guest and nothing typed is lost. The
-//! guest's own text is adopted only on a fresh mount or when its
+//! dropped, so no key waits on the view and nothing typed is lost. The
+//! view's own text is adopted only on a fresh mount or when its
 //! `generation` moves; every other frame leaves the engine's text alone.
 
 use super::*;
@@ -40,7 +40,7 @@ macro_rules! engine {
 
 /// An ask held while an IME composes: the engine's text is the IME's until
 /// it commits, and an edit under a preedit would be an edit in it. An ask
-/// for a generation of the guest's text the host has not adopted yet is
+/// for a generation of the view's text the host has not adopted yet is
 /// held the same way, until the frame that carries it.
 enum Deferred {
     Replace(wire::WidgetCommand),
@@ -48,8 +48,8 @@ enum Deferred {
 }
 
 /// What moved the engine's text, for `settle` to report: the writer or the
-/// IME (the edit is the span that differs), a guest's ask (the edit it made,
-/// exactly), or the adopt of a new generation of the guest's text, which is
+/// IME (the edit is the span that differs), a view's ask (the edit it made,
+/// exactly), or the adopt of a new generation of the view's text, which is
 /// a new document in the field, not an edit of the old one.
 enum Made {
     Observed,
@@ -57,7 +57,7 @@ enum Made {
     Adopted,
 }
 
-/// A mounted `Node::Field`: the engine's state, the guest's routes, and the
+/// A mounted `Node::Field`: the engine's state, the view's routes, and the
 /// text as last reported, which every later report is measured against.
 pub(super) struct Field {
     pub(super) engine: Engine,
@@ -65,7 +65,7 @@ pub(super) struct Field {
     on_key: Option<u32>,
     on_submit: Option<u32>,
     claims: Box<[wire::KeyClaim]>,
-    /// The guest's generation the engine's text was adopted from.
+    /// The view's generation the engine's text was adopted from.
     generation: u64,
     /// The engine's text, cursor and preedit as last reported, at `revision`.
     text: String,
@@ -90,7 +90,7 @@ pub(super) struct Field {
 
 /// What a key pressed in a focused field came to.
 enum Pressed {
-    /// The guest claimed it: its event, which stops the key here.
+    /// The view claimed it: its event, which stops the key here.
     Claimed(wire::Event),
     /// The field spent it (an indent).
     Taken,
@@ -128,7 +128,7 @@ impl ViewTree {
         let path = self.authored_path.clone();
         debug_assert_eq!(path.last(), Some(id));
         // Native key bindings consume Enter, Tab and navigation before
-        // element key listeners: a guest's claim runs at gpui's pre-action
+        // element key listeners: a view's claim runs at gpui's pre-action
         // seam, one interceptor for the tree's fields.
         if self.keystrokes.is_none() {
             let tree = cx.entity().downgrade();
@@ -199,8 +199,8 @@ impl ViewTree {
                 _observation: observation,
                 _events: events,
             };
-            // the guest's text, with the selection its user left in it if
-            // this is the same text a new generation of the guest shows
+            // the view's text, with the selection its user left in it if
+            // this is the same text a new generation of the view shows
             let (selection, focused) = match saved {
                 Some(saved) => (saved.selection, saved.focused),
                 None => (cursor.range(), false),
@@ -250,12 +250,12 @@ impl ViewTree {
             }
         }
         if let Engine::Area(state) = field.engine.clone() {
-            // A height the guest gave is a box to fill; none (a composer's
+            // A height the view gave is a box to fill; none (a composer's
             // `min_h`..`max_h`) is a field as tall as its lines, which the
             // field's own auto-grow reports up to the parent that waits on it.
             field.set_fills(style.size.height.is_some(), field_rows(&style), cx);
             // read-only as the kit's: it refuses what the user types, and
-            // takes what the guest asks
+            // takes what the view asks
             if state.read(cx).is_editable() != editable {
                 state.update(cx, |state, cx| state.set_readonly(!editable, cx));
             }
@@ -330,7 +330,7 @@ impl ViewTree {
             Engine::Area(state) => {
                 // The view's box is the field's, border and padding: it wears
                 // the ring, not the text inside the padding. The box the
-                // guest gave, not the room the words take: a press in the
+                // view gave, not the room the words take: a press in the
                 // empty part of a card is a press on the card's writing. A
                 // field asked to shrink has no empty part to press — its box
                 // IS its words — and taking the parent's height there would
@@ -372,7 +372,7 @@ impl ViewTree {
         }
     }
 
-    /// The engine's state moved under the writer's hands, or under a guest's
+    /// The engine's state moved under the writer's hands, or under a view's
     /// ask already reported: report what differs from the last report. A
     /// text that changed is the person's input; a caret that moved alone,
     /// or a blink, is not.
@@ -392,17 +392,17 @@ impl ViewTree {
         }
     }
 
-    /// Only the keys the guest claimed are taken off the focused field.
+    /// Only the keys the view claimed are taken off the focused field.
     /// Everything else — every arrow, every Backspace, every selection —
     /// belongs to the editing engine, and taking one of those away is how
     /// an editor stops being one.
     ///
     /// The OS key is the input: it activates the view here, where the host
-    /// receives it, whatever the field or the guest makes of it. Escape
+    /// receives it, whatever the field or the view makes of it. Escape
     /// leaves things and activates nothing. Esc lets go of Tab for the next
-    /// key, whatever else it does: the guest that claimed it still hears it,
+    /// key, whatever else it does: the view that claimed it still hears it,
     /// and the field and the view still see it pass (owner, 2026-09-28;
-    /// AX-022). A plain Tab right after Esc is not the guest's even when it
+    /// AX-022). A plain Tab right after Esc is not the view's even when it
     /// claimed Tab: the claim would swallow the very key that leaves.
     fn field_key(&mut self, keystroke: &Keystroke, window: &mut Window, cx: &mut Context<Self>) {
         // A lone modifier's release reaches interceptors since gpui-pre
@@ -426,7 +426,7 @@ impl ViewTree {
             return;
         };
         let field = self.fields.get_mut(&path).expect("the focused field");
-        // A preedit is the IME's: its keys are not the guest's to claim.
+        // A preedit is the IME's: its keys are not the view's to claim.
         if field.composing(window, cx) {
             field.tab_released = false;
             return;
@@ -556,7 +556,7 @@ impl Field {
         }
     }
 
-    /// The guest's text and spans, as the engine's: the one place its history
+    /// The view's text and spans, as the engine's: the one place its history
     /// is cleared, since the text it held is not this one.
     fn install(
         &self,
@@ -585,7 +585,7 @@ impl Field {
         }));
     }
 
-    /// A new generation of the guest's text: adopted, and reported at its
+    /// A new generation of the view's text: adopted, and reported at its
     /// revision with no edit, since it is a new document and not an edit of
     /// the old one. The edit log goes with the old document: no ask on the
     /// new one predates it, and an ask on the old one edits nothing now
@@ -617,7 +617,7 @@ impl Field {
             .and_then(|(event, _)| event)
     }
 
-    /// A frame arrived with the guest at `revision`, and `queued` is the
+    /// A frame arrived with the view at `revision`, and `queued` is the
     /// oldest revision an ask the host still holds for this field read: the
     /// log is kept from the older of the two, and from any ask held while an
     /// IME composes. An ask runs frames after the one it came with
@@ -636,7 +636,7 @@ impl Field {
     /// What differs from the last report, reported: the text at its next
     /// revision when it changed, with the edit that changed it (an ask's
     /// exactly, else the span that differs; none for an adopt), logged and
-    /// told to the guest as one and the same; the cursor and the preedit as
+    /// told to the view as one and the same; the cursor and the preedit as
     /// they stand. `None` when nothing moved. The second answer says whether
     /// the text itself changed.
     fn settle(
@@ -646,7 +646,7 @@ impl Field {
         cx: &mut App,
     ) -> Option<(Option<wire::Event>, bool)> {
         let (text, cursor, preedit, tokens) = self.read(window, cx);
-        // the guest's cap is the field's: what it cannot be sent is cut
+        // the view's cap is the field's: what it cannot be sent is cut
         // back, through the history, as any edit
         if text.len() > wire::MAX_FIELD_BYTES {
             let mut cut = wire::MAX_FIELD_BYTES;
@@ -715,17 +715,17 @@ impl Field {
             .collect()
     }
 
-    /// A guest's `Replace`: carried over every edit since the revision it
-    /// read, so it takes only the bytes the guest read and what was typed
+    /// A view's `Replace`: carried over every edit since the revision it
+    /// read, so it takes only the bytes the view read and what was typed
     /// into them since stays after its text; landed as one edit through the
     /// engine's history so the writer can undo it; reported at the revision
-    /// it made. One span when the guest named a token for it and nothing
+    /// it made. One span when the view named a token for it and nothing
     /// typed since sits inside, as plain text when the engine refuses the
     /// span (a masked field, a range off a grapheme) or the field is at its
     /// span cap. Held while an IME composes. The ask names the generation of
-    /// the guest's text its bytes are of: one the field has not adopted yet
+    /// the view's text its bytes are of: one the field has not adopted yet
     /// is held until it has (its frame is drawn before its asks run, so
-    /// only a held adopt leaves one waiting); one the guest has since left
+    /// only a held adopt leaves one waiting); one the view has since left
     /// edits a document that is gone, and nothing here.
     pub(super) fn ask(
         &mut self,
@@ -866,7 +866,7 @@ impl Field {
     /// Tab in a growing field, which the writer means as an indent and the
     /// field would otherwise spend on leaving. The editing engine has an
     /// indent of its own and will not run it here — it is switched off for
-    /// a field that grows with its text, which is every guest editor — so
+    /// a field that grows with its text, which is every view editor — so
     /// the keystroke walks on to the window's focus ring and the caret never
     /// sees it. Type the indent instead, through the engine's history as
     /// any edit. A one-line field has no indent: Tab leaves it.

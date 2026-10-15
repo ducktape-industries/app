@@ -56,9 +56,9 @@ impl Rail {
         self.roster.parse_link(link)
     }
 
-    /// Whether the node lists `module`.
-    pub(crate) fn lists(&self, module: &str) -> bool {
-        self.roster.lists(module)
+    /// Whether the node lists `program`.
+    pub(crate) fn lists(&self, program: &str) -> bool {
+        self.roster.lists(program)
     }
 
     pub(crate) fn rows(&self) -> &[RailRow] {
@@ -70,9 +70,9 @@ impl Rail {
         &self.badges
     }
 
-    /// `module`'s unread count; 0 with none.
-    pub(crate) fn badge(&self, module: &str) -> i64 {
-        self.badges.get(module).copied().unwrap_or(0)
+    /// `program`'s unread count; 0 with none.
+    pub(crate) fn badge(&self, program: &str) -> i64 {
+        self.badges.get(program).copied().unwrap_or(0)
     }
 
     /// The rows read off the roster again; notifies only when they moved.
@@ -93,12 +93,12 @@ impl Rail {
         self.refresh(cx);
     }
 
-    /// `module`'s unread count (`host.badge`); 0 or less takes it off.
+    /// `program`'s unread count (`host.badge`); 0 or less takes it off.
     /// Notifies only when it moved.
-    pub(crate) fn set_badge(&mut self, module: &'static str, count: i64, cx: &mut Context<Self>) {
+    pub(crate) fn set_badge(&mut self, program: &'static str, count: i64, cx: &mut Context<Self>) {
         let was = match count > 0 {
-            true => self.badges.insert(module, count),
-            false => self.badges.remove(module),
+            true => self.badges.insert(program, count),
+            false => self.badges.remove(program),
         };
         if was != (count > 0).then_some(count) {
             cx.notify();
@@ -125,8 +125,8 @@ mod tests {
     fn a_roster_change_recomputes_the_rail_once_and_notifies_only_on_change(
         cx: &mut TestAppContext,
     ) {
-        const MODULE: &str = "rail-drain-view";
-        let roster = Roster::listing(&[MODULE]);
+        const PROGRAM: &str = "rail-drain-view";
+        let roster = Roster::listing(&[PROGRAM]);
         let (send, changes) = futures::channel::mpsc::unbounded();
         let session = cx.update(crate::shell::entities::tests::session);
         let rail = cx.new(|cx| Rail::new(roster.clone(), changes, &session, cx));
@@ -135,7 +135,7 @@ mod tests {
         assert_eq!(note(cx), Some("Loading"));
 
         // the view landed on a loader thread, which says so on the channel
-        crate::runtime::seat_for_test(MODULE, 400);
+        crate::runtime::seat_for_test(PROGRAM, 400);
         send.unbounded_send(()).unwrap();
         cx.run_until_parked();
         assert_eq!(seen.get(), 1, "the rail moved and said nothing");

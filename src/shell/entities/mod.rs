@@ -188,14 +188,14 @@ pub(crate) mod tests {
         })
     }
 
-    /// The modules window `key`'s desk shows, pane by pane.
-    pub(crate) fn modules(
+    /// The programs window `key`'s desk shows, pane by pane.
+    pub(crate) fn programs(
         app: &Entities,
         key: crate::runtime::WindowKey,
         cx: &gpui_kit::TestAppContext,
     ) -> Vec<&'static str> {
         desk_of(app, key, cx).read_with(cx, |desk, _| {
-            desk.get().panes.iter().map(|pane| pane.module).collect()
+            desk.get().panes.iter().map(|pane| pane.program).collect()
         })
     }
 
@@ -243,9 +243,9 @@ pub(crate) mod tests {
             root: abi::Root([0; 32]),
             epoch: 0,
             identity: Vec::new(),
-            contract: crate::backend::noded::NODE_CONTRACT,
+            contract: noded_client::wire::NODE_CONTRACT,
             genesis: [0; 32],
-            roles: crate::backend::noded::test_roles(),
+            roles: crate::backend::test_roles(),
         }
     }
 }

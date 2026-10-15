@@ -60,7 +60,7 @@ impl ViewTree {
             host_id(format!("container-{index}"))
         });
         let mut element = element.id(native_id);
-        element = self.guest_aria(element, node, interactivity, cx);
+        element = self.view_aria(element, node, interactivity, cx);
         // Only a container with an id of its own owns its path: an id-less
         // one sits on its nearest named ancestor's path.
         if node.identity().is_some() {
@@ -117,7 +117,7 @@ impl ViewTree {
     }
 
     /// A zero-paint absolute canvas over the node at `path`, which claims
-    /// (`guest_aria` put the path in `claiming`): on the first frame of the
+    /// (`view_aria` put the path in `claiming`): on the first frame of the
     /// claim it scrolls to the node's bounds ([`Self::reveal`]) and asks for
     /// the frame that draws it there. Only a node that owns `path` may be
     /// revealed there (see `container`).
@@ -148,7 +148,7 @@ impl ViewTree {
     /// `row`, the claimed node's bounds this frame (its top, when it is
     /// taller than the scroller); the next frame draws it there. True when
     /// it moved. A row in a virtual list is left to the list, which the
-    /// guest scrolls to the row it claims; only a plain scroller is the
+    /// view scrolls to the row it claims; only a plain scroller is the
     /// host's to move, and only vertically.
     fn reveal(&self, path: &[wire::ElementIdWire], row: Bounds<Pixels>) -> bool {
         let nearest = (0..path.len()).rev().map(|end| &path[..end]).find(|above| {

@@ -8,19 +8,19 @@ use super::layers::{BORDER, TITLE};
 use gpui_kit::{Styled as _, TestAppContext, div};
 use view_wire as wire;
 
-fn counted(module: &str, stage: &str) -> Option<u64> {
-    crate::perf::snapshot(false)["views"][module][stage].as_u64()
+fn counted(program: &str, stage: &str) -> Option<u64> {
+    crate::perf::snapshot(false)["views"][program][stage].as_u64()
 }
 
 #[gpui_kit::test]
 fn a_views_first_tick_carries_the_body_its_pane_lays_it_out_in(cx: &mut TestAppContext) {
-    const MODULE: &str = "first-frame-size-test";
+    const PROGRAM: &str = "first-frame-size-test";
     let _on = crate::perf::on_for_test();
     let mut seed = Seed::boot();
     seed.roster = Default::default();
     seed.center = Default::default();
     seed.screen = Screen::Desk;
-    seed.active = Some(MODULE);
+    seed.active = Some(PROGRAM);
     // the console opened and drawn once, its first frame's callbacks run:
     // the desk measured, the active program seeded into a pane, its seat
     // made and placed, nothing loaded for it (no node, no override)
@@ -31,7 +31,7 @@ fn a_views_first_tick_carries_the_body_its_pane_lays_it_out_in(cx: &mut TestAppC
         .expect("the desk is measured before it is seeded");
     assert_eq!(layout.panes.len(), 1);
     let pane = layout.panes[0].clone();
-    assert_eq!(pane.module, MODULE);
+    assert_eq!(pane.program, PROGRAM);
     let before = pane
         .frame
         .expect("the pane has a frame before its view loads");
@@ -43,7 +43,7 @@ fn a_views_first_tick_carries_the_body_its_pane_lays_it_out_in(cx: &mut TestAppC
         ),
         "a new window's share of the desk"
     );
-    assert_eq!(counted(MODULE, "ticks"), None, "the view has not ticked");
+    assert_eq!(counted(PROGRAM, "ticks"), None, "the view has not ticked");
     let seat = app
         .seats
         .read_with(&native, |seats, _| seats.seat(pane.instance))
@@ -61,9 +61,9 @@ fn a_views_first_tick_carries_the_body_its_pane_lays_it_out_in(cx: &mut TestAppC
         interactivity: Default::default(),
         children: Vec::new(),
     });
-    crate::runtime::seat_drawing_for_test(MODULE, 900, card);
+    crate::runtime::seat_drawing_for_test(PROGRAM, 900, card);
     native.run_until_parked();
-    assert_eq!(counted(MODULE, "ticks"), Some(1), "the first tick ran");
+    assert_eq!(counted(PROGRAM, "ticks"), Some(1), "the first tick ran");
     let after = native.update(|_, cx| view.read(cx).layout(cx)).panes[0]
         .frame
         .expect("still framed");
@@ -79,7 +79,7 @@ fn a_views_first_tick_carries_the_body_its_pane_lays_it_out_in(cx: &mut TestAppC
         (before.w - 2. * BORDER).max(900.),
         before.h - 2. * BORDER - TITLE,
     );
-    let ticks = crate::runtime::ticks_for_test(MODULE);
+    let ticks = crate::runtime::ticks_for_test(PROGRAM);
     let viewport = ticks[0].iter().find_map(|event| match event {
         wire::Event::Viewport { width, height } => Some((*width, *height)),
         _ => None,
@@ -114,12 +114,12 @@ fn a_views_first_tick_carries_the_body_its_pane_lays_it_out_in(cx: &mut TestAppC
 /// dialogs' sake; its pane is still drawn filling it.)
 #[gpui_kit::test]
 fn a_live_windows_view_is_laid_out_in_the_whole_window(cx: &mut TestAppContext) {
-    const MODULE: &str = "first-frame-live-test";
+    const PROGRAM: &str = "first-frame-live-test";
     let mut seed = Seed::boot();
     seed.roster = Default::default();
     seed.center = Default::default();
     seed.screen = Screen::Desk;
-    let (app, _key, view, mut native) = super::layers::tests::open_live(seed, MODULE, cx);
+    let (app, _key, view, mut native) = super::layers::tests::open_live(seed, PROGRAM, cx);
     let layout = native.update(|_, cx| view.read(cx).layout(cx));
     let desk = layout.desk.expect("the desk is measured");
     assert_eq!(layout.panes.len(), 1, "the live view is seeded");

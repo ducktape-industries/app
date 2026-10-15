@@ -9,7 +9,7 @@ const MAX_PENDING_WIDGET_COMMANDS: usize = wire::MAX_REQUESTS;
 
 /// Whether `target` is the whole authored path of a node mounted in
 /// `root` (the ancestry `crate::render::enter_scope` walks). A view names a
-/// command's target by the id it holds; the guest SDK, which lowered every
+/// command's target by the id it holds; the view SDK, which lowered every
 /// id above it, sends the whole path, so two scopes holding one id are two
 /// targets and neither is taken for the other.
 pub(crate) fn target_names_mounted_node(root: &wire::Node, target: &[wire::ElementIdWire]) -> bool {
@@ -33,7 +33,7 @@ pub(crate) fn target_names_mounted_node(root: &wire::Node, target: &[wire::Eleme
     contains(root, None, &mut Vec::new(), target)
 }
 
-impl Guest {
+impl View {
     pub(crate) fn sync_theme(&mut self, dark: bool) {
         if self.theme_dark != Some(dark) {
             self.theme_dark = Some(dark);
@@ -46,7 +46,7 @@ impl Guest {
     }
 
     /// The body the view is laid out in, as the pane has it before the
-    /// draw: the guest's `Window::viewport_size()`. Sent when it moved;
+    /// draw: the view's `Window::viewport_size()`. Sent when it moved;
     /// the latest size wins the tick.
     pub(crate) fn sync_viewport(&mut self, width: f32, height: f32) {
         if self.viewport_sent != Some((width, height)) {
@@ -70,8 +70,8 @@ impl Guest {
     }
 
     /// One redraw: tick if there is anything to deliver — or never was a
-    /// first frame — answer the requests, and say whether the guest is due
-    /// again at once. A guest with nothing to deliver is left alone: the
+    /// first frame — answer the requests, and say whether the view is due
+    /// again at once. A view with nothing to deliver is left alone: the
     /// tree the host has is the tree it would send.
     pub(crate) fn redraw(&mut self, props: &Option<Vec<u8>>) -> bool {
         if self.fault.is_some() {
@@ -147,9 +147,9 @@ impl Guest {
     /// props the app holds, `host.log` — and anything else is refused.
     pub(crate) fn answer(&mut self, request: wire::Request, props: &Option<Vec<u8>>) {
         let wire::Request { id, kind, payload } = request;
-        // `op.submit` and `module.describe` carry an op inside a `methods::Call`
+        // `op.submit` and `program.describe` carry an op inside a `methods::Call`
         let payload_limit = match kind.as_str() {
-            "op.submit" | "module.describe" => MAX_OP_BYTES + OP_ENVELOPE_BYTES,
+            "op.submit" | "program.describe" => MAX_OP_BYTES + OP_ENVELOPE_BYTES,
             _ => MAX_PAYLOAD_BYTES,
         };
         if payload.len() > payload_limit {
@@ -176,7 +176,7 @@ impl Guest {
                 self.undeclared_logged.push(capability);
                 tracing::warn!(
                     target: "ducktape::app",
-                    module = self.module,
+                    program = self.program,
                     capability = name,
                     "view asked for a capability its manifest does not declare"
                 );
@@ -188,7 +188,7 @@ impl Guest {
             );
             return;
         }
-        // the kernel contract first: what every view may ask, module-free
+        // the kernel contract first: what every view may ask, program-free
         if kernel::answer(self, capability, operation, id, &payload, props) {
             return;
         }
@@ -203,9 +203,9 @@ impl Guest {
                 Ok(line) => {
                     tracing::debug!(
                         target: "ducktape::app",
-                        module = self.module,
+                        program = self.program,
                         line,
-                        "module view log"
+                        "program view log"
                     );
                     self.reply(id, Ok(Vec::new()));
                 }
@@ -219,7 +219,7 @@ impl Guest {
         }
     }
 
-    /// The host's own refusal, in the shape a guest gets a node's: a stable
+    /// The host's own refusal, in the shape a view gets a node's: a stable
     /// snake_case token it may branch on, and the sentence it may show.
     pub(crate) fn refuse(&mut self, id: u64, reason: &'static str, message: impl Into<String>) {
         self.reply(id, Err(wire::Error::new(reason, message)));
@@ -266,7 +266,7 @@ impl Guest {
         }
     }
 
-    /// Whether the typed path this command names is in the tree the guest is
+    /// Whether the typed path this command names is in the tree the view is
     /// showing RIGHT NOW. A press is answered a frame or more after it was
     /// made, and a live view replaces its frame between the two — so the
     /// question a queued command has to pass is whether its target is still
@@ -295,7 +295,7 @@ impl Guest {
                 return Err("too many pending widget requests".into());
             }
             if !self.target_is_mounted(&command) {
-                return Err("widget target is outside this guest tree".into());
+                return Err("widget target is outside this view tree".into());
             }
             Ok(command)
         })();
@@ -305,7 +305,7 @@ impl Guest {
         }
     }
 
-    /// Called on this guest's mounted tree with the queued commands. A
+    /// Called on this view's mounted tree with the queued commands. A
     /// command whose target left the tree in the meantime is answered with
     /// that, never performed.
     pub(crate) fn execute_widget_commands(
@@ -350,14 +350,14 @@ impl Guest {
         if self.display_diagnostics.first_cut(&self.frame_reports) {
             let cuts = &self.frame_reports;
             crate::perf::count(self.perf_key(), "truncations", 1);
-            tracing::warn!(target: "ducktape::app", module = self.module, generation,
+            tracing::warn!(target: "ducktape::app", program = self.program, generation,
                 reason = "frame_cut", nodes = cuts.nodes, depth = cuts.depth,
                 strings = cuts.strings, text = cuts.text, pictures = cuts.pictures,
-                canvases = cuts.canvases, lists = cuts.lists, first = ?cuts.first, "module view frame cut by the host's budgets");
+                canvases = cuts.canvases, lists = cuts.lists, first = ?cuts.first, "program view frame cut by the host's budgets");
         }
     }
 
-    /// One call into the module with the pending events, inside the budget.
+    /// One call into the view with the pending events, inside the budget.
     /// A trap ends the view; the widget shows the message in its place.
     /// Each stage is a perf sample under the seat's key: the call, the
     /// decode, the merge, the fuel and bytes each way, the frame's kind.
@@ -380,7 +380,7 @@ impl Guest {
             perf::record(key, "fuel.tick", self.fuel_used());
         }
         // `RUST_LOG=ducktape::perf=debug`: how much of the budget a tick took
-        tracing::debug!(target: "ducktape::perf", module = self.module,
+        tracing::debug!(target: "ducktape::perf", program = self.program,
             used = self.fuel_used(), limit = FUEL_PER_TICK);
         let outcome = answer.and_then(|frame| {
             perf::record(key, "frame_bytes", frame.len() as u64);
@@ -413,10 +413,10 @@ impl Guest {
                         reports.merge(report);
                         self.frame_rev += 1;
                         if let Some(root) = &mut frame.root {
-                            // The guest remembers its tree without the
+                            // The view remembers its tree without the
                             // picture bytes; the tree its patches build on
                             // has to be that one.
-                            if self.pictures.adopt(root, self.module) {
+                            if self.pictures.adopt(root, self.program) {
                                 self.pending.push(wire::Event::Resync);
                             }
                             // O(n) over the tree: only with perf on, and
@@ -435,10 +435,10 @@ impl Guest {
                         frame.root = previous;
                         tracing::warn!(
                             target: "ducktape::app",
-                            module = self.module,
-                            reason = "module_view_patch_refused",
+                            program = self.program,
+                            reason = "program_view_patch_refused",
                             error = refused,
-                            "module view patch refused"
+                            "program view patch refused"
                         );
                         self.frame_rev += 1;
                         self.pending.push(wire::Event::Resync);
@@ -456,7 +456,7 @@ impl Guest {
                     for mut response in frame.tooltip_responses.drain(..) {
                         if let (Some(content), Some(root)) =
                             (&mut response.content, &mut frame.root)
-                            && self.pictures.take(content, root, self.module)
+                            && self.pictures.take(content, root, self.program)
                         {
                             self.pending.push(wire::Event::Resync);
                         }
@@ -477,10 +477,10 @@ impl Guest {
                 let reason = panic_message(&mut self.store).unwrap_or(trap);
                 tracing::warn!(
                     target: "ducktape::app",
-                    module = self.module,
-                    reason = "module_view_trapped",
+                    program = self.program,
+                    reason = "program_view_trapped",
                     error = %reason,
-                    "module view ended"
+                    "program view ended"
                 );
                 self.fault = Some(reason);
                 self.frame_rev += 1;
@@ -543,7 +543,7 @@ mod tests {
         )
     }
 
-    /// The guest SDK names a nested field by its whole path, which the
+    /// The view SDK names a nested field by its whole path, which the
     /// host finds; the field's own key alone names no node, since a second
     /// composer could hold it too.
     #[test]

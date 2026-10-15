@@ -2,11 +2,11 @@
 //! for, in two cases. An identity op that removes or suspends a key or an
 //! agent: `RemoveKey`, `Revoke`, `Suspend`, and any `identity` op this app
 //! cannot read (the deployed program may know one this build does not).
-//! And every op to a program bound to a role (the registry, the
+//! And every op to a program bound to a role (the programs role, the
 //! validators, identity) from a view whose own program is not: an account
 //! with a grant may change that view's code (no vote reviews it), and the
 //! card says what the op does in the target program's own words
-//! (`module.describe`). The app is a blind host, but it already names
+//! (`program.describe`). The app is a blind host, but it already names
 //! `identity` (`backend/identity.rs`, `passkey.rs`, `join.rs`): this is the
 //! one more place, and the one place these ops are named; every other
 //! program it knows only by its role (`roles`).
@@ -26,8 +26,6 @@ use std::sync::{Mutex, OnceLock};
 
 /// The card's title for an op to the person's account (identity's).
 pub(crate) const ACCOUNT: &str = "Confirm a change to your account";
-/// The card's title for an op to the network: to the registry, or to the
-/// validators' program.
 pub(crate) const NETWORK: &str = "Confirm a change to the network";
 
 /// What the dialog says for one op: its title ([`ACCOUNT`] or
@@ -96,7 +94,7 @@ pub(super) fn moved() {
 /// One confirmation a view waits on.
 pub(crate) struct Ask {
     pub(crate) id: u64,
-    pub(crate) module: &'static str,
+    pub(crate) program: &'static str,
     pub(crate) instance: u64,
     pub(crate) words: Words,
     tell: tokio::sync::oneshot::Sender<bool>,
@@ -170,7 +168,7 @@ pub(crate) fn refuse_all() {
 /// view's own word, and a hostile one would pick a name that reads as
 /// someone else's (or carries a bidi override). The card names the asker
 /// in one of two phrasings: "System" when genesis bound that program to a
-/// role the kernel calls (`roles`, as the node's registry answers them;
+/// role the kernel calls (`roles`, as the node's programs role answers them;
 /// `None` when it does not), "Program <id>" for any other, the id as the
 /// chain lists it and set in mono. No id reads as the first: a program
 /// named `system` asks as "Program system". `own` is the account the seated key holds as the app
@@ -181,8 +179,8 @@ pub(crate) fn refuse_all() {
 /// words, whoever asks. Any other op to a role's program is asked when the
 /// requesting program is bound to no role, in a sentence that names the
 /// role and the target's own description of the op (`described`, read by
-/// the request's task). With no bindings known (a registry from before
-/// the question) no program is a role's and only the first rule asks.
+/// the request's task). With no bindings known (a programs role that
+/// predates the question) no program is a role's and only the first rule asks.
 pub(super) fn needed(
     program: &str,
     roles: Option<&abi::Roles>,
@@ -207,7 +205,7 @@ pub(super) fn needed(
         shown,
         described: false,
     };
-    if target == identity::MODULE {
+    if target == identity::PROGRAM {
         let Ok(op) = abi::decode::<identity::Op>(body) else {
             // the deployed identity may know it: its own words, if it does
             return Some(Words {
@@ -225,7 +223,7 @@ pub(super) fn needed(
                 format!(
                     "{by} asks to remove a key from your account. Approve only if you meant to."
                 ),
-                Some(crate::backend::join::fingerprint(&key)),
+                Some(noded_client::join::fingerprint(&key)),
             )),
             identity::Op::RemoveKey { account, key } => Some(words(
                 format!(
@@ -233,7 +231,7 @@ pub(super) fn needed(
                 ),
                 Some(format!(
                     "#{account} · {}",
-                    crate::backend::join::fingerprint(&key)
+                    noded_client::join::fingerprint(&key)
                 )),
             )),
             identity::Op::Revoke { account } => Some(words(
@@ -246,7 +244,7 @@ pub(super) fn needed(
                 ),
                 Some(format!("#{account}")),
             )),
-            identity::Op::RegisterModule { .. }
+            identity::Op::RegisterProgram { .. }
             | identity::Op::Create { .. }
             | identity::Op::CreateAgent { .. }
             | identity::Op::AddKey { .. }
@@ -262,12 +260,14 @@ pub(super) fn needed(
     }
     // a view no vote reviewed, writing to a role
     let roles = roles.filter(|_| !bound(program))?;
-    let (title, what) = if target == roles.registry {
-        (NETWORK, "sign an op on the module registry")
+    let (title, what) = if target == roles.programs {
+        (NETWORK, "sign an op on the programs role")
     } else if target == roles.validators {
         (NETWORK, "vote in the validators' program")
     } else if target == roles.identity {
         (ACCOUNT, "sign an identity operation")
+    } else if target == roles.blobs {
+        (NETWORK, "sign an op on the blobs role")
     } else {
         return None;
     };
@@ -281,12 +281,18 @@ pub(super) fn needed(
 }
 
 /// Whether genesis bound `program` to a role the kernel calls (`roles`, as
-/// the node's registry answers them): never while no bindings are known.
+/// the node's programs role answers them): never while no bindings are known.
 pub(super) fn bound(program: &str, roles: Option<&abi::Roles>) -> bool {
     roles.is_some_and(|roles| {
-        [&roles.registry, &roles.validators, &roles.identity]
-            .iter()
-            .any(|role| role.as_str() == program)
+        [
+            &roles.programs,
+            &roles.validators,
+            &roles.identity,
+            &roles.blobs,
+            &roles.awaits,
+        ]
+        .iter()
+        .any(|role| role.as_str() == program)
     })
 }
 
@@ -331,9 +337,9 @@ fn value(shown: &describe::Value) -> String {
     use describe::Value;
     let short = |bytes: &[u8]| design::short_hex(&abi::hex(bytes));
     match shown {
-        Value::Text(text) | Value::Module(text) => text.clone(),
+        Value::Text(text) | Value::Program(text) => text.clone(),
         Value::Account(number) => format!("#{number}"),
-        Value::Key(key) => crate::backend::join::fingerprint(key),
+        Value::Key(key) => noded_client::join::fingerprint(key),
         Value::Hash(bytes) => short(bytes),
         Value::Amount { value, decimals } => match 10u128.checked_pow(u32::from(*decimals)) {
             Some(scale) if *decimals > 0 => format!(
@@ -367,14 +373,14 @@ fn date(millis: u64) -> String {
     )
 }
 
-/// The ask for view (`module`, `instance`), queued in `waiting`; `None`
+/// The ask for view (`program`, `instance`), queued in `waiting`; `None`
 /// while another of that view's waits. The shell is not told here
 /// ([`moved`] is). `waiting` is the queue the request came in on, taken at
 /// its press: the request's task queues the ask from the runtime's thread,
 /// and under test each test thread has its own.
 pub(super) fn queue_in(
     waiting: &'static Mutex<VecDeque<Ask>>,
-    module: &'static str,
+    program: &'static str,
     instance: u64,
     words: Words,
 ) -> Option<Told> {
@@ -382,14 +388,14 @@ pub(super) fn queue_in(
     let mut waiting = lock_in(waiting);
     if waiting
         .iter()
-        .any(|ask| ask.module == module && ask.instance == instance)
+        .any(|ask| ask.program == program && ask.instance == instance)
     {
         return None;
     }
     let (tell, told) = tokio::sync::oneshot::channel();
     waiting.push_back(Ask {
         id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        module,
+        program,
         instance,
         words,
         tell,
@@ -399,8 +405,8 @@ pub(super) fn queue_in(
 
 /// [`queue_in`] this thread's queue.
 #[cfg(test)]
-pub(crate) fn queue(module: &'static str, instance: u64, words: Words) -> Option<Told> {
-    queue_in(waiting(), module, instance, words)
+pub(crate) fn queue(program: &'static str, instance: u64, words: Words) -> Option<Told> {
+    queue_in(waiting(), program, instance, words)
 }
 
 #[cfg(test)]
@@ -414,12 +420,12 @@ mod tests {
     #[test]
     fn the_ops_that_remove_or_suspend_are_asked_and_nothing_else_is() {
         let asked =
-            |op: &identity::Op| needed("chat", None, identity::MODULE, &abi::encode(op), Some(7));
+            |op: &identity::Op| needed("chat", None, identity::PROGRAM, &abi::encode(op), Some(7));
         let remove = identity::Op::RemoveKey {
             account: 7,
             key: vec![1, 2, 3],
         };
-        let fingerprint = crate::backend::join::fingerprint(&[1, 2, 3]);
+        let fingerprint = noded_client::join::fingerprint(&[1, 2, 3]);
         let removed = asked(&remove).unwrap();
         assert!(
             removed
@@ -432,7 +438,7 @@ mod tests {
         // card says whose, beside the key (also while none is resolved yet)
         for own in [Some(8), None] {
             let removed =
-                needed("chat", None, identity::MODULE, &abi::encode(&remove), own).unwrap();
+                needed("chat", None, identity::PROGRAM, &abi::encode(&remove), own).unwrap();
             assert!(
                 removed
                     .said
@@ -466,7 +472,7 @@ mod tests {
         ] {
             assert_eq!(asked(&op), None, "{op:?}");
         }
-        let unread = needed("chat", None, identity::MODULE, &[0xff, 0xff], Some(7)).unwrap();
+        let unread = needed("chat", None, identity::PROGRAM, &[0xff, 0xff], Some(7)).unwrap();
         assert!(unread.said.contains("cannot read"), "{unread:?}");
         // the deployed identity's own words, read in by the request's task
         assert_eq!((unread.shown, unread.described), (None, true));
@@ -481,22 +487,30 @@ mod tests {
     fn a_role_program_asks_as_system_and_any_other_by_its_id() {
         let suspend = abi::encode(&identity::Op::Suspend { account: 12 });
         let said = |program: &str, roles: Option<&abi::Roles>| {
-            needed(program, roles, identity::MODULE, &suspend, Some(7))
+            needed(program, roles, identity::PROGRAM, &suspend, Some(7))
                 .unwrap()
                 .said
         };
         let roles = abi::Roles {
-            registry: "registry-b".into(),
+            programs: "programs-b".into(),
             validators: "valset-b".into(),
             identity: "identity-b".into(),
+            blobs: "blobs-b".into(),
+            awaits: "awaits-b".into(),
         };
-        for program in ["registry-b", "valset-b", "identity-b"] {
+        for program in [
+            "programs-b",
+            "valset-b",
+            "identity-b",
+            "blobs-b",
+            "awaits-b",
+        ] {
             assert_eq!(
                 said(program, Some(&roles)),
                 "System asks to suspend agent #12. It stops acting until it is resumed."
             );
         }
-        for program in ["chat", identity::MODULE, "module-registry"] {
+        for program in ["chat", identity::PROGRAM, "programs"] {
             assert_eq!(
                 said(program, Some(&roles)),
                 format!(
@@ -504,7 +518,7 @@ mod tests {
                 )
             );
         }
-        assert!(said("registry-b", None).starts_with("Program registry-b asks"));
+        assert!(said("programs-b", None).starts_with("Program programs-b asks"));
     }
 
     /// Claim: no program id reads as the system. A program named `system`
@@ -516,12 +530,14 @@ mod tests {
     fn no_program_id_asks_as_the_system() {
         let suspend = abi::encode(&identity::Op::Suspend { account: 12 });
         let roles = abi::Roles {
-            registry: "module-registry".into(),
+            programs: "programs".into(),
             validators: "valset".into(),
-            identity: identity::MODULE.into(),
+            identity: identity::PROGRAM.into(),
+            blobs: "blobs".into(),
+            awaits: "awaits".into(),
         };
         let asked = |program: &str| {
-            needed(program, Some(&roles), identity::MODULE, &suspend, Some(7)).unwrap()
+            needed(program, Some(&roles), identity::PROGRAM, &suspend, Some(7)).unwrap()
         };
         let words = asked("system");
         assert_eq!(
@@ -540,7 +556,7 @@ mod tests {
     }
 
     /// Claim: a view whose program is bound to no role asks for every op to
-    /// a role's program, the network's title for the registry and the
+    /// a role's program, the network's title for the programs role and the
     /// validators, the account's for identity, and leaves the words to the
     /// target's description; its op to any other program, any op from a
     /// role's own program, and every op while no bindings are known ask
@@ -549,9 +565,11 @@ mod tests {
     #[test]
     fn a_view_no_vote_reviewed_asks_for_every_op_to_a_role() {
         let roles = abi::Roles {
-            registry: "module-registry".into(),
+            programs: "programs".into(),
             validators: "valset".into(),
-            identity: identity::MODULE.into(),
+            identity: identity::PROGRAM.into(),
+            blobs: "blobs".into(),
+            awaits: "awaits".into(),
         };
         let op = [1, 2, 3];
         let add_key = abi::encode(&identity::Op::AddKey {
@@ -575,17 +593,18 @@ mod tests {
                 "vote in the validators' program",
             ),
             (
-                "module-registry",
+                "programs",
                 &op[..],
                 NETWORK,
-                "sign an op on the module registry",
+                "sign an op on the programs role",
             ),
             (
-                identity::MODULE,
+                identity::PROGRAM,
                 &add_key[..],
                 ACCOUNT,
                 "sign an identity operation",
             ),
+            ("blobs", &op[..], NETWORK, "sign an op on the blobs role"),
         ] {
             let words = asked("chat", target, body).expect(target);
             assert_eq!(
@@ -601,7 +620,7 @@ mod tests {
                 },
                 "{target}"
             );
-            for own in ["valset", "module-registry", identity::MODULE] {
+            for own in ["valset", "programs", identity::PROGRAM, "blobs"] {
                 assert_eq!(asked(own, target, body), None, "{own} to {target}");
             }
             assert_eq!(
@@ -617,8 +636,8 @@ mod tests {
             account: 7,
             key: vec![1, 2, 3],
         });
-        for (program, by) in [("chat", "Program chat"), ("module-registry", "System")] {
-            let words = asked(program, identity::MODULE, &remove).unwrap();
+        for (program, by) in [("chat", "Program chat"), ("programs", "System")] {
+            let words = asked(program, identity::PROGRAM, &remove).unwrap();
             assert_eq!(
                 words.said,
                 format!(
@@ -639,7 +658,7 @@ mod tests {
             title: "Schedule · chat".into(),
             fields: vec![
                 field("change", Value::text("Set")),
-                field("program", Value::Module("chat".into())),
+                field("program", Value::Program("chat".into())),
                 field("code", Value::Hash(vec![0xab; 32])),
                 field("account", Value::Account(7)),
                 field(

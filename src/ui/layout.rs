@@ -57,7 +57,7 @@ impl Frame {
     }
 }
 
-/// The module of a window with nothing in it yet: it lists what it can open.
+/// The program of a window with nothing in it yet: it lists what it can open.
 pub(crate) const EMPTY: &str = "";
 /// The app's own help, drawn by the shell: no program behind it.
 pub(crate) const HELP: &str = "ducktape:help";
@@ -65,7 +65,7 @@ pub(crate) const HELP: &str = "ducktape:help";
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Pane {
     /// The program shown, or [`EMPTY`] / [`HELP`]: `is_view` tells them apart.
-    pub(crate) module: &'static str,
+    pub(crate) program: &'static str,
     /// Unique per pane, for life: the shell keys the mounted view by it, so
     /// a pane moved between native windows keeps its view.
     pub(crate) instance: u64,
@@ -79,10 +79,10 @@ pub(crate) struct Pane {
 }
 
 impl Pane {
-    pub(crate) fn new(module: &'static str) -> Self {
+    pub(crate) fn new(program: &'static str) -> Self {
         static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
         Self {
-            module,
+            program,
             instance: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
             frame: None,
             z: 0,
@@ -91,12 +91,12 @@ impl Pane {
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.module == EMPTY
+        self.program == EMPTY
     }
 
     /// A program's view is in it: not empty, not the app's help.
     pub(crate) fn is_view(&self) -> bool {
-        !matches!(self.module, EMPTY | HELP)
+        !matches!(self.program, EMPTY | HELP)
     }
 
     /// The narrowest its frame goes: once its view is drawn, the view's
@@ -105,7 +105,7 @@ impl Pane {
     pub(crate) fn min_width(&self) -> f32 {
         let view = self
             .is_view()
-            .then(|| crate::runtime::min_width(self.module));
+            .then(|| crate::runtime::min_width(self.program));
         view.flatten()
             .map_or(MIN_WIDTH, |min_width| MIN_WIDTH.max(min_width + 2.))
     }
@@ -143,12 +143,12 @@ pub(crate) struct Held {
 /// the desk's keys, a drag.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PaneMessage {
-    /// Shift-click on the bar: the window `module` is already in comes to
+    /// Shift-click on the bar: the window `program` is already in comes to
     /// the front, else it takes the focused window's place.
     Select(&'static str),
     /// A bar click, or a pick in an empty window: see [`Layout::open`].
     Open(&'static str),
-    /// Another pane showing `module`.
+    /// Another pane showing `program`.
     Split(&'static str),
     Close(usize),
     Focus(usize),
@@ -192,7 +192,7 @@ impl Layout {
         self.panes
             .get(self.focused)
             .filter(|pane| pane.is_view())
-            .map(|pane| pane.module)
+            .map(|pane| pane.program)
     }
 
     /// Every pane gone, the desk's measure kept.
@@ -256,43 +256,43 @@ impl Layout {
         }
     }
 
-    /// Selection reuses an existing module (the focused window first)
+    /// Selection reuses an existing program (the focused window first)
     /// before replacing a focused view.
-    pub(crate) fn select(&mut self, module: &'static str) -> bool {
+    pub(crate) fn select(&mut self, program: &'static str) -> bool {
         if self
             .panes
             .get(self.focused)
-            .is_some_and(|pane| pane.module == module)
+            .is_some_and(|pane| pane.program == program)
         {
             return self.focus(self.focused);
         }
-        if let Some(index) = self.panes.iter().position(|pane| pane.module == module) {
+        if let Some(index) = self.panes.iter().position(|pane| pane.program == program) {
             return self.focus(index);
         }
-        self.load(module);
+        self.load(program);
         true
     }
 
     /// A menu bar click: into the focused window if it is empty, else to
     /// the window it is already open in, else in a window of its own; on a
     /// full desk, in the focused window's place (as [`Self::popin`]).
-    pub(crate) fn open(&mut self, module: &'static str) -> bool {
+    pub(crate) fn open(&mut self, program: &'static str) -> bool {
         if self.panes.get(self.focused).is_some_and(Pane::is_empty) {
-            self.load(module);
+            self.load(program);
             return true;
         }
-        if let Some(index) = self.panes.iter().position(|pane| pane.module == module) {
+        if let Some(index) = self.panes.iter().position(|pane| pane.program == program) {
             return self.focus(index);
         }
-        if !self.split(module) {
-            self.load(module);
+        if !self.split(program) {
+            self.load(program);
         }
         true
     }
 
-    /// `module` in the focused window, in place of what it showed.
-    pub(crate) fn load(&mut self, module: &'static str) {
-        let mut pane = Pane::new(module);
+    /// `program` in the focused window, in place of what it showed.
+    pub(crate) fn load(&mut self, program: &'static str) {
+        let mut pane = Pane::new(program);
         if let Some(current) = self.panes.get_mut(self.focused) {
             pane.frame = current.frame;
             pane.z = current.z;
@@ -324,7 +324,7 @@ impl Layout {
     }
 
     /// Another window beside the focused one (cascaded when it lands).
-    pub(crate) fn split(&mut self, module: &'static str) -> bool {
+    pub(crate) fn split(&mut self, program: &'static str) -> bool {
         if self.panes.len() == MAX_PANES {
             return false;
         }
@@ -333,7 +333,7 @@ impl Layout {
         } else {
             self.focused + 1
         };
-        self.panes.insert(index, Pane::new(module));
+        self.panes.insert(index, Pane::new(program));
         self.focused = index;
         self.raise(index);
         true

@@ -37,11 +37,11 @@ use view_wire::methods::refusal;
 use super::RpcClient;
 
 /// How long a dial waits for the node's QUIC answer before it takes the
-/// websocket: halo's own wait for a member.
+/// websocket.
 const QUIC_ANSWER: Duration = Duration::from_secs(2);
 /// How long a node whose UDP stayed silent is dialed over the websocket
 /// alone, so a node behind a TCP-only tunnel costs no [`QUIC_ANSWER`] per
-/// connect: halo's own.
+/// connect.
 const QUIC_RETRY: Duration = Duration::from_secs(60);
 /// How long the handshake may take: the node's own deadline.
 const HELLO_WAIT: Duration = Duration::from_secs(5);
@@ -57,7 +57,7 @@ const DATA_BACKLOG: usize = 64;
 /// stream is behind. Past it a send is refused `in_flight_limit`.
 pub(crate) const OUTBOX: usize = 64;
 /// The keep-alive and idle limit of a session, on QUIC and the websocket
-/// alike: halo's.
+/// alike: the node's QUIC transport's.
 const KEEP_ALIVE: Duration = Duration::from_secs(10);
 const IDLE: Duration = Duration::from_secs(30);
 /// How long a quitting app waits for its session's close to leave, so the
@@ -903,7 +903,7 @@ async fn dial(rpc: &RpcClient, client: Weak<Inner>) -> Result<Arc<Conn>, Error> 
     let status = rpc.status().await.map_err(super::refused)?;
     let port = match rpc.live_port().await {
         Ok(port) => port,
-        Err(super::noded::Error::Failed { status: 404, .. }) => {
+        Err(noded_client::Error::Failed { status: 404, .. }) => {
             return Err(unavailable("this node serves no live tracks"));
         }
         Err(error) => return Err(super::refused(error)),

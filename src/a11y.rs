@@ -133,7 +133,7 @@ pub fn aria<E: InteractiveElement>(mut element: E, set: impl FnOnce(Aria<'_>) ->
 /// own node from its one `a11y_synthetic_children` closure. An element has
 /// room for one closure — a second replaces the first — so everything one
 /// element needs goes into one `Patch`. gpui runs it only for an element
-/// with an id and a role. The view's aria mapper (`guest_aria`) fills the
+/// with an id and a role. The view's aria mapper (`view_aria`) fills the
 /// fields a view sets directly.
 #[derive(Clone, Default, PartialEq)]
 pub struct Patch {

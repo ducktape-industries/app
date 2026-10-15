@@ -117,7 +117,7 @@ fn uniform_list_measures_row_zero_and_emits_bounded_viewport_ranges(
 }
 
 #[gpui_kit::test]
-fn uniform_list_scroll_requests_far_rows_without_guest_layout_or_unbounded_state(
+fn uniform_list_scroll_requests_far_rows_without_view_layout_or_unbounded_state(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     cx.update(gpui_kit::init);
@@ -153,7 +153,7 @@ fn uniform_list_scroll_requests_far_rows_without_guest_layout_or_unbounded_state
         wire::Event::UniformListRange { start, end, .. } if *start >= 1_500 => Some((*start, *end)),
         _ => None,
     });
-    let (start, end) = far.expect("far scroll asks guest for a visible range");
+    let (start, end) = far.expect("far scroll asks view for a visible range");
     assert!(end > start);
     assert!((end - start) as usize <= wire::MAX_UNIFORM_LIST_ROWS);
     tree.read_with(&native, |tree, _| {
@@ -235,7 +235,7 @@ fn uniform_list_click_uses_native_identity_and_records_user_activation(
 
 /// A view that asks for the keys on a uniform list by its path hears the
 /// host say no: the host focuses a container, a field or an editor, and a
-/// list is none of them (a guest focus handle tracked on it is the way).
+/// list is none of them (a view focus handle tracked on it is the way).
 #[gpui_kit::test]
 fn a_focus_on_a_uniform_list_is_refused(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -348,7 +348,7 @@ fn a_scroll_request_is_applied_once_per_revision(cx: &mut gpui_kit::TestAppConte
     assert_eq!(shown.borrow().last(), Some(&100), "{:?}", shown.borrow());
 }
 
-/// The host keeps the bar's gutter beside every guest uniform list, outside
+/// The host keeps the bar's gutter beside every view uniform list, outside
 /// the list's own box: the box (its fill here) and its rows end where the
 /// gutter begins, and the room the view gave the list holds both. A list of
 /// few rows keeps the gutter, as a view's scroller does.

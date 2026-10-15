@@ -6,7 +6,7 @@ mod requests;
 
 use abi::{Exports, HostState, first_line, panic_message};
 
-// ---------- the guest ----------
+// ---------- the view ----------
 
 /// How long a press or key stays a view's activation: the web's transient
 /// activation duration.
@@ -14,7 +14,7 @@ pub(crate) const ACTIVATION_EXPIRY: std::time::Duration = std::time::Duration::f
 
 /// What a fresh instance did with the state the drawn view left it. A trap
 /// is not one of these — it takes the instance with it and is the load's
-/// error. A refusal is the guest's own word, reported before it builds
+/// error. A refusal is the view's own word, reported before it builds
 /// anything, so the instance is untouched and can start clean instead.
 pub(super) enum Restored {
     Carried,
@@ -23,7 +23,7 @@ pub(super) enum Restored {
 
 /// What a drawn view answered when asked for its state: the state, a
 /// state past `MAX_SNAPSHOT_BYTES` (the host's word, before it copied a
-/// byte), or the guest's own word that it cannot hand it over now. A trap
+/// byte), or the view's own word that it cannot hand it over now. A trap
 /// is not one of these: it ends the instance.
 pub(super) enum Snapshot {
     Taken(Vec<u8>),
@@ -38,8 +38,8 @@ pub(super) enum Snapshot {
 /// `visibility`, `offset`, `route`, `live`, `tasks`, `clocks`) has one
 /// lifecycle: opened by a request, retired by its cancel in `redraw`, and
 /// gone with the instance. A replacement prepared by `load` is a second
-/// `Guest` seated over this one (`alive`, `staged`).
-pub(super) struct Guest {
+/// `View` seated over this one (`alive`, `staged`).
+pub(super) struct View {
     /// The connection this instance started on, or was last reconnected
     /// to: its node requests and its `store` file go there, and only while
     /// it is still the app's (the same `rev`).
@@ -52,9 +52,9 @@ pub(super) struct Guest {
     pub(crate) activation: Option<std::time::Instant>,
     /// When each recent `link.open` was admitted, for the per-minute budget.
     pub(crate) links: Vec<std::time::Instant>,
-    pub(crate) module: &'static str,
+    pub(crate) program: &'static str,
     /// The seat entity showing this seat (`Seat.instance`;
-    /// 0 for a preloaded seat no tab has claimed): with `module`, the key
+    /// 0 for a preloaded seat no tab has claimed): with `program`, the key
     /// this instance's perf samples land under.
     pub(crate) instance: u64,
     /// The manifest's name: what a registered view's tab is called.
@@ -75,9 +75,9 @@ pub(super) struct Guest {
     pub(crate) undeclared_logged: Vec<Capability>,
     store: Store<HostState>,
     exports: Exports,
-    /// The guest's events for its next tick.
+    /// The view's events for its next tick.
     pub(crate) pending: Vec<wire::Event>,
-    /// The host's facts as the guest last heard them: the theme, the
+    /// The host's facts as the view last heard them: the theme, the
     /// body it is laid out in, the reader's UTC offset. Each crosses once
     /// (`sync_theme`, `sync_viewport`, `sync_offset`), and a replacement
     /// hears them before its first frame (`seed`).
@@ -103,14 +103,14 @@ pub(super) struct Guest {
     /// Bumped when `frame.root` changes: the widget rebuilds when it sees a
     /// number it has not rendered.
     pub(crate) frame_rev: u64,
-    /// What the guest built for tooltip routes since the seat last took
+    /// What the view built for tooltip routes since the seat last took
     /// them, each with the table of the frame it came in: for the tree the
     /// seat draws, which keeps them by route.
     pub(crate) tooltip_responses: Vec<(wire::TooltipResponse, wire::Styles)>,
     pub(crate) ticks: u64,
-    /// Every picture the guest has sent, by hash: the bytes cross once.
+    /// Every picture the view has sent, by hash: the bytes cross once.
     pub(crate) pictures: Pictures,
-    /// The guest's `<module>.props` subscription, once it asked, and the
+    /// The view's `<program>.props` subscription, once it asked, and the
     /// props it was last given on it.
     pub(crate) props_subscription: Option<u64>,
     pub(crate) props_sent: Option<Vec<u8>>,
@@ -119,25 +119,25 @@ pub(super) struct Guest {
     pub(crate) visibility_subscriptions: Vec<u64>,
     /// `host.route` subscriptions; the first is handed a pending link route.
     pub(crate) route_subscriptions: Vec<u64>,
-    /// What the guest asked the app to do this redraw.
+    /// What the view asked the app to do this redraw.
     pub(crate) intents: Vec<Intent>,
-    /// The kernel's answers to this guest's node calls, on their way in.
+    /// The kernel's answers to this view's node calls, on their way in.
     pub(crate) replies: Arc<kernel::Replies>,
-    /// The guest's `module.changes` subscriptions and the program each one
+    /// The view's `program.changes` subscriptions and the program each one
     /// watches: told on every block that wrote to that program.
     pub(crate) live_subscriptions: Vec<(u64, String)>,
     /// The tracks this view publishes, where its `live.send`s go.
     pub(crate) live: kernel::live::Live,
-    /// Pending host requests and subscriptions, each owned by this guest
-    /// the kernel opened for it: retired with the cancel, and with the guest.
+    /// Pending host requests and subscriptions, each owned by this view
+    /// the kernel opened for it: retired with the cancel, and with the view.
     pub(crate) tasks: Vec<(u64, kernel::NodeTask)>,
     pub(crate) clipboard: clipboard::Clipboard,
-    /// The guest's `clock.ticks` subscriptions: the period it asked for and
-    /// the instant its next item is due. A module has no clock of its own,
-    /// so periodic guest subscriptions use this list — driven from the window
+    /// The view's `clock.ticks` subscriptions: the period it asked for and
+    /// the instant its next item is due. A view has no clock of its own,
+    /// so periodic view subscriptions use this list — driven from the window
     /// thread's own redraw, never from a thread that would have to wake it.
     pub(crate) clocks: Vec<kernel::Clock>,
-    /// The trap that ended the view, if one did. A faulted guest never ticks again.
+    /// The trap that ended the view, if one did. A faulted view never ticks again.
     pub(crate) fault: Option<String>,
     /// sha256 of the view bytes this instance was built from; none for a
     /// file the developer's override supplies.
@@ -150,10 +150,10 @@ pub(super) struct Guest {
     pub(crate) staged: bool,
 }
 
-impl Guest {
+impl View {
     pub(crate) fn perf_key(&self) -> crate::perf::Key {
         crate::perf::Key::View {
-            module: self.module,
+            program: self.program,
             instance: self.instance,
         }
     }
@@ -176,11 +176,11 @@ impl Guest {
 }
 
 /// One `view_perf` line as an installed instance leaves: a swap drops the
-/// old guest, a retry and a roster removal empty its slot.
-impl Drop for Guest {
+/// old view, a retry and a roster removal empty its slot.
+impl Drop for View {
     fn drop(&mut self) {
         if self.installed_generation.is_some() {
-            crate::perf::retire(self.module, self.instance);
+            crate::perf::retire(self.program, self.instance);
         }
     }
 }
@@ -304,7 +304,7 @@ fn runtime() -> &'static (Engine, Option<Cache>) {
     })
 }
 
-/// Reset the instruction allowance before entering the guest.
+/// Reset the instruction allowance before entering the view.
 fn arm(store: &mut Store<HostState>) {
     let _ = store.set_fuel(FUEL_PER_TICK);
 }

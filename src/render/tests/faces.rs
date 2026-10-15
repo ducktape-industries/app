@@ -1,4 +1,4 @@
-//! The faces a guest's text is drawn in, through the Linux text system the
+//! The faces a view's text is drawn in, through the Linux text system the
 //! app ships with its bundled faces and none of the machine's.
 use super::*;
 use gpui_kit::HeadlessAppContext;
@@ -41,11 +41,11 @@ fn sensed(key: &str, family: &'static str) -> wire::Node {
     }
 }
 
-/// A guest names the design crate's faces, which the app does not bundle:
+/// A view names the design crate's faces, which the app does not bundle:
 /// a chat code line asks for its mono. Whatever kind of node asks, the app's
 /// own mono draws it, the face the paragraph's runs are drawn in.
 #[test]
-fn a_guest_naming_the_design_crates_mono_is_drawn_in_the_apps() {
+fn a_view_naming_the_design_crates_mono_is_drawn_in_the_apps() {
     let mut cx = HeadlessAppContext::new(Arc::new(crate::fonts::font_fallback::text_system()));
     cx.update(gpui_kit::init);
     let root = container_with_style(

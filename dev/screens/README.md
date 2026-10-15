@@ -42,7 +42,7 @@ per-fixture renderer/Xvfb logs are written to `OUTPUT_DIR/logs`.
 Each `name` references `FIXTURES_DIR/<name>.json`, the serde JSON encoding of
 one whole `view_wire::Frame`: its `root` and the `styles` the root's nodes
 name. The renderer takes it as the host takes a frame, so one the sanitizer
-refuses does not draw. Generate frames with the matching modules SDK (a view
+refuses does not draw. Generate frames with the matching programs SDK (a view
 test's `TestAppContext::whole_frame`); this tool does not maintain a
 second wire schema. Width and height are positive integer pixels; theme is
 `light` or `dark`. Optional `scroll` is `none`, `top`, or `bottom`. Optional

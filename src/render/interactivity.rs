@@ -1,6 +1,6 @@
 //! A node's `wire::Interactivity` onto a gpui element: focus and tab
-//! order, tooltips, one listener per handler the guest set, each emitting
-//! the matching `wire::Event`, the keys the guest consumes, and the `KeyUp`
+//! order, tooltips, one listener per handler the view set, each emitting
+//! the matching `wire::Event`, the keys the view consumes, and the `KeyUp`
 //! owed to a node the keyboard left with a key down in it.
 
 use super::{AuthoredPath, Tree, ViewTree};
@@ -83,7 +83,7 @@ pub(super) fn apply<E: StatefulInteractiveElement>(
         element = element.tooltip_show_delay(delay);
         // what the tree holds for the route when gpui shows the tooltip, not
         // when this frame drew: gpui keeps the builder of the frame the hover
-        // began in, and the guest's answer to that hover lands in the delay.
+        // began in, and the view's answer to that hover lands in the delay.
         // The content is drawn with the table it came with.
         let build = move |cx: &mut App| {
             let held = parent.upgrade().and_then(|tree| {
@@ -95,7 +95,7 @@ pub(super) fn apply<E: StatefulInteractiveElement>(
             });
             match held {
                 Some(tree) => super::tooltip_containment::build(parent.clone(), tree, cx),
-                // the guest took it back during the delay
+                // the view took it back during the delay
                 None => cx.new(|_| gpui_kit::Empty).into(),
             }
         };
@@ -333,7 +333,7 @@ fn apply_keyboard<E: StatefulInteractiveElement>(
             },
         ));
     }
-    // the keys the guest consumes stop here once this node's own
+    // the keys the view consumes stop here once this node's own
     // listeners (and gpui's keyboard click, which notes Enter and Space
     // first) have heard them, as gpui's `cx.stop_propagation()` in them
     // would; the sanitizer refused a frame with a key gpui cannot read
@@ -376,7 +376,7 @@ pub(super) struct HeldKey {
 }
 
 impl ViewTree {
-    /// `keystroke` went down in the node at `path`, whose guest focus
+    /// `keystroke` went down in the node at `path`, whose view focus
     /// handle is `own`: held until it comes up there or the keyboard
     /// leaves the node. A repeat of a held key holds nothing more.
     fn hold(
@@ -392,13 +392,13 @@ impl ViewTree {
             return;
         }
         // the handle the node tracks (a container focused by path tracks
-        // that one over the guest's), else the focused one, which is in it:
+        // that one over the view's), else the focused one, which is in it:
         // the keyboard leaves the node as it leaves that handle
         let focus = self
             .focus_targets
             .get(path)
             .map(|(_, handle)| handle.clone())
-            .or_else(|| own.and_then(|id| self.guest_focus_targets.get(&id).cloned()))
+            .or_else(|| own.and_then(|id| self.view_focus_targets.get(&id).cloned()))
             .or_else(|| window.focused(cx));
         let Some(focus) = focus else {
             return;
@@ -429,7 +429,7 @@ impl ViewTree {
 
     /// The keyboard left the node at `path` with `key` down in it: the node
     /// hears it come up, on the key-up handlers it has in the tree now (a
-    /// listener the guest dropped and set again has a new route), capture
+    /// listener the view dropped and set again has a new route), capture
     /// first as gpui calls them. A node no longer in the tree hears nothing.
     fn lift(&mut self, path: &AuthoredPath, key: &str, cx: &mut Context<Self>) {
         let Some(at) = self

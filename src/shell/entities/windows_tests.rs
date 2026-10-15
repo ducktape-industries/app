@@ -1,7 +1,7 @@
 //! The windows, moved by their methods (windows.rs), and what the app-wide
 //! entities around them do on their own: a toast's clock, a pref's write,
 //! the theme's sync, the network left.
-use super::tests::{active, desk_of, entities, modules, notifies};
+use super::tests::{active, desk_of, entities, notifies, programs};
 use super::{Entities, Overlay, SessionState, Windows};
 use crate::runtime::WindowKey;
 use crate::shell::WindowKind;
@@ -48,22 +48,22 @@ fn popped(app: &Entities, console: WindowKey, cx: &TestAppContext) -> WindowKey 
     })
 }
 
-fn listed(app: &Entities, modules: &[&str], cx: &mut TestAppContext) {
-    let roster = crate::runtime::Roster::listing(modules);
+fn listed(app: &Entities, programs: &[&str], cx: &mut TestAppContext) {
+    let roster = crate::runtime::Roster::listing(programs);
     app.rail.update(cx, |rail, cx| rail.read_off(roster, cx));
 }
 
-/// The route waiting for the seat of window `key`'s pane showing `module`,
+/// The route waiting for the seat of window `key`'s pane showing `program`,
 /// taken; none while no pane shows it.
 fn routed(
     app: &Entities,
     key: WindowKey,
-    module: &'static str,
+    program: &'static str,
     cx: &TestAppContext,
 ) -> Option<String> {
     let layout = desk_of(app, key, cx).read_with(cx, |desk, _| desk.get().clone());
-    let pane = layout.panes.iter().find(|pane| pane.module == module)?;
-    crate::runtime::take_route(module, pane.instance)
+    let pane = layout.panes.iter().find(|pane| pane.program == program)?;
+    crate::runtime::take_route(program, pane.instance)
 }
 
 /// A view picked from ⌘K or a menu opens as a bar click does: the focused
@@ -71,16 +71,16 @@ fn routed(
 #[gpui_kit::test]
 fn a_picked_view_opens_beside_the_focused_one(cx: &mut TestAppContext) {
     let (app, key) = console(cx);
-    let pick = |module, cx: &mut TestAppContext| {
+    let pick = |program, cx: &mut TestAppContext| {
         app.windows
-            .update(cx, |windows, cx| windows.select_view(module, cx))
+            .update(cx, |windows, cx| windows.select_view(program, cx))
     };
     pick("files", cx);
-    assert_eq!(modules(&app, key, cx), ["chat", "files"]);
+    assert_eq!(programs(&app, key, cx), ["chat", "files"]);
     assert_eq!(active(&app, cx), Some("files"));
     pick("chat", cx);
     assert_eq!(
-        modules(&app, key, cx),
+        programs(&app, key, cx),
         ["chat", "files"],
         "the window it is in"
     );
@@ -109,11 +109,11 @@ fn pop_out_and_back_in_keep_the_pane(cx: &mut TestAppContext) {
     app.windows
         .update(cx, |windows, cx| windows.pop_out(console, 1, None, cx));
     cx.run_until_parked();
-    assert_eq!(modules(&app, console, cx), ["chat"]);
+    assert_eq!(programs(&app, console, cx), ["chat"]);
     let popped_key = popped(&app, console, cx);
     assert_eq!(window_count(&app, cx), 2, "the pop-out's window opened");
     assert_eq!(
-        modules(&app, popped_key, cx),
+        programs(&app, popped_key, cx),
         ["files"],
         "the pane is in its own window"
     );
@@ -143,7 +143,7 @@ fn pop_out_and_back_in_keep_the_pane(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     assert_eq!(window_count(&app, cx), 1);
-    assert_eq!(modules(&app, console, cx), ["chat", "files", EMPTY]);
+    assert_eq!(programs(&app, console, cx), ["chat", "files", EMPTY]);
 }
 
 /// The AX door names a window for its life: the console closing renames
@@ -214,7 +214,7 @@ fn a_link_opens_the_seat_and_a_bad_one_toasts(cx: &mut TestAppContext) {
     };
     open("duck://testkit-0a1b2c3d/link-test-here/tx/00ff", cx);
     assert_eq!(active(&app, cx), Some("link-test-here"));
-    assert_eq!(modules(&app, key, cx), ["chat", "link-test-here"]);
+    assert_eq!(programs(&app, key, cx), ["chat", "link-test-here"]);
     assert!(toast(cx).is_empty(), "the view coming forward says it");
     assert_eq!(
         routed(&app, key, "link-test-here", cx).as_deref(),
@@ -232,7 +232,7 @@ fn a_link_opens_the_seat_and_a_bad_one_toasts(cx: &mut TestAppContext) {
     assert_eq!(active(&app, cx), Some("link-test-away"));
     assert!(toast(cx).contains("link-test-nowhere"), "{:?}", toast(cx));
     assert_eq!(
-        modules(&app, key, cx),
+        programs(&app, key, cx),
         ["chat", "link-test-here", "link-test-away"]
     );
 }
@@ -300,17 +300,17 @@ fn the_update_notice_opens_settings_on_updates(cx: &mut TestAppContext) {
 /// raises, and the desk opens nothing.
 #[gpui_kit::test]
 fn an_outside_link_reaches_only_the_window_it_brings_forward(cx: &mut TestAppContext) {
-    const MODULE: &str = "two-window-link";
+    const PROGRAM: &str = "two-window-link";
     let (app, console) = console(cx);
-    listed(&app, &[MODULE], cx);
+    listed(&app, &[PROGRAM], cx);
     let desk = desk_of(&app, console, cx);
     desk.update(cx, |desk, cx| {
-        desk.split(MODULE, cx);
-        desk.split(MODULE, cx);
+        desk.split(PROGRAM, cx);
+        desk.split(PROGRAM, cx);
     });
     let open = |cx: &mut TestAppContext| {
         app.windows.update(cx, |windows, cx| {
-            windows.open_link(&format!("duck://{MODULE}/room/9"), None, cx)
+            windows.open_link(&format!("duck://{PROGRAM}/room/9"), None, cx)
         })
     };
     open(cx);
@@ -319,15 +319,15 @@ fn an_outside_link_reaches_only_the_window_it_brings_forward(cx: &mut TestAppCon
     let other = layout
         .panes
         .iter()
-        .find(|pane| pane.module == MODULE && pane.instance != forward)
+        .find(|pane| pane.program == PROGRAM && pane.instance != forward)
         .expect("two windows of the program")
         .instance;
     assert_eq!(
-        crate::runtime::take_route(MODULE, forward).as_deref(),
+        crate::runtime::take_route(PROGRAM, forward).as_deref(),
         Some("room/9")
     );
     assert_eq!(
-        crate::runtime::take_route(MODULE, other),
+        crate::runtime::take_route(PROGRAM, other),
         None,
         "the window left behind was handed the route too"
     );
@@ -345,15 +345,15 @@ fn an_outside_link_reaches_only_the_window_it_brings_forward(cx: &mut TestAppCon
     app.windows
         .update(cx, |windows, cx| windows.pop_out(console, index, None, cx));
     cx.run_until_parked();
-    assert_eq!(modules(&app, console, cx), ["chat"]);
+    assert_eq!(programs(&app, console, cx), ["chat"]);
     open(cx);
     assert_eq!(
-        modules(&app, console, cx),
+        programs(&app, console, cx),
         ["chat"],
         "the desk opened it again"
     );
     assert_eq!(
-        crate::runtime::take_route(MODULE, forward).as_deref(),
+        crate::runtime::take_route(PROGRAM, forward).as_deref(),
         Some("room/9"),
         "the pop-out was not handed the route"
     );
@@ -402,7 +402,7 @@ fn spotlight_and_links_both_land_in_the_desk_and_leaving_clears_it(cx: &mut Test
         windows.select_view("forge", cx);
         windows.open_link("duck://pane-link/x", None, cx);
     });
-    assert_eq!(modules(&app, key, cx), ["chat", "forge", "pane-link"]);
+    assert_eq!(programs(&app, key, cx), ["chat", "forge", "pane-link"]);
     assert_eq!(active(&app, cx), Some("pane-link"));
     let overlays = app
         .windows
@@ -594,7 +594,7 @@ fn the_front_follows_focus_and_not_frames(cx: &mut TestAppContext) {
         .windows
         .read_with(cx, |windows, _| windows.own(key).unwrap().front.clone());
     let layout = desk.read_with(cx, |desk, _| desk.get().clone());
-    assert_eq!(modules(&app, key, cx), ["chat", "front-test-view"]);
+    assert_eq!(programs(&app, key, cx), ["chat", "front-test-view"]);
     assert_eq!(layout.focused, 1);
     let (desks, _desks) = notifies(&desk, cx);
     let (fronts, _fronts) = notifies(&front, cx);
@@ -632,8 +632,8 @@ fn the_windows_follow_what_opens_over_a_desk(cx: &mut TestAppContext) {
     app.account.update(cx, |account, cx| {
         let key = vec![7; 32];
         let mut state = account.get().clone();
-        state.approve = Some(crate::backend::join::fingerprint(&key));
-        let found = crate::backend::join::Request {
+        state.approve = Some(noded_client::join::fingerprint(&key));
+        let found = noded_client::join::Request {
             network: "testkit".into(),
             key,
         };

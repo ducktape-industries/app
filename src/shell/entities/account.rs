@@ -86,7 +86,7 @@ pub(crate) struct Account {
     keyring: String,
     /// "Add a device…": the code typed, and the request it found.
     approve_code: String,
-    approve_found: Option<backend::join::Request>,
+    approve_found: Option<noded_client::join::Request>,
     /// The key being opened or made (`open_device_key`).
     seating: Option<Task<()>>,
     /// The sign-in call out: an unlock, a phrase check, a recovery, an
@@ -112,7 +112,7 @@ impl Account {
             screen,
             prefs,
             phrase: None,
-            client: backend::RpcClient::new(""),
+            client: backend::rpc_client(""),
             network: String::new(),
             keyring: String::new(),
             approve_code: String::new(),
@@ -194,7 +194,7 @@ impl Account {
     /// same network keeps the screen it was on.
     pub(crate) fn take_up(
         &mut self,
-        keyring: backend::Keyring,
+        keyring: noded_client::keyring::Keyring,
         client: backend::RpcClient,
         network: String,
         cx: &mut Context<Self>,
@@ -227,7 +227,7 @@ impl Account {
         self.link = None;
         self.passkey = None;
         self.phrase = None;
-        self.client = backend::RpcClient::new("");
+        self.client = backend::rpc_client("");
         self.network.clear();
         self.keyring.clear();
         self.approve_code.clear();
@@ -450,7 +450,7 @@ impl Account {
     }
 
     pub(crate) fn resolve(&mut self, cx: &mut Context<Self>) {
-        let Ok(key) = backend::hex_decode(&self.state.signer_key) else {
+        let Ok(key) = noded_client::hex::hex_decode(&self.state.signer_key) else {
             return;
         };
         if key.is_empty() || self.node().is_empty() {
@@ -464,7 +464,7 @@ impl Account {
         );
         let work = async move {
             let lookup = backend::identity::account_of_key(&client, &network, key);
-            match tokio::time::timeout(backend::noded::ANSWER_DEADLINE, lookup).await {
+            match tokio::time::timeout(noded_client::ANSWER_DEADLINE, lookup).await {
                 Ok(Ok(account)) => Some(account),
                 Ok(Err(error)) => {
                     tracing::debug!(target: "ducktape::app", %error, "account not resolved");
@@ -667,7 +667,7 @@ impl Account {
         if !matches!(self.screen(cx), Screen::Account { .. }) || self.link.is_some() {
             return;
         }
-        let code = backend::join::new_code();
+        let code = noded_client::join::new_code();
         self.edit(
             |state| {
                 state.link_code = code.clone();
@@ -989,7 +989,7 @@ impl Account {
 
     pub(crate) fn approve_found(
         &mut self,
-        found: Result<backend::join::Request, String>,
+        found: Result<noded_client::join::Request, String>,
         cx: &mut Context<Self>,
     ) {
         let _timed = timed();
@@ -997,7 +997,7 @@ impl Account {
         self.edit(|state| state.busy = false, cx);
         match found {
             Ok(request) => {
-                let fingerprint = backend::join::fingerprint(&request.key);
+                let fingerprint = noded_client::join::fingerprint(&request.key);
                 self.approve_found = Some(request);
                 self.edit(|state| state.approve = Some(fingerprint), cx);
             }
@@ -1053,7 +1053,7 @@ impl Account {
         &mut self,
         state: AccountState,
         phrase: Option<Secret>,
-        found: Option<backend::join::Request>,
+        found: Option<noded_client::join::Request>,
         cx: &mut Context<Self>,
     ) {
         self.phrase = phrase;
@@ -1072,7 +1072,7 @@ impl Account {
     /// The node and network a test's account is on.
     #[cfg(test)]
     pub(crate) fn seed_network(&mut self, node: &str, network: &str, keyring: &str) {
-        self.client = backend::RpcClient::new(node);
+        self.client = backend::rpc_client(node);
         self.network = network.into();
         self.keyring = keyring.into();
     }

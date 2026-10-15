@@ -1,6 +1,6 @@
 use super::*;
 use crate::backend::live::{Code, Ends, Request};
-use crate::runtime::kernel::tests::guest;
+use crate::runtime::kernel::tests::view;
 use std::sync::mpsc as std_mpsc;
 use wire::methods::{LiveItem, LiveSend, LiveSubscribe};
 
@@ -30,26 +30,26 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// A guest on a connection to chain `net#1`, its live session a [`Fake`]:
-/// the guest, and each request it opens as the fake sees it.
-fn live_guest() -> (Guest, std_mpsc::Receiver<(Ask, Ends)>) {
-    let mut guest = guest();
-    guest.connection = super::super::super::Connection {
+/// A view on a connection to chain `net#1`, its live session a [`Fake`]:
+/// the view, and each request it opens as the fake sees it.
+fn live_guest() -> (View, std_mpsc::Receiver<(Ask, Ends)>) {
+    let mut view = view();
+    view.connection = super::super::super::Connection {
         client: Some(RpcClient::new("http://127.0.0.1:1")),
         network: "net".into(),
         chain: "net#1".into(),
-        rev: guest.connection.rev,
+        rev: view.connection.rev,
     };
     let (opened, opens) = std_mpsc::channel();
     install(
-        guest.connection.rev,
+        view.connection.rev,
         Arc::new(Fake(Mutex::new(opened), Mutex::new(Vec::new()))),
     );
-    (guest, opens)
+    (view, opens)
 }
 
-fn ask(guest: &mut Guest, id: u64, kind: &str, payload: Vec<u8>) {
-    guest.answer(
+fn ask(view: &mut View, id: u64, kind: &str, payload: Vec<u8>) {
+    view.answer(
         wire::Request {
             id,
             kind: kind.into(),
@@ -65,12 +65,12 @@ fn opened(opens: &std_mpsc::Receiver<(Ask, Ends)>) -> (Ask, Ends) {
         .expect("the kernel opened a request")
 }
 
-/// The next answer the guest's tasks hand it, waited for on the replies'
+/// The next answer the view's tasks hand it, waited for on the replies'
 /// own signal.
-fn next(guest: &Guest, changes: &mut tokio::sync::watch::Receiver<()>) -> wire::Event {
+fn next(view: &View, changes: &mut tokio::sync::watch::Receiver<()>) -> wire::Event {
     loop {
         let mut events = Vec::new();
-        guest.replies.drain_into(&mut events).unwrap();
+        view.replies.drain_into(&mut events).unwrap();
         if let Some(event) = events.into_iter().next() {
             return event;
         }
@@ -97,7 +97,7 @@ fn track(name: &str) -> LiveTrack {
     }
 }
 
-fn send(guest: &mut Guest, id: u64, object: u32) {
+fn send(view: &mut View, id: u64, object: u32) {
     let send = LiveSend {
         track: track("presence/7"),
         group: 1,
@@ -105,7 +105,7 @@ fn send(guest: &mut Guest, id: u64, object: u32) {
         body: vec![object as u8],
         end: false,
     };
-    ask(guest, id, "live.send", methods::encode(&send));
+    ask(view, id, "live.send", methods::encode(&send));
 }
 
 /// The headline of the kernel's side: a publication is stamped
@@ -117,14 +117,14 @@ fn send(guest: &mut Guest, id: u64, object: u32) {
 #[test]
 fn a_publication_is_stamped_and_its_sends_wait_for_the_node() {
     let _serial = serial();
-    let (mut guest, opens) = live_guest();
-    let mut changes = guest.replies.changes();
+    let (mut view, opens) = live_guest();
+    let mut changes = view.replies.changes();
     let publish = LivePublish {
         track: track("presence/7"),
         mode: LiveMode::Datagram,
         priority: 9,
     };
-    ask(&mut guest, 1, "live.publish", methods::encode(&publish));
+    ask(&mut view, 1, "live.publish", methods::encode(&publish));
     let (asked, mut ends) = opened(&opens);
     assert_eq!(
         asked,
@@ -137,8 +137,8 @@ fn a_publication_is_stamped_and_its_sends_wait_for_the_node() {
             priority: 9,
         }
     );
-    send(&mut guest, 2, 0);
-    assert_eq!(guest.pending, [], "a send is not answered");
+    send(&mut view, 2, 0);
+    assert_eq!(view.pending, [], "a send is not answered");
     assert!(
         ends.objects.try_recv().is_err(),
         "nothing goes out before the node took it"
@@ -147,13 +147,13 @@ fn a_publication_is_stamped_and_its_sends_wait_for_the_node() {
     let out = ends.objects.blocking_recv().unwrap();
     assert_eq!((out.group, out.object, out.body), (1, 0, vec![0]));
     ends.heard.send(Heard::Subscribers(2)).unwrap();
-    let (id, count, done) = item::<Publishing>(next(&guest, &mut changes));
+    let (id, count, done) = item::<Publishing>(next(&view, &mut changes));
     assert_eq!(
         (id, count, done),
         (1, Ok(Publishing::Subscribers(2)), false)
     );
     ends.heard.send(Heard::Dropped(Code::Rate)).unwrap();
-    let (_, dropped, done) = item::<Publishing>(next(&guest, &mut changes));
+    let (_, dropped, done) = item::<Publishing>(next(&view, &mut changes));
     assert_eq!((dropped, done), (Err(refusal::RATE_LIMIT.into()), false));
     ends.heard
         .send(Heard::Closed(wire::Error::new(
@@ -161,21 +161,21 @@ fn a_publication_is_stamped_and_its_sends_wait_for_the_node() {
             "the node ended this track",
         )))
         .unwrap();
-    let (_, ended, done) = item::<Publishing>(next(&guest, &mut changes));
+    let (_, ended, done) = item::<Publishing>(next(&view, &mut changes));
     assert_eq!((ended, done), (Err(refusal::NOT_GRANTED.into()), true));
     // the publication's queue went with its task
     while !ends.objects.is_closed() {
         std::thread::yield_now();
     }
-    send(&mut guest, 3, 1);
+    send(&mut view, 3, 1);
     assert_eq!(
-        refusal_of(&mut guest, 3),
+        refusal_of(&mut view, 3),
         Some(refusal::LIVE_NOT_PUBLISHED.into())
     );
 }
 
-fn refusal_of(guest: &mut Guest, wanted: u64) -> Option<String> {
-    guest.pending.iter().find_map(|event| match event {
+fn refusal_of(view: &mut View, wanted: u64) -> Option<String> {
+    view.pending.iter().find_map(|event| match event {
         wire::Event::Response {
             id,
             result: Err(refusal),
@@ -190,14 +190,14 @@ fn refusal_of(guest: &mut Guest, wanted: u64) -> Option<String> {
 #[test]
 fn a_send_too_large_or_to_no_track_is_refused() {
     let _serial = serial();
-    let (mut guest, opens) = live_guest();
-    let mut changes = guest.replies.changes();
+    let (mut view, opens) = live_guest();
+    let mut changes = view.replies.changes();
     let publish = LivePublish {
         track: track("presence/7"),
         mode: LiveMode::Datagram,
         priority: 128,
     };
-    ask(&mut guest, 1, "live.publish", methods::encode(&publish));
+    ask(&mut view, 1, "live.publish", methods::encode(&publish));
     let (_, _ends) = opened(&opens);
     let big = LiveSend {
         track: track("presence/7"),
@@ -206,8 +206,8 @@ fn a_send_too_large_or_to_no_track_is_refused() {
         body: vec![0; live_wire::MAX_DATAGRAM_OBJECT + 1],
         end: false,
     };
-    ask(&mut guest, 2, "live.send", methods::encode(&big));
-    let (id, refused, done) = item::<Publishing>(next(&guest, &mut changes));
+    ask(&mut view, 2, "live.send", methods::encode(&big));
+    let (id, refused, done) = item::<Publishing>(next(&view, &mut changes));
     assert_eq!(
         (id, refused, done),
         (1, Err(refusal::TOO_LARGE.into()), false)
@@ -216,9 +216,9 @@ fn a_send_too_large_or_to_no_track_is_refused() {
         track: track("cursor/7"),
         ..big
     };
-    ask(&mut guest, 3, "live.send", methods::encode(&elsewhere));
+    ask(&mut view, 3, "live.send", methods::encode(&elsewhere));
     assert_eq!(
-        refusal_of(&mut guest, 3),
+        refusal_of(&mut view, 3),
         Some(refusal::LIVE_NOT_PUBLISHED.into())
     );
 }
@@ -229,13 +229,13 @@ fn a_send_too_large_or_to_no_track_is_refused() {
 #[test]
 fn a_subscription_hears_the_track_and_its_end() {
     let _serial = serial();
-    let (mut guest, opens) = live_guest();
-    let mut changes = guest.replies.changes();
+    let (mut view, opens) = live_guest();
+    let mut changes = view.replies.changes();
     let subscribe = LiveSubscribe {
         track: track("doc"),
         latest: true,
     };
-    ask(&mut guest, 1, "live.subscribe", methods::encode(&subscribe));
+    ask(&mut view, 1, "live.subscribe", methods::encode(&subscribe));
     let (asked, ends) = opened(&opens);
     assert!(
         matches!(asked, Ask::Subscribe { from: Start::Latest, ref track } if track.namespace == "net#1/request-test/lobby" && track.name == "doc"),
@@ -253,10 +253,7 @@ fn a_subscription_hears_the_track_and_its_end() {
         mode: LiveMode::Datagram,
         latest: Some(3),
     };
-    assert_eq!(
-        item(next(&guest, &mut changes)),
-        (1, Ok(opened_item), false)
-    );
+    assert_eq!(item(next(&view, &mut changes)), (1, Ok(opened_item), false));
     ends.latest.put(Data::Object {
         group: 3,
         object: 0,
@@ -267,7 +264,7 @@ fn a_subscription_hears_the_track_and_its_end() {
         object: 0,
         body: vec![5],
     };
-    assert_eq!(item(next(&guest, &mut changes)), (1, Ok(object), false));
+    assert_eq!(item(next(&view, &mut changes)), (1, Ok(object), false));
     handle()
         .block_on(ends.data.send(Data::GroupEnd {
             group: 3,
@@ -278,7 +275,7 @@ fn a_subscription_hears_the_track_and_its_end() {
         group: 3,
         complete: false,
     };
-    assert_eq!(item(next(&guest, &mut changes)), (1, Ok(end), false));
+    assert_eq!(item(next(&view, &mut changes)), (1, Ok(end), false));
     ends.heard
         .send(Heard::Closed(wire::Error::new(
             refusal::PUBLISHER_GONE,
@@ -286,7 +283,7 @@ fn a_subscription_hears_the_track_and_its_end() {
         )))
         .unwrap();
     assert_eq!(
-        item::<LiveItem>(next(&guest, &mut changes)),
+        item::<LiveItem>(next(&view, &mut changes)),
         (1, Err(refusal::PUBLISHER_GONE.into()), true)
     );
 }
@@ -296,10 +293,10 @@ fn a_subscription_hears_the_track_and_its_end() {
 #[test]
 fn a_lost_session_takes_a_rooms_tracks_down_and_opens_the_list_again() {
     let _serial = serial();
-    let (mut guest, opens) = live_guest();
-    let mut changes = guest.replies.changes();
+    let (mut view, opens) = live_guest();
+    let mut changes = view.replies.changes();
     ask(
-        &mut guest,
+        &mut view,
         1,
         "live.tracks",
         methods::encode(&"lobby".to_owned()),
@@ -328,13 +325,13 @@ fn a_lost_session_takes_a_rooms_tracks_down_and_opens_the_list_again() {
     };
     ends.heard.send(up("echo/7", true)).unwrap();
     assert_eq!(
-        item(next(&guest, &mut changes)),
+        item(next(&view, &mut changes)),
         (1, Ok(announce("echo/7", true)), false)
     );
     // the session is lost: what was up goes down, and the list opens again
     drop(ends);
     assert_eq!(
-        item(next(&guest, &mut changes)),
+        item(next(&view, &mut changes)),
         (1, Ok(announce("echo/7", false)), false)
     );
     let (again, _ends) = opened(&opens);
@@ -347,12 +344,12 @@ fn a_lost_session_takes_a_rooms_tracks_down_and_opens_the_list_again() {
 #[test]
 fn a_reconnect_opens_a_live_subscription_again_on_the_new_session() {
     let _serial = serial();
-    let (mut guest, opens) = live_guest();
+    let (mut view, opens) = live_guest();
     let subscribe = LiveSubscribe {
         track: track("doc"),
         latest: false,
     };
-    ask(&mut guest, 1, "live.subscribe", methods::encode(&subscribe));
+    ask(&mut view, 1, "live.subscribe", methods::encode(&subscribe));
     let (first, _ends) = opened(&opens);
     assert!(matches!(
         first,
@@ -361,7 +358,7 @@ fn a_reconnect_opens_a_live_subscription_again_on_the_new_session() {
             ..
         }
     ));
-    let rev = guest.connection.rev + 1;
+    let rev = view.connection.rev + 1;
     let (reopened, reopens) = std_mpsc::channel();
     install(
         rev,
@@ -369,10 +366,10 @@ fn a_reconnect_opens_a_live_subscription_again_on_the_new_session() {
     );
     let connection = super::super::super::Connection {
         rev,
-        ..guest.connection.clone()
+        ..view.connection.clone()
     };
-    guest.reconnect(&connection);
-    assert_eq!(guest.pending, [], "the subscription was not refused");
+    view.reconnect(&connection);
+    assert_eq!(view.pending, [], "the subscription was not refused");
     let (again, _ends) = opened(&reopens);
     assert!(
         matches!(
@@ -390,7 +387,7 @@ fn a_reconnect_opens_a_live_subscription_again_on_the_new_session() {
 #[test]
 fn a_room_or_a_name_outside_the_rule_is_malformed() {
     let _serial = serial();
-    let (mut guest, _opens) = live_guest();
+    let (mut view, _opens) = live_guest();
     for (id, room, name) in [(1, "", "doc"), (2, "lobby", "a//b"), (3, "lob\nby", "doc")] {
         let subscribe = LiveSubscribe {
             track: LiveTrack {
@@ -399,14 +396,9 @@ fn a_room_or_a_name_outside_the_rule_is_malformed() {
             },
             latest: true,
         };
-        ask(
-            &mut guest,
-            id,
-            "live.subscribe",
-            methods::encode(&subscribe),
-        );
+        ask(&mut view, id, "live.subscribe", methods::encode(&subscribe));
         assert_eq!(
-            refusal_of(&mut guest, id),
+            refusal_of(&mut view, id),
             Some(refusal::MALFORMED_REQUEST.into()),
             "{room:?} {name:?}"
         );
@@ -418,9 +410,9 @@ fn a_room_or_a_name_outside_the_rule_is_malformed() {
 #[test]
 fn a_first_live_request_puts_the_line_on_the_window() {
     let _serial = serial();
-    let (mut guest, opens) = live_guest();
+    let (mut view, opens) = live_guest();
     ask(
-        &mut guest,
+        &mut view,
         1,
         "live.tracks",
         methods::encode(&"lobby".to_owned()),
@@ -441,7 +433,7 @@ fn a_first_live_request_puts_the_line_on_the_window() {
 #[test]
 fn a_session_refused_no_account_is_asked_again() {
     let _serial = serial();
-    let (mut guest, opens) = live_guest();
+    let (mut view, opens) = live_guest();
     let (opened_again, opens_again) = std_mpsc::channel();
     let fake = Fake(
         Mutex::new(opened_again),
@@ -450,18 +442,18 @@ fn a_session_refused_no_account_is_asked_again() {
             "the node refused this key a live session",
         )]),
     );
-    install(guest.connection.rev, Arc::new(fake));
+    install(view.connection.rev, Arc::new(fake));
     drop(opens);
-    let mut changes = guest.replies.changes();
+    let mut changes = view.replies.changes();
     let subscribe = LiveSubscribe {
         track: track("presence/7"),
         latest: true,
     };
-    ask(&mut guest, 1, "live.subscribe", methods::encode(&subscribe));
+    ask(&mut view, 1, "live.subscribe", methods::encode(&subscribe));
     let (asked, ends) = opened(&opens_again);
     assert!(matches!(asked, Ask::Subscribe { .. }));
     let mut pending = Vec::new();
-    guest.replies.drain_into(&mut pending).unwrap();
+    view.replies.drain_into(&mut pending).unwrap();
     assert!(
         pending.is_empty(),
         "the refusal reached the view: {pending:?}"
@@ -473,7 +465,7 @@ fn a_session_refused_no_account_is_asked_again() {
             latest: None,
         })
         .unwrap();
-    let (id, opened, done) = item::<LiveItem>(next(&guest, &mut changes));
+    let (id, opened, done) = item::<LiveItem>(next(&view, &mut changes));
     assert_eq!(id, 1);
     assert!(matches!(opened, Ok(LiveItem::Opened { by: 7, .. })));
     assert!(!done);

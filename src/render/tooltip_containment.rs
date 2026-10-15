@@ -1,4 +1,4 @@
-//! Tooltips whose content is a guest node. gpui draws a tooltip as its own
+//! Tooltips whose content is a view node. gpui draws a tooltip as its own
 //! view, in the source view's layer (`deferred::Layer`): under the host's
 //! band, fitted and clipped to the view's pane, so it can neither paint nor
 //! take clicks outside it. `build` renders the content in a child
@@ -117,7 +117,7 @@ mod tests {
         })
     }
 
-    /// The guest's answer to `request`: `content`.
+    /// The view's answer to `request`: `content`.
     fn answer(request: u32, content: wire::Node) -> wire::TooltipResponse {
         wire::TooltipResponse {
             request,
@@ -322,7 +322,7 @@ mod tests {
         });
     }
 
-    /// A `Deferred` in a guest tooltip's content draws, and paints, instead
+    /// A `Deferred` in a view tooltip's content draws, and paints, instead
     /// of failing the frame.
     #[gpui_kit::test]
     fn a_deferred_inside_a_tooltip_draws(cx: &mut gpui_kit::TestAppContext) {
@@ -406,7 +406,7 @@ mod tests {
     }
 
     /// gpui shows a tooltip with the builder of the frame the hover began
-    /// in, and the guest answers that hover's request during the show
+    /// in, and the view answers that hover's request during the show
     /// delay: the tooltip shows the answer, not what the tree held when the
     /// hover began.
     #[gpui_kit::test]
@@ -452,7 +452,7 @@ mod tests {
 
     /// What the user sees: a tooltip whose content changed (a button's
     /// label, say) shows the new content on the first hover after the
-    /// change, as the guest answers each hover's request.
+    /// change, as the view answers each hover's request.
     #[gpui_kit::test]
     fn the_first_hover_after_a_tooltip_changed_shows_the_new_one(
         cx: &mut gpui_kit::TestAppContext,
@@ -461,7 +461,7 @@ mod tests {
         const SECOND: u32 = 0x0000ff;
         struct Host {
             tree: Entity<ViewTree>,
-            _guest: Subscription,
+            _view: Subscription,
         }
         impl Render for Host {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -474,16 +474,16 @@ mod tests {
             }
         }
         cx.update(gpui_kit::init);
-        // what the guest would build for the tooltip now
+        // what the view would build for the tooltip now
         let says = Rc::new(Cell::new(FIRST));
-        let guest = says.clone();
+        let view = says.clone();
         let window = cx.open_window(size(px(200.), px(200.)), move |_, cx| {
             let tree = cx.new(|_| ViewTree::new(ordinary_source(71)));
             let subscription = cx.subscribe(&tree, move |_, source, event: &wire::Event, cx| {
                 if !matches!(event, wire::Event::TooltipRequest { request: 71, .. }) {
                     return;
                 }
-                let (source, color) = (source.downgrade(), guest.get());
+                let (source, color) = (source.downgrade(), view.get());
                 cx.defer(move |cx| {
                     let _ = source.update(cx, |tree, cx| {
                         let content = colored(20., color, None);
@@ -493,7 +493,7 @@ mod tests {
             });
             Host {
                 tree,
-                _guest: subscription,
+                _view: subscription,
             }
         });
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);

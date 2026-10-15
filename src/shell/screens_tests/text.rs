@@ -169,7 +169,7 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
         identity: vec![3; 32],
         contract: 1,
         genesis: [0; 32],
-        roles: crate::backend::noded::test_roles(),
+        roles: crate::backend::test_roles(),
     });
     let (_view, mut native) = open((seed, Overlay::Menu(Popover::Node)), cx);
     let nodes = native.update(draw);

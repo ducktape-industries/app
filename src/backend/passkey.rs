@@ -28,13 +28,12 @@ use identity::{CONSENT_NAMESPACE, Consent, Op, Query, Reply};
 use keyscheme::KeyScheme;
 use sha2::{Digest as _, Sha256};
 
+use noded_client::identity::{account_by_number, admission, ask, submit};
+use noded_client::wire::{Body, FRAME_NAMESPACE, Frame, Tip, salt};
+
 use super::auth_page::{Assertion, Request, asserted, created};
-use super::identity::{
-    DEVICE_KEY_LABEL, account_by_number, admission, ask, create_seated, person, submit,
-    submit_seated,
-};
-use super::noded::{Body, FRAME_NAMESPACE, Frame, Tip};
-use super::{RpcClient, anchor, salt, seated_key, seated_sign};
+use super::identity::{DEVICE_KEY_LABEL, create_seated, person, submit_seated};
+use super::{RpcClient, anchor, query_signer, seated_key, seated_sign};
 
 // ---------- the flows ----------
 
@@ -53,11 +52,12 @@ pub(crate) async fn create_account(
         Query::OfKey {
             key: device.clone(),
         },
+        &query_signer(),
     )
     .await?
     {
         Reply::Number(Some(number)) => {
-            person(&account_by_number(client, network, number).await?)?;
+            person(&account_by_number(client, network, number, &query_signer()).await?)?;
             number
         }
         _ => create_seated(client, network, name).await?,
@@ -73,6 +73,7 @@ pub(crate) async fn create_account(
         abi::Scheme::Secp256r1,
         passkey.clone(),
         number,
+        &query_signer(),
     )
     .await?;
     let (device, proof) = seated_sign(CONSENT_NAMESPACE, &admission.preimage())
@@ -104,7 +105,7 @@ pub(crate) async fn create_account(
 pub(crate) async fn sign_in(client: &RpcClient, network: &str) -> Result<(), String> {
     let hint = asserted(rand::random(), "1/2").await?;
     let number = account_of_handle(network, hint.user_handle.as_deref())?;
-    let account = account_by_number(client, network, number).await?;
+    let account = account_by_number(client, network, number, &query_signer()).await?;
     person(&account)?;
     let device = seated_key().await.map_err(|refusal| refusal.message)?;
     let admission = admission(
@@ -113,6 +114,7 @@ pub(crate) async fn sign_in(client: &RpcClient, network: &str) -> Result<(), Str
         abi::Scheme::Ed25519,
         device.clone(),
         number,
+        &query_signer(),
     )
     .await?;
     let preimage = admission.preimage();
@@ -148,15 +150,16 @@ fn consenting_key(account: &identity::Account, preimage: &[u8], proof: &[u8]) ->
         .map(|held| held.key.clone())
 }
 
-/// A frame body whose signer is the passkey `pubkey`.
+/// A frame body whose signer is the passkey `pubkey`. A body names its
+/// scheme as `abi::Scheme`, whose `Secp256r1` is core's `KeyScheme` tag.
 pub(super) fn passkey_body(pubkey: &[u8], network: &str, anchor: Tip, payload: Vec<u8>) -> Body {
     Body {
-        scheme: KeyScheme::Secp256r1,
+        scheme: abi::Scheme::Secp256r1,
         signer: pubkey.to_vec(),
         network: network.as_bytes().to_vec(),
         anchor,
         salt: Some(salt()),
-        target: identity::MODULE.to_owned(),
+        target: identity::PROGRAM.to_owned(),
         payload,
     }
 }
@@ -253,10 +256,12 @@ mod tests {
         assert!(body.salt.is_some(), "a passkey's write carries a salt");
         let assertion = page_answer(&sk, FRAME_NAMESPACE, &body.preimage(), &[]);
         let frame = passkey_frame(body, &assertion).expect("its own signer");
-        // the node decodes the bytes and runs `scheme.verify(signer, NS, preimage, proof)`
+        // the node decodes the bytes, the scheme as core's `KeyScheme`, and
+        // runs `scheme.verify(signer, NS, preimage, proof)`
         let decoded: Frame = abi::decode(&frame.encode()).unwrap();
-        assert_eq!(decoded.body.scheme, KeyScheme::Secp256r1);
-        assert!(decoded.body.scheme.verify(
+        let scheme: KeyScheme = abi::decode(&abi::encode(&decoded.body.scheme)).unwrap();
+        assert_eq!(scheme, KeyScheme::Secp256r1);
+        assert!(scheme.verify(
             &decoded.body.signer,
             FRAME_NAMESPACE,
             &decoded.body.preimage(),

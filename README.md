@@ -25,8 +25,8 @@ DUCKTAPE_VIEWS_DIR=/path/to/views cargo run -p ducktape-app     # a view develop
   its tab. A program without the section is left off the rail.
 - **Relay.** A view asks through the kernel contract (`src/runtime/kernel.rs`),
   every method a borsh type in `view_wire::methods`, named `<capability>.<op>`:
-  `module.query`/`op.submit` `Call{target, body}`, `module.changes <program>`,
-  `module.describe`, `chain.status`/`block`/`blocks`/`heads`, `invite.create`,
+  `program.query`/`op.submit` `Call{target, body}`, `program.changes <program>`,
+  `program.describe`, `chain.status`/`block`/`blocks`/`heads`, `invite.create`,
   `blob.get`, `link.open`, `host.widget` (the one MessagePack method: a tree
   command), and the app's own (`host.*`, `clock.ticks`, `clipboard.*`,
   `notify.*`, `store.*`). A view reaches only the capabilities its manifest
@@ -48,7 +48,7 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 
 | Path | What |
 |---|---|
-| `src/backend/noded.rs` | the node's `/v1` wire and the signed frame, mirrored from the kernel branch |
+| `crates/noded-client` | the node's `/v1` wire and the signed frame, mirrored from the kernel branch, and the flows onto an account; shared with the phone |
 | `src/backend/views.rs` | roster → blob → `ducktape.view` section |
 | `src/backend/session.rs` | the seated key, its frames, preferences |
 | `src/runtime.rs`, `runtime/` | the wasm view runtime: seats, loads, swaps, the kernel relay |
@@ -58,7 +58,7 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 
 ## Dependency line
 
-`ducktape-industries/modules` (`crates/sdk`; pinned by rev to modules `dev` until the next `dev` → `main` promotion): `abi`, `view-wire`, `ducklink`, `design`.
+`ducktape-industries/programs` (`crates/sdk`; pinned by rev to programs `dev` until the next `dev` → `main` promotion): `abi`, `view-wire`, `ducklink`, `design`.
 `ducktape` (`feat/capable-sandbox`): `ducktape-home`, `keystore`.
 
 ## Building

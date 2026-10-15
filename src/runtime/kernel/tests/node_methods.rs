@@ -55,7 +55,7 @@ async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals()
             ),
         ],
     );
-    let ask = call("registry", &payload);
+    let ask = call("programs", &payload);
     assert_eq!(
         query(node.clone(), ask.clone()).await.unwrap(),
         [255, 0, 129]
@@ -66,20 +66,20 @@ async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals()
     let bodies = server.join().unwrap();
     assert_eq!(bodies.len(), 2);
     for body in bodies {
-        let query: backend::noded::Query = abi::decode(&body).unwrap();
+        let query: noded_client::wire::Query = abi::decode(&body).unwrap();
         assert_eq!(query.layer, backend::Layer::Preconfirmed);
-        let frame: backend::noded::Frame = abi::decode(&query.frame).unwrap();
-        assert_eq!(frame.body.target, "registry");
+        let frame: noded_client::wire::Frame = abi::decode(&query.frame).unwrap();
+        assert_eq!(frame.body.target, "programs");
         assert_eq!(frame.body.network, b"test-network");
         assert_eq!(frame.body.payload, payload);
         assert_eq!(frame.proof.len(), 64);
     }
 
     for ask in [
-        b"registry".to_vec(),
+        b"programs".to_vec(),
         Vec::new(),
         call("", b""),
-        call("../registry", b""),
+        call("../programs", b""),
     ] {
         assert_eq!(
             query(node.clone(), ask).await.unwrap_err().code,
@@ -109,7 +109,7 @@ async fn a_node_without_the_network_route_is_refused_at_once() {
 
 #[tokio::test]
 async fn system_status_preserves_borsh_and_refusals() {
-    let expected = backend::noded::Status {
+    let expected = noded_client::wire::Status {
         network: "test-network".into(),
         time: 12,
         block_time_ms: 500,
@@ -121,7 +121,7 @@ async fn system_status_preserves_borsh_and_refusals() {
         identity: vec![4; 32],
         contract: 1,
         genesis: [5; 32],
-        roles: backend::noded::test_roles(),
+        roles: crate::backend::test_roles(),
     };
     let (node, server) = node_server(
         "GET /v1/status HTTP/1.1",
@@ -159,10 +159,10 @@ async fn system_status_preserves_borsh_and_refusals() {
 
 #[tokio::test]
 async fn a_block_s_receipts_carry_refusals_as_errors() {
-    let tx = |hash, receipt| backend::noded::Tx {
+    let tx = |hash, receipt| noded_client::wire::Tx {
         hash: [hash; 32],
         signer: vec![5; 32],
-        anchor: backend::noded::Tip {
+        anchor: noded_client::wire::Tip {
             height: 8,
             id: [hash; 32],
         },
@@ -171,24 +171,24 @@ async fn a_block_s_receipts_carry_refusals_as_errors() {
         payload: Some(vec![7]),
         receipt: Some(receipt),
     };
-    let rejected = backend::noded::Receipt {
+    let rejected = noded_client::wire::Receipt {
         program: "chat".into(),
         outcome: abi::Outcome::Rejected(abi::Refusal::new("not_member", "not in this room")),
         events: Vec::new(),
-        nested: vec![backend::noded::Receipt {
+        nested: vec![noded_client::wire::Receipt {
             program: "identity".into(),
             outcome: abi::Outcome::Applied { output: vec![1] },
             events: vec![vec![2]],
             nested: Vec::new(),
         }],
     };
-    let applied = backend::noded::Receipt {
+    let applied = noded_client::wire::Receipt {
         program: "chat".into(),
         outcome: abi::Outcome::Applied { output: vec![3] },
         events: vec![vec![4]],
         nested: Vec::new(),
     };
-    let finalized = backend::noded::Finalized {
+    let finalized = noded_client::wire::Finalized {
         height: 9,
         id: [1; 32],
         parent: [2; 32],
@@ -236,11 +236,11 @@ async fn a_block_s_receipts_carry_refusals_as_errors() {
     );
 }
 
-fn listed_tx(payload: Option<Vec<u8>>) -> backend::noded::Tx {
-    backend::noded::Tx {
+fn listed_tx(payload: Option<Vec<u8>>) -> noded_client::wire::Tx {
+    noded_client::wire::Tx {
         hash: [4; 32],
         signer: vec![5; 32],
-        anchor: backend::noded::Tip {
+        anchor: noded_client::wire::Tip {
             height: 6,
             id: [6; 32],
         },
@@ -268,7 +268,7 @@ fn method_tx(payload: Option<Vec<u8>>) -> methods::Tx {
 
 #[tokio::test]
 async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
-    let finalized = backend::noded::Finalized {
+    let finalized = noded_client::wire::Finalized {
         height: 9,
         id: [1; 32],
         parent: [2; 32],
@@ -277,7 +277,7 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
         proposer: Some(vec![3; 32]),
         txs: vec![listed_tx(None)],
     };
-    let listed = backend::noded::Page {
+    let listed = noded_client::wire::Page {
         blocks: vec![finalized.clone()],
         listed_from: Some(4),
     };
@@ -308,7 +308,7 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
     );
     server.join().unwrap();
 
-    let located = backend::noded::Located {
+    let located = noded_client::wire::Located {
         height: 9,
         position: 0,
         time: 1_000,
@@ -343,7 +343,10 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
 
     let (node, server) = node_server(
         "POST /v1/block HTTP/1.1",
-        vec![("200 OK", abi::encode(&None::<backend::noded::Finalized>))],
+        vec![(
+            "200 OK",
+            abi::encode(&None::<noded_client::wire::Finalized>),
+        )],
     );
     let answer = block(
         node.clone(),
@@ -371,14 +374,14 @@ async fn blob_get_answers_the_blob_or_none() {
     framed.extend_from_slice(b"blob body bytes");
     let ask = methods::encode(&format!("sha256:{}", "00".repeat(32)));
     let held = fake_node(vec![(
-        backend::noded::route::BLOB_GET,
+        noded_client::wire::route::BLOB_GET,
         Mode::Answer(abi::encode(&Some(framed))),
     )]);
     let answer = blob_get(held.node.clone(), ask.clone()).await.unwrap();
     let decoded: Option<Vec<u8>> = methods::decode(&answer).unwrap();
     assert_eq!(decoded.as_deref(), Some(&b"blob body bytes"[..]));
     let absent = fake_node(vec![(
-        backend::noded::route::BLOB_GET,
+        noded_client::wire::route::BLOB_GET,
         Mode::Answer(abi::encode(&None::<Vec<u8>>)),
     )]);
     let answer = blob_get(absent.node.clone(), ask).await.unwrap();
@@ -391,7 +394,7 @@ async fn blob_get_answers_the_blob_or_none() {
 #[tokio::test]
 async fn blob_get_refuses_a_signed_hex_spelling() {
     let held = fake_node(vec![(
-        backend::noded::route::BLOB_GET,
+        noded_client::wire::route::BLOB_GET,
         Mode::Answer(abi::encode(&Some(b"sha256\0body".to_vec()))),
     )]);
     let ask = methods::encode(&format!("sha256:{}", "+f".repeat(32)));
@@ -419,7 +422,7 @@ fn node_key(seed: u8) -> commonware_cryptography::ed25519::PrivateKey {
 }
 
 fn validator_node(identity: &[u8], validators: Vec<Vec<u8>>) -> FakeNode {
-    let status = backend::noded::Status {
+    let status = noded_client::wire::Status {
         network: "test-network".into(),
         time: 12,
         block_time_ms: 1000,
@@ -429,17 +432,17 @@ fn validator_node(identity: &[u8], validators: Vec<Vec<u8>>) -> FakeNode {
         root: abi::Root([3; 32]),
         epoch: 0,
         identity: identity.to_vec(),
-        contract: backend::noded::NODE_CONTRACT,
+        contract: noded_client::wire::NODE_CONTRACT,
         genesis: [5; 32],
-        roles: backend::noded::test_roles(),
+        roles: crate::backend::test_roles(),
     };
     fake_node(vec![
         (
-            backend::noded::route::STATUS,
+            noded_client::wire::route::STATUS,
             Mode::Answer(abi::encode(&status)),
         ),
         (
-            backend::noded::route::QUERY,
+            noded_client::wire::route::QUERY,
             Mode::Answer(abi::encode(&abi::encode(&valset::Reply::Validators(
                 validators,
             )))),
@@ -459,7 +462,7 @@ async fn an_invite_is_the_validator_nodes_signed_grant_for_its_network() {
     let hex = backend::invite::mint(&held.node.client, Some(key.clone()), 7, now)
         .await
         .unwrap();
-    let invite: Invite = abi::decode(&backend::hex_decode(&hex).unwrap()).unwrap();
+    let invite: Invite = abi::decode(&noded_client::hex::hex_decode(&hex).unwrap()).unwrap();
     assert_eq!(invite.issuer, identity);
     assert_eq!(invite.grant.network, b"test-network");
     assert_eq!(invite.grant.expires, now + 7 * 24 * 60 * 60 * 1000);
@@ -471,7 +474,7 @@ async fn an_invite_is_the_validator_nodes_signed_grant_for_its_network() {
     let again = backend::invite::mint(&held.node.client, Some(key), 7, now)
         .await
         .unwrap();
-    let again: Invite = abi::decode(&backend::hex_decode(&again).unwrap()).unwrap();
+    let again: Invite = abi::decode(&noded_client::hex::hex_decode(&again).unwrap()).unwrap();
     assert_ne!(again.grant.nonce, invite.grant.nonce);
 }
 

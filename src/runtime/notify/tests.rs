@@ -495,10 +495,10 @@ fn one_views_flood_leaves_the_other_views_rows() {
             10 + nth,
         );
     }
-    let rows = |center: &Center, module: &str| {
+    let rows = |center: &Center, program: &str| {
         center
             .entries()
-            .filter(|entry| entry.module == module)
+            .filter(|entry| entry.program == program)
             .map(|entry| entry.title.clone())
             .collect::<Vec<_>>()
     };
@@ -535,12 +535,12 @@ fn a_redraws_posts_read_the_prefs_once_and_write_the_log_once() {
     crate::backend::edit_prefs(|prefs| {
         prefs[VIEWS_PREF] = serde_json::json!({ "request-test": "Silent" });
     });
-    let mut guest = crate::runtime::kernel::tests::guest();
+    let mut view = crate::runtime::kernel::tests::view();
     let _on = crate::perf::on_for_test();
     let reads = crate::backend::prefs_reads();
     for id in 0..256 {
         let notice = methods::encode(&post(&id.to_string(), ""));
-        super::post(&mut guest, &center, id, &notice);
+        super::post(&mut view, &center, id, &notice);
     }
     assert_eq!(
         crate::backend::prefs_reads() - reads,
@@ -551,7 +551,7 @@ fn a_redraws_posts_read_the_prefs_once_and_write_the_log_once() {
         !path.exists(),
         "the log was written before the redraw ended"
     );
-    // the end of the redraw (`Guest::redraw`)
+    // the end of the redraw (`View::redraw`)
     center.lock().flush();
     settled(&path);
     let saves = &crate::perf::snapshot(false)["shell"]["io.notify_save"]["n"];

@@ -1,5 +1,5 @@
-//! The renderers that carry the guest's own `Interactivity.aria` announce
-//! it alike through the one mapper, `guest_aria`: the properties AccessKit
+//! The renderers that carry the view's own `Interactivity.aria` announce
+//! it alike through the one mapper, `view_aria`: the properties AccessKit
 //! receives, read off the tree gpui hands the OS, not off `ax::snapshot`
 //! (which drops half of them).
 use super::*;
@@ -175,7 +175,7 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
     }
 }
 
-/// The child under a focusable, roled parent that holds the guest focus
+/// The child under a focusable, roled parent that holds the view focus
 /// handle: the composite an active descendant is announced within.
 fn root(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
     let mut child = child(site, interactivity);
@@ -203,7 +203,7 @@ fn root(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
     })
 }
 
-/// `root` as the host takes it from a guest: through the sanitizer.
+/// `root` as the host takes it from a view: through the sanitizer.
 fn sanitized(root: wire::Node) -> wire::Node {
     let mut frame = wire::Frame {
         root: Some(root),
@@ -213,7 +213,7 @@ fn sanitized(root: wire::Node) -> wire::Node {
     frame.root.expect("the tree stays")
 }
 
-/// Everything gpui writes onto a node from the guest's aria.
+/// Everything gpui writes onto a node from the view's aria.
 #[derive(Debug, PartialEq)]
 struct Heard {
     role: Role,
@@ -305,7 +305,7 @@ fn expected(name: &str, focusable: bool) -> Heard {
     }
 }
 
-/// Renders `root`, focuses the parent through its guest focus handle,
+/// Renders `root`, focuses the parent through its view focus handle,
 /// and returns the child's node as heard (None when the tree has no node
 /// for it) plus whether the tree reports the child as the focused
 /// (active descendant) node.
@@ -320,10 +320,10 @@ fn announce(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> (Option<Hear
         window.render_frame(cx);
         let parent = tree
             .read(cx)
-            .guest_focus_targets
+            .view_focus_targets
             .get(&PARENT_FOCUS)
             .cloned()
-            .expect("the parent's guest focus handle is made on first render");
+            .expect("the parent's view focus handle is made on first render");
         parent.focus(window, cx);
         window.render_frame(cx);
         window.render_frame(cx);
@@ -342,7 +342,7 @@ fn announce(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> (Option<Hear
     })
 }
 
-/// Every renderer announces the guest's aria alike, a roled node with no
+/// Every renderer announces the view's aria alike, a roled node with no
 /// label named by the text it draws; a focusable node never claims the
 /// active descendant (gpui panics, in debug, when the claimant is the
 /// focused node): the sanitizer drops its claim, so focus stays on the
@@ -350,7 +350,7 @@ fn announce(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> (Option<Hear
 /// no node at all: gpui's `UniformList` element reports no `a11y_role`, so
 /// its aria is dead until the fork gives it one.
 #[gpui_kit::test]
-fn guest_aria_announces_what_each_renderer_did(cx: &mut gpui_kit::TestAppContext) {
+fn view_aria_announces_what_each_renderer_did(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     for site in [Site::Container, Site::Image, Site::UniformListRow] {
         for (label, name) in [(None, WORDS), (Some("Labelled"), "Labelled")] {
@@ -388,7 +388,7 @@ fn a_uniform_list_row_and_an_image_get_the_aria_a_container_gets(
     }
 }
 
-/// A picture the guest labelled and gave no role is an Image named by its
+/// A picture the view labelled and gave no role is an Image named by its
 /// label, as `accessible` says; an unlabelled one stays out of the tree.
 #[gpui_kit::test]
 fn a_labelled_picture_without_a_role_is_an_image_in_the_tree(cx: &mut gpui_kit::TestAppContext) {
@@ -547,7 +547,7 @@ fn a_lowered_focusable_with_tab_stop_takes_tab(cx: &mut gpui_kit::TestAppContext
     assert_eq!(pressable_after_tab(cx, Some(true)), (true, true));
 }
 
-/// A raw-wire guest's `focusable` without a `tab_stop` is taken at its
+/// A raw-wire view's `focusable` without a `tab_stop` is taken at its
 /// word: the node offers focus to assistive technology and Tab skips it.
 /// The host adds no stop the wire did not ask for (79b524d3); the SDK's
 /// lint faults such a control as `Unreachable`.
@@ -1049,7 +1049,7 @@ mod phase_two {
     /// A handle a view names on a divider or a list outlives the frame that
     /// made it: a new frame keeps focus where it was.
     #[gpui_kit::test]
-    fn a_guest_focus_handle_on_a_divider_or_a_list_survives_a_frame(
+    fn a_view_focus_handle_on_a_divider_or_a_list_survives_a_frame(
         cx: &mut gpui_kit::TestAppContext,
     ) {
         cx.update(gpui_kit::init);
@@ -1065,11 +1065,11 @@ mod phase_two {
             let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
             native.update(|window, cx| {
                 window.render_frame(cx);
-                let handle = tree.read(cx).guest_focus_targets[&PARENT_FOCUS].clone();
+                let handle = tree.read(cx).view_focus_targets[&PARENT_FOCUS].clone();
                 tree.update(cx, |tree, cx| tree.replace(again, &[], cx));
                 window.render_frame(cx);
                 assert!(
-                    tree.read(cx).guest_focus_targets[&PARENT_FOCUS] == handle,
+                    tree.read(cx).view_focus_targets[&PARENT_FOCUS] == handle,
                     "{site:?} made its handle anew"
                 );
             });

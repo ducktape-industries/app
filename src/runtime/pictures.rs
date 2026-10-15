@@ -1,4 +1,4 @@
-//! A seat's guest pictures. A frame brings a picture's bytes once and
+//! A seat's view pictures. A frame brings a picture's bytes once and
 //! later frames name it by hash, so the bytes outlive the frame and the
 //! native tree that drew them. The store holds each picture's bytes once
 //! (an `Arc`), takes them out of the tree it receives, and hands every tree
@@ -7,9 +7,9 @@
 //!
 //! The store is bounded. Past [`MAX_PICTURE_BYTES`] or [`MAX_PICTURES`] it
 //! keeps what the current tree names, in tree order, while it fits, and
-//! evicts the rest. The guest names a picture by hash alone once it has
+//! evicts the rest. The view names a picture by hash alone once it has
 //! sent it, so an evicted picture could never come back unasked: an
-//! eviction owes the guest `Event::Resync`, which makes it forget what it
+//! eviction owes the view `Event::Resync`, which makes it forget what it
 //! sent and send every picture it draws again.
 
 use crate::render::PictureBytes;
@@ -19,7 +19,7 @@ use view_wire as wire;
 /// The raw picture bytes one seat holds: a view at the budget costs this
 /// much host memory, whatever it draws (P16's measurement is in its report).
 pub(super) const MAX_PICTURE_BYTES: u64 = 64 << 20;
-/// The pictures one seat holds, however small: the guest SDK forgets what
+/// The pictures one seat holds, however small: the view SDK forgets what
 /// it sent at the same count.
 pub(super) const MAX_PICTURES: usize = 4096;
 
@@ -43,12 +43,12 @@ impl Pictures {
     }
 
     /// Moves every picture's bytes out of `root`, leaving the hashes: the
-    /// tree as the guest remembers it. A hash already held keeps its first
+    /// tree as the view remembers it. A hash already held keeps its first
     /// bytes. Then holds the budget against `root`; `true` when it evicted,
-    /// and the guest is owed a `Resync`.
-    pub(super) fn adopt(&mut self, root: &mut wire::Node, module: &str) -> bool {
+    /// and the view is owed a `Resync`.
+    pub(super) fn adopt(&mut self, root: &mut wire::Node, program: &str) -> bool {
         self.join(bytes_of(root));
-        self.hold(root, module)
+        self.hold(root, program)
     }
 
     /// Moves the pictures' bytes out of a tooltip's `content` the same way,
@@ -58,19 +58,19 @@ impl Pictures {
         &mut self,
         content: &mut wire::Node,
         root: &mut wire::Node,
-        module: &str,
+        program: &str,
     ) -> bool {
         self.join(bytes_of(content));
-        self.hold(root, module)
+        self.hold(root, program)
     }
 
     /// The drawn view's store, carried to its replacement across a hot
     /// swap: `fresh`, the replacement's own, joins it (the drawn view's
     /// bytes win a shared hash), and the budget holds against `root`, the
     /// replacement's first tree. `true` when it evicted.
-    pub(super) fn carry(&mut self, fresh: Pictures, root: &mut wire::Node, module: &str) -> bool {
+    pub(super) fn carry(&mut self, fresh: Pictures, root: &mut wire::Node, program: &str) -> bool {
         self.join(Arc::unwrap_or_clone(fresh.held));
-        self.hold(root, module)
+        self.hold(root, program)
     }
 
     /// Takes in the pictures of `fresh` whose hash is not held yet.
@@ -99,7 +99,7 @@ impl Pictures {
 
     /// Past the budget, keeps what `root` names, in tree order, while it
     /// fits, and evicts the rest. `true` when it evicted.
-    fn hold(&mut self, root: &mut wire::Node, module: &str) -> bool {
+    fn hold(&mut self, root: &mut wire::Node, program: &str) -> bool {
         let count = self.held.raster.len() + self.held.vector.len();
         if self.bytes <= MAX_PICTURE_BYTES && count <= MAX_PICTURES {
             return false;
@@ -135,12 +135,12 @@ impl Pictures {
             self.evicted = true;
             tracing::warn!(
                 target: "ducktape::app",
-                module,
-                reason = "module_view_pictures_evicted",
+                program,
+                reason = "program_view_pictures_evicted",
                 held = self.bytes,
                 kept = bytes,
                 budget = MAX_PICTURE_BYTES,
-                "module view pictures past the seat's budget; evicted, view asked to resend"
+                "program view pictures past the seat's budget; evicted, view asked to resend"
             );
         }
         self.held = Arc::new(kept);

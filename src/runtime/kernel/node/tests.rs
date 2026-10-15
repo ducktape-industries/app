@@ -1,9 +1,9 @@
 use super::*;
-use crate::runtime::kernel::tests::{Mode, fake_node, guest, read_request, respond};
+use crate::runtime::kernel::tests::{Mode, fake_node, read_request, respond, view};
 
 /// The one refusal `id` got, as (code, message).
-fn refused(guest: &mut Guest, id: u64) -> (String, String) {
-    match guest.pending.pop() {
+fn refused(view: &mut View, id: u64) -> (String, String) {
+    match view.pending.pop() {
         Some(wire::Event::Response {
             id: answered,
             result: Err(refusal),
@@ -13,30 +13,30 @@ fn refused(guest: &mut Guest, id: u64) -> (String, String) {
     }
 }
 
-/// Too many `module.changes` subscriptions is the same refusal as too many
+/// Too many `program.changes` subscriptions is the same refusal as too many
 /// `clock.ticks`: `subscription_limit`, said as such — not the malformed
 /// request a nameless program is.
 #[test]
 fn too_many_changes_subscriptions_is_the_subscription_limit() {
-    let mut guest = guest();
-    changes(&mut guest, 1, &methods::encode(&String::new()));
+    let mut view = view();
+    changes(&mut view, 1, &methods::encode(&String::new()));
     assert_eq!(
-        refused(&mut guest, 1),
+        refused(&mut view, 1),
         (
             refusal::MALFORMED_REQUEST.to_owned(),
-            "`module.changes` names no program".to_owned()
+            "`program.changes` names no program".to_owned()
         )
     );
-    guest.targets = vec!["chat".into()];
-    guest.live_subscriptions = (0..MAX_SUBSCRIPTIONS as u64)
+    view.targets = vec!["chat".into()];
+    view.live_subscriptions = (0..MAX_SUBSCRIPTIONS as u64)
         .map(|id| (id, "chat".to_owned()))
         .collect();
-    changes(&mut guest, 2, &methods::encode(&"chat".to_owned()));
+    changes(&mut view, 2, &methods::encode(&"chat".to_owned()));
     assert_eq!(
-        refused(&mut guest, 2),
+        refused(&mut view, 2),
         (
             refusal::SUBSCRIPTION_LIMIT.to_owned(),
-            "too many `module.changes` subscriptions".to_owned()
+            "too many `program.changes` subscriptions".to_owned()
         )
     );
 }
@@ -54,7 +54,7 @@ fn status_at(anchor: noded::Tip) -> noded::Status {
         identity: Vec::new(),
         contract: noded::NODE_CONTRACT,
         genesis: [0; 32],
-        roles: noded::test_roles(),
+        roles: crate::backend::test_roles(),
     }
 }
 
@@ -65,7 +65,7 @@ const TIP: noded::Tip = noded::Tip {
 
 fn applied() -> noded::Receipt {
     noded::Receipt {
-        program: "registry".into(),
+        program: "programs".into(),
         outcome: abi::Outcome::Applied { output: Vec::new() },
         events: Vec::new(),
         nested: Vec::new(),
@@ -114,11 +114,13 @@ async fn a_submit_whose_answer_was_lost_is_not_submitted_again() {
     let _seat = backend::seat_serial();
     backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
     let (node, submits) = applying_node_with_a_lost_answer(noded::route::SUBMIT);
-    let (answer, attempts) =
-        until_answered(NODE_RETRY_BUDGET, noded::ANSWER_DEADLINE, unsent, || {
-            submit(node.clone(), call_registry())
-        })
-        .await;
+    let (answer, attempts) = until_answered(
+        NODE_RETRY_BUDGET,
+        noded_client::ANSWER_DEADLINE,
+        unsent,
+        || submit(node.clone(), call_registry()),
+    )
+    .await;
     assert_eq!(attempts, 1);
     assert_eq!(
         answer.unwrap_err().code,
@@ -134,7 +136,7 @@ async fn a_submit_whose_answer_was_lost_is_not_submitted_again() {
 
 fn call_registry() -> Vec<u8> {
     methods::encode(&methods::Call {
-        target: "registry".into(),
+        target: "programs".into(),
         body: vec![1, 2, 3],
     })
 }
@@ -145,11 +147,13 @@ async fn a_submit_whose_anchor_read_was_lost_is_asked_again() {
     let _seat = backend::seat_serial();
     backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
     let (node, submits) = applying_node_with_a_lost_answer(noded::route::STATUS);
-    let (answer, attempts) =
-        until_answered(NODE_RETRY_BUDGET, noded::ANSWER_DEADLINE, unsent, || {
-            submit(node.clone(), call_registry())
-        })
-        .await;
+    let (answer, attempts) = until_answered(
+        NODE_RETRY_BUDGET,
+        noded_client::ANSWER_DEADLINE,
+        unsent,
+        || submit(node.clone(), call_registry()),
+    )
+    .await;
     assert_eq!(
         answer,
         Ok(Vec::new()),
@@ -159,16 +163,16 @@ async fn a_submit_whose_anchor_read_was_lost_is_asked_again() {
     assert_eq!(submits.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
-/// A view's `module.query` to a node that takes the request and never
+/// A view's `program.query` to a node that takes the request and never
 /// answers is refused once its attempt's deadline passes, and gives its
 /// in-flight slot back: before, it waited for good and held the slot.
 #[test]
 fn a_query_to_a_stalled_node_is_refused_at_its_deadline_and_frees_its_slot() {
     let fake = fake_node(vec![(noded::route::QUERY, Mode::Stall)]);
-    let mut guest = guest();
-    let replies = guest.replies.clone();
+    let mut view = view();
+    let replies = view.replies.clone();
     let asked = std::time::Instant::now();
-    start(&mut guest, 1, None, async move {
+    start(&mut view, 1, None, async move {
         let budget = std::time::Duration::from_secs(1);
         let per_attempt = std::time::Duration::from_millis(300);
         let (answer, _) = until_answered(budget, per_attempt, transport_failed, || {
@@ -177,20 +181,20 @@ fn a_query_to_a_stalled_node_is_refused_at_its_deadline_and_frees_its_slot() {
         .await;
         replies.item(1, answer, true);
     });
-    assert!(guest.replies.answer_owed());
+    assert!(view.replies.answer_owed());
     // answered and drained, and nothing owed: the slot is back
     let mut answered = Vec::new();
-    while answered.is_empty() || guest.replies.answer_owed() {
+    while answered.is_empty() || view.replies.answer_owed() {
         assert!(
             asked.elapsed() < std::time::Duration::from_secs(10),
             "the stalled ask still holds its slot"
         );
         std::thread::sleep(std::time::Duration::from_millis(20));
-        guest.replies.drain_into(&mut answered).unwrap();
+        view.replies.drain_into(&mut answered).unwrap();
     }
-    guest.pending = answered;
+    view.pending = answered;
     assert_eq!(
-        refused(&mut guest, 1),
+        refused(&mut view, 1),
         (
             refusal::RPC_CLIENT.to_owned(),
             crate::runtime::NODE_UNREACHABLE.to_owned()
@@ -232,7 +236,7 @@ async fn a_redirected_submit_goes_nowhere_else() {
     let elsewhere = fake_node(vec![(
         noded::route::SUBMIT,
         Mode::Answer(abi::encode(&noded::Receipt {
-            program: "registry".into(),
+            program: "programs".into(),
             outcome: abi::Outcome::Applied { output: Vec::new() },
             events: Vec::new(),
             nested: Vec::new(),
@@ -250,11 +254,13 @@ async fn a_redirected_submit_goes_nowhere_else() {
         ),
         (noded::route::SUBMIT, Mode::Redirect(to)),
     ]);
-    let (answer, attempts) =
-        until_answered(NODE_RETRY_BUDGET, noded::ANSWER_DEADLINE, unsent, || {
-            submit(node.node.clone(), call_registry())
-        })
-        .await;
+    let (answer, attempts) = until_answered(
+        NODE_RETRY_BUDGET,
+        noded_client::ANSWER_DEADLINE,
+        unsent,
+        || submit(node.node.clone(), call_registry()),
+    )
+    .await;
     assert_eq!(
         elsewhere.accepted.load(std::sync::atomic::Ordering::SeqCst),
         0,
@@ -270,11 +276,13 @@ async fn a_redirected_submit_goes_nowhere_else() {
 async fn a_node_that_hangs_up_is_asked_again_within_the_budget() {
     let fake = fake_node(vec![(noded::route::QUERY, Mode::Close)]);
     let budget = std::time::Duration::from_millis(1500);
-    let (answer, attempts) =
-        until_answered(budget, noded::ANSWER_DEADLINE, transport_failed, || {
-            query(fake.node.clone(), call_registry())
-        })
-        .await;
+    let (answer, attempts) = until_answered(
+        budget,
+        noded_client::ANSWER_DEADLINE,
+        transport_failed,
+        || query(fake.node.clone(), call_registry()),
+    )
+    .await;
     assert_eq!(answer.unwrap_err().code, refusal::RPC_CLIENT);
     assert_eq!(attempts, 2, "asked at once and a second later");
     assert_eq!(fake.accepted.load(std::sync::atomic::Ordering::SeqCst), 2);
@@ -408,7 +416,7 @@ fn changes_node(heights: &'static [u64]) -> Node {
 }
 
 /// A connect inside the network, under a view that kept its code: its
-/// `module.changes` subscription goes on, on the new node, so its follower
+/// `program.changes` subscription goes on, on the new node, so its follower
 /// hears `None` (re-read what moved meanwhile) and then the new node's
 /// blocks; its `chain.heads` goes on too; a request still running on the
 /// old connection is refused `stale_connection`. Before, the subscriptions
@@ -416,22 +424,22 @@ fn changes_node(heights: &'static [u64]) -> Node {
 /// every block after the connect.
 #[test]
 fn a_reconnect_opens_a_views_subscriptions_again_on_the_new_node() {
-    let mut guest = guest();
-    guest.targets = vec!["chat".into()];
-    follow_changes(&mut guest, 1, changes_node(&[]), "chat".into());
-    assert!(spawn_reply(&mut guest, 2, std::future::pending::<Answer>()));
-    follow_heads(&mut guest, 3, changes_node(&[]));
+    let mut view = view();
+    view.targets = vec!["chat".into()];
+    follow_changes(&mut view, 1, changes_node(&[]), "chat".into());
+    assert!(spawn_reply(&mut view, 2, std::future::pending::<Answer>()));
+    follow_heads(&mut view, 3, changes_node(&[]));
     let new = changes_node(&[7]);
-    let rev = guest.connection.rev + 1;
-    guest.reconnect(&crate::runtime::Connection {
+    let rev = view.connection.rev + 1;
+    view.reconnect(&crate::runtime::Connection {
         client: Some(new.client),
         network: new.network,
         chain: String::new(),
         rev,
     });
-    assert_eq!(refused(&mut guest, 2).0, refusal::STALE_CONNECTION);
-    assert_eq!(guest.pending, [], "a subscription was refused");
-    let following: Vec<u64> = guest
+    assert_eq!(refused(&mut view, 2).0, refusal::STALE_CONNECTION);
+    assert_eq!(view.pending, [], "a subscription was refused");
+    let following: Vec<u64> = view
         .tasks
         .iter()
         .filter_map(|(id, task)| task.follows.as_ref().map(|_| *id))
@@ -439,7 +447,7 @@ fn a_reconnect_opens_a_views_subscriptions_again_on_the_new_node() {
     assert_eq!(following, [1, 3], "both subscriptions run again");
     let mut items = Vec::new();
     for _ in 0..200 {
-        guest.replies.drain_into(&mut items).unwrap();
+        view.replies.drain_into(&mut items).unwrap();
         if items.len() >= 2 {
             break;
         }
@@ -459,5 +467,5 @@ fn a_reconnect_opens_a_views_subscriptions_again_on_the_new_node() {
         [item(None), item(Some(block))],
         "the follower is told to re-read, then hears the new node's block with the keys it wrote"
     );
-    assert_eq!(guest.live_subscriptions, [(1, "chat".to_owned())]);
+    assert_eq!(view.live_subscriptions, [(1, "chat".to_owned())]);
 }

@@ -23,8 +23,8 @@
 //! line, `Notifications::sharing`): it shares live data with the people in
 //! its rooms, through the person's node. Nothing waits on it.
 //!
-//! The host stamps every room `<chain>/<module>/<room>`: the session's chain
-//! id and the view's own module, so a view names only its module's rooms.
+//! The host stamps every room `<chain>/<program>/<room>`: the session's chain
+//! id and the view's own program, so a view names only its program's rooms.
 //! A lost session (the node restarting, the path breaking) is opened again
 //! and each request with it: a publication is published again, a
 //! subscription subscribes again from the group the node holds and its view
@@ -123,13 +123,13 @@ pub(in crate::runtime) fn install(rev: u64, session: Arc<dyn Session>) {
     *sessions() = Some((rev, session));
 }
 
-/// `room` as the node names it, `<chain>/<module>/<room>`, with `name` held
+/// `room` as the node names it, `<chain>/<program>/<room>`, with `name` held
 /// to the node's rule; `None` with the request refused `malformed_request`.
-fn stamped(guest: &mut Guest, id: u64, room: &str, name: &str) -> Option<Track> {
-    let namespace = format!("{}/{}/{room}", guest.connection.chain, guest.module);
+fn stamped(view: &mut View, id: u64, room: &str, name: &str) -> Option<Track> {
+    let namespace = format!("{}/{}/{room}", view.connection.chain, view.program);
     let room_holds = !room.is_empty() && room.chars().all(|c| plain(&c));
     if !room_holds || namespace.len() > live_wire::MAX_NAMESPACE {
-        guest.refuse(
+        view.refuse(
             id,
             refusal::MALFORMED_REQUEST,
             format!(
@@ -140,7 +140,7 @@ fn stamped(guest: &mut Guest, id: u64, room: &str, name: &str) -> Option<Track> 
         return None;
     }
     if !live_wire::well_named(name) {
-        guest.refuse(
+        view.refuse(
             id,
             refusal::MALFORMED_REQUEST,
             format!(
@@ -157,27 +157,27 @@ fn stamped(guest: &mut Guest, id: u64, room: &str, name: &str) -> Option<Track> 
 }
 
 /// A view's first live request: its window says it shares live data.
-fn went_live(guest: &mut Guest) {
-    if std::mem::replace(&mut guest.live.told, true) {
+fn went_live(view: &mut View) {
+    if std::mem::replace(&mut view.live.told, true) {
         return;
     }
     if crate::runtime::notify::center()
         .lock()
-        .went_live(guest.module)
+        .went_live(view.program)
     {
         // the window's strip redraws with the line
-        guest.intents.push(Intent::Notified);
+        view.intents.push(Intent::Notified);
     }
 }
 
 /// The session to open a request on, or the request refused: the view's
 /// connection is stale or gone (`connected`).
-fn ready(guest: &mut Guest, id: u64) -> Option<Arc<dyn Session>> {
-    went_live(guest);
-    connected(guest, id)?;
-    let session = session(&guest.connection);
+fn ready(view: &mut View, id: u64) -> Option<Arc<dyn Session>> {
+    went_live(view);
+    connected(view, id)?;
+    let session = session(&view.connection);
     if session.is_none() {
-        guest.refuse(id, refusal::NOT_CONNECTED, "not connected to a node");
+        view.refuse(id, refusal::NOT_CONNECTED, "not connected to a node");
     }
     session
 }
@@ -197,23 +197,23 @@ fn live_mode(mode: Mode) -> LiveMode {
 }
 
 /// `live.publish`.
-pub(super) fn publish(guest: &mut Guest, id: u64, payload: &[u8]) {
+pub(super) fn publish(view: &mut View, id: u64, payload: &[u8]) {
     let ask = match methods::decode::<LivePublish>(payload) {
         Ok(ask) => ask,
-        Err(error) => return guest.refuse(id, refusal::MALFORMED_REQUEST, error),
+        Err(error) => return view.refuse(id, refusal::MALFORMED_REQUEST, error),
     };
-    let Some(session) = ready(guest, id) else {
+    let Some(session) = ready(view, id) else {
         return;
     };
-    open_publication(guest, id, session, ask);
+    open_publication(view, id, session, ask);
 }
 
-fn open_publication(guest: &mut Guest, id: u64, session: Arc<dyn Session>, ask: LivePublish) {
-    let Some(track) = stamped(guest, id, &ask.track.room, &ask.track.name) else {
+fn open_publication(view: &mut View, id: u64, session: Arc<dyn Session>, ask: LivePublish) {
+    let Some(track) = stamped(view, id, &ask.track.room, &ask.track.name) else {
         return;
     };
     let (outbox, objects) = mpsc::channel(client::OUTBOX);
-    guest.live.publications.push(Publication {
+    view.live.publications.push(Publication {
         id,
         track: ask.track.clone(),
         mode: ask.mode,
@@ -224,9 +224,9 @@ fn open_publication(guest: &mut Guest, id: u64, session: Arc<dyn Session>, ask: 
         mode: mode_of(ask.mode),
         priority: ask.priority,
     };
-    let (replies, key) = (guest.replies.clone(), guest.perf_key());
+    let (replies, key) = (view.replies.clone(), view.perf_key());
     super::node::start(
-        guest,
+        view,
         id,
         Some(Follow::Live(Follows::Publish(ask))),
         publishing(session, open, objects, Items::new(replies, id), key),
@@ -307,19 +307,19 @@ async fn opened(session: &Arc<dyn Session>, ask: Ask) -> Result<client::Request,
 
 /// `live.send`: into the publication's queue, refused on the publication
 /// when it does not fit.
-pub(super) fn send(guest: &mut Guest, id: u64, payload: &[u8]) {
+pub(super) fn send(view: &mut View, id: u64, payload: &[u8]) {
     let send = match methods::decode::<LiveSend>(payload) {
         Ok(send) => send,
-        Err(error) => return guest.refuse(id, refusal::MALFORMED_REQUEST, error),
+        Err(error) => return view.refuse(id, refusal::MALFORMED_REQUEST, error),
     };
-    let Some(publication) = guest
+    let Some(publication) = view
         .live
         .publications
         .iter()
         .rev()
         .find(|publication| publication.track == send.track)
     else {
-        return guest.refuse(
+        return view.refuse(
             id,
             refusal::LIVE_NOT_PUBLISHED,
             "this view publishes no such track",
@@ -335,7 +335,7 @@ pub(super) fn send(guest: &mut Guest, id: u64, payload: &[u8]) {
             refusal::TOO_LARGE,
             format!("an object of this track is at most {cap} bytes"),
         );
-        guest.replies.item(publication_id, Err(refused), false);
+        view.replies.item(publication_id, Err(refused), false);
         return;
     }
     let object = Object {
@@ -345,7 +345,7 @@ pub(super) fn send(guest: &mut Guest, id: u64, payload: &[u8]) {
         end: send.end,
     };
     match publication.outbox.try_send(object) {
-        Ok(()) => crate::perf::count(guest.perf_key(), "live.objects_out", 1),
+        Ok(()) => crate::perf::count(view.perf_key(), "live.objects_out", 1),
         Err(mpsc::error::TrySendError::Full(_)) => {
             let refused = wire::Error::new(
                 refusal::IN_FLIGHT_LIMIT,
@@ -354,11 +354,11 @@ pub(super) fn send(guest: &mut Guest, id: u64, payload: &[u8]) {
                     client::OUTBOX
                 ),
             );
-            guest.replies.item(publication_id, Err(refused), false);
+            view.replies.item(publication_id, Err(refused), false);
         }
         Err(mpsc::error::TrySendError::Closed(_)) => {
-            guest.live.cancel(publication_id);
-            guest.refuse(
+            view.live.cancel(publication_id);
+            view.refuse(
                 id,
                 refusal::LIVE_NOT_PUBLISHED,
                 "this view's publication of the track ended",
@@ -368,34 +368,34 @@ pub(super) fn send(guest: &mut Guest, id: u64, payload: &[u8]) {
 }
 
 /// `live.subscribe`.
-pub(super) fn subscribe(guest: &mut Guest, id: u64, payload: &[u8]) {
+pub(super) fn subscribe(view: &mut View, id: u64, payload: &[u8]) {
     let ask = match methods::decode::<LiveSubscribe>(payload) {
         Ok(ask) => ask,
-        Err(error) => return guest.refuse(id, refusal::MALFORMED_REQUEST, error),
+        Err(error) => return view.refuse(id, refusal::MALFORMED_REQUEST, error),
     };
-    let Some(session) = ready(guest, id) else {
+    let Some(session) = ready(view, id) else {
         return;
     };
     let from = match ask.latest {
         true => Start::Latest,
         false => Start::Next,
     };
-    open_subscription(guest, id, session, ask.track, from);
+    open_subscription(view, id, session, ask.track, from);
 }
 
 fn open_subscription(
-    guest: &mut Guest,
+    view: &mut View,
     id: u64,
     session: Arc<dyn Session>,
     track: LiveTrack,
     from: Start,
 ) {
-    let Some(stamped) = stamped(guest, id, &track.room, &track.name) else {
+    let Some(stamped) = stamped(view, id, &track.room, &track.name) else {
         return;
     };
-    let (replies, key) = (guest.replies.clone(), guest.perf_key());
+    let (replies, key) = (view.replies.clone(), view.perf_key());
     super::node::start(
-        guest,
+        view,
         id,
         Some(Follow::Live(Follows::Subscribe(track))),
         subscribing(session, stamped, from, Items::new(replies, id), key),
@@ -471,25 +471,25 @@ fn live_item(data: Data) -> LiveItem {
 }
 
 /// `live.tracks`.
-pub(super) fn tracks(guest: &mut Guest, id: u64, payload: &[u8]) {
+pub(super) fn tracks(view: &mut View, id: u64, payload: &[u8]) {
     let room = match methods::decode::<String>(payload) {
         Ok(room) => room,
-        Err(error) => return guest.refuse(id, refusal::MALFORMED_REQUEST, error),
+        Err(error) => return view.refuse(id, refusal::MALFORMED_REQUEST, error),
     };
-    let Some(session) = ready(guest, id) else {
+    let Some(session) = ready(view, id) else {
         return;
     };
-    open_watch(guest, id, session, room);
+    open_watch(view, id, session, room);
 }
 
-fn open_watch(guest: &mut Guest, id: u64, session: Arc<dyn Session>, room: String) {
+fn open_watch(view: &mut View, id: u64, session: Arc<dyn Session>, room: String) {
     // a room's list is held to the room's rule alone: any name stands in
-    let Some(Track { namespace, .. }) = stamped(guest, id, &room, "list") else {
+    let Some(Track { namespace, .. }) = stamped(view, id, &room, "list") else {
         return;
     };
-    let replies = guest.replies.clone();
+    let replies = view.replies.clone();
     super::node::start(
-        guest,
+        view,
         id,
         Some(Follow::Live(Follows::Tracks(room))),
         watching(session, namespace, Items::new(replies, id)),
@@ -549,17 +549,17 @@ async fn watching(session: Arc<dyn Session>, namespace: String, mut items: Items
 /// A connect inside the network: the request opened again on the new
 /// connection's session, as it was asked (a subscription from the group the
 /// node holds).
-pub(super) fn reopen(guest: &mut Guest, id: u64, follows: Follows) {
-    let Some(session) = session(&guest.connection) else {
-        return guest.refuse(id, refusal::NOT_CONNECTED, "not connected to a node");
+pub(super) fn reopen(view: &mut View, id: u64, follows: Follows) {
+    let Some(session) = session(&view.connection) else {
+        return view.refuse(id, refusal::NOT_CONNECTED, "not connected to a node");
     };
     match follows {
         Follows::Publish(ask) => {
-            guest.live.cancel(id);
-            open_publication(guest, id, session, ask);
+            view.live.cancel(id);
+            open_publication(view, id, session, ask);
         }
-        Follows::Subscribe(track) => open_subscription(guest, id, session, track, Start::Latest),
-        Follows::Tracks(room) => open_watch(guest, id, session, room),
+        Follows::Subscribe(track) => open_subscription(view, id, session, track, Start::Latest),
+        Follows::Tracks(room) => open_watch(view, id, session, room),
     }
 }
 

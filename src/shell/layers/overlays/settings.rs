@@ -425,16 +425,16 @@ impl OverlayLayer {
         let views: Vec<_> = listed
             .into_iter()
             .map(|row| {
-                let module = row.module;
+                let program = row.program;
                 let name = super::super::tab_label(&row);
-                let chosen = settings.views.get(module).copied();
-                let week = self.notifications.read(cx).this_week(module, now);
+                let chosen = settings.views.get(program).copied();
+                let week = self.notifications.read(cx).this_week(program, now);
                 let hint = match week {
                     0 => "None yet".to_owned(),
                     week => format!("{week} this week"),
                 };
                 let control = self.segmented(
-                    &format!("notify/view/{module}"),
+                    &format!("notify/view/{program}"),
                     &format!("{name} notifications"),
                     Permission::ALL.map(|permission| {
                         let (notifications, prefs) = (
@@ -445,7 +445,7 @@ impl OverlayLayer {
                             crate::shell::entities::permission(
                                 &notifications,
                                 &prefs,
-                                module,
+                                program,
                                 permission,
                                 cx,
                             )
@@ -471,11 +471,11 @@ impl OverlayLayer {
                             .items_baseline()
                             .gap(px(12.))
                             .child(sans(500, 14.).child(words(
-                                SharedString::from(format!("notify/view/{module}/name")),
+                                SharedString::from(format!("notify/view/{program}/name")),
                                 name,
                             )))
                             .child(sans(400, 13.).text_color(ink.muted).child(words(
-                                SharedString::from(format!("notify/view/{module}/week")),
+                                SharedString::from(format!("notify/view/{program}/week")),
                                 hint,
                             ))),
                     )
@@ -867,7 +867,7 @@ fn about_page(ink: &Ink) -> Vec<gpui_kit::Div> {
         line("Version", env!("CARGO_PKG_VERSION").into(), ink),
         line(
             "Node contract",
-            format!("v{}", crate::backend::noded::NODE_CONTRACT),
+            format!("v{}", noded_client::wire::NODE_CONTRACT),
             ink,
         ),
         line("Log", log, ink),

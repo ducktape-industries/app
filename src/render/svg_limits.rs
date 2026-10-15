@@ -1,4 +1,4 @@
-//! A per-window budget for rasterised guest SVGs. `guarded_svg_paint` wraps
+//! A per-window budget for rasterised view SVGs. `guarded_svg_paint` wraps
 //! an svg element; at prepaint its raster, under the key gpui paints it with
 //! (`Window::svg_params`), is admitted to the window's ledger and charged
 //! the raster gpui makes: the box width, and the height the SVG's own
@@ -124,7 +124,7 @@ struct SvgAdmissionLedgers {
 impl Global for SvgAdmissionLedgers {}
 
 /// Whether the bytes may reach the SVG parser: gzip (svgz, by its magic) is
-/// refused, so a guest cannot hand the parser a small file that inflates.
+/// refused, so a view cannot hand the parser a small file that inflates.
 pub(super) fn svg_data_allowed(bytes: &[u8]) -> bool {
     !bytes.starts_with(&[0x1f, 0x8b])
 }

@@ -1,5 +1,5 @@
 //! The per-view answer queue between the kernel's tasks and the redraw:
-//! written off-thread, drained into the guest's pending events at its next
+//! written off-thread, drained into the view's pending events at its next
 //! redraw, bounded by count and bytes. Overflow latches a fault that stops
 //! the view.
 use super::*;
@@ -24,7 +24,7 @@ fn queued_bytes(events: &[wire::Event]) -> usize {
 }
 
 /// The kernel's answers to a view's requests, written off-thread and
-/// drained into the guest's pending events at its next redraw.
+/// drained into the view's pending events at its next redraw.
 pub(in crate::runtime) struct Replies {
     events: Mutex<Vec<wire::Event>>,
     in_flight: AtomicUsize,
@@ -142,7 +142,7 @@ impl Replies {
     }
 
     /// One item for a request the kernel is running; `done` ends it for the
-    /// guest. The in-flight count is [`Replies::settled`]'s to give back —
+    /// view. The in-flight count is [`Replies::settled`]'s to give back —
     /// a subscription's last item and its count are not the same moment.
     pub(super) fn item(&self, id: u64, result: Answer, done: bool) {
         let mut events = self.events.lock().expect("kernel replies");

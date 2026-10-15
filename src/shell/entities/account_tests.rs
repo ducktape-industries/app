@@ -3,7 +3,7 @@
 //! the desktop does on the account's events (a lock's toast, a new
 //! account's Help, a network left).
 use super::super::{WindowKey, WindowKind};
-use super::tests::{active, desk_of, modules, session};
+use super::tests::{active, desk_of, programs, session};
 use super::{Account, AccountStep, Entities, Screen, Slice};
 use crate::backend;
 use crate::ui::layout::{EMPTY, HELP};
@@ -145,8 +145,8 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
         account.update(cx, |account, cx| account.resolved(NODE, "cd", None, cx));
         (account, screen)
     }
-    fn testkit() -> backend::Keyring {
-        backend::Keyring {
+    fn testkit() -> noded_client::keyring::Keyring {
+        noded_client::keyring::Keyring {
             dir: "testkit".into(),
             other_chain: false,
         }
@@ -579,14 +579,14 @@ fn the_approve_dialog_forgets_what_it_found_when_it_opens_or_closes(cx: &mut Tes
     let found = || {
         let key = vec![7; 32];
         let mut state = super::AccountState {
-            approve: Some(backend::join::fingerprint(&key)),
+            approve: Some(noded_client::join::fingerprint(&key)),
             error: "no".into(),
             ..Default::default()
         };
         state.signer_key = "ab".into();
         (
             state,
-            backend::join::Request {
+            noded_client::join::Request {
                 network: "testkit".into(),
                 key,
             },
@@ -695,7 +695,7 @@ fn taking_up_another_chain_resets_the_last_ones_state(cx: &mut TestAppContext) {
     layout_picked();
     let _seat = backend::seat_serial();
     let (account, screen) = desk(cx);
-    let keyring = |dir: &str, other_chain| backend::Keyring {
+    let keyring = |dir: &str, other_chain| noded_client::keyring::Keyring {
         dir: dir.into(),
         other_chain,
     };
@@ -825,13 +825,13 @@ fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
         account.layout_chosen(backend::Layout::MenuBar, cx)
     });
     assert_eq!(shown(&entities.screen, cx), "Desk");
-    assert_eq!(modules(&entities, key, cx), [HELP]);
+    assert_eq!(programs(&entities, key, cx), [HELP]);
     assert_eq!(active(&entities, cx), None, "help is no program");
     assert!(welcome(cx), "a new account is greeted");
     entities
         .windows
         .update(cx, |windows, cx| windows.help_asked(cx));
-    assert_eq!(modules(&entities, key, cx), [HELP], "not twice");
+    assert_eq!(programs(&entities, key, cx), [HELP], "not twice");
     assert!(!welcome(cx), "asked for, help is just help");
 
     let (entities, key) = desktop(cx);
@@ -841,7 +841,7 @@ fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
         account.create_later(cx);
     });
     assert_eq!(
-        modules(&entities, key, cx),
+        programs(&entities, key, cx),
         [EMPTY],
         "not now: the desk as it was"
     );
@@ -853,7 +853,7 @@ fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
     });
     assert_eq!(shown(&entities.screen, cx), "Desk");
     assert_eq!(
-        modules(&entities, key, cx),
+        programs(&entities, key, cx),
         [EMPTY],
         "a known account is not greeted"
     );

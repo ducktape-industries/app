@@ -232,7 +232,7 @@ fn drew(native: &mut gpui_kit::VisualTestContext, name: &'static str) -> bool {
 }
 
 /// A picture the raster cache has no room for, beside what the current
-/// frame draws, shows the guest's fallback, not its loading placeholder
+/// frame draws, shows the view's fallback, not its loading placeholder
 /// for good; once a new frame lands, the rasters the last one drew are
 /// evicted and it draws.
 #[gpui_kit::test]

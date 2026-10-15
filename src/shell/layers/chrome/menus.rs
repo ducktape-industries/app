@@ -13,7 +13,7 @@ use gpui_kit::*;
 
 /// The program whose view is Account (the account, its keys, agents and
 /// invites), which the account menu opens.
-const ACCOUNT_VIEW: &str = "module-registry";
+const ACCOUNT_VIEW: &str = "programs";
 
 impl Chrome {
     /// What the breath means (the NodeStatus board): in sync or not, and
@@ -31,7 +31,7 @@ impl Chrome {
             self.prefs.read(cx).get().motion,
         );
         let ok = !session.reconnecting;
-        let host = crate::backend::host_of(&session.connected_rpc).to_owned();
+        let host = noded_client::endpoint::host_of(&session.connected_rpc).to_owned();
         let now = crate::runtime::notify::wall();
         let (block_age, heard_age) = (now - chain.block_seen, now - chain.heard);
         // the key and its value, each a Label: `Height`, `6,230`
@@ -428,7 +428,7 @@ fn grouped(number: u64) -> String {
 
 /// The first and last few bytes of a hash, enough to tell two apart.
 fn short_hex(bytes: &[u8]) -> String {
-    let hex = crate::backend::hex_encode(bytes);
+    let hex = noded_client::hex::hex_encode(bytes);
     match hex.len() > 14 {
         true => format!("{}…{}", &hex[..8], &hex[hex.len() - 4..]),
         false => hex,
@@ -545,7 +545,7 @@ mod tests {
             identity: vec![0x24; 32],
             contract: 1,
             genesis: [0; 32],
-            roles: crate::backend::noded::test_roles(),
+            roles: crate::backend::test_roles(),
         }
     }
 

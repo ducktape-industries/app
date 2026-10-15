@@ -54,7 +54,7 @@ pub(crate) struct AxNode {
     pub(crate) actions: Vec<&'static str>,
     #[serde(flatten)]
     pub(crate) more: Properties,
-    /// `<window>` or `<window>/<module>`.
+    /// `<window>` or `<window>/<program>`.
     #[serde(rename = "in")]
     pub(super) scope: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -164,7 +164,7 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
         f64::from(viewport.width) * scale,
         f64::from(viewport.height) * scale,
     );
-    // each node's id prefix (`<window>:` or `<window>:<module>/`), scope
+    // each node's id prefix (`<window>:` or `<window>:<program>/`), scope
     // and path segments, and its parent's index in `out`; the ids
     // themselves are resolved once all are known. A synthetic child's own
     // segment is its role, and after the first of that role under one
@@ -242,9 +242,9 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
         let synthetic = window.a11y_element_id(id).is_none();
         let (prefix, scope, path) = match window.a11y_element_id(id) {
             Some(element) => match element_path(element.iter()) {
-                (Some(module), path) => (
-                    format!("{name}:{module}/"),
-                    format!("{name}/{module}"),
+                (Some(program), path) => (
+                    format!("{name}:{program}/"),
+                    format!("{name}/{program}"),
                     path,
                 ),
                 (None, path) => (format!("{name}:"), name.to_owned(), path),
@@ -450,31 +450,31 @@ pub(super) fn door_ids(paths: &[(String, Vec<String>)]) -> Vec<String> {
     ids
 }
 
-/// The scope (`<window>` or `<window>/<module>`) a snapshot gives the node
+/// The scope (`<window>` or `<window>/<program>`) a snapshot gives the node
 /// an element draws, and so the scope [`Filter`] judges a refused element
 /// by.
 pub(super) fn scope_of(name: &str, element: &gpui_kit::GlobalElementId) -> String {
     match element_path(element.iter()).0 {
-        Some(module) => format!("{name}/{module}"),
+        Some(program) => format!("{name}/{program}"),
         None => name.to_owned(),
     }
 }
 
-/// A path's module and its stable segments: the names call sites pass, not
+/// A path's program and its stable segments: the names call sites pass, not
 /// entities, focus handles or the kit's own type-path ids
-/// (`gpui_component::button::button::Button`). The module is what follows
+/// (`gpui_component::button::button::Button`). The program is what follows
 /// [`VIEW_MARK`] in the host id a seat draws around its view
 /// (`Seat::ax_mark`), the one shape of mark no view can send: a view's own
 /// `view/<other>` id is one more segment of its path.
 fn element_path<'a>(ids: impl Iterator<Item = &'a ElementId>) -> (Option<String>, Vec<String>) {
-    let mut module = None;
+    let mut program = None;
     let mut path = Vec::new();
     for id in ids {
         match id {
             ElementId::NamedChild(_, name) if crate::render::is_host_id(id) => {
                 match name.strip_prefix(VIEW_MARK) {
                     Some(mark) => {
-                        module = Some(mark.to_owned());
+                        program = Some(mark.to_owned());
                         path.clear();
                     }
                     // a host id (`render::host_id`): its name, not its code
@@ -491,7 +491,7 @@ fn element_path<'a>(ids: impl Iterator<Item = &'a ElementId>) -> (Option<String>
             id => path.push(id.to_string()),
         }
     }
-    (module, path)
+    (program, path)
 }
 
 fn is_text_input(role: Role) -> bool {
@@ -724,7 +724,7 @@ mod key_tests {
 }
 #[cfg(test)]
 mod mark_tests {
-    //! The module a node is in comes off the host's mark, never a view's id.
+    //! The program a node is in comes off the host's mark, never a view's id.
     use super::*;
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{
@@ -733,7 +733,7 @@ mod mark_tests {
     };
 
     /// View `chat` under its mark (`Seat::ax_mark`), holding a container it
-    /// named as the mark of another module, `forge`, around a button.
+    /// named as the mark of another program, `forge`, around a button.
     struct Forged;
 
     impl Render for Forged {
@@ -754,7 +754,7 @@ mod mark_tests {
     /// one more segment of its path, so `?view=forge` and the census never
     /// take it for forge's, nor `/act` on `forge/approve` press it.
     #[gpui_kit::test]
-    fn a_view_cannot_name_its_nodes_another_modules(cx: &mut gpui_kit::TestAppContext) {
+    fn a_view_cannot_name_its_nodes_another_programs(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
         let window = cx.open_window(size(px(300.), px(300.)), |_, _| Forged);
         let mut native = VisualTestContext::from_window(window.into(), cx);

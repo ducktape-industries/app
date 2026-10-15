@@ -9,10 +9,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use sha2::{Digest as _, Sha256};
 
-use super::loopback::url_encode;
-
 /// How often a slot is asked for its answer.
-pub(super) const POLL: Duration = Duration::from_millis(1500);
+pub const POLL: Duration = Duration::from_millis(1500);
 
 /// The slot `id` on `page`'s origin.
 fn slot_url(page: &str, id: &str) -> Result<String, String> {
@@ -26,7 +24,7 @@ fn slot_url(page: &str, id: &str) -> Result<String, String> {
 
 /// The relay slot for one side of a code: `request` (new → old) or
 /// `consent` (old → new).
-pub(super) fn slot(page: &str, code: &str, side: &str) -> Result<String, String> {
+pub fn slot(page: &str, code: &str, side: &str) -> Result<String, String> {
     let mut hash = Sha256::new();
     hash.update(b"ducktape:link:v1\0");
     hash.update(side.as_bytes());
@@ -36,7 +34,7 @@ pub(super) fn slot(page: &str, code: &str, side: &str) -> Result<String, String>
 }
 
 /// `json` into the slot at `url`, over the connection's `http`.
-pub(super) async fn post(http: &reqwest::Client, url: &str, json: String) -> Result<(), String> {
+pub async fn post(http: &reqwest::Client, url: &str, json: String) -> Result<(), String> {
     let reply = http
         .post(url)
         .header("content-type", "application/x-www-form-urlencoded")
@@ -57,7 +55,7 @@ pub(super) async fn post(http: &reqwest::Client, url: &str, json: String) -> Res
 
 /// One GET of a slot, over the connection's `http`: its message, or `None`
 /// while nothing has arrived.
-pub(super) async fn take(http: &reqwest::Client, url: &str) -> Result<Option<String>, String> {
+pub async fn take(http: &reqwest::Client, url: &str) -> Result<Option<String>, String> {
     let reply = http
         .get(url)
         .send()
@@ -72,6 +70,21 @@ pub(super) async fn take(http: &reqwest::Client, url: &str) -> Result<Option<Str
         reqwest::StatusCode::NO_CONTENT => Ok(None),
         status => Err(format!("The auth host refused ({status}).")),
     }
+}
+
+/// RFC 3986's unreserved characters as they are, every other byte
+/// percent-encoded: how a value rides to the auth host, as a form field
+/// or in the page URL's fragment.
+pub fn url_encode(value: &str) -> String {
+    value
+        .bytes()
+        .map(
+            |byte| match byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte) {
+                true => (byte as char).to_string(),
+                false => format!("%{byte:02X}"),
+            },
+        )
+        .collect()
 }
 
 #[cfg(test)]

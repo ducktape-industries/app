@@ -1,8 +1,9 @@
 use super::*;
-use crate::backend::noded::{KeyScheme as Verifier, NODE_CONTRACT, Status};
 use commonware_codec::Encode as _;
 use commonware_cryptography::{Signer as _, ed25519};
+use keyscheme::KeyScheme as Verifier;
 use live_wire::{Challenge, Welcome};
+use noded_client::wire::{NODE_CONTRACT, Status};
 use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -91,7 +92,7 @@ async fn node_hearing(
         identity,
         contract: NODE_CONTRACT,
         genesis: [9; 32],
-        roles: crate::backend::noded::test_roles(),
+        roles: crate::backend::test_roles(),
     };
     let http = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", http.local_addr().unwrap());

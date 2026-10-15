@@ -1,4 +1,4 @@
-//! A guest's anchored popup, fitted to what its slot can show. GPUI's own
+//! A view's anchored popup, fitted to what its slot can show. GPUI's own
 //! `anchored` fits the window, but a view paints inside its pane's mask: a
 //! menu opened near a pane's edge fitted the window and was cut off by the
 //! pane. This one flips to the other side of its anchor point when that
@@ -37,7 +37,7 @@ impl ViewTree {
             wire::Anchor::LeftCenter => Anchor::LeftCenter,
             wire::Anchor::RightCenter => Anchor::RightCenter,
         };
-        // every fit mode keeps the popup inside the slot: a guest cannot
+        // every fit mode keeps the popup inside the slot: a view cannot
         // see its pane's edges, so the host fits to them for it
         let margin = match fit {
             wire::AnchoredFitMode::SnapToWindowWithMargin([top, right, bottom, left]) => Edges {

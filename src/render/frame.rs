@@ -1,4 +1,4 @@
-//! A frame's arrival: `replace` adopts the guest's new root and retains
+//! A frame's arrival: `replace` adopts the view's new root and retains
 //! every native-state map to the paths it still mounts.
 
 use super::commands::walk_authored_paths;
@@ -11,7 +11,7 @@ impl ViewTree {
         self.pictures = pictures;
     }
 
-    /// Takes what the guest built for tooltip routes, each with the table
+    /// Takes what the view built for tooltip routes, each with the table
     /// it came with: a content is its own tree, and names its styles in the
     /// table of the frame that brought it, whatever table the tree has by
     /// now. A response is kept by its route while the tree holds that
@@ -65,7 +65,7 @@ impl ViewTree {
         }
     }
 
-    /// The guest's new root and its style table, with the `Replace` asks
+    /// The view's new root and its style table, with the `Replace` asks
     /// the host still holds for it (target and the revision each read): a
     /// field's edit log is kept from the oldest ask on it.
     pub(crate) fn replace(
@@ -84,8 +84,8 @@ impl ViewTree {
             }
         }
         let mut focusable = HashMap::new();
-        let mut guest_focus_ids = std::collections::HashSet::new();
-        // every field, with the guest's revision this frame carries
+        let mut view_focus_ids = std::collections::HashSet::new();
+        // every field, with the view's revision this frame carries
         let mut fields = HashMap::new();
         let mut scrolls = std::collections::HashSet::new();
         let mut uniform_lists = std::collections::HashSet::new();
@@ -116,7 +116,7 @@ impl ViewTree {
                 | wire::Node::Image { interactivity, .. }
                 | wire::Node::Svg { interactivity, .. } => {
                     if let Some(id) = interactivity.as_ref().and_then(|i| i.focus_handle) {
-                        guest_focus_ids.insert(id);
+                        view_focus_ids.insert(id);
                     }
                 }
                 wire::Node::UniformList {
@@ -125,7 +125,7 @@ impl ViewTree {
                     ..
                 } => {
                     if let Some(id) = interactivity.as_ref().and_then(|i| i.focus_handle) {
-                        guest_focus_ids.insert(id);
+                        view_focus_ids.insert(id);
                     }
                     uniform_lists.insert(path.clone());
                 }
@@ -135,7 +135,7 @@ impl ViewTree {
                     ..
                 } => {
                     if let Some(id) = interactivity.as_ref().and_then(|i| i.focus_handle) {
-                        guest_focus_ids.insert(id);
+                        view_focus_ids.insert(id);
                     }
                     variable_lists.insert(path.clone());
                 }
@@ -144,7 +144,7 @@ impl ViewTree {
                 }
                 wire::Node::ResizeHandle { interactivity, .. } => {
                     if let Some(id) = interactivity.as_ref().and_then(|i| i.focus_handle) {
-                        guest_focus_ids.insert(id);
+                        view_focus_ids.insert(id);
                     }
                     drags.insert(path.clone());
                 }
@@ -172,12 +172,12 @@ impl ViewTree {
         });
         self.focus_targets
             .retain(|key, (kind, _)| focusable.get(key) == Some(kind));
-        self.guest_focus_targets
-            .retain(|id, _| guest_focus_ids.contains(id));
+        self.view_focus_targets
+            .retain(|id, _| view_focus_ids.contains(id));
         self.fields.retain(|key, _| fields.contains_key(key));
         for (key, field) in self.fields.iter_mut() {
             // an ask names its target by the whole authored path, as the
-            // guest SDK sends it and `execute_widget_command` reads it
+            // view SDK sends it and `execute_widget_command` reads it
             let queued = asked
                 .iter()
                 .filter(|(target, _)| key == target)

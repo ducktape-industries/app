@@ -52,9 +52,9 @@ pub(crate) fn start() {
 /// What a sample belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Key {
-    /// One seat: the module and the widget instance showing it.
+    /// One seat: the program and the widget instance showing it.
     View {
-        module: &'static str,
+        program: &'static str,
         instance: u64,
     },
     Window(WindowKey),
@@ -247,7 +247,7 @@ pub(crate) fn suffixed(stage: &str, suffix: &str) -> Option<&'static str> {
     on().then(|| crate::runtime::intern(&format!("{stage}{suffix}")))
 }
 
-/// The registry as JSON. Views aggregate by module unless `by_instance`;
+/// The registry as JSON. Views aggregate by program unless `by_instance`;
 /// windows are keyed by their `WindowKey` number (the door adds the name).
 pub(crate) fn snapshot(by_instance: bool) -> serde_json::Value {
     use serde_json::{Map, Value, json};
@@ -255,14 +255,14 @@ pub(crate) fn snapshot(by_instance: bool) -> serde_json::Value {
     let mut views: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
     let mut windows: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
     let mut shell = Map::new();
-    // one module's instances merge stage by stage
+    // one program's instances merge stage by stage
     let mut merged: BTreeMap<(String, &'static str), Vec<&Metric>> = BTreeMap::new();
     for ((key, stage), metric) in &registry.metrics {
         match key {
-            Key::View { module, instance } => {
+            Key::View { program, instance } => {
                 let name = match by_instance {
-                    true => format!("{module}/{instance}"),
-                    false => module.to_string(),
+                    true => format!("{program}/{instance}"),
+                    false => program.to_string(),
                 };
                 merged.entry((name, stage)).or_default().push(metric);
             }
@@ -280,9 +280,9 @@ pub(crate) fn snapshot(by_instance: bool) -> serde_json::Value {
     for ((name, stage), metrics) in merged {
         let entry = views.entry(name.clone()).or_default();
         if !by_instance {
-            entry.insert("module".into(), json!(name));
-        } else if let Some((module, instance)) = name.split_once('/') {
-            entry.insert("module".into(), json!(module));
+            entry.insert("program".into(), json!(name));
+        } else if let Some((program, instance)) = name.split_once('/') {
+            entry.insert("program".into(), json!(program));
             entry.insert(
                 "instance".into(),
                 json!(instance.parse::<u64>().unwrap_or(0)),
@@ -372,17 +372,17 @@ pub(crate) fn summary() {
 
 /// One `view_perf` line for an instance on its way out: its own numbers,
 /// under the same names as `/perf` gives them.
-pub(crate) fn retire(module: &'static str, instance: u64) {
+pub(crate) fn retire(program: &'static str, instance: u64) {
     if !on() {
         return;
     }
     let all = snapshot(true);
-    let name = format!("{module}/{instance}");
+    let name = format!("{program}/{instance}");
     let own = &all["views"][name.as_str()];
     if own.is_null() {
         return;
     }
-    tracing::info!(target: "ducktape::perf", module, instance, perf = %own, "view_perf");
+    tracing::info!(target: "ducktape::perf", program, instance, perf = %own, "view_perf");
 }
 
 /// RSS peak and current, in bytes: `getrusage` gives KiB on Linux and bytes
@@ -452,7 +452,7 @@ mod tests {
     }
 
     const VIEW: Key = Key::View {
-        module: "perf-test",
+        program: "perf-test",
         instance: 7,
     };
 
@@ -490,13 +490,13 @@ mod tests {
         assert_eq!(stage["p95"], 45 + 255 * 95 / 100);
     }
 
-    /// A snapshot carries every kind under its key, by module unless asked
+    /// A snapshot carries every kind under its key, by program unless asked
     /// by instance; a reset clears them and keeps the marks.
     #[test]
-    fn snapshot_aggregates_by_module_and_reset_clears() {
+    fn snapshot_aggregates_by_program_and_reset_clears() {
         let _on = on_for_test();
         let other = Key::View {
-            module: "perf-test",
+            program: "perf-test",
             instance: 8,
         };
         // a key no window of a test running beside this one can have
@@ -511,15 +511,15 @@ mod tests {
         count(Key::Shell, "rail.calls", 1);
         mark("desk");
 
-        let by_module = snapshot(false);
-        let view = &by_module["views"]["perf-test"];
-        assert_eq!(view["module"], "perf-test");
+        let by_program = snapshot(false);
+        let view = &by_program["views"]["perf-test"];
+        assert_eq!(view["program"], "perf-test");
         assert_eq!(view["renders"], 5);
         assert_eq!(view["nodes"]["max"], 10);
         assert_eq!(view["tick.call"]["n"], 1);
-        assert_eq!(by_module["windows"][&name]["renders"], 1);
-        assert_eq!(by_module["shell"]["rail.calls"], 1);
-        assert!(by_module["startup"]["desk"].is_number());
+        assert_eq!(by_program["windows"][&name]["renders"], 1);
+        assert_eq!(by_program["shell"]["rail.calls"], 1);
+        assert!(by_program["startup"]["desk"].is_number());
 
         let by_instance = snapshot(true);
         assert_eq!(by_instance["views"]["perf-test/7"]["renders"], 2);

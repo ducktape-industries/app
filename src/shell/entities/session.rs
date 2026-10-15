@@ -54,7 +54,7 @@ pub(crate) struct SessionState {
     pub(crate) chain: String,
     /// The node address being typed or tried.
     pub(crate) endpoint: String,
-    /// The typed address refused before it was tried ([`backend::ENDPOINT_REFUSAL`]).
+    /// The typed address refused before it was tried ([`noded_client::endpoint::ENDPOINT_REFUSAL`]).
     pub(crate) endpoint_error: String,
     pub(crate) recent_endpoints: Vec<backend::RecentEndpoint>,
     /// The network shares its name with another chain met first: its keys
@@ -74,7 +74,7 @@ impl SessionState {
         let endpoint = recent
             .first()
             .map(|entry| entry.url.clone())
-            .unwrap_or_else(|| backend::DEFAULT_ENDPOINT.to_owned());
+            .unwrap_or_else(|| noded_client::endpoint::DEFAULT_ENDPOINT.to_owned());
         Self {
             endpoint,
             recent_endpoints: recent,
@@ -163,7 +163,7 @@ impl Session {
 
     /// The node's `/v1/status`, as the poll asks for it.
     pub(crate) fn status_source(origin: &str) -> StatusSource {
-        let client = backend::RpcClient::new(origin);
+        let client = backend::rpc_client(origin);
         Rc::new(move || {
             let client = client.clone();
             async move { client.status().await.map_err(|error| error.to_string()) }.boxed_local()
@@ -187,13 +187,13 @@ impl Session {
     /// Connect, with the address typed: reached when it is an address.
     pub(crate) fn submit(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
-        match backend::endpoint_origin(&self.state.endpoint) {
+        match noded_client::endpoint::endpoint_origin(&self.state.endpoint) {
             Some(origin) => self.connect(origin, cx),
             None => {
                 self.edit(
                     |state| {
                         state.error.clear();
-                        state.endpoint_error = backend::ENDPOINT_REFUSAL.into();
+                        state.endpoint_error = noded_client::endpoint::ENDPOINT_REFUSAL.into();
                     },
                     cx,
                 );
@@ -264,11 +264,11 @@ impl Session {
         crate::perf::mark("connected");
         // refused like a node that never answered: a switch keeps the
         // network in hand
-        if status.contract != backend::noded::NODE_CONTRACT {
+        if status.contract != noded_client::wire::NODE_CONTRACT {
             let error = format!(
                 "this node speaks contract {}; this app speaks {}",
                 status.contract,
-                backend::noded::NODE_CONTRACT
+                noded_client::wire::NODE_CONTRACT
             );
             return self.connect_failed(origin, error, cx);
         }
@@ -284,7 +284,7 @@ impl Session {
         let network = status.network.clone();
         // the connection's one client: the views', the roster's and the
         // sign-in calls'
-        let client = backend::RpcClient::new(origin.clone());
+        let client = backend::rpc_client(origin.clone());
         let left = self.account.update(cx, |account, cx| {
             account.take_up(keyring, client.clone(), network.clone(), cx)
         });

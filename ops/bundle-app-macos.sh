@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Native macOS bundle: stage the executable, then — on the local signing
 # path — sign inside-out, image, optionally notarize. No view ships in the
-# bundle: every view the app draws comes off the connected node's registry.
+# bundle: every view the app draws comes off the connected node's programs role.
 #
 # ONE signing path per environment, chosen by DUCKTAPE_SIGN_VIA:
 #   unset    local: DUCKTAPE_CODESIGN_IDENTITY (ad-hoc by default) signs the

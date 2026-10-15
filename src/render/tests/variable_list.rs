@@ -77,7 +77,7 @@ fn native_variable_list_measures_different_heights_and_keeps_slot_clip(
     });
 }
 
-/// A bottom-anchored list whose rows the guest sent do not reach the top
+/// A bottom-anchored list whose rows the view sent do not reach the top
 /// of the viewport and its overdraw: the list lays the row above them
 /// out, finds it missing and asks for it once, in one bounded request;
 /// the rows it has are the tail, drawn from the bottom.
@@ -506,7 +506,7 @@ fn two_lists_under_one_parent_each_draw_their_own_rows(cx: &mut gpui_kit::TestAp
 }
 
 /// A field in a list row keeps what the host holds for it (here, the words
-/// selected in it) when the view's guest is instantiated again. The new
+/// selected in it) when the view is instantiated again. The new
 /// instance files the row under the path the old one did, the list's id in
 /// it, and the host finds the field by that path, whichever list the new
 /// instance draws first. A list draws its rows after the tree's render

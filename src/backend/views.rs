@@ -1,22 +1,22 @@
-//! Where a view comes from: the connected node's roster. The registry
-//! names every program and the code blob it runs; a program that ships a
+//! Where a view comes from: the connected node's roster. The programs
+//! role names every program and the code blob it runs; a program that ships a
 //! view carries it inside that blob, as the custom section
 //! [`VIEW_SECTION`] — one artifact, one blob id. The app reads the section
 //! out and mounts it. A program without the section has no view, which is
-//! the network's fact, not a failure. The registry also lists view-only
+//! the network's fact, not a failure. The programs role also lists view-only
 //! entries: a name and a blob that is the view itself, with no program
 //! behind it (Explorer); they follow the programs.
 //!
 //! Nothing here knows a program by name: the roster's order (programs by
-//! name, then view-only entries by name, as the registry answers them) is the
+//! name, then view-only entries by name, as the programs role answers them) is the
 //! rail's order, the manifest inside the view names the tab.
 
 use std::path::PathBuf;
 
 use abi::BlobId;
 
-use super::noded::Layer;
 use super::{RpcClient, cache_dir};
+use noded_client::wire::{Layer, unframe};
 
 pub const VIEW_SECTION: &str = "ducktape.view";
 
@@ -59,7 +59,7 @@ impl std::fmt::Display for Fetch {
     }
 }
 
-/// The roster as the registry program answers it at the node's height
+/// The roster as the programs role answers it at the node's height
 /// (sorted by name, programs first): asked of that program through the
 /// same query path every view's request takes. Only an id in its one
 /// spelling (`program::is_name`) is taken: the chain accepts more (a
@@ -68,12 +68,14 @@ impl std::fmt::Display for Fetch {
 /// "Program <id>", which a newline would end before a "System asks" of its
 /// own). One left off is said in app.log, once while the same ids are.
 pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>, Fetch> {
-    use module_registry::{Query, Reply};
+    use ::programs::{Query, Reply};
     let Reply::Roster {
         programs, views, ..
     } = ask(client, network, Query::Roster).await?
     else {
-        return Err(Fetch::Refused("the registry answered no roster".into()));
+        return Err(Fetch::Refused(
+            "the programs role answered no roster".into(),
+        ));
     };
     let programs = programs.into_iter().map(|entry| Program {
         name: entry.program,
@@ -124,10 +126,10 @@ fn misspelled_said(ids: Vec<String>) {
 }
 
 /// Which programs fill the roles the kernel calls, as genesis bound them
-/// and the registry program answers them. `None` from a registry from
-/// before the question, which refuses it: no program is known by its role.
+/// and the programs role answers them. `None` from a programs role that
+/// predates the question, which refuses it: no program is known by its role.
 pub async fn roles(client: &RpcClient, network: &str) -> Result<Option<abi::Roles>, Fetch> {
-    use module_registry::{Query, Reply};
+    use ::programs::{Query, Reply};
     match ask(client, network, Query::Roles).await {
         Ok(Reply::Roles(roles)) => Ok(Some(roles)),
         Ok(_) | Err(Fetch::Refused(_)) => Ok(None),
@@ -138,9 +140,9 @@ pub async fn roles(client: &RpcClient, network: &str) -> Result<Option<abi::Role
 async fn ask(
     client: &RpcClient,
     network: &str,
-    query: module_registry::Query,
-) -> Result<module_registry::Reply, Fetch> {
-    let frame = super::query_frame(network, module_registry::MODULE, abi::encode(&query)).await;
+    query: ::programs::Query,
+) -> Result<::programs::Reply, Fetch> {
+    let frame = super::query_frame(network, ::programs::PROGRAM, abi::encode(&query)).await;
     let answer = client
         .query(Layer::Preconfirmed, frame)
         .await
@@ -173,7 +175,7 @@ pub async fn program_bytes(
     if let Some(path) = &cached
         && let Ok(framed) = tokio::fs::read(path).await
         && hashes_to(&framed, code)
-        && let Some(body) = super::noded::unframe(&framed)
+        && let Some(body) = unframe(&framed)
     {
         return Ok((body.to_vec(), "disk"));
     }
@@ -182,7 +184,7 @@ pub async fn program_bytes(
         .await
         .map_err(fetch_error)?
         .ok_or(Fetch::NotHeld)?;
-    let body = super::noded::unframe(&framed)
+    let body = unframe(&framed)
         .ok_or_else(|| Fetch::Refused("the blob carries no git header".into()))?
         .to_vec();
     if !hashes_to(&framed, code) {
@@ -230,12 +232,12 @@ pub fn view_section(bytes: &[u8]) -> Option<Vec<u8>> {
     None
 }
 
-fn fetch_error(error: super::noded::Error) -> Fetch {
+fn fetch_error(error: noded_client::Error) -> Fetch {
     match error {
-        super::noded::Error::Refused(refusal) | super::noded::Error::Decode(refusal) => {
+        noded_client::Error::Refused(refusal) | noded_client::Error::Decode(refusal) => {
             Fetch::Refused(refusal.sentence)
         }
-        error @ super::noded::Error::TooLarge { .. } => Fetch::Refused(error.to_string()),
+        error @ noded_client::Error::TooLarge { .. } => Fetch::Refused(error.to_string()),
         other => Fetch::Unreachable(other.to_string()),
     }
 }

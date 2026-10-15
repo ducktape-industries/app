@@ -113,9 +113,9 @@ pub(super) fn eventually(what: &str, done: impl Fn() -> bool) {
     }
 }
 
-/// A node on a local socket: it answers the registry's two roster
+/// A node on a local socket: it answers the programs role's two roster
 /// questions with `programs` and `views`, the roles question with `roles`
-/// (refused, as a registry from before it does, when `None`; counted), and
+/// (refused, as a programs role that predates it does, when `None`; counted), and
 /// a blob among `blobs` (bodies) with its bytes. Any other blob it holds —
 /// the request read, no answer — until it is dropped, counting the blobs it
 /// holds at once and the most it ever did.
@@ -134,24 +134,24 @@ struct Held {
 
 /// What a fake node answers.
 struct Answers {
-    programs: Vec<module_registry::Entry>,
-    views: Vec<module_registry::View>,
+    programs: Vec<::programs::Entry>,
+    views: Vec<::programs::View>,
     roles: Option<abi::Roles>,
     blobs: Vec<(abi::BlobId, Vec<u8>)>,
 }
 
 impl FakeNode {
     fn new(
-        programs: Vec<module_registry::Entry>,
-        views: Vec<module_registry::View>,
+        programs: Vec<::programs::Entry>,
+        views: Vec<::programs::View>,
         blobs: Vec<Vec<u8>>,
     ) -> Self {
         Self::with_roles(programs, views, None, blobs)
     }
 
     fn with_roles(
-        programs: Vec<module_registry::Entry>,
-        views: Vec<module_registry::View>,
+        programs: Vec<::programs::Entry>,
+        views: Vec<::programs::View>,
         roles: Option<abi::Roles>,
         blobs: Vec<Vec<u8>>,
     ) -> Self {
@@ -205,23 +205,23 @@ fn answer(mut stream: std::net::TcpStream, answers: &Answers, held: &Mutex<Held>
         return respond(&mut stream, "200 OK", &abi::encode(&status(0)));
     }
     if line.starts_with("POST /v1/query ") {
-        let query: crate::backend::noded::Query = abi::decode(&body).unwrap();
-        let frame: crate::backend::noded::Frame = abi::decode(&query.frame).unwrap();
+        let query: noded_client::wire::Query = abi::decode(&body).unwrap();
+        let frame: noded_client::wire::Frame = abi::decode(&query.frame).unwrap();
         let reply = match abi::decode(&frame.body.payload).unwrap() {
-            module_registry::Query::Roster => module_registry::Reply::Roster {
+            ::programs::Query::Roster => ::programs::Reply::Roster {
                 height: 1,
                 programs: answers.programs.clone(),
                 views: answers.views.clone(),
             },
-            module_registry::Query::Roles => {
+            ::programs::Query::Roles => {
                 held.lock().unwrap().roles_asked += 1;
                 let Some(roles) = answers.roles.clone() else {
                     let refused = abi::Refusal::new("invalid_input", "Query did not decode");
                     return respond(&mut stream, "400 Bad Request", &abi::encode(&refused));
                 };
-                module_registry::Reply::Roles(roles)
+                ::programs::Reply::Roles(roles)
             }
-            other => panic!("unexpected registry query: {other:?}"),
+            other => panic!("unexpected programs query: {other:?}"),
         };
         return respond(&mut stream, "200 OK", &abi::encode(&abi::encode(&reply)));
     }
@@ -241,8 +241,8 @@ fn answer(mut stream: std::net::TcpStream, answers: &Answers, held: &Mutex<Held>
     respond(&mut stream, "404 Not Found", b"gone");
 }
 
-fn status(height: u64) -> crate::backend::noded::Status {
-    use crate::backend::noded;
+fn status(height: u64) -> noded_client::wire::Status {
+    use noded_client::wire as noded;
     noded::Status {
         network: "fake-network".into(),
         time: 1,
@@ -255,18 +255,18 @@ fn status(height: u64) -> crate::backend::noded::Status {
         identity: Vec::new(),
         contract: noded::NODE_CONTRACT,
         genesis: [0; 32],
-        roles: noded::test_roles(),
+        roles: crate::backend::test_roles(),
     }
 }
 
-struct RegistryNode {
+struct ProgramsNode {
     asked_of: Connection,
     tip: Arc<std::sync::atomic::AtomicU64>,
     running: abi::BlobId,
     scheduled: abi::BlobId,
 }
 
-impl RegistryNode {
+impl ProgramsNode {
     fn swapping(program: &'static str, at: u64) -> Self {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -274,15 +274,15 @@ impl RegistryNode {
         let height = tip.clone();
         let (founded, codes) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let (registry, running, scheduled) = registry_swapping(program, at);
+            let (programs, running, scheduled) = programs_swapping(program, at);
             founded.send((running, scheduled)).unwrap();
             for mut stream in listener.incoming().flatten() {
                 let tip = height.load(std::sync::atomic::Ordering::SeqCst);
-                serve_registry(&mut stream, &registry, tip);
+                serve_programs(&mut stream, &programs, tip);
             }
         });
         let (running, scheduled) = codes.recv().unwrap();
-        RegistryNode {
+        ProgramsNode {
             asked_of: Connection {
                 client: Some(crate::backend::RpcClient::new(format!("http://{address}"))),
                 network: "fake-network".into(),
@@ -312,18 +312,18 @@ impl RegistryNode {
     }
 }
 
-fn registry_env(height: u64, origin: ::guest::Origin) -> ::guest::Env {
-    ::guest::Env {
+fn programs_env(height: u64, origin: ::program::Origin) -> ::program::Env {
+    ::program::Env {
         height,
         origin,
         sender: None,
-        ..::guest::MockHost::env(module_registry::MODULE)
+        ..::program::MockHost::env(::programs::PROGRAM)
     }
 }
 
-fn registry_swapping(program: &str, at: u64) -> (::guest::MockHost, abi::BlobId, abi::BlobId) {
-    use ::guest::{MockHost, Module as _, Origin};
-    use module_registry::{Change, Entry, Genesis, Modules, Op, Scheduled};
+fn programs_swapping(program: &str, at: u64) -> (::program::MockHost, abi::BlobId, abi::BlobId) {
+    use ::program::{HashKind, MockHost, Origin, Program as _, Sibling};
+    use ::programs::{CODE_KIND, Change, Entry, Genesis, Op, Programs, Scheduled};
     let store = MockHost::default();
     let entry = |code| Entry {
         program: program.into(),
@@ -336,32 +336,37 @@ fn registry_swapping(program: &str, at: u64) -> (::guest::MockHost, abi::BlobId,
         views: Vec::new(),
         hooks: Vec::new(),
     };
-    Modules::init(
-        &store.exec(registry_env(0, Origin::Root)),
+    Programs::init(
+        &store.exec(programs_env(0, Origin::Root)),
         &abi::encode(&genesis),
     )
     .unwrap();
-    let publish = Op::Publish {
-        body: b"scheduled code".to_vec(),
-    };
-    Modules::execute(
-        &store.exec(registry_env(1, Origin::Signed(vec![1; 32]))),
-        publish,
-    )
-    .unwrap();
-    let scheduled: abi::BlobId = abi::decode(&store.take_output()).unwrap();
+    let body = b"scheduled code";
+    let scheduled = ::program::blob_id(HashKind::Sha256, CODE_KIND, body).unwrap();
+    let held: Sibling = Box::new(move |_, _| {
+        Ok(abi::encode(&::blobs::Reply::Held(Some(::blobs::Holding {
+            bundle: 0,
+            len: body.len() as u64,
+            kind: CODE_KIND.into(),
+            since: 1,
+        }))))
+    });
+    store
+        .borrow_mut()
+        .siblings
+        .insert(MockHost::roles().blobs, held);
     let swap = Op::Schedule(Scheduled {
         height: at,
         change: Change::Set(entry(scheduled)),
     });
-    let validators = Origin::Module(MockHost::roles().validators);
-    Modules::execute(&store.exec(registry_env(1, validators)), swap).unwrap();
+    let validators = Origin::Program(MockHost::roles().validators);
+    Programs::execute(&store.exec(programs_env(1, validators)), swap).unwrap();
     (store, running, scheduled)
 }
 
-fn serve_registry(stream: &mut std::net::TcpStream, registry: &::guest::MockHost, tip: u64) {
+fn serve_programs(stream: &mut std::net::TcpStream, programs: &::program::MockHost, tip: u64) {
     use super::super::kernel::tests::{read_request, respond};
-    use ::guest::Module as _;
+    use ::program::Program as _;
     let (line, body) = read_request(stream);
     if line.starts_with("GET /v1/status ") {
         return respond(stream, "200 OK", &abi::encode(&status(tip)));
@@ -369,17 +374,17 @@ fn serve_registry(stream: &mut std::net::TcpStream, registry: &::guest::MockHost
     if !line.starts_with("POST /v1/query ") {
         return respond(stream, "200 OK", &abi::encode(&None::<Vec<u8>>));
     }
-    let query: crate::backend::noded::Query = abi::decode(&body).unwrap();
-    let frame: crate::backend::noded::Frame = abi::decode(&query.frame).unwrap();
+    let query: noded_client::wire::Query = abi::decode(&body).unwrap();
+    let frame: noded_client::wire::Frame = abi::decode(&query.frame).unwrap();
     let asked = abi::decode(&frame.body.payload).unwrap();
-    let env = registry_env(tip + 1, ::guest::Origin::Signed(frame.body.signer));
-    let reply = module_registry::Modules::query(&registry.query(env), asked).unwrap();
+    let env = programs_env(tip + 1, ::program::Origin::Signed(frame.body.signer));
+    let reply = ::programs::Programs::query(&programs.query(env), asked).unwrap();
     respond(stream, "200 OK", &abi::encode(&abi::encode(&reply)));
 }
 
 #[test]
 fn a_scheduled_swap_is_read_once_the_block_being_built_reaches_its_height() {
-    let node = RegistryNode::swapping("scheduled-swap", 5);
+    let node = ProgramsNode::swapping("scheduled-swap", 5);
     let (roster, registry) = (Roster::default(), Registry::default());
     let code_at = |tip| node.code_at(tip, "scheduled-swap", &roster, &registry);
     assert_eq!(
@@ -395,7 +400,7 @@ fn a_scheduled_swap_is_read_once_the_block_being_built_reaches_its_height() {
     assert_eq!(
         code_at(9),
         Some(node.scheduled),
-        "past it, no registry op since"
+        "past it, no programs op since"
     );
 }
 
@@ -412,28 +417,30 @@ fn blob_id(body: &[u8]) -> abi::BlobId {
 }
 
 /// A program the node lists, its code a blob of `seed`'s.
-fn listed(name: &str, seed: &str) -> module_registry::Entry {
-    module_registry::Entry {
+fn listed(name: &str, seed: &str) -> ::programs::Entry {
+    ::programs::Entry {
         program: name.into(),
         code: blob_id(seed.as_bytes()),
         params: Vec::new(),
     }
 }
 
-/// Claim: a roster read takes the registry's role bindings with the
+/// Claim: a roster read takes the programs role's role bindings with the
 /// programs, and asks for them once on a connection, not again while the
-/// roster stands, and again once it moved; a registry from before the
+/// roster stands, and again once it moved; a programs role that predates the
 /// question refuses it, and the roster is still listed, with no bindings
 /// known.
 #[test]
 fn the_roles_come_with_the_roster_and_are_asked_once() {
     let roles = abi::Roles {
-        registry: "roles-registry".into(),
+        programs: "roles-programs".into(),
         validators: "roles-valset".into(),
         identity: "roles-identity".into(),
+        blobs: "roles-blobs".into(),
+        awaits: "roles-awaits".into(),
     };
     let node = FakeNode::with_roles(
-        vec![listed("roles-registry", "roles")],
+        vec![listed("roles-programs", "roles")],
         Vec::new(),
         Some(roles.clone()),
         Vec::new(),
@@ -444,9 +451,9 @@ fn the_roles_come_with_the_roster_and_are_asked_once() {
     read_roster(node.asked_of.clone(), &roster, &registry);
     let asked = node.held.lock().unwrap().roles_asked;
     assert_eq!(asked, 1, "not every block");
-    // the roster moved (a registry upgrade moves its code): asked again
+    // the roster moved (a programs upgrade moves its code): asked again
     let upgraded = FakeNode::with_roles(
-        vec![listed("roles-registry", "upgraded")],
+        vec![listed("roles-programs", "upgraded")],
         Vec::new(),
         Some(roles.clone()),
         Vec::new(),
@@ -464,7 +471,7 @@ fn the_roles_come_with_the_roster_and_are_asked_once() {
     assert_eq!(roster.lock().len(), 1, "the roster is listed all the same");
 }
 
-/// Claim: a roles answer with no bindings (a registry that refuses the
+/// Claim: a roles answer with no bindings (a programs role that refuses the
 /// question: an old one, or a node's 400 that reads the same) pins nothing
 /// for the connection: the next read, the roster unmoved, asks again.
 #[test]
@@ -494,7 +501,7 @@ fn a_misspelled_id_is_left_off_the_roster() {
             listed("System", "misspelled-capital"),
             listed("spelled-ok", "spelled-ok"),
         ],
-        vec![module_registry::View {
+        vec![::programs::View {
             name: "Misspelled View".into(),
             view: blob_id(b"misspelled-view"),
         }],
@@ -505,12 +512,15 @@ fn a_misspelled_id_is_left_off_the_roster() {
     let names: Vec<String> = roster.lock().iter().map(|p| p.name.clone()).collect();
     assert_eq!(names, ["spelled-ok"]);
     assert_eq!(roster.rail().len(), 1, "the rail lists what was kept");
-    let seats: Vec<&str> = lock(&registry).keys().map(|(module, _)| *module).collect();
+    let seats: Vec<&str> = lock(&registry)
+        .keys()
+        .map(|(program, _)| *program)
+        .collect();
     assert_eq!(seats, ["spelled-ok"]);
 }
 
 /// Claim: the consent card names the program whose view asks by the seat
-/// that view runs in (`guest.module`), and a seat is only made from the
+/// that view runs in (`view.program`), and a seat is only made from the
 /// roster: a program listed as `"\nSystem"`, whose card would end the line
 /// after "Program " and read "System asks …" below it, gets no seat, so no
 /// view is ever loaded to ask as it.
@@ -605,7 +615,7 @@ fn view_declaring(name: &str, icon: &str, init: &str) -> Vec<u8> {
 fn an_unopened_program_runs_no_init() {
     let view = view_declaring("Lazy", "", "unreachable");
     let code = blob_id(&view);
-    let listed = module_registry::View {
+    let listed = ::programs::View {
         name: "lazy-view".into(),
         view: code,
     };
@@ -643,7 +653,7 @@ fn an_unopened_program_runs_no_init() {
         locked.start()
     };
     queue(Load {
-        module: "lazy-view",
+        program: "lazy-view",
         seat: seat.clone(),
         generation,
         asked_of: node.asked_of.clone(),
@@ -673,7 +683,7 @@ fn a_rail_row_carries_the_icon_its_views_manifest_declares() {
     ];
     let listed = views
         .iter()
-        .map(|(name, view)| module_registry::View {
+        .map(|(name, view)| ::programs::View {
             name: (*name).into(),
             view: blob_id(view),
         })
@@ -683,14 +693,14 @@ fn a_rail_row_carries_the_icon_its_views_manifest_declares() {
     let (roster, seats) = (Roster::default(), Registry::default());
     read_roster(node.asked_of.clone(), &roster, &seats);
     // the rail reads the app's seats: these two are among them while it looks
-    for (module, _) in &views {
-        let seat = lock(&seats)[&(*module, 0)].clone();
+    for (program, _) in &views {
+        let seat = lock(&seats)[&(*program, 0)].clone();
         eventually("the preload landed", || !lock(&seat).slot.loading());
-        lock(registry()).insert((*module, 0), seat);
+        lock(registry()).insert((*program, 0), seat);
     }
-    let icon = |module: &str| {
+    let icon = |program: &str| {
         let rows = roster.rail();
-        let row = rows.iter().find(|row| row.module == module);
+        let row = rows.iter().find(|row| row.program == program);
         row.expect("a listed view").icon.clone()
     };
     assert_eq!(icon("iconed-view"), ICON, "compiled, not started");
@@ -703,7 +713,7 @@ fn a_rail_row_carries_the_icon_its_views_manifest_declares() {
         locked.start()
     };
     queue(Load {
-        module: "iconed-view",
+        program: "iconed-view",
         seat: seat.clone(),
         generation,
         asked_of: node.asked_of.clone(),
@@ -713,8 +723,8 @@ fn a_rail_row_carries_the_icon_its_views_manifest_declares() {
         matches!(lock(&seat).slot, Slot::Ready(_))
     });
     assert_eq!(icon("iconed-view"), ICON, "started");
-    for (module, view) in &views {
-        lock(registry()).remove(&(*module, 0));
+    for (program, view) in &views {
+        lock(registry()).remove(&(*program, 0));
         // the fetch kept the blob in the developer's own cache: it goes
         let kept = crate::backend::cache_dir()
             .unwrap()
@@ -755,7 +765,7 @@ fn a_program_read_once_is_read_off_the_disk() {
 fn a_claimed_seat_starts_the_code_it_compiled() {
     let view = view_declaring("Quick", "", "");
     let code = blob_id(&view);
-    let listed = module_registry::View {
+    let listed = ::programs::View {
         name: "quick-view".into(),
         view: code,
     };
@@ -784,7 +794,7 @@ fn a_claimed_seat_starts_the_code_it_compiled() {
         let mut locked = lock(&seat);
         locked.instance = instance;
         Load {
-            module: "quick-view",
+            program: "quick-view",
             seat: seat.clone(),
             generation: locked.start(),
             asked_of: gone.clone(),
@@ -793,10 +803,10 @@ fn a_claimed_seat_starts_the_code_it_compiled() {
     };
     // as `mounted` starts it, on the claiming thread
     claim(7).land(|load, timing| {
-        Guest::start(load.module, load.code, load.generation, &load.seat, timing)
+        View::start(load.program, load.code, load.generation, &load.seat, timing)
     });
     assert!(
-        matches!(&lock(&seat).slot, Slot::Ready(guest) if guest.name == "Quick" && guest.instance == 7),
+        matches!(&lock(&seat).slot, Slot::Ready(view) if view.name == "Quick" && view.instance == 7),
         "the claim did not start the compiled view"
     );
     // as a loader starts a seat claimed while its preload was on the way
@@ -804,7 +814,7 @@ fn a_claimed_seat_starts_the_code_it_compiled() {
     queue(claim(8));
     eventually(
         "the loader started the compiled view",
-        || matches!(&lock(&seat).slot, Slot::Ready(guest) if guest.instance == 8),
+        || matches!(&lock(&seat).slot, Slot::Ready(view) if view.instance == 8),
     );
 }
 
@@ -814,17 +824,17 @@ fn a_claimed_seat_starts_the_code_it_compiled() {
 /// node is gone and the blob off the disk by then, so a load would fail.
 #[test]
 fn a_pane_opens_its_compiled_view_at_once() {
-    const MODULE: &str = "opened-at-once";
+    const PROGRAM: &str = "opened-at-once";
     let view = view_declaring("At once", "", "");
     let code = blob_id(&view);
-    let listed = module_registry::View {
-        name: MODULE.into(),
+    let listed = ::programs::View {
+        name: PROGRAM.into(),
         view: code,
     };
     let node = FakeNode::new(Vec::new(), vec![listed], vec![view]);
     let (roster, seats) = (Roster::default(), Registry::default());
     read_roster(node.asked_of.clone(), &roster, &seats);
-    let seat = lock(&seats)[&(MODULE, 0)].clone();
+    let seat = lock(&seats)[&(PROGRAM, 0)].clone();
     eventually("the preload landed", || !lock(&seat).slot.loading());
     drop(node);
     let _ = std::fs::remove_file(
@@ -837,17 +847,17 @@ fn a_pane_opens_its_compiled_view_at_once() {
     super::super::roster::roster()
         .lock()
         .push(crate::backend::views::Program {
-            name: MODULE.into(),
+            name: PROGRAM.into(),
             code,
             bare: true,
         });
-    lock(registry()).insert((MODULE, 0), seat);
-    let opened = mounted(MODULE, 7101);
-    let started = matches!(&lock(&opened).slot, Slot::Ready(guest) if guest.name == "At once");
-    lock(registry()).remove(&(MODULE, 7101));
+    lock(registry()).insert((PROGRAM, 0), seat);
+    let opened = mounted(PROGRAM, 7101);
+    let started = matches!(&lock(&opened).slot, Slot::Ready(view) if view.name == "At once");
+    lock(registry()).remove(&(PROGRAM, 7101));
     super::super::roster::roster()
         .lock()
-        .retain(|program| program.name != MODULE);
+        .retain(|program| program.name != PROGRAM);
     assert!(
         started,
         "the view was not up when the pane's claim returned"
@@ -890,15 +900,15 @@ fn a_seat_is_startable_only_compiled_out_of_the_blob_asked_for() {
 /// a test, a failure offering Retry), where its pane said "Loading" for good.
 #[test]
 fn a_pane_starts_the_view_its_seat_compiled() {
-    const MODULE: &str = "claimed-compiled-seat";
+    const PROGRAM: &str = "claimed-compiled-seat";
     let preloaded = Mounted::seat();
     lock(&preloaded).slot = Slot::Compiled(ViewCode::for_test("Claimed", "", 320));
-    lock(registry()).insert((MODULE, 0), preloaded);
-    let seat = mounted(MODULE, 7001);
+    lock(registry()).insert((PROGRAM, 0), preloaded);
+    let seat = mounted(PROGRAM, 7001);
     eventually("the claiming pane's load ran", || {
         matches!(lock(&seat).slot, Slot::Failed(_))
     });
-    lock(registry()).remove(&(MODULE, 7001));
+    lock(registry()).remove(&(PROGRAM, 7001));
 }
 
 /// A pane that claims a seat while its preload is on the way: the preload
@@ -912,7 +922,7 @@ fn a_seat_claimed_during_its_preload_is_started() {
         locked.start()
     };
     let preload = Load {
-        module: "claimed-during-preload",
+        program: "claimed-during-preload",
         seat: seat.clone(),
         generation,
         asked_of: Connection::default(),
@@ -940,7 +950,7 @@ fn a_stale_preload_does_not_supersede_the_panes_load() {
         locked.start()
     };
     Load {
-        module: "stale-preload",
+        program: "stale-preload",
         seat: seat.clone(),
         generation: reload,
         asked_of: Connection::default(),
@@ -972,7 +982,7 @@ fn a_load_from_a_node_the_app_left_starts_no_other() {
         ..Connection::default()
     };
     Load {
-        module: "left-node",
+        program: "left-node",
         seat: seat.clone(),
         generation,
         asked_of: left,

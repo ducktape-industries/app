@@ -37,7 +37,7 @@ pub(in crate::shell) fn window_label(
 struct Entry {
     /// What the keys and a click reach.
     row: Row,
-    module: &'static str,
+    program: &'static str,
     /// What it says.
     label: String,
     kind: Kind,
@@ -67,8 +67,8 @@ fn index(rows: &[RailRow], open: &[Listed]) -> Vec<Entry> {
     let mut untitled: Vec<&'static str> = Vec::new();
     let mut said = |label: &str, window: &Listed| {
         let ordinal = window.title.is_none().then(|| {
-            untitled.push(window.module);
-            untitled.iter().filter(|it| **it == window.module).count()
+            untitled.push(window.program);
+            untitled.iter().filter(|it| **it == window.program).count()
         });
         window_label(label, window.title.as_deref(), ordinal)
     };
@@ -76,14 +76,14 @@ fn index(rows: &[RailRow], open: &[Listed]) -> Vec<Entry> {
     let rows: Vec<&RailRow> = rows.iter().filter(|row| !row.empty).collect();
     for row in &rows {
         let label = tab_label(row);
-        let windows: Vec<&Listed> = open.iter().filter(|it| it.module == row.module).collect();
+        let windows: Vec<&Listed> = open.iter().filter(|it| it.program == row.program).collect();
         let head = windows.len() > 1
             || windows
                 .iter()
                 .any(|it| it.title.is_some() || it.away.is_some());
         entries.push(Entry {
-            row: Row::Program(row.module),
-            module: row.module,
+            row: Row::Program(row.program),
+            program: row.program,
             label: label.clone(),
             kind: Kind::Program {
                 head,
@@ -95,7 +95,7 @@ fn index(rows: &[RailRow], open: &[Listed]) -> Vec<Entry> {
             for window in windows {
                 entries.push(Entry {
                     row: Row::Window(window.instance),
-                    module: window.module,
+                    program: window.program,
                     label: said(&label, window),
                     kind: Kind::Window,
                     away: window.away,
@@ -105,16 +105,16 @@ fn index(rows: &[RailRow], open: &[Listed]) -> Vec<Entry> {
     }
     for window in open
         .iter()
-        .filter(|it| !rows.iter().any(|row| row.module == it.module))
+        .filter(|it| !rows.iter().any(|row| row.program == it.program))
     {
-        let label = match window.module {
+        let label = match window.program {
             layout::EMPTY => "New window",
             layout::HELP => "Help",
-            module => module,
+            program => program,
         };
         entries.push(Entry {
             row: Row::Window(window.instance),
-            module: window.module,
+            program: window.program,
             label: said(label, window),
             kind: Kind::Loose,
             away: window.away,
@@ -124,15 +124,15 @@ fn index(rows: &[RailRow], open: &[Listed]) -> Vec<Entry> {
 }
 
 impl Entry {
-    /// Its element id: `rail/<module>` for a program, `rail/<module>/<instance>`
+    /// Its element id: `rail/<program>` for a program, `rail/<program>/<instance>`
     /// for a window under it, `rail-help/<instance>` and `rail-new/<instance>`
     /// for Help and an empty window.
     fn id(&self) -> SharedString {
-        let id = match (self.row, self.module) {
-            (Row::Program(module), _) => format!("rail/{module}"),
+        let id = match (self.row, self.program) {
+            (Row::Program(program), _) => format!("rail/{program}"),
             (Row::Window(instance), layout::HELP) => format!("rail-help/{instance}"),
             (Row::Window(instance), layout::EMPTY) => format!("rail-new/{instance}"),
-            (Row::Window(instance), module) => format!("rail/{module}/{instance}"),
+            (Row::Window(instance), program) => format!("rail/{program}/{instance}"),
         };
         id.into()
     }
@@ -302,13 +302,13 @@ impl Chrome {
         ink: &Ink,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let module = entry.module;
-        let Some(row) = bar.rows.iter().find(|row| row.module == module) else {
+        let program = entry.program;
+        let Some(row) = bar.rows.iter().find(|row| row.program == program) else {
             return div().into_any_element();
         };
-        let badge = self.rail.read(cx).badge(module);
+        let badge = self.rail.read(cx).badge(program);
         let on = entry.on(bar.front);
-        let open = head || bar.listed.iter().any(|it| it.module == module);
+        let open = head || bar.listed.iter().any(|it| it.program == program);
         let hover = ink.ink;
         let tab = crate::a11y::roving_item(
             sans(if head { 500 } else { 400 }, 13.).id(entry.id()),
@@ -331,7 +331,7 @@ impl Chrome {
         })
         .hover(move |style| style.text_color(hover));
         let tab = self
-            .opening(tab, module)
+            .opening(tab, program)
             .child(
                 div()
                     .flex_1()
@@ -355,11 +355,11 @@ impl Chrome {
                         .child(badge.to_string()),
                 )
             });
-        let plus = (room && self.hovered == Some(module)).then(|| {
+        let plus = (room && self.hovered == Some(program)).then(|| {
             let desk = self.window.clone();
             let surface = ink.surface;
             div()
-                .id(SharedString::from(format!("rail/{module}/split")))
+                .id(SharedString::from(format!("rail/{program}/split")))
                 .control(
                     Role::Button,
                     SharedString::from(format!("Open another {} window", entry.label)),
@@ -375,7 +375,7 @@ impl Chrome {
                 .on_click(move |_, window, cx| {
                     cx.stop_propagation();
                     let _ = desk.update(cx, |desk, cx| {
-                        desk.pane_message(PaneMessage::Split(module), window, cx)
+                        desk.pane_message(PaneMessage::Split(program), window, cx)
                     });
                 })
                 .child(
@@ -383,7 +383,7 @@ impl Chrome {
                 )
         });
         div()
-            .id(SharedString::from(format!("rail/{module}/row")))
+            .id(SharedString::from(format!("rail/{program}/row")))
             .h(px(30.))
             .flex_shrink_0()
             .flex()
@@ -393,8 +393,8 @@ impl Chrome {
             .when(on, |row| row.bg(ink.raised))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 let now = match hovered {
-                    true => Some(module),
-                    false => this.hovered.filter(|it| *it != module),
+                    true => Some(program),
+                    false => this.hovered.filter(|it| *it != program),
                 };
                 if this.hovered != now {
                     this.hovered = now;
@@ -482,9 +482,9 @@ mod tests {
     use crate::shell::entities::Listed;
     use crate::ui::layout::{EMPTY, HELP};
 
-    fn row(module: &'static str, label: &str) -> RailRow {
+    fn row(program: &'static str, label: &str) -> RailRow {
         RailRow {
-            module,
+            program,
             label: label.into(),
             icon: String::new(),
             note: None,
@@ -492,9 +492,9 @@ mod tests {
         }
     }
 
-    fn window(module: &'static str, instance: u64, title: Option<&str>) -> Listed {
+    fn window(program: &'static str, instance: u64, title: Option<&str>) -> Listed {
         Listed {
-            module,
+            program,
             instance,
             title: title.map(Into::into),
             away: None,

@@ -275,8 +275,8 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             over(Overlay::Approve, || {
                 let mut seed = desk();
                 let key = vec![7; 32];
-                seed.account.approve = Some(crate::backend::join::fingerprint(&key));
-                seed.found = Some(crate::backend::join::Request {
+                seed.account.approve = Some(noded_client::join::fingerprint(&key));
+                seed.found = Some(noded_client::join::Request {
                     network: "testkit".into(),
                     key,
                 });

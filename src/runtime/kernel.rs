@@ -29,7 +29,7 @@
 //! On the node, as a task on [`handle`] (`node`), each answer waiting in
 //! [`Replies`] for the view's next redraw; transport failures retried for
 //! up to a minute unless said otherwise:
-//! - `module.query` `Call{target, body}` — one query on the connected node:
+//! - `program.query` `Call{target, body}` — one query on the connected node:
 //!   `body` is the payload of a signed frame to `target`, and the bytes the
 //!   program `Respond`ed come back as they are. It reads the node's
 //!   preconfirmed layer: an op this view was just answered for is already
@@ -41,7 +41,7 @@
 //!   the preconfirmed layer and waits for a block, and until one carries it
 //!   the node can still drop it (a block that lands first and makes it
 //!   fail, a node restart) with no word to anyone; a view shows what
-//!   `module.query` reads. Retried only while nothing reached the node: a
+//!   `program.query` reads. Retried only while nothing reached the node: a
 //!   lost answer is reported ([`refusal::NODE_FAILED`]), never followed by
 //!   a second submission.
 //! - `chain.status` — node status as `NodeStatus`.
@@ -52,11 +52,11 @@
 //!   one transaction by its place or hash, its payload when at most `most`
 //!   bytes (`/v1/tx`).
 //! - `blob.get` `<id>` — a blob by `sha256:<hex>` or `sha1:<hex>` id, unframed.
-//! - `module.describe` `(program, op)` — the op as the program's own
+//! - `program.describe` `(program, op)` — the op as the program's own
 //!   describe module reads it, or `None` (`describe`).
 //! - `invite.create` `CreateInvite{ttl_days}` — minted ONCE, never retried;
 //!   `Invite{invite, notes}`. Node refusals retain their tokens.
-//! - `module.changes` `<program>` — a subscription that gets one item per
+//! - `program.changes` `<program>` — a subscription that gets one item per
 //!   block that wrote to `program` (`/v1/changes/<program>`): the block's
 //!   height and the keys it wrote, as the node publishes them, so the view
 //!   re-reads what moved; `None` when the link was reopened and the view
@@ -80,8 +80,8 @@
 //! - `notify.post`, `notify.seen` — `notify`, the notification centre.
 //! - `store.get`, `store.set` — `store`, the view's file on this device.
 //!
-//! Not the kernel's — `Guest::answer` (`guest/requests.rs`) takes them once
-//! [`answer`] says `false`, since they read the guest's own state:
+//! Not the kernel's — `View::answer` (`view/requests.rs`) takes them once
+//! [`answer`] says `false`, since they read the view's own state:
 //! - `host.widget` — a widget command; `host.session` — a subscription to
 //!   the session basics (`Session`: the account, theme, chain and read-only
 //!   endpoint); `host.log` — a line into app.log.
@@ -93,7 +93,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use super::{Guest, Intent, wire};
+use super::{Intent, View, wire};
 use crate::backend::{self, RpcClient, refused};
 use wire::methods::{self, Capability, refusal};
 
@@ -106,14 +106,14 @@ const MAX_BLOB_BYTES: usize = 16 << 20;
 /// ([`Replies::admit`]); past it a request is refused `in_flight_limit`.
 const MAX_IN_FLIGHT: usize = 256;
 /// Subscriptions of one kind a view may hold, counted per kind and only
-/// for `clock.ticks` and `module.changes`; the `host.*` subscriptions are
+/// for `clock.ticks` and `program.changes`; the `host.*` subscriptions are
 /// each one list a view has no reason to grow.
 const MAX_SUBSCRIPTIONS: usize = 256;
 /// Answers waiting in [`Replies`] between two redraws, by count and by
 /// bytes; exceeding either stops the view for good. The bytes are what one
 /// node answer may carry at most: a bigger one is refused unread.
 const MAX_REPLY_EVENTS: usize = 1024;
-const MAX_REPLY_BYTES: usize = backend::noded::MAX_BODY_BYTES;
+const MAX_REPLY_BYTES: usize = noded_client::MAX_BODY_BYTES;
 /// The share of the reply budget SUBSCRIPTIONS may fill before they stop
 /// reading their sources: a request answers once, a subscription forever,
 /// against a queue only a redraw empties.
@@ -132,7 +132,7 @@ fn malformed(error: impl std::fmt::Display) -> wire::Error {
     wire::Error::new(refusal::MALFORMED_REQUEST, error.to_string())
 }
 
-/// One answer to a guest: the bytes it asked for, or the refusal that names
+/// One answer to a view: the bytes it asked for, or the refusal that names
 /// why not. Every method in this file hands back exactly this.
 pub(super) type Answer = Result<Vec<u8>, wire::Error>;
 
@@ -178,7 +178,7 @@ pub(super) fn handle() -> tokio::runtime::Handle {
 
 /// Jobs under one name run one after another, in the order they were
 /// queued, each on the blocking pool (an OS call or a file): a view's
-/// banners (`notify`, under its module), so a burst's "N more" never lands
+/// banners (`notify`, under its program), so a burst's "N more" never lands
 /// before the banners it counts, a view's store file (`store`, under its
 /// path), so a `get` reads the `set` before it, and the notification log
 /// (under its path). One task per name on [`handle`] runs them; [`drain`]
@@ -235,84 +235,84 @@ fn queues() -> std::sync::MutexGuard<'static, Queues> {
 
 /// Routes one kernel request; `false` when the kind is not the kernel's.
 pub(super) fn answer(
-    guest: &mut Guest,
+    view: &mut View,
     capability: Capability,
     operation: &str,
     id: u64,
     payload: &[u8],
     props: &Option<Vec<u8>>,
 ) -> bool {
-    if super::clipboard::answer(guest, capability, operation, id, payload)
-        || super::notify::answer(guest, capability, operation, id, payload)
-        || super::store::answer(guest, capability, operation, id, payload)
+    if super::clipboard::answer(view, capability, operation, id, payload)
+        || super::notify::answer(view, capability, operation, id, payload)
+        || super::store::answer(view, capability, operation, id, payload)
     {
         return true;
     }
     match (capability, operation) {
         (Capability::Host, "visible") => {
             if !payload.is_empty() {
-                guest.refuse(
+                view.refuse(
                     id,
                     refusal::MALFORMED_REQUEST,
                     "visibility subscription takes no payload",
                 );
                 return true;
             }
-            guest.visibility_subscriptions.push(id);
-            guest.pending.push(wire::Event::Response {
+            view.visibility_subscriptions.push(id);
+            view.pending.push(wire::Event::Response {
                 id,
-                result: Ok(methods::encode(&guest.visible)),
+                result: Ok(methods::encode(&view.visible)),
                 done: false,
             });
         }
         (Capability::Host, "route") => {
             if !payload.is_empty() {
-                guest.refuse(
+                view.refuse(
                     id,
                     refusal::MALFORMED_REQUEST,
                     "route subscription takes no payload",
                 );
                 return true;
             }
-            guest.route_subscriptions.push(id);
-            guest.sync_route();
+            view.route_subscriptions.push(id);
+            view.sync_route();
         }
-        (Capability::Module, "query") => {
-            if node::targeted(guest, id, payload, "module.query").is_some() {
-                spawn_retrying(guest, id, payload, query, "host_call.module.query")
+        (Capability::Program, "query") => {
+            if node::targeted(view, id, payload, "program.query").is_some() {
+                spawn_retrying(view, id, payload, query, "host_call.program.query")
             }
         }
         (Capability::Chain, "status") => {
-            spawn_retrying(guest, id, payload, status, "host_call.chain.status")
+            spawn_retrying(view, id, payload, status, "host_call.chain.status")
         }
         (Capability::Chain, "network") => {
-            spawn_retrying(guest, id, payload, network, "host_call.chain.network")
+            spawn_retrying(view, id, payload, network, "host_call.chain.network")
         }
         (Capability::Chain, "blocks") => {
-            spawn_retrying(guest, id, payload, blocks, "host_call.chain.blocks")
+            spawn_retrying(view, id, payload, blocks, "host_call.chain.blocks")
         }
         (Capability::Chain, "block") => {
-            spawn_retrying(guest, id, payload, block, "host_call.chain.block")
+            spawn_retrying(view, id, payload, block, "host_call.chain.block")
         }
-        (Capability::Chain, "tx") => spawn_retrying(guest, id, payload, tx, "host_call.chain.tx"),
+        (Capability::Chain, "tx") => spawn_retrying(view, id, payload, tx, "host_call.chain.tx"),
         // the node's key signs an invite: only a role's own view asks
         // for one (a view no vote reviewed could hand it to its program)
         (Capability::Invite, "create") => {
-            if !super::consent::bound(guest.module, super::roster().roles().as_ref()) {
-                guest.refuse(
+            if !super::consent::bound(view.program, super::roster().roles().as_ref()) {
+                view.refuse(
                     id,
                     refusal::UNDECLARED_CAPABILITY,
                     "`invite.create` is a role's own view's: this view's program is bound to no role",
                 );
                 return true;
             }
-            spawn_no_retry(guest, id, payload, invite, "host_call.invite.create")
+            spawn_no_retry(view, id, payload, invite, "host_call.invite.create")
         }
         // a write: to a declared target, and after the person's native
         // yes where the op removes or suspends a key or an agent, or is a
         // view no vote reviewed writing to a role (`consent::needed`)
         (Capability::Op, "submit") => {
-            let Some(call) = node::targeted(guest, id, payload, "op.submit") else {
+            let Some(call) = node::targeted(view, id, payload, "op.submit") else {
                 return true;
             };
             // the account the seated key holds, as the app resolved it
@@ -324,36 +324,36 @@ pub(super) fn answer(
                 .and_then(|session| session.account);
             let roles = super::roster().roles();
             match super::consent::needed(
-                guest.module,
+                view.program,
                 roles.as_ref(),
                 &call.target,
                 &call.body,
                 own,
             ) {
-                None => spawn_retrying_unsent(guest, id, payload, submit, "host_call.op.submit"),
-                Some(words) => node::spawn_consented(guest, id, payload, call, words),
+                None => spawn_retrying_unsent(view, id, payload, submit, "host_call.op.submit"),
+                Some(words) => node::spawn_consented(view, id, payload, call, words),
             }
         }
         (Capability::Blob, "get") => {
-            spawn_retrying(guest, id, payload, blob_get, "host_call.blob.get")
+            spawn_retrying(view, id, payload, blob_get, "host_call.blob.get")
         }
-        (Capability::Module, "describe") => spawn_retrying(
-            guest,
+        (Capability::Program, "describe") => spawn_retrying(
+            view,
             id,
             payload,
             describe::describe,
-            "host_call.module.describe",
+            "host_call.program.describe",
         ),
-        (Capability::Module, "changes") => changes(guest, id, payload),
-        (Capability::Chain, "heads") => heads(guest, id, payload),
+        (Capability::Program, "changes") => changes(view, id, payload),
+        (Capability::Chain, "heads") => heads(view, id, payload),
         // the one way out: a `duck://` link, or an `https://` one for the
         // system browser; any other scheme is refused here, at the method.
         // Only the person's activation opens one, taken by the ask, inside
         // the budget: a view on a clock never opens a tab or reseats the desk
         (Capability::Link, "open") => match methods::decode::<String>(payload) {
             Ok(link) if openable(&link) => {
-                if !guest.take_activation() {
-                    guest.refuse(
+                if !view.take_activation() {
+                    view.refuse(
                         id,
                         refusal::NEEDS_GESTURE,
                         "`link.open` needs a press or key",
@@ -361,28 +361,28 @@ pub(super) fn answer(
                     return true;
                 }
                 let now = std::time::Instant::now();
-                guest.links.retain(|opened| now - *opened < LINK_WINDOW);
-                if guest.links.len() >= MAX_LINKS_PER_WINDOW {
-                    guest.refuse(id, refusal::LINK_LIMIT, "too many links opened this minute");
+                view.links.retain(|opened| now - *opened < LINK_WINDOW);
+                if view.links.len() >= MAX_LINKS_PER_WINDOW {
+                    view.refuse(id, refusal::LINK_LIMIT, "too many links opened this minute");
                     return true;
                 }
-                guest.links.push(now);
-                guest.intents.push(Intent::OpenLink(link));
-                guest.reply(id, Ok(Vec::new()));
+                view.links.push(now);
+                view.intents.push(Intent::OpenLink(link));
+                view.reply(id, Ok(Vec::new()));
             }
-            Ok(_) => guest.refuse(
+            Ok(_) => view.refuse(
                 id,
                 refusal::MALFORMED_REQUEST,
                 "`link.open` opens a duck:// or https:// link",
             ),
-            Err(error) => guest.refuse(id, refusal::MALFORMED_REQUEST, error),
+            Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
         },
         (Capability::Host, "badge") => match methods::decode::<i64>(payload).ok() {
             Some(count) => {
-                guest.intents.push(Intent::Badge(count));
-                guest.reply(id, Ok(Vec::new()));
+                view.intents.push(Intent::Badge(count));
+                view.reply(id, Ok(Vec::new()));
             }
-            None => guest.refuse(
+            None => view.refuse(
                 id,
                 refusal::MALFORMED_REQUEST,
                 "`host.badge` carries no count",
@@ -390,15 +390,15 @@ pub(super) fn answer(
         },
         (Capability::Host, "title") => match methods::decode::<String>(payload) {
             Ok(title) => {
-                guest.intents.push(Intent::Title(shown_title(&title)));
-                guest.reply(id, Ok(Vec::new()));
+                view.intents.push(Intent::Title(shown_title(&title)));
+                view.reply(id, Ok(Vec::new()));
             }
-            Err(error) => guest.refuse(id, refusal::MALFORMED_REQUEST, error),
+            Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
         },
         (Capability::Clock, "ticks") => {
             let period = tick_period(payload);
-            if guest.clocks.len() >= MAX_SUBSCRIPTIONS {
-                guest.refuse(
+            if view.clocks.len() >= MAX_SUBSCRIPTIONS {
+                view.refuse(
                     id,
                     refusal::SUBSCRIPTION_LIMIT,
                     "too many clock subscriptions",
@@ -406,12 +406,12 @@ pub(super) fn answer(
                 return true;
             }
             match period {
-                Some(period) => guest.clocks.push(Clock {
+                Some(period) => view.clocks.push(Clock {
                     id,
                     period,
                     due: std::time::Instant::now() + period,
                 }),
-                None => guest.refuse(
+                None => view.refuse(
                     id,
                     refusal::MALFORMED_REQUEST,
                     "`clock.ticks` names no period",
@@ -419,10 +419,10 @@ pub(super) fn answer(
             }
         }
         // tracks through the connected node, off consensus (`live.rs`)
-        (Capability::Live, "publish") => live::publish(guest, id, payload),
-        (Capability::Live, "send") => live::send(guest, id, payload),
-        (Capability::Live, "subscribe") => live::subscribe(guest, id, payload),
-        (Capability::Live, "tracks") => live::tracks(guest, id, payload),
+        (Capability::Live, "publish") => live::publish(view, id, payload),
+        (Capability::Live, "send") => live::send(view, id, payload),
+        (Capability::Live, "subscribe") => live::subscribe(view, id, payload),
+        (Capability::Live, "tracks") => live::tracks(view, id, payload),
         (Capability::Host, "id") => {
             let prefix = methods::decode::<String>(payload).unwrap_or_default();
             let prefix = prefix.trim();
@@ -430,8 +430,11 @@ pub(super) fn answer(
                 && prefix.len() <= MAX_ID_PREFIX
                 && prefix.bytes().all(|byte| byte.is_ascii_alphanumeric());
             match named {
-                true => guest.reply(id, Ok(methods::encode(&backend::fresh_id(prefix)))),
-                false => guest.refuse(id, refusal::MALFORMED_REQUEST, "`host.id` names no prefix"),
+                true => view.reply(
+                    id,
+                    Ok(methods::encode(&noded_client::ids::fresh_id(prefix))),
+                ),
+                false => view.refuse(id, refusal::MALFORMED_REQUEST, "`host.id` names no prefix"),
             }
         }
         _ => return false,
@@ -503,7 +506,7 @@ pub(crate) fn day(seconds: u64) -> String {
 }
 
 /// The reader's UTC offset in minutes now, as `Event::Offset` carries it
-/// (`Guest::sync_offset`), from the OS's local time.
+/// (`View::sync_offset`), from the OS's local time.
 pub(super) fn offset_minutes() -> i32 {
     (local_offset(super::notify::wall()) / 60) as i32
 }

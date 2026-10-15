@@ -15,10 +15,10 @@ const CASCADE: f32 = 32.;
 /// title strip and bar are not laid out under this.
 pub(in crate::shell) const POPOUT_MIN: f32 = 480.;
 
-/// The narrowest a pop-out holding `module`'s view goes: the view's own
+/// The narrowest a pop-out holding `program`'s view goes: the view's own
 /// minimum once it is drawn, never under [`POPOUT_MIN`].
-pub(in crate::shell) fn popout_min(module: &str) -> f32 {
-    crate::runtime::min_width(module).map_or(POPOUT_MIN, |min_width| min_width.max(POPOUT_MIN))
+pub(in crate::shell) fn popout_min(program: &str) -> f32 {
+    crate::runtime::min_width(program).map_or(POPOUT_MIN, |min_width| min_width.max(POPOUT_MIN))
 }
 
 /// Where a pop-out opens: stepped off its source window so it does not
