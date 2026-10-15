@@ -77,7 +77,7 @@ impl LauncherLayer {
                         "passkey-create",
                         "Create with a passkey",
                         Kind::Secondary,
-                        self.with_field(&self.fields.name, Account::passkey_create),
+                        self.with_field(&self.fields.name, crate::shell::sign_in::passkey_create),
                         busy,
                         &ink,
                     ),
@@ -119,7 +119,7 @@ impl LauncherLayer {
                     .child(link_running(
                         "passkey-sign-in",
                         "a passkey",
-                        self.on_account(Account::passkey_sign_in),
+                        self.on_account(crate::shell::sign_in::passkey_sign_in),
                         true,
                         &ink,
                     ))

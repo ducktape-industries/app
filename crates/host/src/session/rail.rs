@@ -10,7 +10,7 @@ use futures::channel::mpsc::UnboundedReceiver;
 use gpui_kit::{Context, Entity, Subscription, Task};
 use std::collections::BTreeMap;
 
-pub(crate) struct Rail {
+pub struct Rail {
     rows: Vec<RailRow>,
     badges: BTreeMap<&'static str, i64>,
     /// What the rows are read off; not compared.
@@ -23,7 +23,7 @@ impl Rail {
     /// The rail of `roster`, read now and again on every message `changes`
     /// brings (a burst read once); its badges cleared as the network in
     /// hand is left.
-    pub(crate) fn new(
+    pub fn new(
         roster: Roster,
         mut changes: UnboundedReceiver<()>,
         session: &Entity<Session>,
@@ -52,31 +52,31 @@ impl Rail {
     }
 
     /// A link read against the programs the node lists (`Roster::parse_link`).
-    pub(crate) fn parse_link(&self, link: &str) -> Link {
+    pub fn parse_link(&self, link: &str) -> Link {
         self.roster.parse_link(link)
     }
 
     /// Whether the node lists `program`.
-    pub(crate) fn lists(&self, program: &str) -> bool {
+    pub fn lists(&self, program: &str) -> bool {
         self.roster.lists(program)
     }
 
-    pub(crate) fn rows(&self) -> &[RailRow] {
+    pub fn rows(&self) -> &[RailRow] {
         &self.rows
     }
 
     /// Each view's unread count.
-    pub(crate) fn badges(&self) -> &BTreeMap<&'static str, i64> {
+    pub fn badges(&self) -> &BTreeMap<&'static str, i64> {
         &self.badges
     }
 
     /// `program`'s unread count; 0 with none.
-    pub(crate) fn badge(&self, program: &str) -> i64 {
+    pub fn badge(&self, program: &str) -> i64 {
         self.badges.get(program).copied().unwrap_or(0)
     }
 
     /// The rows read off the roster again; notifies only when they moved.
-    pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) -> bool {
+    pub fn refresh(&mut self, cx: &mut Context<Self>) -> bool {
         let rows = self.roster.rail();
         if rows == self.rows {
             return false;
@@ -87,15 +87,15 @@ impl Rail {
     }
 
     /// The rows of `roster` from now on: a test that swaps the model's.
-    #[cfg(test)]
-    pub(crate) fn read_off(&mut self, roster: Roster, cx: &mut Context<Self>) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn read_off(&mut self, roster: Roster, cx: &mut Context<Self>) {
         self.roster = roster;
         self.refresh(cx);
     }
 
     /// `program`'s unread count (`host.badge`); 0 or less takes it off.
     /// Notifies only when it moved.
-    pub(crate) fn set_badge(&mut self, program: &'static str, count: i64, cx: &mut Context<Self>) {
+    pub fn set_badge(&mut self, program: &'static str, count: i64, cx: &mut Context<Self>) {
         let was = match count > 0 {
             true => self.badges.insert(program, count),
             false => self.badges.remove(program),
@@ -128,9 +128,9 @@ mod tests {
         const PROGRAM: &str = "rail-drain-view";
         let roster = Roster::listing(&[PROGRAM]);
         let (send, changes) = futures::channel::mpsc::unbounded();
-        let session = cx.update(crate::shell::entities::tests::session);
+        let session = cx.update(crate::session::tests::session);
         let rail = cx.new(|cx| Rail::new(roster.clone(), changes, &session, cx));
-        let (seen, _observing) = crate::shell::entities::tests::notifies(&rail, cx);
+        let (seen, _observing) = crate::session::tests::notifies(&rail, cx);
         let note = |cx: &mut TestAppContext| rail.read_with(cx, |rail, _| rail.rows()[0].note);
         assert_eq!(note(cx), Some("Loading"));
 

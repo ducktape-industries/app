@@ -7,11 +7,15 @@
 //! updater's own notice ([`post_host`], [`withdraw_host`]) is the
 //! desktop's too.
 
-use ducktape_host::contract::{Banners, Dirs, MintInvite, OsFacts, OsServices};
+use ducktape_host::contract::{
+    Banners, Dirs, Inbound, KeyLevel, KeyRefusal, KeyStorage, Limits, MintInvite, OsFacts,
+    OsServices, Preload, Signal, SoftKeyboard,
+};
 use ducktape_host::runtime::Answered;
 use ducktape_host::runtime::notify::{Click, Notice, Settings};
+use gpui_kit::{Window, WindowInsets};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 // Each platform module exposes `post(&Notice, click: Option<Click>) -> raised`,
 // `withdraw(tag)` and `withdraw_host()`. All block on OS calls; a view's run
@@ -29,6 +33,25 @@ use freedesktop as platform;
 
 /// What this device's key is labelled on the account it joins.
 pub(crate) const DEVICE_LABEL: &str = "Desktop";
+
+static INBOUND: OnceLock<Inbound> = OnceLock::new();
+
+/// Where the OS's events go once the host started (`host::start`'s
+/// `Inbound`): the desktop feeds banner clicks.
+pub(crate) fn install_inbound(inbound: Inbound) {
+    let _ = INBOUND.set(inbound);
+}
+
+/// A banner clicked, from the OS's own thread: into the host through the
+/// one inbound channel.
+fn clicked(click: Click) {
+    match INBOUND.get() {
+        Some(inbound) => inbound.send(Signal::BannerClick(click)),
+        None => {
+            tracing::error!(target: "ducktape::app", reason = "no_host", "a banner was clicked before the host started")
+        }
+    }
+}
 
 pub(crate) struct DesktopOs {
     dirs: Dirs,
@@ -60,6 +83,9 @@ impl DesktopOs {
                 // supplies files in their place, and app.log says so for
                 // each one it supplies
                 views_override: std::env::var_os("DUCKTAPE_VIEWS_DIR").map(Into::into),
+                // the keyring directories, `remotes/<name>` under the
+                // ducktape home (`backend::key_dir` reads the same)
+                remotes: ducktape_home::root()?.join("remotes"),
                 cache,
             },
             reader: Arc::new(reader_key()),
@@ -110,6 +136,30 @@ impl OsServices for DesktopOs {
         &self.dirs
     }
 
+    /// The OS keyring's entry for `keyring` (`backend::device_key`), or the
+    /// file it falls back to; a password-locked key from before keys moved
+    /// into the OS is `Legacy`, which `shell::sign_in` opens with its
+    /// password once. The store's refusal sentences are one string today,
+    /// so each reads as `Denied`.
+    fn device_key(&self, keyring: &str) -> Result<Arc<dyn noded_client::Signer>, KeyRefusal> {
+        let legacy = crate::backend::key_exists(keyring);
+        match crate::backend::device_key::open(keyring, legacy) {
+            Ok(Some(key)) => Ok(Arc::new(key)),
+            Ok(None) => Err(KeyRefusal::Legacy),
+            Err(sentence) => Err(KeyRefusal::Denied(sentence)),
+        }
+    }
+
+    fn key_storage(&self, _: &str) -> Result<KeyStorage, KeyRefusal> {
+        Ok(KeyStorage {
+            sealed: false,
+            level: match crate::backend::device_key::file_only() {
+                true => KeyLevel::File,
+                false => KeyLevel::OsKeyring,
+            },
+        })
+    }
+
     fn reader(&self) -> Arc<dyn noded_client::Signer> {
         self.reader.clone()
     }
@@ -118,20 +168,36 @@ impl OsServices for DesktopOs {
         &DesktopBanners
     }
 
+    fn insets(&self, _: &Window) -> WindowInsets {
+        WindowInsets::default()
+    }
+
+    fn soft_keyboard(&self, _: &Window, _: SoftKeyboard) {}
+
     fn facts(&self) -> OsFacts {
         OsFacts {
             mac_modifiers: cfg!(target_os = "macos"),
             // `getrusage`'s `ru_maxrss`: bytes on macOS, kibibytes elsewhere
             rss_unit: if cfg!(target_os = "macos") { 1 } else { 1024 },
+            touch_first: false,
             device_label: DEVICE_LABEL,
+        }
+    }
+
+    fn limits(&self) -> Limits {
+        Limits {
+            // one loader a core: a fetch and a cranelift compile each
+            loaders: std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
+            preload: Preload::Compile,
+            snapshot_to_disk: false,
         }
     }
 
     /// With the key of the validator node this machine runs, read from
     /// the node's workspace; a node that is not this one refuses inside
     /// `mint`.
-    fn mint_invite(&self, client: &crate::backend::RpcClient, ask: MintInvite) -> Option<Answered> {
-        let client = client.clone();
+    fn mint_invite(&self, ask: MintInvite) -> Option<Answered> {
+        let client = ask.client.clone();
         Some(Box::pin(async move {
             let host_fault = |error: String| {
                 view_wire::Error::new(view_wire::methods::refusal::HOST_FAULT, error)

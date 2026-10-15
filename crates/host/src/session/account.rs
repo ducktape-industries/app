@@ -20,47 +20,48 @@
 
 use super::{AccountStep, Prefs, Screen, Slice, spawn_on_runtime};
 use crate::backend;
+use crate::contract::{self, KeyRefusal};
 use gpui_kit::{Context, Entity, EventEmitter, Task};
 
 /// A typed secret or a recovery phrase: wiped when it drops, so leaving a
 /// step wipes what it held.
-pub(crate) type Secret = zeroize::Zeroizing<String>;
+pub type Secret = zeroize::Zeroizing<String>;
 
 /// The account's compared value.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct AccountState {
+pub struct AccountState {
     /// The seated key's public half, hex; empty while locked.
-    pub(crate) signer_key: String,
+    pub signer_key: String,
     /// `None` not asked yet; `Some(None)` no account; `Some(Some(..))` found.
-    pub(crate) account: Option<Option<(u64, String)>>,
+    pub account: Option<Option<(u64, String)>>,
     /// A password-locked key file is here for the network and this
     /// device's OS-kept key is not: the key screen asks for its password,
     /// once, and moves it into the OS.
-    pub(crate) key_exists: bool,
+    pub key_exists: bool,
     /// Locked on purpose: the key is not reopened until Unlock.
-    pub(crate) locked: bool,
+    pub locked: bool,
     /// This device's key is being opened (or made) for the network reached.
-    pub(crate) seating: bool,
+    pub seating: bool,
     /// A sign-in call is out (any step's); a second submit is ignored.
-    pub(crate) busy: bool,
+    pub busy: bool,
     /// The failure the current sign-in step shows, whichever step: the key,
     /// a phrase, the account, a passkey, "Add a device…". Cleared by the
     /// next keystroke or try.
-    pub(crate) error: String,
+    pub error: String,
     /// "Add a device…": the joining key's fingerprint, once found.
-    pub(crate) approve: Option<String>,
+    pub approve: Option<String>,
     /// The code this device waits under for another to approve it.
-    pub(crate) link_code: String,
+    pub link_code: String,
     /// A passkey ceremony is in the browser.
-    pub(crate) passkey_waiting: bool,
+    pub passkey_waiting: bool,
     /// Help greets a new account rather than titling itself.
-    pub(crate) welcome: bool,
+    pub welcome: bool,
 }
 
 /// What other entities do for the account: `Toast` shows the notice,
 /// `Windows` opens Help and closes "Add a device…".
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum AccountEvent {
+pub enum AccountEvent {
     Toast(String),
     /// A new account: Help opens on the desk, greeting it.
     Welcome,
@@ -68,7 +69,7 @@ pub(crate) enum AccountEvent {
     Approved,
 }
 
-pub(crate) struct Account {
+pub struct Account {
     state: AccountState,
     screen: Entity<Slice<Screen>>,
     /// Read for the layout the desk waits on (`show`), written by its step.
@@ -81,7 +82,7 @@ pub(crate) struct Account {
     client: backend::RpcClient,
     network: String,
     /// Where this network's keys live on this device
-    /// ([`backend::bind_keyring`]): the name alone is not enough, two chains
+    /// (`noded_client::keyring::bind` under `Dirs::remotes`): the name alone is not enough, two chains
     /// can share one.
     keyring: String,
     /// "Add a device…": the code typed, and the request it found.
@@ -106,7 +107,7 @@ fn timed() -> Option<crate::perf::Timer> {
 }
 
 impl Account {
-    pub(crate) fn new(screen: Entity<Slice<Screen>>, prefs: Entity<Slice<Prefs>>) -> Self {
+    pub fn new(screen: Entity<Slice<Screen>>, prefs: Entity<Slice<Prefs>>) -> Self {
         Self {
             state: AccountState::default(),
             screen,
@@ -124,22 +125,48 @@ impl Account {
         }
     }
 
-    pub(crate) fn get(&self) -> &AccountState {
+    pub fn get(&self) -> &AccountState {
         &self.state
     }
 
+    /// The node the sign-in calls are asked of, and the network and keyring
+    /// in hand: what a shell's own step (the desktop's `sign_in`) needs.
+    pub fn client(&self) -> backend::RpcClient {
+        self.client.clone()
+    }
+
+    pub fn network(&self) -> &str {
+        &self.network
+    }
+
+    pub fn keyring(&self) -> &str {
+        &self.keyring
+    }
+
+    pub fn screen(&self, cx: &Context<Self>) -> Screen {
+        *self.screen.read(cx).get()
+    }
+
+    /// A sign-in call a shell's own step holds out: `busy` until it lands
+    /// (`unlocked`, `joined`, `recovery_key_added`, ...).
+    pub fn begin_call(&mut self, call: Task<()>, cx: &mut Context<Self>) {
+        self.call = Some(call);
+        self.edit(|state| state.busy = true, cx);
+    }
+
+    /// A passkey ceremony a shell's own step runs; dropping it cancels it.
+    pub fn hold_passkey(&mut self, ceremony: Task<()>) {
+        self.passkey = Some(ceremony);
+    }
+
     /// A new recovery key's words, while its screens show.
-    pub(crate) fn phrase(&self) -> Option<&Secret> {
+    pub fn phrase(&self) -> Option<&Secret> {
         self.phrase.as_ref()
     }
 
     /// A field-wise edit, compared as a whole; notifies when it moved.
     fn edit(&mut self, edit: impl FnOnce(&mut AccountState), cx: &mut Context<Self>) -> bool {
         super::slice::edit_compared(&mut self.state, edit, cx)
-    }
-
-    fn screen(&self, cx: &Context<Self>) -> Screen {
-        *self.screen.read(cx).get()
     }
 
     /// `screen` on the console. The desk waits while this device has no
@@ -155,21 +182,18 @@ impl Account {
         });
     }
 
-    fn client(&self) -> backend::RpcClient {
-        self.client.clone()
-    }
-
     /// The node the account is on; empty off a network.
     fn node(&self) -> &str {
         self.client.endpoint()
     }
 
     /// The step's failure goes with the next keystroke in any of its fields.
-    pub(crate) fn clear_error(&mut self, cx: &mut Context<Self>) {
+    pub fn clear_error(&mut self, cx: &mut Context<Self>) {
         self.edit(|state| state.error.clear(), cx);
     }
 
-    fn fail(&mut self, error: impl Into<String>, cx: &mut Context<Self>) {
+    /// The step's failure, drawn under its fields.
+    pub fn fail(&mut self, error: impl Into<String>, cx: &mut Context<Self>) {
         let error = error.into();
         self.edit(|state| state.error = error, cx);
     }
@@ -192,7 +216,7 @@ impl Account {
     /// account, any sign-in half done), and the key step comes first; `true`
     /// then, for what leaving the last network clears. A second node of the
     /// same network keeps the screen it was on.
-    pub(crate) fn take_up(
+    pub fn take_up(
         &mut self,
         keyring: noded_client::keyring::Keyring,
         client: backend::RpcClient,
@@ -210,8 +234,6 @@ impl Account {
         self.keyring = keyring.dir;
         self.client = client;
         self.network = network;
-        let key_exists = backend::key_exists(&self.keyring);
-        self.edit(|state| state.key_exists = key_exists, cx);
         left
     }
 
@@ -220,7 +242,7 @@ impl Account {
     /// any sign-in half done. Dropping the tasks cancels them; an account
     /// lookup in flight lands and is discarded by `resolved`'s node and
     /// key check.
-    pub(crate) fn leave_network(&mut self, cx: &mut Context<Self>) {
+    pub fn leave_network(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         self.seating = None;
         self.call = None;
@@ -248,11 +270,13 @@ impl Account {
 
     // ---------- this device's key ----------
 
-    /// Opens this device's key for the network in hand and seats it, made
-    /// here the first time this device meets the network. Nothing to do when
-    /// one is seated, or the person locked it; a password-locked key from
-    /// before answers `Ok(None)` and waits for its password once.
-    pub(crate) fn open_device_key(&mut self, cx: &mut Context<Self>) {
+    /// Opens this device's key for the network in hand
+    /// (`OsServices::device_key`) and seats it, made the first time this
+    /// device meets the network. Nothing to do when one is seated, or the
+    /// person locked it; a password-locked key from before
+    /// (`KeyRefusal::Legacy`) answers `Ok(None)` and waits for its password
+    /// once, which the shell's own step asks.
+    pub fn open_device_key(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         if self.state.seating
             || self.state.locked
@@ -263,16 +287,18 @@ impl Account {
         }
         self.edit(|state| state.seating = true, cx);
         let keyring = self.keyring.clone();
-        let legacy = self.state.key_exists;
         let work = async move {
-            let opened =
-                tokio::task::spawn_blocking(move || backend::device_key::open(&keyring, legacy))
-                    .await
-                    .unwrap_or_else(|_| Err("opening this device's key did not finish".into()));
+            let opened = tokio::task::spawn_blocking(move || contract::os().device_key(&keyring))
+                .await
+                .unwrap_or_else(|_| {
+                    Err(KeyRefusal::Broken(
+                        "opening this device's key did not finish".into(),
+                    ))
+                });
             match opened {
-                Ok(Some(key)) => Ok(Some(backend::seat_key(std::sync::Arc::new(key)).await)),
-                Ok(None) => Ok(None),
-                Err(error) => Err(error),
+                Ok(key) => Ok(Some(backend::seat_key(key).await)),
+                Err(KeyRefusal::Legacy) => Ok(None),
+                Err(refused) => Err(refused.sentence()),
             }
         };
         self.seating = Some(spawn_on_runtime(cx, work, |this, found, cx| {
@@ -282,7 +308,7 @@ impl Account {
 
     /// This device's key, opened or made: its public half; `None` when only
     /// a password-locked key is here.
-    pub(crate) fn device_key_answered(
+    pub fn device_key_answered(
         &mut self,
         found: Result<Option<String>, String>,
         cx: &mut Context<Self>,
@@ -296,19 +322,22 @@ impl Account {
                 self.unlocked(pubkey, cx);
             }
             // only a password-locked key here: the key screen asks
-            Ok(None) => {}
+            Ok(None) => {
+                self.edit(|state| state.key_exists = true, cx);
+            }
             Err(error) => self.fail(error, cx),
         }
     }
 
-    /// Unlock. With no password typed, it reopens this device's OS-kept
-    /// key (after a Lock). With one, it opens a password-locked key from
-    /// before keys moved into the OS, and moves it there: the password is
-    /// asked this once. A failed try leaves the field as it was.
-    pub(crate) fn unlock(&mut self, password: String, cx: &mut Context<Self>) {
+    /// Unlock: this device's OS-kept key reopened (after a Lock). A
+    /// password-locked key from before keys moved into the OS
+    /// (`key_exists`) is the shell's own step to open (the desktop's
+    /// `sign_in::unlock`); this only clears the lock for it. Whether the
+    /// step may go on: not while a call is out.
+    pub fn unlock(&mut self, cx: &mut Context<Self>) -> bool {
         let _timed = timed();
         if self.state.busy {
-            return;
+            return false;
         }
         self.edit(
             |state| {
@@ -318,46 +347,15 @@ impl Account {
             cx,
         );
         if !self.state.key_exists {
-            return self.open_device_key(cx);
+            self.open_device_key(cx);
         }
-        if password.is_empty() {
-            return self.fail("Type this key's password first.", cx);
-        }
-        let password = Secret::new(password);
-        let keyring = self.keyring.clone();
-        self.edit(|state| state.busy = true, cx);
-        let work = async move {
-            let opened = tokio::task::spawn_blocking(move || {
-                let path = backend::session_key_path(&keyring)?;
-                let key = keystore::userkey::open_user_key_at(&path, &password)?;
-                // kept by the OS from now on; a refusal only means the
-                // password is asked again next time
-                if let Err(error) = backend::device_key::save(&keyring, &key) {
-                    tracing::info!(target: "ducktape::keys", %error, "password-locked key not moved into the OS");
-                }
-                Ok::<_, String>(key)
-            })
-            .await
-            .unwrap_or_else(|_| Err("opening this device's key did not finish".into()));
-            match opened {
-                Ok(key) => Ok(backend::seat_key(std::sync::Arc::new(key)).await),
-                Err(error) => Err(backend::user_error(error)),
-            }
-        };
-        self.call = Some(spawn_on_runtime(
-            cx,
-            work,
-            |this, opened, cx| match opened {
-                Ok(pubkey) => this.unlocked(pubkey, cx),
-                Err(error) => this.unlock_failed(error, cx),
-            },
-        ));
+        true
     }
 
     /// The key seated. The key step stays up, its password gone, until the
     /// node says whether the key holds an account (`resolved`). A key that
     /// lands after the network was left seats nothing on screen.
-    pub(crate) fn unlocked(&mut self, pubkey: String, cx: &mut Context<Self>) {
+    pub fn unlocked(&mut self, pubkey: String, cx: &mut Context<Self>) {
         let _timed = timed();
         self.call = None;
         self.edit(
@@ -381,13 +379,13 @@ impl Account {
         self.resolve(cx);
     }
 
-    pub(crate) fn unlock_failed(&mut self, error: String, cx: &mut Context<Self>) {
+    /// The password-locked key did not open: the key screen says why and
+    /// keeps asking (the file is still there).
+    pub fn unlock_failed(&mut self, error: String, cx: &mut Context<Self>) {
         let _timed = timed();
         self.call = None;
-        let key_exists = backend::key_exists(&self.keyring);
         self.edit(
             |state| {
-                state.key_exists = key_exists;
                 state.busy = false;
                 state.error = error;
             },
@@ -397,7 +395,7 @@ impl Account {
 
     /// Lock: the key is not reopened until Unlock. (The account menu closed
     /// as its row was picked: `layers::Chrome`.)
-    pub(crate) fn lock(&mut self, cx: &mut Context<Self>) {
+    pub fn lock(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         self.edit(
             |state| {
@@ -414,7 +412,7 @@ impl Account {
 
     /// Reading opens the desk, unless the key is seated already and the
     /// node's answer is on its way: that answer decides.
-    pub(crate) fn browse_without_key(&mut self, cx: &mut Context<Self>) {
+    pub fn browse_without_key(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         if self.screen(cx) != (Screen::Unlock { awaiting: true }) {
             self.show(Screen::Desk, cx);
@@ -423,7 +421,7 @@ impl Account {
     }
 
     /// "Sign in" from the bar: the key step, the key reopened.
-    pub(crate) fn sign_in(&mut self, cx: &mut Context<Self>) {
+    pub fn sign_in(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         self.edit(|state| state.locked = false, cx);
         self.show(Screen::Unlock { awaiting: false }, cx);
@@ -436,7 +434,7 @@ impl Account {
     /// `--live`: the key the process seated, on `network` at `client`;
     /// its account is resolved as after any sign-in.
     #[cfg(debug_assertions)]
-    pub(crate) fn live(
+    pub fn live(
         &mut self,
         signer: String,
         client: backend::RpcClient,
@@ -449,7 +447,7 @@ impl Account {
         self.resolve(cx);
     }
 
-    pub(crate) fn resolve(&mut self, cx: &mut Context<Self>) {
+    pub fn resolve(&mut self, cx: &mut Context<Self>) {
         let Ok(key) = noded_client::hex::hex_decode(&self.state.signer_key) else {
             return;
         };
@@ -489,7 +487,7 @@ impl Account {
     /// this lands: a key with no account goes on to the account step, one
     /// with an account to the console, and neither shows the other first.
     /// Later answers move no screen.
-    pub(crate) fn resolved(
+    pub fn resolved(
         &mut self,
         node: &str,
         key: &str,
@@ -516,16 +514,17 @@ impl Account {
 
     // ---------- a new recovery key, from the account menu ----------
 
-    /// "Make a recovery key…": its words, to write down.
-    pub(crate) fn recovery_key_start(&mut self, cx: &mut Context<Self>) {
+    /// "Make a recovery key…": its words (made by the shell's own step, which
+    /// holds the key crate), to write down.
+    pub fn recovery_key_start(&mut self, phrase: Secret, cx: &mut Context<Self>) {
         let _timed = timed();
         self.clear_error(cx);
-        self.phrase = Some(backend::recovery::new_recovery_phrase().into());
+        self.phrase = Some(phrase);
         cx.notify();
         self.show(Screen::Phrase { quiz: None }, cx);
     }
 
-    pub(crate) fn phrase_cancel(&mut self, cx: &mut Context<Self>) {
+    pub fn phrase_cancel(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         if matches!(self.screen(cx), Screen::Phrase { .. }) {
             self.drop_call(cx);
@@ -534,7 +533,7 @@ impl Account {
     }
 
     /// "I wrote them down": three of the words asked back.
-    pub(crate) fn phrase_written_down(&mut self, cx: &mut Context<Self>) {
+    pub fn phrase_written_down(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         if let Some(phrase) = &self.phrase {
             let quiz = Some(quiz_positions(phrase.split_whitespace().count()));
@@ -543,33 +542,29 @@ impl Account {
         self.clear_error(cx);
     }
 
-    /// The words typed back: checked, the key they make goes onto the
-    /// account.
-    pub(crate) fn phrase_check(&mut self, answers: [String; 3], cx: &mut Context<Self>) {
+    /// The words typed back, checked: the phrase, for the shell's own step
+    /// to put the key it makes onto the account (`recovery_key_added`
+    /// lands it); `None` when they do not match, the step saying so.
+    pub fn phrase_check(&mut self, answers: [String; 3], cx: &mut Context<Self>) -> Option<Secret> {
         let _timed = timed();
         let (Screen::Phrase { quiz: Some(asked) }, Some(phrase)) = (self.screen(cx), &self.phrase)
         else {
-            return;
+            return None;
         };
         if self.state.busy {
-            return;
+            return None;
         }
         if !quiz_matches(phrase, asked, &answers) {
-            return self.fail(
+            self.fail(
                 "Those words don't match your phrase. Check them, or show the phrase again.",
                 cx,
             );
+            return None;
         }
-        let (phrase, client, network) = (phrase.clone(), self.client(), self.network.clone());
-        self.edit(|state| state.busy = true, cx);
-        let work =
-            async move { backend::recovery::add_recovery_key(&client, &network, &phrase).await };
-        self.call = Some(spawn_on_runtime(cx, work, |this, added, cx| {
-            this.recovery_key_added(added, cx)
-        }));
+        Some(phrase.clone())
     }
 
-    pub(crate) fn recovery_key_added(&mut self, added: Result<(), String>, cx: &mut Context<Self>) {
+    pub fn recovery_key_added(&mut self, added: Result<(), String>, cx: &mut Context<Self>) {
         let _timed = timed();
         self.call = None;
         self.edit(|state| state.busy = false, cx);
@@ -585,7 +580,7 @@ impl Account {
     }
 
     /// "See the words again": the sheet, and the quiz starts over.
-    pub(crate) fn phrase_show_again(&mut self, cx: &mut Context<Self>) {
+    pub fn phrase_show_again(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         if matches!(self.screen(cx), Screen::Phrase { .. }) {
             self.show(Screen::Phrase { quiz: None }, cx);
@@ -607,7 +602,7 @@ impl Account {
 
     // ---------- a recovery key typed, off the account step ----------
 
-    pub(crate) fn recover_show(&mut self, cx: &mut Context<Self>) {
+    pub fn recover_show(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         if matches!(self.screen(cx), Screen::Account { .. }) {
             self.show(Screen::Recover, cx);
@@ -615,7 +610,7 @@ impl Account {
         self.clear_error(cx);
     }
 
-    pub(crate) fn recover_cancel(&mut self, cx: &mut Context<Self>) {
+    pub fn recover_cancel(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         if self.screen(cx) == Screen::Recover {
             self.drop_call(cx);
@@ -629,37 +624,23 @@ impl Account {
         self.clear_error(cx);
     }
 
-    /// The 24 words typed: this device joins the account they hold.
-    pub(crate) fn recover_submit(&mut self, phrase: String, cx: &mut Context<Self>) {
+    /// The 24 words typed, folded to what BIP39 checks: for the shell's own
+    /// step to join this device to the account they hold (`joined` lands
+    /// it); `None` off the Recover step or with a call out.
+    pub fn recover_submit(&mut self, phrase: String, cx: &mut Context<Self>) -> Option<Secret> {
         let _timed = timed();
         if self.screen(cx) != Screen::Recover || self.state.busy {
-            return;
+            return None;
         }
-        let phrase = zeroize::Zeroizing::new(normalize_phrase(&phrase));
-        if keystore::userkey::seed_of_mnemonic(&phrase).is_err() {
-            return self.fail("Those words aren't a recovery key — check each one.", cx);
-        }
-        let (client, network) = (self.client(), self.network.clone());
-        self.edit(
-            |state| {
-                state.busy = true;
-                state.error.clear();
-            },
-            cx,
-        );
-        let work = async move {
-            backend::recovery::join_with_recovery_key(&client, &network, &phrase).await
-        };
-        self.call = Some(spawn_on_runtime(cx, work, |this, joined, cx| {
-            this.joined(joined, cx)
-        }));
+        self.clear_error(cx);
+        Some(zeroize::Zeroizing::new(normalize_phrase(&phrase)))
     }
 
     // ---------- the account step ----------
 
     /// "From another device": a code shown, and a wait for one on the
     /// account to approve it.
-    pub(crate) fn link_start(&mut self, cx: &mut Context<Self>) {
+    pub fn link_start(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         if !matches!(self.screen(cx), Screen::Account { .. }) || self.link.is_some() {
             return;
@@ -685,7 +666,7 @@ impl Account {
         }));
     }
 
-    pub(crate) fn link_cancel(&mut self, cx: &mut Context<Self>) {
+    pub fn link_cancel(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         self.end_link(cx);
     }
@@ -707,7 +688,7 @@ impl Account {
     }
 
     /// Another device or the recovery key added this one: the desk.
-    pub(crate) fn joined(&mut self, joined: Result<(), String>, cx: &mut Context<Self>) {
+    pub fn joined(&mut self, joined: Result<(), String>, cx: &mut Context<Self>) {
         let _timed = timed();
         self.call = None;
         self.edit(|state| state.busy = false, cx);
@@ -723,37 +704,33 @@ impl Account {
         }
     }
 
-    /// A passkey creates an account named `name`.
-    pub(crate) fn passkey_create(&mut self, name: String, cx: &mut Context<Self>) {
+    /// A passkey ceremony begins: to create an account named `create`, or
+    /// to admit this device's key into the account the passkey holds. Both
+    /// are about the ACCOUNT: the device key is already seated before either
+    /// is offered (opened, or minted on first contact; it has no phrase),
+    /// and it signs the writes. The ceremony itself is the shell's own step
+    /// (the desktop's `sign_in`, in the browser), which lands it through
+    /// `passkey_done` / `passkey_failed`: this answers the trimmed name to
+    /// create with (`Some(None)` to sign in), or `None` when the step may
+    /// not begin, the screen saying why.
+    pub fn passkey_begin(
+        &mut self,
+        create: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Option<Option<String>> {
         let _timed = timed();
-        self.passkey(Some(name), cx);
-    }
-
-    /// A passkey admits this device's key into the account it holds.
-    pub(crate) fn passkey_sign_in(&mut self, cx: &mut Context<Self>) {
-        let _timed = timed();
-        self.passkey(None, cx);
-    }
-
-    /// Both are about the ACCOUNT: the device key is already seated before
-    /// either is offered (opened, or minted on first contact; it has no
-    /// phrase), and it signs the writes.
-    fn passkey(&mut self, create: Option<String>, cx: &mut Context<Self>) {
         if !matches!(self.screen(cx), Screen::Account { .. }) || self.state.busy {
-            return;
+            return None;
         }
         if self.state.signer_key.is_empty() {
-            return self.fail("Unlock this device's key first.", cx);
+            self.fail("Unlock this device's key first.", cx);
+            return None;
         }
         let name = create.as_deref().map(str::trim).map(str::to_owned);
         if name.as_deref() == Some("") {
-            return self.fail("Name your account first.", cx);
+            self.fail("Name your account first.", cx);
+            return None;
         }
-        let (client, network, pubkey) = (
-            self.client(),
-            self.network.clone(),
-            self.state.signer_key.clone(),
-        );
         self.edit(
             |state| {
                 state.busy = true;
@@ -768,37 +745,23 @@ impl Account {
             },
             cx,
         );
-        let work = async move {
-            match &name {
-                Some(name) => backend::passkey::create_account(&client, &network, name).await,
-                None => backend::passkey::sign_in(&client, &network).await,
-            }
-            .map(|()| pubkey)
-        };
-        self.passkey = Some(spawn_on_runtime(
-            cx,
-            work,
-            |this, joined, cx| match joined {
-                Ok(pubkey) => this.passkey_done(pubkey, cx),
-                Err(error) => this.passkey_failed(error, cx),
-            },
-        ));
+        Some(name)
     }
 
-    pub(crate) fn passkey_cancel(&mut self, cx: &mut Context<Self>) {
+    pub fn passkey_cancel(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         self.end_passkey(cx);
         cx.emit(AccountEvent::Toast("Passkey step cancelled".into()));
     }
 
-    pub(crate) fn passkey_failed(&mut self, error: String, cx: &mut Context<Self>) {
+    pub fn passkey_failed(&mut self, error: String, cx: &mut Context<Self>) {
         let _timed = timed();
         self.end_passkey(cx);
         self.fail(error, cx);
     }
 
     /// The passkey made (or joined) the account: the desk.
-    pub(crate) fn passkey_done(&mut self, pubkey: String, cx: &mut Context<Self>) {
+    pub fn passkey_done(&mut self, pubkey: String, cx: &mut Context<Self>) {
         let _timed = timed();
         self.end_passkey(cx);
         if pubkey != self.state.signer_key {
@@ -835,7 +798,7 @@ impl Account {
     }
 
     /// "Create account" from the desk: the account step, for a seated key.
-    pub(crate) fn create_account(&mut self, cx: &mut Context<Self>) {
+    pub fn create_account(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         if !self.state.signer_key.is_empty() {
             self.show(
@@ -849,7 +812,7 @@ impl Account {
     }
 
     /// "Not now": the desk, without an account.
-    pub(crate) fn create_later(&mut self, cx: &mut Context<Self>) {
+    pub fn create_later(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         if matches!(self.screen(cx), Screen::Account { .. }) {
             self.drop_call(cx);
@@ -859,7 +822,7 @@ impl Account {
     }
 
     /// A plain account named `name`, signed by the seated key.
-    pub(crate) fn create_submit(&mut self, name: String, cx: &mut Context<Self>) {
+    pub fn create_submit(&mut self, name: String, cx: &mut Context<Self>) {
         let _timed = timed();
         if !matches!(self.screen(cx), Screen::Account { .. }) || self.state.busy {
             return;
@@ -883,7 +846,7 @@ impl Account {
         }));
     }
 
-    pub(crate) fn account_created(
+    pub fn account_created(
         &mut self,
         created: Result<(u64, String), String>,
         cx: &mut Context<Self>,
@@ -913,7 +876,7 @@ impl Account {
     }
 
     /// Help asked for is just help.
-    pub(crate) fn help_asked(&mut self, cx: &mut Context<Self>) {
+    pub fn help_asked(&mut self, cx: &mut Context<Self>) {
         self.edit(|state| state.welcome = false, cx);
     }
 
@@ -921,7 +884,7 @@ impl Account {
 
     /// The layout step's Continue: `layout` saved for this device, and the
     /// desk. A press that lands after the step went (a lock) does nothing.
-    pub(crate) fn layout_chosen(&mut self, layout: backend::Layout, cx: &mut Context<Self>) {
+    pub fn layout_chosen(&mut self, layout: backend::Layout, cx: &mut Context<Self>) {
         let _timed = timed();
         if self.screen(cx) != Screen::Layout {
             return;
@@ -935,7 +898,7 @@ impl Account {
 
     /// The dialog opened (`Overlays::open`, by the account menu's row):
     /// what the last one held goes.
-    pub(crate) fn approve_open(&mut self, cx: &mut Context<Self>) {
+    pub fn approve_open(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         self.approve_code.clear();
         self.approve_found = None;
@@ -950,7 +913,7 @@ impl Account {
 
     /// The dialog closed, however: what it found, its failure and its call
     /// out go.
-    pub(crate) fn approve_closed(&mut self, cx: &mut Context<Self>) {
+    pub fn approve_closed(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         self.drop_call(cx);
         self.approve_found = None;
@@ -964,7 +927,7 @@ impl Account {
     }
 
     /// The code the new device shows, typed: the joining key it names.
-    pub(crate) fn approve_find(&mut self, code: String, cx: &mut Context<Self>) {
+    pub fn approve_find(&mut self, code: String, cx: &mut Context<Self>) {
         let _timed = timed();
         if self.state.busy {
             return;
@@ -984,7 +947,7 @@ impl Account {
         }));
     }
 
-    pub(crate) fn approve_found(
+    pub fn approve_found(
         &mut self,
         found: Result<noded_client::join::Request, String>,
         cx: &mut Context<Self>,
@@ -1003,7 +966,7 @@ impl Account {
     }
 
     /// This device's yes: consent it signs for the account.
-    pub(crate) fn approve_confirm(&mut self, cx: &mut Context<Self>) {
+    pub fn approve_confirm(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         let (Some(request), Some(Some((account, _)))) =
             (self.approve_found.clone(), self.state.account.clone())
@@ -1027,7 +990,7 @@ impl Account {
         }));
     }
 
-    pub(crate) fn approve_done(&mut self, done: Result<(), String>, cx: &mut Context<Self>) {
+    pub fn approve_done(&mut self, done: Result<(), String>, cx: &mut Context<Self>) {
         let _timed = timed();
         self.call = None;
         self.edit(|state| state.busy = false, cx);
@@ -1045,8 +1008,8 @@ impl Account {
 
     /// The state a test starts from: what the screens draw, the words the
     /// phrase screens show, and the request "Add a device…" found.
-    #[cfg(test)]
-    pub(crate) fn seed(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed(
         &mut self,
         state: AccountState,
         phrase: Option<Secret>,
@@ -1060,15 +1023,15 @@ impl Account {
     }
 
     /// A sign-in call a test holds out, as a submit leaves it.
-    #[cfg(test)]
-    pub(crate) fn seed_call(&mut self, call: Task<()>, cx: &mut Context<Self>) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_call(&mut self, call: Task<()>, cx: &mut Context<Self>) {
         self.call = Some(call);
         self.edit(|state| state.busy = true, cx);
     }
 
     /// The node and network a test's account is on.
-    #[cfg(test)]
-    pub(crate) fn seed_network(&mut self, node: &str, network: &str, keyring: &str) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_network(&mut self, node: &str, network: &str, keyring: &str) {
         self.client = backend::rpc_client(node);
         self.network = network.into();
         self.keyring = keyring.into();

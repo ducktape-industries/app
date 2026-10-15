@@ -47,7 +47,7 @@ pub(in crate::shell) struct OverlayLayer {
     app: Entities,
     key: WindowKey,
     overlays: Observed<Overlays>,
-    spotlight: Observed<Slice<Spotlight>>,
+    spotlight: Observed<Spotlight>,
     rail: Observed<Rail>,
     notifications: Observed<Notifications>,
     session: Observed<Session>,

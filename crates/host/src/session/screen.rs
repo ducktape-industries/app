@@ -2,7 +2,7 @@
 //! by `Session`'s and `Account`'s methods.
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum Screen {
+pub enum Screen {
     #[default]
     Connect,
     /// The key step; `awaiting` the node's word on its account.
@@ -25,7 +25,7 @@ pub(crate) enum Screen {
 
 /// The account step's sub-step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum AccountStep {
+pub enum AccountStep {
     /// Naming a new account.
     Name,
     /// Showing a code for another device to approve.

@@ -8,23 +8,23 @@ use crate::runtime::notify;
 use gpui_kit::Context;
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Prefs {
-    pub(crate) appearance: Appearance,
+pub struct Prefs {
+    pub appearance: Appearance,
     /// The OS says dark; counts under `Appearance::System`.
-    pub(crate) system_dark: bool,
-    pub(crate) motion: bool,
+    pub system_dark: bool,
+    pub motion: bool,
     /// Where the programs are listed; `None` until the launcher's last
     /// step asked (`Account::show` asks that); drawn through
     /// `layout_or_default`.
-    pub(crate) layout: Option<Layout>,
+    pub layout: Option<Layout>,
     /// Read off disk once, and again only after a notice setting was saved.
-    pub(crate) notify: notify::Settings,
+    pub notify: notify::Settings,
 }
 
 impl Prefs {
     /// As the prefs file has them; the theme's own word comes with
     /// `Windows::sync_appearance`.
-    pub(crate) fn load() -> Self {
+    pub fn load() -> Self {
         Self {
             appearance: backend::load_appearance(),
             system_dark: false,
@@ -34,7 +34,7 @@ impl Prefs {
         }
     }
 
-    pub(crate) fn dark(&self) -> bool {
+    pub fn dark(&self) -> bool {
         match self.appearance {
             Appearance::Light => false,
             Appearance::Dark => true,
@@ -44,7 +44,7 @@ impl Prefs {
 
     /// The layout to draw: not chosen yet draws the menu bar (the desk
     /// never waits on the choice).
-    pub(crate) fn layout_or_default(&self) -> Layout {
+    pub fn layout_or_default(&self) -> Layout {
         self.layout.unwrap_or_default()
     }
 }
@@ -55,42 +55,42 @@ fn timed() -> Option<crate::perf::Timer> {
 }
 
 impl Slice<Prefs> {
-    pub(crate) fn set_appearance(&mut self, mode: Appearance, cx: &mut Context<Self>) {
+    pub fn set_appearance(&mut self, mode: Appearance, cx: &mut Context<Self>) {
         let _timed = timed();
         backend::save_appearance(mode);
         self.edit(|prefs| prefs.appearance = mode, cx);
     }
 
-    pub(crate) fn set_motion(&mut self, on: bool, cx: &mut Context<Self>) {
+    pub fn set_motion(&mut self, on: bool, cx: &mut Context<Self>) {
         let _timed = timed();
         backend::save_motion(on);
         self.edit(|prefs| prefs.motion = on, cx);
     }
 
-    pub(crate) fn set_layout(&mut self, layout: Layout, cx: &mut Context<Self>) {
+    pub fn set_layout(&mut self, layout: Layout, cx: &mut Context<Self>) {
         let _timed = timed();
         backend::save_layout(layout);
         self.edit(|prefs| prefs.layout = Some(layout), cx);
     }
 
     /// What the theme says the OS is: written by whoever syncs the theme.
-    pub(crate) fn set_system_dark(&mut self, dark: bool, cx: &mut Context<Self>) {
+    pub fn set_system_dark(&mut self, dark: bool, cx: &mut Context<Self>) {
         self.edit(|prefs| prefs.system_dark = dark, cx);
     }
 
-    pub(crate) fn set_notify_banners(&mut self, on: bool, cx: &mut Context<Self>) {
+    pub fn set_notify_banners(&mut self, on: bool, cx: &mut Context<Self>) {
         let _timed = timed();
         notify::save_banners(on);
         self.reload_notify(cx);
     }
 
-    pub(crate) fn set_notify_in_front(&mut self, show: bool, cx: &mut Context<Self>) {
+    pub fn set_notify_in_front(&mut self, show: bool, cx: &mut Context<Self>) {
         let _timed = timed();
         notify::save_in_front(show);
         self.reload_notify(cx);
     }
 
-    pub(crate) fn set_notify_burst(&mut self, burst: u32, cx: &mut Context<Self>) {
+    pub fn set_notify_burst(&mut self, burst: u32, cx: &mut Context<Self>) {
         let _timed = timed();
         notify::save_burst(burst);
         self.reload_notify(cx);
@@ -98,7 +98,7 @@ impl Slice<Prefs> {
 
     /// The notice settings read off disk again: after a view's permission
     /// was saved (`Notifications::permission` writes the file).
-    pub(crate) fn reload_notify(&mut self, cx: &mut Context<Self>) {
+    pub fn reload_notify(&mut self, cx: &mut Context<Self>) {
         let notify = notify::Settings::load();
         self.edit(|prefs| prefs.notify = notify, cx);
     }
@@ -106,7 +106,7 @@ impl Slice<Prefs> {
     /// Everything read off disk again: the door's walk put the prefs file
     /// back (`layers::Kept::restore`).
     #[cfg(any(test, feature = "ax-door"))]
-    pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
+    pub fn reload(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         let loaded = Prefs::load();
         self.edit(

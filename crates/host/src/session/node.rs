@@ -24,45 +24,45 @@ use std::rc::Rc;
 use std::time::Duration;
 
 /// How often the node's status is asked for while connected.
-pub(crate) const STATUS_EVERY: Duration = Duration::from_secs(2);
+pub const STATUS_EVERY: Duration = Duration::from_secs(2);
 
 /// The session's compared value.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct SessionState {
+pub struct SessionState {
     /// A node answered and is polled; true through a switch in flight.
-    pub(crate) connected: bool,
+    pub connected: bool,
     /// A connect attempt is out.
-    pub(crate) connecting: bool,
+    pub connecting: bool,
     /// The node that attempt reaches for: the address it was started
     /// with, whatever is typed since. Empty when none is out.
-    pub(crate) reaching: String,
+    pub reaching: String,
     /// Connected, but the last status poll went unanswered.
-    pub(crate) reconnecting: bool,
+    pub reconnecting: bool,
     /// The node the views are on.
-    pub(crate) connected_rpc: String,
-    pub(crate) network: String,
+    pub connected_rpc: String,
+    pub network: String,
     /// The chain id `duck://` links carry, `<network>#<salt>`
     /// ([`ducklink::ChainId`]); the network's name alone when its genesis
     /// yields none.
-    pub(crate) chain: String,
+    pub chain: String,
     /// The node address being typed or tried.
-    pub(crate) endpoint: String,
+    pub endpoint: String,
     /// The typed address refused before it was tried ([`noded_client::endpoint::ENDPOINT_REFUSAL`]).
-    pub(crate) endpoint_error: String,
-    pub(crate) recent_endpoints: Vec<backend::RecentEndpoint>,
+    pub endpoint_error: String,
+    pub recent_endpoints: Vec<backend::RecentEndpoint>,
     /// The network shares its name with another chain met first: its keys
     /// are its own, and the sign-in screen says so.
-    pub(crate) other_chain: bool,
+    pub other_chain: bool,
     /// The last connect attempt's failure, drawn under the address field;
     /// cleared by the next keystroke or try. shell/windows.rs also parks a
     /// pop-out that would not open here, so it is only seen on that screen.
-    pub(crate) error: String,
+    pub error: String,
 }
 
 impl SessionState {
     /// The state at launch: the nodes reached before, the last of them in
     /// the address field (or the default node).
-    pub(crate) fn booted() -> Self {
+    pub fn booted() -> Self {
         let recent = backend::recent_endpoints();
         let endpoint = recent
             .first()
@@ -78,7 +78,7 @@ impl SessionState {
 
 /// What other entities do for the session (`Windows`, `Rail`, `Toast`).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum SessionEvent {
+pub enum SessionEvent {
     /// The network in hand was left (disconnected, or another chain taken
     /// up): every desk's panes, the badges and the active program go.
     LeftNetwork,
@@ -89,10 +89,10 @@ pub(crate) enum SessionEvent {
 }
 
 /// Where a status comes from: the node's `/v1/status`, or a test's answer.
-pub(crate) type StatusSource =
+pub type StatusSource =
     Rc<dyn Fn() -> LocalBoxFuture<'static, Result<backend::NodeStatus, String>>>;
 
-pub(crate) struct Session {
+pub struct Session {
     state: SessionState,
     chain: Entity<Chain>,
     account: Entity<Account>,
@@ -114,7 +114,7 @@ fn timed() -> Option<crate::perf::Timer> {
 }
 
 impl Session {
-    pub(crate) fn new(
+    pub fn new(
         chain: Entity<Chain>,
         account: Entity<Account>,
         screen: Entity<Slice<Screen>>,
@@ -134,7 +134,7 @@ impl Session {
 
     /// The node to reach at launch: `DUCKTAPE_RPC`, else the last one
     /// reached, else none.
-    pub(crate) fn boot_target() -> Option<String> {
+    pub fn boot_target() -> Option<String> {
         std::env::var("DUCKTAPE_RPC").ok().or_else(|| {
             backend::recent_endpoints()
                 .first()
@@ -142,7 +142,7 @@ impl Session {
         })
     }
 
-    pub(crate) fn get(&self) -> &SessionState {
+    pub fn get(&self) -> &SessionState {
         &self.state
     }
 
@@ -152,7 +152,7 @@ impl Session {
     }
 
     /// The node's `/v1/status`, as the poll asks for it.
-    pub(crate) fn status_source(origin: &str) -> StatusSource {
+    pub fn status_source(origin: &str) -> StatusSource {
         let client = backend::rpc_client(origin);
         Rc::new(move || {
             let client = client.clone();
@@ -162,7 +162,7 @@ impl Session {
 
     /// The address as typed. A new address makes the last failure's
     /// sentence stale: it named a node this attempt is not about.
-    pub(crate) fn set_endpoint(&mut self, text: String, cx: &mut Context<Self>) {
+    pub fn set_endpoint(&mut self, text: String, cx: &mut Context<Self>) {
         let _timed = timed();
         self.edit(
             |state| {
@@ -175,7 +175,7 @@ impl Session {
     }
 
     /// Connect, with the address typed: reached when it is an address.
-    pub(crate) fn submit(&mut self, cx: &mut Context<Self>) {
+    pub fn submit(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         match noded_client::endpoint::endpoint_origin(&self.state.endpoint) {
             Some(origin) => self.connect(origin, cx),
@@ -193,14 +193,14 @@ impl Session {
 
     /// Reaches the node at `origin`: its first status answers, and the
     /// network it serves becomes the one in hand.
-    pub(crate) fn connect(&mut self, origin: String, cx: &mut Context<Self>) {
+    pub fn connect(&mut self, origin: String, cx: &mut Context<Self>) {
         let source = Self::status_source(&origin);
         self.connect_through(origin, source, cx);
     }
 
     /// As `connect`, with the status coming from `source` (the node's, or a
     /// test's).
-    pub(crate) fn connect_through(
+    pub fn connect_through(
         &mut self,
         origin: String,
         source: StatusSource,
@@ -256,7 +256,8 @@ impl Session {
             );
             return self.connect_failed(origin, error, cx);
         }
-        let keyring = match backend::bind_keyring(&status.network, status.time) {
+        let remotes = &crate::contract::os().dirs().remotes;
+        let keyring = match noded_client::keyring::bind(remotes, &status.network, status.time) {
             Ok(keyring) => keyring,
             Err(error) => return self.connect_failed(origin, error, cx),
         };
@@ -329,7 +330,7 @@ impl Session {
     /// The poll's answer: a status, or none. A moved height asks the node
     /// which account the seated key holds now (a block may have created
     /// it, or renamed it).
-    pub(crate) fn status_answered(
+    pub fn status_answered(
         &mut self,
         answer: Result<backend::NodeStatus, String>,
         cx: &mut Context<Self>,
@@ -405,9 +406,23 @@ impl Session {
         }));
     }
 
+    /// The app's phase moved (`Signal::Lifecycle`): in the background the
+    /// status poll stops (the node is not asked while nothing is shown);
+    /// coming to the front asks at once and polls on.
+    pub fn lifecycle(&mut self, phase: gpui_kit::AppLifecyclePhase, cx: &mut Context<Self>) {
+        use gpui_kit::AppLifecyclePhase::{Background, Foreground};
+        match phase {
+            Background => self.poll = None,
+            Foreground if self.state.connected && self.poll.is_none() => {
+                self.start_poll(Duration::ZERO, cx)
+            }
+            _ => {}
+        }
+    }
+
     /// "Retry now": the status asked for at once, and the poll counted
     /// from it.
-    pub(crate) fn poll_now(&mut self, cx: &mut Context<Self>) {
+    pub fn poll_now(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         if self.state.connected {
             self.start_poll(Duration::ZERO, cx);
@@ -416,7 +431,7 @@ impl Session {
 
     /// Off every network: the Connect screen, nothing of the last network
     /// kept.
-    pub(crate) fn disconnect(&mut self, cx: &mut Context<Self>) {
+    pub fn disconnect(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         self.connect = None;
         self.poll = None;
@@ -451,7 +466,7 @@ impl Session {
     /// Another node from the switcher: reached first, and only once it
     /// answers does the console leave the network in hand (`connect_failed`
     /// leaves everything as it was).
-    pub(crate) fn switch(&mut self, origin: String, cx: &mut Context<Self>) {
+    pub fn switch(&mut self, origin: String, cx: &mut Context<Self>) {
         if origin == self.state.connected_rpc && !self.state.connecting {
             return;
         }
@@ -459,7 +474,7 @@ impl Session {
     }
 
     /// A node taken off the Recent list.
-    pub(crate) fn forget(&mut self, url: &str, cx: &mut Context<Self>) {
+    pub fn forget(&mut self, url: &str, cx: &mut Context<Self>) {
         let _timed = timed();
         backend::forget_endpoint(url);
         self.edit(
@@ -470,13 +485,13 @@ impl Session {
 
     /// A failure said under the address field (a window that would not
     /// open, `shell/windows.rs`).
-    pub(crate) fn note_error(&mut self, error: String, cx: &mut Context<Self>) {
+    pub fn note_error(&mut self, error: String, cx: &mut Context<Self>) {
         self.edit(|state| state.error = error, cx);
     }
 
     /// The chain, account and screen the session writes, for a test to read.
-    #[cfg(test)]
-    pub(crate) fn parts(&self) -> (Entity<Chain>, Entity<Account>, Entity<Slice<Screen>>) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn parts(&self) -> (Entity<Chain>, Entity<Account>, Entity<Slice<Screen>>) {
         (
             self.chain.clone(),
             self.account.clone(),
@@ -489,7 +504,7 @@ impl Session {
     /// this device (no keyring, no recent-nodes entry; the runtime's
     /// roster is the caller's), and the poll started.
     #[cfg(debug_assertions)]
-    pub(crate) fn live(
+    pub fn live(
         &mut self,
         origin: String,
         status: &backend::NodeStatus,
@@ -513,16 +528,16 @@ impl Session {
     }
 
     /// The state a test starts from.
-    #[cfg(test)]
-    pub(crate) fn seed(&mut self, state: SessionState, cx: &mut Context<Self>) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed(&mut self, state: SessionState, cx: &mut Context<Self>) {
         self.edit(|current| *current = state, cx);
     }
 
     /// A test's session on a node already reached, polling `source`: what
     /// `connect_answered` leaves, without the network taken up on this
     /// device (its keyring, its recent-nodes entry, the runtime's roster).
-    #[cfg(test)]
-    pub(crate) fn seed_connected(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_connected(
         &mut self,
         state: SessionState,
         source: StatusSource,

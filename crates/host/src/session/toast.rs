@@ -7,9 +7,9 @@ use gpui_kit::{Context, Entity, Subscription, Task};
 use std::time::Duration;
 
 /// How long a notice stays up.
-pub(crate) const SHOWN_FOR: Duration = Duration::from_millis(3600);
+pub const SHOWN_FOR: Duration = Duration::from_millis(3600);
 
-pub(crate) struct Toast {
+pub struct Toast {
     text: String,
     /// Takes the notice down; dropped (cancelled) by the next `show`.
     dismiss: Option<Task<()>>,
@@ -17,7 +17,7 @@ pub(crate) struct Toast {
 }
 
 impl Toast {
-    pub(crate) fn new(
+    pub fn new(
         session: &Entity<Session>,
         account: &Entity<Account>,
         cx: &mut Context<Self>,
@@ -41,12 +41,12 @@ impl Toast {
     }
 
     /// The notice up; empty when none.
-    pub(crate) fn get(&self) -> &String {
+    pub fn get(&self) -> &String {
         &self.text
     }
 
     /// `said` up, for `SHOWN_FOR`.
-    pub(crate) fn show(&mut self, said: String, cx: &mut Context<Self>) {
+    pub fn show(&mut self, said: String, cx: &mut Context<Self>) {
         let _timed = timed();
         if self.text != said {
             self.text = said;
@@ -59,7 +59,7 @@ impl Toast {
     }
 
     /// The notice down.
-    pub(crate) fn dismiss(&mut self, cx: &mut Context<Self>) {
+    pub fn dismiss(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         self.dismiss = None;
         if !self.text.is_empty() {

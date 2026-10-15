@@ -2538,6 +2538,7 @@ name = "ducktape-host"
 version = "0.1.0"
 dependencies = [
  "abi",
+ "async-channel",
  "blob",
  "blobs",
  "commonware-codec",
@@ -2571,6 +2572,7 @@ dependencies = [
  "wasmparser 0.251.0",
  "wasmtime",
  "wat",
+ "zeroize",
 ]
 
 [[package]]

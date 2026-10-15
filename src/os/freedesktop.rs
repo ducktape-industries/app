@@ -84,7 +84,7 @@ fn listen(bus: &'static zbus::blocking::Connection) {
                         .get(&banner)
                         .copied();
                     if let Some(click) = click.filter(|_| action == "default") {
-                        ducktape_host::runtime::notify::clicked(click);
+                        super::clicked(click);
                     }
                 }
             });
