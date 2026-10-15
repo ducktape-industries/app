@@ -241,6 +241,12 @@ pub(crate) fn mark_at(stage: &'static str, at: Instant) {
     registry.changed = true;
 }
 
+/// `stage` with `suffix` appended, interned; built only when on, so an
+/// off run never allocates for it.
+pub(crate) fn suffixed(stage: &str, suffix: &str) -> Option<&'static str> {
+    on().then(|| crate::runtime::intern(&format!("{stage}{suffix}")))
+}
+
 /// The registry as JSON. Views aggregate by program unless `by_instance`;
 /// windows are keyed by their `WindowKey` number (the door adds the name).
 pub(crate) fn snapshot(by_instance: bool) -> serde_json::Value {
@@ -460,6 +466,7 @@ mod tests {
         gauge(VIEW, "nodes", 5);
         record(VIEW, "fuel.tick", 9);
         mark("desk");
+        assert_eq!(suffixed("host_call", ".attempts"), None);
         let snapshot = snapshot(true);
         assert_eq!(snapshot["on"], false);
         assert!(snapshot["views"]["perf-test/7"].is_null());
