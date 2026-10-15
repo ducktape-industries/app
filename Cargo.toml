@@ -29,16 +29,16 @@ version = "0.1.0"
 [workspace.dependencies]
 
 # --- sdk-line: crates/sdk of ducktape-industries/programs (abi, view-wire, program, ducklink, design, describe). Every crate of that repo here and below sits on ONE rev, and every view this app seats is built at that rev: its manifest's wire_id must equal `view_wire::WIRE_ID` (`runtime/view.rs` `wire_id`). Which rev and why is in `git log -- Cargo.toml`. ---
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "539313e42e474c6f6c0b925c9bf1bde335446ce0", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "539313e42e474c6f6c0b925c9bf1bde335446ce0", package = "view-wire" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "618e25ecf9b4ec324d3467cd8047fc1c806945e0", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "618e25ecf9b4ec324d3467cd8047fc1c806945e0", package = "view-wire" }
 # `program::is_name`: the one spelling of a program id
-program = { git = "https://github.com/ducktape-industries/programs", rev = "539313e42e474c6f6c0b925c9bf1bde335446ce0", package = "program" }
-ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "539313e42e474c6f6c0b925c9bf1bde335446ce0", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/programs", rev = "539313e42e474c6f6c0b925c9bf1bde335446ce0", package = "design" }
+program = { git = "https://github.com/ducktape-industries/programs", rev = "618e25ecf9b4ec324d3467cd8047fc1c806945e0", package = "program" }
+ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "618e25ecf9b4ec324d3467cd8047fc1c806945e0", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/programs", rev = "618e25ecf9b4ec324d3467cd8047fc1c806945e0", package = "design" }
 # `program.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/programs", rev = "539313e42e474c6f6c0b925c9bf1bde335446ce0", package = "describe" }
+describe = { git = "https://github.com/ducktape-industries/programs", rev = "618e25ecf9b4ec324d3467cd8047fc1c806945e0", package = "describe" }
 # the identity program's own types: the app's passkey lane and `crates/noded-client`'s flows
-identity = { git = "https://github.com/ducktape-industries/programs", rev = "539313e42e474c6f6c0b925c9bf1bde335446ce0", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/programs", rev = "618e25ecf9b4ec324d3467cd8047fc1c806945e0", package = "identity" }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -99,7 +99,7 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b", package = "keyscheme" }
 identity.workspace = true
-valset = { git = "https://github.com/ducktape-industries/programs", rev = "539313e42e474c6f6c0b925c9bf1bde335446ce0", package = "valset" }
+valset = { git = "https://github.com/ducktape-industries/programs", rev = "618e25ecf9b4ec324d3467cd8047fc1c806945e0", package = "valset" }
 base64.workspace = true
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -149,20 +149,20 @@ keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9d
 p256 = "0.13"
 
 [patch."https://github.com/ducktape-industries/ducktape"]
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "539313e42e474c6f6c0b925c9bf1bde335446ce0", package = "abi" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "618e25ecf9b4ec324d3467cd8047fc1c806945e0", package = "abi" }
 
 [patch.crates-io]
-gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "02724886f436f4f5b01ebfc1fb5cd37c09809a79" }
-rmp-serde = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "02724886f436f4f5b01ebfc1fb5cd37c09809a79" }
-gpui-pre-scheduler = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "02724886f436f4f5b01ebfc1fb5cd37c09809a79" }
-gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "02724886f436f4f5b01ebfc1fb5cd37c09809a79" }
+gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8fc712852ad6eaac4b5a120f8dbcac4243b7826d" }
+rmp-serde = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8fc712852ad6eaac4b5a120f8dbcac4243b7826d" }
+gpui-pre-scheduler = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8fc712852ad6eaac4b5a120f8dbcac4243b7826d" }
+gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8fc712852ad6eaac4b5a120f8dbcac4243b7826d" }
 # Window::set_bounds (X11, macOS) and the Linux clipboard reads' wait hook
 # (`crates/web`): the backends, vendored in the fork
-gpui-pre-linux = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "02724886f436f4f5b01ebfc1fb5cd37c09809a79" }
-gpui-pre-macos = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "02724886f436f4f5b01ebfc1fb5cd37c09809a79" }
+gpui-pre-linux = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8fc712852ad6eaac4b5a120f8dbcac4243b7826d" }
+gpui-pre-macos = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8fc712852ad6eaac4b5a120f8dbcac4243b7826d" }
 # the X11 input-method client gpui-pre-linux uses, vendored in the fork: it decodes
 # Hangul and Chinese from ibus and drops (does not panic on) text it cannot decode
-zed-xim = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "02724886f436f4f5b01ebfc1fb5cd37c09809a79" }
+zed-xim = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8fc712852ad6eaac4b5a120f8dbcac4243b7826d" }
 
 # Symbols are a fifth of the binary and nothing at run time reads them.
 [profile.release]
