@@ -3,6 +3,17 @@
 //! this file and knows what a new OS must provide; nothing else in this
 //! crate names an OS, a window manager or a key store.
 //!
+//! The seam has two directions. Shell to host: [`OsServices`] (installed
+//! once, read anywhere) and [`Inbound`] (OS events after start). Host to
+//! shell: what [`start`](crate::start::start) returns in
+//! [`Host`](crate::start::Host): the entities to draw, `signals` (the
+//! [`Signal`]s the host hands on: `Back`, `InsetsChanged`,
+//! `MemoryWarning`), and `consent`, one wake each time the consent queue
+//! moves (`runtime::consent`: the shell shows the front ask and answers
+//! it); and [`Boot::open`], the shell's opener for what a banner click
+//! names, which `start` installs. Both are in what a shell must pass or
+//! take, so none can be forgotten.
+//!
 //! Two impls: the desktop's (`src/os.rs` in the app binary: directories
 //! by the platform's rule, the OS keyring, freedesktop / macOS banners,
 //! invites minted with the node this machine runs) and the phone's
@@ -12,9 +23,11 @@
 //! The view runner (`ViewRunner`, its own trait handed to [`Boot`] beside
 //! `OsServices`) is the next cut on this file.
 
+#![deny(missing_docs)]
+
 use crate::backend::RpcClient;
 use crate::runtime::Answered;
-use crate::runtime::notify::{Click, Notice};
+use crate::runtime::notify::{Click, Notice, Opened};
 use gpui_kit::{AppLifecyclePhase, TextInputConfiguration, Window, WindowInsets};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -25,8 +38,14 @@ pub trait OsServices: Send + Sync + 'static {
     fn dirs(&self) -> &Dirs;
     /// This device's key for `keyring`, made on first ask; it signs and
     /// never hands the key out. Called off the window thread (a store may
-    /// prompt).
-    fn device_key(&self, keyring: &str) -> Result<Arc<dyn noded_client::Signer>, KeyRefusal>;
+    /// prompt). `Ok(None)`: no OS-kept key, but a key from before keys
+    /// moved into the OS is here under a password; the shell asks for it
+    /// and seats it itself (the desktop's `shell::sign_in`). A phone never
+    /// answers `None`.
+    fn device_key(
+        &self,
+        keyring: &str,
+    ) -> Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal>;
     /// Where that key is kept, in the store's own words (the Settings row
     /// "Key storage").
     fn key_storage(&self, keyring: &str) -> Result<KeyStorage, KeyRefusal>;
@@ -55,6 +74,10 @@ pub trait OsServices: Send + Sync + 'static {
     /// (the desktop reads it out of the node's workspace). `None` on a host
     /// that runs no node: the kernel refuses `invite_unsupported` with
     /// "Only the machine running this node can mint its invites."
+    /// Called on the kernel's thread (`views-kernel`, one tokio
+    /// current-thread runtime) inside the request's task, and the answer
+    /// is awaited there: neither may block it (blocking work goes to
+    /// `tokio::task::spawn_blocking`).
     fn mint_invite(&self, ask: MintInvite) -> Option<Answered>;
 }
 
@@ -72,11 +95,18 @@ pub trait OsServices: Send + Sync + 'static {
 /// desktop reads `DUCKTAPE_VIEWS_DIR`; a phone has none).
 #[derive(Clone, Debug)]
 pub struct Dirs {
+    /// What the OS may purge: fetched blobs, compiled view code.
     pub cache: PathBuf,
+    /// What the person set: `prefs.json`.
     pub config: PathBuf,
+    /// What the app keeps: the notification centre's log, view stores.
     pub data: PathBuf,
+    /// The keyring directories, one per network name. The ONE source: the
+    /// desktop's key files resolve under it too.
     pub remotes: PathBuf,
+    /// The private directory the AX door's file goes in (see above).
     pub runtime: PathBuf,
+    /// A view developer's directory of view files, if any.
     pub views_override: Option<PathBuf>,
 }
 
@@ -85,17 +115,27 @@ pub struct Dirs {
 pub struct KeyStorage {
     /// The seed never leaves hardware (Secure Enclave, StrongBox).
     pub sealed: bool,
+    /// Which store holds it.
     pub level: KeyLevel,
 }
 
+/// The store a device key is kept in (the mobile `DeviceKeyStore`'s
+/// `storage` levels, plus the desktop's two).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyLevel {
+    /// iOS: a seed sealed by the Secure Enclave.
     SecureEnclave,
+    /// iOS: a this-device-only Keychain item.
     Keychain,
+    /// Android Keystore backed by StrongBox.
     KeystoreStrongBox,
+    /// Android Keystore backed by the TEE.
     KeystoreTee,
+    /// Android Keystore in software.
     KeystoreSoftware,
+    /// The desktop OS keyring (Secret Service, macOS Keychain).
     OsKeyring,
+    /// A file, where no keyring is reachable.
     File,
 }
 
@@ -109,10 +149,6 @@ pub enum KeyRefusal {
     Denied(String),
     /// The store answered with something that is not a key.
     Broken(String),
-    /// No OS-kept key, but a key from before keys moved into the OS is
-    /// here under a password: the shell asks for it and seats it itself
-    /// (the desktop's `shell::sign_in`). A phone never answers this.
-    Legacy,
 }
 
 impl KeyRefusal {
@@ -120,7 +156,6 @@ impl KeyRefusal {
     pub fn sentence(&self) -> String {
         match self {
             Self::NoStore(s) | Self::Denied(s) | Self::Broken(s) => s.clone(),
-            Self::Legacy => "Type this key's password first.".into(),
         }
     }
 }
@@ -136,11 +171,14 @@ pub trait Banners: Send + Sync {
     fn withdraw(&self, tag: &str);
 }
 
-/// The software keyboard a focused field wants. (`InputMode`, the one
-/// field gpui lacks, joins `Show` with the fork pin that adds it.)
+/// The software keyboard a focused field wants. (The fork's
+/// `VirtualKeyboard`, the one field gpui lacks, joins `Show` with the fork
+/// pin that adds it.)
 #[derive(Clone, Debug)]
 pub enum SoftKeyboard {
+    /// Up, for a field configured so.
     Show(TextInputConfiguration),
+    /// Down.
     Hide,
 }
 
@@ -176,6 +214,7 @@ pub struct Limits {
     pub snapshot_to_disk: bool,
 }
 
+/// What a roster read does for a program nobody opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Preload {
     /// Compile every roster program, instantiate none (the desktop).
@@ -190,14 +229,19 @@ pub enum Preload {
 /// and the clock.
 #[derive(Clone)]
 pub struct MintInvite {
+    /// The node the invite is for.
     pub client: RpcClient,
+    /// How many days the invite lives.
     pub ttl_days: u64,
+    /// Now, in milliseconds since the epoch.
     pub now_ms: u64,
 }
 
 /// Everything the shell feeds the host after [`start`](crate::start::start):
 /// one sender, any thread; one foreground task drains it on the GPUI
-/// thread into the entities. The only way an OS event reaches host state.
+/// thread into the entities. An OS event from another thread reaches host
+/// state through it (a shell's own GPUI-thread channels, such as the
+/// desktop tray's appearance pick, call the entities directly).
 #[derive(Clone)]
 pub struct Inbound(async_channel::Sender<Signal>);
 
@@ -213,6 +257,7 @@ impl Inbound {
     }
 }
 
+/// One OS event for the host.
 #[derive(Clone, Debug)]
 pub enum Signal {
     /// gpui's phase. `Background` stops the status poll (and, with the
@@ -225,13 +270,18 @@ pub enum Signal {
     Back,
     /// The insets changed: re-read `OsServices::insets`, re-place.
     InsetsChanged,
+    /// A banner the host raised was clicked: the centre opens what it
+    /// names, through [`Boot::open`].
     BannerClick(Click),
 }
 
-/// What a shell hands [`start`](crate::start::start). The view runner joins
-/// it with the runner cut.
+/// What a shell hands [`start`](crate::start::start).
 pub struct Boot {
+    /// The shell's services; `start` installs them.
     pub os: Arc<dyn OsServices>,
+    /// What opens what a banner click names (a `duck://` link, Settings ›
+    /// Updates) in the shell's windows. Called on the GPUI thread.
+    pub open: fn(Opened),
 }
 
 static OS: OnceLock<Arc<dyn OsServices>> = OnceLock::new();
@@ -317,6 +367,7 @@ pub mod testing {
     }
 
     impl TestOs {
+        /// The test services, made active (see [`active`]).
         pub fn new() -> Self {
             remove_stale_roots();
             ACTIVE.store(true, Ordering::Relaxed);
@@ -394,14 +445,17 @@ pub mod testing {
             DIRS.with(|dirs| *dirs)
         }
 
-        fn device_key(&self, keyring: &str) -> Result<Arc<dyn noded_client::Signer>, KeyRefusal> {
+        fn device_key(
+            &self,
+            keyring: &str,
+        ) -> Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal> {
             // a key of the keyring's name: the same device key every time a
             // test meets the same network, none kept anywhere
             let mut seed = [0u8; 32];
             let name = keyring.as_bytes();
             let n = name.len().min(32);
             seed[..n].copy_from_slice(&name[..n]);
-            Ok(Arc::new(FakeKey(seed)))
+            Ok(Some(Arc::new(FakeKey(seed))))
         }
 
         fn key_storage(&self, _: &str) -> Result<KeyStorage, KeyRefusal> {

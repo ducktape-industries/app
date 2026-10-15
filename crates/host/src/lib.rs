@@ -12,6 +12,14 @@
 //!   role/name/keyboard helpers for native controls.
 //! - [`perf`]: the performance journal.
 //! - [`ax`] (feature `ax-door`, and every test): the AX test door.
+//! - [`contract`]: THE interface file: what a shell gives the host
+//!   (`OsServices`, `Boot`), feeds it (`Inbound`), and what a view runner
+//!   implements. Read it first.
+//! - [`session`]: the entities every shell draws from (`Session`,
+//!   `Account`, `Chain`, `Screen`, `Rail`, `Seats`, `Notifications`,
+//!   `Prefs`, `Toast`).
+//! - [`start`]: `start(Boot) -> (Host, Inbound)`, the stores and entities
+//!   made, the inbound drain spawned.
 //!
 //! `ARCHITECTURE.md` at the repository root is the guide; its map names
 //! these modules by their old `src/` paths until its phone section lands.

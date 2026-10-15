@@ -1080,18 +1080,22 @@ pub(crate) fn posted() -> UnboundedReceiver<Posted> {
     let (send, receive) = mpsc::unbounded();
     let mut current = poster().lock().expect("the shell's posts");
     assert!(current.is_none(), "one native shell per process");
-    // runtime::notify and backend::auth_page cannot depend on shell: they
-    // call these hooks instead
-    crate::runtime::notify::on_open(|opened| {
-        post(match opened {
-            crate::runtime::notify::Opened::Link(url) => Posted::Link(url),
-            crate::runtime::notify::Opened::Updates => Posted::OpenUpdates,
-        })
-    });
+    // backend::auth_page and update cannot depend on shell: they call these
+    // hooks instead (the host's banner opener is `Boot::open`,
+    // `open_banner`)
     crate::backend::auth_page::on_open_url(|url| post(Posted::Url(url)));
     crate::update::on_moved(|| post(Posted::UpdatesMoved));
     *current = Some(send);
     receive
+}
+
+/// The desktop's `Boot::open`: what a banner click names, posted to
+/// `Windows::posted`.
+pub(crate) fn open_banner(opened: crate::runtime::notify::Opened) {
+    post(match opened {
+        crate::runtime::notify::Opened::Link(url) => Posted::Link(url),
+        crate::runtime::notify::Opened::Updates => Posted::OpenUpdates,
+    })
 }
 
 fn post(posted: Posted) {

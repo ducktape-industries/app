@@ -274,7 +274,7 @@ impl Account {
     /// (`OsServices::device_key`) and seats it, made the first time this
     /// device meets the network. Nothing to do when one is seated, or the
     /// person locked it; a password-locked key from before
-    /// (`KeyRefusal::Legacy`) answers `Ok(None)` and waits for its password
+    /// (`OsServices::device_key` answers `None`) waits for its password
     /// once, which the shell's own step asks.
     pub fn open_device_key(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
@@ -296,8 +296,8 @@ impl Account {
                     ))
                 });
             match opened {
-                Ok(key) => Ok(Some(backend::seat_key(key).await)),
-                Err(KeyRefusal::Legacy) => Ok(None),
+                Ok(Some(key)) => Ok(Some(backend::seat_key(key).await)),
+                Ok(None) => Ok(None),
                 Err(refused) => Err(refused.sentence()),
             }
         };

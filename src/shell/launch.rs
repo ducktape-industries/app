@@ -47,9 +47,15 @@ fn start(boot: Boot, os: Arc<dyn OsServices>) {
         let mut posted = entities::posted();
         // the host's stores and the shared entities; what the OS feeds in
         // after this goes through `inbound` (the desktop: banner clicks)
-        let (host, inbound) =
-            ducktape_host::start::start(ducktape_host::contract::Boot { os: os.clone() }, cx);
+        let (host, inbound) = ducktape_host::start::start(
+            ducktape_host::contract::Boot {
+                os: os.clone(),
+                open: entities::open_banner,
+            },
+            cx,
+        );
         crate::os::install_inbound(inbound);
+        let mut consent = host.consent;
         let entities = entities::Entities::new(host.shared, cx);
         let (tray, mut tray_events) = crate::tray::init(&entities, cx);
         let windows = entities.windows.clone();
@@ -73,7 +79,6 @@ fn start(boot: Boot, os: Arc<dyn OsServices>) {
         })
         .detach();
         // an ask's request gone: the card follows it off the console
-        let mut consent = crate::runtime::consent::changes_channel();
         let consent_windows = windows.downgrade();
         cx.spawn(async move |cx: &mut AsyncApp| {
             while consent.next().await.is_some() {

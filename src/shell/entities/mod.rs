@@ -27,7 +27,7 @@ pub(crate) use front::{Front, Listed, Popped};
 pub(crate) use overlays::{Overlay, Overlays, Popover, SettingsPage, Spot, SpotRow};
 pub(crate) use seats::DeskSeats;
 pub(crate) use spotlight::Spotlight;
-pub(crate) use windows::{Windows, posted};
+pub(crate) use windows::{Windows, open_banner, posted};
 #[cfg(test)]
 mod account_tests;
 #[cfg(test)]
