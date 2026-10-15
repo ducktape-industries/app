@@ -870,22 +870,22 @@ dependencies = [
 [[package]]
 name = "blob"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape?rev=9d6b2239eb97fe7a9a8a34f5a97f9d254d0eaab1#9d6b2239eb97fe7a9a8a34f5a97f9d254d0eaab1"
+source = "git+https://github.com/ducktape-industries/ducktape?rev=a015f5a3bcd285ec95639eac6aa662e57b03b8d4#a015f5a3bcd285ec95639eac6aa662e57b03b8d4"
 dependencies = [
  "abi",
  "borsh",
- "sha1-checked",
+ "sha1",
  "sha2 0.10.9",
 ]
 
 [[package]]
 name = "blob"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape?rev=a015f5a3bcd285ec95639eac6aa662e57b03b8d4#a015f5a3bcd285ec95639eac6aa662e57b03b8d4"
+source = "git+https://github.com/ducktape-industries/ducktape?rev=e5a3a4a07fb5a10c09dd6f874fdb59b2b951bfa1#e5a3a4a07fb5a10c09dd6f874fdb59b2b951bfa1"
 dependencies = [
  "abi",
  "borsh",
- "sha1",
+ "sha1-checked",
  "sha2 0.10.9",
 ]
 
@@ -2497,7 +2497,7 @@ version = "0.1.0"
 dependencies = [
  "abi",
  "base64 0.22.1",
- "blob 0.1.0 (git+https://github.com/ducktape-industries/ducktape?rev=9d6b2239eb97fe7a9a8a34f5a97f9d254d0eaab1)",
+ "blob 0.1.0 (git+https://github.com/ducktape-industries/ducktape?rev=e5a3a4a07fb5a10c09dd6f874fdb59b2b951bfa1)",
  "blobs",
  "block2 0.5.1",
  "borsh",
