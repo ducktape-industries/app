@@ -359,7 +359,10 @@ its meaning; the host and the views name the const, never the string.
    `Tip{height, id: tip}`), then `Frame::sign` builds `Body{scheme: Ed25519,
    signer, network, anchor, salt, target, payload}` with a random salt
    (`backend::salt`) and signs `abi::encode(body)` under
-   `FRAME_NAMESPACE`; the bytes go to `/v1/submit`. The node runs a frame
+   `FRAME_NAMESPACE`; the bytes go to `/v1/submit` in a `wire::Submit`
+   with `preconfirm` set, so the node runs the frame at once, keeps its
+   writes in the preconfirmed layer the view's queries read, and answers
+   the predicted receipt (`Submitted::Preconfirmed`). The node runs a frame
    only while its anchor is one of the 256 blocks before the block that
    carries it (`anchor` refusal otherwise), and a block runs a frame at
    most once (`duplicate`): the salt is what makes two identical writes

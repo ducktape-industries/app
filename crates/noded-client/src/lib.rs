@@ -30,7 +30,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 use wire::{
     BlockRef, Blocks, Change, Finalized, Layer, Located, Network, Page, Query, Receipt, Status,
-    TxAsk, route,
+    Submit, Submitted, TxAsk, route,
 };
 
 /// What signs a frame or a consent: an ed25519 key, wherever it is kept.
@@ -187,9 +187,18 @@ impl Client {
         self.fetch(route::NETWORK).await
     }
 
-    /// A signed frame, as bytes; the node answers the receipt of its execute.
-    pub async fn submit(&self, frame: Vec<u8>) -> Result<Receipt> {
-        self.post_raw(route::SUBMIT, frame).await
+    pub async fn preconfirm(&self, frame: Vec<u8>) -> Result<Receipt> {
+        let submit = Submit {
+            frame,
+            preconfirm: true,
+        };
+        match self.post(route::SUBMIT, &submit).await? {
+            Submitted::Preconfirmed(receipt) => Ok(receipt),
+            Submitted::Pooled => Err(Error::Decode(Refusal::new(
+                abi::reason::PROTOCOL,
+                "the node pooled a frame this app asked it to preconfirm",
+            ))),
+        }
     }
 
     /// A signed frame whose target answers a query; the reply is whatever

@@ -45,6 +45,7 @@ pub enum Fetch {
     NotHeld,
     /// The bytes came, and do not hash to the id asked for.
     Corrupt,
+    Collision(BlobId),
     /// The node answered something this app does not read.
     Refused(String),
 }
@@ -55,6 +56,10 @@ impl std::fmt::Display for Fetch {
             Fetch::Unreachable(reason) | Fetch::Refused(reason) => f.write_str(reason),
             Fetch::NotHeld => f.write_str("the node does not hold the program's code yet"),
             Fetch::Corrupt => f.write_str("the program's bytes do not hash to its blob id"),
+            Fetch::Collision(code) => write!(
+                f,
+                "the program's bytes named {code:?} carry a SHA-1 collision attack"
+            ),
         }
     }
 }
@@ -174,7 +179,7 @@ pub async fn program_bytes(
     let cached = cache_path(code);
     if let Some(path) = &cached
         && let Ok(framed) = tokio::fs::read(path).await
-        && hashes_to(&framed, code)
+        && hashes_to(&framed, code)?
         && let Some(body) = unframe(&framed)
     {
         return Ok((body.to_vec(), "disk"));
@@ -187,7 +192,7 @@ pub async fn program_bytes(
     let body = unframe(&framed)
         .ok_or_else(|| Fetch::Refused("the blob carries no git header".into()))?
         .to_vec();
-    if !hashes_to(&framed, code) {
+    if !hashes_to(&framed, code)? {
         return Err(Fetch::Corrupt);
     }
     if let Some(path) = cached {
@@ -211,11 +216,23 @@ fn cache_path(code: &BlobId) -> Option<PathBuf> {
 /// A blob id names the FRAMED bytes (`kind len\0body`), as git's does, and
 /// the cache keeps them framed: the kind is the node's word (a program is
 /// `program`), which the id alone cannot give back.
-fn hashes_to(framed: &[u8], code: &BlobId) -> bool {
+fn hashes_to(framed: &[u8], code: &BlobId) -> Result<bool, Fetch> {
     use sha2::Digest as _;
     match code.kind() {
-        abi::HashKind::Sha1 => sha1::Sha1::digest(framed)[..] == *code.digest(),
-        abi::HashKind::Sha256 => sha2::Sha256::digest(framed)[..] == *code.digest(),
+        abi::HashKind::Sha1 => sha1_hashes_to(framed, code),
+        abi::HashKind::Sha256 => Ok(sha2::Sha256::digest(framed)[..] == *code.digest()),
+    }
+}
+
+fn sha1_hashes_to(framed: &[u8], code: &BlobId) -> Result<bool, Fetch> {
+    use sha1_checked::{CollisionResult, Digest as _};
+    let mut hasher = sha1_checked::Sha1::builder().safe_hash(false).build();
+    hasher.update(framed);
+    match hasher.try_finalize() {
+        CollisionResult::Ok(digest) => Ok(digest[..] == *code.digest()),
+        CollisionResult::Collision(_) | CollisionResult::Mitigated(_) => {
+            Err(Fetch::Collision(*code))
+        }
     }
 }
 
@@ -260,5 +277,29 @@ mod tests {
         module.extend_from_slice(&section);
         assert_eq!(view_section(&module).as_deref(), Some(&body[..]));
         assert_eq!(view_section(b"\0asm\x01\0\0\0"), None);
+    }
+
+    #[test]
+    fn a_sha1_code_hashes_as_git_does_and_a_shattered_half_is_refused_by_its_id() {
+        let hello =
+            noded_client::hex::hex_decode("ce013625030ba8dba906f756967f9e9ca394464a").unwrap();
+        let hello = BlobId::Sha1(hello.try_into().unwrap());
+        assert!(hashes_to(b"blob 6\0hello\n", &hello).unwrap());
+        assert!(!hashes_to(b"blob 6\0hullo\n", &hello).unwrap());
+        let shared =
+            noded_client::hex::hex_decode("f92d74e3874587aaf443d1db961d4e26dde13e9c").unwrap();
+        let code = BlobId::Sha1(shared.try_into().unwrap());
+        for half in [
+            &include_bytes!("fixtures/shattered-1.bin")[..],
+            &include_bytes!("fixtures/shattered-2.bin")[..],
+        ] {
+            let refused = hashes_to(half, &code).unwrap_err();
+            assert!(matches!(refused, Fetch::Collision(named) if named == code));
+            assert!(
+                refused
+                    .to_string()
+                    .contains("f92d74e3874587aaf443d1db961d4e26dde13e9c")
+            );
+        }
     }
 }

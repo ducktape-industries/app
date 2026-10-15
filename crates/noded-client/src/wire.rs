@@ -16,7 +16,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::{SignError, Signer};
 
-pub const NODE_CONTRACT: u32 = 5;
+pub const NODE_CONTRACT: u32 = 6;
 pub const FRAME_NAMESPACE: &[u8] = b"ducktape:frame";
 
 pub mod route {
@@ -209,6 +209,18 @@ pub struct Network {
 pub struct PeerStatus {
     pub key: Vec<u8>,
     pub signed: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct Submit {
+    pub frame: Vec<u8>,
+    pub preconfirm: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum Submitted {
+    Pooled,
+    Preconfirmed(Receipt),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]

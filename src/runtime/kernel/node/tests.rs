@@ -90,11 +90,13 @@ fn applying_node_with_a_lost_answer(
             let answer = match route.as_str() {
                 noded::route::STATUS => abi::encode(&status_at(TIP)),
                 noded::route::SUBMIT => {
-                    let frame: noded::Frame = abi::decode(&body).unwrap();
+                    let submit: noded::Submit = abi::decode(&body).unwrap();
+                    assert!(submit.preconfirm, "a view's write is preconfirmed");
+                    let frame: noded::Frame = abi::decode(&submit.frame).unwrap();
                     assert_eq!(frame.body.anchor, TIP, "anchored at the tip the node named");
                     assert!(frame.body.salt.is_some(), "a write carries a salt");
                     counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    abi::encode(&applied())
+                    abi::encode(&noded::Submitted::Preconfirmed(applied()))
                 }
                 other => panic!("{other}"),
             };
@@ -235,12 +237,14 @@ async fn a_redirected_submit_goes_nowhere_else() {
     backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
     let elsewhere = fake_node(vec![(
         noded::route::SUBMIT,
-        Mode::Answer(abi::encode(&noded::Receipt {
-            program: "programs".into(),
-            outcome: abi::Outcome::Applied { output: Vec::new() },
-            events: Vec::new(),
-            nested: Vec::new(),
-        })),
+        Mode::Answer(abi::encode(&noded::Submitted::Preconfirmed(
+            noded::Receipt {
+                program: "programs".into(),
+                outcome: abi::Outcome::Applied { output: Vec::new() },
+                events: Vec::new(),
+                nested: Vec::new(),
+            },
+        ))),
     )]);
     let to = format!(
         "{}{}",
@@ -332,7 +336,8 @@ fn node_refusing_duplicates() -> (Node, std::sync::Arc<std::sync::atomic::Atomic
             let answer = match route.as_str() {
                 noded::route::STATUS => abi::encode(&status_at(TIP)),
                 noded::route::SUBMIT => {
-                    let frame: noded::Frame = abi::decode(&body).unwrap();
+                    let submit: noded::Submit = abi::decode(&body).unwrap();
+                    let frame: noded::Frame = abi::decode(&submit.frame).unwrap();
                     let body = frame.body;
                     let id = abi::encode(&(
                         body.signer,
@@ -354,7 +359,7 @@ fn node_refusing_duplicates() -> (Node, std::sync::Arc<std::sync::atomic::Atomic
                             ..applied()
                         },
                     };
-                    abi::encode(&receipt)
+                    abi::encode(&noded::Submitted::Preconfirmed(receipt))
                 }
                 other => panic!("{other}"),
             };
