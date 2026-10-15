@@ -2,9 +2,9 @@ use std::time::{Duration, Instant};
 
 use std::path::Path;
 
-use super::center::{Center, CenterHandle, MAX_AGE, MAX_ENTRIES, VIEW_ENTRIES, read_log};
+use super::center::{Center, CenterHandle, read_log};
 use super::settings::{BURST_PREF, FRONT_PREF, NOTIFY_PREF, Permission, Settings, VIEWS_PREF};
-use super::{MAX_TEXT, in_order, shortened};
+use super::{checked, in_order};
 use crate::runtime::WindowKey;
 use view_wire::methods::{self, Delivery, Notification};
 
@@ -213,34 +213,26 @@ fn reading_a_tag_reads_only_the_views_own_rows_under_it() {
     assert_eq!(center.unread(), 3);
 }
 
-/// The log keeps 500 rows and thirty days, whichever is fewer.
+/// The log keeps every row, however many and however old, until the
+/// person clears it.
 #[test]
-fn the_log_is_capped_by_count_and_age() {
+fn the_log_keeps_every_row_until_cleared() {
     let now = Instant::now();
     let mut center = Center::default();
-    // six views, each under its own share of the log
-    let views: Vec<String> = (0..6).map(|nth| format!("view{nth}")).collect();
-    let mut silent = settings(None);
-    for view in &views {
-        silent.views.insert(view.clone(), Permission::Silent);
+    let silent = settings(Some(Permission::Silent));
+    for nth in 0..600 {
+        center.post(
+            &silent,
+            "chat",
+            "Chat",
+            post(&nth.to_string(), ""),
+            now,
+            nth,
+        );
     }
-    for nth in 0..(MAX_ENTRIES as i64 + 20) {
-        let view = &views[nth as usize % views.len()];
-        center.post(&silent, view, "View", post(&nth.to_string(), ""), now, nth);
-    }
-    assert_eq!(center.entries().count(), MAX_ENTRIES);
-    assert_eq!(center.entries().last().unwrap().title, "20");
-    // thirty days on from the row at 100: everything before it ages out
-    center.post(
-        &silent,
-        "view0",
-        "View",
-        post("late", ""),
-        now,
-        100 + MAX_AGE,
-    );
-    assert_eq!(center.entries().count(), 520 - 100 + 1);
-    assert_eq!(center.entries().last().unwrap().title, "100");
+    center.post(&silent, "chat", "Chat", post("late", ""), now, 1 << 40);
+    assert_eq!(center.entries().count(), 601);
+    assert_eq!(center.entries().last().unwrap().title, "0");
 }
 
 #[test]
@@ -258,7 +250,7 @@ fn prefs_read_back_as_settings() {
 
 /// A post round-trips as borsh and trailing bytes are refused; a post
 /// with no words, or a link that is not `duck://`, is refused; long text
-/// is cut on a char boundary, and a cut link is dropped.
+/// and a long link are kept whole.
 #[test]
 fn a_post_is_words_a_tag_and_a_duck_link() {
     let full = Notification {
@@ -271,54 +263,21 @@ fn a_post_is_words_a_tag_and_a_duck_link() {
     assert_eq!(methods::decode::<Notification>(&bytes).unwrap(), full);
     bytes.extend_from_slice(b"icon");
     assert!(methods::decode::<Notification>(&bytes).is_err());
-    assert!(shortened(Notification::default()).is_err());
+    assert!(checked(Notification::default()).is_err());
     assert!(
-        shortened(Notification {
+        checked(Notification {
             link: "https://example.com".into(),
             ..full.clone()
         })
         .is_err()
     );
-    let long = shortened(Notification {
-        title: "가".repeat(MAX_TEXT),
-        body: "b".repeat(MAX_TEXT * 2),
-        link: format!("duck://{}", "x".repeat(MAX_TEXT)),
+    let long = Notification {
+        title: "가".repeat(4096),
+        body: "b".repeat(1 << 16),
+        link: format!("duck://{}", "x".repeat(4096)),
         ..full
-    })
-    .unwrap();
-    assert!(long.title.len() <= MAX_TEXT && long.title.chars().all(|c| c == '가'));
-    assert_eq!(long.body.len(), MAX_TEXT);
-    assert!(long.link.is_empty(), "a cut link goes nowhere");
-}
-
-/// The cut is what clears a link, not its length after: a link of exactly
-/// MAX_TEXT bytes was not cut and stays; a multibyte link cut short of
-/// MAX_TEXT on a character boundary was, and goes.
-#[test]
-fn a_link_is_cleared_when_cut_not_when_long() {
-    let with_link = |link: String| {
-        shortened(Notification {
-            title: "t".into(),
-            link,
-            ..Notification::default()
-        })
-        .unwrap()
-        .link
     };
-    let exact = format!("duck://{}", "x".repeat(MAX_TEXT - "duck://".len()));
-    assert_eq!(exact.len(), MAX_TEXT);
-    assert_eq!(
-        with_link(exact.clone()),
-        exact,
-        "uncut, so it still goes somewhere"
-    );
-    // 7 + 3 * 169 = 514 bytes; the boundary cut lands at 511
-    let cut = format!("duck://{}", "가".repeat(169));
-    assert!(cut.len() > MAX_TEXT);
-    assert!(
-        with_link(cut).is_empty(),
-        "cut short of MAX_TEXT, still cut"
-    );
+    assert_eq!(checked(long.clone()).unwrap(), long);
 }
 
 /// A view's banners leave in the order they came, however long each
@@ -466,9 +425,8 @@ fn quitting_hands_the_log_over_before_it_drains() {
     assert_eq!(kept[0].title, "last");
 }
 
-/// A view posting 600 notices keeps its newest 100 rows and leaves the
-/// other views' rows where they were; a view the person has not answered
-/// keeps its newest five, however much it posts.
+/// A view posting 600 notices leaves the other views' rows where they
+/// were, and a view the person has not answered keeps every row it posts.
 #[test]
 fn one_views_flood_leaves_the_other_views_rows() {
     let now = Instant::now();
@@ -503,13 +461,11 @@ fn one_views_flood_leaves_the_other_views_rows() {
             .collect::<Vec<_>>()
     };
     assert_eq!(rows(&center, "forge"), ["forge 2", "forge 1", "forge 0"]);
-    let chat = rows(&center, "chat");
-    assert_eq!(chat.len(), VIEW_ENTRIES);
-    assert_eq!((chat[0].as_str(), chat[99].as_str()), ("599", "500"));
-
+    assert_eq!(rows(&center, "chat").len(), 600);
+    let unanswered = settings(None);
     for nth in 0..600 {
         center.post(
-            &answered,
+            &unanswered,
             "spam",
             "Spam",
             post(&nth.to_string(), ""),
@@ -518,9 +474,8 @@ fn one_views_flood_leaves_the_other_views_rows() {
         );
     }
     assert!(center.asking.contains("spam"), "the bar still asks");
-    assert_eq!(rows(&center, "spam"), ["599", "598", "597", "596", "595"]);
+    assert_eq!(rows(&center, "spam").len(), 600);
     assert_eq!(rows(&center, "forge").len(), 3);
-    assert_eq!(rows(&center, "chat").len(), VIEW_ENTRIES);
 }
 
 /// 256 posts in one redraw: the prefs are read once, not per post, and
@@ -557,7 +512,7 @@ fn a_redraws_posts_read_the_prefs_once_and_write_the_log_once() {
     let saves = &crate::perf::snapshot(false)["shell"]["io.notify_save"]["n"];
     assert_eq!(saves.as_u64(), Some(1), "one write for the redraw's posts");
     let kept = read_log(&path).unwrap();
-    assert_eq!(kept.len(), VIEW_ENTRIES);
+    assert_eq!(kept.len(), 256);
     assert_eq!(kept.last().unwrap().title, "255");
 }
 

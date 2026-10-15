@@ -29,21 +29,21 @@ version = "0.1.0"
 [workspace.dependencies]
 
 # --- sdk-line: crates/sdk of ducktape-industries/programs (abi, view-wire, program, ducklink, design, describe). Every crate of that repo here and below sits on ONE rev, and every view this app seats is built at that rev: its manifest's wire_id must equal `view_wire::WIRE_ID` (`runtime/view.rs` `wire_id`). Which rev and why is in `git log -- Cargo.toml`. ---
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "ffad7b993c7abde7016768c135d429c6fee63e6f", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "ffad7b993c7abde7016768c135d429c6fee63e6f", package = "view-wire" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "view-wire" }
 # `program::is_name`: the one spelling of a program id
-program = { git = "https://github.com/ducktape-industries/programs", rev = "ffad7b993c7abde7016768c135d429c6fee63e6f", package = "program" }
-ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "ffad7b993c7abde7016768c135d429c6fee63e6f", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/programs", rev = "ffad7b993c7abde7016768c135d429c6fee63e6f", package = "design" }
+program = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "program" }
+ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "design" }
 # `program.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/programs", rev = "ffad7b993c7abde7016768c135d429c6fee63e6f", package = "describe", features = ["host"] }
+describe = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "describe", features = ["host"] }
 # the identity program's own types: the app's passkey lane and `crates/noded-client`'s flows
-identity = { git = "https://github.com/ducktape-industries/programs", rev = "ffad7b993c7abde7016768c135d429c6fee63e6f", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "identity" }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
 keystore = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "keystore" }
-blob = { git = "https://github.com/ducktape-industries/ducktape", rev = "e5a3a4a07fb5a10c09dd6f874fdb59b2b951bfa1", package = "blob" }
+blob = { git = "https://github.com/ducktape-industries/ducktape", rev = "d57fad49bc62250f93f76b2a289b38dc8958a0f2", package = "blob" }
 
 # --- external ---
 borsh = { version = "1", default-features = false, features = ["derive", "std"] }
@@ -100,8 +100,8 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b", package = "keyscheme" }
 identity.workspace = true
 # The roster's full query surface: its programs and its view-only entries.
-programs = { git = "https://github.com/ducktape-industries/programs", rev = "ffad7b993c7abde7016768c135d429c6fee63e6f", package = "programs" }
-valset = { git = "https://github.com/ducktape-industries/programs", rev = "ffad7b993c7abde7016768c135d429c6fee63e6f", package = "valset" }
+programs = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "programs" }
+valset = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "valset" }
 base64.workspace = true
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -159,7 +159,7 @@ tempfile.workspace = true
 tokio-tungstenite.workspace = true
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b", package = "keyscheme", features = ["testkit"] }
 p256 = "0.13"
-blobs = { git = "https://github.com/ducktape-industries/programs", rev = "ffad7b993c7abde7016768c135d429c6fee63e6f", package = "blobs" }
+blobs = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "blobs" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # test-support: its headless renderer, which `render/tests/picture_pixels.rs`
@@ -167,7 +167,7 @@ blobs = { git = "https://github.com/ducktape-industries/programs", rev = "ffad7b
 gpui-wgpu = { package = "gpui-pre-wgpu", version = "=0.3.9", features = ["test-support"] }
 
 [patch."https://github.com/ducktape-industries/ducktape"]
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "ffad7b993c7abde7016768c135d429c6fee63e6f", package = "abi" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "ad0db7a0c3c05210554dde3008015fb19863915a", package = "abi" }
 
 [patch.crates-io]
 gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "02724886f436f4f5b01ebfc1fb5cd37c09809a79" }

@@ -89,10 +89,6 @@ pub(super) enum Mode {
     Close,
     /// `307 Temporary Redirect` to the URL: a node sending the request on.
     Redirect(String),
-    /// `200 OK` with a blob's borsh `Some(framed)` `len` bytes long, sent
-    /// for as long as the client reads, its `Content-Length` declared or
-    /// the body chunked. What got out goes to [`FakeNode::streamed`].
-    Stream { len: usize, declared: bool },
 }
 
 /// A node on a local socket whose routes each answer one [`Mode`], one
@@ -101,8 +97,6 @@ pub(super) struct FakeNode {
     pub(super) node: node::Node,
     /// Connections taken so far.
     pub(super) accepted: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    /// The bytes each [`Mode::Stream`] got out before the client hung up.
-    pub(super) streamed: tokio::sync::mpsc::UnboundedReceiver<usize>,
 }
 
 pub(super) fn fake_node(routes: Vec<(&'static str, Mode)>) -> FakeNode {
@@ -113,28 +107,19 @@ pub(super) fn fake_node(routes: Vec<(&'static str, Mode)>) -> FakeNode {
         network: "test-network".into(),
     };
     let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let (streamed, sent) = tokio::sync::mpsc::unbounded_channel();
     let counted = accepted.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             counted.fetch_add(1, Ordering::SeqCst);
-            let (routes, streamed) = (routes.clone(), streamed.clone());
-            std::thread::spawn(move || serve(stream, &routes, &streamed));
+            let routes = routes.clone();
+            std::thread::spawn(move || serve(stream, &routes));
         }
     });
-    FakeNode {
-        node,
-        accepted,
-        streamed: sent,
-    }
+    FakeNode { node, accepted }
 }
 
 /// One connection to a [`FakeNode`]: its route's mode, played out.
-fn serve(
-    mut stream: std::net::TcpStream,
-    routes: &[(&'static str, Mode)],
-    streamed: &tokio::sync::mpsc::UnboundedSender<usize>,
-) {
+fn serve(mut stream: std::net::TcpStream, routes: &[(&'static str, Mode)]) {
     use std::io::{Read as _, Write as _};
     let (line, _) = read_request(&mut stream);
     let path = line.split(' ').nth(1).unwrap_or_default();
@@ -157,34 +142,6 @@ fn serve(
             "HTTP/1.1 307 Temporary Redirect\r\nLocation: {to}\r\nContent-Length: 0\r\n\r\n"
         )
         .unwrap(),
-        Mode::Stream { len, declared } => {
-            let head = match declared {
-                true => format!("HTTP/1.1 200 OK\r\nContent-Length: {len}\r\n\r\n"),
-                false => "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".into(),
-            };
-            let mut sent = 0;
-            let mut body = vec![0; 64 << 10];
-            body[0] = 1;
-            body[1..5].copy_from_slice(&(*len as u32 - 5).to_le_bytes());
-            let mut out = stream.write_all(head.as_bytes());
-            while out.is_ok() && sent < *len {
-                let chunk = &body[..body.len().min(len - sent)];
-                out = match declared {
-                    true => stream.write_all(chunk),
-                    false => write!(stream, "{:x}\r\n", chunk.len())
-                        .and_then(|()| stream.write_all(chunk))
-                        .and_then(|()| stream.write_all(b"\r\n")),
-                };
-                if out.is_ok() {
-                    sent += chunk.len();
-                }
-                body[..5].fill(0);
-            }
-            if out.is_ok() && !declared {
-                let _ = stream.write_all(b"0\r\n\r\n");
-            }
-            let _ = streamed.send(sent);
-        }
     }
 }
 
@@ -328,6 +285,8 @@ fn acl_roles() -> AclRoles {
         validators: "acl-valset".into(),
         identity: "acl-identity".into(),
         blobs: "acl-blobs".into(),
+        awaits: "acl-awaits".into(),
+        egress: None,
     }));
     AclRoles
 }
@@ -481,10 +440,8 @@ fn host_title_is_cleaned_and_anything_but_a_string_refused() {
     assert_eq!(named(reordered), "#general");
     let rtl = "#\u{200f}שלום 👩\u{200d}💻";
     assert_eq!(named(rtl), rtl, "a mark and a joiner stay");
-    let cut = named(&"한".repeat(10_000));
-    assert_eq!(cut, "한".repeat(80), "80 chars, not 80 bytes");
-    let spaced = format!("{} tail", "a".repeat(79));
-    assert_eq!(named(&spaced), "a".repeat(79), "no space left at the cut");
+    let long = "한".repeat(10_000);
+    assert_eq!(named(&long), long, "a long title is kept whole");
     assert_eq!(named(""), "");
     // a length past its bytes; one byte that is no UTF-8
     for payload in [vec![0xff; 4], methods::encode(&vec![0xffu8])] {
@@ -636,26 +593,16 @@ fn a_readers_press_on_a_link_opens_it_once(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(view.intents.len(), 1);
 }
 
-/// Four links a minute per view, each on its own activation; the fifth is
-/// refused `link_limit` until the window moves on.
+/// Every link opened on its own activation goes through.
 #[test]
-fn link_open_refuses_the_fifth_link_in_a_minute() {
+fn link_open_admits_every_link_on_its_own_activation() {
     let mut view = view();
-    for id in 1..=4 {
+    for id in 1..=8 {
         view.activation = Some(Instant::now());
         view.answer(link_request(id, "https://example.com/"), &None);
         assert_eq!(refusal_code(&mut view), None, "link {id}");
     }
-    view.activation = Some(Instant::now());
-    view.answer(link_request(5, "https://example.com/"), &None);
-    assert_eq!(refusal_code(&mut view).as_deref(), Some("link_limit"));
-    assert_eq!(view.intents.len(), 4);
-    // a minute on, the oldest is forgotten and one more goes through
-    view.links[0] -= Duration::from_secs(61);
-    view.activation = Some(Instant::now());
-    view.answer(link_request(6, "https://example.com/"), &None);
-    assert_eq!(refusal_code(&mut view), None);
-    assert_eq!(view.intents.len(), 5);
+    assert_eq!(view.intents.len(), 8);
 }
 
 /// One activation admits one gated call, whichever asks first; a stale
@@ -904,7 +851,7 @@ fn a_node_method_reaches_only_a_declared_target() {
 fn awaited(view: &mut View) -> Option<wire::Event> {
     for _ in 0..200 {
         let mut events = Vec::new();
-        view.replies.drain_into(&mut events).unwrap();
+        view.replies.drain_into(&mut events);
         if let Some(event) = events.pop() {
             return Some(event);
         }
@@ -1014,19 +961,6 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
         }) => assert_eq!(refusal.code, refusal::CONSENT_REFUSED),
         other => panic!("{other:?}"),
     }
-    // the in-flight budget spent: refused before the card goes up (the ask
-    // is the request's own slot, so Approve could lead nowhere)
-    let held: Vec<_> = (0..MAX_IN_FLIGHT)
-        .map(|_| view.replies.admit().expect("within budget"))
-        .collect();
-    view.activation = Some(Instant::now());
-    view.answer(request(6), &None);
-    assert_eq!(
-        refusal_code(&mut view).as_deref(),
-        Some(refusal::IN_FLIGHT_LIMIT)
-    );
-    assert!(consent::front().is_none(), "nothing asked");
-    drop(held);
     // resubmitted after Cancel with no new press: no second card
     view.answer(request(5), &None);
     assert_eq!(

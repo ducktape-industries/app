@@ -20,9 +20,9 @@ pub(crate) struct PictureBytes {
 /// The rasters decoded from a seat's picture bytes, by content hash: one
 /// cache for the seat's tree and the tooltip trees it opens, carried
 /// across a hot swap, and released with their atlas tiles when the seat
-/// drops (`ViewTree::release`). Past the caps (`picture_resources`) it
-/// evicts the rasters drawn least recently before the current frame, whose
-/// bytes the seat still holds to decode again; a raster that does not fit
+/// drops (`ViewTree::release`). Past the picture memory setting
+/// (`picture_resources`) it evicts the rasters drawn least recently before
+/// the current frame, whose bytes the seat still holds to decode again; a raster that does not fit
 /// beside the current frame's is refused, and its Image draws the view's
 /// fallback.
 #[derive(Default)]
@@ -69,7 +69,7 @@ impl Rasters {
             *drawn = self.frame;
             return true;
         }
-        if !self.make_room(1, window.as_deref_mut(), cx) {
+        if !self.make_room(0, window.as_deref_mut(), cx) {
             return false;
         }
         let Some(image) = decode_image(data) else {
@@ -85,16 +85,16 @@ impl Rasters {
     }
 
     /// Evicts the rasters drawn least recently, never one the current frame
-    /// drew, until `additional` bytes and one more raster fit. `false` when
-    /// they still do not.
+    /// drew, until one more raster of `additional` bytes fits. `false` when
+    /// it still does not.
     fn make_room(
         &mut self,
         additional: usize,
         mut window: Option<&mut Window>,
         cx: &mut App,
     ) -> bool {
-        while !cache_fits(self.held.len(), self.bytes, additional) {
-            // ponytail: a scan per eviction, over at most `MAX_PICTURES`
+        let budget = crate::backend::memory_bounds().picture_bytes;
+        while !cache_fits(self.held.len(), self.bytes, additional, budget) {
             let Some(hash) = (self.held.iter())
                 .filter(|(_, (_, drawn))| *drawn < self.frame)
                 .min_by_key(|(_, (_, drawn))| *drawn)

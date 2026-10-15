@@ -1,12 +1,5 @@
 use super::*;
 
-/// The `methods::Call` envelope around an op: its target name and two
-/// lengths, allowed on top of MAX_OP_BYTES.
-const OP_ENVELOPE_BYTES: usize = 256;
-/// Widget commands waiting for a frame that mounts their target: at most
-/// one tick's worth of requests.
-const MAX_PENDING_WIDGET_COMMANDS: usize = wire::MAX_REQUESTS;
-
 /// Whether `target` is the whole authored path of a node mounted in
 /// `root` (the ancestry `crate::render::enter_scope` walks). A view names a
 /// command's target by the id it holds; the view SDK, which lowered every
@@ -78,13 +71,8 @@ impl View {
             return false;
         }
         self.sync_props(props);
-        match self.replies.drain_into(&mut self.pending) {
-            Ok(backlog) => crate::perf::record(self.perf_key(), "backlog", backlog as u64),
-            Err(error) => {
-                self.fault = Some(error);
-                return false;
-            }
-        }
+        let backlog = self.replies.drain_into(&mut self.pending);
+        crate::perf::record(self.perf_key(), "backlog", backlog as u64);
         self.pending
             .extend(kernel::ticked(&mut self.clocks, std::time::Instant::now()));
         // Queued results precede becoming visible, so a view can distinguish
@@ -140,25 +128,12 @@ impl View {
             .is_some_and(|at| at.elapsed() <= super::ACTIVATION_EXPIRY)
     }
 
-    /// Routes one request: the size cap, the manifest's capability gate,
+    /// Routes one request: the manifest's capability gate,
     /// then the kernel contract (`kernel::answer`), then the three methods
     /// only this side has — `host.widget`, `host.session` answered from the
     /// props the app holds, `host.log` — and anything else is refused.
     pub(crate) fn answer(&mut self, request: wire::Request, props: &Option<Vec<u8>>) {
         let wire::Request { id, kind, payload } = request;
-        // `op.submit` and `program.describe` carry an op inside a `methods::Call`
-        let payload_limit = match kind.as_str() {
-            "op.submit" | "program.describe" => MAX_OP_BYTES + OP_ENVELOPE_BYTES,
-            _ => MAX_PAYLOAD_BYTES,
-        };
-        if payload.len() > payload_limit {
-            self.refuse(
-                id,
-                refusal::TOO_LARGE,
-                format!("`{kind}` carries more than {payload_limit} bytes"),
-            );
-            return;
-        }
         let Some((capability, operation)) = Capability::of_kind(&kind) else {
             self.refuse(
                 id,
@@ -289,10 +264,6 @@ impl View {
                 return Err("widget request has trailing bytes".into());
             }
             command.validate()?;
-            let queue_full = self.widget_commands.len() >= MAX_PENDING_WIDGET_COMMANDS;
-            if queue_full {
-                return Err("too many pending widget requests".into());
-            }
             if !self.target_is_mounted(&command) {
                 return Err("widget target is outside this view tree".into());
             }
@@ -351,8 +322,7 @@ impl View {
             crate::perf::count(self.perf_key(), "truncations", 1);
             tracing::warn!(target: "ducktape::app", program = self.program, generation,
                 reason = "frame_cut", nodes = cuts.nodes, depth = cuts.depth,
-                strings = cuts.strings, text = cuts.text, pictures = cuts.pictures,
-                canvases = cuts.canvases, lists = cuts.lists, first = ?cuts.first, "program view frame cut by the host's budgets");
+                first = ?cuts.first, "program view frame cut by the host's sanitizer");
         }
     }
 

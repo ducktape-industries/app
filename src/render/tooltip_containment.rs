@@ -582,12 +582,9 @@ mod tests {
     }
 
     /// The store behind the tree: a response is kept only for a route the
-    /// tree holds, on every node kind that carries a tooltip, and the
-    /// contents together stay within the frame's node budget.
+    /// tree holds, on every node kind that carries a tooltip.
     #[gpui_kit::test]
-    fn tooltip_responses_hold_the_trees_routes_within_the_node_budget(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
+    fn tooltip_responses_hold_the_trees_routes(cx: &mut gpui_kit::TestAppContext) {
         let tip = |request| {
             Some(Box::new(wire::Interactivity {
                 tooltip: Some(wire::Tooltip {
@@ -702,17 +699,5 @@ mod tests {
             [1, 2, 3, 4, 5],
             "image, svg, uniform list, list and grip each keep their tooltip"
         );
-
-        // with the four others it would hold one frame's budget and more
-        let budget = wire::Node::Container(view_wire::ContainerNode {
-            id: None,
-            style: crate::render::plain_style(),
-            interactivity: Default::default(),
-            children: vec![wire::Node::empty(); wire::MAX_NODES - 1],
-        });
-        tree.update(cx, |tree, cx| {
-            tree.tooltip_responses(answered([answer(3, budget)]), cx)
-        });
-        assert_eq!(held(cx), [3], "the store went past the node budget");
     }
 }

@@ -47,37 +47,13 @@ pub(crate) use settings::{
     BURSTS, Permission, Settings, not_now, save_banners, save_burst, save_in_front, set_permission,
 };
 
-/// The longest title, body, tag and link the host keeps. A notice is a
-/// sentence, not a payload.
-const MAX_TEXT: usize = 512;
-
-/// Shortened to what a screen shows, on a character boundary; a notice
-/// with no words is not one, and a link is a `duck://` link or nothing.
-fn shortened(mut post: Notification) -> Result<Notification, &'static str> {
+/// A notice with words, and a link that is a `duck://` link or nothing.
+fn checked(post: Notification) -> Result<Notification, &'static str> {
     if post.title.is_empty() && post.body.is_empty() {
         return Err("a notice carries neither a title nor a body");
     }
     if !post.link.is_empty() && !post.link.starts_with("duck://") {
         return Err("a notice's link is a duck:// link");
-    }
-    // a cut link goes nowhere: the cut says so, not the length after it
-    let link_cut = post.link.len() > MAX_TEXT;
-    for text in [
-        &mut post.title,
-        &mut post.body,
-        &mut post.tag,
-        &mut post.link,
-    ] {
-        if text.len() > MAX_TEXT {
-            let cut = (0..=MAX_TEXT)
-                .rev()
-                .find(|end| text.is_char_boundary(*end))
-                .unwrap_or(0);
-            text.truncate(cut);
-        }
-    }
-    if link_cut {
-        post.link.clear();
     }
     Ok(post)
 }
@@ -102,7 +78,7 @@ pub(super) fn answer(
 /// the end of the redraw ([`center::Center::flush`]).
 fn post(view: &mut View, center: &CenterHandle, id: u64, payload: &[u8]) {
     let post = methods::decode::<Notification>(payload)
-        .and_then(|post| shortened(post).map_err(str::to_owned));
+        .and_then(|post| checked(post).map_err(str::to_owned));
     let post = match post {
         Ok(post) => post,
         Err(error) => {

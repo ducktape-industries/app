@@ -22,15 +22,6 @@ pub(crate) struct Notice {
     pub tag: String,
 }
 
-/// The centre keeps this many rows, and none older than this.
-pub(super) const MAX_ENTRIES: usize = 500;
-pub(super) const MAX_AGE: i64 = 30 * 86_400;
-/// The rows one view keeps: a fifth of the log, so one view's flood
-/// leaves the other views' rows. A view the person has not answered yet
-/// (no word, or "Not now") keeps a few, enough to show what it posts.
-pub(super) const VIEW_ENTRIES: usize = 100;
-pub(super) const UNANSWERED_ENTRIES: usize = 5;
-
 /// One row of the centre.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Entry {
@@ -133,11 +124,7 @@ impl Center {
                 false => format!("{program}/{}", post.tag),
             },
         };
-        let share = match permission {
-            None => UNANSWERED_ENTRIES,
-            Some(_) => VIEW_ENTRIES,
-        };
-        self.log(program, view, post, wall, share);
+        self.log(program, view, post, wall);
         match permission {
             None => {
                 if !self.not_now.contains(program) {
@@ -179,7 +166,7 @@ impl Center {
     /// folds into that row and brings it back to the top, unread. Past the
     /// view's `share` of rows its own oldest go, never another view's.
     /// Written at the end of the view's redraw ([`Center::flush`]).
-    fn log(&mut self, program: &str, view: &str, post: Notification, wall: i64, share: usize) {
+    fn log(&mut self, program: &str, view: &str, post: Notification, wall: i64) {
         let folded = (!post.tag.is_empty())
             .then(|| {
                 self.entries
@@ -216,26 +203,7 @@ impl Center {
             }
         };
         self.entries.push(entry);
-        let mut over = self
-            .entries
-            .iter()
-            .filter(|entry| entry.program == program)
-            .count()
-            .saturating_sub(share);
-        self.entries.retain(|entry| {
-            let gone = over > 0 && entry.program == program;
-            over -= usize::from(gone);
-            !gone
-        });
-        self.prune(wall);
         self.rev += 1;
-    }
-
-    /// At most [`MAX_ENTRIES`] rows, none older than [`MAX_AGE`].
-    fn prune(&mut self, wall: i64) {
-        self.entries.retain(|entry| wall - entry.at <= MAX_AGE);
-        let over = self.entries.len().saturating_sub(MAX_ENTRIES);
-        self.entries.drain(..over);
     }
 
     /// Newest first.
@@ -354,7 +322,6 @@ impl Center {
             }
         }
         self.next = self.entries.iter().map(|entry| entry.id).max().unwrap_or(0);
-        self.prune(wall());
     }
 
     /// The log handed to the disk if it moved since it last was: once per

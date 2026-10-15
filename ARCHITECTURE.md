@@ -105,10 +105,10 @@ quit) are `Windows`' methods.
 | Thread | What runs there | Where it is made |
 |---|---|---|
 | **window / main** (GPUI foreground) | every entity method and the timers the entities and layers own (`Session`'s status poll, `Toast`'s dismiss, an open menu's ages in `layers::Chrome`, a `Seat`'s clocks); every `WindowRoot` render and its layers'; `Seat::turn`, so every wasm **tick**; `ViewTree` layout and paint; AX door answers (`ax::serve`); the entities' own `Task` futures (connect, status poll, sign-in) — polled on the GPUI foreground inside `runtime.enter()` (`spawn_on_runtime`), so their HTTP bodies are decoded here | `shell/launch.rs` |
-| **`views-kernel`** (one tokio current-thread runtime) | the I/O driver for every `reqwest`/WebSocket; view-originated node calls (`kernel/node.rs` `spawn_retrying`/`spawn_retrying_unsent`/`spawn_no_retry`, `changes`, `heads`); the banner queue (`notify::in_order`); its blocking pool runs `program.describe`, OS banners and device-key opening | `kernel::handle` |
-| **`view-loader` threads** (at most `LOADERS`, 4) | each takes the next queued load: fetch, verify, compile, instantiate, snapshot/restore (`View::load`), then the install; a pane's load goes ahead of the preloads | `seat::queue` |
+| **`views-kernel`** (one tokio current-thread runtime) | the I/O driver for every `reqwest`/WebSocket; view-originated node calls (`kernel/node.rs` `spawn_asked`/`spawn_consented`, `changes`, `heads`); the banner queue (`notify::in_order`); its blocking pool runs `program.describe`, OS banners and device-key opening | `kernel::handle` |
+| **`view-loader` threads** (at most `loaders()`, the parallelism the OS reports) | each takes the next queued load: fetch, verify, compile, instantiate, snapshot/restore (`View::load`), then the install; a pane's load goes ahead of the preloads | `seat::queue` |
 | **`roster` thread** | `/v1/programs` and the seat reconciliation on connect and on each new block; it queues the loads and returns, never waiting on one | `roster::spawn_roster_read` |
-| **`ax-door`** | TCP accept and HTTP parsing, one request per connection in turn (a long `/wait` holds the next caller; a connection has 5 s to send its request, whose head is capped at 16 KiB before the token is read); each request is forwarded to the window thread | `ax/http.rs` |
+| **`ax-door`** | TCP accept, then each connection read and parsed on a thread of its own, one request per connection (a caller that stalls or trickles holds up no other); each request is forwarded to the window thread, which answers them in turn (a long `/wait` holds the next caller's answer) | `ax/http.rs` |
 | **freedesktop listener** (non-macOS) | banner clicks off the session bus | `runtime/notify/freedesktop.rs` |
 | GPUI background executor | timers only (clock wake-ups, sensor delays, spin, the door's settle polls) | — |
 
@@ -124,7 +124,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
 1. **Roster.** `Session::connect_answered` (`shell/entities/session.rs`) calls `runtime::connected`,
    which bumps `Connection.rev` and starts `roster::spawn_roster_read`.
    That thread calls `backend::views::programs` (the `programs`
-   query; the app takes at most `MAX_PROGRAMS`, 256, entries), stores the
+   query; the app takes every entry it lists), stores the
    list in the app's `Roster` (`roster::roster`, the
    one `launch::run` hands the `Rail`), retires seats of programs that left,
    creates a preloaded seat `(program, 0)` for each program and queues a
@@ -152,8 +152,9 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    wasmtime disk cache under `cache_dir()/view-code`); `runtime::manifest_of`
    reads the same manifest again for the tab's name and icon and the
    capabilities.
-   Compiled modules are cached by sha256 of the bytes in `ViewCodeCache`
-   (16 modules, 32 MiB of source).
+   Compiled modules are kept in `ViewCodeCache` by sha256 of the bytes for
+   as long as a view or a seat holds the module; one nobody holds compiles
+   again from the wasmtime disk cache.
 4. **Seat / mount.** A **seat** is `seat::Mounted`, one per
    `(program, instance)` in `seat::registry`, holding a `Slot`:
    `Loading → Fetching → Compiling → Compiled | Ready(View) | Empty | Failed(Failure)`,
@@ -176,8 +177,11 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    is queued as a load. A seat claimed while its preload is on the way gets
    its load once the preload lands, and that load starts the code the same
    way.
-   `View::instantiate` builds a store with `StoreLimits` (`MEMORY_LIMIT`)
-   and binds `Exports` (`memory`, `alloc`, `init`, `tick`, `snapshot`,
+   `View::instantiate` builds a store whose `ViewLimits`
+   (`view/abi.rs`, a wasmtime `ResourceLimiter`) charges linear memory and
+   table elements against the device's `memory.view_bytes` setting
+   (`backend::memory_bounds`; a grow past it traps), and binds `Exports`
+   (`memory`, `alloc`, `init`, `tick`, `snapshot`,
    `restore`); `View::load` then runs `init` on a fresh view, or `restore`
    on a replacement.
 5. **Turn / tick.** A seat is never stepped inside a draw. Every wake ends in
@@ -207,14 +211,12 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    route subscriptions, and — only if something is pending, the frame said
    `busy`, or there was never a first tree — calls `View::tick`: `arm`
    refills `FUEL_PER_TICK`, `Exports::tick` runs the wasm with the encoded
-   events, `shape` decodes and bound-checks the returned `Frame`
-   (`MAX_FRAME_BYTES`, request and cancel counts, sanitize, the frame's
-   style entries into the held table), `merge`
+   events, `shape` decodes the returned `Frame` (`view_wire::decode`
+   refuses one nested deeper than `view_wire::MAX_DEPTH`) and sanitizes it,
+   taking the frame's style entries into the held table; a frame `shape`
+   refuses ends the view. `merge`
    applies tooltip replies and patches onto the held root. A changed root
-   bumps `frame_rev`. A frame carrying more than `view_wire::MAX_REQUESTS`
-   requests (or `MAX_CANCELS` cancels) does not decode, so `shape` refuses
-   it whole and the view faults; the view SDK sends at most that many a
-   frame and keeps the rest for the next. A patch `merge` refuses does not fault: the held root stays,
+   bumps `frame_rev`. A patch `merge` refuses does not fault: the held root stays,
    `frame_rev` bumps and `Event::Resync` asks the view for a full tree.
 6. **Frame → render.** When `frame_rev` moved, `turn` takes the held
    tree, its pictures named by hash alone, with the seat's picture bytes
@@ -243,7 +245,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    onto `view.pending` and turns. The listeners also stamp the tree's
    **transient activation** (`ViewTree::activate`: a press, a key but
    Escape, typing, an AT press), which the turn carries to
-   `view.activation`: `link.open` (four a minute) and
+   `view.activation`: `link.open` and
    `clipboard.read`/`write` need it fresh (5 s) and take it, one input
    admitting one call. Every focus-moving `host.widget` command and a
    dialog's auto-focus need the pane's keys free instead (`Seat::keys_free`),
@@ -297,10 +299,9 @@ title and Retry — `Unreachable` (node or blob), `HashMismatch`,
 `NotListed`, `Trapped` (fuel exhausted or a wasm trap, the panic message
 from `HostState::panic` when there is one), `Refused` (bytes this build does
 not run, or a load overtaken), `Wire` (built against another wire than
-this app's). A failed candidate is held off
-`RETRY_FIRST` doubling to `RETRY_MAX` while the same bytes keep failing
-(`seat::Retry`). At run time a trap, a frame past
-`MAX_FRAME_BYTES` or a `Replies` overflow latch `view.fault`: the view never
+this app's). A failed candidate's code is held off (`seat::Retry`) until
+the roster names other code or the person presses Retry (`seat::retry`).
+At run time a trap or a frame `shape` refuses latches `view.fault`: the view never
 ticks again and the standin shows the message. `Fetching`'s byte counts are
 written once at zero and never advanced.
 
@@ -318,9 +319,8 @@ Every code the host refuses a request with below (`unknown_request`,
 its meaning; the host and the views name the const, never the string.
 
 1. **Ask.** The view's `tick` returns requests in its `Frame`. `View::answer`
-   (`runtime/view/requests.rs`) caps the payload (`MAX_PAYLOAD_BYTES`;
-   `MAX_OP_BYTES` plus the envelope for `op.submit` and `program.describe`),
-   splits the kind with `Capability::of_kind` (a kind that does not split is
+   (`runtime/view/requests.rs`) splits the kind with `Capability::of_kind`
+   (a kind that does not split is
    `unknown_request`), and refuses `undeclared_capability` when the
    manifest did not declare it (logged once per capability).
 2. **Route.** `kernel::answer(view, capability, operation, id, payload)`
@@ -331,25 +331,20 @@ its meaning; the host and the views name the const, never the string.
    never reach the kernel and are handled in `View::answer` after it
    returns `false`: `host.widget` (the one MessagePack method: a `WidgetCommand`),
    `host.session` (the props subscription) and `host.log`.
-3. **Relay.** `kernel/node.rs` `spawn_method`, behind `spawn_retrying`,
-   `spawn_retrying_unsent` and `spawn_no_retry`, first checks in `connected`
+3. **Relay.** `kernel/node.rs` `spawn_method`, behind `spawn_asked` and
+   `spawn_consented`, first checks in `connected`
    that the view's own connection (`View.connection`, taken at start and
    at each reconnect) is still the current `roster::connection()`'s `rev`
    (else `stale_connection`), and asks the node that connection names (else
-   `not_connected`); then `start` admits
-   the call against `MAX_IN_FLIGHT` (`in_flight_limit`) and runs the handler
+   `not_connected`); then it takes an in-flight slot (`Replies::admit`) and
+   runs the handler
    as a tokio task on `views-kernel`, owned by `view.tasks` as a `NodeTask`
-   that aborts on drop (cancel, swap, teardown). A read (`spawn_retrying`)
-   retries transport refusals (`rpc_client`, `node_failed`) with
-   `backend::retry_delay` backoff for `NODE_RETRY_BUDGET` (60 s), then
-   answers `rpc_client` with the `NODE_UNREACHABLE` sentence; `op.submit`
-   (`spawn_retrying_unsent`) retries only `rpc_client`, which proves nothing
-   was sent, and `invite.create` (`spawn_no_retry`) asks once. A node's own
-   refusal ends the call at once. Each attempt has `noded::ANSWER_DEADLINE`
-   (180 s, above the hold a recovering node puts on a request) to answer;
-   one cut there is `node_failed`, so a submit is never signed again. The
-   client bounds only the connect (10 s), and reads an answer no further
-   than `noded::MAX_BODY_BYTES` (a blob: its own cap), `too_large` past it.
+   that aborts on drop (cancel, swap, teardown). The node is asked once,
+   and a transport refusal is the answer: `rpc_client` when nothing reached
+   the node, `node_failed` when the request may have and its answer went
+   missing, so a submit is never signed again. A node's own refusal is the
+   answer too. The view decides whether to ask again. The client sets no
+   deadline on the connect or the answer, and reads an answer whole.
 4. **Sign.** A read: `backend::query_frame` signs a `Frame` with the
    seated key, or with the process's throwaway `reader_key` while nobody
    is signed in. Its anchor is the zero `Tip` and it carries no salt: the
@@ -369,26 +364,28 @@ its meaning; the host and the views name the const, never the string.
    two frames. Writes by one signer do not wait on each other. With no
    seated key the request is refused `session_locked`.
 5. **Reply.** The handler pushes into `kernel::Replies`, a per-view queue
-   bounded by `MAX_REPLY_EVENTS` / `MAX_REPLY_BYTES`; overflow latches a
-   fault that ends the view. `Seat` awaits `Replies::changes`
+   only a redraw empties. `Seat` awaits `Replies::changes`
    and turns; `View::redraw` drains the queue into
    `view.pending` as `Event::Response` values, so the answer reaches the
    view on its next tick. Nothing wakes the wasm from another thread.
 6. **Subscriptions.** `program.changes <program>` (`live`: one WebSocket
    `/v1/changes/<program>` per subscription), `chain.heads` (`heads`: polls
-   status and pages `/v1/blocks`), `clock.ticks`, `host.session`,
+   status at half the node's block time and pages `/v1/blocks` until the
+   advance is covered), `clock.ticks`, `host.session`,
    `host.route`, `host.offset`, `host.visible` answer many times with
-   `done: false`. While the reply queue is past half full
-   (`MAX_STREAM_BACKLOG_*`) a subscription parks on the `drained` watch
-   instead of adding items, so a slow view holds its own backlog on the
-   socket. A cancel drops the task and with it the socket.
+   `done: false`. After each item a node subscription parks on the
+   `drained` watch until a redraw takes the queue
+   (`Replies::subscription_item`), so a slow view holds its own backlog on
+   the socket. A `program.changes` or `chain.heads` the node cannot serve
+   ends with the node's error (`done: true`). A cancel drops the task and
+   with it the socket.
 
 `program.describe` (`kernel/describe.rs`) is the odd one: it fetches the
 program's current code blob, compiles the `ducktape.describe` section once
 per code id, runs it on the blocking pool in an import-free fuel-bounded
-instance, caches by (code id, op hash) up to `MAX_KEPT` answers, and
+instance, caches every answer by (code id, op hash), and
 answers `None` on any failure but a transport one, which becomes
-`rpc_client` and is retried like any node call.
+`rpc_client`, the answer as for any node call.
 
 `blob.manifest` (`kernel/node.rs`) reads a code blob the same way: only
 one the programs role names (a listed program's, a view-only entry's, or
@@ -577,8 +574,8 @@ Connect ─► /v1/status ─► contract check ─► bind_keyring ─► devic
 ```
 
 1. **Connect** (`shell/entities/session.rs`). `Session::connect(origin)`
-   builds the status source over `backend::RpcClient` and asks `/v1/status`
-   under `CONNECT_TIMEOUT`. `connect_answered` refuses a
+   builds the status source over `backend::RpcClient` and asks `/v1/status`,
+   waiting for its answer. `connect_answered` refuses a
    `status.contract` other than `noded::NODE_CONTRACT`, then
    `backend::bind_keyring(network, founded)` picks the key directory under
    `<ducktape home>/remotes/`: `<network>`, or `<network>+<founded>` when
@@ -589,7 +586,7 @@ Connect ─► /v1/status ─► contract check ─► bind_keyring ─► devic
    `ducklink::ChainId::of(network, genesis)`, `runtime::connected` starts
    the roster read, `Account::open_device_key` and `Account::resolve` run
    in parallel, and the status poll starts: every `STATUS_EVERY` on the
-   executor's timer, `LOST_AFTER` misses in a row read reconnecting, one
+   executor's timer, one unanswered poll reads reconnecting, one
    answer recovers.
 2. **Device key** (`backend/device_key.rs`, `Account::open_device_key`).
    On the blocking pool: `device_key::open(keyring, legacy)` reads the OS
@@ -712,19 +709,22 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   `restore`, and instantiate. There is no wall-clock or epoch budget.
   `RUST_LOG=ducktape::perf=debug` logs fuel used per tick, and
   `DUCKTAPE_PERF=1` keeps the counters `GET /perf` reads (docs/perf.md).
-- **Limits** (`runtime.rs`, `kernel.rs`), as of this writing: `MEMORY_LIMIT`
-  64 MiB per store, `MAX_FRAME_BYTES` 8 MiB (a bigger frame ends the view),
-  `view_wire::MAX_REQUESTS` 256, `MAX_PAYLOAD_BYTES` 1 MiB, `MAX_OP_BYTES`
-  16 MiB, `MAX_BLOB_BYTES` 16 MiB, `MAX_IN_FLIGHT` 256, `MAX_SUBSCRIPTIONS`
-  256, `MAX_REPLY_EVENTS` 1024 / `MAX_REPLY_BYTES` 32 MiB and their
-  half-size stream backlog; `LOADERS` 4 loads at once and
-  `views::MAX_PROGRAMS` 256 roster entries; `layout::MAX_PANES` 8; a per-window SVG raster
-  budget (`render/svg_limits.rs`: 256 MiB charged at each raster's real
-  size, 4096 keys, evicting the least recently drawn rasters no frame
-  shows, whose atlas tiles leave with them); a per-seat cache of decoded
-  pictures (`render/pictures.rs` `Rasters`: 64 MiB / 4096, evicting the
-  least recently drawn; its atlas tiles leave every window when the seat
-  drops); picture decode size limits (`render/picture_resources.rs`).
+- **Memory settings** (`backend::memory_bounds`, `backend/prefs.rs`): three
+  byte counts under `memory` in `prefs.json`, read once per run.
+  `view_bytes` (64 MiB unless set) is what one view's linear memory and
+  tables may grow to (`ViewLimits`, `runtime/view/abi.rs`).
+  `picture_bytes` (64 MiB) bounds a seat's picture store
+  (`runtime/pictures.rs`), the per-seat cache of decoded pictures
+  (`render/pictures.rs` `Rasters`, evicting the least recently drawn; its
+  atlas tiles leave every window when the seat drops), each entry charged
+  its bytes and its own size, and what one picture decode may allocate
+  (`render/picture_resources.rs`). `svg_raster_bytes` (256 MiB) is a
+  per-window SVG raster budget (`render/svg_limits.rs`: each raster
+  charged at its real size plus its entry, evicting the least recently
+  drawn rasters no frame shows, whose atlas tiles leave with them). Loads
+  run on at most `loaders()` threads, the parallelism the OS reports. The wire bounds a
+  frame's nesting (`view_wire::MAX_DEPTH`, 64) and an element id's
+  (`view_wire::MAX_ELEMENT_ID_DEPTH`, 64).
 - **Window-thread work.** Every wasm tick, frame decode (`shape`), `merge`
   and `ViewTree::replace` run on the window thread inside `Seat::turn`,
   while holding the seat mutex, between draws and never inside one; GPUI
@@ -825,9 +825,10 @@ House words, and where one word means several things.
   only the AX test door.
 - **kernel** — the host-side router in `runtime/kernel.rs`, not an OS
   kernel and not the node. **Replies** — its per-view answer queue.
-  **in flight / admit / settled** — a running request's slot against
-  `MAX_IN_FLIGHT`. **backlog / park** — a subscription waiting because the
-  queue is half full. **refusal** — a `wire::Error{code, message}` reply
+  **in flight / admit / settled** — a running request's slot
+  (`Replies::admit`), counted so the host knows the view is still owed a
+  frame. **backlog / park** — a subscription waiting after an item until a
+  redraw takes the queue. **refusal** — a `wire::Error{code, message}` reply
   with a snake_case code.
 - **intent** — what a view asked the app itself to do: `Intent::Badge`,
   `Title`, `OpenLink`, `Notified`, `Seated`; routed by `Seats::route`
@@ -935,7 +936,8 @@ House words, and where one word means several things.
   (`runtime/pictures.rs`): bytes cross once, later frames name them by
   hash; `adopt` moves them out of the tree into the store, each held once
   (`Arc`) and shared with every tree the seat draws (`render::PictureBytes`).
-  Past the seat's budget (`MAX_PICTURE_BYTES`, `MAX_PICTURES`) the store
+  Past the device's `memory.picture_bytes` setting, each picture charged
+  its bytes and its entry, the store
   keeps what the current tree names and evicts the rest, and the view is
   sent `Event::Resync` so it sends what it draws again.
 
@@ -946,9 +948,8 @@ House words, and where one word means several things.
   Then: a new operation under an existing capability gets an arm in
   `kernel::answer` (or in `clipboard`/`notify`/`store::answer` if it
   belongs there); a node-backed one gets a handler in `kernel/node.rs` and
-  is spawned with `spawn_retrying`, `spawn_retrying_unsent` or
-  `spawn_no_retry` (by whether a lost answer may be asked again),
-  answering through `Replies`; a subscription writes through `Items`. Add
+  is spawned with `spawn_asked` (or `spawn_consented` for an op the
+  person confirms first), answering through `Replies`; a subscription writes through `Items`. Add
   the method to the module doc in `kernel.rs` and a case in
   `kernel/tests/node_methods.rs`, which stands up a fake node on a local
   socket.
@@ -976,7 +977,7 @@ House words, and where one word means several things.
   node, point `DUCKTAPE_VIEWS_DIR` at a directory of `<program>_view.wasm`.
   `RUST_LOG=ducktape::perf=debug` shows per-tick fuel.
 - **Run against a node.** Start a node from `ducktape-industries/ducktape`
-  (the branch README names), then `cargo run -p ducktape-app`;
+  (at the rev README names), then `cargo run -p ducktape-app`;
   `DUCKTAPE_RPC=<url>` skips the connect screen. Keys go to the OS store;
   `DUCKTAPE_DEVICE_KEY_STORE=file` and XDG variables point a scratch run
   elsewhere (`backend/app_dirs.rs`).

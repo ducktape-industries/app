@@ -6,8 +6,7 @@
 //!
 //! What runs here:
 //! - `Fetch`: the chosen channel's one file over HTTPS, its manifest and the
-//!   signature over it (at most [`MAX_MANIFEST_BYTES`]), verified under the
-//!   pinned key and its
+//!   signature over it, verified under the pinned key and its
 //!   successor, and against the highest sequence the channel has shown this
 //!   install ([`Updater::against_seen`]), answering `ManifestFetched`.
 //!   Unreachable or unpublished is not a refusal: the check did not happen,
@@ -46,8 +45,6 @@ use super::{Layout, TARGET, stage};
 
 /// How often the running app asks the channel.
 pub(super) const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
-/// A channel file larger than this is not one.
-const MAX_MANIFEST_BYTES: usize = 256 * 1024;
 /// The tag the update notice stands under: a newer staged release replaces it.
 const NOTICE_TAG: &str = "ducktape/update";
 
@@ -271,14 +268,9 @@ pub(crate) fn restart_waiter() -> i32 {
     1
 }
 
-/// connect fast, never hang on a stalled read; no total cap, an archive
-/// takes as long as the line does.
+/// An archive takes as long as the line does.
 pub(super) fn client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .read_timeout(Duration::from_secs(60))
-        .build()
-        .expect("the HTTP client")
+    reqwest::Client::builder().build().expect("the HTTP client")
 }
 
 /// The async work one step asks for; each answers with one [`Event`].
@@ -578,7 +570,7 @@ pub(super) async fn fetch(
     channel: Channel,
     keys: &TrustedKeys,
 ) -> Option<Result<VerifiedManifest, ManifestRefusal>> {
-    let file = match get_small(client, &format!("{base}{}", channel.file())).await {
+    let file = match get_whole(client, &format!("{base}{}", channel.file())).await {
         Ok(file) => file,
         Err(error) => {
             debug!(target: TARGET, event = "app_update_manifest_unavailable", %error);
@@ -591,24 +583,16 @@ pub(super) async fn fetch(
     )
 }
 
-/// A whole small file, refused past [`MAX_MANIFEST_BYTES`] whatever the
-/// server claims its length is.
-async fn get_small(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
-    let mut response = client
+/// A whole file.
+async fn get_whole(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
+    let response = client
         .get(url)
-        .timeout(Duration::from_secs(30))
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
         .map_err(|error| error.to_string())?;
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
-        bytes.extend_from_slice(&chunk);
-        if bytes.len() > MAX_MANIFEST_BYTES {
-            return Err(format!("{url} is larger than a manifest"));
-        }
-    }
-    Ok(bytes)
+    let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+    Ok(bytes.to_vec())
 }
 
 /// `Download`: the archive into `releases/<sha>.partial`, resuming from what

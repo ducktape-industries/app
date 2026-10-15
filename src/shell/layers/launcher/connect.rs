@@ -74,7 +74,7 @@ impl LauncherLayer {
                     "Connect",
                     Kind::Primary,
                     self.on_session(Session::submit),
-                    session.connecting,
+                    false,
                     &ink,
                 ))
                 .into_any_element(),

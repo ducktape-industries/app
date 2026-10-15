@@ -67,13 +67,12 @@ pub(super) fn paint_canvas_commands(
         // Butt-capped lines that go on from each other's end with one
         // stroke are one path: a subpath a line, so the triangles are the
         // ones each line had alone (no joins), built and ordered once.
-        // A path's indices are 16 bits, four vertices a line: the wire's
-        // cap on a canvas's commands keeps any run under that (asserted below).
         let mut run = 1;
         let mut end = to;
         if stroke.cap == wire::CanvasLineCap::Butt {
             for (from, to, next) in rest[1..].iter().map_while(line) {
-                if from != end || next != stroke {
+                let path_full = run == LINES_PER_PATH;
+                if from != end || next != stroke || path_full {
                     break;
                 }
                 end = to;
@@ -105,8 +104,7 @@ pub(super) fn paint_canvas_commands(
     }
 }
 
-// The longest run of lines a canvas can hold builds as one path.
-const _: () = assert!(wire::MAX_CANVAS_PARTS * 4 <= u16::MAX as usize + 1);
+pub(super) const LINES_PER_PATH: usize = (u16::MAX as usize + 1) / 4;
 
 /// The line a command strokes; nothing else is one.
 fn line(command: &wire::CanvasCommand) -> Option<([f32; 2], [f32; 2], &wire::CanvasStroke)> {
@@ -399,11 +397,6 @@ fn canvas_path(shape: &wire::CanvasShape) -> String {
     path
 }
 
-/// The most `A` segments one arc is cut into: one per half turn is what
-/// the SVG arc command needs to stay unambiguous, and a view cannot ask
-/// for a path longer than this by sweeping many turns.
-const MAX_ARC_SEGMENTS: f32 = 128.;
-
 pub(super) fn append_arc(
     path: &mut String,
     center: [f32; 2],
@@ -421,14 +414,19 @@ pub(super) fn append_arc(
             center[1] + x * rotation.sin() + y * rotation.cos(),
         ]
     };
+    use std::f32::consts::{PI, TAU};
     let a = point(start);
     let sweep = i32::from(end >= start);
     let _ = write!(path, "M{} {} ", a[0], a[1]);
-    let steps = ((end - start).abs() / std::f32::consts::PI)
-        .ceil()
-        .clamp(1.0, MAX_ARC_SEGMENTS) as usize;
+    let turned = (end - start).abs();
+    let past_a_turn = turned > TAU;
+    let swept = match past_a_turn {
+        true => (TAU + turned % TAU).copysign(end - start),
+        false => end - start,
+    };
+    let steps = (swept.abs() / PI).ceil().max(1.0) as usize;
     for index in 1..=steps {
-        let b = point(start + (end - start) * index as f32 / steps as f32);
+        let b = point(start + swept * index as f32 / steps as f32);
         let _ = write!(
             path,
             "A{} {} {} 0 {sweep} {} {} ",

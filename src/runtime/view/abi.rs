@@ -5,8 +5,69 @@ use super::*;
 /// What a view's store holds: its limits, and the message its panic hook
 /// handed over before the trap that follows.
 pub(super) struct HostState {
-    pub(super) limits: StoreLimits,
+    pub(super) limits: ViewLimits,
     pub(super) panic: Option<String>,
+}
+
+pub(super) struct ViewLimits {
+    budget: usize,
+    memory: usize,
+    tables: usize,
+}
+
+impl ViewLimits {
+    pub(super) fn new(budget: usize) -> Self {
+        Self {
+            budget,
+            memory: 0,
+            tables: 0,
+        }
+    }
+
+    fn fits(&self, memory: usize, tables: usize) -> wasmtime::Result<()> {
+        let fits = memory.saturating_add(tables) <= self.budget;
+        match fits {
+            true => Ok(()),
+            false => Err(wasmtime::Error::msg(
+                "the view is past the device's view memory setting",
+            )),
+        }
+    }
+}
+
+impl wasmtime::ResourceLimiter for ViewLimits {
+    fn memory_growing(
+        &mut self,
+        _current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        self.fits(desired, self.tables)?;
+        self.memory = desired;
+        Ok(true)
+    }
+
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        let added = desired.saturating_sub(current);
+        let tables =
+            (self.tables).saturating_add(added.saturating_mul(std::mem::size_of::<usize>()));
+        self.fits(self.memory, tables)?;
+        self.tables = tables;
+        Ok(true)
+    }
+
+    fn instances(&self) -> usize {
+        1
+    }
+
+    fn memories(&self) -> usize {
+        1
+    }
 }
 
 /// The view's exports and the memory their bytes cross in (`wire::abi`).
@@ -77,20 +138,12 @@ impl Exports {
     ) -> wasmtime::Result<Vec<u8>> {
         let (ptr, len) = self.give(store, events)?;
         let packed = self.tick.call(&mut *store, (ptr, len))?;
-        if wire::abi::unpack(packed).1 as usize > MAX_FRAME_BYTES {
-            return Err(wasmtime::Error::msg("frame too large"));
-        }
         self.answer(store, packed)
     }
 
-    /// The view's state, held to `MAX_SNAPSHOT_BYTES` on the length the
-    /// view names, before the host copies a byte of it.
+    /// The view's state.
     pub(super) fn snapshot(&self, store: &mut Store<HostState>) -> wasmtime::Result<Snapshot> {
         let packed = self.snapshot.call(&mut *store, ())?;
-        // the answer's first byte is its result tag
-        if wire::abi::unpack(packed).1 as usize > wire::MAX_SNAPSHOT_BYTES + 1 {
-            return Ok(Snapshot::TooLarge);
-        }
         Ok(match self.result(store, packed)? {
             Ok(state) => Snapshot::Taken(state),
             Err(refusal) => Snapshot::Refused(refusal),

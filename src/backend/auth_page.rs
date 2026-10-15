@@ -5,8 +5,6 @@
 //! them. The page and its contract live in `ducktape-industries/auth` (its
 //! README).
 
-use std::time::Duration;
-
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use keyscheme::KeyScheme;
@@ -16,9 +14,6 @@ use super::loopback::Listener;
 
 /// The live page. Its host IS the RP ID every passkey is scoped to.
 const AUTH_PAGE: &str = "https://auth.ducktape.industries/";
-
-/// How long one touch may take before the app stops waiting.
-const CEREMONY_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub(super) fn auth_page() -> String {
     std::env::var("DUCKTAPE_AUTH_PAGE").unwrap_or_else(|_| AUTH_PAGE.to_owned())
@@ -138,16 +133,15 @@ pub(super) async fn asserted(challenge: [u8; 32], step: &'static str) -> Result<
 }
 
 /// One touch: open `request` in this device's browser and take the page's
-/// answer on loopback.
+/// answer on loopback, for as long as the page takes; the person's cancel
+/// drops the wait.
 async fn ceremony(request: Request) -> Result<Outcome, String> {
     let page = auth_page();
     let listener = Listener::bind(&page)
         .await
         .map_err(|error| format!("Couldn't listen for the browser: {error}"))?;
     open_browser(&request_url(&page, &request, &listener.callback_url()))?;
-    tokio::time::timeout(CEREMONY_TIMEOUT, listener.wait())
-        .await
-        .map_err(|_| "Nothing came back from the passkey. Try again.".to_string())?
+    listener.wait().await
 }
 
 /// The system browser, or `DUCKTAPE_BROWSER <url>` when set (a test's

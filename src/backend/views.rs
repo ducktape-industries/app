@@ -20,14 +20,6 @@ use noded_client::wire::{Layer, unframe};
 
 pub const VIEW_SECTION: &str = "ducktape.view";
 
-/// The most a program's code blob may be, framed: the view inside it is
-/// compiled, so no view is near it.
-const MAX_PROGRAM_BYTES: usize = 64 << 20;
-
-/// The most roster entries the app takes: a node that lists more has the
-/// rest left off the rail and never loaded, said once in app.log.
-pub const MAX_PROGRAMS: usize = 256;
-
 /// One roster entry, as the rail lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
@@ -46,14 +38,16 @@ pub enum Fetch {
     /// The bytes came, and do not hash to the id asked for.
     Corrupt,
     Collision(BlobId),
-    /// The node answered something this app does not read.
     Refused(String),
+    Unreadable(String),
 }
 
 impl std::fmt::Display for Fetch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Fetch::Unreachable(reason) | Fetch::Refused(reason) => f.write_str(reason),
+            Fetch::Unreachable(reason) | Fetch::Refused(reason) | Fetch::Unreadable(reason) => {
+                f.write_str(reason)
+            }
             Fetch::NotHeld => f.write_str("the node does not hold the program's code yet"),
             Fetch::Corrupt => f.write_str("the program's bytes do not hash to its blob id"),
             Fetch::Collision(code) => write!(
@@ -78,7 +72,7 @@ pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>,
         programs, views, ..
     } = ask(client, network, Query::Roster).await?
     else {
-        return Err(Fetch::Refused(
+        return Err(Fetch::Unreadable(
             "the programs role answered no roster".into(),
         ));
     };
@@ -92,23 +86,10 @@ pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>,
         code: view.view,
         bare: true,
     });
-    let (mut roster, misspelled): (Vec<Program>, Vec<Program>) = programs
+    let (roster, misspelled): (Vec<Program>, Vec<Program>) = programs
         .chain(views)
         .partition(|program| program::is_name(&program.name));
     misspelled_said(misspelled.into_iter().map(|program| program.name).collect());
-    if roster.len() > MAX_PROGRAMS {
-        static SAID: std::sync::Once = std::sync::Once::new();
-        SAID.call_once(|| {
-            tracing::warn!(
-                target: "ducktape::app",
-                reason = "roster_capped",
-                listed = roster.len(),
-                kept = MAX_PROGRAMS,
-                "the node lists more programs than the app takes"
-            );
-        });
-        roster.truncate(MAX_PROGRAMS);
-    }
     Ok(roster)
 }
 
@@ -131,14 +112,14 @@ fn misspelled_said(ids: Vec<String>) {
 }
 
 /// Which programs fill the roles the kernel calls, as genesis bound them
-/// and the programs role answers them. `None` from a programs role that
-/// predates the question, which refuses it: no program is known by its role.
-pub async fn roles(client: &RpcClient, network: &str) -> Result<Option<abi::Roles>, Fetch> {
+/// and the programs role answers them.
+pub async fn roles(client: &RpcClient, network: &str) -> Result<abi::Roles, Fetch> {
     use ::programs::{Query, Reply};
-    match ask(client, network, Query::Roles).await {
-        Ok(Reply::Roles(roles)) => Ok(Some(roles)),
-        Ok(_) | Err(Fetch::Refused(_)) => Ok(None),
-        Err(error) => Err(error),
+    match ask(client, network, Query::Roles).await? {
+        Reply::Roles(roles) => Ok(roles),
+        _ => Err(Fetch::Unreadable(
+            "the programs role answered the roles question with another reply".into(),
+        )),
     }
 }
 
@@ -155,7 +136,12 @@ pub async fn coming(client: &RpcClient, network: &str) -> Result<Vec<BlobId>, Fe
         let page = PageRequest { after, limit: None };
         let page = match ask(client, network, Query::Scheduled { page }).await {
             Ok(Reply::Scheduled(page)) => page,
-            Ok(_) | Err(Fetch::Refused(_)) => return Ok(Vec::new()),
+            Ok(_) => {
+                return Err(Fetch::Unreadable(
+                    "the programs role answered the scheduled question with another reply".into(),
+                ));
+            }
+            Err(Fetch::Refused(_)) => return Ok(Vec::new()),
             Err(error) => return Err(error),
         };
         codes.extend(
@@ -163,11 +149,10 @@ pub async fn coming(client: &RpcClient, network: &str) -> Result<Vec<BlobId>, Fe
                 .iter()
                 .filter_map(|pending| pending.change.code()),
         );
-        // a node that pages forever is read as far as the roster cap
-        match page.next {
-            Some(next) if codes.len() <= MAX_PROGRAMS => after = Some(next),
-            _ => return Ok(codes),
-        }
+        let Some(next) = page.next else {
+            return Ok(codes);
+        };
+        after = Some(next);
     }
 }
 
@@ -181,7 +166,7 @@ async fn ask(
         .query(Layer::Preconfirmed, frame)
         .await
         .map_err(fetch_error)?;
-    abi::decode(&answer).map_err(|refusal| Fetch::Refused(refusal.sentence))
+    abi::decode(&answer).map_err(|refusal| Fetch::Unreadable(refusal.sentence))
 }
 
 /// The view inside `code`'s blob, or `None` when the program ships none; a
@@ -218,12 +203,12 @@ pub async fn program_bytes(
         return Ok((body.to_vec(), "disk"));
     }
     let framed = client
-        .blob(*code, MAX_PROGRAM_BYTES)
+        .blob(*code)
         .await
         .map_err(fetch_error)?
         .ok_or(Fetch::NotHeld)?;
     let body = unframe(&framed)
-        .ok_or_else(|| Fetch::Refused("the blob carries no git header".into()))?
+        .ok_or_else(|| Fetch::Unreadable("the blob carries no git header".into()))?
         .to_vec();
     if !hashes_to(&framed, code)? {
         return Err(Fetch::Corrupt);
@@ -275,10 +260,8 @@ pub fn section<'a>(bytes: &'a [u8], name: &str) -> Option<&'a [u8]> {
 
 fn fetch_error(error: noded_client::Error) -> Fetch {
     match error {
-        noded_client::Error::Refused(refusal) | noded_client::Error::Decode(refusal) => {
-            Fetch::Refused(refusal.sentence)
-        }
-        error @ noded_client::Error::TooLarge { .. } => Fetch::Refused(error.to_string()),
+        noded_client::Error::Refused(refusal) => Fetch::Refused(refusal.sentence),
+        noded_client::Error::Decode(refusal) => Fetch::Unreadable(refusal.sentence),
         other => Fetch::Unreachable(other.to_string()),
     }
 }
