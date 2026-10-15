@@ -53,12 +53,10 @@ impl Drop for Written {
 }
 
 /// Writes the door's port and token. Readable by this user only because
-/// `Dirs::runtime` is: the shell makes that directory private (the
-/// desktop: `$XDG_RUNTIME_DIR/ducktape`, else one it creates mode 0700).
+/// `Dirs::runtime` is: the shell makes that directory and makes it private
+/// (`contract::Dirs`); it is never created here, so a shell that forgot
+/// gets this error and no door, not a token in a directory anyone reads.
 fn write_door_file(path: PathBuf, door: &DoorFile) -> std::io::Result<Written> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
     let mut file = std::fs::File::create(&path)?;
     let text = serde_json::to_string(door).unwrap_or_default();
     file.write_all(text.as_bytes())?;
@@ -92,10 +90,17 @@ fn open_env(
             return None;
         }
     };
-    // the door file's path is settled before the port is taken: a door no
-    // client can learn of is never opened
+    // the door file's path is settled, and its directory there, before the
+    // port is taken: a door no client can learn of is never opened. The
+    // directory is the shell's to make and make private (`contract::Dirs`);
+    // the door never makes it
     let file = match file {
-        Ok(file) => file,
+        Ok(file) if file.parent().is_some_and(std::path::Path::is_dir) => file,
+        Ok(file) => {
+            let error = format!("{}: no runtime directory", file.display());
+            tracing::warn!(target: "ducktape::app", reason = "ax_door_file_unwritten", %error, "the test door stays shut");
+            return None;
+        }
         Err(error) => {
             tracing::warn!(target: "ducktape::app", reason = "ax_door_file_unwritten", %error, "the test door stays shut");
             return None;
@@ -702,7 +707,7 @@ mod tests {
     #[test]
     fn an_open_door_has_its_file_until_the_app_quits() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("ducktape").join("ax-door.json");
+        let path = dir.path().join("ax-door.json");
         let (_calls, written) = open_env(Some("0"), None, Ok(path.clone())).unwrap();
         let door: DoorFile =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -710,6 +715,22 @@ mod tests {
         assert_eq!(status, 401);
         drop(written);
         assert!(!path.exists(), "the file outlived the door");
+    }
+
+    /// The door never makes its own directory: a runtime directory the
+    /// shell did not make (and so did not make private) is no door at all,
+    /// and the port stays free.
+    #[test]
+    fn a_door_makes_no_runtime_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("forgotten");
+        let path = missing.join("ax-door.json");
+        let held = bind(0).unwrap();
+        let port = held.local_addr().unwrap().port();
+        drop(held);
+        assert!(open_env(Some(&port.to_string()), None, Ok(path)).is_none());
+        assert!(!missing.exists(), "the door made the directory itself");
+        bind(port).expect("the port was taken by a door with no file");
     }
 
     /// Quitting leaves a door file another app has since written in its

@@ -36,9 +36,13 @@ pub trait OsServices: Send + Sync + 'static {
 }
 
 /// Where the host keeps files. `cache` the OS may purge; `config` and
-/// `data` it keeps; `runtime` is the AX door file's directory, one only
-/// this user can read (the shell makes it so: the door file's token is
-/// written there plainly); `views_override` is a VIEW DEVELOPER'S
+/// `data` it keeps; `runtime` is a directory that EXISTS and that only
+/// this user or app can enter: every `OsServices` impl makes it so before
+/// `install` (the desktop: `$XDG_RUNTIME_DIR/ducktape`, else one it
+/// creates mode 0700), because the AX door file's token, and anything else
+/// written there, is written plainly and relies on it. The host never
+/// creates that directory, so an impl that forgets gets an error, not a
+/// world-readable default. `views_override` is a VIEW DEVELOPER'S
 /// directory of `<program>_view.wasm` files that stand in for the
 /// network's (the desktop reads `DUCKTAPE_VIEWS_DIR`; a phone has none).
 #[derive(Clone, Debug)]
