@@ -221,6 +221,13 @@ fn answer(mut stream: std::net::TcpStream, answers: &Answers, held: &Mutex<Held>
                 };
                 ::programs::Reply::Roles(roles)
             }
+            ::programs::Query::Scheduled { .. } => {
+                ::programs::Reply::Scheduled(::programs::PageResponse {
+                    height: 1,
+                    items: Vec::new(),
+                    next: None,
+                })
+            }
             other => panic!("unexpected programs query: {other:?}"),
         };
         return respond(&mut stream, "200 OK", &abi::encode(&abi::encode(&reply)));

@@ -49,6 +49,9 @@ pub(super) fn connection() -> &'static Mutex<Connection> {
 #[derive(Clone, Default)]
 pub(crate) struct Roster {
     programs: Arc<Mutex<Vec<crate::backend::views::Program>>>,
+    /// The code the scheduled changes bring, as last read
+    /// ([`crate::backend::views::coming`]).
+    coming: Arc<Mutex<Vec<abi::BlobId>>>,
     bound: Arc<Mutex<Bound>>,
 }
 
@@ -118,6 +121,26 @@ impl Roster {
     /// Whether it lists `program`: a link to anything else names nothing.
     pub(crate) fn lists(&self, program: &str) -> bool {
         self.code(program).is_some()
+    }
+
+    /// Whether the programs role names `code`: a listed program's, a
+    /// view-only entry's, or one a scheduled change brings. The host reads
+    /// a blob for a view (`blob.manifest`) only under this name.
+    pub(super) fn names_code(&self, code: &abi::BlobId) -> bool {
+        self.lock().iter().any(|entry| entry.code == *code)
+            || self
+                .coming
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(code)
+    }
+
+    /// `codes` as the scheduled changes' code, in place of what was read.
+    pub(super) fn come(&self, codes: Vec<abi::BlobId>) {
+        *self
+            .coming
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = codes;
     }
 }
 
@@ -365,6 +388,19 @@ pub(super) fn read_roster(asked_of: Connection, roster: &Roster, registry: &Regi
     } else {
         None
     };
+    // a transport failure here keeps the last read: the next block reads again
+    let coming = match handle().block_on(crate::backend::views::coming(client, &asked_of.network)) {
+        Ok(coming) => Some(coming),
+        Err(error) => {
+            tracing::warn!(
+                target: "ducktape::app",
+                reason = "scheduled_unreadable",
+                error = %error,
+                "the node's scheduled changes were not read"
+            );
+            None
+        }
+    };
     let loads = {
         let node_since_left = connection().lock().expect("views rpc").rev != asked_of.rev;
         if node_since_left {
@@ -378,6 +414,9 @@ pub(super) fn read_roster(asked_of: Connection, roster: &Roster, registry: &Regi
                 asked_of: roles.is_some().then_some(asked_of.rev),
                 roles,
             };
+        }
+        if let Some(coming) = coming {
+            roster.come(coming);
         }
         let mut registry = lock(registry);
         let names: Vec<&'static str> = programs.iter().map(|p| intern(&p.name)).collect();

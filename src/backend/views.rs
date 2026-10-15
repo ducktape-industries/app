@@ -137,6 +137,34 @@ pub async fn roles(client: &RpcClient, network: &str) -> Result<Option<abi::Role
     }
 }
 
+/// The code every scheduled change brings (a program set, a view set), in
+/// the programs role's order, whatever height it lands at: what the
+/// network is about to run, so a view may ask about it before it does.
+/// Empty from a programs role that predates the question.
+pub async fn coming(client: &RpcClient, network: &str) -> Result<Vec<BlobId>, Fetch> {
+    use ::programs::{PageRequest, Query, Reply};
+    let mut codes = Vec::new();
+    let mut after = None;
+    loop {
+        let page = PageRequest { after, limit: None };
+        let page = match ask(client, network, Query::Scheduled { page }).await {
+            Ok(Reply::Scheduled(page)) => page,
+            Ok(_) | Err(Fetch::Refused(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        codes.extend(
+            page.items
+                .iter()
+                .filter_map(|pending| pending.change.code()),
+        );
+        // a node that pages forever is read as far as the roster cap
+        match page.next {
+            Some(next) if codes.len() <= MAX_PROGRAMS => after = Some(next),
+            _ => return Ok(codes),
+        }
+    }
+}
+
 async fn ask(
     client: &RpcClient,
     network: &str,
@@ -167,30 +195,13 @@ pub async fn view_of(
     })
 }
 
-/// The program's blob as a seat reads it: the cache's copy, else the
-/// node's, which the cache keeps from then on.
+/// A program's blob: the cache's copy, else the node's, which the cache
+/// keeps from then on. Only code the roster names is read here (a seat's,
+/// `program.describe`'s, `blob.manifest`'s), so the cache holds at most
+/// what the network runs or has scheduled.
 pub async fn program_bytes(
     client: &RpcClient,
     code: &BlobId,
-) -> Result<(Vec<u8>, &'static str), Fetch> {
-    blob(client, code, true).await
-}
-
-/// The blob as a view asks of it (`blob.manifest`): the cache's copy when
-/// a seat put it there, else the node's, read and let go. Only what the
-/// app seats fills the cache: a view with `blob` may not fill the disk a
-/// program's size at a time.
-pub async fn program_bytes_unkept(
-    client: &RpcClient,
-    code: &BlobId,
-) -> Result<(Vec<u8>, &'static str), Fetch> {
-    blob(client, code, false).await
-}
-
-async fn blob(
-    client: &RpcClient,
-    code: &BlobId,
-    keep: bool,
 ) -> Result<(Vec<u8>, &'static str), Fetch> {
     let cached = cache_path(code);
     if let Some(path) = &cached
@@ -211,7 +222,7 @@ async fn blob(
     if !hashes_to(&framed, code) {
         return Err(Fetch::Corrupt);
     }
-    if let Some(path) = cached.filter(|_| keep) {
+    if let Some(path) = cached {
         if let Some(parent) = path.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }

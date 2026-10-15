@@ -767,19 +767,29 @@ fn blob_id(ask: &[u8]) -> Result<abi::BlobId, wire::Error> {
     })
 }
 
-/// `blob.manifest`: the blob as the seat path holds it, or fetched and let
-/// go (`views::program_bytes_unkept`: a view fills no cache), the view in
+/// `blob.manifest`: a blob the programs role names (a listed program's
+/// code, a view-only entry's, or one a scheduled change brings), read as a
+/// seat reads it (`views::program_bytes`, cached under its id); the view in
 /// its `ducktape.view` section or the blob itself for a view-only entry,
 /// and that view's manifest as `manifest_of` would read it. A blob is a
 /// view by its manifest section, read or not: one this host cannot read is
 /// a view with no manifest, never a program that draws nothing. The bytes
-/// stay on the host.
+/// stay on the host. An id the roster does not name is refused as
+/// `undeclared_target`, never fetched: `None` is the node's word that it
+/// holds no such blob, and a view asks the host only about code the chain
+/// names, as a node method names only a program its manifest declares.
 pub(super) fn blob_manifest(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
-        use backend::views::{Fetch, VIEW_SECTION, program_bytes_unkept, section};
+        use backend::views::{Fetch, VIEW_SECTION, program_bytes, section};
         use view_wire::manifest::{MANIFEST_SECTION, read_manifest};
         let id = blob_id(&ask)?;
-        let bytes = match program_bytes_unkept(&node.client, &id).await {
+        if !super::super::roster::roster().names_code(&id) {
+            return Err(wire::Error::new(
+                refusal::UNDECLARED_TARGET,
+                "the programs role names no such code",
+            ));
+        }
+        let bytes = match program_bytes(&node.client, &id).await {
             Ok((bytes, _)) => bytes,
             Err(Fetch::NotHeld) => return Ok(methods::encode(&None::<methods::Manifested>)),
             // the transport: retried by the node method's loop

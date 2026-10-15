@@ -444,6 +444,7 @@ async fn blob_manifest_answers_what_the_view_in_a_blob_declares() {
             noded_client::wire::route::BLOB_GET,
             Mode::Answer(abi::encode(&Some(framed))),
         )]);
+        listed(abi::BlobId::Sha256(id.into()));
         let ask = methods::encode(&format!("sha256:{}", noded_client::hex::hex_encode(&id)));
         async move {
             let answer = blob_manifest(held.node.clone(), ask).await.unwrap();
@@ -501,6 +502,7 @@ async fn blob_manifest_answers_what_the_view_in_a_blob_declares() {
         noded_client::wire::route::BLOB_GET,
         Mode::Answer(abi::encode(&None::<Vec<u8>>)),
     )]);
+    listed(abi::BlobId::Sha256([0; 32]));
     let ask = methods::encode(&format!("sha256:{}", "00".repeat(32)));
     let answer = blob_manifest(absent.node.clone(), ask).await.unwrap();
     assert_eq!(
@@ -509,14 +511,27 @@ async fn blob_manifest_answers_what_the_view_in_a_blob_declares() {
     );
 }
 
-/// `blob.manifest` fills no cache: a blob the seat path never fetched is
-/// read off the node and let go, so a view with `blob` cannot fill the
-/// disk a program's size at a time; one the seat path keeps is answered
-/// from the disk.
+/// `code` listed in the app's roster as a running program's, under a name
+/// of its own.
+fn listed(code: abi::BlobId) {
+    crate::runtime::roster::roster()
+        .lock()
+        .push(crate::backend::views::Program {
+            name: format!("manifest-test-{}", &abi::hex(code.digest())[..8]),
+            code,
+            bare: false,
+        });
+}
+
+/// `blob.manifest` reads only code the programs role names: a listed
+/// program's, a view-only entry's, or what a scheduled change brings. An
+/// id it does not name is refused before the node is asked; a named one is
+/// read as a seat reads it, kept under its id, so the next ask reads the
+/// disk, not the node.
 #[tokio::test]
-async fn blob_manifest_leaves_the_program_cache_as_it_was() {
+async fn blob_manifest_reads_only_code_the_roster_names() {
     use sha2::Digest as _;
-    let program = module(&[("ducktape.describe", b"unseated")]);
+    let program = module(&[("ducktape.describe", b"scheduled")]);
     let mut framed = format!("program {}\0", program.len()).into_bytes();
     framed.extend_from_slice(&program);
     let id = abi::BlobId::Sha256(sha2::Sha256::digest(&framed).into());
@@ -530,25 +545,32 @@ async fn blob_manifest_leaves_the_program_cache_as_it_was() {
         "sha256:{}",
         noded_client::hex::hex_encode(id.digest())
     ));
-    let answer = blob_manifest(held.node.clone(), ask.clone()).await.unwrap();
+    let refusal = blob_manifest(held.node.clone(), ask.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(refusal.code, refusal::UNDECLARED_TARGET);
     assert_eq!(
+        held.accepted.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "an unnamed code reached the node"
+    );
+    // a scheduled change brings it: named, read, kept
+    crate::runtime::roster::roster().come(vec![id]);
+    let size = |answer: Vec<u8>| {
         methods::decode::<Option<methods::Manifested>>(&answer)
             .unwrap()
-            .map(|blob| blob.size),
-        Some(program.len() as u64)
-    );
-    assert!(!kept.exists(), "a view's ask put the blob in the cache");
-    // the seat path keeps it; the next ask reads the disk, not the node
-    std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
-    std::fs::write(&kept, &framed).unwrap();
+            .map(|blob| blob.size)
+    };
+    let answer = blob_manifest(held.node.clone(), ask.clone()).await.unwrap();
+    assert_eq!(size(answer), Some(program.len() as u64));
+    assert!(kept.exists(), "a named code's read was not kept");
+    // the next ask reads the disk: a node with no blob route answers it
     let dead = fake_node(Vec::new());
-    let answer = blob_manifest(dead.node.clone(), ask).await.unwrap();
+    let answer = blob_manifest(dead.node.clone(), ask).await;
     let _ = std::fs::remove_file(&kept);
     assert_eq!(
-        methods::decode::<Option<methods::Manifested>>(&answer)
-            .unwrap()
-            .map(|blob| blob.size),
-        Some(program.len() as u64),
+        answer.map(size),
+        Ok(Some(program.len() as u64)),
         "answered off the disk"
     );
 }
