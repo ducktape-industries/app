@@ -5330,7 +5330,7 @@ dependencies = [
 [[package]]
 name = "keyscheme"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape?rev=47c2bca881da4b195f8871abceae172730407475#47c2bca881da4b195f8871abceae172730407475"
+source = "git+https://github.com/ducktape-industries/ducktape?rev=66453b797cf67af032c8b9c11d9ba3e2d6d99598#66453b797cf67af032c8b9c11d9ba3e2d6d99598"
 dependencies = [
  "base64 0.22.1",
  "borsh",
@@ -5545,7 +5545,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 [[package]]
 name = "live-wire"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape?rev=47c2bca881da4b195f8871abceae172730407475#47c2bca881da4b195f8871abceae172730407475"
+source = "git+https://github.com/ducktape-industries/ducktape?rev=66453b797cf67af032c8b9c11d9ba3e2d6d99598#66453b797cf67af032c8b9c11d9ba3e2d6d99598"
 dependencies = [
  "abi",
  "borsh",

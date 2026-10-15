@@ -97,7 +97,7 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # pick which passkey signed and to frame its assertion), and the identity
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 # At the core rev `live-wire` names, so one copy builds.
-keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "47c2bca881da4b195f8871abceae172730407475", package = "keyscheme" }
+keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "66453b797cf67af032c8b9c11d9ba3e2d6d99598", package = "keyscheme" }
 identity.workspace = true
 # The roster's full query surface: its programs and its view-only entries.
 programs = { git = "https://github.com/ducktape-industries/programs", rev = "62b369c6abb11db582d6a4cd3ede27710bc850b7", package = "programs" }
@@ -130,7 +130,7 @@ tokio-tungstenite.workspace = true
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["alloc", "ring"] }
-live-wire = { git = "https://github.com/ducktape-industries/ducktape", rev = "47c2bca881da4b195f8871abceae172730407475", package = "live-wire" }
+live-wire = { git = "https://github.com/ducktape-industries/ducktape", rev = "66453b797cf67af032c8b9c11d9ba3e2d6d99598", package = "live-wire" }
 wasmtime.workspace = true
 wasmparser = "0.251"
 libc.workspace = true
@@ -170,7 +170,7 @@ gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tempfile.workspace = true
 # a fake node's changes socket (`runtime/kernel/node/tests.rs`)
 tokio-tungstenite.workspace = true
-keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "47c2bca881da4b195f8871abceae172730407475", package = "keyscheme", features = ["testkit"] }
+keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "66453b797cf67af032c8b9c11d9ba3e2d6d99598", package = "keyscheme", features = ["testkit"] }
 p256 = "0.13"
 blobs = { git = "https://github.com/ducktape-industries/programs", rev = "62b369c6abb11db582d6a4cd3ede27710bc850b7", package = "blobs" }
 
