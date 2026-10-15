@@ -260,18 +260,18 @@ pub(super) fn needed(
     }
     // a view no vote reviewed, writing to a role
     let roles = roles.filter(|_| !bound(program))?;
-    let (title, what) = if target == roles.programs {
-        (NETWORK, "sign an op on the programs role")
-    } else if target == roles.validators {
-        (NETWORK, "vote in the validators' program")
-    } else if target == roles.identity {
-        (ACCOUNT, "sign an identity operation")
-    } else if target == roles.blobs {
-        (NETWORK, "sign an op on the blobs role")
-    } else if target == roles.halo {
-        (NETWORK, "sign an op on the halo role, the network's lanes")
-    } else {
-        return None;
+    let (role, _) = roles
+        .named()
+        .into_iter()
+        .find(|(_, role)| role.as_str() == target)?;
+    let (title, what) = match role {
+        "validators" => (NETWORK, "vote in the validators' program".to_owned()),
+        "identity" => (ACCOUNT, "sign an identity operation".to_owned()),
+        "halo" => (
+            NETWORK,
+            "sign an op on the halo role, the network's lanes".to_owned(),
+        ),
+        role => (NETWORK, format!("sign an op on the {role} role")),
     };
     Some(Words {
         title,
@@ -559,8 +559,8 @@ mod tests {
     }
 
     /// Claim: a view whose program is bound to no role asks for every op to
-    /// a role's program, the network's title for the programs role and the
-    /// validators, the account's for identity, and leaves the words to the
+    /// a bound role's program (egress among them), the account's title for
+    /// identity and the network's for every other, and leaves the words to the
     /// target's description; its op to any other program, any op from a
     /// role's own program, and every op while no bindings are known ask
     /// nothing new. The identity ops that remove or suspend keep their own
@@ -573,7 +573,7 @@ mod tests {
             identity: identity::PROGRAM.into(),
             blobs: "blobs".into(),
             awaits: "awaits".into(),
-            egress: None,
+            egress: Some("egress".into()),
             halo: "halo".into(),
         };
         let op = [1, 2, 3];
@@ -610,6 +610,8 @@ mod tests {
                 "sign an identity operation",
             ),
             ("blobs", &op[..], NETWORK, "sign an op on the blobs role"),
+            ("awaits", &op[..], NETWORK, "sign an op on the awaits role"),
+            ("egress", &op[..], NETWORK, "sign an op on the egress role"),
             (
                 "halo",
                 &op[..],
@@ -631,7 +633,15 @@ mod tests {
                 },
                 "{target}"
             );
-            for own in ["valset", "programs", identity::PROGRAM, "blobs", "halo"] {
+            for own in [
+                "valset",
+                "programs",
+                identity::PROGRAM,
+                "blobs",
+                "awaits",
+                "egress",
+                "halo",
+            ] {
                 assert_eq!(asked(own, target, body), None, "{own} to {target}");
             }
             assert_eq!(
