@@ -6,7 +6,8 @@
 # the script. Rows whose subject does not exist yet (the phone crate, the
 # views lock) say SKIP.
 #
-# Run from the repository root before every push (CI is off):
+# Run from the repository root before every push (CI is off; the app has
+# no Makefile, so this is the gate itself):
 #   tools/dep-gate.sh
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -19,8 +20,15 @@ skip() { printf 'SKIP  %s\n' "$1"; }
 # `cargo tree -p <crate> -e normal --target <t>`: the crate's normal (not
 # dev, not build) dependency graph for one target. Resolution only, no
 # compile: a target the toolchain lacks still answers.
+# A cargo-tree failure (a crate name that is not one, a stale lock under
+# `--locked`) is a FAIL, never an empty, passing tree.
 tree() {
-    cargo tree -p "$1" -e normal --target "$2" --prefix none 2>/dev/null | awk '{print $1}' | sort -u
+    local out
+    if ! out=$(cargo tree --locked -p "$1" -e normal --target "$2" --prefix none ${3:-} 2>&1); then
+        fail "cargo tree -p $1 --target $2 failed: $(printf '%s' "$out" | tail -1)"
+        return 1
+    fi
+    printf '%s\n' "$out" | awk '{print $1}' | sort -u
 }
 
 # Row 1: host names no shell, OS or runtime crate. Transitively for the
@@ -31,22 +39,24 @@ tree() {
 host_banned='ducktape-app ducktape-phone ducktape-host-jsc ducktape-updater updater tray-icon keyring commonware-cryptography keystore keyscheme ducktape-home cef gpui-pre-ios gpui-pre-mobile jni ndk objc2-web-kit'
 host_direct_banned='gpui-pre-linux gpui-pre-macos zbus'
 for target in x86_64-unknown-linux-gnu aarch64-apple-darwin aarch64-apple-ios aarch64-linux-android; do
-    found=$(tree ducktape-host "$target" | grep -xF -f <(tr ' ' '\n' <<<"$host_banned") | tr '\n' ' ')
-    direct=$(cargo tree -p ducktape-host -e normal --target "$target" --depth 1 --prefix none 2>/dev/null | awk '{print $1}' | sort -u | grep -xF -f <(tr ' ' '\n' <<<"$host_direct_banned") | tr '\n' ' ')
+    all=$(tree ducktape-host "$target") || continue
+    near=$(tree ducktape-host "$target" "--depth 1") || continue
+    found=$(grep -xF -f <(tr ' ' '\n' <<<"$host_banned") <<<"$all" | tr '\n' ' ')
+    direct=$(grep -xF -f <(tr ' ' '\n' <<<"$host_direct_banned") <<<"$near" | tr '\n' ' ')
     if [ -z "$found$direct" ]; then
-        pass "host tree on $target names no shell, OS or runtime crate"
+        pass "host tree on $target (default features) names no shell, OS or runtime crate"
     else
         fail "host tree on $target names: $found$direct"
     fi
 done
 
 # Row 2: host is OS-blind in source (test modules excluded).
-cfgs=$(grep -rn 'cfg(target_os\|cfg!(target_os\|target_family\|target_vendor' crates/host/src \
+cfgs=$(grep -rnE '(cfg!?|cfg_attr)\s*\(.*\b(target_os|target_family|target_vendor|unix|windows)\b' crates/host/src \
     --exclude='tests.rs' --exclude='*_tests.rs' --exclude-dir=tests || true)
 if [ -z "$cfgs" ]; then
-    pass "host source carries no cfg(target_os) outside test modules"
+    pass "host source carries no OS cfg (target_os, target_family, target_vendor, unix, windows) outside test modules"
 else
-    fail "host source carries cfg(target_os):"
+    fail "host source carries an OS cfg:"
     printf '%s\n' "$cfgs" | sed 's/^/      /'
 fi
 
@@ -54,7 +64,8 @@ fi
 if [ -d crates/phone ]; then
     phone_banned='ducktape-app ducktape-updater updater tray-icon keyring zbus cef commonware-cryptography'
     for target in aarch64-apple-ios aarch64-linux-android; do
-        found=$(tree ducktape-phone "$target" | grep -xF -f <(tr ' ' '\n' <<<"$phone_banned") | tr '\n' ' ')
+        all=$(tree ducktape-phone "$target") || continue
+        found=$(grep -xF -f <(tr ' ' '\n' <<<"$phone_banned") <<<"$all" | tr '\n' ' ')
         if [ -z "$found" ]; then
             pass "phone tree on $target names no desktop crate"
         else

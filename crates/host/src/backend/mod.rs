@@ -43,7 +43,7 @@ use view_wire::methods::refusal;
 
 /// The live auth page. Its host IS the RP ID every passkey is scoped to,
 /// and its relay carries a device join.
-const AUTH_PAGE: &str = "https://auth.ducktape.industries/";
+pub const AUTH_PAGE: &str = "https://auth.ducktape.industries/";
 
 /// The auth page this build talks to: `DUCKTAPE_AUTH_PAGE`, else the live one.
 pub fn auth_page() -> String {

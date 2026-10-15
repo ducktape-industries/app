@@ -658,7 +658,7 @@ fn node_rules(
             .any(|above| tree::COMPOSITES.contains(&above.role.as_str()) && offers(above, "focus"));
         // a rich text's links, which no element draws, are reached by the
         // arrows from the box around the text once Tab has put the keys in
-        // it (src/render/text/links.rs); the picked one is a node the keys
+        // it (crates/host/src/render/text/links.rs); the picked one is a node the keys
         // are on, the box's active descendant, which the snapshot reports
         // focused
         let linked = node.synthetic && snapshot.ancestors(node).any(|above| offers(above, "focus"));

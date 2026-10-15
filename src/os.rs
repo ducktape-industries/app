@@ -3,11 +3,13 @@
 //! convention (`backend::app_dirs`), banners through the freedesktop
 //! notifications service or macOS's notification centre, invites minted
 //! with the key of the node this machine runs (`backend::invite`), and
-//! the throwaway key that signs a query while no key is seated.
+//! the throwaway key that signs a query while no key is seated. The
+//! updater's own notice ([`post_host`], [`withdraw_host`]) is the
+//! desktop's too.
 
 use ducktape_host::contract::{Banners, Dirs, MintInvite, OsFacts, OsServices};
 use ducktape_host::runtime::Answered;
-use ducktape_host::runtime::notify::{Click, Notice};
+use ducktape_host::runtime::notify::{Click, Notice, Settings};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -25,6 +27,9 @@ mod freedesktop;
 #[cfg(not(target_os = "macos"))]
 use freedesktop as platform;
 
+/// What this device's key is labelled on the account it joins.
+pub(crate) const DEVICE_LABEL: &str = "Desktop";
+
 pub(crate) struct DesktopOs {
     dirs: Dirs,
     reader: Arc<dyn noded_client::Signer>,
@@ -40,13 +45,15 @@ impl DesktopOs {
         // support bundles collect)
         let runtime = match std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()) {
             Some(dir) => PathBuf::from(dir).join("ducktape"),
-            None => cache.clone(),
+            None => cache.join("runtime"),
         };
+        // the door file's token is written there plainly: the directory is
+        // this user's alone
+        private_dir(&runtime).map_err(|error| format!("{}: {error}", runtime.display()))?;
         Ok(Self {
             dirs: Dirs {
                 config: crate::backend::config_dir()?,
                 data: crate::backend::data_dir()?,
-                state: crate::backend::app_dirs::state_dir()?,
                 runtime,
                 // no view ships with the app: every one comes off the
                 // connected node. A view developer's DUCKTAPE_VIEWS_DIR
@@ -58,6 +65,33 @@ impl DesktopOs {
             reader: Arc::new(reader_key()),
         })
     }
+}
+
+/// A directory only this user may enter, made if missing.
+fn private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir)?;
+    #[cfg(unix)]
+    std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
+    Ok(())
+}
+
+/// The updater's own notice: up if the device's banners are on, a click
+/// opening Settings › Updates. One stands for the install, whichever of its
+/// processes raised it: a newer one takes its place, and [`withdraw_host`]
+/// takes it down. Blocks on the OS call, so the caller is a thread of its
+/// own. Whether it went up.
+pub(crate) fn post_host(notice: &Notice) -> bool {
+    Settings::load().banners && platform::post(notice, Some(Click::Updates))
+}
+
+/// The updater's notice down, whichever process raised it. Blocks on the
+/// OS call, as [`post_host`] does.
+pub(crate) fn withdraw_host() {
+    platform::withdraw_host()
 }
 
 /// A key of this process's own, never kept: what signs a query while no
@@ -89,6 +123,7 @@ impl OsServices for DesktopOs {
             mac_modifiers: cfg!(target_os = "macos"),
             // `getrusage`'s `ru_maxrss`: bytes on macOS, kibibytes elsewhere
             rss_unit: if cfg!(target_os = "macos") { 1 } else { 1024 },
+            device_label: DEVICE_LABEL,
         }
     }
 
@@ -123,9 +158,5 @@ impl Banners for DesktopBanners {
 
     fn withdraw(&self, tag: &str) {
         platform::withdraw(tag)
-    }
-
-    fn withdraw_host(&self) {
-        platform::withdraw_host()
     }
 }

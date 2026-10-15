@@ -32,7 +32,7 @@ use noded_client::identity::{account_by_number, admission, ask, submit};
 use noded_client::wire::{Body, FRAME_NAMESPACE, Frame, Tip, salt};
 
 use super::auth_page::{Assertion, Request, asserted, created};
-use super::identity::{DEVICE_KEY_LABEL, create_seated, person, submit_seated};
+use super::identity::{create_seated, person, submit_seated};
 use super::{RpcClient, anchor, query_signer, seated_key, seated_sign};
 
 // ---------- the flows ----------
@@ -128,7 +128,7 @@ pub(crate) async fn sign_in(client: &RpcClient, network: &str) -> Result<(), Str
         .ok_or("That passkey isn't on this account. Use the same passkey both times.")?;
     let add = Op::AddKey {
         scheme: abi::Scheme::Ed25519,
-        label: Some(DEVICE_KEY_LABEL.into()),
+        label: Some(crate::os::DEVICE_LABEL.into()),
         consent: Consent {
             key,
             account: number,

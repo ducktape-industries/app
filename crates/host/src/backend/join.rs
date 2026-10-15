@@ -9,14 +9,14 @@
 
 use noded_client::join::{self, Request};
 
-use super::identity::DEVICE_KEY_LABEL;
 use super::{RpcClient, auth_page, seated_signer};
 
 /// Puts this device's (seated) key up under `code`, waits for a device on
 /// the account to consent, and joins with that consent.
 pub async fn join_from_device(client: &RpcClient, network: &str, code: &str) -> Result<(), String> {
     let key = seated_signer().map_err(|refusal| refusal.message)?;
-    join::join_from_device(client, &auth_page(), network, code, &key, DEVICE_KEY_LABEL).await
+    let label = crate::contract::os().facts().device_label;
+    join::join_from_device(client, &auth_page(), network, code, &key, label).await
 }
 
 /// The request a new device put up under `code`, on the auth page's relay.

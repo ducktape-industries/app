@@ -88,6 +88,6 @@ pub fn refine_fallbacks(style: &mut gpui_kit::StyleRefinement) {
     });
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 #[path = "tests/font_fallback.rs"]
 pub mod font_fallback;

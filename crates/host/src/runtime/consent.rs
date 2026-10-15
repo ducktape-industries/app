@@ -101,22 +101,20 @@ pub struct Ask {
 }
 
 /// The asks waiting for the person, oldest first; the shell shows the front.
-/// One queue for the process, as there is one person. Under test, one per
-/// test thread: the tests share the process, and a card one test asks for
-/// would open in another test's window as its dialog closed.
+/// One queue for the process, as there is one person. On the test services
+/// (`contract::testing`), one per test thread: the tests share the process,
+/// and a card one test asks for would open in another test's window as its
+/// dialog closed.
 pub fn waiting() -> &'static Mutex<VecDeque<Ask>> {
-    #[cfg(not(any(test, feature = "test-support")))]
-    {
-        static WAITING: OnceLock<Mutex<VecDeque<Ask>>> = OnceLock::new();
-        WAITING.get_or_init(Mutex::default)
-    }
     #[cfg(any(test, feature = "test-support"))]
-    {
+    if crate::contract::testing::active() {
         thread_local! {
             static WAITING: &'static Mutex<VecDeque<Ask>> = Box::leak(Box::default());
         }
-        WAITING.with(|waiting| *waiting)
+        return WAITING.with(|waiting| *waiting);
     }
+    static WAITING: OnceLock<Mutex<VecDeque<Ask>>> = OnceLock::new();
+    WAITING.get_or_init(Mutex::default)
 }
 
 /// The queue, less every ask whose request let go of it (`Told`).

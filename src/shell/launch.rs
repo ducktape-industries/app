@@ -161,13 +161,7 @@ fn start(boot: Boot) {
                 let settle = move |cx: &mut gpui_kit::App| {
                     let _ = door_seats.update(cx, |seats, cx| seats.settle(cx));
                 };
-                // the walk keeps Settings' choices and puts them back
-                let keep = |window: &gpui_kit::Window, cx: &gpui_kit::App| {
-                    Kept::of(window, cx).map(|kept| {
-                        Box::new(move |cx: &mut gpui_kit::App| kept.restore(cx))
-                            as crate::ax::Restore
-                    })
-                };
+                let keep = super::kept_restore;
                 let door = crate::ax::Door {
                     windows: &windows,
                     settle: &settle,

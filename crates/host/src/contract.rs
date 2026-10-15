@@ -19,9 +19,9 @@ use std::sync::{Arc, OnceLock};
 pub trait OsServices: Send + Sync + 'static {
     /// Where files go.
     fn dirs(&self) -> &Dirs;
-    /// What signs a query while no key is seated (`backend::query_frame`):
-    /// the desktop's throwaway reader key. A phone always has a device key,
-    /// so its reader is that key.
+    /// What signs a query while no key is seated (`backend::query_frame`).
+    /// Which key that is, and whether it is linkable to the device, is the
+    /// shell's call: the desktop answers a throwaway key made per process.
     fn reader(&self) -> Arc<dyn noded_client::Signer>;
     /// OS banners: post and withdraw. A click comes back through
     /// `runtime::notify::clicked`.
@@ -35,17 +35,17 @@ pub trait OsServices: Send + Sync + 'static {
     fn mint_invite(&self, client: &RpcClient, ask: MintInvite) -> Option<Answered>;
 }
 
-/// Where the host keeps files. `cache` the OS may purge; `config`, `data`
-/// and `state` it keeps (`state` holds the log); `runtime` is the AX door
-/// file's directory; `views_override` is a VIEW DEVELOPER'S directory of
-/// `<program>_view.wasm` files that stand in for the network's (the desktop
-/// reads `DUCKTAPE_VIEWS_DIR`; a phone has none).
+/// Where the host keeps files. `cache` the OS may purge; `config` and
+/// `data` it keeps; `runtime` is the AX door file's directory, one only
+/// this user can read (the shell makes it so: the door file's token is
+/// written there plainly); `views_override` is a VIEW DEVELOPER'S
+/// directory of `<program>_view.wasm` files that stand in for the
+/// network's (the desktop reads `DUCKTAPE_VIEWS_DIR`; a phone has none).
 #[derive(Clone, Debug)]
 pub struct Dirs {
     pub cache: PathBuf,
     pub config: PathBuf,
     pub data: PathBuf,
-    pub state: PathBuf,
     pub runtime: PathBuf,
     pub views_override: Option<PathBuf>,
 }
@@ -59,6 +59,9 @@ pub struct OsFacts {
     /// What `getrusage`'s `ru_maxrss` counts in: bytes on macOS, kibibytes
     /// elsewhere.
     pub rss_unit: u64,
+    /// What this device's key is labelled on the account it joins
+    /// (`identity::DeviceKey.label`): "Desktop", "iPhone", ...
+    pub device_label: &'static str,
 }
 
 /// OS banners. Both calls block on the OS: a view's run through
@@ -70,12 +73,10 @@ pub trait Banners: Send + Sync {
     fn post(&self, notice: &Notice, click: Option<Click>) -> bool;
     /// Takes down the banner standing under `tag`.
     fn withdraw(&self, tag: &str);
-    /// Takes down the host's own notice (the one a click opens Settings ›
-    /// Updates from), whichever process raised it.
-    fn withdraw_host(&self);
 }
 
-/// `invite.create`'s ask: how long the invite lives, and the clock.
+/// `invite.create`'s ask: how long the invite lives
+/// (`methods::CreateInvite.ttl_days`), and the clock.
 #[derive(Clone, Copy, Debug)]
 pub struct MintInvite {
     pub ttl_days: u64,
@@ -92,8 +93,9 @@ pub fn install(os: Arc<dyn OsServices>) {
 }
 
 /// The installed services. A test build with none installed runs on
-/// [`testing::TestOs`]: files under a directory of the process's own, no
-/// banners, no node.
+/// [`testing::TestOs`]: files under a directory of the test thread's own,
+/// no banners, no node. A binary never reaches that fallback: every shell
+/// installs its services before its first read (`main.rs`).
 pub fn os() -> &'static Arc<dyn OsServices> {
     #[cfg(any(test, feature = "test-support"))]
     {
@@ -110,26 +112,58 @@ pub fn os() -> &'static Arc<dyn OsServices> {
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-    /// Files under one directory of this process's own, no banners, a reader
-    /// key of its own, no node to mint invites with.
+    static ACTIVE: AtomicBool = AtomicBool::new(false);
+
+    /// Whether the test services are the installed ones: what the host's
+    /// per-test-thread state (the consent queue) keys on. Never true in a
+    /// shell's binary, which installs its own.
+    pub fn active() -> bool {
+        ACTIVE.load(Ordering::Relaxed)
+    }
+
+    /// Files under one directory per test thread (the tests share the
+    /// process; one thread's prefs are not another's), no banners, a reader
+    /// key of its own, no node to mint invites with. The directories of
+    /// test processes that are gone are removed as a new one starts.
     pub struct TestOs {
-        dirs: Dirs,
         reader: Arc<dyn noded_client::Signer>,
+    }
+
+    fn root_of(pid: u32) -> PathBuf {
+        std::env::temp_dir().join(format!("ducktape-test-{pid}"))
+    }
+
+    /// The roots earlier test processes left: each is named by its pid,
+    /// and a pid no process holds is a run that ended.
+    fn remove_stale_roots() {
+        let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(pid) = name
+                .to_str()
+                .and_then(|name| name.strip_prefix("ducktape-test-"))
+                .and_then(|pid| pid.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            // SAFETY: `kill` with signal 0 sends nothing; it only answers
+            // whether `pid` names a process.
+            let alive = pid == std::process::id() || unsafe { libc::kill(pid as i32, 0) } == 0;
+            if !alive {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
     }
 
     impl TestOs {
         pub fn new() -> Self {
-            let root = std::env::temp_dir().join(format!("ducktape-test-{}", std::process::id()));
+            remove_stale_roots();
+            ACTIVE.store(true, Ordering::Relaxed);
             Self {
-                dirs: Dirs {
-                    cache: root.join("cache"),
-                    config: root.join("config"),
-                    data: root.join("data"),
-                    state: root.join("state"),
-                    runtime: root.join("runtime"),
-                    views_override: None,
-                },
                 reader: Arc::new(FixedReader),
             }
         }
@@ -164,13 +198,25 @@ pub mod testing {
         }
 
         fn withdraw(&self, _: &str) {}
-
-        fn withdraw_host(&self) {}
     }
 
     impl OsServices for TestOs {
         fn dirs(&self) -> &Dirs {
-            &self.dirs
+            thread_local! {
+                static DIRS: &'static Dirs = {
+                    let thread = format!("{:?}", std::thread::current().id());
+                    let thread = thread.trim_start_matches("ThreadId(").trim_end_matches(')');
+                    let root = root_of(std::process::id()).join(thread);
+                    Box::leak(Box::new(Dirs {
+                        cache: root.join("cache"),
+                        config: root.join("config"),
+                        data: root.join("data"),
+                        runtime: root.join("runtime"),
+                        views_override: None,
+                    }))
+                };
+            }
+            DIRS.with(|dirs| *dirs)
         }
 
         fn reader(&self) -> Arc<dyn noded_client::Signer> {
@@ -185,6 +231,7 @@ pub mod testing {
             OsFacts {
                 mac_modifiers: false,
                 rss_unit: 1024,
+                device_label: "Test",
             }
         }
 
