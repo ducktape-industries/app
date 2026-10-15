@@ -503,6 +503,50 @@ async fn blob_manifest_answers_what_the_view_in_a_blob_declares() {
     );
 }
 
+/// `blob.manifest` fills no cache: a blob the seat path never fetched is
+/// read off the node and let go, so a view with `blob` cannot fill the
+/// disk a program's size at a time; one the seat path keeps is answered
+/// from the disk.
+#[tokio::test]
+async fn blob_manifest_leaves_the_program_cache_as_it_was() {
+    use sha2::Digest as _;
+    let program = module(&[("ducktape.describe", b"unseated")]);
+    let mut framed = format!("program {}\0", program.len()).into_bytes();
+    framed.extend_from_slice(&program);
+    let id = abi::BlobId::Sha256(sha2::Sha256::digest(&framed).into());
+    let kept = crate::backend::views::cache_path(&id).unwrap();
+    let _ = std::fs::remove_file(&kept);
+    let held = fake_node(vec![(
+        noded_client::wire::route::BLOB_GET,
+        Mode::Answer(abi::encode(&Some(framed.clone()))),
+    )]);
+    let ask = methods::encode(&format!(
+        "sha256:{}",
+        noded_client::hex::hex_encode(id.digest())
+    ));
+    let answer = blob_manifest(held.node.clone(), ask.clone()).await.unwrap();
+    assert_eq!(
+        methods::decode::<Option<methods::Manifested>>(&answer)
+            .unwrap()
+            .map(|blob| blob.size),
+        Some(program.len() as u64)
+    );
+    assert!(!kept.exists(), "a view's ask put the blob in the cache");
+    // the seat path keeps it; the next ask reads the disk, not the node
+    std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
+    std::fs::write(&kept, &framed).unwrap();
+    let dead = fake_node(Vec::new());
+    let answer = blob_manifest(dead.node.clone(), ask).await.unwrap();
+    let _ = std::fs::remove_file(&kept);
+    assert_eq!(
+        methods::decode::<Option<methods::Manifested>>(&answer)
+            .unwrap()
+            .map(|blob| blob.size),
+        Some(program.len() as u64),
+        "answered off the disk"
+    );
+}
+
 /// A blob id is hex digits only: `+f` (which `from_str_radix` reads as 15)
 /// is a malformed id, refused before the node is asked, so each digest has
 /// one spelling.

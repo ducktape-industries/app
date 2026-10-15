@@ -167,9 +167,30 @@ pub async fn view_of(
     })
 }
 
+/// The program's blob as a seat reads it: the cache's copy, else the
+/// node's, which the cache keeps from then on.
 pub async fn program_bytes(
     client: &RpcClient,
     code: &BlobId,
+) -> Result<(Vec<u8>, &'static str), Fetch> {
+    blob(client, code, true).await
+}
+
+/// The blob as a view asks of it (`blob.manifest`): the cache's copy when
+/// a seat put it there, else the node's, read and let go. Only what the
+/// app seats fills the cache: a view with `blob` may not fill the disk a
+/// program's size at a time.
+pub async fn program_bytes_unkept(
+    client: &RpcClient,
+    code: &BlobId,
+) -> Result<(Vec<u8>, &'static str), Fetch> {
+    blob(client, code, false).await
+}
+
+async fn blob(
+    client: &RpcClient,
+    code: &BlobId,
+    keep: bool,
 ) -> Result<(Vec<u8>, &'static str), Fetch> {
     let cached = cache_path(code);
     if let Some(path) = &cached
@@ -190,7 +211,7 @@ pub async fn program_bytes(
     if !hashes_to(&framed, code) {
         return Err(Fetch::Corrupt);
     }
-    if let Some(path) = cached {
+    if let Some(path) = cached.filter(|_| keep) {
         if let Some(parent) = path.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
@@ -199,7 +220,8 @@ pub async fn program_bytes(
     Ok((body, "node"))
 }
 
-fn cache_path(code: &BlobId) -> Option<PathBuf> {
+/// Where the cache keeps `code`'s framed bytes.
+pub(crate) fn cache_path(code: &BlobId) -> Option<PathBuf> {
     Some(
         cache_dir()
             .ok()?
