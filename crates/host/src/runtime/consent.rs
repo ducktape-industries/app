@@ -107,11 +107,17 @@ pub struct Ask {
 /// dialog closed.
 pub fn waiting() -> &'static Mutex<VecDeque<Ask>> {
     #[cfg(any(test, feature = "test-support"))]
-    if crate::contract::testing::active() {
-        thread_local! {
-            static WAITING: &'static Mutex<VecDeque<Ask>> = Box::leak(Box::default());
+    {
+        // `os()` first: on a test build it installs the test services if
+        // nothing has yet, so which queue an ask lands in never depends on
+        // whether an earlier read happened to install them.
+        crate::contract::os();
+        if crate::contract::testing::active() {
+            thread_local! {
+                static WAITING: &'static Mutex<VecDeque<Ask>> = Box::leak(Box::default());
+            }
+            return WAITING.with(|waiting| *waiting);
         }
-        return WAITING.with(|waiting| *waiting);
     }
     static WAITING: OnceLock<Mutex<VecDeque<Ask>>> = OnceLock::new();
     WAITING.get_or_init(Mutex::default)

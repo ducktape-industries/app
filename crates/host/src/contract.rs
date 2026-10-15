@@ -211,11 +211,28 @@ pub mod testing {
                     let thread = format!("{:?}", std::thread::current().id());
                     let thread = thread.trim_start_matches("ThreadId(").trim_end_matches(')');
                     let root = root_of(std::process::id()).join(thread);
+                    // The rule `Dirs` sets every impl: `runtime` exists and
+                    // is private before anything writes there.
+                    let runtime = root.join("runtime");
+                    {
+                        use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+                        std::fs::DirBuilder::new()
+                            .recursive(true)
+                            .mode(0o700)
+                            .create(&runtime)
+                            .and_then(|()| {
+                                std::fs::set_permissions(
+                                    &runtime,
+                                    std::fs::Permissions::from_mode(0o700),
+                                )
+                            })
+                            .expect("the test runtime directory is made private");
+                    }
                     Box::leak(Box::new(Dirs {
                         cache: root.join("cache"),
                         config: root.join("config"),
                         data: root.join("data"),
-                        runtime: root.join("runtime"),
+                        runtime,
                         views_override: None,
                     }))
                 };
@@ -242,5 +259,18 @@ pub mod testing {
         fn mint_invite(&self, _: &RpcClient, _: MintInvite) -> Option<Answered> {
             None
         }
+    }
+
+    /// `TestOs` keeps the rule `Dirs` sets every impl: its runtime
+    /// directory exists and only this user can enter it.
+    #[cfg(test)]
+    #[test]
+    fn the_test_runtime_directory_exists_and_is_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(&TestOs::new().dirs().runtime)
+            .expect("the runtime directory exists")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
     }
 }
