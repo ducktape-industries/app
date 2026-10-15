@@ -122,7 +122,9 @@ impl Frame {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+/// Decoded by hand ([`Status::deserialize_reader`]): `contract` is read before the fields that follow it, whose layout is
+/// the contract's.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize)]
 pub struct Status {
     pub network: String,
     /// The chain's founding time (its genesis block's), unix ms — not now.
@@ -140,6 +142,43 @@ pub struct Status {
     /// The genesis block's digest: with the network name, the chain's id.
     pub genesis: [u8; 32],
     pub roles: abi::Roles,
+}
+
+impl BorshDeserialize for Status {
+    /// The node's field order, with one stop: a node on another contract lays out what follows `contract` its own way
+    /// (contract 4 had three roles), so it is refused by name there, not as "Unexpected length of input" further on.
+    fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
+        let network = String::deserialize_reader(reader)?;
+        let time = u64::deserialize_reader(reader)?;
+        let block_time_ms = u64::deserialize_reader(reader)?;
+        let epoch_length = u64::deserialize_reader(reader)?;
+        let height = u64::deserialize_reader(reader)?;
+        let tip = <[u8; 32]>::deserialize_reader(reader)?;
+        let root = Root::deserialize_reader(reader)?;
+        let epoch = u64::deserialize_reader(reader)?;
+        let identity = Vec::<u8>::deserialize_reader(reader)?;
+        let contract = u32::deserialize_reader(reader)?;
+        if contract != NODE_CONTRACT {
+            return Err(borsh::io::Error::new(
+                borsh::io::ErrorKind::InvalidData,
+                format!("this node speaks contract {contract}; this app speaks {NODE_CONTRACT}"),
+            ));
+        }
+        Ok(Status {
+            network,
+            time,
+            block_time_ms,
+            epoch_length,
+            height,
+            tip,
+            root,
+            epoch,
+            identity,
+            contract,
+            genesis: <[u8; 32]>::deserialize_reader(reader)?,
+            roles: abi::Roles::deserialize_reader(reader)?,
+        })
+    }
 }
 
 impl Status {
@@ -381,6 +420,30 @@ mod tests {
         let mut listed = vec![0, 0, 0, 0, 1];
         listed.extend(3u64.to_le_bytes());
         assert_eq!(abi::decode::<Page>(&listed).unwrap(), page);
+    }
+
+    /// A contract-4 node (three roles) is refused as the contract it speaks, not as bytes that ran out.
+    #[test]
+    fn a_status_from_another_contract_is_refused_by_its_contract() {
+        let text = |text: &str| [&(text.len() as u32).to_le_bytes()[..], text.as_bytes()].concat();
+        let mut bytes = text("n");
+        for number in [1u64, 2, 3, 4] {
+            bytes.extend(number.to_le_bytes());
+        }
+        bytes.extend([5; 32]);
+        bytes.extend([6; 32]);
+        bytes.extend(7u64.to_le_bytes());
+        bytes.extend([1, 0, 0, 0, 8]);
+        bytes.extend(4u32.to_le_bytes());
+        bytes.extend([9; 32]);
+        for role in ["r", "v", "i"] {
+            bytes.extend(text(role));
+        }
+        let refusal = abi::decode::<Status>(&bytes).unwrap_err();
+        assert_eq!(
+            refusal.sentence,
+            format!("this node speaks contract 4; this app speaks {NODE_CONTRACT}")
+        );
     }
 
     #[test]
