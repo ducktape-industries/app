@@ -753,18 +753,78 @@ async fn submitted(node: Node, target: String, payload: Vec<u8>) -> Answer {
     }
 }
 
+/// The blob id a `blob.*` ask spells, `sha256:<hex>` or `sha1:<hex>`.
+fn blob_id(ask: &[u8]) -> Result<abi::BlobId, wire::Error> {
+    let id: String = methods::decode(ask).map_err(malformed)?;
+    let (kind, hex) = id
+        .split_once(':')
+        .ok_or_else(|| malformed("id is `sha256:<hex>` or `sha1:<hex>`"))?;
+    let digest = noded_client::hex::hex_decode(hex).map_err(malformed)?;
+    Ok(match (kind, digest.len()) {
+        ("sha256", 32) => abi::BlobId::Sha256(digest.try_into().expect("32 bytes")),
+        ("sha1", 20) => abi::BlobId::Sha1(digest.try_into().expect("20 bytes")),
+        _ => return Err(malformed("id is `sha256:<hex>` or `sha1:<hex>`")),
+    })
+}
+
+/// `blob.manifest`: a blob the programs role names (a listed program's
+/// code, a view-only entry's, or one a scheduled change brings: the
+/// scheduled list is read for the ask, never per block), read as a seat
+/// reads it (`views::program_bytes`, cached under its id); the view in its
+/// `ducktape.view` section or the blob itself for a view-only entry, and
+/// that view's manifest as `manifest_of` would read it. A blob is a view by
+/// its manifest section, read or not: one this host cannot read is a view
+/// with no manifest, never a program that draws nothing. The bytes stay on
+/// the host. An id the roster does not name is refused as
+/// `undeclared_target`, never fetched: `None` is the node's word that it
+/// holds no such blob, and a view asks the host only about code the chain
+/// names, as a node method names only a program its manifest declares.
+pub(super) fn blob_manifest(node: Node, ask: Vec<u8>) -> Answered {
+    Box::pin(async move {
+        use backend::views::{Fetch, VIEW_SECTION, program_bytes, section};
+        use view_wire::manifest::{MANIFEST_SECTION, read_manifest};
+        let id = blob_id(&ask)?;
+        let named = super::super::roster::roster().names_code(&id)
+            || match backend::views::coming(&node.client, &node.network).await {
+                Ok(coming) => coming.contains(&id),
+                // the transport, as a blob read's: the node method's loop retries
+                Err(Fetch::Unreachable(reason)) => {
+                    return Err(wire::Error::new(refusal::RPC_CLIENT, reason));
+                }
+                Err(error) => return Err(host_fault(error)),
+            };
+        if !named {
+            return Err(wire::Error::new(
+                refusal::UNDECLARED_TARGET,
+                "the programs role names no such code",
+            ));
+        }
+        let bytes = match program_bytes(&node.client, &id).await {
+            Ok((bytes, _)) => bytes,
+            Err(Fetch::NotHeld) => return Ok(methods::encode(&None::<methods::Manifested>)),
+            // the transport: retried by the node method's loop
+            Err(Fetch::Unreachable(reason)) => {
+                return Err(wire::Error::new(refusal::RPC_CLIENT, reason));
+            }
+            Err(error) => return Err(host_fault(error)),
+        };
+        let view = section(&bytes, VIEW_SECTION)
+            // no section: the blob is a view itself, or carries none
+            .or_else(|| section(&bytes, MANIFEST_SECTION).map(|_| &bytes[..]))
+            .map(|view| methods::CarriedView {
+                size: view.len() as u64,
+                manifest: read_manifest(view),
+            });
+        Ok(methods::encode(&Some(methods::Manifested {
+            size: bytes.len() as u64,
+            view,
+        })))
+    })
+}
+
 pub(super) fn blob_get(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
-        let id: String = methods::decode(&ask).map_err(malformed)?;
-        let (kind, hex) = id
-            .split_once(':')
-            .ok_or_else(|| malformed("id is `sha256:<hex>` or `sha1:<hex>`"))?;
-        let digest = noded_client::hex::hex_decode(hex).map_err(malformed)?;
-        let id = match (kind, digest.len()) {
-            ("sha256", 32) => abi::BlobId::Sha256(digest.try_into().expect("32 bytes")),
-            ("sha1", 20) => abi::BlobId::Sha1(digest.try_into().expect("20 bytes")),
-            _ => return Err(malformed("id is `sha256:<hex>` or `sha1:<hex>`")),
-        };
+        let id = blob_id(&ask)?;
         // absent is `None`, never a refusal: the ask itself did not fail.
         // Read no further than the cap and the blob's header (`kind len\0`,
         // under 32 bytes) in its borsh `Option<Vec<u8>>` (5)

@@ -142,6 +142,35 @@ pub async fn roles(client: &RpcClient, network: &str) -> Result<Option<abi::Role
     }
 }
 
+/// The code every scheduled change brings (a program set, a view set), in
+/// the programs role's order, whatever height it lands at: what the
+/// network is about to run, so a view may ask about it (`blob.manifest`)
+/// before it does. Read for that ask, not per block. Empty from a programs
+/// role that predates the question.
+pub async fn coming(client: &RpcClient, network: &str) -> Result<Vec<BlobId>, Fetch> {
+    use ::programs::{PageRequest, Query, Reply};
+    let mut codes = Vec::new();
+    let mut after = None;
+    loop {
+        let page = PageRequest { after, limit: None };
+        let page = match ask(client, network, Query::Scheduled { page }).await {
+            Ok(Reply::Scheduled(page)) => page,
+            Ok(_) | Err(Fetch::Refused(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        codes.extend(
+            page.items
+                .iter()
+                .filter_map(|pending| pending.change.code()),
+        );
+        // a node that pages forever is read as far as the roster cap
+        match page.next {
+            Some(next) if codes.len() <= MAX_PROGRAMS => after = Some(next),
+            _ => return Ok(codes),
+        }
+    }
+}
+
 async fn ask(
     client: &RpcClient,
     network: &str,
@@ -172,6 +201,10 @@ pub async fn view_of(
     })
 }
 
+/// A program's blob: the cache's copy, else the node's, which the cache
+/// keeps from then on. Only code the roster names is read here (a seat's,
+/// `program.describe`'s, `blob.manifest`'s), so the cache holds at most
+/// what the network runs or has scheduled.
 pub async fn program_bytes(
     client: &RpcClient,
     code: &BlobId,
@@ -204,7 +237,8 @@ pub async fn program_bytes(
     Ok((body, "node"))
 }
 
-fn cache_path(code: &BlobId) -> Option<PathBuf> {
+/// Where the cache keeps `code`'s framed bytes.
+pub(crate) fn cache_path(code: &BlobId) -> Option<PathBuf> {
     Some(
         cache_dir()
             .ok()?
@@ -221,17 +255,22 @@ fn hashes_to(framed: &[u8], code: &BlobId) -> Result<bool, Fetch> {
     Ok(hashed == *code)
 }
 
-/// The bytes of the [`VIEW_SECTION`] custom section, out of a core module or
-/// a component (where the section may sit on a nested core module).
+/// The bytes of the [`VIEW_SECTION`] custom section ([`section`]).
 pub fn view_section(bytes: &[u8]) -> Option<Vec<u8>> {
-    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
-        if let Ok(wasmparser::Payload::CustomSection(section)) = payload
-            && section.name() == VIEW_SECTION
-        {
-            return Some(section.data().to_vec());
-        }
-    }
-    None
+    section(bytes, VIEW_SECTION).map(<[u8]>::to_vec)
+}
+
+/// The bytes of the custom section `name`, out of a core module or a
+/// component (where the section may sit on a nested core module).
+pub fn section<'a>(bytes: &'a [u8], name: &str) -> Option<&'a [u8]> {
+    wasmparser::Parser::new(0)
+        .parse_all(bytes)
+        .find_map(|payload| match payload {
+            Ok(wasmparser::Payload::CustomSection(section)) if section.name() == name => {
+                Some(section.data())
+            }
+            _ => None,
+        })
 }
 
 fn fetch_error(error: noded_client::Error) -> Fetch {

@@ -119,6 +119,11 @@ impl Roster {
     pub(crate) fn lists(&self, program: &str) -> bool {
         self.code(program).is_some()
     }
+
+    /// Whether it lists `code`: a listed program's, or a view-only entry's.
+    pub(super) fn names_code(&self, code: &abi::BlobId) -> bool {
+        self.lock().iter().any(|entry| entry.code == *code)
+    }
 }
 
 /// The app's one roster.

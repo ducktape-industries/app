@@ -68,7 +68,7 @@ tar xzf /tmp/ducktape.tar.gz -C /tmp
   every method a borsh type in `view_wire::methods`, named `<capability>.<op>`:
   `program.query`/`op.submit` `Call{target, body}`, `program.changes <program>`,
   `program.describe`, `chain.status`/`block`/`blocks`/`heads`, `invite.create`,
-  `blob.get`, `link.open`, `host.widget` (the one MessagePack method: a tree
+  `blob.get`, `blob.manifest`, `link.open`, `host.widget` (the one MessagePack method: a tree
   command), and the app's own (`host.*`, `clock.ticks`, `clipboard.*`,
   `notify.*`, `store.*`). A view reaches only the capabilities its manifest
   declares. The app forwards the bytes to the
