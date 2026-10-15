@@ -269,6 +269,12 @@ async fn publishing(
                             return;
                         }
                     }
+                    Some(Heard::Waiting(code)) => {
+                        lost = 0;
+                        if !items.send(Err(waiting(code))).await {
+                            return;
+                        }
+                    }
                     Some(Heard::Closed(refusal)) => return items.last(refusal),
                     Some(Heard::Subscribed { .. } | Heard::Announce { .. }) => {}
                     None => break,
@@ -429,8 +435,20 @@ async fn subscribing(
                         lost = 0;
                         LiveItem::Opened { by, mode: live_mode(mode), latest }
                     }
+                    Some(Heard::Waiting(code)) => {
+                        lost = 0;
+                        if !items.send(Err(waiting(code))).await {
+                            return;
+                        }
+                        continue;
+                    }
                     Some(Heard::Closed(refusal)) => return items.last(refusal),
-                    Some(_) => continue,
+                    Some(
+                        Heard::Published
+                        | Heard::Subscribers(_)
+                        | Heard::Announce { .. }
+                        | Heard::Dropped(_),
+                    ) => continue,
                     None => break,
                 },
                 Some(data) = request.data.recv() => live_item(data),
@@ -453,6 +471,16 @@ async fn subscribing(
         lost += 1;
         tokio::time::sleep(backend::retry_delay(lost)).await;
     }
+}
+
+/// The item a request hears while the node holds it: not its end. The
+/// view reads it as "not open yet" before `Opened`/`Published`, unlike the
+/// same word as a request's last item, a grant taken back.
+fn waiting(code: client::Code) -> wire::Error {
+    wire::Error::new(
+        code.as_str(),
+        "the room does not grant this yet; the node holds the request until it does",
+    )
 }
 
 fn live_item(data: Data) -> LiveItem {
@@ -523,8 +551,18 @@ async fn watching(session: Arc<dyn Session>, namespace: String, mut items: Items
                     mode: live_mode(mode),
                     up,
                 },
+                Heard::Waiting(code) => {
+                    lost = 0;
+                    if !items.send(Err(waiting(code))).await {
+                        return;
+                    }
+                    continue;
+                }
                 Heard::Closed(refusal) => return items.last(refusal),
-                _ => continue,
+                Heard::Published
+                | Heard::Subscribers(_)
+                | Heard::Subscribed { .. }
+                | Heard::Dropped(_) => continue,
             };
             lost = 0;
             up.retain(|held| held.name != announce.name);

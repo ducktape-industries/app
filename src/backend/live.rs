@@ -115,6 +115,10 @@ pub(crate) enum Heard {
     },
     /// The node dropped one object of this publication; the track goes on.
     Dropped(Code),
+    /// The node holds the request until it may answer it (`NotGranted`:
+    /// the room grants it nothing yet); it answers on the block that
+    /// does, and the request goes on.
+    Waiting(Code),
     /// The node ended the request, or the session ended it as a wire
     /// mismatch: the refusal a view reads.
     Closed(Error),
@@ -781,6 +785,11 @@ impl Conn {
                 };
                 end(&mut table, request, word);
             }
+            Control::Waiting { request, code } => {
+                if let Some(entry) = table.requests.get(&request) {
+                    entry.tell(Heard::Waiting(code));
+                }
+            }
             Control::Refused { request, code } => {
                 let dropped = table
                     .requests
@@ -799,7 +808,18 @@ impl Conn {
                 }
                 return Err("the node is going away");
             }
-            _ => return Err("the node sent a message only a client sends"),
+            Control::Hello(_)
+            | Control::Challenge(_)
+            | Control::Proof(_)
+            | Control::Welcome(_)
+            | Control::Publish { .. }
+            | Control::Unpublish { .. }
+            | Control::Subscribe { .. }
+            | Control::Unsubscribe { .. }
+            | Control::Watch { .. }
+            | Control::Unwatch { .. } => {
+                return Err("the node sent a message only a client sends");
+            }
         }
         Ok(())
     }
@@ -1036,7 +1056,22 @@ async fn handshake(link: &mut Link, hello: Hello, node: &[u8]) -> Result<bool, E
             code.as_str(),
             "the node refused this key a live session",
         )),
-        _ => Err(unavailable("the node did not welcome the proof")),
+        Control::Hello(_)
+        | Control::Challenge(_)
+        | Control::Proof(_)
+        | Control::Publish { .. }
+        | Control::Unpublish { .. }
+        | Control::Subscribe { .. }
+        | Control::Unsubscribe { .. }
+        | Control::Watch { .. }
+        | Control::Unwatch { .. }
+        | Control::Published { .. }
+        | Control::Subscribed { .. }
+        | Control::Subscribers { .. }
+        | Control::Announce { .. }
+        | Control::Ended { .. }
+        | Control::Waiting { .. }
+        | Control::GoAway { .. } => Err(unavailable("the node did not welcome the proof")),
     }
 }
 

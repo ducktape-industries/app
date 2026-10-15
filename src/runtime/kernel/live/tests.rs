@@ -152,9 +152,9 @@ fn a_publication_is_stamped_and_its_sends_wait_for_the_node() {
         (id, count, done),
         (1, Ok(Publishing::Subscribers(2)), false)
     );
-    ends.heard.send(Heard::Dropped(Code::Rate)).unwrap();
+    ends.heard.send(Heard::Dropped(Code::TooLarge)).unwrap();
     let (_, dropped, done) = item::<Publishing>(next(&view, &mut changes));
-    assert_eq!((dropped, done), (Err(refusal::RATE_LIMIT.into()), false));
+    assert_eq!((dropped, done), (Err(refusal::TOO_LARGE.into()), false));
     ends.heard
         .send(Heard::Closed(wire::Error::new(
             Code::NotGranted.as_str(),
@@ -286,6 +286,102 @@ fn a_subscription_hears_the_track_and_its_end() {
         item::<LiveItem>(next(&view, &mut changes)),
         (1, Err(refusal::PUBLISHER_GONE.into()), true)
     );
+}
+
+/// A request the node holds for its grant: each kind hears one
+/// `not_granted` item that ends nothing, and goes on when the node answers.
+/// A publication's sends wait for it.
+#[test]
+fn a_request_the_node_holds_hears_not_granted_and_goes_on() {
+    let _serial = serial();
+    let (mut view, opens) = live_guest();
+    let mut changes = view.replies.changes();
+    let publish = LivePublish {
+        track: track("presence/7"),
+        mode: LiveMode::Stream,
+        priority: 128,
+    };
+    ask(&mut view, 1, "live.publish", methods::encode(&publish));
+    let (_, mut published) = opened(&opens);
+    send(&mut view, 2, 0);
+    published
+        .heard
+        .send(Heard::Waiting(Code::NotGranted))
+        .unwrap();
+    let (id, waits, done) = item::<Publishing>(next(&view, &mut changes));
+    assert_eq!(
+        (id, waits, done),
+        (1, Err(refusal::NOT_GRANTED.into()), false)
+    );
+    assert!(published.objects.try_recv().is_err(), "a send waits too");
+    published.heard.send(Heard::Published).unwrap();
+    let out = published.objects.blocking_recv().unwrap();
+    assert_eq!((out.group, out.object), (1, 0));
+    published.heard.send(Heard::Subscribers(1)).unwrap();
+    assert_eq!(
+        item(next(&view, &mut changes)),
+        (1, Ok(Publishing::Subscribers(1)), false)
+    );
+
+    let subscribe = LiveSubscribe {
+        track: track("doc"),
+        latest: false,
+    };
+    ask(&mut view, 3, "live.subscribe", methods::encode(&subscribe));
+    let (_, subscribed) = opened(&opens);
+    subscribed
+        .heard
+        .send(Heard::Waiting(Code::NotGranted))
+        .unwrap();
+    assert_eq!(
+        item::<LiveItem>(next(&view, &mut changes)),
+        (3, Err(refusal::NOT_GRANTED.into()), false)
+    );
+    subscribed
+        .heard
+        .send(Heard::Subscribed {
+            by: 7,
+            mode: Mode::Stream,
+            latest: None,
+        })
+        .unwrap();
+    let opened_item = LiveItem::Opened {
+        by: 7,
+        mode: LiveMode::Stream,
+        latest: None,
+    };
+    assert_eq!(item(next(&view, &mut changes)), (3, Ok(opened_item), false));
+
+    ask(
+        &mut view,
+        4,
+        "live.tracks",
+        methods::encode(&"lobby".to_owned()),
+    );
+    let (_, watched) = opened(&opens);
+    watched
+        .heard
+        .send(Heard::Waiting(Code::NotGranted))
+        .unwrap();
+    assert_eq!(
+        item::<LiveAnnounce>(next(&view, &mut changes)),
+        (4, Err(refusal::NOT_GRANTED.into()), false)
+    );
+    watched
+        .heard
+        .send(Heard::Announce {
+            track: Track {
+                namespace: "net#1/request-test/lobby".into(),
+                name: "doc".into(),
+            },
+            by: 7,
+            mode: Mode::Stream,
+            up: true,
+        })
+        .unwrap();
+    let (id, announce, done) = item::<LiveAnnounce>(next(&view, &mut changes));
+    assert_eq!((id, done), (4, false));
+    assert!(announce.is_ok_and(|announce| announce.name == "doc" && announce.up));
 }
 
 /// A room's list: the tracks it hears come and go, and a lost session takes

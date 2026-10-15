@@ -215,6 +215,13 @@ async fn relay(connection: quinn::Connection, node: Vec<u8>, answer: Answer) {
     let mut watching: HashMap<RequestId, String> = HashMap::new();
     loop {
         let answer = match read(&mut recv).await {
+            // a room that grants nothing yet: the node holds the request
+            Control::Subscribe { request, track, .. } if track.name == "closed" => {
+                Control::Waiting {
+                    request,
+                    code: Code::NotGranted,
+                }
+            }
             Control::Publish {
                 request,
                 mode: published,
@@ -744,6 +751,27 @@ async fn one_window_withdrawing_leaves_the_other_running() {
 
 /// Two windows that list one room share the session's one watcher: the
 /// later is handed the tracks up now.
+/// A request the node holds hears it, and the session goes on: the next
+/// request is answered on it.
+#[tokio::test]
+async fn a_request_the_node_holds_hears_it_waits_and_the_session_goes_on() {
+    let _seat = seated().await;
+    let (client, _published) = publishing(9).await;
+    let mut held = client
+        .open(Ask::Subscribe {
+            track: track("closed"),
+            from: Start::Next,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        held.heard.recv().await,
+        Some(Heard::Waiting(Code::NotGranted))
+    );
+    let (_following, latest) = following(&client, Start::Next).await;
+    assert_eq!(latest, None);
+}
+
 #[tokio::test]
 async fn a_later_list_of_a_room_is_handed_the_tracks_up() {
     let _seat = seated().await;
