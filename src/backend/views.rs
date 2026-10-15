@@ -136,7 +136,12 @@ pub async fn coming(client: &RpcClient, network: &str) -> Result<Vec<BlobId>, Fe
         let page = PageRequest { after, limit: None };
         let page = match ask(client, network, Query::Scheduled { page }).await {
             Ok(Reply::Scheduled(page)) => page,
-            Ok(_) | Err(Fetch::Refused(_)) => return Ok(Vec::new()),
+            Ok(_) => {
+                return Err(Fetch::Unreadable(
+                    "the programs role answered the scheduled question with another reply".into(),
+                ));
+            }
+            Err(Fetch::Refused(_)) => return Ok(Vec::new()),
             Err(error) => return Err(error),
         };
         codes.extend(
@@ -144,11 +149,10 @@ pub async fn coming(client: &RpcClient, network: &str) -> Result<Vec<BlobId>, Fe
                 .iter()
                 .filter_map(|pending| pending.change.code()),
         );
-        // a node that pages forever is read as far as the roster cap
-        match page.next {
-            Some(next) if codes.len() <= MAX_PROGRAMS => after = Some(next),
-            _ => return Ok(codes),
-        }
+        let Some(next) = page.next else {
+            return Ok(codes);
+        };
+        after = Some(next);
     }
 }
 
