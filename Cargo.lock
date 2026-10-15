@@ -870,7 +870,7 @@ dependencies = [
 [[package]]
 name = "blob"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape?rev=5206fbc24b2a539c37a0597e298e9016d0d7d83b#5206fbc24b2a539c37a0597e298e9016d0d7d83b"
+source = "git+https://github.com/ducktape-industries/ducktape?rev=9d6b2239eb97fe7a9a8a34f5a97f9d254d0eaab1#9d6b2239eb97fe7a9a8a34f5a97f9d254d0eaab1"
 dependencies = [
  "abi",
  "borsh",
@@ -2497,7 +2497,7 @@ version = "0.1.0"
 dependencies = [
  "abi",
  "base64 0.22.1",
- "blob 0.1.0 (git+https://github.com/ducktape-industries/ducktape?rev=5206fbc24b2a539c37a0597e298e9016d0d7d83b)",
+ "blob 0.1.0 (git+https://github.com/ducktape-industries/ducktape?rev=9d6b2239eb97fe7a9a8a34f5a97f9d254d0eaab1)",
  "blobs",
  "block2 0.5.1",
  "borsh",

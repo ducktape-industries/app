@@ -43,7 +43,7 @@ identity = { git = "https://github.com/ducktape-industries/programs", rev = "4ea
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
 keystore = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "keystore" }
-blob = { git = "https://github.com/ducktape-industries/ducktape", rev = "5206fbc24b2a539c37a0597e298e9016d0d7d83b", package = "blob" }
+blob = { git = "https://github.com/ducktape-industries/ducktape", rev = "9d6b2239eb97fe7a9a8a34f5a97f9d254d0eaab1", package = "blob" }
 
 # --- external ---
 borsh = { version = "1", default-features = false, features = ["derive", "std"] }
