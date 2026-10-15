@@ -18,17 +18,17 @@
 //!   → `forge:web:3`), checked by `valid_route`. The view whose manifest
 //!   declares `web` gets an http(s) link the app opens as its whole
 //!   address instead, checked by the web piece's own rule
-//!   (`render/web.rs` `view_for`: https, or http on this machine, at most
-//!   2048 bytes, no user name or password).
+//!   (`render/web.rs` `view_for`: https, or http on this machine, no user
+//!   name or password).
 //! - `host.badge` — the tab's unread count; `host.title` — the name of the
 //!   view's window, cleaned ([`shown_title`]); `host.id` — a minted id under a
-//!   short prefix; `link.open` — the one way out: a `duck://` link, or an
+//!   prefix word; `link.open` — the one way out: a `duck://` link, or an
 //!   `https://` one for the system browser; `clock.ticks` — a periodic
 //!   empty item, at most one per redraw ([`ticked`]).
 //!
 //! On the node, as a task on [`handle`] (`node`), each answer waiting in
-//! [`Replies`] for the view's next redraw; transport failures retried for
-//! up to a minute unless said otherwise:
+//! [`Replies`] for the view's next redraw; each asked once, a transport
+//! failure being the answer:
 //! - `program.query` `Call{target, body}` — one query on the connected node:
 //!   `body` is the payload of a signed frame to `target`, and the bytes the
 //!   program `Respond`ed come back as they are. It reads the node's
@@ -41,9 +41,8 @@
 //!   the preconfirmed layer and waits for a block, and until one carries it
 //!   the node can still drop it (a block that lands first and makes it
 //!   fail, a node restart) with no word to anyone; a view shows what
-//!   `program.query` reads. Retried only while nothing reached the node: a
-//!   lost answer is reported ([`refusal::NODE_FAILED`]), never followed by
-//!   a second submission.
+//!   `program.query` reads. A lost answer is reported
+//!   ([`refusal::NODE_FAILED`]), never followed by a second submission.
 //! - `chain.status` — node status as `NodeStatus`.
 //! - `chain.blocks` `BlockPage` — finalized blocks, newest first, as the
 //!   node lists them (`/v1/blocks`): each transaction's size, its payload
@@ -54,8 +53,7 @@
 //! - `blob.get` `<id>` — a blob by `sha256:<hex>` or `sha1:<hex>` id, unframed.
 //! - `program.describe` `(program, op)` — the op as the program's own
 //!   describe module reads it, or `None` (`describe`).
-//! - `invite.create` `CreateInvite{ttl_days}` — minted ONCE, never retried;
-//!   `Invite{invite, notes}`. Node refusals retain their tokens.
+//! - `invite.create` `CreateInvite{ttl_days}` — `Invite{invite, notes}`. Node refusals retain their tokens.
 //! - `program.changes` `<program>` — a subscription that gets one item per
 //!   block that wrote to `program` (`/v1/changes/<program>`): the block's
 //!   height and the keys it wrote, as the node publishes them, so the view
@@ -91,33 +89,6 @@ use super::{Intent, View, wire};
 use crate::backend::{self, RpcClient, refused};
 use wire::methods::{self, Capability, refusal};
 
-/// The longest `host.id` prefix: a word naming the kind of record, not a
-/// payload of its own.
-const MAX_ID_PREFIX: usize = 32;
-/// The most a `blob.get` may pull into a view.
-const MAX_BLOB_BYTES: usize = 16 << 20;
-/// Node tasks and subscriptions running at once for one view
-/// ([`Replies::admit`]); past it a request is refused `in_flight_limit`.
-const MAX_IN_FLIGHT: usize = 256;
-/// Subscriptions of one kind a view may hold, counted per kind and only
-/// for `clock.ticks` and `program.changes`; the `host.*` subscriptions are
-/// each one list a view has no reason to grow.
-const MAX_SUBSCRIPTIONS: usize = 256;
-/// Answers waiting in [`Replies`] between two redraws, by count and by
-/// bytes; exceeding either stops the view for good. The bytes are what one
-/// node answer may carry at most: a bigger one is refused unread.
-const MAX_REPLY_EVENTS: usize = 1024;
-const MAX_REPLY_BYTES: usize = noded_client::MAX_BODY_BYTES;
-/// The share of the reply budget SUBSCRIPTIONS may fill before they stop
-/// reading their sources: a request answers once, a subscription forever,
-/// against a queue only a redraw empties.
-const MAX_STREAM_BACKLOG_EVENTS: usize = MAX_REPLY_EVENTS / 2;
-const MAX_STREAM_BACKLOG_BYTES: usize = MAX_REPLY_BYTES / 2;
-/// `link.open`s one view may have admitted in the last `LINK_WINDOW`,
-/// each on its own activation; past it a request is refused `link_limit`.
-const MAX_LINKS_PER_WINDOW: usize = 4;
-const LINK_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
-
 fn host_fault(error: impl std::fmt::Display) -> wire::Error {
     wire::Error::new(refusal::HOST_FAULT, error.to_string())
 }
@@ -136,8 +107,8 @@ mod replies;
 
 pub(super) use node::{NodeTask, reconnected, spawn_reply};
 use node::{
-    blob_get, block, blocks, changes, heads, invite, network, query, spawn_no_retry,
-    spawn_retrying, spawn_retrying_unsent, status, submit, tx,
+    blob_get, block, blocks, changes, heads, invite, network, query, spawn_asked, status, submit,
+    tx,
 };
 use replies::InFlight;
 pub(super) use replies::Replies;
@@ -272,22 +243,22 @@ pub(super) fn answer(
         }
         (Capability::Program, "query") => {
             if node::targeted(view, id, payload, "program.query").is_some() {
-                spawn_retrying(view, id, payload, query, "host_call.program.query")
+                spawn_asked(view, id, payload, query, "host_call.program.query")
             }
         }
         (Capability::Chain, "status") => {
-            spawn_retrying(view, id, payload, status, "host_call.chain.status")
+            spawn_asked(view, id, payload, status, "host_call.chain.status")
         }
         (Capability::Chain, "network") => {
-            spawn_retrying(view, id, payload, network, "host_call.chain.network")
+            spawn_asked(view, id, payload, network, "host_call.chain.network")
         }
         (Capability::Chain, "blocks") => {
-            spawn_retrying(view, id, payload, blocks, "host_call.chain.blocks")
+            spawn_asked(view, id, payload, blocks, "host_call.chain.blocks")
         }
         (Capability::Chain, "block") => {
-            spawn_retrying(view, id, payload, block, "host_call.chain.block")
+            spawn_asked(view, id, payload, block, "host_call.chain.block")
         }
-        (Capability::Chain, "tx") => spawn_retrying(view, id, payload, tx, "host_call.chain.tx"),
+        (Capability::Chain, "tx") => spawn_asked(view, id, payload, tx, "host_call.chain.tx"),
         // the node's key signs an invite: only a role's own view asks
         // for one (a view no vote reviewed could hand it to its program)
         (Capability::Invite, "create") => {
@@ -299,7 +270,7 @@ pub(super) fn answer(
                 );
                 return true;
             }
-            spawn_no_retry(view, id, payload, invite, "host_call.invite.create")
+            spawn_asked(view, id, payload, invite, "host_call.invite.create")
         }
         // a write: to a declared target, and after the person's native
         // yes where the op removes or suspends a key or an agent, or is a
@@ -323,14 +294,12 @@ pub(super) fn answer(
                 &call.body,
                 own,
             ) {
-                None => spawn_retrying_unsent(view, id, payload, submit, "host_call.op.submit"),
+                None => spawn_asked(view, id, payload, submit, "host_call.op.submit"),
                 Some(words) => node::spawn_consented(view, id, payload, call, words),
             }
         }
-        (Capability::Blob, "get") => {
-            spawn_retrying(view, id, payload, blob_get, "host_call.blob.get")
-        }
-        (Capability::Program, "describe") => spawn_retrying(
+        (Capability::Blob, "get") => spawn_asked(view, id, payload, blob_get, "host_call.blob.get"),
+        (Capability::Program, "describe") => spawn_asked(
             view,
             id,
             payload,
@@ -341,8 +310,8 @@ pub(super) fn answer(
         (Capability::Chain, "heads") => heads(view, id, payload),
         // the one way out: a `duck://` link, or an `https://` one for the
         // system browser; any other scheme is refused here, at the method.
-        // Only the person's activation opens one, taken by the ask, inside
-        // the budget: a view on a clock never opens a tab or reseats the desk
+        // Only the person's activation opens one, taken by the ask: a view
+        // on a clock never opens a tab or reseats the desk
         (Capability::Link, "open") => match methods::decode::<String>(payload) {
             Ok(link) if openable(&link) => {
                 if !view.take_activation() {
@@ -353,13 +322,6 @@ pub(super) fn answer(
                     );
                     return true;
                 }
-                let now = std::time::Instant::now();
-                view.links.retain(|opened| now - *opened < LINK_WINDOW);
-                if view.links.len() >= MAX_LINKS_PER_WINDOW {
-                    view.refuse(id, refusal::LINK_LIMIT, "too many links opened this minute");
-                    return true;
-                }
-                view.links.push(now);
                 view.intents.push(Intent::OpenLink(link));
                 view.reply(id, Ok(Vec::new()));
             }
@@ -388,35 +350,23 @@ pub(super) fn answer(
             }
             Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
         },
-        (Capability::Clock, "ticks") => {
-            let period = tick_period(payload);
-            if view.clocks.len() >= MAX_SUBSCRIPTIONS {
-                view.refuse(
-                    id,
-                    refusal::SUBSCRIPTION_LIMIT,
-                    "too many clock subscriptions",
-                );
-                return true;
-            }
-            match period {
-                Some(period) => view.clocks.push(Clock {
-                    id,
-                    period,
-                    due: std::time::Instant::now() + period,
-                }),
-                None => view.refuse(
-                    id,
-                    refusal::MALFORMED_REQUEST,
-                    "`clock.ticks` names no period",
-                ),
-            }
-        }
+        (Capability::Clock, "ticks") => match tick_period(payload) {
+            Some(period) => view.clocks.push(Clock {
+                id,
+                period,
+                due: std::time::Instant::now() + period,
+            }),
+            None => view.refuse(
+                id,
+                refusal::MALFORMED_REQUEST,
+                "`clock.ticks` names no period",
+            ),
+        },
         (Capability::Host, "id") => {
             let prefix = methods::decode::<String>(payload).unwrap_or_default();
             let prefix = prefix.trim();
-            let named = !prefix.is_empty()
-                && prefix.len() <= MAX_ID_PREFIX
-                && prefix.bytes().all(|byte| byte.is_ascii_alphanumeric());
+            let named =
+                !prefix.is_empty() && prefix.bytes().all(|byte| byte.is_ascii_alphanumeric());
             match named {
                 true => view.reply(
                     id,
@@ -430,16 +380,11 @@ pub(super) fn answer(
     true
 }
 
-/// The most of a `host.title` the host shows, in chars.
-const MAX_TITLE: usize = 80;
-
 /// A `host.title` as the window shows it, one line of the view's own text
-/// ([`plain`] chars), no space at either end, at most [`MAX_TITLE`] chars
-/// (a cut on a char boundary).
+/// ([`plain`] chars), no space at either end.
 pub(crate) fn shown_title(title: &str) -> String {
     let title: String = title.chars().filter(plain).collect();
-    let cut: String = title.trim_start().chars().take(MAX_TITLE).collect();
-    cut.trim_end().to_owned()
+    title.trim().to_owned()
 }
 
 /// Whether the host shows a char of a view's text as it is, on one line: no
@@ -505,17 +450,11 @@ pub(super) struct Clock {
     due: std::time::Instant,
 }
 
-/// The shortest and longest period a view may ask the clock for. Below the
-/// floor a tick is a spin the window thread pays for every frame; above the
-/// ceiling it is not a period but a date, which a view has no business
-/// keeping — it reads the node for that.
-const MIN_TICK_MS: i64 = 16;
-const MAX_TICK_MS: i64 = 60 * 60 * 1_000;
-
-/// A `clock.ticks` payload: the period in milliseconds.
+/// A `clock.ticks` payload: the period in milliseconds, more than none. A
+/// period shorter than a frame ticks once a redraw ([`ticked`]).
 fn tick_period(payload: &[u8]) -> Option<std::time::Duration> {
     let millis = methods::decode::<i64>(payload).ok()?;
-    let named = (MIN_TICK_MS..=MAX_TICK_MS).contains(&millis);
+    let named = millis > 0;
     named.then(|| std::time::Duration::from_millis(millis as u64))
 }
 

@@ -1,4 +1,5 @@
-//! A per-window budget for rasterised view SVGs. `guarded_svg_paint` wraps
+//! A per-window budget for rasterised view SVGs, the device's SVG raster
+//! memory setting (`backend::memory_bounds`). `guarded_svg_paint` wraps
 //! an svg element; at prepaint its raster, under the key gpui paints it with
 //! (`Window::svg_params`), is admitted to the window's ledger and charged
 //! the raster gpui makes: the box width, and the height the SVG's own
@@ -14,9 +15,7 @@ use super::*;
 use gpui_kit::{DevicePixels, Global, RenderSvgParams, Svg, WindowId};
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-const MAX_SVG_RASTER_BYTES: u64 = 64 << 20;
-const MAX_WINDOW_SVG_RASTER_BYTES: u64 = 256 << 20;
-const MAX_WINDOW_SVG_RASTERS: usize = 4_096;
+const ENTRY_BYTES: u64 = std::mem::size_of::<(SvgRaster, HeldRaster)>() as u64;
 const SVG_BYTES_PER_PIXEL: u64 = 5; // tiny-skia RGBA plus GPUI's alpha mask.
 
 /// What a guard draws.
@@ -78,17 +77,16 @@ impl WindowSvgLedger {
         true
     }
 
-    fn fits(&self, charge: u64) -> bool {
-        self.rasters.len() < MAX_WINDOW_SVG_RASTERS
-            && self
-                .bytes
-                .checked_add(charge)
-                .is_some_and(|total| total <= MAX_WINDOW_SVG_RASTER_BYTES)
+    fn fits(&self, charge: u64, budget: u64) -> bool {
+        let entries = (self.rasters.len() as u64 + 1).saturating_mul(ENTRY_BYTES);
+        (self.bytes)
+            .checked_add(charge)
+            .and_then(|total| total.checked_add(entries))
+            .is_some_and(|total| total <= budget)
     }
 
     /// Takes out the raster drawn least recently that no guard pins.
     fn evict(&mut self) -> Option<SvgRaster> {
-        // ponytail: a scan per eviction, over at most `MAX_WINDOW_SVG_RASTERS`
         let raster = (self.rasters.iter())
             .filter(|(_, held)| held.pins == 0)
             .min_by_key(|(_, held)| held.drawn)
@@ -118,6 +116,7 @@ impl Drop for SvgPin {
 
 struct SvgAdmissionLedgers {
     windows: HashMap<WindowId, Rc<RefCell<WindowSvgLedger>>>,
+    budget: u64,
     _cleanup: Subscription,
 }
 
@@ -145,7 +144,7 @@ fn svg_raster_charge(size: Size<DevicePixels>, intrinsic: Option<(f32, f32)>) ->
         let fit = (8192.0 / width).min(8192.0 / height).min(1.0);
         u64::from((width * fit) as u32) * u64::from((height * fit) as u32) * SVG_BYTES_PER_PIXEL
     });
-    (charge <= MAX_SVG_RASTER_BYTES).then_some(charge)
+    Some(charge)
 }
 
 /// An SVG's own size as gpui's parser reads it, or `None` when it cannot
@@ -167,8 +166,7 @@ fn svg_intrinsic_size(source: &SvgPaintSource, cx: &App) -> Option<(f32, f32)> {
     Some((size.width(), size.height()))
 }
 
-/// The window's ledger, made on first use.
-fn window_ledger(window_id: WindowId, cx: &mut App) -> Rc<RefCell<WindowSvgLedger>> {
+fn admission_ledgers(cx: &mut App) -> &mut SvgAdmissionLedgers {
     if !cx.has_global::<SvgAdmissionLedgers>() {
         let cleanup = cx.on_window_closed(|cx, closed| {
             if cx.has_global::<SvgAdmissionLedgers>() {
@@ -179,10 +177,16 @@ fn window_ledger(window_id: WindowId, cx: &mut App) -> Rc<RefCell<WindowSvgLedge
         });
         cx.set_global(SvgAdmissionLedgers {
             windows: HashMap::new(),
+            budget: crate::backend::memory_bounds().svg_raster_bytes,
             _cleanup: cleanup,
         });
     }
     cx.global_mut::<SvgAdmissionLedgers>()
+}
+
+/// The window's ledger, made on first use.
+fn window_ledger(window_id: WindowId, cx: &mut App) -> Rc<RefCell<WindowSvgLedger>> {
+    admission_ledgers(cx)
         .windows
         .entry(window_id)
         .or_default()
@@ -204,10 +208,11 @@ fn admit_svg_raster(
         // ponytail: a refused key is parsed again each frame it shows; the
         // refusal is the window's last resort, so its cost is not cached
         let charge = svg_raster_charge(size, svg_intrinsic_size(source, cx))?;
+        let budget = admission_ledgers(cx).budget;
         loop {
             let evicted = {
                 let mut ledger = ledger.borrow_mut();
-                if ledger.fits(charge) {
+                if ledger.fits(charge, budget) {
                     ledger.bytes += charge;
                     let drawn = ledger.tick;
                     ledger.rasters.insert(
@@ -383,6 +388,21 @@ mod tests {
         svg_raster_charge(size(DevicePixels(width), DevicePixels(height)), Some(svg)).is_some()
     }
 
+    const HELD: usize = 4_096;
+
+    fn hold_only(rasters: usize, charge: u64, cx: &mut App) {
+        admission_ledgers(cx).budget = rasters as u64 * (charge + ENTRY_BYTES);
+    }
+
+    fn icon_charge(side: f32, window: &Window) -> u64 {
+        let icon = Bounds::new(point(px(0.), px(0.)), size(px(side), px(side)));
+        svg_raster_charge(
+            window.svg_params(icon, SharedString::default()).size,
+            Some((24.0, 24.0)),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn compressed_svg_data_is_refused_before_native_parsing() {
         assert!(!svg_data_allowed(&[0x1f, 0x8b, 0x08, 0x00]));
@@ -399,12 +419,14 @@ mod tests {
         assert!(!svg_raster_fits(0, 200, (1.0, 1.0)));
         assert!(!svg_raster_fits(200, 0, (1.0, 1.0)));
         assert!(!svg_raster_fits(16384, 16384, (1.0, 1.0)));
-        assert!(
-            !svg_raster_fits(2000, 2, (1.0, 4.0)),
-            "a narrow source aspect ratio can inflate the raster height"
+        assert_eq!(
+            svg_raster_charge(size(DevicePixels(2000), DevicePixels(2)), Some((1.0, 4.0))),
+            Some(2000 * 8000 * 5),
+            "a narrow source aspect ratio inflates the raster height"
         );
-        assert!(
-            svg_raster_fits(2000, 2, (1.0, 1.0)),
+        assert_eq!(
+            svg_raster_charge(size(DevicePixels(2000), DevicePixels(2)), Some((1.0, 1.0))),
+            Some(2000 * 2000 * 5),
             "a square source in the same short box is charged its square"
         );
     }
@@ -448,7 +470,7 @@ mod tests {
         admit_svg_raster(&ledger, raster, size, source, window, cx)
     }
 
-    /// Rasters still pinned are never evicted: past the caps a new one is
+    /// Rasters still pinned are never evicted: past the budget a new one is
     /// refused.
     #[gpui_kit::test]
     fn window_aggregate_reuses_keys_and_refuses_new_rasters_at_budget(
@@ -481,14 +503,16 @@ mod tests {
                 source += 1;
             }
             assert!(source > 2, "the budget admitted some distinct sources");
-            assert!(svg_admitted_bytes(window_id, cx) <= MAX_WINDOW_SVG_RASTER_BYTES);
+            assert!(svg_admitted_bytes(window_id, cx) <= admission_ledgers(cx).budget);
             assert!(admit_named(&tall, "1", 200, 2, window, cx).is_some());
         })
         .unwrap();
     }
 
     #[gpui_kit::test]
-    fn window_aggregate_caps_keys_and_cleans_up_closed_windows(cx: &mut gpui_kit::TestAppContext) {
+    fn window_aggregate_charges_each_key_and_cleans_up_closed_windows(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
         cx.update(gpui_kit::init);
         let window = cx.open_window(size(px(10.), px(10.)), |_, _| GuardedPaint {
             width: 1.0,
@@ -499,21 +523,12 @@ mod tests {
             cx.global_mut::<SvgAdmissionLedgers>()
                 .windows
                 .remove(&window_id);
+            hold_only(HELD, 0, cx);
             let blank = SvgPaintSource::Data(Arc::from(&b"blank"[..]));
-            let pins: Vec<_> = (0..MAX_WINDOW_SVG_RASTERS)
+            let pins: Vec<_> = (0..HELD)
                 .map(|source| admit_named(&blank, &source.to_string(), 1, 2, window, cx).unwrap())
                 .collect();
-            assert!(
-                admit_named(
-                    &blank,
-                    &MAX_WINDOW_SVG_RASTERS.to_string(),
-                    1,
-                    2,
-                    window,
-                    cx
-                )
-                .is_none()
-            );
+            assert!(admit_named(&blank, &HELD.to_string(), 1, 2, window, cx).is_none());
             drop(pins);
         })
         .unwrap();
@@ -627,17 +642,16 @@ mod tests {
     }
 
     /// The window ledger's cost, measured: one window drawing 4,096
-    /// distinct 24px icons through gpui's rasteriser, the ledger's key cap,
-    /// into wgpu's atlas (`rendering_app`). With no GPU, Mesa's software
+    /// distinct 24px icons through gpui's rasteriser into wgpu's atlas (`rendering_app`). With no GPU, Mesa's software
     /// Vulkan keeps the atlas in this process, so resident memory counts
     /// it. The window is drawn and read back empty first, so the readback
     /// target is not counted. Run alone: `cargo test
-    /// render::svg_limits::tests::a_window_of_icons_at_the_key_cap --
+    /// render::svg_limits::tests::a_window_of_4096_icons --
     /// --ignored --exact --nocapture`.
     #[cfg(target_os = "linux")]
     #[test]
     #[ignore = "measurement: prints resident memory and the ledger, asserts nothing of them"]
-    fn a_window_of_icons_at_the_key_cap() {
+    fn a_window_of_4096_icons() {
         let mut cx = crate::render::tests::picture_pixels::rendering_app();
         let window = cx
             .open_window(size(px(1536.), px(1536.)), |_, cx| {
@@ -663,7 +677,7 @@ mod tests {
         let before = crate::render::tests::resident_mib();
         cx.update(|cx| {
             window.update(cx, |icons, _, cx| {
-                icons.count = MAX_WINDOW_SVG_RASTERS;
+                icons.count = HELD;
                 cx.notify();
             })
         })
@@ -671,7 +685,7 @@ mod tests {
         let (scale, ledger, refusals) = drawn(&mut cx);
         let after = crate::render::tests::resident_mib();
         println!(
-            "{MAX_WINDOW_SVG_RASTERS} icons at scale {scale}: ledger {ledger} B, {refusals} refusal quads, resident +{:.1} MiB",
+            "{HELD} icons at scale {scale}: ledger {ledger} B, {refusals} refusal quads, resident +{:.1} MiB",
             after - before,
         );
     }
@@ -762,7 +776,7 @@ mod tests {
         }
     }
 
-    /// Asserts the frame drew no refusal, the ledger is within its caps,
+    /// Asserts the frame drew no refusal, the ledger is within its budget,
     /// every raster it holds is in the atlas, and every raster it once held
     /// and let go has left it. Returns how many it let go.
     fn assert_ledger_and_atlas_agree(
@@ -774,8 +788,7 @@ mod tests {
         let window_id = window.window_handle().window_id();
         assert!(window.painted_quads().is_empty(), "{frame} drew a refusal");
         let held = svg_admitted(window_id, cx);
-        assert!(held.len() <= MAX_WINDOW_SVG_RASTERS);
-        assert!(svg_admitted_bytes(window_id, cx) <= MAX_WINDOW_SVG_RASTER_BYTES);
+        assert!(svg_admitted_bytes(window_id, cx) <= admission_ledgers(cx).budget);
         for params in &held {
             assert!(
                 window.has_svg_atlas_entry(params),
@@ -793,14 +806,18 @@ mod tests {
         evicted.len()
     }
 
-    /// A window that draws more distinct icons over time than the ledger's
-    /// key cap, a few hundred at a time and then through a resize sweep,
+    /// A window that draws more distinct icons over time than the ledger's budget
+    /// holds, a few hundred at a time and then through a resize sweep,
     /// never refuses one: the rasters no frame shows any more are evicted,
     /// and their tiles leave the atlas with them.
     #[gpui_kit::test]
-    fn icons_drawn_over_time_past_the_key_cap_never_refuse(cx: &mut gpui_kit::TestAppContext) {
+    fn icons_drawn_over_time_past_the_budget_never_refuse(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
         let window = cx.open_window(size(px(1200.), px(1200.)), |_, _| Churn::new(0, 250));
+        cx.update_window(window.into(), |_, window, cx| {
+            hold_only(HELD, icon_charge(24., window), cx)
+        })
+        .unwrap();
         let mut seen = HashSet::new();
         for batch in 0..20 {
             window
@@ -832,7 +849,7 @@ mod tests {
         assert_eq!(seen.len(), 10_000, "and 5,000 more sizes of the last 250");
         cx.update_window(window.into(), |_, window, cx| {
             let evicted = assert_ledger_and_atlas_agree(&mut seen, "the end", window, cx);
-            assert!(evicted >= 10_000 - MAX_WINDOW_SVG_RASTERS);
+            assert!(evicted >= 10_000 - HELD);
         })
         .unwrap();
     }
@@ -860,7 +877,7 @@ mod tests {
         }
     }
 
-    /// While one view churns past the key cap, a cached view that gpui
+    /// While one view churns past the budget, a cached view that gpui
     /// replays keeps its rasters: they are its frame's, though no guard of
     /// it has drawn since.
     #[gpui_kit::test]
@@ -890,6 +907,10 @@ mod tests {
         })
         .unwrap();
         assert_eq!(still_keys.len(), 40);
+        cx.update_window(window.into(), |_, window, cx| {
+            hold_only(HELD, icon_charge(24., window), cx)
+        })
+        .unwrap();
         let renders_before = still_renders.get();
         let mut seen = HashSet::new();
         for batch in 0..20 {
@@ -916,26 +937,27 @@ mod tests {
             renders_before,
             "gpui replayed the cached view without drawing it"
         );
-        assert!(
-            seen.len() > MAX_WINDOW_SVG_RASTERS,
-            "the busy view went past the cap"
-        );
+        assert!(seen.len() > HELD, "the busy view went past the budget");
     }
 
     /// Icons whose guards are gone stay pinned through the next frame (gpui
     /// keeps their element state until it finishes): a view that swaps
-    /// more than half the key cap of icons for new ones refuses the excess
+    /// more than half the budget of icons for new ones refuses the excess
     /// on that frame, and draws them all on the next.
     #[gpui_kit::test]
     fn icons_swapped_wholesale_wait_one_frame_for_the_last_ones_to_go(
         cx: &mut gpui_kit::TestAppContext,
     ) {
         cx.update(gpui_kit::init);
-        let count = MAX_WINDOW_SVG_RASTERS / 2 + 50;
+        let count = HELD / 2 + 50;
         let window = cx.open_window(size(px(1200.), px(1200.)), move |_, _| Churn {
             side: 1.,
             ..Churn::new(0, count)
         });
+        cx.update_window(window.into(), |_, window, cx| {
+            hold_only(HELD, icon_charge(1., window), cx)
+        })
+        .unwrap();
         window
             .update(cx, |churn, _, cx| {
                 churn.first = count;
@@ -946,7 +968,7 @@ mod tests {
         cx.update_window(window.into(), |_, window, cx| {
             assert_eq!(
                 window.painted_quads().len(),
-                2 * count - MAX_WINDOW_SVG_RASTERS,
+                2 * count - HELD,
                 "the frame that swapped them refused what did not fit beside the last frame's"
             );
             window.draw(cx).clear(cx);
@@ -958,23 +980,33 @@ mod tests {
         .unwrap();
     }
 
-    /// A frame whose own icons pass the key cap evicts none of them: the
-    /// one past the cap draws its refusal.
+    /// A frame whose own icons pass the budget evicts none of them: the
+    /// one past the budget draws its refusal.
     #[gpui_kit::test]
-    fn a_frame_alone_over_the_key_cap_still_refuses(cx: &mut gpui_kit::TestAppContext) {
+    fn a_frame_alone_over_the_budget_still_refuses(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
         let window = cx.open_window(size(px(1200.), px(1200.)), |_, _| Churn {
             side: 1.,
-            ..Churn::new(0, MAX_WINDOW_SVG_RASTERS + 1)
+            ..Churn::new(0, 0)
         });
+        cx.update_window(window.into(), |_, window, cx| {
+            hold_only(HELD, icon_charge(1., window), cx)
+        })
+        .unwrap();
+        window
+            .update(cx, |churn, _, cx| {
+                churn.count = HELD + 1;
+                cx.notify();
+            })
+            .unwrap();
         cx.update_window(window.into(), |_, window, cx| {
             window.draw(cx).clear(cx);
             let held = svg_admitted(window.window_handle().window_id(), cx);
-            assert_eq!(held.len(), MAX_WINDOW_SVG_RASTERS);
+            assert_eq!(held.len(), HELD);
             assert_eq!(
                 window.painted_quads().len(),
                 1,
-                "the icon past the cap drew its refusal"
+                "the icon past the budget drew its refusal"
             );
             for params in &held {
                 assert!(
@@ -1035,8 +1067,9 @@ mod tests {
             .unwrap();
         cx.update_window(window.into(), |_, window, cx| {
             window.draw(cx).clear(cx);
+            hold_only(HELD, 0, cx);
             let blank = SvgPaintSource::Data(Arc::from(&b"blank"[..]));
-            let pins: Vec<_> = (0..MAX_WINDOW_SVG_RASTERS)
+            let pins: Vec<_> = (0..HELD)
                 .map(|source| admit_named(&blank, &source.to_string(), 1, 2, window, cx).unwrap())
                 .collect();
             assert!(

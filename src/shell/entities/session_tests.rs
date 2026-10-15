@@ -210,10 +210,10 @@ fn heard_moves_without_a_notify(cx: &mut TestAppContext) {
     );
 }
 
-/// Two missed polls read reconnecting, and one answer recovers; the
+/// A missed poll reads reconnecting, and one answer recovers; the
 /// session moves once each way, and the poll never stops.
 #[gpui_kit::test]
-fn two_missed_polls_read_reconnecting_and_one_answer_recovers(cx: &mut TestAppContext) {
+fn a_missed_poll_reads_reconnecting_and_one_answer_recovers(cx: &mut TestAppContext) {
     let (session, _) = connected(
         |n| match n {
             1 | 2 => Err("no".into()),
@@ -223,7 +223,10 @@ fn two_missed_polls_read_reconnecting_and_one_answer_recovers(cx: &mut TestAppCo
     );
     let (sessions, _a) = notifies(&session, cx);
     poll(cx);
-    assert!(!state(&session, cx).reconnecting, "one miss is a hiccup");
+    assert!(
+        state(&session, cx).reconnecting,
+        "one miss is the node lost"
+    );
     poll(cx);
     let lost = state(&session, cx);
     assert!(lost.reconnecting);

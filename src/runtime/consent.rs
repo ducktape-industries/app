@@ -268,6 +268,8 @@ pub(super) fn needed(
         (ACCOUNT, "sign an identity operation")
     } else if target == roles.blobs {
         (NETWORK, "sign an op on the blobs role")
+    } else if target == roles.awaits {
+        (NETWORK, "sign an op on the awaits role")
     } else {
         return None;
     };
@@ -289,6 +291,7 @@ pub(super) fn bound(program: &str, roles: Option<&abi::Roles>) -> bool {
             &roles.validators,
             &roles.identity,
             &roles.blobs,
+            &roles.awaits,
         ]
         .iter()
         .any(|role| role.as_str() == program)
@@ -495,8 +498,15 @@ mod tests {
             validators: "valset-b".into(),
             identity: "identity-b".into(),
             blobs: "blobs-b".into(),
+            awaits: "awaits-b".into(),
         };
-        for program in ["programs-b", "valset-b", "identity-b", "blobs-b"] {
+        for program in [
+            "programs-b",
+            "valset-b",
+            "identity-b",
+            "blobs-b",
+            "awaits-b",
+        ] {
             assert_eq!(
                 said(program, Some(&roles)),
                 "System asks to suspend agent #12. It stops acting until it is resumed."
@@ -526,6 +536,7 @@ mod tests {
             validators: "valset".into(),
             identity: identity::PROGRAM.into(),
             blobs: "blobs".into(),
+            awaits: "awaits".into(),
         };
         let asked = |program: &str| {
             needed(program, Some(&roles), identity::PROGRAM, &suspend, Some(7)).unwrap()
@@ -560,6 +571,7 @@ mod tests {
             validators: "valset".into(),
             identity: identity::PROGRAM.into(),
             blobs: "blobs".into(),
+            awaits: "awaits".into(),
         };
         let op = [1, 2, 3];
         let add_key = abi::encode(&identity::Op::AddKey {

@@ -623,3 +623,44 @@ fn round_capped_lines_are_the_picture_they_were() {
         );
     }
 }
+
+#[test]
+fn a_path_takes_lines_up_to_its_sixteen_bit_indices() {
+    let built = |lines: usize| {
+        let mut path = gpui_kit::PathBuilder::stroke(px(1.));
+        for line in 0..lines {
+            let y = line as f32 / 1000.;
+            path.move_to(point(px(0.), px(y)));
+            path.line_to(point(px(10.), px(y)));
+        }
+        path.build().is_ok()
+    };
+    assert!(built(crate::render::canvas::LINES_PER_PATH));
+    assert!(!built(crate::render::canvas::LINES_PER_PATH + 1));
+}
+
+#[test]
+fn a_run_longer_than_one_path_paints_every_line() {
+    let black = gpui_kit::rgba(0x000000ff);
+    let line = |from: [f32; 2], to: [f32; 2]| {
+        stroked(
+            wire::CanvasShape::Line { from, to },
+            None,
+            black,
+            4.,
+            wire::CanvasLineCap::Butt,
+        )
+    };
+    let mut commands: Vec<_> = (0..crate::render::canvas::LINES_PER_PATH)
+        .map(|at| match at % 2 {
+            0 => line([20., 20.], [120., 20.]),
+            _ => line([120., 20.], [20., 20.]),
+        })
+        .collect();
+    commands.push(line([20., 20.], [20., 120.]));
+    let after = picture(&commands, crate::render::canvas::paint_canvas_commands);
+    let scale = after.width() / 240;
+    let at = |x: u32, y: u32| after.get_pixel(x * scale, y * scale).0;
+    assert_near(at(70, 20), [0, 0, 0, 255], "the first path's lines");
+    assert_near(at(20, 100), [0, 0, 0, 255], "the line past the first path");
+}

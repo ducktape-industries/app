@@ -1,7 +1,7 @@
 //! The node-backed methods and how a view request becomes a task: a
 //! handler is `fn(Node, Vec<u8>) -> Answered`, run on [`handle`] with an
 //! in-flight slot from [`Replies::admit`], its answer put in [`Replies`];
-//! transport failures are retried for [`NODE_RETRY_BUDGET`]. A subscription
+//! the node is asked once and a transport failure is the answer. A subscription
 //! (`program.changes`, `chain.heads`) is one long task writing items. Every
 //! task is a [`NodeTask`] in `view.tasks`, aborted when dropped.
 use super::super::consent;
@@ -21,11 +21,7 @@ pub(super) struct Node {
     pub(super) network: String,
 }
 
-/// How long a view's node request keeps asking a node that does not answer.
-const NODE_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
-
-/// A refusal the transport produced is retried; one that is the node's
-/// own word ends the retry loop. For a READ: asking again costs nothing.
+/// A refusal the transport produced, not the node's own word.
 pub(super) fn transport_failed(refusal: &wire::Error) -> bool {
     matches!(
         refusal.code.as_str(),
@@ -33,88 +29,16 @@ pub(super) fn transport_failed(refusal: &wire::Error) -> bool {
     )
 }
 
-fn unsent(refusal: &wire::Error) -> bool {
-    refusal.code == refusal::RPC_CLIENT
-}
-
-/// The answer, and how many times the node was asked for it: each ask
-/// given `per_attempt` to answer ([`noded_client::ANSWER_DEADLINE`], never the
-/// budget's remainder, which would cut a recovering node's held answer
-/// short), asked again while `retry_on` the refusal and `budget` lasts. An
-/// ask cut at its deadline may have reached the node: `node_failed`, which
-/// a submit does not sign again.
-async fn until_answered(
-    budget: std::time::Duration,
-    per_attempt: std::time::Duration,
-    retry_on: fn(&wire::Error) -> bool,
-    mut ask: impl FnMut() -> Answered,
-) -> (Answer, u64) {
-    let deadline = tokio::time::Instant::now() + budget;
-    let mut attempt: u32 = 0;
-    loop {
-        let refusal = match tokio::time::timeout(per_attempt, ask()).await {
-            Ok(Ok(bytes)) => return (Ok(bytes), u64::from(attempt) + 1),
-            Ok(Err(refusal)) => refusal,
-            Err(_) => wire::Error::new(
-                refusal::NODE_FAILED,
-                "no answer came back: the node did not answer in time",
-            ),
-        };
-        if !retry_on(&refusal) {
-            return (Err(refusal), u64::from(attempt) + 1);
-        }
-        let detail = refusal.message;
-        attempt += 1;
-        let delay = backend::retry_delay(attempt);
-        if tokio::time::Instant::now() + delay > deadline {
-            tracing::warn!(
-                target: "ducktape::app",
-                reason = "view_request_unanswered",
-                error = %detail,
-                attempts = attempt,
-                "a view's node request got no answer within its retry budget"
-            );
-            return (
-                Err(wire::Error::new(
-                    refusal::RPC_CLIENT,
-                    super::super::NODE_UNREACHABLE,
-                )),
-                u64::from(attempt),
-            );
-        }
-        tokio::time::sleep(delay).await;
-    }
-}
-
-/// Runs `method` on the connected node as a task, RETRYING transport
-/// failures for [`NODE_RETRY_BUDGET`]: for reads, which ask again from
-/// scratch at no cost.
-pub(super) fn spawn_retrying(
+/// Runs `method` on the connected node as a task, asking once: a transport
+/// failure is the answer, and the view decides whether to ask again.
+pub(super) fn spawn_asked(
     view: &mut View,
     id: u64,
     payload: &[u8],
     method: NodeMethod,
     stage: &'static str,
 ) {
-    spawn_method(
-        view,
-        id,
-        payload,
-        method,
-        Some(transport_failed),
-        stage,
-        None,
-    );
-}
-
-pub(super) fn spawn_retrying_unsent(
-    view: &mut View,
-    id: u64,
-    payload: &[u8],
-    method: NodeMethod,
-    stage: &'static str,
-) {
-    spawn_method(view, id, payload, method, Some(unsent), stage, None);
+    spawn_method(view, id, payload, method, stage, None);
 }
 
 /// `op.submit` of an op the person confirms first (`consent::needed`):
@@ -123,7 +47,7 @@ pub(super) fn spawn_retrying_unsent(
 /// a clock, gets `needs_gesture` and no second card); refused
 /// `session_locked` at once with no key to sign it (no dialog that cannot
 /// lead to a signature); else its task asks the person ([`Asking`]) and
-/// runs it as [`spawn_retrying_unsent`] once they approve, refused
+/// runs it as [`spawn_asked`] once they approve, refused
 /// `consent_refused` otherwise.
 pub(super) fn spawn_consented(
     view: &mut View,
@@ -151,11 +75,6 @@ pub(super) fn spawn_consented(
     if connected(view, id).is_none() {
         return;
     }
-    // the in-flight slot before the ask: a request refused
-    // `in_flight_limit` never puts a card up that leads nowhere
-    let Some(slot) = admit(view, id) else {
-        return;
-    };
     let asking = Asking {
         waiting: consent::waiting(),
         program: view.program,
@@ -168,17 +87,10 @@ pub(super) fn spawn_consented(
         id,
         payload,
         submit,
-        Some(unsent),
         "host_call.op.submit",
-        Some((slot, asking)),
+        Some(asking),
     );
 }
-
-/// How long a consented op's card waits on the target's description before
-/// it goes up with the op's size instead: the press it answers is the
-/// person's of a moment ago, not of minutes ago. The code blob is normally
-/// on disk already (the role's own view loaded from it).
-const DESCRIBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// A consented op's ask, made by its task: the card goes up only once its
 /// words are whole, and goes with the task (aborted with its view, the ask
@@ -195,7 +107,7 @@ struct Asking {
 impl Asking {
     /// The person's yes: the op described into the words where they show
     /// the target's own description (its size when the target's describe
-    /// program reads nothing or does not answer in time), the ask queued and
+    /// program reads nothing or fails), the ask queued and
     /// the shell woken, and its answer. `consent_refused` for anything but
     /// Approve, and while another ask of this view waits.
     async fn yes(self, node: &Node) -> Result<(), wire::Error> {
@@ -208,12 +120,10 @@ impl Asking {
         } = self;
         if words.described {
             let len = call.body.len();
-            let described = tokio::time::timeout(
-                DESCRIBE_DEADLINE,
-                super::describe::described(node, &call.target, call.body),
-            )
-            .await;
-            let described = described.ok().and_then(Result::ok).flatten();
+            let described = super::describe::described(node, &call.target, call.body)
+                .await
+                .ok()
+                .flatten();
             words.shown = Some(consent::shown(described.as_ref(), len));
         }
         let refused = |message: &str| wire::Error::new(refusal::CONSENT_REFUSED, message);
@@ -230,21 +140,8 @@ impl Asking {
     }
 }
 
-/// Runs `method` on the connected node as a task, asking exactly once: a
-/// transport failure is the answer (`invite.create` must not mint twice).
-pub(super) fn spawn_no_retry(
-    view: &mut View,
-    id: u64,
-    payload: &[u8],
-    method: NodeMethod,
-    stage: &'static str,
-) {
-    spawn_method(view, id, payload, method, None, stage, None);
-}
-
 /// `stage` names the call in the perf registry (`host_call.<kind>`): its
-/// latency from here to the reply, and the attempts it took. `consent`,
-/// when given, is the person's yes the task asks for before it asks the
+/// latency from here to the reply. `asking`, when given, is the person's yes the task asks for before it asks the
 /// node at all ([`Asking::yes`]).
 #[allow(clippy::too_many_arguments, reason = "one spawn, every node method")]
 fn spawn_method(
@@ -252,27 +149,19 @@ fn spawn_method(
     id: u64,
     payload: &[u8],
     method: NodeMethod,
-    retry_on: Option<fn(&wire::Error) -> bool>,
     stage: &'static str,
-    consent: Option<(InFlight, Asking)>,
+    asking: Option<Asking>,
 ) {
     let ask = payload.to_vec();
     let Some(node) = connected(view, id) else {
         return;
     };
-    let (slot, asking) = match consent {
-        Some((slot, asking)) => (slot, Some(asking)),
-        None => match admit(view, id) {
-            Some(slot) => (slot, None),
-            None => return,
-        },
-    };
+    let slot = view.replies.admit();
     let replies = view.replies.clone();
     let key = view.perf_key();
-    // not a `perf::Timer`: its drop would record a call refused
-    // `in_flight_limit` or cancelled by the view, which never got a reply
+    // not a `perf::Timer`: its drop would record a call cancelled by the
+    // view, which never got a reply
     let asked = crate::perf::on().then(std::time::Instant::now);
-    let attempts_stage = crate::perf::suffixed(stage, ".attempts");
     run(view, id, slot, None, async move {
         if let Some(asking) = asking
             && let Err(refused) = asking.yes(&node).await
@@ -280,57 +169,24 @@ fn spawn_method(
             replies.item(id, Err(refused), true);
             return;
         }
-        let (result, attempts) = match retry_on {
-            Some(retry_on) => {
-                until_answered(
-                    NODE_RETRY_BUDGET,
-                    noded_client::ANSWER_DEADLINE,
-                    retry_on,
-                    || method(node.clone(), ask.clone()),
-                )
-                .await
-            }
-            None => (method(node, ask).await, 1),
-        };
+        let result = method(node, ask).await;
         if let Some(asked) = asked {
             crate::perf::record(key, stage, asked.elapsed().as_micros() as u64);
-        }
-        if let Some(attempts_stage) = attempts_stage {
-            crate::perf::count(key, attempts_stage, attempts);
         }
         replies.item(id, result, true);
     });
 }
 
-/// Every task starts here: an in-flight slot ([`admit`]) — or the request
-/// refused `in_flight_limit`, and `false` — then [`run`].
+/// Every task starts here: an in-flight slot ([`Replies::admit`]), then
+/// [`run`].
 fn start(
     view: &mut View,
     id: u64,
     follows: Option<Follow>,
     task: impl std::future::Future<Output = ()> + Send + 'static,
-) -> bool {
-    match admit(view, id) {
-        Some(slot) => {
-            run(view, id, slot, follows, task);
-            true
-        }
-        None => false,
-    }
-}
-
-/// An in-flight slot from [`Replies::admit`] for request `id`, or the
-/// request refused `in_flight_limit` and `None`.
-fn admit(view: &mut View, id: u64) -> Option<InFlight> {
+) {
     let slot = view.replies.admit();
-    if slot.is_none() {
-        view.refuse(
-            id,
-            refusal::IN_FLIGHT_LIMIT,
-            "too many in-flight view requests",
-        );
-    }
-    slot
+    run(view, id, slot, follows, task);
 }
 
 /// `task` on [`handle`] holding its `slot`, its [`NodeTask`] kept in
@@ -352,9 +208,8 @@ fn run(
 }
 
 /// One SUBSCRIPTION's writing end, handed to the loop that feeds it: every
-/// item goes through the same backlog park as a node socket's, so a source
-/// that outruns the redraw waits instead of growing the reply queue into a
-/// fault.
+/// item goes through the same park as a node socket's, so a source that
+/// outruns the redraw waits for the redraw that takes its item.
 struct Items {
     replies: std::sync::Arc<Replies>,
     drained: tokio::sync::watch::Receiver<()>,
@@ -362,9 +217,8 @@ struct Items {
 }
 
 impl Items {
-    /// One more item. `false` when the view is gone or its reply queue
-    /// faulted, and the subscription should end — the caller returns, and
-    /// everything it holds is dropped.
+    /// One more item. `false` when the view is gone and the subscription
+    /// should end — the caller returns, and everything it holds is dropped.
     async fn send(&mut self, result: Answer) -> bool {
         self.replies
             .subscription_item(&mut self.drained, self.id, result)
@@ -393,13 +247,12 @@ where
 /// Runs `future` on the kernel runtime and delivers its result as the one
 /// reply to request `id`; counted in flight, aborted with the view. For a
 /// host method that waits on something other than the node (`notify.post`
-/// waits on its banner, `store.*` on its file). `false` when the request
-/// was refused `in_flight_limit` instead.
+/// waits on its banner, `store.*` on its file).
 pub(in crate::runtime) fn spawn_reply(
     view: &mut View,
     id: u64,
     future: impl std::future::Future<Output = Answer> + Send + 'static,
-) -> bool {
+) {
     let replies = view.replies.clone();
     start(view, id, None, async move {
         replies.item(id, future.await, true);
@@ -486,14 +339,6 @@ pub(super) fn changes(view: &mut View, id: u64, payload: &[u8]) {
         );
         return;
     }
-    if view.live_subscriptions.len() >= MAX_SUBSCRIPTIONS {
-        view.refuse(
-            id,
-            refusal::SUBSCRIPTION_LIMIT,
-            "too many `program.changes` subscriptions",
-        );
-        return;
-    }
     let Some(node) = connected(view, id) else {
         return;
     };
@@ -505,22 +350,16 @@ fn follow_changes(view: &mut View, id: u64, node: Node, program: String) {
     let replies = view.replies.clone();
     let subscribed = (id, program.clone());
     let follows = Follow::Changes(program.clone());
-    let started = start(view, id, Some(follows), async move {
+    start(view, id, Some(follows), async move {
         use futures::StreamExt as _;
         let mut drained = replies.drains();
-        let mut warned = false;
         loop {
             let mut changes = match node.client.changes(&program).await {
                 Ok(changes) => changes,
                 Err(error) => {
-                    if warned {
-                        tracing::debug!(target: "ducktape::app", %error, program, "changes stream not opened");
-                    } else {
-                        warned = true;
-                        tracing::warn!(target: "ducktape::app", %error, program, "changes stream not opened");
-                    }
-                    tokio::time::sleep(backend::retry_delay(2)).await;
-                    continue;
+                    tracing::debug!(target: "ducktape::app", %error, program, "changes stream not opened");
+                    replies.item(id, Err(refused(error)), true);
+                    return;
                 }
             };
             while let Some(change) = changes.next().await {
@@ -538,7 +377,8 @@ fn follow_changes(view: &mut View, id: u64, node: Node, program: String) {
                 }
             }
             // the socket closed: the node restarted or the link dropped. Say
-            // so once (the view re-reads) and open it again.
+            // so once (the view re-reads) and open it again; a node that
+            // does not take it again ends the subscription with why.
             if !replies
                 .subscription_item(
                     &mut drained,
@@ -549,21 +389,17 @@ fn follow_changes(view: &mut View, id: u64, node: Node, program: String) {
             {
                 return;
             }
-            tokio::time::sleep(backend::retry_delay(1)).await;
         }
     });
-    if started {
-        view.live_subscriptions.push(subscribed);
-    }
+    view.live_subscriptions.push(subscribed);
 }
-
-/// The most blocks one `/v1/blocks` page answers (the node's cap).
-const MAX_BLOCK_PAGE: u32 = 100;
 
 /// `chain.heads`: one [`methods::Head`] per finalized block, oldest first. The
 /// node pushes no block stream, so this reads its status at half the block
-/// time and fills each advance from the archive (a page, at most the node's
-/// cap); where the archive holds none, the tip alone.
+/// time and fills each advance from the archive, page after page as the
+/// node answers them; where the archive holds none, the tip alone. A read
+/// the node does not answer is read again at the same pace; a first read
+/// it does not answer ends the subscription with why.
 pub(super) fn heads(view: &mut View, id: u64, payload: &[u8]) {
     if !payload.is_empty() {
         view.refuse(
@@ -583,26 +419,30 @@ pub(super) fn heads(view: &mut View, id: u64, payload: &[u8]) {
 fn follow_heads(view: &mut View, id: u64, node: Node) {
     spawn_subscription(view, id, Follow::Heads, move |mut items| async move {
         let mut last: Option<u64> = None;
+        let mut block_time_ms = None;
         loop {
-            let pace = match next_heads(&node, last).await {
-                Ok((heads, block_time_ms)) => {
+            let read = next_heads(&node, last).await;
+            let pace = match (read, block_time_ms) {
+                (Ok((heads, read_block_time_ms)), _) => {
+                    block_time_ms = Some(read_block_time_ms);
                     for head in heads {
                         last = Some(head.height);
                         if !items.send(Ok(methods::encode(&head))).await {
                             return;
                         }
                     }
-                    std::time::Duration::from_millis(block_time_ms / 2).clamp(
-                        std::time::Duration::from_millis(100),
-                        std::time::Duration::from_secs(2),
-                    )
+                    read_block_time_ms
                 }
-                Err(error) => {
+                (Err(error), Some(known)) => {
                     tracing::debug!(target: "ducktape::app", %error, "heads not read");
-                    backend::retry_delay(2)
+                    known
+                }
+                (Err(error), None) => {
+                    items.replies.item(items.id, Err(refused(error)), true);
+                    return;
                 }
             };
-            tokio::time::sleep(pace).await;
+            tokio::time::sleep(std::time::Duration::from_millis(pace / 2)).await;
         }
     });
 }
@@ -618,21 +458,29 @@ async fn next_heads(
     if last.is_some_and(|last| last >= tip) {
         return Ok((Vec::new(), status.block_time_ms));
     }
-    let wanted = last
-        .map_or(1, |last| tip - last)
-        .min(u64::from(MAX_BLOCK_PAGE));
-    let page = noded::Blocks {
-        before: tip.checked_add(1),
-        limit: wanted as u32,
-    };
-    let mut heads: Vec<methods::Head> = node
-        .client
-        .blocks(&page)
-        .await?
-        .blocks
+    let floor = last.map_or(tip, |last| last + 1);
+    let mut before = tip.saturating_add(1);
+    let mut found = Vec::new();
+    while before > floor {
+        let page = noded::Blocks {
+            before: Some(before),
+            limit: u32::try_from(before - floor).unwrap_or(u32::MAX),
+        };
+        let blocks = node.client.blocks(&page).await?.blocks;
+        let Some(lowest) = blocks.iter().map(|block| block.height).min() else {
+            break;
+        };
+        let moved_down = lowest < before;
+        found.extend(blocks.into_iter().filter(|block| block.height >= floor));
+        if !moved_down {
+            break;
+        }
+        before = lowest;
+    }
+    found.sort_by_key(|block| block.height);
+    found.dedup_by_key(|block| block.height);
+    let mut heads: Vec<methods::Head> = found
         .into_iter()
-        .rev()
-        .filter(|block| last.is_none_or(|last| block.height > last))
         .map(|block| methods::Head {
             height: block.height,
             time: block.time,
@@ -765,21 +613,12 @@ pub(super) fn blob_get(node: Node, ask: Vec<u8>) -> Answered {
             ("sha1", 20) => abi::BlobId::Sha1(digest.try_into().expect("20 bytes")),
             _ => return Err(malformed("id is `sha256:<hex>` or `sha1:<hex>`")),
         };
-        // absent is `None`, never a refusal: the ask itself did not fail.
-        // Read no further than the cap and the blob's header (`kind len\0`,
-        // under 32 bytes) in its borsh `Option<Vec<u8>>` (5)
-        let cap = MAX_BLOB_BYTES + 64;
-        let Some(framed) = node.client.blob(id, cap).await.map_err(refused)? else {
+        // absent is `None`, never a refusal: the ask itself did not fail
+        let Some(framed) = node.client.blob(id).await.map_err(refused)? else {
             return Ok(methods::encode(&None::<Vec<u8>>));
         };
         let body =
             noded_client::wire::unframe(&framed).ok_or_else(|| host_fault("blob has no header"))?;
-        if body.len() > MAX_BLOB_BYTES {
-            return Err(wire::Error::new(
-                refusal::TOO_LARGE,
-                "blob exceeds the view's read limit",
-            ));
-        }
         Ok(methods::encode(&Some(body.to_vec())))
     })
 }

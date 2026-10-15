@@ -412,7 +412,7 @@ pub(super) fn read_roster(asked_of: Connection, roster: &Roster, registry: &Regi
                 .any(|old| old.name == listed.name && old.code == listed.code);
             let asked_of_this_node = locked.generation > 0 && locked.rev == asked_of.rev;
             let code = code_digest(&listed.code);
-            if !locked.reload_due(same_code, asked_of_this_node, code, Instant::now()) {
+            if !locked.reload_due(same_code, asked_of_this_node, code) {
                 continue;
             }
             locked.rev = asked_of.rev;

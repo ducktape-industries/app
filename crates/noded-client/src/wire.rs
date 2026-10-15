@@ -477,7 +477,7 @@ mod tests {
         bytes.extend([1, 0, 0, 0, 8]);
         bytes.extend(NODE_CONTRACT.to_le_bytes());
         bytes.extend([9; 32]);
-        for role in ["r", "v", "i", "b"] {
+        for role in ["r", "v", "i", "b", "a"] {
             bytes.extend(text(role));
         }
         let status = Status {
@@ -497,6 +497,7 @@ mod tests {
                 validators: "v".into(),
                 identity: "i".into(),
                 blobs: "b".into(),
+                awaits: "a".into(),
             },
         };
         assert_eq!(abi::decode::<Status>(&bytes).unwrap(), status);

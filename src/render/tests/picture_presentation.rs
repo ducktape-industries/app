@@ -81,6 +81,31 @@ fn pixel(seed: u64) -> wire::ImageData {
     }
 }
 
+/// A picture of a mebibyte of pixels, `seed` in its first ones.
+fn mebibyte(seed: u64) -> wire::ImageData {
+    let mut pixels = vec![255; 1 << 20];
+    pixels[..8].copy_from_slice(&seed.to_le_bytes());
+    wire::ImageData::Rgba {
+        width: 512,
+        height: 512,
+        pixels,
+    }
+}
+
+/// Remembers mebibyte pictures from hash `first` on until the raster
+/// cache takes no more, then one-pixel ones until it takes none; the last
+/// hash it took.
+fn fill(tree: &mut ViewTree, first: u64, cx: &mut gpui_kit::Context<ViewTree>) -> u64 {
+    let mut hash = first;
+    while tree.remember_image(hash, &mebibyte(hash), None, cx) {
+        hash += 1;
+    }
+    while tree.remember_image(hash, &pixel(hash), None, cx) {
+        hash += 1;
+    }
+    hash - 1
+}
+
 /// The bytes a seat holds for `pictures(false)`'s two hashes.
 fn held() -> Arc<PictureBytes> {
     let mut held = PictureBytes::default();
@@ -150,15 +175,14 @@ fn picture_caches_survive_view_tree_recreation_without_resetting_limits(
     assert!(admitted_before > 0, "the first SVG paint was admitted");
 
     let original = host.read_with(&native, |host, _| host.tree.clone());
-    native.update(|_, cx| {
+    let last = native.update(|_, cx| {
         original.update(cx, |tree, cx| {
             assert!(tree.image_for_test(11).is_some(), "decoded raster");
-            // the cache's other 4,095 rasters, all drawn by this frame
-            for hash in 100..100 + 4_095 {
-                assert!(tree.remember_image(hash, &pixel(hash), None, cx));
-            }
-            assert!(tree.image_for_test(100 + 4_094).is_some());
-        });
+            // the cache filled to its budget, all drawn by this frame
+            let last = fill(tree, 100, cx);
+            assert!(tree.image_for_test(last).is_some());
+            last
+        })
     });
 
     native.update(|window, cx| {
@@ -189,9 +213,10 @@ fn picture_caches_survive_view_tree_recreation_without_resetting_limits(
                 "hash-only raster resolves"
             );
 
-            assert!(!tree.remember_image(9_999, &pixel(9_999), None, cx));
+            let fresh = last + 1;
+            assert!(!tree.remember_image(fresh, &pixel(fresh), None, cx));
             assert!(
-                tree.image_for_test(9_999).is_none(),
+                tree.image_for_test(fresh).is_none(),
                 "raster limit survived transfer"
             );
         });
@@ -241,15 +266,14 @@ fn a_full_raster_cache_draws_the_fallback_then_evicts(cx: &mut gpui_kit::TestApp
     let (host, mut native) = drawn(ViewTree::new(image_with_states(7)), cx);
     let tree = host.read_with(&native, |host, _| host.tree.clone());
     // app-level, as the seat updates its tree, so no window is leased
-    native.cx.update(|cx| {
+    let last = native.cx.update(|cx| {
         tree.update(cx, |tree, cx| {
             // the decoded picture leaves; the cache fills with rasters this
             // frame drew
             tree.release(cx);
-            for hash in 100..100 + 4_096 {
-                assert!(tree.remember_image(hash, &pixel(hash), None, cx));
-            }
+            let last = fill(tree, 100, cx);
             cx.notify();
+            last
         })
     });
     native.update(|window, cx| window.render_frame(cx));
@@ -268,7 +292,7 @@ fn a_full_raster_cache_draws_the_fallback_then_evicts(cx: &mut gpui_kit::TestApp
     native.update(|window, cx| window.render_frame(cx));
     tree.read_with(&native, |tree, _| {
         assert!(tree.image_for_test(7).is_some(), "the picture drew");
-        let evicted = (100..100 + 4_096)
+        let evicted = (100..=last)
             .filter(|hash| tree.image_for_test(*hash).is_none())
             .count();
         assert_eq!(evicted, 1, "one raster the last frame drew made room");

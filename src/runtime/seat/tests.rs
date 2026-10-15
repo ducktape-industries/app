@@ -4,30 +4,20 @@ use super::*;
 /// The table on [`Mounted::reload_due`], row by row.
 #[test]
 fn a_roster_read_reloads_by_code_node_and_hold_off() {
-    let now = Instant::now();
     let code = [1; 32];
-    let held = |code, next| Retry {
-        code,
-        next,
-        gap: RETRY_FIRST,
-    };
-    let running = now + RETRY_FIRST;
-    let up = now - RETRY_FIRST;
+    let held = |code| Some(Retry { code });
     // (retry, same_code, asked_of_this_node) -> load
     let table = [
         (None, false, false, true),
         (None, true, false, true),
         (None, false, true, true),
         (None, true, true, false),
-        // the gap is up: the re-attempt at the same code it promised
-        (Some(held(Some(code), up)), true, true, true),
-        (Some(held(Some(code), up)), false, true, true),
-        // running: this very code waits, whatever else moved
-        (Some(held(Some(code), running)), false, false, false),
-        (Some(held(Some(code), running)), true, true, false),
-        // running for another code, or for none: nothing held off here
-        (Some(held(Some([2; 32]), running)), true, true, true),
-        (Some(held(None, running)), true, true, true),
+        // this very code waits, whatever else moved
+        (held(Some(code)), false, false, false),
+        (held(Some(code)), true, true, false),
+        // held for another code, or for none: nothing held off here
+        (held(Some([2; 32])), true, true, true),
+        (held(None), true, true, true),
     ];
     for (nth, (retry, same_code, asked_of_this_node, load)) in table.into_iter().enumerate() {
         let seat = Mounted::seat();
@@ -35,7 +25,7 @@ fn a_roster_read_reloads_by_code_node_and_hold_off() {
         assert_eq!(
             seat.lock()
                 .unwrap()
-                .reload_due(same_code, asked_of_this_node, code, now),
+                .reload_due(same_code, asked_of_this_node, code),
             load,
             "row {nth}"
         );
@@ -44,8 +34,7 @@ fn a_roster_read_reloads_by_code_node_and_hold_off() {
 
 /// A view that fails to load is held off under the blob the roster names,
 /// not under its own section's hash: the two never match, and keying on
-/// the section had every block reload the failed view while the hold-off
-/// ran and skip it once the gap was up.
+/// the section had every block reload the failed view.
 #[test]
 fn a_failed_view_is_held_off_under_the_code_the_roster_names() {
     let code = [1; 32];
@@ -54,7 +43,6 @@ fn a_failed_view_is_held_off_under_the_code_the_roster_names() {
     let mut locked = seat.lock().unwrap();
     locked.load_failed(
         "seat-tests-failed",
-        None,
         Some(code),
         Unloaded {
             hash: Some(section),
@@ -62,37 +50,18 @@ fn a_failed_view_is_held_off_under_the_code_the_roster_names() {
         },
     );
     assert!(matches!(locked.slot, Slot::Failed(_)));
-    let now = Instant::now();
     assert!(
-        !locked.reload_due(true, true, code, now),
-        "held off: the same code is not asked again this block"
+        !locked.reload_due(true, true, code),
+        "held off: the same code is not asked again"
     );
     assert!(
-        locked.reload_due(true, true, code, now + RETRY_FIRST * 2),
-        "the gap is up: asked again"
-    );
-    assert!(
-        locked.reload_due(true, true, [2; 32], now),
+        locked.reload_due(true, true, [2; 32]),
         "another code is not held off"
     );
 
-    // failing again on the same code widens the gap; a failure before any
-    // candidate holds nothing off
-    let held_off = locked.retry.take();
+    // a failure before any candidate holds nothing off
     locked.load_failed(
         "seat-tests-failed",
-        held_off,
-        Some(code),
-        Unloaded {
-            hash: Some(section),
-            failure: Failure::Refused("not a view".into()),
-        },
-    );
-    assert_eq!(locked.retry.as_ref().unwrap().gap, RETRY_FIRST * 2);
-    let held_off = locked.retry.take();
-    locked.load_failed(
-        "seat-tests-failed",
-        held_off,
         Some(code),
         Unloaded {
             hash: None,
@@ -100,7 +69,7 @@ fn a_failed_view_is_held_off_under_the_code_the_roster_names() {
         },
     );
     assert_eq!(locked.retry.as_ref().unwrap().code, None);
-    assert!(locked.reload_due(true, true, code, now));
+    assert!(locked.reload_due(true, true, code));
 }
 
 /// Waits, up to ten seconds, for `done`; panics naming `what` if it never
@@ -437,6 +406,7 @@ fn the_roles_come_with_the_roster_and_are_asked_once() {
         validators: "roles-valset".into(),
         identity: "roles-identity".into(),
         blobs: "roles-blobs".into(),
+        awaits: "roles-awaits".into(),
     };
     let node = FakeNode::with_roles(
         vec![listed("roles-programs", "roles")],
@@ -537,28 +507,28 @@ fn a_newline_id_never_gets_a_seat_to_ask_from() {
 }
 
 /// A node that lists 1,000 programs, none of whose code it answers: the
-/// app takes the first `MAX_PROGRAMS` of them, and runs at most `LOADERS`
-/// of their loads at once — the rest wait their turn rather than each
-/// forking a thread.
+/// app takes every one of them, and runs at most one load a core at once —
+/// the rest wait their turn rather than each forking a thread.
 #[test]
-fn a_long_roster_is_capped_and_its_loads_queue() {
+fn a_long_roster_is_taken_whole_and_its_loads_queue() {
     let programs = (0..1000)
         .map(|n| listed(&format!("long-roster-{n:04}"), &format!("long-roster-{n}")))
         .collect();
     let node = FakeNode::new(programs, Vec::new(), Vec::new());
     let (roster, registry) = (Roster::default(), Registry::default());
     read_roster(node.asked_of.clone(), &roster, &registry);
-    let kept = crate::backend::views::MAX_PROGRAMS;
-    assert_eq!(roster.lock().len(), kept, "the roster is capped");
-    assert_eq!(roster.rail().len(), kept, "the rail lists what was kept");
-    assert_eq!(lock(&registry).len(), kept, "only what was kept is seated");
+    let listed = 1000;
+    assert_eq!(roster.lock().len(), listed, "the roster is taken whole");
+    assert_eq!(roster.rail().len(), listed, "the rail lists every program");
+    assert_eq!(lock(&registry).len(), listed, "every program is seated");
     eventually("a load reached the node", || node.held().0 > 0);
     // time for a load per thread to have asked, had each got one
     std::thread::sleep(Duration::from_millis(500));
     let (_, most) = node.held();
+    let loaders = super::super::loaders();
     assert!(
-        most <= LOADERS,
-        "{most} loads ran at once, past the {LOADERS} loaders"
+        most <= loaders,
+        "{most} loads ran at once, past the {loaders} loaders"
     );
 }
 

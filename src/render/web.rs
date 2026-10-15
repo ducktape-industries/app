@@ -205,15 +205,14 @@ impl ViewTree {
 /// (`history.pushState`, `document.title`), so both are bounded as
 /// `wire::WebState` says: the title cleaned as a `host.title` is, the
 /// address whole or else its origin (one cut short is another address):
-/// the origin past `MAX_URL_BYTES` or when it is not plain ASCII without
-/// control characters, as a canonical address is. Never empty while the
-/// page has a site: a same-document `pushState` past the bound meets no
-/// `loadable`, and an empty address would hide which site the page is.
+/// the origin when it is not plain ASCII without control characters, as a
+/// canonical address is. Never empty while the page has a site: a
+/// same-document `pushState` meets no `loadable`, and an empty address
+/// would hide which site the page is.
 #[cfg(feature = "web")]
 fn told(state: &ducktape_web::PageState) -> wire::WebState {
     let url = &state.url;
-    let plain =
-        url.len() <= wire::MAX_URL_BYTES && url.is_ascii() && !url.contains(char::is_control);
+    let plain = url.is_ascii() && !url.contains(char::is_control);
     wire::WebState {
         url: match plain {
             true => url.clone(),
@@ -320,19 +319,18 @@ mod tests {
         assert_eq!(state.url, "https://example.com/a?b");
         assert_eq!(state.title, "Example page");
         assert!(state.loading);
-        let long = format!("https://example.com/{}", "a".repeat(wire::MAX_URL_BYTES));
+        let long = format!("https://example.com/{}", "a".repeat(4096));
+        assert_eq!(
+            told(&page(&long, "")).url,
+            long,
+            "a long address is told whole"
+        );
         // one that cannot be told whole is told as its site
-        for url in [
-            long.as_str(),
-            "https://example.com/\u{2028}",
-            "https://example.com/\t",
-        ] {
+        for url in ["https://example.com/\u{2028}", "https://example.com/\t"] {
             assert_eq!(told(&page(url, "")).url, "https://example.com/", "{url:?}");
         }
-        let long_data = format!("data:text/plain,{}", "a".repeat(wire::MAX_URL_BYTES));
-        assert_eq!(told(&page(&long_data, "")).url, "");
         let title = told(&page("", &"x".repeat(500))).title;
-        assert_eq!(title.chars().count(), 80);
+        assert_eq!(title.chars().count(), 500);
     }
 
     /// A build without the web view draws a web piece as its line, and a

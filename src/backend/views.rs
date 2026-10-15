@@ -20,14 +20,6 @@ use noded_client::wire::{Layer, unframe};
 
 pub const VIEW_SECTION: &str = "ducktape.view";
 
-/// The most a program's code blob may be, framed: the view inside it is
-/// compiled, so no view is near it.
-const MAX_PROGRAM_BYTES: usize = 64 << 20;
-
-/// The most roster entries the app takes: a node that lists more has the
-/// rest left off the rail and never loaded, said once in app.log.
-pub const MAX_PROGRAMS: usize = 256;
-
 /// One roster entry, as the rail lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
@@ -92,23 +84,10 @@ pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>,
         code: view.view,
         bare: true,
     });
-    let (mut roster, misspelled): (Vec<Program>, Vec<Program>) = programs
+    let (roster, misspelled): (Vec<Program>, Vec<Program>) = programs
         .chain(views)
         .partition(|program| program::is_name(&program.name));
     misspelled_said(misspelled.into_iter().map(|program| program.name).collect());
-    if roster.len() > MAX_PROGRAMS {
-        static SAID: std::sync::Once = std::sync::Once::new();
-        SAID.call_once(|| {
-            tracing::warn!(
-                target: "ducktape::app",
-                reason = "roster_capped",
-                listed = roster.len(),
-                kept = MAX_PROGRAMS,
-                "the node lists more programs than the app takes"
-            );
-        });
-        roster.truncate(MAX_PROGRAMS);
-    }
     Ok(roster)
 }
 
@@ -185,7 +164,7 @@ pub async fn program_bytes(
         return Ok((body.to_vec(), "disk"));
     }
     let framed = client
-        .blob(*code, MAX_PROGRAM_BYTES)
+        .blob(*code)
         .await
         .map_err(fetch_error)?
         .ok_or(Fetch::NotHeld)?;
@@ -239,7 +218,6 @@ fn fetch_error(error: noded_client::Error) -> Fetch {
         noded_client::Error::Refused(refusal) | noded_client::Error::Decode(refusal) => {
             Fetch::Refused(refusal.sentence)
         }
-        error @ noded_client::Error::TooLarge { .. } => Fetch::Refused(error.to_string()),
         other => Fetch::Unreachable(other.to_string()),
     }
 }

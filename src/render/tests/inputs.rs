@@ -746,6 +746,25 @@ fn geometry_and_pixels_keep_the_wire_meaning() {
         std::f32::consts::TAU,
     );
     assert_eq!(path.as_str().matches('A').count(), 2);
+    path.clear();
+    let many_turns = 1000.0 * std::f32::consts::TAU + std::f32::consts::FRAC_PI_2;
+    append_arc(&mut path, [10.0, 10.0], [5.0, 5.0], 0.0, 0.0, many_turns);
+    assert_eq!(
+        path.as_str().matches('A').count(),
+        3,
+        "one whole turn, then the rest"
+    );
+    let last: Vec<f32> = path
+        .split_whitespace()
+        .rev()
+        .take(2)
+        .map(|n| n.parse().unwrap())
+        .collect();
+    let (x, y) = (10.0 + 5.0 * many_turns.cos(), 10.0 + 5.0 * many_turns.sin());
+    assert!(
+        (last[1] - x).abs() < 0.01 && (last[0] - y).abs() < 0.01,
+        "{path}"
+    );
     let pixels = wire::ImageData::Rgba {
         width: 1,
         height: 1,

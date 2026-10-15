@@ -33,8 +33,8 @@ pub(crate) use noded_client::wire::{Layer, Status as NodeStatus};
 #[cfg(test)]
 pub(crate) use prefs::prefs_reads;
 pub(crate) use prefs::{
-    Appearance, Layout, edit_prefs, load_appearance, load_layout, load_motion, read_prefs,
-    save_appearance, save_layout, save_motion,
+    Appearance, Layout, edit_prefs, load_appearance, load_layout, load_motion, memory_bounds,
+    read_prefs, save_appearance, save_layout, save_motion,
 };
 #[cfg(test)]
 pub(crate) use session::seat_serial;
@@ -44,7 +44,6 @@ pub(crate) use session::{
 };
 
 use std::path::Path;
-use std::time::Duration;
 
 use view_wire::methods::refusal;
 
@@ -62,6 +61,7 @@ pub(crate) fn test_roles() -> abi::Roles {
         validators: "valset".into(),
         identity: "identity".into(),
         blobs: "blobs".into(),
+        awaits: "awaits".into(),
     }
 }
 
@@ -84,9 +84,6 @@ pub(crate) fn refused(error: noded_client::Error) -> view_wire::Error {
             refusal::NODE_FAILED,
             format!("no answer came back: {sentence}"),
         ),
-        error @ Error::TooLarge { .. } => {
-            view_wire::Error::new(refusal::TOO_LARGE, error.to_string())
-        }
     }
 }
 
@@ -157,12 +154,6 @@ pub(crate) fn unreadable_for_test(path: &Path) -> bool {
         );
     }
     refused
-}
-
-/// One second, doubling to sixteen, for a request that retries.
-pub(crate) fn retry_delay(attempt: u32) -> Duration {
-    let exponent = attempt.saturating_sub(1).min(4);
-    Duration::from_secs(1_u64 << exponent)
 }
 
 #[cfg(test)]

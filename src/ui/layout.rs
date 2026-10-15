@@ -7,7 +7,6 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub(crate) const MAX_PANES: usize = 8;
 pub(crate) const MIN_WIDTH: f32 = 320.;
 pub(crate) const MIN_HEIGHT: f32 = 220.;
 /// What of a window must stay on the desk past its right or bottom edge:
@@ -274,8 +273,7 @@ impl Layout {
     }
 
     /// A menu bar click: into the focused window if it is empty, else to
-    /// the window it is already open in, else in a window of its own; on a
-    /// full desk, in the focused window's place (as [`Self::popin`]).
+    /// the window it is already open in, else in a window of its own.
     pub(crate) fn open(&mut self, program: &'static str) -> bool {
         if self.panes.get(self.focused).is_some_and(Pane::is_empty) {
             self.load(program);
@@ -284,9 +282,7 @@ impl Layout {
         if let Some(index) = self.panes.iter().position(|pane| pane.program == program) {
             return self.focus(index);
         }
-        if !self.split(program) {
-            self.load(program);
-        }
+        self.split(program);
         true
     }
 
@@ -324,10 +320,7 @@ impl Layout {
     }
 
     /// Another window beside the focused one (cascaded when it lands).
-    pub(crate) fn split(&mut self, program: &'static str) -> bool {
-        if self.panes.len() == MAX_PANES {
-            return false;
-        }
+    pub(crate) fn split(&mut self, program: &'static str) {
         let index = if self.panes.is_empty() {
             0
         } else {
@@ -336,7 +329,6 @@ impl Layout {
         self.panes.insert(index, Pane::new(program));
         self.focused = index;
         self.raise(index);
-        true
     }
 
     /// Focus brings a window to the top. False if nothing changed.
@@ -369,22 +361,12 @@ impl Layout {
     }
 
     /// `pane` onto this desk, instance and all, so its view survives the
-    /// move; placed when it lands. A full desk puts it in the focused
-    /// window's place instead and hands the displaced pane back — its view
-    /// goes when the shell next mounts, being in no layout.
-    pub(crate) fn popin(&mut self, mut pane: Pane) -> Option<Pane> {
+    /// move; placed when it lands.
+    pub(crate) fn popin(&mut self, mut pane: Pane) {
         pane.frame = None;
-        if self.panes.len() == MAX_PANES {
-            pane.frame = self.panes[self.focused].frame;
-            let displaced = std::mem::replace(&mut self.panes[self.focused], pane);
-            self.raise(self.focused);
-            Some(displaced)
-        } else {
-            self.panes.push(pane);
-            self.focused = self.panes.len() - 1;
-            self.raise(self.focused);
-            None
-        }
+        self.panes.push(pane);
+        self.focused = self.panes.len() - 1;
+        self.raise(self.focused);
     }
 
     /// Gives every window a frame on a desk of `desk` size: the first one

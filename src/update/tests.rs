@@ -328,15 +328,15 @@ fn the_kept_channel_reads_back_and_anything_else_is_stable() {
     assert_eq!(read_channel(&layout), Channel::Stable);
 }
 
-/// A manifest past the cap is not read, whatever it holds.
+/// A large channel file is read whole and judged by what it holds.
 #[test]
-fn a_manifest_larger_than_the_cap_is_not_read() {
+fn a_large_manifest_is_read_whole() {
     let bucket = Bucket::new();
     bucket.put("stable.json", vec![b' '; 300 * 1024]);
-    assert_eq!(
+    assert!(matches!(
         block(fetch(&client(), &bucket.base, Channel::Stable, &keys())),
-        None
-    );
+        Some(Err(_))
+    ));
 }
 
 /// An archive of `size` bytes no two of which repeat in a short window.

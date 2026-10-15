@@ -20,9 +20,6 @@ use crate::backend::views::{self, Fetch};
 
 type Description = Option<methods::Description>;
 
-/// Answers kept before the table starts over.
-const MAX_KEPT: usize = 4096;
-
 /// One code id's compiled module, `None` where the code carries none: set
 /// once, by the first ask that fetched and compiled it, while every ask
 /// that came meanwhile waits for it.
@@ -71,12 +68,10 @@ pub(super) async fn described(
     .await
     .ok()
     .flatten();
-    let mut kept = answers().lock().expect("describe answers");
-    // ponytail: starts over when full; an LRU if a window ever outgrows it
-    if kept.len() >= MAX_KEPT {
-        kept.clear();
-    }
-    kept.insert(key, described.clone());
+    answers()
+        .lock()
+        .expect("describe answers")
+        .insert(key, described.clone());
     Ok(described)
 }
 
@@ -95,7 +90,7 @@ async fn module(node: &Node, code: abi::BlobId) -> Result<Option<Arc<Module>>, w
         .get_or_try_init(|| async {
             let bytes = match views::program_bytes(&node.client, &code).await {
                 Ok((bytes, _)) => bytes,
-                // the transport: retried by the node method's loop
+                // the transport: the ask's answer, and the next ask tries again
                 Err(Fetch::Unreachable(reason)) => {
                     return Err(Some(wire::Error::new(refusal::RPC_CLIENT, reason)));
                 }

@@ -4,7 +4,7 @@ mod abi;
 mod lifecycle;
 mod requests;
 
-use abi::{Exports, HostState, first_line, panic_message};
+use abi::{Exports, HostState, ViewLimits, first_line, panic_message};
 
 // ---------- the view ----------
 
@@ -21,13 +21,11 @@ pub(super) enum Restored {
     Refused(String),
 }
 
-/// What a drawn view answered when asked for its state: the state, a
-/// state past `MAX_SNAPSHOT_BYTES` (the host's word, before it copied a
-/// byte), or the view's own word that it cannot hand it over now. A trap
-/// is not one of these: it ends the instance.
+/// What a drawn view answered when asked for its state: the state, or the
+/// view's own word that it cannot hand it over now. A trap is not one of
+/// these: it ends the instance.
 pub(super) enum Snapshot {
     Taken(Vec<u8>),
-    TooLarge,
     Refused(String),
 }
 
@@ -50,8 +48,6 @@ pub(super) struct View {
     /// `ACTIVATION_EXPIRY`; a gated call (`link.open`, the clipboard) takes
     /// it, so one input admits one call (`take_activation`).
     pub(crate) activation: Option<std::time::Instant>,
-    /// When each recent `link.open` was admitted, for the per-minute budget.
-    pub(crate) links: Vec<std::time::Instant>,
     pub(crate) program: &'static str,
     /// The seat entity showing this seat (`Seat.instance`;
     /// 0 for a preloaded seat no tab has claimed): with `program`, the key
@@ -183,46 +179,22 @@ impl Drop for View {
     }
 }
 
-pub(super) const COMPILED_VIEW_LIMIT: usize = 16;
-pub(super) const COMPILED_VIEW_SOURCE_BYTES: usize = 32 * 1024 * 1024;
-
+/// Compiled view code by the hash of its bytes, held for as long as some
+/// view or seat holds the module; a module no one holds is compiled again
+/// from wasmtime's disk cache.
 #[derive(Default)]
 pub(super) struct ViewCodeCache {
-    entries: VecDeque<CompiledView>,
-}
-
-pub(super) struct CompiledView {
-    hash: [u8; 32],
-    source_bytes: usize,
-    module: Arc<Module>,
+    entries: HashMap<[u8; 32], std::sync::Weak<Module>>,
 }
 
 impl ViewCodeCache {
-    fn get(&mut self, hash: &[u8; 32]) -> Option<Arc<Module>> {
-        let index = self.entries.iter().position(|entry| &entry.hash == hash)?;
-        let entry = self.entries.remove(index)?;
-        let module = entry.module.clone();
-        self.entries.push_back(entry);
-        Some(module)
+    fn get(&self, hash: &[u8; 32]) -> Option<Arc<Module>> {
+        self.entries.get(hash)?.upgrade()
     }
 
-    fn insert(&mut self, entry: CompiledView) {
-        if entry.source_bytes > COMPILED_VIEW_SOURCE_BYTES {
-            return;
-        }
-        let mut bytes: usize = self.entries.iter().map(|entry| entry.source_bytes).sum();
-        loop {
-            let fits = self.entries.len() < COMPILED_VIEW_LIMIT
-                && bytes + entry.source_bytes <= COMPILED_VIEW_SOURCE_BYTES;
-            if fits {
-                break;
-            }
-            let Some(old) = self.entries.pop_front() else {
-                break;
-            };
-            bytes -= old.source_bytes;
-        }
-        self.entries.push_back(entry);
+    fn insert(&mut self, hash: [u8; 32], module: &Arc<Module>) {
+        self.entries.retain(|_, held| held.strong_count() > 0);
+        self.entries.insert(hash, Arc::downgrade(module));
     }
 }
 
@@ -263,11 +235,7 @@ pub(super) fn compile_view(
     if let Some(existing) = cache.get(&hash) {
         return Ok((existing, true));
     }
-    cache.insert(CompiledView {
-        hash,
-        source_bytes: bytes.len(),
-        module: module.clone(),
-    });
+    cache.insert(hash, &module);
     Ok((module, true))
 }
 
@@ -331,15 +299,14 @@ pub(super) fn merge(
     Ok((true, report))
 }
 
-/// What the host is willing to take from one tick's bytes, already held to
-/// `MAX_FRAME_BYTES`: nothing in here is trusted — the counts, the tree.
+/// What the host is willing to take from one tick's bytes: nothing in here
+/// is trusted — the counts, the tree.
 /// The frame's style entries join `styles`, the table of the tree the host
 /// holds (a whole tree's replace it); a refused frame leaves it as it was.
 pub(super) fn shape(
     bytes: &[u8],
     styles: &mut wire::Styles,
 ) -> Result<(wire::Frame, wire::SanitizeReport), String> {
-    // a frame over `MAX_REQUESTS` or `MAX_CANCELS` does not decode
     let mut frame: wire::Frame = wire::decode(bytes)?;
     if frame.unchanged {
         frame.root = None;
