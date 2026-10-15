@@ -918,7 +918,7 @@ fn the_largest_object_framed_fits_the_nodes_websocket_cap() {
             group: u64::MAX,
         },
         objects: vec![vec![0; live_wire::MAX_STREAM_OBJECT]],
-        end: true,
+        end: Ending::Complete,
     };
     assert!(abi::encode(&frame).len() <= live_wire::WS_MESSAGE);
 }
@@ -978,10 +978,10 @@ fn drain(request: &mut Request) -> Vec<Data> {
 fn a_late_end_of_the_old_group_leaves_the_new_groups_count_alone() {
     let (conn, mut request) = ws_conn();
     let header = |group| GroupHeader { alias: 9, group };
-    heard_slice(&conn, header(1), vec![b"a".to_vec()], false);
-    heard_slice(&conn, header(2), vec![b"b".to_vec()], false);
-    heard_slice(&conn, header(1), vec![], true);
-    heard_slice(&conn, header(2), vec![b"c".to_vec()], true);
+    heard_slice(&conn, header(1), vec![b"a".to_vec()], Ending::More);
+    heard_slice(&conn, header(2), vec![b"b".to_vec()], Ending::More);
+    heard_slice(&conn, header(1), vec![], Ending::Complete);
+    heard_slice(&conn, header(2), vec![b"c".to_vec()], Ending::Complete);
     let object = |group, object, body: &[u8]| Data::Object {
         group,
         object,
@@ -1061,6 +1061,38 @@ async fn a_group_of_an_alias_not_yet_subscribed_waits_for_its_name() {
     );
 }
 
+/// Over the websocket a group the node cut short (an object refused, the
+/// publisher gone, a replay abandoned) says so in its frame: it ends
+/// incomplete, its count goes, and the next group is counted from 0.
+#[test]
+fn a_cut_frame_ends_the_group_short() {
+    let (conn, mut request) = ws_conn();
+    let header = |group| GroupHeader { alias: 9, group };
+    heard_slice(&conn, header(1), vec![b"a".to_vec()], Ending::More);
+    heard_slice(&conn, header(1), vec![], Ending::Cut);
+    heard_slice(&conn, header(2), vec![b"b".to_vec()], Ending::Complete);
+    let object = |group, body: &[u8]| Data::Object {
+        group,
+        object: 0,
+        body: body.to_vec(),
+    };
+    assert_eq!(
+        drain(&mut request),
+        [
+            object(1, b"a"),
+            Data::GroupEnd {
+                group: 1,
+                complete: false
+            },
+            object(2, b"b"),
+            Data::GroupEnd {
+                group: 2,
+                complete: true
+            },
+        ]
+    );
+}
+
 /// A websocket reader that falls behind has its group cut, never a hole:
 /// the objects it took, then `GroupEnd { complete: false }` once, and the
 /// rest of the group (its real end too) is dropped for it. The next group
@@ -1070,7 +1102,7 @@ fn a_websocket_reader_behind_has_its_group_cut_not_a_hole() {
     let (conn, mut request) = ws_conn();
     let header = |group| GroupHeader { alias: 9, group };
     let bodies: Vec<Vec<u8>> = (0..=DATA_BACKLOG as u8).map(|i| vec![i]).collect();
-    heard_slice(&conn, header(1), bodies, false);
+    heard_slice(&conn, header(1), bodies, Ending::More);
     let got = drain(&mut request);
     // one slot of the backlog holds the group's end
     let taken = DATA_BACKLOG - 1;
@@ -1088,13 +1120,13 @@ fn a_websocket_reader_behind_has_its_group_cut_not_a_hole() {
             complete: false
         }
     );
-    heard_slice(&conn, header(1), vec![vec![200]], true);
+    heard_slice(&conn, header(1), vec![vec![200]], Ending::Complete);
     assert_eq!(
         drain(&mut request),
         [],
         "the rest of a cut group is dropped"
     );
-    heard_slice(&conn, header(2), vec![vec![1]], true);
+    heard_slice(&conn, header(2), vec![vec![1]], Ending::Complete);
     assert_eq!(
         drain(&mut request),
         [

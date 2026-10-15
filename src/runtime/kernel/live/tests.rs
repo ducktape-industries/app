@@ -16,7 +16,7 @@ impl Session for Fake {
         if let Some(refused) = self.1.lock().unwrap().pop() {
             return Box::pin(async move { Err(refused) });
         }
-        let (request, ends) = client::request(|| {});
+        let (request, ends) = crate::backend::live::request(|| {});
         self.0.lock().unwrap().send((ask, ends)).unwrap();
         Box::pin(async move { Ok(request) })
     }
@@ -443,13 +443,11 @@ fn a_request_the_node_holds_hears_it_waits_and_goes_on() {
 }
 
 /// Every word the node can end a request with is a word a view reads: a
-/// view-wire refusal, or `no_account`, which the host asks again
-/// (`opened`) and no view hears. A code the live wire gains fails this
-/// match until it is given its word.
+/// view-wire refusal. A code the live wire gains fails this match until it
+/// is given its word.
 #[test]
 fn every_code_the_node_says_is_a_word_a_view_knows() {
     let codes = [
-        Code::NoAccount,
         Code::BadProof,
         Code::NotGranted,
         Code::Unknown,
@@ -459,7 +457,6 @@ fn every_code_the_node_says_is_a_word_a_view_knows() {
     ];
     for code in codes {
         let word = match code {
-            Code::NoAccount => continue,
             Code::BadProof => refusal::BAD_PROOF,
             Code::NotGranted => refusal::NOT_GRANTED,
             Code::Unknown => refusal::UNKNOWN_TRACK,
@@ -651,40 +648,4 @@ fn a_first_live_request_puts_the_line_on_the_window() {
         "the view went live and its window said nothing"
     );
     assert!(matches!(opened(&opens).0, Ask::Watch { .. }));
-}
-
-/// A key whose account the node has not confirmed yet is refused
-/// `no_account`: the subscription waits and asks again rather than ending,
-/// and opens once the node knows the account.
-#[test]
-fn a_session_refused_no_account_is_asked_again() {
-    let (mut view, opens_again) = live_guest_refusing(vec![wire::Error::new(
-        Code::NoAccount.as_str(),
-        "the node refused this key a live session",
-    )]);
-    let mut changes = view.replies.changes();
-    let subscribe = LiveSubscribe {
-        track: track("presence/7"),
-        from: LiveStart::Latest,
-    };
-    ask(&mut view, 1, "live.subscribe", methods::encode(&subscribe));
-    let (asked, ends) = opened(&opens_again);
-    assert!(matches!(asked, Ask::Subscribe { .. }));
-    let mut pending = Vec::new();
-    view.replies.drain_into(&mut pending).unwrap();
-    assert!(
-        pending.is_empty(),
-        "the refusal reached the view: {pending:?}"
-    );
-    ends.heard
-        .send(Heard::Subscribed {
-            by: 7,
-            mode: Mode::Datagram,
-            latest: None,
-        })
-        .unwrap();
-    let (id, opened, done) = item::<LiveItem>(next(&view, &mut changes));
-    assert_eq!(id, 1);
-    assert!(matches!(opened, Ok(LiveItem::Opened { by: 7, .. })));
-    assert!(!done);
 }

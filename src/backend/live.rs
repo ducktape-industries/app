@@ -28,7 +28,8 @@ use std::time::{Duration, Instant};
 use futures::future::BoxFuture;
 use futures::{SinkExt as _, StreamExt as _};
 use live_wire::{
-    Alias, Control, DatagramHeader, End, GroupHeader, Hello, KeyScheme, Proof, RequestId, WsFrame,
+    Alias, Control, DatagramHeader, End, Ending, GroupHeader, Hello, KeyScheme, Proof, RequestId,
+    WsFrame,
 };
 pub(crate) use live_wire::{Code, Mode, Priority, Start, Track};
 use tokio::sync::{Notify, mpsc, oneshot, watch};
@@ -1857,10 +1858,11 @@ fn heard_datagram(conn: &Conn, bytes: &[u8]) {
 }
 
 /// A slice of a group over the websocket: its objects numbered on from the
-/// slice before, and the group's end if it carries it. One socket carries
-/// every track, so a reader that is behind has its group cut
+/// slice before, and how the group stands after it (`end`: more comes, it
+/// is complete, or it was cut and nothing more of it comes). One socket
+/// carries every track, so a reader that is behind has its group cut
 /// ([`Reader::offer`]) rather than holding the socket.
-fn heard_slice(conn: &Conn, header: GroupHeader, objects: Vec<Vec<u8>>, end: bool) {
+fn heard_slice(conn: &Conn, header: GroupHeader, objects: Vec<Vec<u8>>, end: Ending) {
     let mut table = lock(&conn.table);
     let Some(id) = table.aliases.get(&header.alias).copied() else {
         return;
@@ -1877,8 +1879,8 @@ fn heard_slice(conn: &Conn, header: GroupHeader, objects: Vec<Vec<u8>>, end: boo
         return;
     };
     let mut next = match end {
-        true => counted.remove(&header.group).unwrap_or_default(),
-        false => *counted.entry(header.group).or_default(),
+        Ending::More => *counted.entry(header.group).or_default(),
+        Ending::Complete | Ending::Cut => counted.remove(&header.group).unwrap_or_default(),
     };
     for body in objects {
         let item = Data::Object {
@@ -1894,13 +1896,16 @@ fn heard_slice(conn: &Conn, header: GroupHeader, objects: Vec<Vec<u8>>, end: boo
     {
         *count = next;
     }
-    if end {
-        let item = Data::GroupEnd {
-            group: header.group,
-            complete: true,
-        };
-        hand(entry, item);
-    }
+    let complete = match end {
+        Ending::More => return,
+        Ending::Complete => true,
+        Ending::Cut => false,
+    };
+    let item = Data::GroupEnd {
+        group: header.group,
+        complete,
+    };
+    hand(entry, item);
 }
 
 /// A publication's writer: once the node took it (`alias`), each object
@@ -1908,7 +1913,8 @@ fn heard_slice(conn: &Conn, header: GroupHeader, objects: Vec<Vec<u8>>, end: boo
 /// (FIN) by `end` or by the first object of a newer group, and RESET when
 /// the queue abandoned it (the node then ends it short for everyone); a
 /// datagram-mode object is one datagram, dropped when the path will not
-/// take it. Over the websocket each is one frame.
+/// take it. Over the websocket each is one frame, and an abandoned group
+/// a frame that says `Cut`.
 async fn write(conn: Arc<Conn>, alias: oneshot::Receiver<Alias>, objects: Arc<Outbox>, mode: Mode) {
     let Ok(alias) = alias.await else {
         return;
@@ -1931,8 +1937,18 @@ async fn write(conn: Arc<Conn>, alias: oneshot::Receiver<Alias>, objects: Arc<Ou
         } = match out {
             Out::Object(object) => object,
             Out::Cut(group) => {
-                if let Some((_, Some(mut stream))) = open.take_if(|(at, _)| *at == group) {
-                    let _ = stream.reset(0u32.into());
+                match (&conn.path, open.take_if(|(at, _)| *at == group)) {
+                    (_, Some((_, Some(mut stream)))) => {
+                        let _ = stream.reset(0u32.into());
+                    }
+                    (Path::Ws(frames), Some(_)) => {
+                        let _ = frames.send(WsFrame::Group {
+                            header: GroupHeader { alias, group },
+                            objects: Vec::new(),
+                            end: Ending::Cut,
+                        });
+                    }
+                    _ => {}
                 }
                 continue;
             }
@@ -1988,7 +2004,7 @@ async fn write(conn: Arc<Conn>, alias: oneshot::Receiver<Alias>, objects: Arc<Ou
                     let _ = frames.send(WsFrame::Group {
                         header: header(before),
                         objects: Vec::new(),
-                        end: true,
+                        end: Ending::Complete,
                     });
                 }
                 let objects = match body.is_empty() && end {
@@ -1998,7 +2014,10 @@ async fn write(conn: Arc<Conn>, alias: oneshot::Receiver<Alias>, objects: Arc<Ou
                 let _ = frames.send(WsFrame::Group {
                     header: header(group),
                     objects,
-                    end,
+                    end: match end {
+                        true => Ending::Complete,
+                        false => Ending::More,
+                    },
                 });
                 open = (!end).then_some((group, None));
             }
