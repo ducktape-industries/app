@@ -329,6 +329,7 @@ fn acl_roles() -> AclRoles {
         identity: "acl-identity".into(),
         blobs: "acl-blobs".into(),
         awaits: "acl-awaits".into(),
+        halo: "acl-halo".into(),
     }));
     AclRoles
 }

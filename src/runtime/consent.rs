@@ -268,6 +268,8 @@ pub(super) fn needed(
         (ACCOUNT, "sign an identity operation")
     } else if target == roles.blobs {
         (NETWORK, "sign an op on the blobs role")
+    } else if target == roles.halo {
+        (NETWORK, "sign an op on the halo role, the network's lanes")
     } else {
         return None;
     };
@@ -290,6 +292,7 @@ pub(super) fn bound(program: &str, roles: Option<&abi::Roles>) -> bool {
             &roles.identity,
             &roles.blobs,
             &roles.awaits,
+            &roles.halo,
         ]
         .iter()
         .any(|role| role.as_str() == program)
@@ -497,6 +500,7 @@ mod tests {
             identity: "identity-b".into(),
             blobs: "blobs-b".into(),
             awaits: "awaits-b".into(),
+            halo: "halo-b".into(),
         };
         for program in [
             "programs-b",
@@ -504,6 +508,7 @@ mod tests {
             "identity-b",
             "blobs-b",
             "awaits-b",
+            "halo-b",
         ] {
             assert_eq!(
                 said(program, Some(&roles)),
@@ -535,6 +540,7 @@ mod tests {
             identity: identity::PROGRAM.into(),
             blobs: "blobs".into(),
             awaits: "awaits".into(),
+            halo: "halo".into(),
         };
         let asked = |program: &str| {
             needed(program, Some(&roles), identity::PROGRAM, &suspend, Some(7)).unwrap()
@@ -570,6 +576,7 @@ mod tests {
             identity: identity::PROGRAM.into(),
             blobs: "blobs".into(),
             awaits: "awaits".into(),
+            halo: "halo".into(),
         };
         let op = [1, 2, 3];
         let add_key = abi::encode(&identity::Op::AddKey {
@@ -605,6 +612,12 @@ mod tests {
                 "sign an identity operation",
             ),
             ("blobs", &op[..], NETWORK, "sign an op on the blobs role"),
+            (
+                "halo",
+                &op[..],
+                NETWORK,
+                "sign an op on the halo role, the network's lanes",
+            ),
         ] {
             let words = asked("chat", target, body).expect(target);
             assert_eq!(
@@ -620,7 +633,7 @@ mod tests {
                 },
                 "{target}"
             );
-            for own in ["valset", "programs", identity::PROGRAM, "blobs"] {
+            for own in ["valset", "programs", identity::PROGRAM, "blobs", "halo"] {
                 assert_eq!(asked(own, target, body), None, "{own} to {target}");
             }
             assert_eq!(
@@ -646,6 +659,23 @@ mod tests {
             );
             assert_eq!((words.title, words.described), (ACCOUNT, false));
         }
+    }
+
+    /// Claim: a vote on a halo op reads on the card in the halo program's
+    /// own words, through the validators' program's description.
+    #[test]
+    fn a_halo_vote_reads_in_the_halo_programs_words() {
+        let open = abi::role::halo::Op::Open {
+            name: "ducktape/live".into(),
+            cap: abi::role::halo::Class::Client,
+        };
+        let vote = valset::Op::Vote(valset::Motion::Halo {
+            op: abi::encode(&open),
+        });
+        assert_eq!(
+            shown(Some(&valset::describe(&vote)), 0),
+            "Vote · Open lane · ducktape/live\ncap Client"
+        );
     }
 
     /// Claim: the card shows a description as the program's title, then
