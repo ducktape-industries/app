@@ -310,6 +310,7 @@ mod tests {
                 identity: "i".into(),
                 blobs: "b".into(),
                 awaits: "a".into(),
+                egress: None,
             },
         };
         let client = fake_node("200 OK", BYTES, abi::encode(&status)).await;

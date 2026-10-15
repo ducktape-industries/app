@@ -27,6 +27,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use futures::{Stream, StreamExt as _};
 use reqwest::StatusCode;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 use wire::{
     BlockRef, Blocks, Change, Finalized, Layer, Located, Network, Page, Preconfirm, Query, Receipt,
@@ -216,7 +217,12 @@ impl Client {
             self.base.replacen("http", "ws", 1),
             route::CHANGES
         );
-        let (socket, _) = tokio_tungstenite::connect_async(url)
+        let unbounded = WebSocketConfig {
+            max_message_size: None,
+            max_frame_size: None,
+            ..WebSocketConfig::default()
+        };
+        let (socket, _) = tokio_tungstenite::connect_async_with_config(url, Some(unbounded), false)
             .await
             .map_err(|error| Error::Transport(error.to_string()))?;
         Ok(socket.filter_map(|message| {

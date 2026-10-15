@@ -407,6 +407,7 @@ fn the_roles_come_with_the_roster_and_are_asked_once() {
         identity: "roles-identity".into(),
         blobs: "roles-blobs".into(),
         awaits: "roles-awaits".into(),
+        egress: None,
     };
     let node = FakeNode::with_roles(
         vec![listed("roles-programs", "roles")],

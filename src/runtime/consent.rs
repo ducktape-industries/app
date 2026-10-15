@@ -270,6 +270,8 @@ pub(super) fn needed(
         (NETWORK, "sign an op on the blobs role")
     } else if target == roles.awaits {
         (NETWORK, "sign an op on the awaits role")
+    } else if roles.egress.as_deref() == Some(target) {
+        (NETWORK, "sign an op on the egress role")
     } else {
         return None;
     };
@@ -293,7 +295,8 @@ pub(super) fn bound(program: &str, roles: Option<&abi::Roles>) -> bool {
             &roles.blobs,
             &roles.awaits,
         ]
-        .iter()
+        .into_iter()
+        .chain(roles.egress.as_ref())
         .any(|role| role.as_str() == program)
     })
 }
@@ -499,6 +502,7 @@ mod tests {
             identity: "identity-b".into(),
             blobs: "blobs-b".into(),
             awaits: "awaits-b".into(),
+            egress: Some("egress-b".into()),
         };
         for program in [
             "programs-b",
@@ -506,6 +510,7 @@ mod tests {
             "identity-b",
             "blobs-b",
             "awaits-b",
+            "egress-b",
         ] {
             assert_eq!(
                 said(program, Some(&roles)),
@@ -521,6 +526,11 @@ mod tests {
             );
         }
         assert!(said("programs-b", None).starts_with("Program programs-b asks"));
+        let unbound = abi::Roles {
+            egress: None,
+            ..roles
+        };
+        assert!(said("egress-b", Some(&unbound)).starts_with("Program egress-b asks"));
     }
 
     /// Claim: no program id reads as the system. A program named `system`
@@ -537,6 +547,7 @@ mod tests {
             identity: identity::PROGRAM.into(),
             blobs: "blobs".into(),
             awaits: "awaits".into(),
+            egress: Some("egress".into()),
         };
         let asked = |program: &str| {
             needed(program, Some(&roles), identity::PROGRAM, &suspend, Some(7)).unwrap()
@@ -572,6 +583,7 @@ mod tests {
             identity: identity::PROGRAM.into(),
             blobs: "blobs".into(),
             awaits: "awaits".into(),
+            egress: Some("egress".into()),
         };
         let op = [1, 2, 3];
         let add_key = abi::encode(&identity::Op::AddKey {
@@ -607,6 +619,8 @@ mod tests {
                 "sign an identity operation",
             ),
             ("blobs", &op[..], NETWORK, "sign an op on the blobs role"),
+            ("awaits", &op[..], NETWORK, "sign an op on the awaits role"),
+            ("egress", &op[..], NETWORK, "sign an op on the egress role"),
         ] {
             let words = asked("chat", target, body).expect(target);
             assert_eq!(
@@ -622,7 +636,14 @@ mod tests {
                 },
                 "{target}"
             );
-            for own in ["valset", "programs", identity::PROGRAM, "blobs"] {
+            for own in [
+                "valset",
+                "programs",
+                identity::PROGRAM,
+                "blobs",
+                "awaits",
+                "egress",
+            ] {
                 assert_eq!(asked(own, target, body), None, "{own} to {target}");
             }
             assert_eq!(
