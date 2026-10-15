@@ -68,7 +68,7 @@ tar xzf /tmp/ducktape.tar.gz -C /tmp
   every method a borsh type in `view_wire::methods`, named `<capability>.<op>`:
   `program.query`/`op.submit` `Call{target, body}`, `program.changes <program>`,
   `program.describe`, `chain.status`/`block`/`blocks`/`heads`, `invite.create`,
-  `blob.get`, `link.open`, `host.widget` (the one MessagePack method: a tree
+  `blob.get`, `blob.manifest`, `link.open`, `host.widget` (the one MessagePack method: a tree
   command), `live.*` (`publish`/`send`/`subscribe`/`tracks`: a view's live
   tracks through the node's relay, off consensus, on one QUIC or websocket
   session per connection, `src/backend/live.rs`), and the app's own
@@ -102,8 +102,8 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 
 ## Dependency line
 
-`ducktape-industries/programs` (`crates/sdk`; pinned by rev to programs `dev` until the next `dev` → `main` promotion): `abi`, `view-wire`, `ducklink`, `design`.
-`ducktape` (`feat/capable-sandbox`): `ducktape-home`, `keystore`.
+`ducktape-industries/programs` (`crates/sdk`; rev `539313e42e474c6f6c0b925c9bf1bde335446ce0`): `abi`, `view-wire`, `ducklink`, `design`.
+`ducktape-industries/ducktape`: `blob` (rev `a4360f6d6ac3b807df95e3fda24d8d8a8b130049`), `keyscheme` (rev `9dfffb0662bd8a16293df8c75de8817a79b0810b`), `ducktape-home` and `keystore` (branch `feat/capable-sandbox`).
 
 ## Building
 

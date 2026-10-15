@@ -88,9 +88,6 @@ async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals()
     }
 }
 
-/// A node from before `/v1/network` answers a bare 404: `unknown_request`
-/// at once, which the retry loop takes as the node's word, not a transport
-/// failure to ask again.
 #[tokio::test]
 async fn a_node_without_the_network_route_is_refused_at_once() {
     let (node, server) = node_server(
@@ -104,7 +101,7 @@ async fn a_node_without_the_network_route_is_refused_at_once() {
         refused.message,
         "This node doesn't report its validators' votes. Update the node."
     );
-    assert!(!node::transport_failed(&refused), "not retried");
+    assert!(!node::transport_failed(&refused), "the node's word");
 }
 
 #[tokio::test]
@@ -206,9 +203,11 @@ async fn a_block_s_receipts_carry_refusals_as_errors() {
         "POST /v1/block HTTP/1.1",
         vec![("200 OK", abi::encode(&Some(finalized)))],
     );
-    let answer = block(node, methods::encode(&methods::BlockRef::Height(9)))
-        .await
-        .unwrap();
+    let ask = methods::encode(&methods::BlockAsk {
+        by: methods::BlockRef::Height(9),
+        most: u32::MAX,
+    });
+    let answer = block(node, ask).await.unwrap();
     server.join().unwrap();
     let block = methods::decode::<Option<methods::Block>>(&answer)
         .unwrap()
@@ -293,6 +292,7 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
     let page = methods::encode(&methods::BlockPage {
         before: Some(10),
         limit: 1,
+        most: 16,
     });
     let answer = blocks(node, page).await.unwrap();
     let decoded: methods::BlockList = methods::decode(&answer).unwrap();
@@ -311,7 +311,13 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
             listed_from: Some(4),
         }
     );
-    server.join().unwrap();
+    let asked = server.join().unwrap();
+    let summaries = noded_client::wire::Blocks {
+        before: Some(10),
+        limit: 1,
+        most: 16,
+    };
+    assert_eq!(asked, [abi::encode(&summaries)]);
 
     let located = noded_client::wire::Located {
         height: 9,
@@ -355,7 +361,10 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
     );
     let answer = block(
         node.clone(),
-        methods::encode(&methods::BlockRef::Id([8; 32])),
+        methods::encode(&methods::BlockAsk {
+            by: methods::BlockRef::Id([8; 32]),
+            most: 32,
+        }),
     )
     .await
     .unwrap();
@@ -363,7 +372,12 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
         methods::decode::<Option<methods::Block>>(&answer).unwrap(),
         None
     );
-    server.join().unwrap();
+    let asked = server.join().unwrap();
+    let summary = noded_client::wire::BlockAsk {
+        by: noded_client::wire::BlockRef::Id([8; 32]),
+        most: 32,
+    };
+    assert_eq!(asked, [abi::encode(&summary)]);
     assert_eq!(
         block(node, b"x".to_vec()).await.unwrap_err().code,
         refusal::MALFORMED_REQUEST
@@ -391,6 +405,218 @@ async fn blob_get_answers_the_blob_or_none() {
     )]);
     let answer = blob_get(absent.node.clone(), ask).await.unwrap();
     assert_eq!(methods::decode::<Option<Vec<u8>>>(&answer).unwrap(), None);
+}
+
+/// A core module of custom sections, as a program's code is laid out.
+fn module(sections: &[(&str, &[u8])]) -> Vec<u8> {
+    fn leb(mut n: usize, out: &mut Vec<u8>) {
+        loop {
+            let byte = (n & 0x7f) as u8;
+            n >>= 7;
+            if n == 0 {
+                out.push(byte);
+                return;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+    let mut bytes = b"\0asm\x01\0\0\0".to_vec();
+    for (name, body) in sections {
+        let mut section = Vec::new();
+        leb(name.len(), &mut section);
+        section.extend_from_slice(name.as_bytes());
+        section.extend_from_slice(body);
+        bytes.push(0);
+        leb(section.len(), &mut bytes);
+        bytes.extend_from_slice(&section);
+    }
+    bytes
+}
+
+/// `blob.manifest` reads the blob as a seat would: a program's view out of
+/// its `ducktape.view` section with the manifest that view carries, a
+/// view-only blob as the view itself, a program with no section as none,
+/// a view this host cannot read (a program's or a view-only one) as a view
+/// with no manifest, and a blob the node does not hold as `None`. The
+/// blob's bytes never reach the view.
+#[tokio::test]
+async fn blob_manifest_answers_what_the_view_in_a_blob_declares() {
+    use sha2::Digest as _;
+    use view_wire::manifest::Manifest;
+    let text = "ducktape.view.manifest\nChat\nRooms.\nchain,clipboard,\n480\n0123abcd\n\n";
+    let view = module(&[("ducktape.view.manifest", text.as_bytes())]);
+    let program = module(&[("ducktape.view", &view)]);
+    let manifest = Manifest {
+        wire_id: "0123abcd".into(),
+        name: "Chat".into(),
+        description: "Rooms.".into(),
+        capabilities: vec![methods::Capability::Chain, methods::Capability::Clipboard],
+        min_width: 480,
+        targets: Vec::new(),
+        icon: String::new(),
+    };
+    let ask = |body: &[u8]| {
+        let mut framed = format!("program {}\0", body.len()).into_bytes();
+        framed.extend_from_slice(body);
+        let id = sha2::Sha256::digest(&framed);
+        let held = fake_node(vec![(
+            noded_client::wire::route::BLOB_GET,
+            Mode::Answer(abi::encode(&Some(framed))),
+        )]);
+        listed(abi::BlobId::Sha256(id.into()));
+        let ask = methods::encode(&format!("sha256:{}", noded_client::hex::hex_encode(&id)));
+        async move {
+            let answer = blob_manifest(held.node.clone(), ask).await.unwrap();
+            methods::decode::<Option<methods::Manifested>>(&answer).unwrap()
+        }
+    };
+    assert_eq!(
+        ask(&program).await,
+        Some(methods::Manifested {
+            size: program.len() as u64,
+            view: Some(methods::CarriedView {
+                size: view.len() as u64,
+                manifest: Some(manifest.clone()),
+            }),
+        })
+    );
+    assert_eq!(
+        ask(&view).await,
+        Some(methods::Manifested {
+            size: view.len() as u64,
+            view: Some(methods::CarriedView {
+                size: view.len() as u64,
+                manifest: Some(manifest),
+            }),
+        }),
+        "a view-only blob is the view"
+    );
+    let bare = module(&[("ducktape.describe", b"not a view")]);
+    assert_eq!(
+        ask(&bare).await,
+        Some(methods::Manifested {
+            size: bare.len() as u64,
+            view: None,
+        }),
+        "a program that draws nothing"
+    );
+    let unreadable = module(&[("ducktape.view.manifest", b"?")]);
+    let unread = Some(methods::CarriedView {
+        size: unreadable.len() as u64,
+        manifest: None,
+    });
+    assert_eq!(
+        ask(&module(&[("ducktape.view", &unreadable)]))
+            .await
+            .and_then(|blob| blob.view),
+        unread,
+        "a program's view whose manifest this host cannot read"
+    );
+    assert_eq!(
+        ask(&unreadable).await.and_then(|blob| blob.view),
+        unread,
+        "a view-only blob this host cannot read is a view, not a program that draws nothing"
+    );
+    let absent = fake_node(vec![(
+        noded_client::wire::route::BLOB_GET,
+        Mode::Answer(abi::encode(&None::<Vec<u8>>)),
+    )]);
+    listed(abi::BlobId::Sha256([0; 32]));
+    let ask = methods::encode(&format!("sha256:{}", "00".repeat(32)));
+    let answer = blob_manifest(absent.node.clone(), ask).await.unwrap();
+    assert_eq!(
+        methods::decode::<Option<methods::Manifested>>(&answer).unwrap(),
+        None
+    );
+}
+
+/// `code` listed in the app's roster as a running program's, under a name
+/// of its own.
+fn listed(code: abi::BlobId) {
+    crate::runtime::roster::roster()
+        .lock()
+        .push(crate::backend::views::Program {
+            name: format!("manifest-test-{}", &abi::hex(code.digest())[..8]),
+            code,
+            bare: false,
+        });
+}
+
+/// `blob.manifest` reads only code the programs role names: a listed
+/// program's, a view-only entry's, or what a scheduled change brings, the
+/// scheduled list read for the ask. An id none of them name is refused,
+/// the node asked for the list and nothing else; a scheduled code is read
+/// as a seat reads it, kept under its id, so the next ask reads the disk,
+/// not the node.
+#[tokio::test]
+async fn blob_manifest_reads_only_code_the_roster_names() {
+    use sha2::Digest as _;
+    let program = module(&[("ducktape.describe", b"scheduled")]);
+    let mut framed = format!("program {}\0", program.len()).into_bytes();
+    framed.extend_from_slice(&program);
+    let id = abi::BlobId::Sha256(sha2::Sha256::digest(&framed).into());
+    let kept = crate::backend::views::cache_path(&id).unwrap();
+    let _ = std::fs::remove_file(&kept);
+    let scheduled = |items: Vec<::programs::Pending>| {
+        let reply = ::programs::Reply::Scheduled(::programs::PageResponse {
+            height: 12,
+            items,
+            next: None,
+        });
+        (
+            noded_client::wire::route::QUERY,
+            Mode::Answer(abi::encode(&abi::encode(&reply))),
+        )
+    };
+    let brings = ::programs::Pending {
+        height: 20,
+        change: ::programs::Change::Set(::programs::Entry {
+            program: "later".into(),
+            code: id,
+            params: Vec::new(),
+        }),
+        by: None,
+    };
+    let ask = methods::encode(&format!(
+        "sha256:{}",
+        noded_client::hex::hex_encode(id.digest())
+    ));
+    // nothing scheduled: refused, the node asked for the list alone
+    let nothing = fake_node(vec![scheduled(Vec::new())]);
+    let refusal = blob_manifest(nothing.node.clone(), ask.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(refusal.code, refusal::UNDECLARED_TARGET);
+    assert_eq!(
+        nothing.accepted.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "an unnamed code reached the node"
+    );
+    // a scheduled change brings it: read, kept
+    let held = fake_node(vec![
+        scheduled(vec![brings.clone()]),
+        (
+            noded_client::wire::route::BLOB_GET,
+            Mode::Answer(abi::encode(&Some(framed.clone()))),
+        ),
+    ]);
+    let size = |answer: Vec<u8>| {
+        methods::decode::<Option<methods::Manifested>>(&answer)
+            .unwrap()
+            .map(|blob| blob.size)
+    };
+    let answer = blob_manifest(held.node.clone(), ask.clone()).await.unwrap();
+    assert_eq!(size(answer), Some(program.len() as u64));
+    assert!(kept.exists(), "a named code's read was not kept");
+    // the next ask reads the disk: a node with no blob route answers it
+    let listed_only = fake_node(vec![scheduled(vec![brings])]);
+    let answer = blob_manifest(listed_only.node.clone(), ask).await;
+    let _ = std::fs::remove_file(&kept);
+    assert_eq!(
+        answer.map(size),
+        Ok(Some(program.len() as u64)),
+        "answered off the disk"
+    );
 }
 
 /// A blob id is hex digits only: `+f` (which `from_str_radix` reads as 15)

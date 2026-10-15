@@ -27,9 +27,10 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use futures::{Stream, StreamExt as _};
 use reqwest::StatusCode;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 use wire::{
-    BlockRef, Blocks, Change, Finalized, Layer, Located, Network, Page, Preconfirm, Query, Receipt,
+    BlockAsk, Blocks, Change, Finalized, Layer, Located, Network, Page, Preconfirm, Query, Receipt,
     Status, Submit, Submitted, TxAsk, route,
 };
 
@@ -79,29 +80,12 @@ impl Signer for commonware_cryptography::ed25519::PrivateKey {
     }
 }
 
-/// The most one node answer may carry, unless the call names its own cap
-/// (a blob's): a view's reply budget holds no more, so a bigger body is
-/// refused before it is read, not after.
-pub const MAX_BODY_BYTES: usize = 32 << 20;
-
-/// How long a connection to a node (or the auth host) may take to open.
-const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// How long a caller waits for one node answer before it stops waiting. Not
-/// the client's own timeout, and above the hold a recovering node puts on a
-/// request: it accepts the connection and answers once it has recovered
-/// (app#189's run held its queries ~94 s: node up 13:14:49.9, recovered
-/// 13:16:22.0, serving 13:16:23.6), so this is that hold and as much again.
-pub const ANSWER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(180);
-
-/// Every HTTP client this crate builds: the opening bounded, the answer not
-/// (see [`ANSWER_DEADLINE`]), and no redirect followed. A redirect would
-/// send the same signed frame on to whatever host the answer names; it is
-/// the answer instead, a status this client does not read
+/// Every HTTP client this crate builds: no redirect followed. A redirect
+/// would send the same signed frame on to whatever host the answer names;
+/// it is the answer instead, a status this client does not read
 /// ([`Error::Failed`]).
 fn http() -> reqwest::Client {
     reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("the HTTP client")
@@ -123,8 +107,6 @@ pub enum Error {
     Transport(String),
     /// the body did not decode as the type asked for
     Decode(Refusal),
-    /// the answer is longer than the call reads: refused, never buffered
-    TooLarge { cap: usize },
 }
 
 impl std::fmt::Display for Error {
@@ -135,11 +117,6 @@ impl std::fmt::Display for Error {
             }
             Error::Failed { status, sentence } => write!(f, "node answered {status}: {sentence}"),
             Error::Unreachable(sentence) | Error::Transport(sentence) => write!(f, "{sentence}"),
-            Error::TooLarge { cap } => write!(
-                f,
-                "The node's answer is over the {} MiB this app reads.",
-                cap >> 20
-            ),
         }
     }
 }
@@ -215,26 +192,22 @@ impl Client {
         self.post(route::QUERY, &Query { layer, frame }).await
     }
 
-    /// The framed bytes (`kind len\0body`) of a blob the node holds; an
-    /// answer over `cap` bytes is refused [`Error::TooLarge`].
-    pub async fn blob(&self, id: BlobId, cap: usize) -> Result<Option<Vec<u8>>> {
+    /// The framed bytes (`kind len\0body`) of a blob the node holds.
+    pub async fn blob(&self, id: BlobId) -> Result<Option<Vec<u8>>> {
         answered(
             self.http
                 .post(self.url(route::BLOB_GET))
                 .body(abi::encode(&id)),
-            cap,
         )
         .await
     }
 
-    /// Finalized blocks, newest first: below `before` (the tip when
-    /// `None`), at most `limit` (the node caps it).
     pub async fn blocks(&self, page: &Blocks) -> Result<Page> {
         self.post(route::BLOCKS, page).await
     }
 
-    pub async fn block(&self, by: &BlockRef) -> Result<Option<Finalized>> {
-        self.post(route::BLOCK, by).await
+    pub async fn block(&self, ask: &BlockAsk) -> Result<Option<Finalized>> {
+        self.post(route::BLOCK, ask).await
     }
 
     pub async fn tx(&self, ask: &TxAsk) -> Result<Option<Located>> {
@@ -250,11 +223,14 @@ impl Client {
             self.base.replacen("http", "ws", 1),
             route::CHANGES
         );
-        let (socket, _) =
-            tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(url))
-                .await
-                .map_err(|_| Error::Transport("the changes socket did not open in time".into()))?
-                .map_err(|error| Error::Transport(error.to_string()))?;
+        let unbounded = WebSocketConfig {
+            max_message_size: None,
+            max_frame_size: None,
+            ..WebSocketConfig::default()
+        };
+        let (socket, _) = tokio_tungstenite::connect_async_with_config(url, Some(unbounded), false)
+            .await
+            .map_err(|error| Error::Transport(error.to_string()))?;
         Ok(socket.filter_map(|message| {
             let change = match message {
                 Ok(Message::Binary(bytes)) => Some(abi::decode(&bytes).map_err(Error::Decode)),
@@ -270,7 +246,7 @@ impl Client {
     }
 
     async fn fetch<T: BorshDeserialize>(&self, route: &str) -> Result<T> {
-        answered(self.http.get(self.url(route)), MAX_BODY_BYTES).await
+        answered(self.http.get(self.url(route))).await
     }
 
     async fn post<B: BorshSerialize, T: BorshDeserialize>(
@@ -282,15 +258,13 @@ impl Client {
     }
 
     async fn post_raw<T: BorshDeserialize>(&self, route: &str, body: Vec<u8>) -> Result<T> {
-        answered(self.http.post(self.url(route)).body(body), MAX_BODY_BYTES).await
+        answered(self.http.post(self.url(route)).body(body)).await
     }
 }
 
-/// `request`'s answer, read a chunk at a time and never past `cap` bytes:
-/// a `Content-Length` over it is refused before the body is read, a body
-/// that streams past it as soon as it does.
-async fn answered<T: BorshDeserialize>(request: reqwest::RequestBuilder, cap: usize) -> Result<T> {
-    let mut response = request.send().await?;
+/// `request`'s answer, read whole.
+async fn answered<T: BorshDeserialize>(request: reqwest::RequestBuilder) -> Result<T> {
+    let response = request.send().await?;
     let status = response.status();
     // A node's failure is its own sentence in plain text (noded answers `(status, sentence)`); whatever else answers
     // (a proxy's page, a redirect to https) is not a node's word, and its body never reaches a sentence.
@@ -299,19 +273,7 @@ async fn answered<T: BorshDeserialize>(request: reqwest::RequestBuilder, cap: us
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.starts_with("text/plain"));
-    if response
-        .content_length()
-        .is_some_and(|length| length > cap as u64)
-    {
-        return Err(Error::TooLarge { cap });
-    }
-    let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        if body.len() + chunk.len() > cap {
-            return Err(Error::TooLarge { cap });
-        }
-        body.extend_from_slice(&chunk);
-    }
+    let body = response.bytes().await?;
     match status {
         StatusCode::OK => abi::decode(&body).map_err(Error::Decode),
         StatusCode::BAD_REQUEST => Err(Error::Refused(abi::decode(&body).map_err(Error::Decode)?)),

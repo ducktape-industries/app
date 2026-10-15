@@ -44,7 +44,11 @@ pub(crate) async fn mint(
             "Only the machine running this node can mint its invites.",
         ));
     };
-    let validators = validators(client, &status.network, &status.roles.validators).await?;
+    let role = status
+        .roles
+        .bound(abi::role::VALIDATORS)
+        .map_err(|refusal| view_wire::Error::new(refusal.reason, refusal.sentence))?;
+    let validators = validators(client, &status.network, role).await?;
     let validates = validators.contains(&status.identity);
     if !validates {
         return Err(view_wire::Error::new(

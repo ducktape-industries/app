@@ -21,7 +21,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
@@ -405,23 +405,10 @@ pub(crate) struct Client(Arc<Inner>);
 struct Inner {
     rpc: RpcClient,
     conn: tokio::sync::Mutex<Option<Arc<Conn>>>,
-    /// Until when the node asked not to be dialed (`GoAway`), or the
-    /// client holds off after a failure ([`Inner::hold_off`]).
+    /// Until when the node asked not to be dialed (`GoAway`): the one
+    /// wait before a dial, the node's own. A refused dial is the request's
+    /// answer, and a lost session is dialed again by the next request.
     not_before: Mutex<Option<Instant>>,
-    /// Failures since the last session opened: dials that failed (the
-    /// node refused, was busy or was not there) and sessions lost. Each
-    /// holds the next dial off longer.
-    failures: AtomicU32,
-}
-
-impl Inner {
-    /// The next dial waits [`super::retry_delay`] of the failures so far:
-    /// a refusal, a busy node, a wire mismatch or a lost session is never
-    /// redialed at once. The requests ask again at once and wait here.
-    fn hold_off(&self) {
-        let failures = self.failures.fetch_add(1, Ordering::SeqCst) + 1;
-        *lock(&self.not_before) = Some(Instant::now() + super::retry_delay(failures));
-    }
 }
 
 impl Client {
@@ -430,7 +417,6 @@ impl Client {
             rpc,
             conn: tokio::sync::Mutex::new(None),
             not_before: Mutex::new(None),
-            failures: AtomicU32::new(0),
         }))
     }
 
@@ -443,14 +429,7 @@ impl Client {
         if let Some(until) = not_before {
             tokio::time::sleep_until(until.into()).await;
         }
-        let conn = match dial(&self.0.rpc, Arc::downgrade(&self.0)).await {
-            Ok(conn) => conn,
-            Err(refused) => {
-                self.0.hold_off();
-                return Err(refused);
-            }
-        };
-        self.0.failures.store(0, Ordering::SeqCst);
+        let conn = dial(&self.0.rpc, Arc::downgrade(&self.0)).await?;
         *held = Some(conn.clone());
         Ok(conn)
     }
@@ -897,18 +876,12 @@ impl Conn {
     }
 
     /// Ends the session: every request's channels close, which its reader
-    /// hears as the session gone. A session lost (not quit, not the
-    /// connection changing, not the node's own `GoAway`, which names its
-    /// wait) holds the next dial off: the one wait before a dial.
+    /// hears as the session gone.
     fn close(&self, why: Close) {
         if self.closed.send_replace(true) {
             return;
         }
         tracing::info!(target: "ducktape::app", event = "live_session", reason = why.as_str(), "a live session closed");
-        let lost = !matches!(why, Close::Quit | Close::ConnectionChanged | Close::GoAway);
-        if let Some(client) = self.client.upgrade().filter(|_| lost) {
-            client.hold_off();
-        }
         *lock(&self.table) = Table::default();
         self.aliased.notify_waiters();
         if let Path::Quic(connection) = &self.path {

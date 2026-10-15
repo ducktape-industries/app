@@ -470,8 +470,8 @@ async fn a_refused_proof_is_the_nodes_word() {
         .unwrap();
     assert_eq!(refused.code, Code::BadProof.as_str());
     assert!(
-        lock(&client.0.not_before).is_some_and(|until| until > Instant::now()),
-        "a refusal is redialed at once"
+        lock(&client.0.not_before).is_none(),
+        "the app invents no wait: the refusal was the answer"
     );
 }
 
@@ -556,10 +556,6 @@ async fn a_message_that_does_not_decode_ends_the_session_as_a_wire_mismatch() {
             refused.message
         );
     }
-    assert!(
-        lock(&client.0.not_before).is_some_and(|until| until > Instant::now()),
-        "the next dial does not wait"
-    );
 }
 
 /// An app that quits closes its QUIC session itself: the node hears the
@@ -600,10 +596,10 @@ async fn a_quitting_app_closes_its_session_and_the_node_hears_it_at_once() {
 }
 
 /// A session the node closes is lost: its requests end (their channels
-/// close), and the next dial waits, the client's one wait, so a node that
-/// drops every session is not dialed in a loop.
+/// close), and the app invents no wait before the next dial: the node's
+/// `GoAway` is the one wait, and it names it.
 #[tokio::test]
-async fn a_lost_session_ends_its_requests_and_holds_the_next_dial_off() {
+async fn a_lost_session_ends_its_requests_and_the_next_dial_waits_on_nothing() {
     let _seat = seated().await;
     let node_key = ed25519::PrivateKey::from_seed(14);
     let identity = node_key.public_key().as_ref().to_vec();
@@ -627,10 +623,7 @@ async fn a_lost_session_ends_its_requests_and_holds_the_next_dial_off() {
         "the request's channel closes"
     );
     let _ = ended.recv().await;
-    assert!(
-        lock(&client.0.not_before).is_some_and(|until| until > Instant::now()),
-        "a lost session is redialed at once"
-    );
+    assert!(lock(&client.0.not_before).is_none());
 }
 
 /// A client on a test node with a stream track `doc` published, its

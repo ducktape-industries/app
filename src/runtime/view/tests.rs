@@ -22,16 +22,17 @@ fn label(view: &View) -> (String, u32) {
 
 /// The held tree passed sanitize when it arrived: an `unchanged` frame
 /// takes it as it is, without another walk. Seen through a held tree no
-/// frame could have brought (twice the node cap), which a walk would cut.
+/// frame could have brought (nested past the depth bound), which a walk
+/// would cut.
 #[test]
 fn an_unchanged_frame_takes_the_held_tree_without_walking_it() {
-    let oversized = wire::Node::Container(view_wire::ContainerNode {
-        id: None,
-        style: crate::render::plain_style(),
-        interactivity: Default::default(),
-        children: (0..2 * wire::MAX_NODES)
-            .map(|_| wire::Node::empty())
-            .collect(),
+    let oversized = (0..wire::MAX_DEPTH + 2).fold(wire::Node::empty(), |child, _| {
+        wire::Node::Container(view_wire::ContainerNode {
+            id: None,
+            style: crate::render::plain_style(),
+            interactivity: Default::default(),
+            children: vec![child],
+        })
     });
     let mut held = Some(oversized.clone());
     let mut frame = wire::Frame {
@@ -197,7 +198,7 @@ fn inline_picture_bytes(mut root: wire::Node) -> usize {
 /// the store's one copy, not one per node (8 GiB).
 #[test]
 fn a_picture_named_by_every_node_is_held_once() {
-    const PICTURE: usize = wire::MAX_PICTURE_BYTES_PER_FRAME;
+    const PICTURE: usize = 1 << 20;
     let mut view = scripted_view();
     draw(&mut view, vec![image(1, Some(PICTURE))]);
     draw(&mut view, (0..8_000).map(|_| image(1, None)).collect());
@@ -222,14 +223,18 @@ fn a_picture_named_by_every_node_is_held_once() {
 /// it draws again comes with its bytes and is held again.
 #[test]
 fn a_view_drawing_a_fresh_picture_every_tick_stays_in_its_budget() {
-    use crate::runtime::pictures::MAX_PICTURE_BYTES;
-    const PICTURE: usize = wire::MAX_PICTURE_BYTES_PER_FRAME;
+    use crate::runtime::pictures::charge;
+    const PICTURE: usize = 1 << 20;
+    let budget = crate::backend::memory_bounds().picture_bytes;
+    let fitting = (1..)
+        .find(|count: &u64| charge((count + 1) * PICTURE as u64, *count as usize + 1) > budget)
+        .unwrap();
     let mut view = scripted_view();
     let mut told = None;
-    for hash in 0..MAX_PICTURE_BYTES / PICTURE as u64 + 2 {
+    for hash in 0..fitting + 2 {
         draw(&mut view, vec![image(hash, Some(PICTURE))]);
         assert!(
-            view.pictures.bytes() <= MAX_PICTURE_BYTES,
+            view.pictures.bytes() <= budget,
             "{} bytes held after picture {hash}",
             view.pictures.bytes()
         );
@@ -238,11 +243,7 @@ fn a_view_drawing_a_fresh_picture_every_tick_stays_in_its_budget() {
         }
     }
     let told = told.expect("past the budget the view is told to resync");
-    assert_eq!(
-        told,
-        MAX_PICTURE_BYTES / PICTURE as u64,
-        "the first picture past it"
-    );
+    assert_eq!(told, fitting, "the first picture past it");
     let held = view.pictures.held();
     assert!(held.raster.contains_key(&told), "what the tree names stays");
     assert!(
@@ -352,9 +353,12 @@ fn a_view_built_against_another_wire_is_refused_at_load() {
     );
 }
 
-/// Pages a view's memory holds for the swap tests: a full snapshot budget
-/// plus its tag byte, with room to spare for the events and the frame.
-const SWAP_PAGES: usize = wire::MAX_SNAPSHOT_BYTES / 65536 + 1;
+/// A large state the swap tests carry over.
+const SNAPSHOT_BYTES: usize = 8 << 20;
+
+/// Pages a view's memory holds for the swap tests: the large state plus
+/// its tag byte, with room to spare for the events and the frame.
+const SWAP_PAGES: usize = SNAPSHOT_BYTES / 65536 + 1;
 
 /// The code of a view in WAT whose `snapshot`, `restore` and `tick` are
 /// the bodies given, each leaving the packed `i64` it answers with. Memory
@@ -429,7 +433,7 @@ fn init_ran(view: &View) -> bool {
 }
 
 /// Every arm of `View::replacement` a real view cannot be made to take on
-/// demand: the state past its budget, the view refusing the state, the
+/// demand: a large state carried whole, the view refusing the state, the
 /// restore trapping and the drawn view's own snapshot trapping (each of
 /// those starts clean), and the first frame trapping (no replacement).
 #[test]
@@ -441,24 +445,12 @@ fn a_replacement_takes_the_state_it_is_handed_or_says_why_not() {
     let ok = |len: usize| format!("i64.const {}", wire::abi::pack(0, len as u32));
     let refused = format!("i64.const {}", wire::abi::pack(1, 1));
 
-    // one byte past the budget (the tag not counted) is refused before a
-    // byte of it is copied, and the replacement starts clean; the budget
-    // itself carries over whole
-    let (swapped, mounted) = swap(
-        wat_view(&ok(wire::MAX_SNAPSHOT_BYTES + 2), &ok(1), Some(&frame)),
-        wat_code(&ok(1), &ok(1), Some(&frame)),
-    );
-    let fresh = swapped.expect("a state past the budget starts clean");
-    assert!(fresh.staged && init_ran(&fresh), "inited, not restored");
-    assert!(matches!(
-        &mounted.lock().unwrap().slot,
-        Slot::Ready(old) if old.fault.is_none()
-    ));
+    // a large state (the tag not counted) carries over whole
     let (swapped, _) = swap(
-        wat_view(&ok(wire::MAX_SNAPSHOT_BYTES + 1), &ok(1), Some(&frame)),
+        wat_view(&ok(SNAPSHOT_BYTES + 1), &ok(1), Some(&frame)),
         wat_code(&ok(1), &ok(1), Some(&frame)),
     );
-    let fresh = swapped.expect("a full budget carries over");
+    let fresh = swapped.expect("a large state carries over");
     assert!(fresh.staged && !init_ran(&fresh), "restored, not inited");
 
     // the view refuses the state as not its own: it inits instead
@@ -745,12 +737,11 @@ fn a_swap_refused_at_install_is_asked_again() {
         let locked = lock(&seat);
         assert!(matches!(&locked.slot, Slot::Ready(old) if Arc::ptr_eq(&old.alive, alive)));
         let code = code_digest(&::abi::BlobId::Sha256([7; 32]));
-        let retry = locked.retry.as_ref().expect("the refused swap is held off");
-        assert_eq!(retry.code, Some(code), "under the code the roster names");
-        let due = Instant::now() + RETRY_FIRST * 2;
+        let retry = locked.retry.as_ref().expect("the refused swap is marked");
+        assert_eq!(retry.code, None, "no code is held off");
         assert!(
-            locked.reload_due(true, true, code, due),
-            "a later block asks again"
+            locked.reload_due(true, true, code),
+            "the next roster read asks again"
         );
     }
     // the next block's load, once the drawn view's turn has taken the
@@ -838,14 +829,13 @@ fn the_hold_of_a_swap_handed_over_again() {
 /// size: the control run draws the same trees with 1-byte pictures. Run
 /// each alone: `cargo test <name> -- --ignored --exact --nocapture`.
 fn resident_at_the_picture_budget(picture: usize) {
-    use crate::runtime::pictures::MAX_PICTURE_BYTES;
     fn resident_mib() -> f64 {
         let status = std::fs::read_to_string("/proc/self/status").unwrap();
         let line = status.lines().find(|l| l.starts_with("VmRSS:")).unwrap();
         let kib: f64 = line.split_whitespace().nth(1).unwrap().parse().unwrap();
         kib / 1024.
     }
-    let full = MAX_PICTURE_BYTES / wire::MAX_PICTURE_BYTES_PER_FRAME as u64;
+    let full = crate::backend::memory_bounds().picture_bytes / (1 << 20);
     let tree = |last: u64| {
         let mut children: Vec<_> = (0..last).map(|hash| image(hash, None)).collect();
         children.push(image(last, Some(picture)));
@@ -888,7 +878,7 @@ fn resident_at_the_picture_budget(picture: usize) {
 #[test]
 #[ignore = "measurement: prints resident memory, asserts nothing of it"]
 fn a_seat_at_its_picture_budget() {
-    resident_at_the_picture_budget(wire::MAX_PICTURE_BYTES_PER_FRAME);
+    resident_at_the_picture_budget(1 << 20);
 }
 
 #[test]

@@ -97,7 +97,7 @@ fn uniform_list_measures_row_zero_and_emits_bounded_viewport_ranges(
                 end,
                 item_height,
                 ..
-            } if *end > 1 && (*end as usize) <= wire::MAX_UNIFORM_LIST_ROWS && *item_height == 24.
+            } if *end > 1 && *end <= 96 / 24 + 1 && *item_height == 24.
         )),
         "initial viewport event, with the measured row height: {events:?}"
     );
@@ -155,10 +155,13 @@ fn uniform_list_scroll_requests_far_rows_without_view_layout_or_unbounded_state(
     });
     let (start, end) = far.expect("far scroll asks view for a visible range");
     assert!(end > start);
-    assert!((end - start) as usize <= wire::MAX_UNIFORM_LIST_ROWS);
+    assert!(
+        end - start <= 96 / 24 + 1,
+        "the rows on screen: {start}..{end}"
+    );
     tree.read_with(&native, |tree, _| {
         let state = tree.uniform_lists.get(&vec![named_id("uniform")]).unwrap();
-        assert!(state.rows.len() <= wire::MAX_UNIFORM_LIST_ROWS + 1);
+        assert_eq!(state.rows.len(), 1, "only the row the view sent is held");
         assert!(state.rows.contains_key(&0));
     });
 }

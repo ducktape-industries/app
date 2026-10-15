@@ -304,15 +304,13 @@ mod tests {
             identity: vec![8],
             contract: crate::wire::NODE_CONTRACT,
             genesis: [9; 32],
-            roles: abi::Roles {
-                programs: "r".into(),
-                validators: "v".into(),
-                identity: "i".into(),
-                blobs: "b".into(),
-                awaits: "a".into(),
-                egress: None,
-                halo: "h".into(),
-            },
+            roles: abi::Roles::from_iter([
+                (abi::role::PROGRAMS, "r"),
+                (abi::role::VALIDATORS, "v"),
+                (abi::role::IDENTITY, "i"),
+                (abi::role::BLOBS, "b"),
+                (abi::role::AWAITS, "a"),
+            ]),
         };
         let client = fake_node("200 OK", BYTES, abi::encode(&status)).await;
         let create = Op::Create {

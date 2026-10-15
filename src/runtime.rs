@@ -35,7 +35,7 @@ pub(crate) use kernel::shown_title;
 pub use roster::{Link, RailRow, connected, deployments_checked, props, valid_route};
 pub(crate) use roster::{Roster, changes_channel, roster};
 pub use seat::override_views_from;
-pub(crate) use seat::{Failure, NODE_UNREACHABLE, Seat};
+pub(crate) use seat::{Failure, Seat};
 
 use roster::{Connection, code_digest, connection, rail_moved};
 use seat::{
@@ -88,8 +88,7 @@ use gpui_kit::AppContext as _;
 use pictures::Pictures;
 use view_wire as wire;
 use wasmtime::{
-    Cache, CacheConfig, Caller, Config, Engine, Linker, Memory, Module, OptLevel, Store,
-    StoreLimits, StoreLimitsBuilder, TypedFunc,
+    Cache, CacheConfig, Caller, Config, Engine, Linker, Memory, Module, OptLevel, Store, TypedFunc,
 };
 use wire::methods::{Capability, refusal};
 
@@ -130,27 +129,12 @@ pub enum Intent {
 /// fuel; docs/perf.md §4.2 has the heaviest ticks measured and each view's
 /// budget, at most half of this ceiling.
 const FUEL_PER_TICK: u64 = 250_000_000;
-const MEMORY_LIMIT: usize = 64 << 20;
-/// A frame the view sends past this ends it: nothing a screen needs is
-/// megabytes, and the host would decode all of it on the window thread.
-const MAX_FRAME_BYTES: usize = 8 << 20;
-const MAX_PAYLOAD_BYTES: usize = 1 << 20;
-/// The most one op may carry: the kernel bounds nothing, this host does.
-const MAX_OP_BYTES: usize = 16 << 20;
-/// The gap before the first re-attempt at a candidate whose load failed,
-/// and the longest that gap widens to. A load fetches the artifact,
-/// instantiates it, restores the snapshot and verifies the first tree —
-/// and compiles the view too, whenever `compiled_view` does not
-/// already hold it. A deployment that cannot load fails that way every
-/// time, so trying it once a block buys nothing and never stops. Widening
-/// the gap rather than giving up keeps a fetch that failed on the
-/// transport recoverable: nothing is suppressed for good, only spaced out.
-const RETRY_FIRST: Duration = Duration::from_secs(1);
-const RETRY_MAX: Duration = Duration::from_secs(60);
 /// How many view loads run at once, each on a loader thread of its own: a
 /// fetch and a cranelift compile each, so a long roster waits its turn
-/// behind these rather than forking a thread per program.
-const LOADERS: usize = 4;
+/// behind one loader a core rather than forking a thread per program.
+fn loaders() -> usize {
+    std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+}
 
 type Routes = Mutex<std::collections::BTreeMap<(&'static str, u64), String>>;
 

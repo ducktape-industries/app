@@ -20,9 +20,6 @@ use crate::backend::views::{self, Fetch};
 
 type Description = Option<methods::Description>;
 
-/// Answers kept before the table starts over.
-const MAX_KEPT: usize = 4096;
-
 /// One code id's compiled module, `None` where the code carries none: set
 /// once, by the first ask that fetched and compiled it, while every ask
 /// that came meanwhile waits for it.
@@ -71,12 +68,10 @@ pub(super) async fn described(
     .await
     .ok()
     .flatten();
-    let mut kept = answers().lock().expect("describe answers");
-    // ponytail: starts over when full; an LRU if a window ever outgrows it
-    if kept.len() >= MAX_KEPT {
-        kept.clear();
-    }
-    kept.insert(key, described.clone());
+    answers()
+        .lock()
+        .expect("describe answers")
+        .insert(key, described.clone());
     Ok(described)
 }
 
@@ -95,7 +90,7 @@ async fn module(node: &Node, code: abi::BlobId) -> Result<Option<Arc<Module>>, w
         .get_or_try_init(|| async {
             let bytes = match views::program_bytes(&node.client, &code).await {
                 Ok((bytes, _)) => bytes,
-                // the transport: retried by the node method's loop
+                // the transport: the ask's answer, and the next ask tries again
                 Err(Fetch::Unreachable(reason)) => {
                     return Err(Some(wire::Error::new(refusal::RPC_CLIENT, reason)));
                 }
@@ -269,7 +264,7 @@ pub(super) mod tests {
 #[cfg(test)]
 mod stage {
     use super::*;
-    use noded_client::wire::{Blocks, TxAsk, TxRef};
+    use noded_client::wire::Blocks;
 
     #[tokio::test]
     #[ignore = "reads a running stage: DESCRIBE_STAGE=http://<listen>"]
@@ -283,47 +278,20 @@ mod stage {
         *super::super::super::roster::roster().lock() = programs;
         let node = Node { client, network };
         let mut counts: std::collections::BTreeMap<String, (u64, u64)> = Default::default();
-        let mut before = None;
-        loop {
-            let page = node
-                .client
-                .blocks(&Blocks { before, limit: 100 })
-                .await
-                .expect("a page of blocks")
-                .blocks;
-            let Some(last) = page.last().map(|block| block.height) else {
-                break;
-            };
-            for block in page {
-                for (position, tx) in block.txs.into_iter().enumerate() {
-                    let payload = match tx.payload {
-                        Some(payload) => payload,
-                        None => {
-                            let whole = TxAsk {
-                                tx: TxRef::At {
-                                    height: block.height,
-                                    position: position as u32,
-                                },
-                                most: u32::MAX,
-                            };
-                            let located = node.client.tx(&whole).await.expect("a transaction");
-                            located
-                                .and_then(|located| located.tx.payload)
-                                .expect("its payload")
-                        }
-                    };
-                    let described = described(&node, &tx.target, payload).await.unwrap();
-                    let count = counts.entry(tx.target).or_default();
-                    match described {
-                        Some(_) => count.0 += 1,
-                        None => count.1 += 1,
-                    }
-                }
+        let every = Blocks {
+            before: None,
+            limit: u32::MAX,
+            most: u32::MAX,
+        };
+        let chain = node.client.blocks(&every).await.expect("the blocks");
+        for tx in chain.blocks.into_iter().flat_map(|block| block.txs) {
+            let payload = tx.payload.expect("its payload");
+            let described = described(&node, &tx.target, payload).await.unwrap();
+            let count = counts.entry(tx.target).or_default();
+            match described {
+                Some(_) => count.0 += 1,
+                None => count.1 += 1,
             }
-            if last == 0 {
-                break;
-            }
-            before = Some(last);
         }
         for (program, (described, bytes)) in &counts {
             println!("{program}: {described} described, {bytes} as bytes");

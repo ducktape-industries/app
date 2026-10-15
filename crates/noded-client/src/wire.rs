@@ -260,6 +260,7 @@ pub struct Change {
 pub struct Blocks {
     pub before: Option<u64>,
     pub limit: u32,
+    pub most: u32,
 }
 
 /// `wire::BlockRef`: a finalized block by height or by id.
@@ -267,6 +268,12 @@ pub struct Blocks {
 pub enum BlockRef {
     Height(u64),
     Id([u8; 32]),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct BlockAsk {
+    pub by: BlockRef,
+    pub most: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -479,8 +486,18 @@ mod tests {
         bytes.extend([1, 0, 0, 0, 8]);
         bytes.extend(NODE_CONTRACT.to_le_bytes());
         bytes.extend([9; 32]);
-        for role in ["r", "v", "i", "b", "a"] {
+        let rows = [
+            (abi::role::AWAITS, "a"),
+            (abi::role::BLOBS, "b"),
+            (abi::role::EGRESS, "e"),
+            (abi::role::IDENTITY, "i"),
+            (abi::role::PROGRAMS, "r"),
+            (abi::role::VALIDATORS, "v"),
+        ];
+        bytes.extend((rows.len() as u32).to_le_bytes());
+        for (role, program) in rows {
             bytes.extend(text(role));
+            bytes.extend(text(program));
         }
         // egress, an `Option`: bound here
         bytes.push(1);
@@ -498,15 +515,14 @@ mod tests {
             identity: vec![8],
             contract: NODE_CONTRACT,
             genesis: [9; 32],
-            roles: abi::Roles {
-                programs: "r".into(),
-                validators: "v".into(),
-                identity: "i".into(),
-                blobs: "b".into(),
-                awaits: "a".into(),
-                egress: Some("e".into()),
-                halo: "h".into(),
-            },
+            roles: abi::Roles::from_iter([
+                (abi::role::PROGRAMS, "r"),
+                (abi::role::VALIDATORS, "v"),
+                (abi::role::IDENTITY, "i"),
+                (abi::role::BLOBS, "b"),
+                (abi::role::AWAITS, "a"),
+                (abi::role::EGRESS, "e"),
+            ]),
         };
         assert_eq!(abi::decode::<Status>(&bytes).unwrap(), status);
     }

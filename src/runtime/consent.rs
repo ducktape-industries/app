@@ -179,8 +179,7 @@ pub(crate) fn refuse_all() {
 /// words, whoever asks. Any other op to a role's program is asked when the
 /// requesting program is bound to no role, in a sentence that names the
 /// role and the target's own description of the op (`described`, read by
-/// the request's task). With no bindings known (a programs role that
-/// predates the question) no program is a role's and only the first rule asks.
+/// the request's task).
 pub(super) fn needed(
     program: &str,
     roles: Option<&abi::Roles>,
@@ -260,18 +259,11 @@ pub(super) fn needed(
     }
     // a view no vote reviewed, writing to a role
     let roles = roles.filter(|_| !bound(program))?;
-    let (role, _) = roles
-        .named()
-        .into_iter()
-        .find(|(_, role)| role.as_str() == target)?;
+    let (role, _) = roles.iter().find(|(_, bound)| *bound == target)?;
     let (title, what) = match role {
-        "validators" => (NETWORK, "vote in the validators' program".to_owned()),
-        "identity" => (ACCOUNT, "sign an identity operation".to_owned()),
-        "halo" => (
-            NETWORK,
-            "sign an op on the halo role, the network's lanes".to_owned(),
-        ),
-        role => (NETWORK, format!("sign an op on the {role} role")),
+        abi::role::VALIDATORS => (NETWORK, "vote in the validators' program".to_owned()),
+        abi::role::IDENTITY => (ACCOUNT, "sign an identity operation".to_owned()),
+        other => (NETWORK, format!("sign an op on the {other} role")),
     };
     Some(Words {
         title,
@@ -285,12 +277,7 @@ pub(super) fn needed(
 /// Whether genesis bound `program` to a role the kernel calls (`roles`, as
 /// the node's programs role answers them): never while no bindings are known.
 pub(super) fn bound(program: &str, roles: Option<&abi::Roles>) -> bool {
-    roles.is_some_and(|roles| {
-        roles
-            .named()
-            .iter()
-            .any(|(_, role)| role.as_str() == program)
-    })
+    roles.is_some_and(|roles| roles.iter().any(|(_, bound)| bound == program))
 }
 
 /// What the card shows for an op its target describes: the program's own
@@ -488,15 +475,14 @@ mod tests {
                 .unwrap()
                 .said
         };
-        let roles = abi::Roles {
-            programs: "programs-b".into(),
-            validators: "valset-b".into(),
-            identity: "identity-b".into(),
-            blobs: "blobs-b".into(),
-            awaits: "awaits-b".into(),
-            egress: Some("egress-b".into()),
-            halo: "halo-b".into(),
-        };
+        let roles = abi::Roles::from_iter([
+            (abi::role::PROGRAMS, "programs-b"),
+            (abi::role::VALIDATORS, "valset-b"),
+            (abi::role::IDENTITY, "identity-b"),
+            (abi::role::BLOBS, "blobs-b"),
+            (abi::role::AWAITS, "awaits-b"),
+            (abi::role::EGRESS, "egress-b"),
+        ]);
         for program in [
             "programs-b",
             "valset-b",
@@ -504,7 +490,6 @@ mod tests {
             "blobs-b",
             "awaits-b",
             "egress-b",
-            "halo-b",
         ] {
             assert_eq!(
                 said(program, Some(&roles)),
@@ -520,6 +505,11 @@ mod tests {
             );
         }
         assert!(said("programs-b", None).starts_with("Program programs-b asks"));
+        let unbound: abi::Roles = roles
+            .iter()
+            .filter(|(role, _)| *role != abi::role::EGRESS)
+            .collect();
+        assert!(said("egress-b", Some(&unbound)).starts_with("Program egress-b asks"));
     }
 
     /// Claim: no program id reads as the system. A program named `system`
@@ -530,15 +520,14 @@ mod tests {
     #[test]
     fn no_program_id_asks_as_the_system() {
         let suspend = abi::encode(&identity::Op::Suspend { account: 12 });
-        let roles = abi::Roles {
-            programs: "programs".into(),
-            validators: "valset".into(),
-            identity: identity::PROGRAM.into(),
-            blobs: "blobs".into(),
-            awaits: "awaits".into(),
-            egress: None,
-            halo: "halo".into(),
-        };
+        let roles = abi::Roles::from_iter([
+            (abi::role::PROGRAMS, "programs"),
+            (abi::role::VALIDATORS, "valset"),
+            (abi::role::IDENTITY, identity::PROGRAM),
+            (abi::role::BLOBS, "blobs"),
+            (abi::role::AWAITS, "awaits"),
+            (abi::role::EGRESS, "egress"),
+        ]);
         let asked = |program: &str| {
             needed(program, Some(&roles), identity::PROGRAM, &suspend, Some(7)).unwrap()
         };
@@ -567,15 +556,14 @@ mod tests {
     /// words for both.
     #[test]
     fn a_view_no_vote_reviewed_asks_for_every_op_to_a_role() {
-        let roles = abi::Roles {
-            programs: "programs".into(),
-            validators: "valset".into(),
-            identity: identity::PROGRAM.into(),
-            blobs: "blobs".into(),
-            awaits: "awaits".into(),
-            egress: Some("egress".into()),
-            halo: "halo".into(),
-        };
+        let roles = abi::Roles::from_iter([
+            (abi::role::PROGRAMS, "programs"),
+            (abi::role::VALIDATORS, "valset"),
+            (abi::role::IDENTITY, identity::PROGRAM),
+            (abi::role::BLOBS, "blobs"),
+            (abi::role::AWAITS, "awaits"),
+            (abi::role::EGRESS, "egress"),
+        ]);
         let op = [1, 2, 3];
         let add_key = abi::encode(&identity::Op::AddKey {
             scheme: abi::Scheme::Ed25519,
@@ -612,12 +600,6 @@ mod tests {
             ("blobs", &op[..], NETWORK, "sign an op on the blobs role"),
             ("awaits", &op[..], NETWORK, "sign an op on the awaits role"),
             ("egress", &op[..], NETWORK, "sign an op on the egress role"),
-            (
-                "halo",
-                &op[..],
-                NETWORK,
-                "sign an op on the halo role, the network's lanes",
-            ),
         ] {
             let words = asked("chat", target, body).expect(target);
             assert_eq!(
@@ -640,7 +622,6 @@ mod tests {
                 "blobs",
                 "awaits",
                 "egress",
-                "halo",
             ] {
                 assert_eq!(asked(own, target, body), None, "{own} to {target}");
             }

@@ -1,27 +1,8 @@
 //! The per-view answer queue between the kernel's tasks and the redraw:
 //! written off-thread, drained into the view's pending events at its next
-//! redraw, bounded by count and bytes. Overflow latches a fault that stops
-//! the view.
+//! redraw. A subscription hands over one item and waits for the redraw
+//! that takes it before it reads its source again.
 use super::*;
-
-/// What one answer holds against the reply budget.
-fn result_bytes(result: &Answer) -> usize {
-    match result {
-        Ok(bytes) => bytes.len(),
-        Err(refusal) => refusal.code.len() + refusal.message.len(),
-    }
-}
-
-/// What the queue holds against it.
-fn queued_bytes(events: &[wire::Event]) -> usize {
-    events
-        .iter()
-        .map(|event| match event {
-            wire::Event::Response { result, .. } => result_bytes(result),
-            _ => 0,
-        })
-        .sum()
-}
 
 /// The kernel's answers to a view's requests, written off-thread and
 /// drained into the view's pending events at its next redraw.
@@ -29,12 +10,9 @@ pub(in crate::runtime) struct Replies {
     events: Mutex<Vec<wire::Event>>,
     in_flight: AtomicUsize,
     changed: tokio::sync::watch::Sender<()>,
-    /// Told on every redraw that takes the queue: a subscription parked on
-    /// [`Replies::backlogged`] wakes here and reads its socket again.
+    /// Told on every redraw that takes the queue: a subscription parked in
+    /// [`Replies::subscription_item`] wakes here and reads its source again.
     drained: tokio::sync::watch::Sender<()>,
-    /// Set once the queue overflows: the view is stopped on its next drain
-    /// and admits nothing more.
-    fault: Mutex<Option<String>>,
 }
 
 impl Default for Replies {
@@ -44,7 +22,6 @@ impl Default for Replies {
             in_flight: AtomicUsize::new(0),
             changed: tokio::sync::watch::channel(()).0,
             drained: tokio::sync::watch::channel(()).0,
-            fault: Mutex::default(),
         }
     }
 }
@@ -58,18 +35,12 @@ impl Replies {
     }
 
     /// Answers how many were waiting: the backlog at this drain.
-    pub(in crate::runtime) fn drain_into(
-        &self,
-        pending: &mut Vec<wire::Event>,
-    ) -> Result<usize, String> {
+    pub(in crate::runtime) fn drain_into(&self, pending: &mut Vec<wire::Event>) -> usize {
         let mut events = self.events.lock().expect("kernel replies");
-        if let Some(fault) = self.fault() {
-            return Err(fault);
-        }
         let backlog = events.len();
         pending.append(&mut events);
         self.drained.send_replace(());
-        Ok(backlog)
+        backlog
     }
 
     /// Told on every drain: what a parked subscription waits on.
@@ -77,51 +48,26 @@ impl Replies {
         self.drained.subscribe()
     }
 
-    /// Whether the queue is at least half full, in either budget. While it
-    /// is, every subscription parks in [`Replies::subscription_item`] rather
-    /// than growing the queue toward the fault in [`Replies::item`]; a
-    /// one-shot answer still goes in, up to the full budget.
-    fn backlogged(&self) -> bool {
-        let events = self.events.lock().expect("kernel replies");
-        events.len() >= MAX_STREAM_BACKLOG_EVENTS
-            || queued_bytes(&events) >= MAX_STREAM_BACKLOG_BYTES
-    }
-
     /// One item from a SUBSCRIPTION, which is the only producer that can
     /// outrun the redraw: it answers for as long as the view holds it,
-    /// against a queue only a redraw empties. It PARKS here while the queue
-    /// is half full, so its own source — a node socket, a poll loop — holds
-    /// the backlog instead of the queue growing into the fault. `false` when
-    /// the view is gone or the queue faulted: the subscription should end.
+    /// against a queue only a redraw empties. It PARKS here after the item
+    /// until a redraw takes the queue, so its own source — a node socket, a
+    /// poll loop — holds what comes next. `false` when the queue's drains
+    /// can no longer come: the subscription should end.
     pub(super) async fn subscription_item(
         &self,
         drained: &mut tokio::sync::watch::Receiver<()>,
         id: u64,
         result: Answer,
     ) -> bool {
-        while self.backlogged() {
-            if drained.changed().await.is_err() {
-                return false;
-            }
-        }
+        drained.borrow_and_update();
         self.item(id, result, false);
-        self.fault().is_none()
+        drained.changed().await.is_ok()
     }
 
-    pub(in crate::runtime) fn fault(&self) -> Option<String> {
-        self.fault.lock().expect("kernel reply fault").clone()
-    }
-
-    pub(super) fn admit(self: &std::sync::Arc<Self>) -> Option<InFlight> {
-        if self.fault().is_some() {
-            return None;
-        }
-        self.in_flight
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
-                (count < MAX_IN_FLIGHT).then_some(count + 1)
-            })
-            .ok()?;
-        Some(InFlight(self.clone()))
+    pub(super) fn admit(self: &std::sync::Arc<Self>) -> InFlight {
+        self.in_flight.fetch_add(1, Ordering::SeqCst);
+        InFlight(self.clone())
     }
 
     /// WHETHER THE VIEW IS STILL OWED A FRAME, which is the in-flight count
@@ -146,18 +92,6 @@ impl Replies {
     /// a subscription's last item and its count are not the same moment.
     pub(super) fn item(&self, id: u64, result: Answer, done: bool) {
         let mut events = self.events.lock().expect("kernel replies");
-        if self.fault().is_some() {
-            return;
-        }
-        let queued = queued_bytes(&events);
-        let exceeds_budget = events.len() >= MAX_REPLY_EVENTS
-            || result_bytes(&result) > MAX_REPLY_BYTES.saturating_sub(queued);
-        if exceeds_budget {
-            *self.fault.lock().expect("kernel reply fault") =
-                Some("view reply backlog limit exceeded; view stopped".into());
-            self.changed.send_replace(());
-            return;
-        }
         events.push(wire::Event::Response { id, result, done });
         self.changed.send_replace(());
     }
@@ -194,7 +128,7 @@ fn reply_notifications_wake_each_presenter_and_keep_the_answer() {
         second.changed().await.expect("second presenter notified");
     });
     let mut pending = Vec::new();
-    replies.drain_into(&mut pending).expect("reply budget");
+    replies.drain_into(&mut pending);
     assert!(
         matches!(pending.as_slice(), [wire::Event::Response { id: 7, result: Ok(bytes), done: true }] if bytes == &[1, 2])
     );
@@ -203,43 +137,28 @@ fn reply_notifications_wake_each_presenter_and_keep_the_answer() {
 
 #[cfg(test)]
 #[test]
-fn request_admission_is_bounded_and_drop_returns_capacity() {
+fn a_dropped_request_gives_its_slot_back() {
     let replies = std::sync::Arc::new(Replies::default());
-    let mut admitted: Vec<_> = (0..MAX_IN_FLIGHT)
-        .map(|_| replies.admit().expect("within budget"))
-        .collect();
-    assert!(replies.admit().is_none());
-    admitted.pop();
-    let replacement = replies.admit().expect("dropped request returns capacity");
-    drop(replacement);
+    let admitted: Vec<_> = (0..3).map(|_| replies.admit()).collect();
+    assert!(replies.answer_owed());
     drop(admitted);
     assert!(!replies.answer_owed());
 }
 
 #[cfg(test)]
 #[test]
-fn reply_overflow_stops_the_view_instead_of_losing_an_answer_silently() {
+fn a_subscription_item_waits_for_the_redraw_that_takes_it() {
+    use std::future::Future as _;
     let replies = std::sync::Arc::new(Replies::default());
-    for id in 0..MAX_REPLY_EVENTS {
-        replies.item(id as u64, Ok(Vec::new()), false);
-    }
-    assert!(replies.fault().is_none());
-    replies.item(MAX_REPLY_EVENTS as u64, Ok(Vec::new()), true);
-    assert!(replies.fault().is_some());
-    assert!(replies.admit().is_none());
+    let mut drained = replies.drains();
+    let mut item = Box::pin(replies.subscription_item(&mut drained, 7, Ok(vec![1])));
+    let waker = futures::task::noop_waker();
+    let mut poll = std::task::Context::from_waker(&waker);
+    assert!(
+        item.as_mut().poll(&mut poll).is_pending(),
+        "parked until a redraw"
+    );
     let mut pending = Vec::new();
-    assert!(replies.drain_into(&mut pending).is_err());
-    assert!(pending.is_empty());
-    assert_eq!(replies.events.lock().unwrap().len(), MAX_REPLY_EVENTS);
-}
-
-#[cfg(test)]
-#[test]
-fn queued_reply_bytes_are_bounded_across_individually_valid_items() {
-    let replies = Replies::default();
-    replies.item(1, Ok(vec![0; MAX_REPLY_BYTES]), false);
-    assert!(replies.fault().is_none());
-    replies.item(2, Ok(vec![1]), true);
-    assert!(replies.fault().is_some());
-    assert_eq!(replies.events.lock().unwrap().len(), 1);
+    assert_eq!(replies.drain_into(&mut pending), 1);
+    assert_eq!(item.as_mut().poll(&mut poll), std::task::Poll::Ready(true));
 }

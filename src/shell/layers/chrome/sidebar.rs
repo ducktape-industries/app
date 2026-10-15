@@ -237,8 +237,6 @@ impl Chrome {
             .and_then(|at| keys.iter().position(|row| *row == at))
             .or_else(|| entries.iter().position(|entry| entry.on(bar.front)))
             .unwrap_or_default();
-        // room on the desk for another window: the `+` a program's row shows
-        let room = bar.listed.iter().filter(|it| it.away.is_none()).count() < layout::MAX_PANES;
         let mut rows: Vec<AnyElement> = Vec::new();
         for (n, entry) in entries.iter().enumerate() {
             if entry.kind == Kind::Loose && n > 0 && entries[n - 1].kind != Kind::Loose {
@@ -246,9 +244,7 @@ impl Chrome {
             }
             let stop = (n == active).then_some(&self.stop);
             rows.push(match entry.kind {
-                Kind::Program { head, .. } => {
-                    self.program_row(entry, head, stop, room, bar, ink, cx)
-                }
+                Kind::Program { head, .. } => self.program_row(entry, head, stop, bar, ink, cx),
                 Kind::Window | Kind::Loose => self.window_row(entry, stop, bar, ink),
             });
         }
@@ -297,7 +293,6 @@ impl Chrome {
         entry: &Entry,
         head: bool,
         stop: Option<&FocusHandle>,
-        room: bool,
         bar: &Bar,
         ink: &Ink,
         cx: &mut Context<Self>,
@@ -355,7 +350,7 @@ impl Chrome {
                         .child(badge.to_string()),
                 )
             });
-        let plus = (room && self.hovered == Some(program)).then(|| {
+        let plus = (self.hovered == Some(program)).then(|| {
             let desk = self.window.clone();
             let surface = ink.surface;
             div()

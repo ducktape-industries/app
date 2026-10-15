@@ -271,14 +271,7 @@ fn request_row(
     let start = index.min(list.item_count);
     let end = start.saturating_add(1).min(list.item_count);
     list.requested = Some(match list.requested.take() {
-        Some(range) => {
-            let start = range.start.min(start);
-            start
-                ..range
-                    .end
-                    .max(end)
-                    .min(start.saturating_add(wire::MAX_LIST_ROWS))
-        }
+        Some(range) => range.start.min(start)..range.end.max(end),
         None => start..end,
     });
     if list.request_scheduled {
@@ -308,10 +301,9 @@ fn request_row(
 }
 
 fn apply_commands(list: &mut VariableList, commands: &[wire::ListCommand]) {
-    for command in commands.iter().take(wire::MAX_LIST_COMMANDS) {
+    for command in commands {
         match *command {
             wire::ListCommand::Reset { count } => {
-                let count = count.min(wire::MAX_LIST_ITEMS);
                 list.state.reset(count);
                 list.rows.clear();
                 list.item_count = count;
@@ -320,7 +312,6 @@ fn apply_commands(list: &mut VariableList, commands: &[wire::ListCommand]) {
                 let current = list.state.item_count();
                 let start = start.min(current);
                 let end = end.clamp(start, current);
-                let count = count.min(wire::MAX_LIST_ITEMS.saturating_sub(current - (end - start)));
                 list.state.splice(start..end, count);
                 let delta = count as isize - (end - start) as isize;
                 list.rows = std::mem::take(&mut list.rows)

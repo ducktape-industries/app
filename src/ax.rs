@@ -168,13 +168,6 @@ fn yes() -> bool {
     true
 }
 
-/// Most characters in `keys` or `text` (`POST /key`) or `value` (`POST
-/// /act`): the door dispatches a key for each, all in one update.
-const MAX_TEXT: usize = 4_096;
-
-/// Most moves in one `POST /drag`, all dispatched in one update.
-const MAX_STEPS: u32 = 1_000;
-
 /// `POST /drag`: what a mouse sends to one window — a left press at `from`,
 /// `steps` moves with the button held, a release at `to`. Logical px; with
 /// `id`, local to that node's painted bounds, else window coordinates.
@@ -184,8 +177,7 @@ pub(crate) struct Drag {
     id: Option<String>,
     from: [f32; 2],
     to: [f32; 2],
-    /// moves between press and release, 4 unless given, never 0, never
-    /// more than [`MAX_STEPS`]
+    /// moves between press and release, 4 unless given, never 0
     #[serde(default)]
     steps: Option<u32>,
     /// without `id`: the window that gets it; else as `/key` picks one
@@ -210,9 +202,6 @@ impl Drag {
         }
         match self.steps {
             Some(0) => Err(refuse("steps is 1 or more")),
-            Some(steps) if steps > MAX_STEPS => {
-                Err(refuse(&format!("steps is {MAX_STEPS} or fewer")))
-            }
             Some(steps) => Ok(steps),
             None => Ok(4),
         }
@@ -336,18 +325,15 @@ const POLL: Duration = Duration::from_millis(50);
 /// for each pair it tries and once more (`audit::arrow_pairs`).
 const ARROW_WAIT: Duration = Duration::from_millis(500);
 
-/// Longest a call may wait on the tree. The client picks its deadline, so
-/// an absurd one is honoured only this far.
-const MAX_DEADLINE: Duration = Duration::from_secs(60);
-
-/// A call's deadline, `ms` from now, capped at [`MAX_DEADLINE`].
-fn deadline(ms: u64) -> Instant {
-    Instant::now() + bounded(ms)
+/// A call's deadline, `ms` from now, as the client picked it; `None` when
+/// that is past the clock's range, which is never.
+fn deadline(ms: u64) -> Option<Instant> {
+    Instant::now().checked_add(Duration::from_millis(ms))
 }
 
-/// `ms` as a Duration, no longer than [`MAX_DEADLINE`].
-fn bounded(ms: u64) -> Duration {
-    Duration::from_millis(ms).min(MAX_DEADLINE)
+/// Whether `deadline` has passed.
+fn passed(deadline: Option<Instant>) -> bool {
+    deadline.is_some_and(|deadline| Instant::now() >= deadline)
 }
 
 /// Answers the door's calls on the app's thread until the door is gone.
@@ -553,7 +539,7 @@ async fn answer(request: Request, door: &Door<'_>, seen: &mut Seen, cx: &mut Asy
             let deadline = deadline(wait.deadline_ms);
             loop {
                 let nodes = read(door, &all, false, seen, cx);
-                if let Some(reply) = wait.step(&nodes, Instant::now() >= deadline) {
+                if let Some(reply) = wait.step(&nodes, passed(deadline)) {
                     return reply;
                 }
                 cx.background_executor().timer(POLL).await;
@@ -697,7 +683,7 @@ async fn settle(
     let mut after = before.to_vec();
     let mut last = serde_json::to_string(&after).unwrap_or_default();
     let mut quiet = 0;
-    while quiet < 3 && Instant::now() < deadline {
+    while quiet < 3 && !passed(deadline) {
         cx.background_executor().timer(POLL).await;
         let now = read(door, &Filter::default(), false, seen, cx);
         let key = serde_json::to_string(&now).unwrap_or_default();
@@ -738,18 +724,17 @@ fn keyboard_window(
 mod tests {
     use super::*;
 
-    /// The client names the deadline; u64::MAX must not leave a call waiting
-    /// past the cap.
+    /// The client names the deadline, however far off: the call waits that
+    /// long for its answer.
     #[test]
-    fn a_deadline_is_capped() {
-        assert_eq!(bounded(u64::MAX), MAX_DEADLINE);
-        assert_eq!(bounded(2000), Duration::from_secs(2));
+    fn a_deadline_is_the_clients() {
+        assert!(!passed(deadline(u64::MAX)));
+        assert!(passed(deadline(0)));
     }
 
-    /// A drag of more than [`MAX_STEPS`] moves is 400, not an update that
-    /// dispatches them all.
+    /// A drag takes as many moves as it asks for, but never zero.
     #[test]
-    fn drag_steps_are_capped() {
+    fn drag_steps_are_the_callers() {
         let drag = |steps| Drag {
             id: None,
             from: [0., 0.],
@@ -758,15 +743,8 @@ mod tests {
             window: None,
             deadline_ms: None,
         };
-        assert_eq!(drag(MAX_STEPS).checked(), Ok(MAX_STEPS));
-        assert_eq!(
-            drag(MAX_STEPS + 1).checked().map_err(|reply| reply.status),
-            Err(400)
-        );
-        assert_eq!(
-            drag(u32::MAX).checked().map_err(|reply| reply.status),
-            Err(400)
-        );
+        assert_eq!(drag(1 << 20).checked(), Ok(1 << 20));
+        assert_eq!(drag(0).checked().map_err(|reply| reply.status), Err(400));
     }
 
     /// A served window under a key no window of a test running beside
