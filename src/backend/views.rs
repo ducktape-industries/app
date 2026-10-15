@@ -241,17 +241,22 @@ fn hashes_to(framed: &[u8], code: &BlobId) -> bool {
     }
 }
 
-/// The bytes of the [`VIEW_SECTION`] custom section, out of a core module or
-/// a component (where the section may sit on a nested core module).
+/// The bytes of the [`VIEW_SECTION`] custom section ([`section`]).
 pub fn view_section(bytes: &[u8]) -> Option<Vec<u8>> {
-    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
-        if let Ok(wasmparser::Payload::CustomSection(section)) = payload
-            && section.name() == VIEW_SECTION
-        {
-            return Some(section.data().to_vec());
-        }
-    }
-    None
+    section(bytes, VIEW_SECTION).map(<[u8]>::to_vec)
+}
+
+/// The bytes of the custom section `name`, out of a core module or a
+/// component (where the section may sit on a nested core module).
+pub fn section<'a>(bytes: &'a [u8], name: &str) -> Option<&'a [u8]> {
+    wasmparser::Parser::new(0)
+        .parse_all(bytes)
+        .find_map(|payload| match payload {
+            Ok(wasmparser::Payload::CustomSection(section)) if section.name() == name => {
+                Some(section.data())
+            }
+            _ => None,
+        })
 }
 
 fn fetch_error(error: noded_client::Error) -> Fetch {

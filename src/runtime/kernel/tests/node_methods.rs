@@ -417,8 +417,9 @@ fn module(sections: &[(&str, &[u8])]) -> Vec<u8> {
 /// `blob.manifest` reads the blob as a seat would: a program's view out of
 /// its `ducktape.view` section with the manifest that view carries, a
 /// view-only blob as the view itself, a program with no section as none,
-/// a view this host cannot read as a view with no manifest, and a blob the
-/// node does not hold as `None`. The blob's bytes never reach the view.
+/// a view this host cannot read (a program's or a view-only one) as a view
+/// with no manifest, and a blob the node does not hold as `None`. The
+/// blob's bytes never reach the view.
 #[tokio::test]
 async fn blob_manifest_answers_what_the_view_in_a_blob_declares() {
     use sha2::Digest as _;
@@ -479,17 +480,22 @@ async fn blob_manifest_answers_what_the_view_in_a_blob_declares() {
         }),
         "a program that draws nothing"
     );
-    let unreadable = module(&[(
-        "ducktape.view",
-        &module(&[("ducktape.view.manifest", b"?")]),
-    )]);
+    let unreadable = module(&[("ducktape.view.manifest", b"?")]);
+    let unread = Some(methods::CarriedView {
+        size: unreadable.len() as u64,
+        manifest: None,
+    });
+    assert_eq!(
+        ask(&module(&[("ducktape.view", &unreadable)]))
+            .await
+            .and_then(|blob| blob.view),
+        unread,
+        "a program's view whose manifest this host cannot read"
+    );
     assert_eq!(
         ask(&unreadable).await.and_then(|blob| blob.view),
-        Some(methods::CarriedView {
-            size: module(&[("ducktape.view.manifest", b"?")]).len() as u64,
-            manifest: None,
-        }),
-        "a view whose manifest this host cannot read"
+        unread,
+        "a view-only blob this host cannot read is a view, not a program that draws nothing"
     );
     let absent = fake_node(vec![(
         noded_client::wire::route::BLOB_GET,

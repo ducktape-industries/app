@@ -770,12 +770,14 @@ fn blob_id(ask: &[u8]) -> Result<abi::BlobId, wire::Error> {
 /// `blob.manifest`: the blob as the seat path holds it, or fetched and let
 /// go (`views::program_bytes_unkept`: a view fills no cache), the view in
 /// its `ducktape.view` section or the blob itself for a view-only entry,
-/// and that view's manifest as `manifest_of` would read it. The bytes
+/// and that view's manifest as `manifest_of` would read it. A blob is a
+/// view by its manifest section, read or not: one this host cannot read is
+/// a view with no manifest, never a program that draws nothing. The bytes
 /// stay on the host.
 pub(super) fn blob_manifest(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
-        use backend::views::{Fetch, program_bytes_unkept, view_section};
-        use view_wire::manifest::read_manifest;
+        use backend::views::{Fetch, VIEW_SECTION, program_bytes_unkept, section};
+        use view_wire::manifest::{MANIFEST_SECTION, read_manifest};
         let id = blob_id(&ask)?;
         let bytes = match program_bytes_unkept(&node.client, &id).await {
             Ok((bytes, _)) => bytes,
@@ -786,17 +788,13 @@ pub(super) fn blob_manifest(node: Node, ask: Vec<u8>) -> Answered {
             }
             Err(error) => return Err(host_fault(error)),
         };
-        let view = match view_section(&bytes) {
-            Some(view) => Some(methods::CarriedView {
-                size: view.len() as u64,
-                manifest: read_manifest(&view),
-            }),
+        let view = section(&bytes, VIEW_SECTION)
             // no section: the blob is a view itself, or carries none
-            None => read_manifest(&bytes).map(|manifest| methods::CarriedView {
-                size: bytes.len() as u64,
-                manifest: Some(manifest),
-            }),
-        };
+            .or_else(|| section(&bytes, MANIFEST_SECTION).map(|_| &bytes[..]))
+            .map(|view| methods::CarriedView {
+                size: view.len() as u64,
+                manifest: read_manifest(view),
+            });
         Ok(methods::encode(&Some(methods::Manifested {
             size: bytes.len() as u64,
             view,
