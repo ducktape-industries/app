@@ -203,9 +203,11 @@ async fn a_block_s_receipts_carry_refusals_as_errors() {
         "POST /v1/block HTTP/1.1",
         vec![("200 OK", abi::encode(&Some(finalized)))],
     );
-    let answer = block(node, methods::encode(&methods::BlockRef::Height(9)))
-        .await
-        .unwrap();
+    let ask = methods::encode(&methods::BlockAsk {
+        by: methods::BlockRef::Height(9),
+        most: u32::MAX,
+    });
+    let answer = block(node, ask).await.unwrap();
     server.join().unwrap();
     let block = methods::decode::<Option<methods::Block>>(&answer)
         .unwrap()
@@ -290,6 +292,7 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
     let page = methods::encode(&methods::BlockPage {
         before: Some(10),
         limit: 1,
+        most: 16,
     });
     let answer = blocks(node, page).await.unwrap();
     let decoded: methods::BlockList = methods::decode(&answer).unwrap();
@@ -312,7 +315,7 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
     let summaries = noded_client::wire::Blocks {
         before: Some(10),
         limit: 1,
-        most: 0,
+        most: 16,
     };
     assert_eq!(asked, [abi::encode(&summaries)]);
 
@@ -358,7 +361,10 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
     );
     let answer = block(
         node.clone(),
-        methods::encode(&methods::BlockRef::Id([8; 32])),
+        methods::encode(&methods::BlockAsk {
+            by: methods::BlockRef::Id([8; 32]),
+            most: 32,
+        }),
     )
     .await
     .unwrap();
@@ -369,7 +375,7 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
     let asked = server.join().unwrap();
     let summary = noded_client::wire::BlockAsk {
         by: noded_client::wire::BlockRef::Id([8; 32]),
-        most: 0,
+        most: 32,
     };
     assert_eq!(asked, [abi::encode(&summary)]);
     assert_eq!(

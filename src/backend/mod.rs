@@ -56,14 +56,13 @@ pub(crate) fn rpc_client(base: impl Into<String>) -> RpcClient {
 /// The roles a test node's status names.
 #[cfg(test)]
 pub(crate) fn test_roles() -> abi::Roles {
-    abi::Roles {
-        programs: "programs".into(),
-        validators: "valset".into(),
-        identity: "identity".into(),
-        blobs: "blobs".into(),
-        awaits: "awaits".into(),
-        egress: None,
-    }
+    abi::Roles::from_iter([
+        (abi::role::PROGRAMS, "programs"),
+        (abi::role::VALIDATORS, "valset"),
+        (abi::role::IDENTITY, "identity"),
+        (abi::role::BLOBS, "blobs"),
+        (abi::role::AWAITS, "awaits"),
+    ])
 }
 
 /// A refusal the NODE or the PROGRAM authored, carried through with its

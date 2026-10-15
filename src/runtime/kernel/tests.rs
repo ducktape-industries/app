@@ -280,14 +280,13 @@ impl Drop for AclRoles {
 }
 
 fn acl_roles() -> AclRoles {
-    super::super::roster().bind(Some(abi::Roles {
-        programs: "acl-programs".into(),
-        validators: "acl-valset".into(),
-        identity: "acl-identity".into(),
-        blobs: "acl-blobs".into(),
-        awaits: "acl-awaits".into(),
-        egress: None,
-    }));
+    super::super::roster().bind(Some(abi::Roles::from_iter([
+        (abi::role::PROGRAMS, "acl-programs"),
+        (abi::role::VALIDATORS, "acl-valset"),
+        (abi::role::IDENTITY, "acl-identity"),
+        (abi::role::BLOBS, "acl-blobs"),
+        (abi::role::AWAITS, "acl-awaits"),
+    ])));
     AclRoles
 }
 

@@ -45,10 +45,11 @@
 //!   ([`refusal::NODE_FAILED`]), never followed by a second submission.
 //! - `chain.status` — node status as `NodeStatus`.
 //! - `chain.blocks` `BlockPage` — finalized blocks, newest first, as the
-//!   node lists them (`/v1/blocks`): each transaction's size, no payload,
-//!   and the lowest height the node lists; `chain.block` `BlockRef` — one
-//!   by height or id (`/v1/block`), no payload; `chain.tx` `TxAsk` —
-//!   one transaction by its place or hash, its payload when at most `most`
+//!   node lists them (`/v1/blocks`): each transaction's size, its payload
+//!   when at most `most` bytes, and the lowest height the node lists;
+//!   `chain.block` `BlockAsk` — one by height or id (`/v1/block`), each
+//!   payload when at most `most` bytes; `chain.tx` `TxAsk` — one
+//!   transaction by its place or hash, its payload when at most `most`
 //!   bytes (`/v1/tx`).
 //! - `blob.get` `<id>` — a blob by `sha256:<hex>` or `sha1:<hex>` id, unframed.
 //! - `program.describe` `(program, op)` — the op as the program's own
