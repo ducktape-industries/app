@@ -791,8 +791,6 @@ struct Shown {
     title: Option<String>,
     program: &'static str,
     is_view: bool,
-    /// Split is offered (the desk has room for another window).
-    split: bool,
 }
 
 impl Shown {
@@ -815,7 +813,6 @@ impl Shown {
             title: pane.title.clone(),
             program: pane.program,
             is_view: pane.is_view(),
-            split: layout.panes.len() < layout::MAX_PANES,
         }
     }
 }
@@ -942,7 +939,6 @@ impl Strip {
         index: usize,
         program: &'static str,
         action: PaneAction,
-        enabled: bool,
         ink: &super::super::ink::Ink,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -960,17 +956,12 @@ impl Strip {
                 .flex()
                 .items_center()
                 .justify_center()
-                .when(enabled, |button| {
-                    button.cursor_pointer().hover(move |style| style.bg(hover))
-                })
-                .opacity(if enabled { 1. } else { 0.35 })
+                .cursor_pointer()
+                .hover(move |style| style.bg(hover))
                 // a press on a control isn't a hold on the title bar
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
-                    if !enabled {
-                        return;
-                    }
                     let message = match action {
                         PaneAction::Split => PaneMessage::Split(program),
                         PaneAction::Restore => PaneMessage::Fill,
@@ -983,7 +974,6 @@ impl Strip {
                 .child(gpui_kit::component::Icon::new(glyph).size(px(18.))),
             ink.ink,
         )
-        .aria_disabled(!enabled)
     }
 
     /// The pane's title bar: the handle it is held by on the desk, its name,
@@ -1001,7 +991,6 @@ impl Strip {
             filled,
             program,
             is_view,
-            split,
             ..
         } = self.shown;
         let console = self.kind == WindowKind::Console;
@@ -1010,19 +999,19 @@ impl Strip {
             .items_center()
             .gap(px(if filled { 8. } else { 2. }))
             .when(console, |strip| {
-                strip.child(self.pane_button(index, program, PaneAction::Split, split, ink, cx))
+                strip.child(self.pane_button(index, program, PaneAction::Split, ink, cx))
             })
             .when(filled, |strip| {
-                strip.child(self.pane_button(index, program, PaneAction::Restore, true, ink, cx))
+                strip.child(self.pane_button(index, program, PaneAction::Restore, ink, cx))
             })
             // an empty or Help window has no program view to carry out
             .when(console && is_view, |strip| {
-                strip.child(self.pane_button(index, program, PaneAction::PopOut, true, ink, cx))
+                strip.child(self.pane_button(index, program, PaneAction::PopOut, ink, cx))
             })
             .when(!console, |strip| {
-                strip.child(self.pane_button(index, program, PaneAction::PopIn, true, ink, cx))
+                strip.child(self.pane_button(index, program, PaneAction::PopIn, ink, cx))
             })
-            .child(self.pane_button(index, program, PaneAction::Close, true, ink, cx));
+            .child(self.pane_button(index, program, PaneAction::Close, ink, cx));
         // A window of its own on macOS draws no title bar of the
         // system's: this bar is its handle, and the traffic lights sit
         // over its left end. Elsewhere the system's bar names it.

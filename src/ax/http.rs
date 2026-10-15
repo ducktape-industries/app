@@ -127,7 +127,7 @@ fn open_env(
     std::thread::Builder::new()
         .name("ax-door".into())
         .spawn(move || {
-            accept(listener, &token, private, REQUEST_DEADLINE, |request| {
+            accept(listener, &token, private, |request| {
                 let (reply, answer) = std::sync::mpsc::channel();
                 sender.unbounded_send((request, reply)).ok()?;
                 answer.recv().ok()
@@ -151,97 +151,67 @@ fn open_env(
     Some((calls, written))
 }
 
-/// Most bytes of a request line and its headers: all a caller without the
-/// token gets the door to read.
-const HEAD_MAX: u64 = 16 << 10;
-
-/// Most header lines in one request.
-const HEADERS_MAX: usize = 64;
-
-/// Most bytes of a request body.
-const BODY_MAX: usize = 1 << 20;
-
-/// Longest a connection may take to send its whole request, however slowly
-/// it trickles in; and longest one write of the reply waits on its reader.
-const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
-
-/// A connection read against one deadline for the whole request, where the
-/// socket's own timeout starts again on every read.
-struct Deadline<'a> {
-    stream: &'a TcpStream,
-    until: Instant,
-}
-
-impl std::io::Read for Deadline<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let left = self.until.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Err(std::io::ErrorKind::TimedOut.into());
-        }
-        self.stream.set_read_timeout(Some(left))?;
-        let mut stream = self.stream;
-        stream.read(buf)
-    }
-}
-
-/// The door's HTTP/1.1 loop: one request per connection, answered in turn;
-/// `/reveal` exists only when `private`. A connection has `patience` to send
-/// its request ([`REQUEST_DEADLINE`]).
-/// ponytail: one at a time, so a long `wait` holds the next caller, and so
-/// does each stalled connection for its `patience`; the one consumer is a
-/// sequential runner.
+/// The door's HTTP/1.1 loop: one request per connection, each connection
+/// read and answered on a thread of its own, so a caller that stalls or
+/// trickles holds up no other; `/reveal` exists only when `private`.
 fn accept(
     listener: TcpListener,
     token: &str,
     private: bool,
-    patience: Duration,
-    answer: impl Fn(Request) -> Option<Reply>,
+    answer: impl Fn(Request) -> Option<Reply> + Sync,
 ) {
-    for stream in listener.incoming() {
-        let Ok(stream) = stream else {
-            // out of descriptors, say: the caller waits in the backlog
-            // rather than the thread spinning
-            std::thread::sleep(Duration::from_millis(10));
-            continue;
-        };
-        let reading = Deadline {
-            stream: &stream,
-            until: Instant::now() + patience,
-        };
-        let reply = match read_request(reading, token) {
-            Err(_) => Reply::new(400, json!({ "error": "not an HTTP/1.1 request" })),
-            Ok((_, _, auth, _)) if !same(auth.as_deref().unwrap_or_default(), token) => {
-                Reply::new(401, json!({ "error": "the door's token is required" }))
-            }
-            Ok((method, target, _, body)) => match route(&method, &target, &body, private) {
-                Ok(request) => answer(request)
-                    .unwrap_or_else(|| Reply::new(503, json!({ "error": "the app is closing" }))),
-                Err(reply) => reply,
-            },
-        };
-        let reason = match reply.status {
-            200 => "OK",
-            400 => "Bad Request",
-            401 => "Unauthorized",
-            403 => "Forbidden",
-            404 => "Not Found",
-            408 => "Request Timeout",
-            409 => "Conflict",
-            _ => "Service Unavailable",
-        };
-        let revision = reply.revision.map_or(String::new(), |revision| {
-            format!("X-Ax-Revision: {revision}\r\n")
-        });
-        let mut stream = stream;
-        let _ = stream.set_write_timeout(Some(patience));
-        let _ = write!(
-            stream,
-            "HTTP/1.1 {} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{revision}Connection: close\r\n\r\n{}",
-            reply.status,
-            reply.body.len(),
-            reply.body
-        );
-    }
+    std::thread::scope(|scope| {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else {
+                // out of descriptors, say: the caller waits in the backlog
+                // rather than the thread spinning
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            };
+            let answer = &answer;
+            scope.spawn(move || serve(stream, token, private, answer));
+        }
+    });
+}
+
+/// One connection to the door: its request read, routed and answered.
+fn serve(
+    mut stream: TcpStream,
+    token: &str,
+    private: bool,
+    answer: &impl Fn(Request) -> Option<Reply>,
+) {
+    let reply = match read_request(&stream, token) {
+        Err(_) => Reply::new(400, json!({ "error": "not an HTTP/1.1 request" })),
+        Ok((_, _, auth, _)) if !same(auth.as_deref().unwrap_or_default(), token) => {
+            Reply::new(401, json!({ "error": "the door's token is required" }))
+        }
+        Ok((method, target, _, body)) => match route(&method, &target, &body, private) {
+            Ok(request) => answer(request)
+                .unwrap_or_else(|| Reply::new(503, json!({ "error": "the app is closing" }))),
+            Err(reply) => reply,
+        },
+    };
+    let reason = match reply.status {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        408 => "Request Timeout",
+        409 => "Conflict",
+        _ => "Service Unavailable",
+    };
+    let revision = reply.revision.map_or(String::new(), |revision| {
+        format!("X-Ax-Revision: {revision}\r\n")
+    });
+    let _ = write!(
+        stream,
+        "HTTP/1.1 {} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{revision}Connection: close\r\n\r\n{}",
+        reply.status,
+        reply.body.len(),
+        reply.body
+    );
 }
 
 /// A token comparison that takes the same time wherever the first
@@ -255,8 +225,8 @@ fn same(given: &str, token: &str) -> bool {
             == 0
 }
 
-/// One whole line into `line`. A line the head's cap or the source's end
-/// cut short is no line: never taken for the empty one that ends the head.
+/// One whole line into `line`. A line the source's end cut short is no
+/// line: never taken for the empty one that ends the head.
 fn whole_line(reader: &mut impl std::io::BufRead, line: &mut String) -> std::io::Result<()> {
     line.clear();
     reader.read_line(line)?;
@@ -266,16 +236,14 @@ fn whole_line(reader: &mut impl std::io::BufRead, line: &mut String) -> std::io:
     }
 }
 
-/// Method, target, bearer token and body: the request line and headers in
-/// [`HEAD_MAX`] bytes and [`HEADERS_MAX`] lines, the body in [`BODY_MAX`].
-/// The body is read only for the caller that holds `token`; any other gets
-/// it empty, unread.
+/// Method, target, bearer token and body. The body is read only for the
+/// caller that holds `token`; any other gets it empty, unread.
 fn read_request(
     source: impl std::io::Read,
     token: &str,
 ) -> std::io::Result<(String, String, Option<String>, Vec<u8>)> {
     let invalid = || std::io::Error::from(std::io::ErrorKind::InvalidData);
-    let mut reader = BufReader::new(source.take(HEAD_MAX));
+    let mut reader = BufReader::new(source);
     let mut line = String::new();
     whole_line(&mut reader, &mut line)?;
     let mut parts = line.split_whitespace();
@@ -283,15 +251,12 @@ fn read_request(
         return Err(invalid());
     };
     let (method, target) = (method.to_owned(), target.to_owned());
-    let (mut auth, mut length) = (None, 0usize);
-    for headers in 0.. {
+    let (mut auth, mut length) = (None, 0u64);
+    loop {
         whole_line(&mut reader, &mut line)?;
         let header = line.trim_end();
         if header.is_empty() {
             break;
-        }
-        if headers == HEADERS_MAX {
-            return Err(invalid());
         }
         if let Some((name, value)) = header.split_once(':') {
             let value = value.trim();
@@ -302,18 +267,15 @@ fn read_request(
             }
         }
     }
-    if length > BODY_MAX {
-        return Err(invalid());
-    }
     if !same(auth.as_deref().unwrap_or_default(), token) {
         return Ok((method, target, auth, Vec::new()));
     }
-    // the body is past the head's cap: what the reader holds, and `length`
-    // bytes more at most
-    reader.get_mut().set_limit(length as u64);
-    let mut body = vec![0; length];
-    reader.read_exact(&mut body)?;
-    Ok((method, target, auth, body))
+    let mut body = Vec::new();
+    reader.take(length).read_to_end(&mut body)?;
+    match body.len() as u64 == length {
+        true => Ok((method, target, auth, body)),
+        false => Err(invalid()),
+    }
 }
 
 fn route(method: &str, target: &str, body: &[u8], private: bool) -> Result<Request, Reply> {
@@ -334,16 +296,10 @@ fn route(method: &str, target: &str, body: &[u8], private: bool) -> Result<Reque
             bounds: flag("bounds"),
         }),
         ("GET", "actions") => Ok(Request::Actions(filter)),
-        ("POST", "act") => parse::<Act>(body).and_then(|act| {
-            typed(act.value.as_deref().unwrap_or_default()).map(|()| Request::Act(act))
-        }),
+        ("POST", "act") => parse(body).map(Request::Act),
         ("POST", "wait") => parse(body).map(Request::Wait),
         ("POST", "reveal") if private => parse(body).map(Request::Reveal),
-        ("POST", "key") => parse::<Key>(body).and_then(|key| {
-            typed(&key.keys)
-                .and(typed(&key.text))
-                .map(|()| Request::Key(key))
-        }),
+        ("POST", "key") => parse(body).map(Request::Key),
         ("GET", "keys") => Ok(Request::Keys(filter)),
         ("POST", "drag") => parse(body).map(Request::Drag),
         ("GET", "audit") => Ok(Request::Audit {
@@ -381,34 +337,15 @@ fn route(method: &str, target: &str, body: &[u8], private: bool) -> Result<Reque
     }
 }
 
-/// 400 for text of more than [`MAX_TEXT`] characters.
-fn typed(text: &str) -> Result<(), Reply> {
-    match text.chars().count() > MAX_TEXT {
-        true => Err(Reply::new(
-            400,
-            json!({ "error": format!("{MAX_TEXT} characters at most") }),
-        )),
-        false => Ok(()),
-    }
-}
-
 fn parse<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, Reply> {
     serde_json::from_slice(body)
         .map_err(|error| Reply::new(400, json!({ "error": error.to_string() })))
 }
 
-/// Longest the CLI waits on the door for one read or write. An `audit --walk`
-/// is not held to [`MAX_DEADLINE`] (each arrow press may wait for focus), so
-/// this matches the 300 s qa's walk.py gives `/audit`.
-#[cfg_attr(not(feature = "ax-door"), allow(dead_code))]
-const CALL_TIMEOUT: Duration = Duration::from_secs(300);
-
 /// One call to the door: its status and body.
 #[cfg_attr(not(feature = "ax-door"), allow(dead_code))]
 fn call(door: &DoorFile, method: &str, target: &str, body: &str) -> std::io::Result<(u16, String)> {
     let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, door.port))?;
-    stream.set_read_timeout(Some(CALL_TIMEOUT))?;
-    stream.set_write_timeout(Some(CALL_TIMEOUT))?;
     write!(
         stream,
         "{method} {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -659,35 +596,15 @@ mod tests {
         assert_eq!(body("key --no-read")["keys"], "");
     }
 
-    /// A caller without the token can make the door read no more than
-    /// [`HEAD_MAX`] bytes: a head with no line end is refused there, however
-    /// much more the caller has to send.
+    /// A head the source ends before its empty line is not a request, and
+    /// a body lands whole behind a long head.
     #[test]
-    fn a_head_is_read_to_its_cap_and_no_further() {
-        let sent = 1 << 20;
-        let mut endless = std::io::repeat(b'A').take(sent);
-        assert!(read_request(&mut endless, TOKEN).is_err());
-        assert_eq!(sent - endless.limit(), HEAD_MAX);
-    }
-
-    /// [`HEADERS_MAX`] headers are a request, one more is not; a head the
-    /// source ends before its empty line is not one either; and a body
-    /// lands whole past a head near its cap.
-    #[test]
-    fn a_head_has_a_header_cap_and_an_end() {
-        let head = |headers: usize| {
-            format!(
-                "GET /tree HTTP/1.1\r\n{}\r\n",
-                "X-Pad: b\r\n".repeat(headers)
-            )
-        };
-        assert!(read_request(head(HEADERS_MAX).as_bytes(), TOKEN).is_ok());
-        assert!(read_request(head(HEADERS_MAX + 1).as_bytes(), TOKEN).is_err());
+    fn a_head_has_an_end() {
         assert!(read_request(&b"GET /tree HTTP/1.1\r\nX-Pad: b\r\n"[..], TOKEN).is_err());
         let body = "b".repeat(64 << 10);
         let near = format!(
             "POST /act HTTP/1.1\r\nAuthorization: Bearer {TOKEN}\r\nX-Pad: {}\r\nContent-Length: {}\r\n\r\n{body}",
-            "a".repeat(15 << 10),
+            "a".repeat(1 << 20),
             body.len()
         );
         let (_, _, _, read) = read_request(near.as_bytes(), TOKEN).unwrap();
@@ -699,12 +616,12 @@ mod tests {
     /// A door on an ephemeral port that answers `{}` to every request it
     /// routes, and what reached its `answer`. Its thread outlives the test:
     /// `accept` never returns.
-    fn door(private: bool, patience: Duration) -> (u16, std::sync::mpsc::Receiver<Request>) {
+    fn door(private: bool) -> (u16, std::sync::mpsc::Receiver<Request>) {
         let listener = bind(0).unwrap();
         let port = listener.local_addr().unwrap().port();
         let (heard, seen) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            accept(listener, TOKEN, private, patience, move |request| {
+            accept(listener, TOKEN, private, move |request| {
                 heard.send(request).ok()?;
                 Some(Reply::ok(json!({})))
             })
@@ -742,7 +659,7 @@ mod tests {
     /// request; the right one reaches it.
     #[test]
     fn a_wrong_token_is_refused_before_the_app_hears_of_it() {
-        let (port, seen) = door(false, REQUEST_DEADLINE);
+        let (port, seen) = door(false);
         let wrong = TOKEN.replace('0', "1");
         let (status, _) = send(port, &request_with(&wrong, "GET", "/tree", "")).unwrap();
         assert_eq!(status, 401);
@@ -759,53 +676,28 @@ mod tests {
     #[test]
     fn reveal_is_routed_on_a_private_door_only() {
         let reveal = request_with(TOKEN, "POST", "/reveal", r#"{"id":"console:x"}"#);
-        let (port, seen) = door(false, REQUEST_DEADLINE);
+        let (port, seen) = door(false);
         let (status, body) = send(port, &reveal).unwrap();
         assert_eq!(status, 404);
         assert!(body.contains("POST /act") && !body.contains("reveal"));
         assert!(seen.try_recv().is_err());
-        let (port, seen) = door(true, REQUEST_DEADLINE);
+        let (port, seen) = door(true);
         assert_eq!(send(port, &reveal).unwrap().0, 200);
         assert!(matches!(seen.try_recv(), Ok(Request::Reveal(_))));
     }
 
-    /// A head of [`HEAD_MAX`] bytes with no line end is 400 at once, not at
-    /// the deadline, and a body over [`BODY_MAX`] is 400 before its token
-    /// is weighed (a wrong one included); the app hears of neither.
+    /// A caller that sends a byte now and then, never a whole request,
+    /// holds up no other caller: the next one is answered while it is
+    /// still sending.
     #[test]
-    fn an_oversized_head_or_body_is_refused_before_the_token() {
-        let (port, seen) = door(false, Duration::from_secs(30));
-        let (status, _) = send(port, &[b'A'; HEAD_MAX as usize]).unwrap();
-        assert_eq!(status, 400);
-        let over = |token: &str| {
-            format!(
-                "POST /act HTTP/1.1\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\n\r\n",
-                BODY_MAX + 1
-            )
-        };
-        assert_eq!(send(port, over(TOKEN).as_bytes()).unwrap().0, 400);
-        assert_eq!(send(port, over("wrong").as_bytes()).unwrap().0, 400);
-        assert!(seen.try_recv().is_err());
-    }
-
-    /// A caller that sends a byte now and then, never a whole request, has
-    /// the door for its deadline, not for as long as it keeps sending: the
-    /// next caller is answered.
-    #[test]
-    fn a_trickling_caller_holds_the_door_no_longer_than_its_deadline() {
-        let (port, seen) = door(false, Duration::from_millis(300));
+    fn a_trickling_caller_holds_up_no_other() {
+        let (port, seen) = door(false);
         let mut slow = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
-        std::thread::spawn(move || {
-            let until = Instant::now() + Duration::from_secs(4);
-            while Instant::now() < until && slow.write_all(b"G").is_ok() {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        });
-        std::thread::sleep(Duration::from_millis(100));
-        let (status, _) = send(port, &request_with(TOKEN, "GET", "/tree", ""))
-            .expect("the next caller is answered within 3 s");
+        slow.write_all(b"G").unwrap();
+        let (status, _) = send(port, &request_with(TOKEN, "GET", "/tree", "")).unwrap();
         assert_eq!(status, 200);
         assert!(matches!(seen.try_recv(), Ok(Request::Tree { .. })));
+        drop(slow);
     }
 
     /// An open door has its file, naming a port that answers; the file goes
@@ -868,42 +760,30 @@ mod tests {
     /// never sends the body, and the door does not wait for it.
     #[test]
     fn a_wrong_token_is_refused_without_reading_the_body() {
-        let (port, seen) = door(false, Duration::from_secs(30));
+        let (port, seen) = door(false);
         let head = format!(
-            "POST /act HTTP/1.1\r\nAuthorization: Bearer wrong\r\nContent-Length: {BODY_MAX}\r\n\r\n"
+            "POST /act HTTP/1.1\r\nAuthorization: Bearer wrong\r\nContent-Length: {}\r\n\r\n",
+            1u64 << 40
         );
         assert_eq!(send(port, head.as_bytes()).unwrap().0, 401);
         assert!(seen.try_recv().is_err());
     }
 
-    /// `POST /key` and `POST /act` carry at most [`MAX_TEXT`] characters in
-    /// each typed field; one more is 400 before the app sees it.
+    /// `POST /key` and `POST /act` take typed text of any length.
     #[test]
-    fn typed_text_is_capped() {
+    fn typed_text_is_taken_whole() {
         let status = |path: &str, body: serde_json::Value| {
             route("POST", path, body.to_string().as_bytes(), false)
                 .map_or_else(|reply| reply.status, |_| 200)
         };
-        let (most, over) = ("é".repeat(MAX_TEXT), "é".repeat(MAX_TEXT + 1));
-        assert_eq!(status("/key", json!({ "text": most })), 200);
-        assert_eq!(status("/key", json!({ "text": over })), 400);
-        assert_eq!(
-            status("/key", json!({ "keys": "a ".repeat(MAX_TEXT) })),
-            400
-        );
+        let long = "é".repeat(1 << 16);
+        assert_eq!(status("/key", json!({ "text": long })), 200);
         assert_eq!(
             status(
                 "/act",
-                json!({ "id": "x", "action": "type", "value": most })
+                json!({ "id": "x", "action": "type", "value": long })
             ),
             200
-        );
-        assert_eq!(
-            status(
-                "/act",
-                json!({ "id": "x", "action": "type", "value": over })
-            ),
-            400
         );
     }
 }

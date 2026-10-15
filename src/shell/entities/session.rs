@@ -23,15 +23,8 @@ use gpui_kit::{Context, Entity, EventEmitter, Task};
 use std::rc::Rc;
 use std::time::Duration;
 
-/// Unanswered status polls in a row before the node counts as lost: one
-/// miss is a hiccup, two (one `STATUS_EVERY` each) is a node that went away.
-pub(crate) const LOST_AFTER: u32 = 2;
-
 /// How often the node's status is asked for while connected.
 pub(crate) const STATUS_EVERY: Duration = Duration::from_secs(2);
-
-/// How long a node has to answer the first status before it is not reached.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The session's compared value.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -43,7 +36,7 @@ pub(crate) struct SessionState {
     /// The node that attempt reaches for: the address it was started
     /// with, whatever is typed since. Empty when none is out.
     pub(crate) reaching: String,
-    /// Connected, but the last [`LOST_AFTER`] status polls went unanswered.
+    /// Connected, but the last status poll went unanswered.
     pub(crate) reconnecting: bool,
     /// The node the views are on.
     pub(crate) connected_rpc: String,
@@ -106,8 +99,6 @@ pub(crate) struct Session {
     screen: Entity<Slice<Screen>>,
     /// The notification centre: told the chain, which its links name.
     center: notify::CenterHandle,
-    /// Status polls gone unanswered in a row.
-    misses: u32,
     /// The connected node's status, asked by the poll.
     source: Option<StatusSource>,
     /// The connect attempt in flight; dropping it drops the request.
@@ -135,7 +126,6 @@ impl Session {
             account,
             screen,
             center,
-            misses: 0,
             source: None,
             connect: None,
             poll: None,
@@ -227,13 +217,7 @@ impl Session {
             },
             cx,
         );
-        let ask = source.clone();
-        let work = async move {
-            match tokio::time::timeout(CONNECT_TIMEOUT, ask()).await {
-                Ok(answer) => answer,
-                Err(_) => Err("the node did not answer in time".into()),
-            }
-        };
+        let work = source();
         // a new attempt drops the last one: its answer never lands
         self.connect = Some(spawn_on_runtime(cx, work, move |this, answer, cx| {
             this.connect_answered(origin, source, answer, cx)
@@ -307,7 +291,6 @@ impl Session {
             },
             cx,
         );
-        self.misses = 0;
         self.apply_status(&status, cx);
         crate::runtime::connected(&client, &network, &chain);
         if left {
@@ -354,7 +337,6 @@ impl Session {
         let _timed = timed();
         match answer {
             Ok(status) => {
-                self.misses = 0;
                 self.edit(|state| state.reconnecting = false, cx);
                 let moved =
                     i64::try_from(status.height).unwrap_or(-1) != self.chain.read(cx).height;
@@ -366,9 +348,7 @@ impl Session {
             }
             Err(error) => {
                 tracing::debug!(target: "ducktape::app", %error, "status not answered");
-                self.misses = self.misses.saturating_add(1);
-                let lost = self.misses >= LOST_AFTER;
-                self.edit(|state| state.reconnecting = state.connected && lost, cx);
+                self.edit(|state| state.reconnecting = state.connected, cx);
             }
         }
     }
@@ -441,7 +421,6 @@ impl Session {
         self.connect = None;
         self.poll = None;
         self.source = None;
-        self.misses = 0;
         self.edit(
             |state| {
                 state.connected = false;
@@ -536,7 +515,6 @@ impl Session {
     /// The state a test starts from.
     #[cfg(test)]
     pub(crate) fn seed(&mut self, state: SessionState, cx: &mut Context<Self>) {
-        self.misses = if state.reconnecting { LOST_AFTER } else { 0 };
         self.edit(|current| *current = state, cx);
     }
 

@@ -1,7 +1,7 @@
-//! `prefs.json` in the config directory. Appearance, motion and the layout
-//! are read and written here; the recent-nodes list (`endpoints`) and the
-//! notification prefs (`runtime::notify`) go through [`read_prefs`] and
-//! [`edit_prefs`] too.
+//! `prefs.json` in the config directory. Appearance, motion, the layout and
+//! the memory a view and its pictures may hold are read and written here;
+//! the recent-nodes list (`endpoints`) and the notification prefs
+//! (`runtime::notify`) go through [`read_prefs`] and [`edit_prefs`] too.
 
 #[cfg(not(test))]
 fn prefs_path() -> Option<std::path::PathBuf> {
@@ -151,9 +151,52 @@ pub(crate) fn save_motion(on: bool) -> bool {
     edit_prefs(|prefs| prefs["motion"] = serde_json::json!(on))
 }
 
+const DEFAULT_VIEW_BYTES: u64 = 64 << 20;
+const DEFAULT_PICTURE_BYTES: u64 = 64 << 20;
+const DEFAULT_SVG_RASTER_BYTES: u64 = 256 << 20;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MemoryBounds {
+    pub(crate) view_bytes: u64,
+    pub(crate) picture_bytes: u64,
+    pub(crate) svg_raster_bytes: u64,
+}
+
+pub(crate) fn load_memory_bounds() -> MemoryBounds {
+    let prefs = read_prefs().unwrap_or_default();
+    let memory = &prefs["memory"];
+    let bytes = |key: &str, default: u64| memory[key].as_u64().unwrap_or(default);
+    MemoryBounds {
+        view_bytes: bytes("view_bytes", DEFAULT_VIEW_BYTES),
+        picture_bytes: bytes("picture_bytes", DEFAULT_PICTURE_BYTES),
+        svg_raster_bytes: bytes("svg_raster_bytes", DEFAULT_SVG_RASTER_BYTES),
+    }
+}
+
+pub(crate) fn memory_bounds() -> MemoryBounds {
+    static BOUNDS: std::sync::OnceLock<MemoryBounds> = std::sync::OnceLock::new();
+    *BOUNDS.get_or_init(load_memory_bounds)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_bounds_read_each_key_and_keep_the_default_for_a_missing_one() {
+        let defaults = load_memory_bounds();
+        assert!(edit_prefs(|prefs| {
+            prefs["memory"] = serde_json::json!({"picture_bytes": 1024, "view_bytes": 2048})
+        }));
+        assert_eq!(
+            load_memory_bounds(),
+            MemoryBounds {
+                view_bytes: 2048,
+                picture_bytes: 1024,
+                ..defaults
+            }
+        );
+    }
 
     /// No `layout` key is "not chosen yet"; each choice reads back as
     /// saved, under its own word.

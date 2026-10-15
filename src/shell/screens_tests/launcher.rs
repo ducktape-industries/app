@@ -104,3 +104,19 @@ fn the_launcher_size_agrees_with_the_screen_drawn(cx: &mut TestAppContext) {
         }
     }
 }
+
+/// The launcher is fixed at its size and the desk resizes: the console
+/// opens on the launcher fixed, and each crossing switches it.
+#[gpui_kit::test]
+fn the_launcher_is_fixed_and_the_desk_resizes(cx: &mut TestAppContext) {
+    use crate::shell::entities::Screen;
+    let (view, mut native) = open(Seed::boot(), cx);
+    let resizable =
+        |native: &mut VisualTestContext| native.update(|window, _| window.is_resizable());
+    assert!(!resizable(&mut native), "the launcher opens fixed");
+    for (screen, expected) in [(Screen::Desk, true), (Screen::Connect, false)] {
+        set_screen(&view, screen, &mut native);
+        native.run_until_parked();
+        assert_eq!(resizable(&mut native), expected, "{screen:?}");
+    }
+}

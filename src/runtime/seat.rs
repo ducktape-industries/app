@@ -14,9 +14,8 @@ pub(super) struct Mounted {
     pub(super) slot: Slot,
     pub(super) props: Option<Vec<u8>>,
     pub(super) generation: u64,
-    /// The code a load last failed on, and when the next block may try it
-    /// again. Cleared by any load that comes back, so only a repeated
-    /// failure on the same code widens the gap.
+    /// The code a load last failed on. Cleared by any load that comes back
+    /// and by the person's Retry.
     pub(super) retry: Option<Retry>,
     /// The seat's load wake: signalled by an install, a stage shown and a
     /// retry, so the `Seat` turns once for each instead of asking for a
@@ -25,29 +24,11 @@ pub(super) struct Mounted {
 }
 
 /// A failed load's hold-off: the code (the roster's blob id, as
-/// `code_digest` spells it) the load was asked for when it failed, when the
-/// next attempt at that same code is due, and the gap that produced it.
+/// `code_digest` spells it) the load was asked for when it failed. That
+/// code is not asked for again until the roster names another or the
+/// person presses Retry; `None` is asked for again at the next roster read.
 pub(super) struct Retry {
     pub(super) code: Option<[u8; 32]>,
-    pub(super) next: Instant,
-    pub(super) gap: Duration,
-}
-
-impl Retry {
-    /// The hold-off after a load for `code` failed: the gap doubles up to
-    /// `RETRY_MAX` while the same code keeps failing, and starts over at
-    /// `RETRY_FIRST` for a different one.
-    pub(super) fn after(previous: Option<&Retry>, code: Option<[u8; 32]>) -> Retry {
-        let gap = match previous {
-            Some(previous) if previous.code == code => (previous.gap * 2).min(RETRY_MAX),
-            _ => RETRY_FIRST,
-        };
-        Retry {
-            code,
-            next: Instant::now() + gap,
-            gap,
-        }
-    }
 }
 
 impl Mounted {
@@ -82,36 +63,31 @@ impl Mounted {
     /// | hold-off from a failed load | load when                              |
     /// |-----------------------------|----------------------------------------|
     /// | none                        | the code moved, or this node not asked |
-    /// | still running               | it is not for this very `code`         |
-    /// | its gap is up               | always: the re-attempt it promised     |
+    /// | for some code               | it is not for this very `code`         |
     ///
     /// The hold-off and `code` both name the blob the roster lists
     /// (`Retry.code`, [`code_digest`]), so a failed view is left alone until
-    /// its gap is up and then asked for again, RETRY_FIRST's way.
+    /// the roster names other code or the person presses Retry.
     pub(super) fn reload_due(
         &self,
         same_code: bool,
         asked_of_this_node: bool,
         code: [u8; 32],
-        now: Instant,
     ) -> bool {
         match &self.retry {
             None => !(same_code && asked_of_this_node),
-            Some(held_off) if now < held_off.next => held_off.code != Some(code),
-            Some(_) => true,
+            Some(held_off) => held_off.code != Some(code),
         }
     }
 
-    /// A load for `asked_for` came back with no view: the next block leaves
-    /// that code alone until the gap is up, widened against `held_off` when
-    /// it is the same code failing again. A failure before any candidate (a
-    /// status or transport error, `hash` none) holds nothing off, and any
-    /// other code is unaffected. A view that is there stays: the failure is
-    /// the replacement's, not its own.
+    /// A load for `asked_for` came back with no view: later blocks leave
+    /// that code alone. A failure before any candidate (a status or
+    /// transport error, `hash` none) holds nothing off, and any other code
+    /// is unaffected. A view that is there stays: the failure is the
+    /// replacement's, not its own.
     pub(super) fn load_failed(
         &mut self,
         program: &str,
-        held_off: Option<Retry>,
         asked_for: Option<[u8; 32]>,
         Unloaded {
             hash: failed_on,
@@ -125,7 +101,9 @@ impl Mounted {
             error = %failure,
             "program view not loaded"
         );
-        self.retry = Some(Retry::after(held_off.as_ref(), failed_on.and(asked_for)));
+        self.retry = Some(Retry {
+            code: failed_on.and(asked_for),
+        });
         if !matches!(self.slot, Slot::Ready(_)) {
             self.slot = Slot::Failed(failure);
         }
@@ -265,8 +243,8 @@ impl Failure {
         let reason = error.to_string();
         match error {
             Fetch::Unreachable(_) | Fetch::NotHeld => Failure::Unreachable(reason),
-            Fetch::Corrupt => Failure::HashMismatch(reason),
-            Fetch::Refused(_) => Failure::Refused(reason),
+            Fetch::Corrupt | Fetch::Collision(_) => Failure::HashMismatch(reason),
+            Fetch::Refused(_) | Fetch::Unreadable(_) => Failure::Refused(reason),
         }
     }
 }
@@ -389,7 +367,7 @@ static LOADING: Mutex<Loaders> = Mutex::new(Loaders {
 
 /// Hands `load` to a loader thread — a cold cranelift compile is a second
 /// or more; the window thread shows "Loading" instead of freezing for it.
-/// A loader starts while fewer than `LOADERS` run, and each takes the next
+/// A loader starts while fewer than [`loaders`] run, and each takes the next
 /// waiting load until none is left, so a long roster queues rather than
 /// forking a thread per program. A load a pane waits for goes ahead of the
 /// preloads. With no thread to be had and no loader left to take it, what
@@ -402,7 +380,7 @@ pub(super) fn queue(load: Load) {
         true => loaders.waiting.push_front(load),
         false => loaders.waiting.push_back(load),
     }
-    if loaders.running == LOADERS {
+    if loaders.running >= super::loaders() {
         return;
     }
     loaders.running += 1;
@@ -520,11 +498,9 @@ impl Load {
         if let Err(panic) = &landed
             && locked.generation == generation
         {
-            let held_off = locked.retry.take();
             let failure = panicked("installing", &**panic);
             locked.load_failed(
                 program,
-                held_off,
                 asked_for,
                 Unloaded {
                     hash: asked_for,
@@ -595,12 +571,12 @@ fn install(
         return false;
     }
     // a load that came back at all clears the hold-off; only a failure
-    // puts one back, widened against the one taken here
-    let held_off = locked.retry.take();
+    // puts one back
+    locked.retry = None;
     let loaded = match loaded {
         Ok(loaded) => loaded,
         Err(unloaded) => {
-            locked.load_failed(program, held_off, asked_for, unloaded);
+            locked.load_failed(program, asked_for, unloaded);
             return false;
         }
     };
@@ -631,7 +607,7 @@ fn install(
         }
         // the same tab, the same surface handle, the same host-side
         // input text and pictures: only the instance behind them moves. A
-        // swap refused here is asked again, as a failed load is
+        // swap refused here is asked again at the next roster read
         Loaded::Swap {
             fresh,
             alive,
@@ -650,7 +626,7 @@ fn install(
                 }
                 Err(reason) => {
                     log_source(program, hash.as_ref(), "Failed", generation, &reason);
-                    *retry = Some(Retry::after(held_off.as_ref(), asked_for));
+                    *retry = Some(Retry { code: None });
                 }
             }
         }

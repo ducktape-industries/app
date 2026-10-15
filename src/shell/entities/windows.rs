@@ -351,7 +351,9 @@ impl Windows {
                     }),
                 )),
             }),
-            // one window serves the launcher and the desk, so it resizes;
+            // the launcher is fixed at its size, the desk resizes
+            // (`swap_console` switches it as the screens cross)
+            is_resizable: !launcher,
             // a pop-out goes down to its view's minimum, as it stands when
             // the window opens (there is no setting it later)
             window_min_size: Some(match kind {
@@ -959,9 +961,9 @@ impl Windows {
 
     /// The launcher and the desk are one window: crossing from one to
     /// the other resizes it in place rather than closing it and opening
-    /// another. The launcher comes up centred on the window's display; the
-    /// desk comes back where it was, at its size, maximized or fullscreen
-    /// again if it had been.
+    /// another. The launcher comes up centred on the window's display, at
+    /// its fixed size; the desk comes back where it was, at its size,
+    /// maximized or fullscreen again if it had been, and resizes again.
     fn swap_console(&mut self, cx: &mut Context<Self>) {
         let Some(key) = self.console else {
             return;
@@ -1050,6 +1052,10 @@ impl Windows {
                         centred(size(px(windows::WINDOW_SIZE.0), px(windows::WINDOW_SIZE.1)))
                     }
                 };
+                // the launcher is fixed at its size, the desk resizes; set
+                // first: a fixed window still takes the new size, and the
+                // desk's zoom or full screen needs a resizable one
+                window.set_resizable(!launcher);
                 window.set_bounds(to);
                 match (launcher, desk) {
                     (false, Some(WindowBounds::Fullscreen(_))) => window.toggle_fullscreen(),

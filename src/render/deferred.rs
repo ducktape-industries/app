@@ -20,8 +20,7 @@ use std::cell::Cell;
 /// draws inside its window's; the host's layers over the desk (its dialogs,
 /// the bar's menus, the footer) defer at `HOST_BAND + n`, so no window and
 /// no view draw paints or takes a click above them.
-pub(crate) const HOST_BAND: usize = 1000;
-const _: () = assert!(crate::ui::layout::MAX_PANES <= HOST_BAND);
+pub(crate) const HOST_BAND: usize = usize::MAX / 2;
 
 /// The highest priority a view draw takes: a `Deferred` asks for at most
 /// this, and a view tooltip draws at it.

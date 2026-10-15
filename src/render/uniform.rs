@@ -72,10 +72,7 @@ impl UniformListDecoration for RangeObserver {
         app: &mut App,
     ) -> AnyElement {
         let start = visible.start.min(item_count);
-        let end = visible
-            .end
-            .min(item_count)
-            .min(start.saturating_add(wire::MAX_UNIFORM_LIST_ROWS));
+        let end = visible.end.min(item_count);
         let range = start..end;
         let scrollable = self.scroll.is_scrollable();
         let scrolled_to_end = self.scroll.is_scrolled_to_end();
@@ -217,7 +214,7 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        let count = (*count).min(wire::MAX_UNIFORM_LIST_COUNT);
+        let count = *count;
         let state = self
             .uniform_lists
             .entry(path.clone())
@@ -232,10 +229,7 @@ impl ViewTree {
         state.count = count;
         let measure_index = (*measure_index).min(count.saturating_sub(1));
         // the rows are the ones sent: a row held as sent stays as it is
-        let sent = indices
-            .iter()
-            .zip(children)
-            .take(wire::MAX_UNIFORM_LIST_ROWS);
+        let sent = indices.iter().zip(children);
         for (&index, child) in sent.clone() {
             let index = index as usize;
             if index < count && state.rows.get(&index) != Some(child) {
@@ -273,10 +267,7 @@ impl ViewTree {
         let mut list =
             gpui_kit::uniform_list(native_id.clone(), count, move |range, window, app| {
                 let start = range.start.min(count);
-                let end = range
-                    .end
-                    .min(count)
-                    .min(start.saturating_add(wire::MAX_UNIFORM_LIST_ROWS));
+                let end = range.end.min(count);
                 let range = start..end;
                 weak.update(app, |tree, cx| {
                     let rows = tree

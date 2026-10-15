@@ -16,11 +16,6 @@ use gpui_kit::{Edges, EntityInputHandler as _, Keystroke};
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
-/// The tallest a growing field gets before it scrolls inside itself. The
-/// field's byte cap is the real limit; this is only the point past which
-/// growing the element stops being how anyone reads it.
-const MAX_ROWS: usize = 4096;
-
 /// The kit state a field's text lives in: one line, or many.
 #[derive(Clone)]
 pub(super) enum Engine {
@@ -151,7 +146,7 @@ impl ViewTree {
                 true => Engine::Area(cx.new(|cx| {
                     let mut state = TextareaState::new(window, cx)
                         .placeholder(placeholder.clone())
-                        .auto_grow(1, MAX_ROWS)
+                        .auto_grow(1, usize::MAX)
                         .soft_wrap(true)
                         .searchable(false)
                         .context_menu(false);
@@ -551,7 +546,7 @@ impl Field {
         self.fills = fills;
         self.cap = cap;
         if let Engine::Area(state) = &self.engine {
-            let rows = cap.filter(|_| !fills).unwrap_or(MAX_ROWS);
+            let rows = cap.filter(|_| !fills).unwrap_or(usize::MAX);
             state.update(cx, |state, cx| state.set_auto_grow(1, rows, cx));
         }
     }
@@ -646,19 +641,6 @@ impl Field {
         cx: &mut App,
     ) -> Option<(Option<wire::Event>, bool)> {
         let (text, cursor, preedit, tokens) = self.read(window, cx);
-        // the view's cap is the field's: what it cannot be sent is cut
-        // back, through the history, as any edit
-        if text.len() > wire::MAX_FIELD_BYTES {
-            let mut cut = wire::MAX_FIELD_BYTES;
-            while !text.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            engine!(&self.engine, |state| state.update(cx, |state, cx| {
-                state.set_selected_range(cut..text.len(), cx);
-                state.replace("", window, cx);
-            }));
-            return self.settle(Made::Observed, window, cx);
-        }
         let changed = text != self.text;
         if !changed && cursor == self.cursor && preedit == self.preedit {
             return None;
@@ -772,11 +754,7 @@ impl Field {
             state.set_selected_range(range, cx);
             let range = state.selected_range();
             let before = state.value().len();
-            let span = token.filter(|_| {
-                replacement == text
-                    && !text.is_empty()
-                    && state.tokens().len() < wire::MAX_FIELD_TOKENS
-            });
+            let span = token.filter(|_| replacement == text && !text.is_empty());
             let landed = span.is_some_and(|id| {
                 state
                     .replace_range_with_token(

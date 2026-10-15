@@ -77,8 +77,7 @@ impl Roster {
 
     /// The programs genesis bound to the roles the kernel calls (the
     /// programs role, the validators, identity), as the node's programs role
-    /// answers them: `None` until read, and from a programs role that
-    /// refuses the question (one that predates it).
+    /// answers them: `None` until read.
     pub(crate) fn roles(&self) -> Option<abi::Roles> {
         self.bound().roles.clone()
     }
@@ -118,6 +117,11 @@ impl Roster {
     /// Whether it lists `program`: a link to anything else names nothing.
     pub(crate) fn lists(&self, program: &str) -> bool {
         self.code(program).is_some()
+    }
+
+    /// Whether it lists `code`: a listed program's, or a view-only entry's.
+    pub(super) fn names_code(&self, code: &abi::BlobId) -> bool {
+        self.lock().iter().any(|entry| entry.code == *code)
     }
 }
 
@@ -370,13 +374,10 @@ pub(super) fn read_roster(asked_of: Connection, roster: &Roster, registry: &Regi
         if node_since_left {
             return;
         }
-        // no bindings (an old programs program, or a refusal: one 400 reads the
-        // same) are asked again on the next read: a `None` kept for the
-        // connection would keep the consent card off all that time
         if let Some(roles) = roles {
             *roster.bound() = Bound {
-                asked_of: roles.is_some().then_some(asked_of.rev),
-                roles,
+                asked_of: Some(asked_of.rev),
+                roles: Some(roles),
             };
         }
         let mut registry = lock(registry);
@@ -412,7 +413,7 @@ pub(super) fn read_roster(asked_of: Connection, roster: &Roster, registry: &Regi
                 .any(|old| old.name == listed.name && old.code == listed.code);
             let asked_of_this_node = locked.generation > 0 && locked.rev == asked_of.rev;
             let code = code_digest(&listed.code);
-            if !locked.reload_due(same_code, asked_of_this_node, code, Instant::now()) {
+            if !locked.reload_due(same_code, asked_of_this_node, code) {
                 continue;
             }
             locked.rev = asked_of.rev;

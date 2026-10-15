@@ -20,14 +20,6 @@ use noded_client::wire::{Layer, unframe};
 
 pub const VIEW_SECTION: &str = "ducktape.view";
 
-/// The most a program's code blob may be, framed: the view inside it is
-/// compiled, so no view is near it.
-const MAX_PROGRAM_BYTES: usize = 64 << 20;
-
-/// The most roster entries the app takes: a node that lists more has the
-/// rest left off the rail and never loaded, said once in app.log.
-pub const MAX_PROGRAMS: usize = 256;
-
 /// One roster entry, as the rail lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
@@ -45,16 +37,23 @@ pub enum Fetch {
     NotHeld,
     /// The bytes came, and do not hash to the id asked for.
     Corrupt,
-    /// The node answered something this app does not read.
+    Collision(BlobId),
     Refused(String),
+    Unreadable(String),
 }
 
 impl std::fmt::Display for Fetch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Fetch::Unreachable(reason) | Fetch::Refused(reason) => f.write_str(reason),
+            Fetch::Unreachable(reason) | Fetch::Refused(reason) | Fetch::Unreadable(reason) => {
+                f.write_str(reason)
+            }
             Fetch::NotHeld => f.write_str("the node does not hold the program's code yet"),
             Fetch::Corrupt => f.write_str("the program's bytes do not hash to its blob id"),
+            Fetch::Collision(code) => write!(
+                f,
+                "the program's bytes named {code:?} carry a SHA-1 collision attack"
+            ),
         }
     }
 }
@@ -73,7 +72,7 @@ pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>,
         programs, views, ..
     } = ask(client, network, Query::Roster).await?
     else {
-        return Err(Fetch::Refused(
+        return Err(Fetch::Unreadable(
             "the programs role answered no roster".into(),
         ));
     };
@@ -87,23 +86,10 @@ pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>,
         code: view.view,
         bare: true,
     });
-    let (mut roster, misspelled): (Vec<Program>, Vec<Program>) = programs
+    let (roster, misspelled): (Vec<Program>, Vec<Program>) = programs
         .chain(views)
         .partition(|program| program::is_name(&program.name));
     misspelled_said(misspelled.into_iter().map(|program| program.name).collect());
-    if roster.len() > MAX_PROGRAMS {
-        static SAID: std::sync::Once = std::sync::Once::new();
-        SAID.call_once(|| {
-            tracing::warn!(
-                target: "ducktape::app",
-                reason = "roster_capped",
-                listed = roster.len(),
-                kept = MAX_PROGRAMS,
-                "the node lists more programs than the app takes"
-            );
-        });
-        roster.truncate(MAX_PROGRAMS);
-    }
     Ok(roster)
 }
 
@@ -126,14 +112,47 @@ fn misspelled_said(ids: Vec<String>) {
 }
 
 /// Which programs fill the roles the kernel calls, as genesis bound them
-/// and the programs role answers them. `None` from a programs role that
-/// predates the question, which refuses it: no program is known by its role.
-pub async fn roles(client: &RpcClient, network: &str) -> Result<Option<abi::Roles>, Fetch> {
+/// and the programs role answers them.
+pub async fn roles(client: &RpcClient, network: &str) -> Result<abi::Roles, Fetch> {
     use ::programs::{Query, Reply};
-    match ask(client, network, Query::Roles).await {
-        Ok(Reply::Roles(roles)) => Ok(Some(roles)),
-        Ok(_) | Err(Fetch::Refused(_)) => Ok(None),
-        Err(error) => Err(error),
+    match ask(client, network, Query::Roles).await? {
+        Reply::Roles(roles) => Ok(roles),
+        _ => Err(Fetch::Unreadable(
+            "the programs role answered the roles question with another reply".into(),
+        )),
+    }
+}
+
+/// The code every scheduled change brings (a program set, a view set), in
+/// the programs role's order, whatever height it lands at: what the
+/// network is about to run, so a view may ask about it (`blob.manifest`)
+/// before it does. Read for that ask, not per block. Empty from a programs
+/// role that predates the question.
+pub async fn coming(client: &RpcClient, network: &str) -> Result<Vec<BlobId>, Fetch> {
+    use ::programs::{PageRequest, Query, Reply};
+    let mut codes = Vec::new();
+    let mut after = None;
+    loop {
+        let page = PageRequest { after, limit: None };
+        let page = match ask(client, network, Query::Scheduled { page }).await {
+            Ok(Reply::Scheduled(page)) => page,
+            Ok(_) => {
+                return Err(Fetch::Unreadable(
+                    "the programs role answered the scheduled question with another reply".into(),
+                ));
+            }
+            Err(Fetch::Refused(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        codes.extend(
+            page.items
+                .iter()
+                .filter_map(|pending| pending.change.code()),
+        );
+        let Some(next) = page.next else {
+            return Ok(codes);
+        };
+        after = Some(next);
     }
 }
 
@@ -147,7 +166,7 @@ async fn ask(
         .query(Layer::Preconfirmed, frame)
         .await
         .map_err(fetch_error)?;
-    abi::decode(&answer).map_err(|refusal| Fetch::Refused(refusal.sentence))
+    abi::decode(&answer).map_err(|refusal| Fetch::Unreadable(refusal.sentence))
 }
 
 /// The view inside `code`'s blob, or `None` when the program ships none; a
@@ -167,6 +186,10 @@ pub async fn view_of(
     })
 }
 
+/// A program's blob: the cache's copy, else the node's, which the cache
+/// keeps from then on. Only code the roster names is read here (a seat's,
+/// `program.describe`'s, `blob.manifest`'s), so the cache holds at most
+/// what the network runs or has scheduled.
 pub async fn program_bytes(
     client: &RpcClient,
     code: &BlobId,
@@ -174,20 +197,20 @@ pub async fn program_bytes(
     let cached = cache_path(code);
     if let Some(path) = &cached
         && let Ok(framed) = tokio::fs::read(path).await
-        && hashes_to(&framed, code)
+        && hashes_to(&framed, code)?
         && let Some(body) = unframe(&framed)
     {
         return Ok((body.to_vec(), "disk"));
     }
     let framed = client
-        .blob(*code, MAX_PROGRAM_BYTES)
+        .blob(*code)
         .await
         .map_err(fetch_error)?
         .ok_or(Fetch::NotHeld)?;
     let body = unframe(&framed)
-        .ok_or_else(|| Fetch::Refused("the blob carries no git header".into()))?
+        .ok_or_else(|| Fetch::Unreadable("the blob carries no git header".into()))?
         .to_vec();
-    if !hashes_to(&framed, code) {
+    if !hashes_to(&framed, code)? {
         return Err(Fetch::Corrupt);
     }
     if let Some(path) = cached {
@@ -199,7 +222,8 @@ pub async fn program_bytes(
     Ok((body, "node"))
 }
 
-fn cache_path(code: &BlobId) -> Option<PathBuf> {
+/// Where the cache keeps `code`'s framed bytes.
+pub(crate) fn cache_path(code: &BlobId) -> Option<PathBuf> {
     Some(
         cache_dir()
             .ok()?
@@ -211,33 +235,33 @@ fn cache_path(code: &BlobId) -> Option<PathBuf> {
 /// A blob id names the FRAMED bytes (`kind len\0body`), as git's does, and
 /// the cache keeps them framed: the kind is the node's word (a program is
 /// `program`), which the id alone cannot give back.
-fn hashes_to(framed: &[u8], code: &BlobId) -> bool {
-    use sha2::Digest as _;
-    match code.kind() {
-        abi::HashKind::Sha1 => sha1::Sha1::digest(framed)[..] == *code.digest(),
-        abi::HashKind::Sha256 => sha2::Sha256::digest(framed)[..] == *code.digest(),
-    }
+fn hashes_to(framed: &[u8], code: &BlobId) -> Result<bool, Fetch> {
+    let hashed = blob::id_of(code.kind(), framed).map_err(|_| Fetch::Collision(*code))?;
+    Ok(hashed == *code)
 }
 
-/// The bytes of the [`VIEW_SECTION`] custom section, out of a core module or
-/// a component (where the section may sit on a nested core module).
+/// The bytes of the [`VIEW_SECTION`] custom section ([`section`]).
 pub fn view_section(bytes: &[u8]) -> Option<Vec<u8>> {
-    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
-        if let Ok(wasmparser::Payload::CustomSection(section)) = payload
-            && section.name() == VIEW_SECTION
-        {
-            return Some(section.data().to_vec());
-        }
-    }
-    None
+    section(bytes, VIEW_SECTION).map(<[u8]>::to_vec)
+}
+
+/// The bytes of the custom section `name`, out of a core module or a
+/// component (where the section may sit on a nested core module).
+pub fn section<'a>(bytes: &'a [u8], name: &str) -> Option<&'a [u8]> {
+    wasmparser::Parser::new(0)
+        .parse_all(bytes)
+        .find_map(|payload| match payload {
+            Ok(wasmparser::Payload::CustomSection(section)) if section.name() == name => {
+                Some(section.data())
+            }
+            _ => None,
+        })
 }
 
 fn fetch_error(error: noded_client::Error) -> Fetch {
     match error {
-        noded_client::Error::Refused(refusal) | noded_client::Error::Decode(refusal) => {
-            Fetch::Refused(refusal.sentence)
-        }
-        error @ noded_client::Error::TooLarge { .. } => Fetch::Refused(error.to_string()),
+        noded_client::Error::Refused(refusal) => Fetch::Refused(refusal.sentence),
+        noded_client::Error::Decode(refusal) => Fetch::Unreadable(refusal.sentence),
         other => Fetch::Unreachable(other.to_string()),
     }
 }
@@ -260,5 +284,29 @@ mod tests {
         module.extend_from_slice(&section);
         assert_eq!(view_section(&module).as_deref(), Some(&body[..]));
         assert_eq!(view_section(b"\0asm\x01\0\0\0"), None);
+    }
+
+    #[test]
+    fn a_sha1_code_hashes_as_git_does_and_a_shattered_half_is_refused_by_its_id() {
+        let hello =
+            noded_client::hex::hex_decode("ce013625030ba8dba906f756967f9e9ca394464a").unwrap();
+        let hello = BlobId::Sha1(hello.try_into().unwrap());
+        assert!(hashes_to(b"blob 6\0hello\n", &hello).unwrap());
+        assert!(!hashes_to(b"blob 6\0hullo\n", &hello).unwrap());
+        let shared =
+            noded_client::hex::hex_decode("f92d74e3874587aaf443d1db961d4e26dde13e9c").unwrap();
+        let code = BlobId::Sha1(shared.try_into().unwrap());
+        for half in [
+            &include_bytes!("fixtures/shattered-1.bin")[..],
+            &include_bytes!("fixtures/shattered-2.bin")[..],
+        ] {
+            let refused = hashes_to(half, &code).unwrap_err();
+            assert!(matches!(refused, Fetch::Collision(named) if named == code));
+            assert!(
+                refused
+                    .to_string()
+                    .contains("f92d74e3874587aaf443d1db961d4e26dde13e9c")
+            );
+        }
     }
 }

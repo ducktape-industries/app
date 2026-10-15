@@ -13,11 +13,9 @@ fn refused(view: &mut View, id: u64) -> (String, String) {
     }
 }
 
-/// Too many `program.changes` subscriptions is the same refusal as too many
-/// `clock.ticks`: `subscription_limit`, said as such — not the malformed
-/// request a nameless program is.
+/// A `program.changes` that names no program is malformed.
 #[test]
-fn too_many_changes_subscriptions_is_the_subscription_limit() {
+fn a_nameless_changes_subscription_is_malformed() {
     let mut view = view();
     changes(&mut view, 1, &methods::encode(&String::new()));
     assert_eq!(
@@ -25,18 +23,6 @@ fn too_many_changes_subscriptions_is_the_subscription_limit() {
         (
             refusal::MALFORMED_REQUEST.to_owned(),
             "`program.changes` names no program".to_owned()
-        )
-    );
-    view.targets = vec!["chat".into()];
-    view.live_subscriptions = (0..MAX_SUBSCRIPTIONS as u64)
-        .map(|id| (id, "chat".to_owned()))
-        .collect();
-    changes(&mut view, 2, &methods::encode(&"chat".to_owned()));
-    assert_eq!(
-        refused(&mut view, 2),
-        (
-            refusal::SUBSCRIPTION_LIMIT.to_owned(),
-            "too many `program.changes` subscriptions".to_owned()
         )
     );
 }
@@ -90,11 +76,17 @@ fn applying_node_with_a_lost_answer(
             let answer = match route.as_str() {
                 noded::route::STATUS => abi::encode(&status_at(TIP)),
                 noded::route::SUBMIT => {
-                    let frame: noded::Frame = abi::decode(&body).unwrap();
+                    let submit: noded::Submit = abi::decode(&body).unwrap();
+                    assert_eq!(
+                        submit.preconfirm,
+                        noded::Preconfirm::On,
+                        "a view's write is preconfirmed"
+                    );
+                    let frame: noded::Frame = abi::decode(&submit.frame).unwrap();
                     assert_eq!(frame.body.anchor, TIP, "anchored at the tip the node named");
                     assert!(frame.body.salt.is_some(), "a write carries a salt");
                     counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    abi::encode(&applied())
+                    abi::encode(&noded::Submitted::Preconfirmed(applied()))
                 }
                 other => panic!("{other}"),
             };
@@ -114,14 +106,7 @@ async fn a_submit_whose_answer_was_lost_is_not_submitted_again() {
     let _seat = backend::seat_serial();
     backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
     let (node, submits) = applying_node_with_a_lost_answer(noded::route::SUBMIT);
-    let (answer, attempts) = until_answered(
-        NODE_RETRY_BUDGET,
-        noded_client::ANSWER_DEADLINE,
-        unsent,
-        || submit(node.clone(), call_registry()),
-    )
-    .await;
-    assert_eq!(attempts, 1);
+    let answer = submit(node.clone(), call_registry()).await;
     assert_eq!(
         answer.unwrap_err().code,
         refusal::NODE_FAILED,
@@ -142,72 +127,49 @@ fn call_registry() -> Vec<u8> {
 }
 
 #[tokio::test]
-async fn a_submit_whose_anchor_read_was_lost_is_asked_again() {
+async fn a_submit_whose_anchor_read_was_lost_is_refused_unsent() {
     use commonware_cryptography::Signer as _;
     let _seat = backend::seat_serial();
     backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
     let (node, submits) = applying_node_with_a_lost_answer(noded::route::STATUS);
-    let (answer, attempts) = until_answered(
-        NODE_RETRY_BUDGET,
-        noded_client::ANSWER_DEADLINE,
-        unsent,
-        || submit(node.clone(), call_registry()),
-    )
-    .await;
+    let answer = submit(node.clone(), call_registry()).await;
     assert_eq!(
-        answer,
-        Ok(Vec::new()),
-        "nothing was sent: the read is retried"
+        answer.unwrap_err().code,
+        refusal::RPC_CLIENT,
+        "nothing was sent: the view may ask again"
     );
-    assert_eq!(attempts, 2, "the lost read, then the one that went through");
-    assert_eq!(submits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(submits.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
 /// A view's `program.query` to a node that takes the request and never
-/// answers is refused once its attempt's deadline passes, and gives its
-/// in-flight slot back: before, it waited for good and held the slot.
+/// answers holds its in-flight slot until the view cancels it, and the
+/// cancel gives the slot back.
 #[test]
-fn a_query_to_a_stalled_node_is_refused_at_its_deadline_and_frees_its_slot() {
+fn a_query_to_a_stalled_node_holds_its_slot_until_the_view_cancels_it() {
     let fake = fake_node(vec![(noded::route::QUERY, Mode::Stall)]);
     let mut view = view();
     let replies = view.replies.clone();
-    let asked = std::time::Instant::now();
+    let mut changed = view.replies.changes();
     start(&mut view, 1, None, async move {
-        let budget = std::time::Duration::from_secs(1);
-        let per_attempt = std::time::Duration::from_millis(300);
-        let (answer, _) = until_answered(budget, per_attempt, transport_failed, || {
-            query(fake.node.clone(), call_registry())
-        })
-        .await;
+        let answer = query(fake.node.clone(), call_registry()).await;
         replies.item(1, answer, true);
     });
     assert!(view.replies.answer_owed());
-    // answered and drained, and nothing owed: the slot is back
+    changed.borrow_and_update();
+    view.tasks.clear();
+    futures::executor::block_on(async {
+        while view.replies.answer_owed() {
+            changed.changed().await.unwrap();
+        }
+    });
     let mut answered = Vec::new();
-    while answered.is_empty() || view.replies.answer_owed() {
-        assert!(
-            asked.elapsed() < std::time::Duration::from_secs(10),
-            "the stalled ask still holds its slot"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        view.replies.drain_into(&mut answered).unwrap();
-    }
-    view.pending = answered;
-    assert_eq!(
-        refused(&mut view, 1),
-        (
-            refusal::RPC_CLIENT.to_owned(),
-            crate::runtime::NODE_UNREACHABLE.to_owned()
-        )
-    );
+    assert_eq!(view.replies.drain_into(&mut answered), 0, "no answer came");
 }
 
-/// A recovering node holds a request and answers once it is back, which
-/// can outlast the whole retry budget: the answer still lands. The
-/// deadline is each attempt's own; one taken from the budget's remainder
-/// (`budget - elapsed`) would cut this answer off as a failure.
+/// A recovering node holds a request and answers once it is back: the
+/// answer is waited for, however long the hold.
 #[tokio::test]
-async fn a_held_answer_outlasting_the_budget_still_lands() {
+async fn a_held_answer_lands() {
     let fake = fake_node(vec![(
         noded::route::QUERY,
         Mode::After(
@@ -215,14 +177,8 @@ async fn a_held_answer_outlasting_the_budget_still_lands() {
             abi::encode(&vec![7u8]),
         ),
     )]);
-    let budget = std::time::Duration::from_secs(1);
-    let per_attempt = std::time::Duration::from_secs(3);
-    let (answer, attempts) = until_answered(budget, per_attempt, transport_failed, || {
-        query(fake.node.clone(), call_registry())
-    })
-    .await;
+    let answer = query(fake.node.clone(), call_registry()).await;
     assert_eq!(answer, Ok(vec![7]), "the held answer is the answer");
-    assert_eq!(attempts, 1);
 }
 
 /// A node that answers a submit with a redirect to another host does not
@@ -235,12 +191,14 @@ async fn a_redirected_submit_goes_nowhere_else() {
     backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
     let elsewhere = fake_node(vec![(
         noded::route::SUBMIT,
-        Mode::Answer(abi::encode(&noded::Receipt {
-            program: "programs".into(),
-            outcome: abi::Outcome::Applied { output: Vec::new() },
-            events: Vec::new(),
-            nested: Vec::new(),
-        })),
+        Mode::Answer(abi::encode(&noded::Submitted::Preconfirmed(
+            noded::Receipt {
+                program: "programs".into(),
+                outcome: abi::Outcome::Applied { output: Vec::new() },
+                events: Vec::new(),
+                nested: Vec::new(),
+            },
+        ))),
     )]);
     let to = format!(
         "{}{}",
@@ -254,66 +212,41 @@ async fn a_redirected_submit_goes_nowhere_else() {
         ),
         (noded::route::SUBMIT, Mode::Redirect(to)),
     ]);
-    let (answer, attempts) = until_answered(
-        NODE_RETRY_BUDGET,
-        noded_client::ANSWER_DEADLINE,
-        unsent,
-        || submit(node.node.clone(), call_registry()),
-    )
-    .await;
+    let answer = submit(node.node.clone(), call_registry()).await;
     assert_eq!(
         elsewhere.accepted.load(std::sync::atomic::Ordering::SeqCst),
         0,
         "the signed frame went on to the host the redirect named"
     );
     assert_eq!(answer.unwrap_err().code, refusal::NODE_FAILED);
-    assert_eq!(attempts, 1, "not signed again");
 }
 
-/// A node that hangs up on a read is asked again within the budget; the
-/// view hears it as unreachable once the budget is spent.
+/// A node that hangs up on a read is asked once: the transport failure is
+/// the view's answer.
 #[tokio::test]
-async fn a_node_that_hangs_up_is_asked_again_within_the_budget() {
+async fn a_node_that_hangs_up_is_asked_once() {
     let fake = fake_node(vec![(noded::route::QUERY, Mode::Close)]);
-    let budget = std::time::Duration::from_millis(1500);
-    let (answer, attempts) = until_answered(
-        budget,
-        noded_client::ANSWER_DEADLINE,
-        transport_failed,
-        || query(fake.node.clone(), call_registry()),
-    )
-    .await;
-    assert_eq!(answer.unwrap_err().code, refusal::RPC_CLIENT);
-    assert_eq!(attempts, 2, "asked at once and a second later");
-    assert_eq!(fake.accepted.load(std::sync::atomic::Ordering::SeqCst), 2);
+    let answer = query(fake.node.clone(), call_registry()).await;
+    assert!(transport_failed(&answer.unwrap_err()));
+    assert_eq!(fake.accepted.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
-/// `blob.get` from a node streaming more than the view may read is refused
-/// `too_large` as the bytes pass the cap, with what the node streamed past
-/// it left unread: chunked, or declared by a `Content-Length`, refused
-/// before the body is read (what gets out then is what the two sockets'
-/// buffers hold, a few MiB, short of the cap).
+/// `blob.get` of a blob bigger than any one answer the app once read is
+/// answered whole.
 #[tokio::test]
-async fn a_blob_streamed_past_the_cap_is_refused_unread() {
-    let len = 4 * MAX_BLOB_BYTES;
+async fn a_large_blob_is_read_whole() {
+    let body = vec![7u8; 17 << 20];
+    let framed = [format!("blob {}\0", body.len()).as_bytes(), &body].concat();
+    let fake = fake_node(vec![(
+        noded::route::BLOB_GET,
+        Mode::Answer(abi::encode(&Some(framed))),
+    )]);
     let ask = methods::encode(&format!("sha256:{}", "00".repeat(32)));
-    for (declared, unread) in [(false, len), (true, MAX_BLOB_BYTES)] {
-        let mut fake = fake_node(vec![(
-            noded::route::BLOB_GET,
-            Mode::Stream { len, declared },
-        )]);
-        let refusal = blob_get(fake.node.clone(), ask.clone()).await.unwrap_err();
-        assert_eq!(refusal.code, refusal::TOO_LARGE, "declared: {declared}");
-        let streamed =
-            tokio::time::timeout(std::time::Duration::from_secs(10), fake.streamed.recv())
-                .await
-                .expect("the node is still streaming")
-                .unwrap();
-        assert!(
-            streamed < unread,
-            "declared: {declared}: {streamed} bytes were read, {unread} or more"
-        );
-    }
+    let answer = blob_get(fake.node.clone(), ask).await.unwrap();
+    assert_eq!(
+        methods::decode::<Option<Vec<u8>>>(&answer).unwrap(),
+        Some(body)
+    );
 }
 
 fn node_refusing_duplicates() -> (Node, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
@@ -332,7 +265,8 @@ fn node_refusing_duplicates() -> (Node, std::sync::Arc<std::sync::atomic::Atomic
             let answer = match route.as_str() {
                 noded::route::STATUS => abi::encode(&status_at(TIP)),
                 noded::route::SUBMIT => {
-                    let frame: noded::Frame = abi::decode(&body).unwrap();
+                    let submit: noded::Submit = abi::decode(&body).unwrap();
+                    let frame: noded::Frame = abi::decode(&submit.frame).unwrap();
                     let body = frame.body;
                     let id = abi::encode(&(
                         body.signer,
@@ -354,7 +288,7 @@ fn node_refusing_duplicates() -> (Node, std::sync::Arc<std::sync::atomic::Atomic
                             ..applied()
                         },
                     };
-                    abi::encode(&receipt)
+                    abi::encode(&noded::Submitted::Preconfirmed(receipt))
                 }
                 other => panic!("{other}"),
             };
@@ -418,7 +352,9 @@ fn changes_node(heights: &'static [u64]) -> Node {
 /// A connect inside the network, under a view that kept its code: its
 /// `program.changes` subscription goes on, on the new node, so its follower
 /// hears `None` (re-read what moved meanwhile) and then the new node's
-/// blocks; its `chain.heads` goes on too; a request still running on the
+/// blocks; its `chain.heads` goes on too, and ends with why when the new
+/// node answers no status (this one serves only changes); a request still
+/// running on the
 /// old connection is refused `stale_connection`. Before, the subscriptions
 /// were refused too, which ends a view's stream: the view went deaf to
 /// every block after the connect.
@@ -427,7 +363,7 @@ fn a_reconnect_opens_a_views_subscriptions_again_on_the_new_node() {
     let mut view = view();
     view.targets = vec!["chat".into()];
     follow_changes(&mut view, 1, changes_node(&[]), "chat".into());
-    assert!(spawn_reply(&mut view, 2, std::future::pending::<Answer>()));
+    spawn_reply(&mut view, 2, std::future::pending::<Answer>());
     follow_heads(&mut view, 3, changes_node(&[]));
     let new = changes_node(&[7]);
     let rev = view.connection.rev + 1;
@@ -447,8 +383,8 @@ fn a_reconnect_opens_a_views_subscriptions_again_on_the_new_node() {
     assert_eq!(following, [1, 3], "both subscriptions run again");
     let mut items = Vec::new();
     for _ in 0..200 {
-        view.replies.drain_into(&mut items).unwrap();
-        if items.len() >= 2 {
+        view.replies.drain_into(&mut items);
+        if items.len() >= 3 {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -462,10 +398,17 @@ fn a_reconnect_opens_a_views_subscriptions_again_on_the_new_node() {
         height: 7,
         keys: vec![b"row/7".to_vec()],
     };
+    let (changes, heads): (Vec<_>, Vec<_>) = items
+        .into_iter()
+        .partition(|event| matches!(event, wire::Event::Response { id: 1, .. }));
     assert_eq!(
-        items,
+        changes,
         [item(None), item(Some(block))],
         "the follower is told to re-read, then hears the new node's block with the keys it wrote"
+    );
+    assert!(
+        matches!(&heads[..], [wire::Event::Response { id: 3, result: Err(error), done: true }] if error.code == refusal::NODE_FAILED),
+        "{heads:?}"
     );
     assert_eq!(view.live_subscriptions, [(1, "chat".to_owned())]);
 }

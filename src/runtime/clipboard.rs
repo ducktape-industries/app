@@ -3,10 +3,6 @@ use super::wire::methods::{self, Capability, refusal};
 use super::{Seat, View};
 use gpui_kit::{ClipboardEntry, Context};
 
-/// Requests a view may have waiting for the window thread between two
-/// ticks; a view has no reason to read the clipboard sixteen times a frame.
-const MAX_PENDING: usize = 16;
-
 #[derive(Default)]
 pub(super) struct Clipboard {
     pending: Vec<(u64, Request)>,
@@ -42,22 +38,10 @@ pub(super) fn answer(
             refusal::NEEDS_GESTURE,
             "the clipboard needs a press or key",
         ),
-        Ok(request) => queue(view, id, request),
+        Ok(request) => view.clipboard.pending.push((id, request)),
         Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
     }
     true
-}
-
-fn queue(view: &mut View, id: u64, request: Request) {
-    if view.clipboard.pending.len() >= MAX_PENDING {
-        view.refuse(
-            id,
-            refusal::IN_FLIGHT_LIMIT,
-            "too many pending clipboard requests",
-        );
-        return;
-    }
-    view.clipboard.pending.push((id, request));
 }
 
 pub(super) fn mount(view: &mut View, cx: &mut Context<Seat>) {

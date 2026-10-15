@@ -19,10 +19,6 @@ use crate::identity::{admission, submit_signed};
 use crate::relay::{POLL, post, slot, take};
 use crate::{Client, Signer};
 
-/// How long a new device waits for the other to approve: the relay's own
-/// hold.
-const APPROVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
-
 /// Crockford's base32: no I, L, O, U to misread.
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -91,13 +87,9 @@ pub async fn join_from_device(
     )
     .await?;
     let answer = slot(relay, &code, "consent")?;
-    let deadline = tokio::time::Instant::now() + APPROVAL_WAIT;
     let json = loop {
         if let Some(json) = take(client.http(), &answer).await? {
             break json;
-        }
-        if tokio::time::Instant::now() > deadline {
-            return Err("No device approved in time. Start again for a new code.".into());
         }
         tokio::time::sleep(POLL).await;
     };

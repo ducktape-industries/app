@@ -16,7 +16,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::{SignError, Signer};
 
-pub const NODE_CONTRACT: u32 = 5;
+pub const NODE_CONTRACT: u32 = 8;
 pub const FRAME_NAMESPACE: &[u8] = b"ducktape:frame";
 
 pub mod route {
@@ -122,7 +122,9 @@ impl Frame {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+/// Decoded by hand ([`Status::deserialize_reader`]): `contract` is read before the fields that follow it, whose layout is
+/// the contract's.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize)]
 pub struct Status {
     pub network: String,
     /// The chain's founding time (its genesis block's), unix ms — not now.
@@ -140,6 +142,43 @@ pub struct Status {
     /// The genesis block's digest: with the network name, the chain's id.
     pub genesis: [u8; 32],
     pub roles: abi::Roles,
+}
+
+impl BorshDeserialize for Status {
+    /// The node's field order, with one stop: a node on another contract lays out what follows `contract` its own way
+    /// (contract 4 had three roles), so it is refused by name there, not as "Unexpected length of input" further on.
+    fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
+        let network = String::deserialize_reader(reader)?;
+        let time = u64::deserialize_reader(reader)?;
+        let block_time_ms = u64::deserialize_reader(reader)?;
+        let epoch_length = u64::deserialize_reader(reader)?;
+        let height = u64::deserialize_reader(reader)?;
+        let tip = <[u8; 32]>::deserialize_reader(reader)?;
+        let root = Root::deserialize_reader(reader)?;
+        let epoch = u64::deserialize_reader(reader)?;
+        let identity = Vec::<u8>::deserialize_reader(reader)?;
+        let contract = u32::deserialize_reader(reader)?;
+        if contract != NODE_CONTRACT {
+            return Err(borsh::io::Error::new(
+                borsh::io::ErrorKind::InvalidData,
+                format!("this node speaks contract {contract}; this app speaks {NODE_CONTRACT}"),
+            ));
+        }
+        Ok(Status {
+            network,
+            time,
+            block_time_ms,
+            epoch_length,
+            height,
+            tip,
+            root,
+            epoch,
+            identity,
+            contract,
+            genesis: <[u8; 32]>::deserialize_reader(reader)?,
+            roles: abi::Roles::deserialize_reader(reader)?,
+        })
+    }
 }
 
 impl Status {
@@ -172,6 +211,24 @@ pub struct PeerStatus {
     pub signed: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum Preconfirm {
+    Off,
+    On,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct Submit {
+    pub frame: Vec<u8>,
+    pub preconfirm: Preconfirm,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum Submitted {
+    Pooled,
+    Preconfirmed(Receipt),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct Query {
     pub layer: Layer,
@@ -201,6 +258,7 @@ pub struct Change {
 pub struct Blocks {
     pub before: Option<u64>,
     pub limit: u32,
+    pub most: u32,
 }
 
 /// `wire::BlockRef`: a finalized block by height or by id.
@@ -208,6 +266,12 @@ pub struct Blocks {
 pub enum BlockRef {
     Height(u64),
     Id([u8; 32]),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct BlockAsk {
+    pub by: BlockRef,
+    pub most: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -383,6 +447,30 @@ mod tests {
         assert_eq!(abi::decode::<Page>(&listed).unwrap(), page);
     }
 
+    /// A contract-4 node (three roles) is refused as the contract it speaks, not as bytes that ran out.
+    #[test]
+    fn a_status_from_another_contract_is_refused_by_its_contract() {
+        let text = |text: &str| [&(text.len() as u32).to_le_bytes()[..], text.as_bytes()].concat();
+        let mut bytes = text("n");
+        for number in [1u64, 2, 3, 4] {
+            bytes.extend(number.to_le_bytes());
+        }
+        bytes.extend([5; 32]);
+        bytes.extend([6; 32]);
+        bytes.extend(7u64.to_le_bytes());
+        bytes.extend([1, 0, 0, 0, 8]);
+        bytes.extend(4u32.to_le_bytes());
+        bytes.extend([9; 32]);
+        for role in ["r", "v", "i"] {
+            bytes.extend(text(role));
+        }
+        let refusal = abi::decode::<Status>(&bytes).unwrap_err();
+        assert_eq!(
+            refusal.sentence,
+            format!("this node speaks contract 4; this app speaks {NODE_CONTRACT}")
+        );
+    }
+
     #[test]
     fn a_status_decodes_the_nodes_field_order_ending_in_the_roles() {
         let text = |text: &str| [&(text.len() as u32).to_le_bytes()[..], text.as_bytes()].concat();
@@ -396,9 +484,11 @@ mod tests {
         bytes.extend([1, 0, 0, 0, 8]);
         bytes.extend(NODE_CONTRACT.to_le_bytes());
         bytes.extend([9; 32]);
-        for role in ["r", "v", "i", "b"] {
+        for role in ["r", "v", "i", "b", "a"] {
             bytes.extend(text(role));
         }
+        bytes.push(1);
+        bytes.extend(text("e"));
         let status = Status {
             network: "n".into(),
             time: 1,
@@ -416,6 +506,8 @@ mod tests {
                 validators: "v".into(),
                 identity: "i".into(),
                 blobs: "b".into(),
+                awaits: "a".into(),
+                egress: Some("e".into()),
             },
         };
         assert_eq!(abi::decode::<Status>(&bytes).unwrap(), status);
@@ -470,5 +562,17 @@ mod tests {
     fn unframe_drops_the_git_header() {
         assert_eq!(unframe(b"blob 3\0abc"), Some(&b"abc"[..]));
         assert_eq!(unframe(b"no header"), None);
+    }
+
+    #[test]
+    fn a_submit_is_its_frame_then_one_preconfirm_byte() {
+        let submit = |preconfirm| {
+            abi::encode(&Submit {
+                frame: vec![7],
+                preconfirm,
+            })
+        };
+        assert_eq!(submit(Preconfirm::Off), [1, 0, 0, 0, 7, 0]);
+        assert_eq!(submit(Preconfirm::On), [1, 0, 0, 0, 7, 1]);
     }
 }
