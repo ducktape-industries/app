@@ -16,7 +16,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::{SignError, Signer};
 
-pub const NODE_CONTRACT: u32 = 5;
+pub const NODE_CONTRACT: u32 = 6;
 pub const FRAME_NAMESPACE: &[u8] = b"ducktape:frame";
 
 pub mod route {
@@ -209,6 +209,24 @@ pub struct Network {
 pub struct PeerStatus {
     pub key: Vec<u8>,
     pub signed: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum Preconfirm {
+    Off,
+    On,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct Submit {
+    pub frame: Vec<u8>,
+    pub preconfirm: Preconfirm,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum Submitted {
+    Pooled,
+    Preconfirmed(Receipt),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -533,5 +551,17 @@ mod tests {
     fn unframe_drops_the_git_header() {
         assert_eq!(unframe(b"blob 3\0abc"), Some(&b"abc"[..]));
         assert_eq!(unframe(b"no header"), None);
+    }
+
+    #[test]
+    fn a_submit_is_its_frame_then_one_preconfirm_byte() {
+        let submit = |preconfirm| {
+            abi::encode(&Submit {
+                frame: vec![7],
+                preconfirm,
+            })
+        };
+        assert_eq!(submit(Preconfirm::Off), [1, 0, 0, 0, 7, 0]);
+        assert_eq!(submit(Preconfirm::On), [1, 0, 0, 0, 7, 1]);
     }
 }

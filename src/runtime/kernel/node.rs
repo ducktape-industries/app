@@ -746,7 +746,7 @@ async fn submitted(node: Node, target: String, payload: Vec<u8>) -> Answer {
             true => wire::Error::new(refusal::RPC_CLIENT, refusal.message),
             false => refusal,
         })?;
-    let receipt = node.client.submit(frame).await.map_err(refused)?;
+    let receipt = node.client.preconfirm(frame).await.map_err(refused)?;
     match receipt.outcome {
         abi::Outcome::Applied { output } => Ok(output),
         abi::Outcome::Rejected(refusal) => Err(wire::Error::new(refusal.reason, refusal.sentence)),
