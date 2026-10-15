@@ -3,10 +3,12 @@
 //! the node's UDP socket (the port `/v1/live/port` names, ALPN
 //! `ducktape-live`, the node's key from `/v1/status` pinned as its
 //! certificate's), or the websocket `/v1/live` on its HTTP port where it
-//! names none or no UDP answers in [`QUIC_ANSWER`]. A node that answers
-//! the port's route 404 serves no live tracks: the request is refused
-//! `live_unavailable`, and nothing is dialed. A lost session ends what rode on it: each request's
-//! channels close, and the next request dials a new session.
+//! names none or no UDP answers in [`QUIC_ANSWER`] (both then run, and the
+//! first handshake done is the session). A node that answers the port's
+//! route 404 serves no live tracks: the request is refused
+//! `live_unavailable`, and nothing is dialed. A lost session ends what rode
+//! on it: each request's channels close, and the next request dials a new
+//! session.
 //!
 //! The wire is core's `live-wire`, borsh throughout: a length-prefixed
 //! `Control` on the first bidirectional stream (the handshake, then requests
@@ -37,13 +39,9 @@ use view_wire::methods::refusal;
 
 use super::RpcClient;
 
-/// How long a dial waits for the node's QUIC answer before it takes the
-/// websocket.
+/// How long a dial waits for the node's QUIC answer before it starts the
+/// websocket beside it.
 const QUIC_ANSWER: Duration = Duration::from_secs(2);
-/// How long a node whose UDP stayed silent is dialed over the websocket
-/// alone, so a node behind a TCP-only tunnel costs no [`QUIC_ANSWER`] per
-/// connect.
-const QUIC_RETRY: Duration = Duration::from_secs(60);
 /// How long the handshake may take: the node's own deadline.
 const HELLO_WAIT: Duration = Duration::from_secs(5);
 /// Stream-mode objects one subscription holds for its view. Past it the
@@ -493,13 +491,6 @@ impl Drop for Inner {
             conn.close(Close::ConnectionChanged);
         }
     }
-}
-
-/// When each node's UDP last stayed silent, by its `/v1` address.
-fn silent() -> MutexGuard<'static, HashMap<String, Instant>> {
-    static SILENT: std::sync::OnceLock<Mutex<HashMap<String, Instant>>> =
-        std::sync::OnceLock::new();
-    lock(SILENT.get_or_init(Mutex::default))
 }
 
 /// The path a session's bytes take.
@@ -1326,8 +1317,12 @@ fn undecoded(kind: &str, bytes: &[u8], error: impl std::fmt::Display) -> String 
 }
 
 /// A session with the node `rpc` reaches: its status for the key and the
-/// chain, its live port, QUIC where it names one and it answers, the
-/// websocket otherwise, then the handshake.
+/// chain, its live port, then the handshake over QUIC where it names a
+/// port, over the websocket where it names none. A QUIC dial that has not
+/// answered in [`QUIC_ANSWER`] keeps running while the websocket starts
+/// beside it, and the first handshake done is the session; the other is
+/// dropped. Nothing is remembered between dials: a node whose UDP comes
+/// back is on QUIC at the next one.
 async fn dial(rpc: &RpcClient, client: Weak<Inner>) -> Result<Arc<Conn>, Error> {
     let status = rpc.status().await.map_err(super::refused)?;
     let port = match rpc.live_port().await {
@@ -1339,68 +1334,158 @@ async fn dial(rpc: &RpcClient, client: Weak<Inner>) -> Result<Arc<Conn>, Error> 
     };
     let key = super::seated_key().await?;
     let endpoint = rpc.endpoint().to_owned();
-    let udp_silent = silent()
-        .get(&endpoint)
-        .is_some_and(|at| at.elapsed() < QUIC_RETRY);
-    let quic = match port {
-        Some(port) if !udp_silent => match quic(&endpoint, port, &status.identity).await {
-            Ok(dialed) => Some(dialed),
-            Err(error) => {
-                tracing::info!(target: "ducktape::app", reason = "udp_silent", %error, "the node's live UDP did not answer; the websocket instead");
-                silent().insert(endpoint.clone(), Instant::now());
-                None
-            }
-        },
-        _ => None,
-    };
     let hello = Hello {
         chain: status.genesis,
         scheme: KeyScheme::Ed25519,
-        key: key.clone(),
-    };
-    let udp = quic.as_ref().map(|(udp, _)| udp.clone());
-    let (path, control, mut link) = match quic {
-        Some((_, connection)) => {
-            let (send, recv) = connection
-                .open_bi()
-                .await
-                .map_err(|error| unavailable(format!("no control stream: {error}")))?;
-            let (control, queue) = mpsc::unbounded_channel();
-            (
-                Path::Quic(connection.clone()),
-                control,
-                Link::Quic {
-                    connection,
-                    send,
-                    recv,
-                    queue,
-                },
-            )
-        }
-        None => {
-            let url = format!("{}{}", endpoint.replacen("http", "ws", 1), live_wire::ROUTE);
-            let (socket, _) =
-                tokio::time::timeout(HELLO_WAIT, tokio_tungstenite::connect_async(url))
-                    .await
-                    .map_err(|_| unavailable("the node's live socket did not open in time"))?
-                    .map_err(|error| {
-                        unavailable(format!("the node serves no live socket: {error}"))
-                    })?;
-            let (frames, queue) = mpsc::unbounded_channel();
-            let (control, controls) = mpsc::unbounded_channel();
-            (
-                Path::Ws(frames),
-                control,
-                Link::Ws {
-                    socket: Box::new(socket),
-                    queue,
-                    controls,
-                },
-            )
-        }
+        key,
     };
     let node = &status.identity;
-    let datagrams = tokio::time::timeout(HELLO_WAIT, handshake(&mut link, hello, node))
+    let over_ws = || over_ws(&endpoint, &hello, node, &client);
+    let Some(port) = port else {
+        return over_ws().await.map(opened);
+    };
+    let mut quic = std::pin::pin!(over_quic(&endpoint, port, &hello, node, &client));
+    let silent = |error: &str| {
+        tracing::info!(target: "ducktape::app", reason = "udp_silent", error, "the node's live UDP did not answer; the websocket instead");
+    };
+    match tokio::time::timeout(QUIC_ANSWER, &mut quic).await {
+        Ok(Quic::Session(session)) => return Ok(opened(session)),
+        Ok(Quic::Refused(refusal)) => return Err(refusal),
+        Ok(Quic::Silent(error)) => {
+            silent(&error);
+            return over_ws().await.map(opened);
+        }
+        Err(_) => {}
+    }
+    let mut ws = std::pin::pin!(over_ws());
+    tokio::select! {
+        quic = &mut quic => match quic {
+            Quic::Session(session) => Ok(opened(session)),
+            Quic::Refused(refusal) => Err(refusal),
+            Quic::Silent(error) => {
+                silent(&error);
+                ws.await.map(opened)
+            }
+        },
+        ws = &mut ws => match ws {
+            Ok(session) => Ok(opened(session)),
+            Err(refusal) => match quic.await {
+                Quic::Session(session) => Ok(opened(session)),
+                Quic::Refused(theirs) => Err(theirs),
+                Quic::Silent(_) => Err(refusal),
+            },
+        },
+    }
+}
+
+/// A session handshaken over its link, not yet running its tasks.
+struct Handshaken {
+    conn: Arc<Conn>,
+    link: Link,
+    /// The node's welcome: whether the path carries datagrams.
+    datagrams: bool,
+}
+
+/// The session is the one: its tasks run.
+fn opened(session: Handshaken) -> Arc<Conn> {
+    let Handshaken {
+        conn,
+        link,
+        datagrams,
+    } = session;
+    tracing::info!(
+        target: "ducktape::app",
+        event = "live_session",
+        path = if matches!(conn.path, Path::Quic(_)) { "quic" } else { "ws" },
+        datagrams,
+        "a live session opened"
+    );
+    link.run(conn.clone());
+    conn
+}
+
+/// How a QUIC dial ended.
+enum Quic {
+    Session(Handshaken),
+    /// The node answered and refused the handshake: its word, and no
+    /// other path would do better.
+    Refused(Error),
+    /// No QUIC session: the UDP path did not answer, or the certificate
+    /// was not the node's.
+    Silent(String),
+}
+
+async fn over_quic(
+    endpoint: &str,
+    port: u16,
+    hello: &Hello,
+    node: &[u8],
+    client: &Weak<Inner>,
+) -> Quic {
+    let (udp, connection) = match quic(endpoint, port, node).await {
+        Ok(dialed) => dialed,
+        Err(error) => return Quic::Silent(error),
+    };
+    let (send, recv) = match connection.open_bi().await {
+        Ok(streams) => streams,
+        Err(error) => return Quic::Silent(format!("no control stream: {error}")),
+    };
+    let (control, queue) = mpsc::unbounded_channel();
+    let link = Link::Quic {
+        connection: connection.clone(),
+        send,
+        recv,
+        queue,
+    };
+    match handshaken(
+        link,
+        hello,
+        node,
+        Path::Quic(connection),
+        Some(udp),
+        control,
+        client,
+    )
+    .await
+    {
+        Ok(session) => Quic::Session(session),
+        Err(refusal) => Quic::Refused(refusal),
+    }
+}
+
+async fn over_ws(
+    endpoint: &str,
+    hello: &Hello,
+    node: &[u8],
+    client: &Weak<Inner>,
+) -> Result<Handshaken, Error> {
+    let url = format!("{}{}", endpoint.replacen("http", "ws", 1), live_wire::ROUTE);
+    let (socket, _) = tokio::time::timeout(HELLO_WAIT, tokio_tungstenite::connect_async(url))
+        .await
+        .map_err(|_| unavailable("the node's live socket did not open in time"))?
+        .map_err(|error| unavailable(format!("the node serves no live socket: {error}")))?;
+    let (frames, queue) = mpsc::unbounded_channel();
+    let (control, controls) = mpsc::unbounded_channel();
+    let link = Link::Ws {
+        socket: Box::new(socket),
+        queue,
+        controls,
+    };
+    handshaken(link, hello, node, Path::Ws(frames), None, control, client).await
+}
+
+/// The handshake over `link`, within [`HELLO_WAIT`], and the session it
+/// opened.
+async fn handshaken(
+    mut link: Link,
+    hello: &Hello,
+    node: &[u8],
+    path: Path,
+    udp: Option<quinn::Endpoint>,
+    control: mpsc::UnboundedSender<Control>,
+    client: &Weak<Inner>,
+) -> Result<Handshaken, Error> {
+    let datagrams = tokio::time::timeout(HELLO_WAIT, handshake(&mut link, hello.clone(), node))
         .await
         .map_err(|_| unavailable("the node did not finish the live handshake in time"))??;
     let conn = Arc::new(Conn {
@@ -1412,17 +1497,13 @@ async fn dial(rpc: &RpcClient, client: Weak<Inner>) -> Result<Arc<Conn>, Error> 
         closed: watch::Sender::new(false),
         aliased: Notify::new(),
         tasks: Mutex::new(Vec::new()),
-        client,
+        client: client.clone(),
     });
-    tracing::info!(
-        target: "ducktape::app",
-        event = "live_session",
-        path = if matches!(conn.path, Path::Quic(_)) { "quic" } else { "ws" },
+    Ok(Handshaken {
+        conn,
+        link,
         datagrams,
-        "a live session opened"
-    );
-    link.run(conn.clone());
-    Ok(conn)
+    })
 }
 
 /// The control side of a session as the handshake and the readers see it.

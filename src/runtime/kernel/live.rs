@@ -19,9 +19,12 @@
 //!   its oldest.
 //! - `live.subscribe` `LiveSubscribe` — items `LiveItem`: `Waiting` while
 //!   the room's program has not granted it, then `Opened`, the group the
-//!   node holds (with `latest`), then each object and each group's end. A datagram-mode track keeps only its newest unread object
-//!   while the view is behind (drop-oldest, counted `live.dropped_behind`);
-//!   a stream-mode one holds its group back.
+//!   node holds (with `latest`), then each object and each group's end. A
+//!   datagram-mode track keeps only its newest unread object while the
+//!   view is behind (drop-oldest, counted `live.dropped_behind`); a
+//!   stream-mode one holds its group back over QUIC, and over the
+//!   websocket cuts the group for the reader that is behind (`GroupEnd {
+//!   complete: false }`), never an object.
 //! - `live.tracks` `<room>` — items `Watching`: `Waiting` while the room's
 //!   program has not granted watching it, then an `Announce` per track up
 //!   now and per one that comes or goes.
