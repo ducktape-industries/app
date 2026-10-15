@@ -107,6 +107,9 @@ fn http() -> reqwest::Client {
         .expect("the HTTP client")
 }
 
+/// [`Error::Failed`]'s sentence when what answered is not a node: its body is someone else's page.
+pub const NOT_A_NODE: &str = "this address does not answer as a ducktape node";
+
 #[derive(Debug)]
 pub enum Error {
     /// the node refused: a decoded `Refusal` (HTTP 400)
@@ -280,6 +283,13 @@ impl Client {
 async fn answered<T: BorshDeserialize>(request: reqwest::RequestBuilder, cap: usize) -> Result<T> {
     let mut response = request.send().await?;
     let status = response.status();
+    // A node's failure is its own sentence in plain text (noded answers `(status, sentence)`); whatever else answers
+    // (a proxy's page, a redirect to https) is not a node's word, and its body never reaches a sentence.
+    let plain = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/plain"));
     if response
         .content_length()
         .is_some_and(|length| length > cap as u64)
@@ -298,7 +308,10 @@ async fn answered<T: BorshDeserialize>(request: reqwest::RequestBuilder, cap: us
         StatusCode::BAD_REQUEST => Err(Error::Refused(abi::decode(&body).map_err(Error::Decode)?)),
         status => Err(Error::Failed {
             status: status.as_u16(),
-            sentence: String::from_utf8_lossy(&body).into_owned(),
+            sentence: match plain || body.is_empty() {
+                true => String::from_utf8_lossy(&body).into_owned(),
+                false => NOT_A_NODE.into(),
+            },
         }),
     }
 }
