@@ -1,19 +1,22 @@
 //! THE SEAM: every call into a capture or playback library, and nothing of
-//! gpui. Cameras through nokhwa, microphones and speakers through cpal,
-//! each piece on a thread of its own that leaves what it has in a feed
-//! ([`CameraFeed`], [`MicFeed`]) for the gpui side to read. Another backend
-//! replaces this file: the feeds, [`Device`], [`Status`] and the five
-//! functions are the whole surface.
+//! gpui. Cameras through our own capture (V4L2 on Linux in `v4l2.rs`,
+//! AVFoundation on macOS in `mac.rs`) driven by one stream loop here,
+//! microphones and speakers through cpal, each piece on a thread of its
+//! own that leaves what it has in a feed ([`CameraFeed`], [`MicFeed`]) for
+//! the gpui side to read. Another backend replaces this file and those
+//! two: the feeds, [`Device`], [`Status`] and the five functions are the
+//! whole surface.
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _};
-use nokhwa::utils::{
-    ApiBackend, CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType,
-    Resolution,
-};
+
+#[cfg(target_os = "macos")]
+use crate::mac as platform;
+#[cfg(target_os = "linux")]
+use crate::v4l2 as platform;
 
 /// One camera, microphone or speaker: `id` opens it, `name` is shown.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,18 +109,9 @@ fn set(status: &Mutex<(Status, String)>, to: Status) {
 
 /// The cameras the system lists now; the first is the default.
 pub fn cameras() -> Result<Vec<Device>, String> {
-    // listing asks for no permission (AVFoundation's discovery lists
-    // without it); opening does, in `run_camera`
-    let found = nokhwa::query(ApiBackend::Auto).map_err(|error| error.to_string())?;
-    Ok(found
-        .iter()
-        .enumerate()
-        .map(|(at, info)| Device {
-            id: info.index().to_string(),
-            name: info.human_name(),
-            default: at == 0,
-        })
-        .collect())
+    // listing asks for no permission (AVFoundation lists without it);
+    // opening does
+    platform::cameras()
 }
 
 /// Opens `device` (the first camera when `None`) on a thread of its own
@@ -132,174 +126,85 @@ pub fn start_camera(device: Option<String>, feed: Arc<CameraFeed>) {
 }
 
 fn run_camera(device: Option<String>, feed: &CameraFeed) {
-    #[cfg(target_os = "macos")]
-    if !crate::mac::allowed(crate::mac::VIDEO) {
-        return set(&feed.status, Status::Denied);
-    }
     let listed = cameras().unwrap_or_default();
-    let index = match &device {
-        Some(id) => listed.iter().find(|d| &d.id == id).map(|d| d.id.clone()),
-        None => listed.first().map(|d| d.id.clone()),
+    let found = match &device {
+        Some(id) => listed.iter().find(|d| &d.id == id),
+        None => listed.first(),
     };
-    let Some(index) = index else {
+    let Some(found) = found else {
         return set(&feed.status, Status::NoDevice);
     };
-    let name = listed
-        .iter()
-        .find(|d| d.id == index)
-        .map(|d| d.name.clone())
-        .unwrap_or_default();
-    feed.status.lock().expect("feed status").1 = name;
-    let index = match index.parse::<u32>() {
-        Ok(at) => CameraIndex::Index(at),
-        Err(_) => CameraIndex::String(index),
+    feed.status.lock().expect("feed status").1 = found.name.clone();
+    match platform::open(&found.id) {
+        Ok(camera) => stream(camera, feed),
+        Err(status) => set(&feed.status, status),
+    }
+}
+
+/// One opened camera as the stream loop drives it: the platform's, or a
+/// test's. Dropping it releases the device (the camera's light off).
+pub(crate) trait Source {
+    /// Waits at most `wait` for the camera's next frame. While `wanted`
+    /// a frame comes back as a picture (mirrored if `mirror`); otherwise
+    /// it is only taken from the camera, so it keeps delivering.
+    fn next(&mut self, wait: Duration, wanted: bool, mirror: bool) -> Result<Got, Status>;
+}
+
+/// What a camera gave in one wait.
+pub(crate) enum Got {
+    /// No frame came.
+    Nothing,
+    /// A frame came and was let go (not wanted, or it did not decode).
+    Frame,
+    Picture(Picture),
+}
+
+/// How long one wait for a frame lasts: how soon the loop sees `stop`.
+pub(crate) const SLICE: Duration = Duration::from_millis(100);
+/// A live camera that sends nothing this long has gone away (unplugged,
+/// its driver or its feeder stopped). A webcam in the dark still sends
+/// several frames a second.
+pub(crate) const QUIET: Duration = Duration::from_millis(1500);
+/// How long an opened camera may take to send its first frame (a USB
+/// camera settles its exposure first).
+pub(crate) const FIRST: Duration = Duration::from_secs(5);
+
+/// Feeds `camera`'s pictures into `feed` until `feed.stop`, an error, or
+/// [`QUIET`] without a frame (Gone). The camera is released before its
+/// end is told: a view that sees Gone finds the device free.
+pub(crate) fn stream(mut camera: impl Source, feed: &CameraFeed) {
+    let opened = Instant::now();
+    let mut last: Option<Instant> = None;
+    let ended = loop {
+        if feed.stop.load(Ordering::Relaxed) {
+            break None;
+        }
+        let wanted = feed.wanted.load(Ordering::Relaxed);
+        let got = camera.next(SLICE, wanted, feed.mirror.load(Ordering::Relaxed));
+        match got {
+            Err(status) => break Some(status),
+            Ok(Got::Nothing) => match last {
+                Some(at) if at.elapsed() > QUIET => break Some(Status::Gone),
+                None if opened.elapsed() > FIRST => {
+                    break Some(Status::Failed("the camera sent no picture".into()));
+                }
+                _ => {}
+            },
+            Ok(got) => {
+                if last.is_none() {
+                    set(&feed.status, Status::Live);
+                }
+                last = Some(Instant::now());
+                if let Got::Picture(picture) = got {
+                    *feed.picture.lock().expect("feed picture") = Some(picture);
+                }
+            }
+        }
     };
-    // YUYV first on every OS (no decoder, and nokhwa's macOS path asks
-    // AVFoundation for packed 4:2:2 then), MJPEG where a camera has no YUYV
-    let mut camera = None;
-    let mut last = String::new();
-    for format in [FrameFormat::YUYV, FrameFormat::MJPEG] {
-        let wanted = RequestedFormat::new::<nokhwa::pixel_format::RgbFormat>(
-            RequestedFormatType::Closest(CameraFormat::new(Resolution::new(1280, 720), format, 30)),
-        );
-        match nokhwa::Camera::new(index.clone(), wanted) {
-            Ok(opened) => {
-                camera = Some(opened);
-                break;
-            }
-            Err(error) => last = error.to_string(),
-        }
+    drop(camera);
+    if let Some(status) = ended {
+        set(&feed.status, status);
     }
-    let Some(mut camera) = camera else {
-        return set(&feed.status, fault(&last, false));
-    };
-    if let Err(error) = camera.open_stream() {
-        return set(&feed.status, fault(&error.to_string(), false));
-    }
-    let mut live = false;
-    while !feed.stop.load(Ordering::Relaxed) {
-        let buffer = match camera.frame() {
-            Ok(buffer) => buffer,
-            Err(error) => {
-                set(&feed.status, fault(&error.to_string(), true));
-                break;
-            }
-        };
-        if !live {
-            live = true;
-            set(&feed.status, Status::Live);
-        }
-        // read (the camera keeps its buffers moving) but not converted
-        // while nothing draws the piece
-        if !feed.wanted.load(Ordering::Relaxed) {
-            continue;
-        }
-        let resolution = buffer.resolution();
-        let mirror = feed.mirror.load(Ordering::Relaxed);
-        let picture = match buffer.source_frame_format() {
-            FrameFormat::YUYV => yuyv_to_bgra(
-                buffer.buffer(),
-                resolution.width(),
-                resolution.height(),
-                mirror,
-            ),
-            FrameFormat::MJPEG => jpeg_to_bgra(buffer.buffer(), mirror),
-            other => {
-                set(
-                    &feed.status,
-                    Status::Failed(format!("the camera sends {other}")),
-                );
-                break;
-            }
-        };
-        let Some(picture) = picture else { continue };
-        *feed.picture.lock().expect("feed picture") = Some(picture);
-    }
-    // the light off now, not when the last reference goes
-    let _ = camera.stop_stream();
-}
-
-/// What a failure's words say, as a status: nokhwa reports every failure
-/// as text. `open`: the device was open (a vanished one is gone).
-/// ponytail: reads the OS's error text; nokhwa 0.11's typed errors are the
-/// upgrade.
-fn fault(error: &str, open: bool) -> Status {
-    let lower = error.to_lowercase();
-    if lower.contains("busy") {
-        Status::Busy
-    } else if lower.contains("permission") || lower.contains("denied") {
-        Status::Denied
-    } else if lower.contains("no such") || lower.contains("not found") {
-        if open { Status::Gone } else { Status::NoDevice }
-    } else if open {
-        Status::Gone
-    } else {
-        Status::Failed(
-            error
-                .lines()
-                .next()
-                .unwrap_or_default()
-                .chars()
-                .take(200)
-                .collect(),
-        )
-    }
-}
-
-/// Packed 4:2:2 (Y0 U Y1 V, BT.601 video range) to BGRA. A buffer whose
-/// rows are padded is read by its stride.
-pub(crate) fn yuyv_to_bgra(src: &[u8], width: u32, height: u32, mirror: bool) -> Option<Picture> {
-    let (w, h) = (width as usize, height as usize);
-    if w < 2 || h == 0 || src.len() < w * 2 * h {
-        return None;
-    }
-    let stride = src.len() / h;
-    let mut bgra = vec![0u8; w * h * 4];
-    for (y, out) in bgra.chunks_exact_mut(w * 4).enumerate() {
-        let row = &src[y * stride..y * stride + w * 2];
-        for x in 0..w {
-            let pair = &row[(x & !1) * 2..(x & !1) * 2 + 4];
-            let luma = pair[if x & 1 == 0 { 0 } else { 2 }];
-            let (b, g, r) = yuv(luma, pair[1], pair[3]);
-            let at = if mirror { w - 1 - x } else { x } * 4;
-            out[at..at + 4].copy_from_slice(&[b, g, r, 255]);
-        }
-    }
-    Some(Picture {
-        width,
-        height,
-        bgra,
-    })
-}
-
-fn yuv(y: u8, u: u8, v: u8) -> (u8, u8, u8) {
-    let c = (i32::from(y) - 16) * 298;
-    let d = i32::from(u) - 128;
-    let e = i32::from(v) - 128;
-    let clamp = |value: i32| ((value + 128) >> 8).clamp(0, 255) as u8;
-    (
-        clamp(c + 516 * d),
-        clamp(c - 100 * d - 208 * e),
-        clamp(c + 409 * e),
-    )
-}
-
-fn jpeg_to_bgra(src: &[u8], mirror: bool) -> Option<Picture> {
-    let decoded = image::load_from_memory_with_format(src, image::ImageFormat::Jpeg).ok()?;
-    let mut rgba = decoded.to_rgba8();
-    if mirror {
-        image::imageops::flip_horizontal_in_place(&mut rgba);
-    }
-    let (width, height) = rgba.dimensions();
-    let mut bgra = rgba.into_raw();
-    for pixel in bgra.chunks_exact_mut(4) {
-        pixel.swap(0, 2);
-    }
-    Some(Picture {
-        width,
-        height,
-        bgra,
-    })
 }
 
 // ---------- microphones and speakers ----------
@@ -729,27 +634,6 @@ fn tracing_error(what: &str, error: &dyn std::fmt::Display) {
 mod tests {
     use super::*;
 
-    /// Grey, white and a mirrored pair come out of 4:2:2 as BGRA.
-    #[test]
-    fn yuyv_turns_into_bgra_and_mirrors() {
-        // two pixels: black (Y 16) then white (Y 235), no colour
-        let src = [16, 128, 235, 128];
-        let plain = yuyv_to_bgra(&src, 2, 1, false).unwrap();
-        assert_eq!(plain.bgra, [0, 0, 0, 255, 255, 255, 255, 255]);
-        let mirrored = yuyv_to_bgra(&src, 2, 1, true).unwrap();
-        assert_eq!(mirrored.bgra, [255, 255, 255, 255, 0, 0, 0, 255]);
-        // pure red in BT.601 video range: Y 81, U 90, V 240
-        let red = yuyv_to_bgra(&[81, 90, 81, 240], 2, 1, false).unwrap();
-        let [b, g, r, _] = red.bgra[..4] else {
-            unreachable!()
-        };
-        assert!(r > 250 && g < 5 && b < 5, "{:?}", &red.bgra[..4]);
-        // a short buffer is no picture; a padded row is read by its stride
-        assert!(yuyv_to_bgra(&src[..3], 2, 1, false).is_none());
-        let padded = [16, 128, 235, 128, 0, 0, 16, 128, 235, 128, 0, 0];
-        assert_eq!(yuyv_to_bgra(&padded, 2, 2, false).unwrap().bgra.len(), 16);
-    }
-
     /// One loopback card's ALSA names come down to the default and one
     /// row per card and device.
     #[cfg(target_os = "linux")]
@@ -822,17 +706,101 @@ mod tests {
         );
     }
 
+    /// A camera that delivers a few frames.
+    struct Fake {
+        frames: usize,
+        released: Arc<AtomicBool>,
+    }
+
+    impl Source for Fake {
+        fn next(&mut self, wait: Duration, wanted: bool, _: bool) -> Result<Got, Status> {
+            if self.frames == 0 {
+                std::thread::sleep(wait);
+                return Ok(Got::Nothing);
+            }
+            self.frames -= 1;
+            std::thread::sleep(Duration::from_millis(33));
+            Ok(match wanted {
+                true => Got::Picture(Picture {
+                    width: 1,
+                    height: 1,
+                    bgra: vec![0; 4],
+                }),
+                false => Got::Frame,
+            })
+        }
+    }
+
+    impl Drop for Fake {
+        fn drop(&mut self) {
+            self.released.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Runs `stream` over a fake camera on a thread of its own.
+    fn streaming(frames: usize, wanted: bool) -> (Arc<CameraFeed>, Arc<AtomicBool>) {
+        let feed = Arc::new(CameraFeed::default());
+        feed.wanted.store(wanted, Ordering::Relaxed);
+        let released = Arc::new(AtomicBool::new(false));
+        let camera = Fake {
+            frames,
+            released: released.clone(),
+        };
+        let running = feed.clone();
+        std::thread::spawn(move || stream(camera, &running));
+        (feed, released)
+    }
+
+    fn status(feed: &CameraFeed) -> Status {
+        feed.status.lock().unwrap().0.clone()
+    }
+
+    /// Waits up to `limit` for `feed`'s status to become `want`.
+    fn wait_for(feed: &CameraFeed, want: &Status, limit: Duration) -> Option<Instant> {
+        let deadline = Instant::now() + limit;
+        while Instant::now() < deadline {
+            if &status(feed) == want {
+                return Some(Instant::now());
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        None
+    }
+
+    /// THE HEADLINE: a live camera that stops delivering is told Gone
+    /// [`QUIET`] after its last frame, and is released by then.
     #[test]
-    fn a_failure_reads_as_a_status() {
-        assert_eq!(
-            fault("Could not open device: Device or resource busy", false),
-            Status::Busy
+    fn a_camera_that_stops_delivering_is_gone_and_released() {
+        let (feed, released) = streaming(3, true);
+        let live = wait_for(&feed, &Status::Live, Duration::from_secs(1)).expect("live");
+        let gone = wait_for(&feed, &Status::Gone, QUIET * 3);
+        feed.stop.store(true, Ordering::Relaxed);
+        let gone = gone.unwrap_or_else(|| panic!("still {:?}", status(&feed)));
+        assert!(released.load(Ordering::SeqCst), "told Gone before release");
+        assert!(feed.picture.lock().unwrap().is_some());
+        // the last frame came about 2 x 33 ms after Live
+        let quiet = gone - live;
+        assert!(
+            quiet > QUIET && quiet < QUIET + Duration::from_millis(600),
+            "{quiet:?}"
         );
-        assert_eq!(
-            fault("open: Permission denied (os error 13)", false),
-            Status::Denied
-        );
-        assert_eq!(fault("No such device (os error 19)", true), Status::Gone);
-        assert_eq!(fault("No such file or directory", false), Status::NoDevice);
+    }
+
+    /// Stop releases the camera within one wait; a camera taken only
+    /// (nothing draws it) gives no pictures and is not mistaken for gone.
+    #[test]
+    fn stop_releases_at_once_and_a_hidden_camera_stays_live() {
+        let (feed, released) = streaming(usize::MAX, false);
+        wait_for(&feed, &Status::Live, Duration::from_secs(1)).expect("live");
+        std::thread::sleep(QUIET + Duration::from_millis(300));
+        assert_eq!(status(&feed), Status::Live);
+        assert!(feed.picture.lock().unwrap().is_none());
+        let stopped = Instant::now();
+        feed.stop.store(true, Ordering::Relaxed);
+        while !released.load(Ordering::SeqCst) {
+            assert!(stopped.elapsed() < SLICE * 2, "not released");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(status(&feed), Status::Live);
     }
 }

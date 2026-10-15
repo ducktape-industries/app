@@ -7,10 +7,12 @@
 //! the wire.
 //!
 //! Shape:
-//! - every device call is in [`backend`] (nokhwa, cpal): the seam another
-//!   backend replaces. Each piece runs its device on a thread of its own
-//!   that leaves pictures, the level and its status in a feed; the latest
-//!   picture wins.
+//! - every device call is in [`backend`] (cpal; the camera's stream loop)
+//!   over our own camera capture, `v4l2` on Linux and `mac` on macOS: the
+//!   seam another backend replaces. Each piece runs its device on a
+//!   thread of its own that leaves pictures, the level and its status in
+//!   a feed; the latest picture wins. A camera that stops delivering is
+//!   told gone within [`backend::QUIET`] and released.
 //! - the gpui side reads its feed on a 30 Hz timer while it lives and
 //!   redraws only on news: a new picture, a level that moved, a new state.
 //! - a piece's device is released when the piece is dropped: its thread
@@ -19,11 +21,18 @@
 //! Without feature `capture` the crate is empty (`Cargo.toml` says why).
 #![cfg(feature = "capture")]
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!(
+    "ducktape-av captures cameras on Linux (V4L2) and macOS (AVFoundation) only: build the app without `av` here"
+);
+
 mod backend;
 mod camera;
 #[cfg(target_os = "macos")]
 mod mac;
 mod meter;
+#[cfg(target_os = "linux")]
+mod v4l2;
 
 pub use backend::{Device, Playback, Status};
 pub use camera::{Camera, Fit};

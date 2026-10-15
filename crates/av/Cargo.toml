@@ -8,9 +8,12 @@
 # a `Meter`. Removing it is removing this crate and its callers
 # (`src/render/av.rs` says which).
 #
-# The device code is one file, `src/backend.rs` (nokhwa for cameras, cpal
-# for audio): the seam another backend replaces. The gpui side
-# (`camera.rs`, `meter.rs`) reads only what it leaves in a feed.
+# The device code is `src/backend.rs` (the seam: the camera's stream loop,
+# cpal for audio) over the camera capture we own: V4L2 on Linux
+# (`src/v4l2.rs`), AVFoundation on macOS (`src/mac.rs`). Another backend
+# replaces those. The gpui side (`camera.rs`, `meter.rs`) reads only what
+# they leave in a feed. Other systems (Windows) are not built with
+# `capture`: a build there goes without av.
 #
 # A workspace member, so every `--workspace` command builds it. Without
 # feature `capture` it is empty and has no dependencies: a default build
@@ -19,7 +22,7 @@
 #   cargo clippy --locked --workspace --all-targets --no-deps --features av -- -D warnings
 #   cargo test --locked -p ducktape-av --features capture
 #   cargo build --locked --features av
-# Linux needs ALSA's headers (libasound2-dev) and libclang (v4l's bindgen).
+# Linux needs ALSA's headers (libasound2-dev).
 
 [package]
 name = "ducktape-av"
@@ -28,23 +31,39 @@ version.workspace = true
 publish = false
 
 [features]
-capture = ["dep:gpui-kit", "dep:nokhwa", "dep:cpal", "dep:image", "dep:objc2", "dep:block2", "dep:objc2-foundation"]
+capture = [
+    "dep:gpui-kit", "dep:cpal", "dep:image", "dep:libc",
+    "dep:objc2", "dep:block2", "dep:objc2-foundation", "dep:objc2-av-foundation",
+    "dep:objc2-core-media", "dep:objc2-core-video", "dep:dispatch2",
+]
 
 [dependencies]
 gpui-kit = { version = "=0.7.3", optional = true }
-# cameras: V4L2 on Linux, AVFoundation on macOS, Media Foundation on
-# Windows. No `decoding` (mozjpeg, a C build): a MJPEG frame is decoded
-# by `image`'s pure-Rust JPEG decoder
-nokhwa = { version = "=0.10.11", default-features = false, features = ["input-native"], optional = true }
 # microphones and speakers: ALSA on Linux, Core Audio on macOS
 cpal = { version = "=0.18.2", optional = true }
+# the pictures gpui draws; on Linux also a MJPEG camera's frames, by its
+# pure-Rust JPEG decoder
 image = { version = "0.25", default-features = false, features = ["jpeg"], optional = true }
 
-# macOS: the microphone's permission, asked as nokhwa asks the camera's
+# Linux: the V4L2 calls (open, ioctl, mmap, poll), with our own few structs
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true, optional = true }
+
+# macOS: the camera and microphone permission, and the camera through
+# AVFoundation (a capture session, its frames as BGRA pixel buffers on a
+# dispatch queue of ours, the disconnect notifications)
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", optional = true }
 block2 = { version = "0.6", optional = true }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"], optional = true }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSString", "NSArray", "NSDictionary", "NSError", "NSNotification", "NSObject", "NSOperation", "NSValue"], optional = true }
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "dispatch2", "objc2-core-media", "AVCaptureDevice", "AVCaptureInput", "AVCaptureOutputBase", "AVCaptureSession", "AVCaptureSessionPreset", "AVCaptureVideoDataOutput", "AVError", "AVMediaFormat"], optional = true }
+objc2-core-media = { version = "0.3", default-features = false, features = ["std", "objc2-core-video", "CMSampleBuffer"], optional = true }
+objc2-core-video = { version = "0.3", default-features = false, features = ["std", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"], optional = true }
+dispatch2 = { version = "0.3", default-features = false, features = ["std", "objc2"], optional = true }
 
 [dev-dependencies]
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
+
+# a test's own pixel buffer, released
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std"] }
