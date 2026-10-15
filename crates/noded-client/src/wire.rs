@@ -16,7 +16,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::{SignError, Signer};
 
-pub const NODE_CONTRACT: u32 = 7;
+pub const NODE_CONTRACT: u32 = 8;
 pub const FRAME_NAMESPACE: &[u8] = b"ducktape:frame";
 
 pub mod route {
@@ -258,6 +258,7 @@ pub struct Change {
 pub struct Blocks {
     pub before: Option<u64>,
     pub limit: u32,
+    pub most: u32,
 }
 
 /// `wire::BlockRef`: a finalized block by height or by id.
@@ -265,6 +266,12 @@ pub struct Blocks {
 pub enum BlockRef {
     Height(u64),
     Id([u8; 32]),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct BlockAsk {
+    pub by: BlockRef,
+    pub most: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]

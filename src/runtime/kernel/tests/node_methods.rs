@@ -308,7 +308,13 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
             listed_from: Some(4),
         }
     );
-    server.join().unwrap();
+    let asked = server.join().unwrap();
+    let summaries = noded_client::wire::Blocks {
+        before: Some(10),
+        limit: 1,
+        most: 0,
+    };
+    assert_eq!(asked, [abi::encode(&summaries)]);
 
     let located = noded_client::wire::Located {
         height: 9,
@@ -360,7 +366,12 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
         methods::decode::<Option<methods::Block>>(&answer).unwrap(),
         None
     );
-    server.join().unwrap();
+    let asked = server.join().unwrap();
+    let summary = noded_client::wire::BlockAsk {
+        by: noded_client::wire::BlockRef::Id([8; 32]),
+        most: 0,
+    };
+    assert_eq!(asked, [abi::encode(&summary)]);
     assert_eq!(
         block(node, b"x".to_vec()).await.unwrap_err().code,
         refusal::MALFORMED_REQUEST

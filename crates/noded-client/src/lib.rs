@@ -30,7 +30,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 use wire::{
-    BlockRef, Blocks, Change, Finalized, Layer, Located, Network, Page, Preconfirm, Query, Receipt,
+    BlockAsk, Blocks, Change, Finalized, Layer, Located, Network, Page, Preconfirm, Query, Receipt,
     Status, Submit, Submitted, TxAsk, route,
 };
 
@@ -194,14 +194,12 @@ impl Client {
         .await
     }
 
-    /// Finalized blocks, newest first: below `before` (the tip when
-    /// `None`), at most `limit` (the node caps it).
     pub async fn blocks(&self, page: &Blocks) -> Result<Page> {
         self.post(route::BLOCKS, page).await
     }
 
-    pub async fn block(&self, by: &BlockRef) -> Result<Option<Finalized>> {
-        self.post(route::BLOCK, by).await
+    pub async fn block(&self, ask: &BlockAsk) -> Result<Option<Finalized>> {
+        self.post(route::BLOCK, ask).await
     }
 
     pub async fn tx(&self, ask: &TxAsk) -> Result<Option<Located>> {
