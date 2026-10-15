@@ -7,7 +7,7 @@ use super::*;
 impl ViewTree {
     /// The seat's picture bytes, handed with each root it draws: what a
     /// node that names a picture by hash alone draws.
-    pub(crate) fn set_pictures(&mut self, pictures: Arc<PictureBytes>) {
+    pub fn set_pictures(&mut self, pictures: Arc<PictureBytes>) {
         self.pictures = pictures;
     }
 
@@ -59,7 +59,7 @@ impl ViewTree {
     /// The view's new root and its style table, with the `Replace` asks
     /// the host still holds for it (target and the revision each read): a
     /// field's edit log is kept from the oldest ask on it.
-    pub(crate) fn replace(
+    pub fn replace(
         &mut self,
         tree: impl Into<Tree>,
         asked: &[(wire::WidgetTarget, u64)],

@@ -357,7 +357,7 @@ impl ViewTree {
                 *element.style() = (*style).clone();
                 let element =
                     crate::a11y::around_field(element, focused, crate::a11y::ink(cx)).child(words);
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 let element = {
                     use gpui_kit::test::TestSupportExt as _;
                     element.test_support()
@@ -823,7 +823,7 @@ impl Field {
             && self
                 .claims
                 .iter()
-                .any(|claim| claim.matches(&key, cfg!(target_os = "macos")))
+                .any(|claim| claim.matches(&key, crate::contract::os().facts().mac_modifiers))
         {
             return Pressed::Claimed(wire::Event::KeyDown {
                 handler,

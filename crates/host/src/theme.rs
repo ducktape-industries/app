@@ -1,11 +1,10 @@
 //! The product theme on gpui-kit: its light and dark configs from the
-//! design crate, the app's font families, scrollbars always shown. Also
-//! the room macOS's traffic lights take (`traffic_lights`). The fonts
-//! themselves live in `crate::fonts` and are registered by `launch`.
+//! design crate, the app's font families, scrollbars always shown. The
+//! fonts themselves live in `crate::fonts`; the shell registers them.
 
 /// Loads the product theme (once) and makes it the kit's light and dark
 /// theme, then re-applies the current mode.
-pub(super) fn configure_native_theme(cx: &mut gpui_kit::App) {
+pub fn configure_native_theme(cx: &mut gpui_kit::App) {
     use gpui_kit::component::{Theme, ThemeRegistry};
     let registry = ThemeRegistry::global_mut(cx);
     let registered = registry.themes().contains_key(design::LIGHT_THEME);
@@ -57,14 +56,7 @@ fn hsla_of(color: design::Color) -> gpui_kit::Hsla {
     gpui_kit::Rgba { r, g, b, a }.into()
 }
 
-/// The room macOS's traffic lights take at a title bar's left end, when
-/// this window draws the bar itself (macOS, not fullscreen); `None`
-/// elsewhere, where the system draws the title bar.
-pub(super) fn traffic_lights(window: &gpui_kit::Window) -> Option<f32> {
-    (cfg!(target_os = "macos") && !window.is_fullscreen()).then_some(78.)
-}
-
-pub(crate) use crate::fonts::{FAMILY_MONO, FAMILY_UI};
+pub use crate::fonts::{FAMILY_MONO, FAMILY_UI};
 
 /// The scrollbars stay shown through a light/dark switch: the mode lives on
 /// the kit theme, which every `Theme::change` projects onto the base theme

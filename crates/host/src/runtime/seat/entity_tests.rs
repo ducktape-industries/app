@@ -2,12 +2,29 @@
 //! `layers::PaneView` does: its tree, cached, or its standin.
 use super::tests::eventually;
 use super::*;
-use crate::ui::layout::Pane;
 use gpui_kit::{
     Entity, IntoElement, ParentElement as _, Render, Styled as _, Subscription, TestAppContext,
     VisualTestContext, div, px, size,
 };
 use std::time::Duration;
+
+/// A pane instance of this test's own, as `ui::layout::Pane::new` hands the
+/// shell one: unique for the process.
+fn instance() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Counts `entity`'s notifies while the subscription lives.
+fn notifies<T: 'static>(
+    entity: &Entity<T>,
+    cx: &mut TestAppContext,
+) -> (std::rc::Rc<std::cell::Cell<usize>>, gpui_kit::Subscription) {
+    let seen = std::rc::Rc::new(std::cell::Cell::new(0));
+    let count = seen.clone();
+    let observing = cx.update(|cx| cx.observe(entity, move |_, _| count.set(count.get() + 1)));
+    (seen, observing)
+}
 
 struct Root {
     seat: Entity<Seat>,
@@ -69,7 +86,7 @@ fn another(
     selection_layer: bool,
 ) -> (Entity<Seat>, Entity<Root>, VisualTestContext) {
     let window = cx.open_window(size(px(400.), px(300.)), |window, cx| {
-        let seat = cx.new(|cx| Seat::new(program, Pane::new(program).instance, cx));
+        let seat = cx.new(|cx| Seat::new(program, instance(), cx));
         seat.update(cx, |seat, cx| {
             seat.place(window.window_handle(), Some((400., 300.)), true, cx)
         });
@@ -345,7 +362,7 @@ fn a_busy_frame_turns_once_per_frame(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_seat_turns_when_its_props_move_and_not_otherwise(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
-    let seat = cx.new(|cx| Seat::new("props-turn-test", Pane::new("props-turn-test").instance, cx));
+    let seat = cx.new(|cx| Seat::new("props-turn-test", instance(), cx));
     seat.update(cx, |seat, cx| seat.set_props(b"one".to_vec(), cx));
     cx.run_until_parked();
     assert_eq!(turns_of(&seat, cx), 1);
@@ -431,7 +448,7 @@ fn a_load_that_lands_wakes_the_seat() {
 fn a_stage_change_and_a_retry_each_turn_the_seat_once(cx: &mut TestAppContext) {
     const PROGRAM: &str = "stage-retry-test";
     let (seat, _, mut native) = open(cx, PROGRAM, false);
-    let (notifies, _watch) = crate::shell::entities::tests::notifies(&seat, &mut native);
+    let (notifies, _watch) = notifies(&seat, &mut native);
     let mounted = mounted_of(&seat, &native);
     let turns = turns_of(&seat, &native);
     let words = |native: &TestAppContext| {
@@ -527,7 +544,7 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
     // the focus itself, not the reply.
     cx.update(gpui_kit::init);
     let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
-        let seat = cx.new(|cx| Seat::new(PROGRAM, Pane::new(PROGRAM).instance, cx));
+        let seat = cx.new(|cx| Seat::new(PROGRAM, instance(), cx));
         Root {
             seat: seat.clone(),
             selection_layer: false,
@@ -1171,7 +1188,7 @@ fn a_seat_claimed_or_dropped_wakes_the_rail(cx: &mut TestAppContext) {
         }
         n
     };
-    let seat = cx.new(|cx| Seat::new("rail-wake-seat", Pane::new("rail-wake-seat").instance, cx));
+    let seat = cx.new(|cx| Seat::new("rail-wake-seat", instance(), cx));
     assert!(woken() > 0, "a claimed seat told the rail nothing");
     let key = seat.read_with(cx, |seat, _| (seat.program(), seat.instance()));
     // a retry (Loading again) and the load it starts (no node: a failure

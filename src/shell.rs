@@ -28,7 +28,7 @@ pub(crate) mod entities;
 mod figure;
 mod help;
 pub(crate) use help::chords;
-#[cfg(any(test, feature = "ax-door"))]
+#[cfg(feature = "ax-door")]
 pub(crate) use layers::Kept;
 mod ink;
 mod keys;
@@ -57,8 +57,11 @@ mod spin;
 mod theme;
 
 use crate::fonts::BUNDLED_FACES;
+
+/// Not on macOS: CoreGraphics cannot load Noto's CBDT color font, and macOS
+/// supplies its own emoji.
 #[cfg(not(target_os = "macos"))]
-use crate::fonts::EMOJI_FACE;
+const EMOJI_FACE: &[u8] = include_bytes!("../assets/fonts/NotoColorEmoji.ttf");
 use theme::configure_native_theme;
 
 pub(crate) use crate::runtime::WindowKey;

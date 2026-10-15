@@ -137,18 +137,18 @@ pub fn aria<E: InteractiveElement>(mut element: E, set: impl FnOnce(Aria<'_>) ->
 /// fields a view sets directly.
 #[derive(Clone, Default, PartialEq)]
 pub struct Patch {
-    pub(crate) modal: bool,
-    pub(crate) live: Option<Live>,
-    pub(crate) busy: bool,
-    pub(crate) required: bool,
-    pub(crate) read_only: bool,
-    pub(crate) invalid: Option<Invalid>,
-    pub(crate) has_popup: Option<HasPopup>,
-    pub(crate) current: Option<AriaCurrent>,
+    pub modal: bool,
+    pub live: Option<Live>,
+    pub busy: bool,
+    pub required: bool,
+    pub read_only: bool,
+    pub invalid: Option<Invalid>,
+    pub has_popup: Option<HasPopup>,
+    pub current: Option<AriaCurrent>,
     /// `(id, description)`, each requested as `Action::CustomAction`.
-    pub(crate) custom_actions: Vec<(i32, String)>,
-    pub(crate) class_name: Option<&'static str>,
-    pub(crate) fallback: bool,
+    pub custom_actions: Vec<(i32, String)>,
+    pub class_name: Option<&'static str>,
+    pub fallback: bool,
 }
 
 impl Patch {

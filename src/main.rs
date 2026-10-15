@@ -1,17 +1,15 @@
-mod a11y;
-mod ui;
-
+// the host core, shared with the phone: `crate::render`, `crate::runtime`,
+// ... name its modules, so the shell reads as it did when they were here
 // the AX test door: in a build with the `ax-door` feature only (kit and qa),
 // and in the tests, which read the trees it reads
 #[cfg(any(test, feature = "ax-door"))]
-mod ax;
+use ducktape_host::ax;
+use ducktape_host::{a11y, fonts, perf, render, runtime};
 mod backend;
-mod fonts;
-mod perf;
-mod render;
-mod runtime;
+mod os;
 mod shell;
 mod tray;
+mod ui;
 mod update;
 
 fn main() {
@@ -36,6 +34,7 @@ fn main() {
         // the test door's client: talks to a running app, opens nothing
         #[cfg(feature = "ax-door")]
         Some("ax") => {
+            install_os();
             let args: Vec<String> = std::env::args().skip(2).collect();
             std::process::exit(ax::cli(&args));
         }
@@ -67,16 +66,13 @@ fn main() {
         }
         _ => {}
     }
+    install_os();
     install_log();
     perf::mark("log");
     // the self-update's boot step: flip to a staged release, or back from
     // one that never came up, and exec the release that should run
     update::boot();
     raise_open_file_limit();
-    // no view ships with the app: every one comes off the connected node.
-    // A view developer's DUCKTAPE_VIEWS_DIR supplies files in their place,
-    // and app.log says so for each one it supplies
-    runtime::override_views_from(std::env::var_os("DUCKTAPE_VIEWS_DIR").map(Into::into));
     #[cfg(debug_assertions)]
     if let Some(live) = live {
         shell::run_live(live);
@@ -85,6 +81,19 @@ fn main() {
     }
     shell::run();
     render::web::shutdown();
+}
+
+/// The desktop's OS services into the host core, before anything reads a
+/// directory. No home to put them in is a refusal with the sentence that
+/// names the variable to set, not a GUI that starts and finds nothing.
+fn install_os() {
+    match os::DesktopOs::new() {
+        Ok(os) => ducktape_host::contract::install(std::sync::Arc::new(os)),
+        Err(error) => {
+            eprintln!("ducktape-app: {error}");
+            std::process::exit(2);
+        }
+    }
 }
 
 /// macOS launches a GUI with a 256-fd soft limit; the app's stores and

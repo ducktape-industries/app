@@ -75,7 +75,7 @@ async fn validators(
     network: &str,
     program: &str,
 ) -> Result<Vec<Vec<u8>>, view_wire::Error> {
-    let frame = query_frame(network, program, abi::encode(&valset::Query::Validators)).await;
+    let frame = query_frame(network, program, abi::encode(&valset::Query::Validators)).await?;
     let reply = client
         .query(Layer::Preconfirmed, frame)
         .await
@@ -112,5 +112,116 @@ mod tests {
         assert_eq!(key.public_key(), expected.public_key());
         std::fs::write(workspace.path().join(NODE_KEY), "not hex").unwrap();
         assert!(node_key(workspace.path()).is_err());
+    }
+
+    /// A node on a local socket whose routes each answer `200 OK` with one
+    /// body, one thread per connection; a request line names its route by
+    /// prefix.
+    fn fake_node(routes: Vec<(&'static str, Vec<u8>)>) -> RpcClient {
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = RpcClient::new(format!("http://{}", listener.local_addr().unwrap()));
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let routes = routes.clone();
+                std::thread::spawn(move || {
+                    let mut request = String::new();
+                    std::io::BufReader::new(&stream)
+                        .read_line(&mut request)
+                        .unwrap();
+                    let path = request.split_whitespace().nth(1).unwrap_or_default();
+                    let body = routes
+                        .iter()
+                        .find(|(route, _)| path.starts_with(route))
+                        .map(|(_, body)| body.clone())
+                        .unwrap_or_default();
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .unwrap();
+                    stream.write_all(&body).unwrap();
+                });
+            }
+        });
+        client
+    }
+
+    fn seeded_key(seed: u8) -> commonware_cryptography::ed25519::PrivateKey {
+        use commonware_codec::DecodeExt as _;
+        commonware_cryptography::ed25519::PrivateKey::decode([seed; 32].as_slice()).unwrap()
+    }
+
+    fn validator_node(identity: &[u8], validators: Vec<Vec<u8>>) -> RpcClient {
+        let status = noded_client::wire::Status {
+            network: "test-network".into(),
+            time: 12,
+            block_time_ms: 1000,
+            epoch_length: 64,
+            height: 9,
+            tip: [2; 32],
+            root: abi::Root([3; 32]),
+            epoch: 0,
+            identity: identity.to_vec(),
+            contract: noded_client::wire::NODE_CONTRACT,
+            genesis: [5; 32],
+            roles: crate::backend::test_roles(),
+        };
+        fake_node(vec![
+            (noded_client::wire::route::STATUS, abi::encode(&status)),
+            (
+                noded_client::wire::route::QUERY,
+                abi::encode(&abi::encode(&valset::Reply::Validators(validators))),
+            ),
+        ])
+    }
+
+    #[tokio::test]
+    async fn an_invite_is_the_validator_nodes_signed_grant_for_its_network() {
+        use abi::role::validators::{INVITE_NAMESPACE, Invite};
+        use commonware_codec::DecodeExt as _;
+        use commonware_cryptography::{Signer as _, Verifier as _, ed25519};
+        let key = seeded_key(7);
+        let identity = key.public_key().as_ref().to_vec();
+        let held = validator_node(&identity, vec![vec![1; 32], identity.clone()]);
+        let now = 1_000_000;
+        let hex = mint(&held, Some(key.clone()), 7, now).await.unwrap();
+        let invite: Invite = abi::decode(&noded_client::hex::hex_decode(&hex).unwrap()).unwrap();
+        assert_eq!(invite.issuer, identity);
+        assert_eq!(invite.grant.network, b"test-network");
+        assert_eq!(invite.grant.expires, now + 7 * 24 * 60 * 60 * 1000);
+        let signature = ed25519::Signature::decode(invite.signature.as_slice()).unwrap();
+        assert!(
+            key.public_key()
+                .verify(INVITE_NAMESPACE, &invite.grant.preimage(), &signature)
+        );
+        let again = mint(&held, Some(key), 7, now).await.unwrap();
+        let again: Invite = abi::decode(&noded_client::hex::hex_decode(&again).unwrap()).unwrap();
+        assert_ne!(again.grant.nonce, invite.grant.nonce);
+    }
+
+    #[tokio::test]
+    async fn only_the_machine_running_a_validator_node_mints_its_invites() {
+        use commonware_cryptography::Signer as _;
+        let key = seeded_key(7);
+        let identity = key.public_key().as_ref().to_vec();
+        let held = validator_node(&identity, vec![identity.clone()]);
+        for key in [None, Some(seeded_key(8))] {
+            let refusal = mint(&held, key, 7, 0).await.unwrap_err();
+            assert_eq!(refusal.code, refusal::INVITE_UNSUPPORTED);
+            assert_eq!(
+                refusal.message,
+                "Only the machine running this node can mint its invites."
+            );
+        }
+        let resident = validator_node(&identity, vec![vec![1; 32]]);
+        let refusal = mint(&resident, Some(key), 7, 0).await.unwrap_err();
+        assert_eq!(refusal.code, refusal::INVITE_UNSUPPORTED);
+        assert_eq!(
+            refusal.message,
+            "Only a validator's node can mint invites, and this node is a resident."
+        );
     }
 }

@@ -42,8 +42,8 @@ mod settings;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use center::{CenterHandle, Entry, Notice, center, wall};
-pub(crate) use settings::{
+pub use center::{CenterHandle, Entry, Notice, center, wall};
+pub use settings::{
     BURSTS, Permission, Settings, not_now, save_banners, save_burst, save_in_front, set_permission,
 };
 
@@ -108,7 +108,7 @@ fn post(view: &mut View, center: &CenterHandle, id: u64, payload: &[u8]) {
     let raised = banner.map(|notice| {
         let (tell, told) = tokio::sync::oneshot::channel();
         in_order(view.program, move || {
-            let _ = tell.send(platform::post(&notice, entry.map(Click::Row)));
+            let _ = tell.send(banners().post(&notice, entry.map(Click::Row)));
         });
         told
     });
@@ -141,14 +141,14 @@ fn seen(view: &mut View, id: u64, payload: &[u8]) {
     }
     if !tag.is_empty() {
         let tag = format!("{}/{tag}", view.program);
-        in_order(view.program, move || platform::withdraw(&tag));
+        in_order(view.program, move || banners().withdraw(&tag));
     }
     view.reply(id, Ok(methods::encode(&())));
 }
 
 /// What a click on a banner opens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Click {
+pub enum Click {
     /// A centre row, as if picked in the centre.
     Row(u64),
     /// Settings › Updates: the host's own update notice.
@@ -156,7 +156,7 @@ pub(crate) enum Click {
 }
 
 /// What a click asks the shell to open.
-pub(crate) enum Opened {
+pub enum Opened {
     /// A `duck://` link, for `Windows::open_link`.
     Link(String),
     /// Settings › Updates.
@@ -168,13 +168,14 @@ pub(crate) enum Opened {
 static OPEN: OnceLock<fn(Opened)> = OnceLock::new();
 
 /// The shell says how what a banner click opens reaches `Windows`.
-pub(crate) fn on_open(open: fn(Opened)) {
+pub fn on_open(open: fn(Opened)) {
     let _ = OPEN.set(open);
 }
 
-/// A banner clicked. A row opens as if picked in the centre — read now, and
-/// its `duck://` link opened (the view's seat, when it carried none).
-fn clicked(click: Click) {
+/// A banner clicked (the shell's `Banners` impl calls this). A row opens as
+/// if picked in the centre — read now, and its `duck://` link opened (the
+/// view's seat, when it carried none).
+pub fn clicked(click: Click) {
     let opened = match click {
         Click::Row(entry) => {
             let Some(entry) = center().lock().open(entry) else {
@@ -200,23 +201,28 @@ fn clicked(click: Click) {
 /// processes raised it: a newer one takes its place, and [`withdraw_host`]
 /// takes it down. Blocks on the OS call, so the caller is a thread of its
 /// own. Whether it went up.
-pub(crate) fn post_host(notice: &Notice) -> bool {
-    Settings::load().banners && platform::post(notice, Some(Click::Updates))
+pub fn post_host(notice: &Notice) -> bool {
+    Settings::load().banners && banners().post(notice, Some(Click::Updates))
 }
 
 /// The host's notice down, whichever process raised it. Blocks on the OS
 /// call, as [`post_host`] does.
-pub(crate) fn withdraw_host() {
-    platform::withdraw_host();
+pub fn withdraw_host() {
+    banners().withdraw_host();
+}
+
+/// The shell's banners (`OsServices::banners`).
+fn banners() -> &'static dyn crate::contract::Banners {
+    crate::contract::os().banners()
 }
 
 /// A banner request's identifier, new across processes and not only within
 /// one: macOS replaces a delivered banner when a new request carries its
 /// identifier, so one that restarts with every process takes down, unseen,
 /// a banner an earlier process left standing. This process's token, then a
-/// count within it.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn request_id() -> String {
+/// count within it. For a shell's `Banners` impl whose OS keys banners by
+/// such an identifier.
+pub fn request_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static PROCESS: OnceLock<String> = OnceLock::new();
     static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -236,17 +242,3 @@ fn process_token(pid: u32, started: std::time::SystemTime) -> String {
         .map_or(0, |since| since.as_nanos());
     format!("{pid:x}-{nanos:x}")
 }
-
-// Each platform module exposes `post(&Notice, click: Option<Click>) -> raised`
-// and `withdraw(tag)`. Both block on OS calls; a view's run only through
-// `in_order` under the view's program, on the blocking pool, and the host's
-// on the thread that posts it. A click on a banner calls back
-// `clicked(click)`.
-#[cfg(target_os = "macos")]
-mod macos;
-#[cfg(target_os = "macos")]
-use macos as platform;
-#[cfg(not(target_os = "macos"))]
-mod freedesktop;
-#[cfg(not(target_os = "macos"))]
-use freedesktop as platform;

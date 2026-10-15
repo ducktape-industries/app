@@ -104,6 +104,7 @@ pub(super) type Answer = Result<Vec<u8>, wire::Error>;
 
 mod describe;
 mod node;
+pub use node::Answered;
 mod replies;
 
 pub(super) use node::{NodeTask, reconnected, spawn_reply};
@@ -386,7 +387,7 @@ pub(super) fn answer(
 
 /// A `host.title` as the window shows it, one line of the view's own text
 /// ([`plain`] chars), no space at either end.
-pub(crate) fn shown_title(title: &str) -> String {
+pub fn shown_title(title: &str) -> String {
     let title: String = title.chars().filter(plain).collect();
     title.trim().to_owned()
 }
@@ -395,7 +396,7 @@ pub(crate) fn shown_title(title: &str) -> String {
 /// control character, no bidi embedding, override or isolate (each
 /// reorders what follows it), no line or paragraph separator. Direction
 /// marks and joiners stay: an RTL name or an emoji needs them.
-pub(crate) fn plain(c: &char) -> bool {
+pub fn plain(c: &char) -> bool {
     !(c.is_control()
         || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
         || matches!(c, '\u{2028}' | '\u{2029}'))
@@ -412,7 +413,7 @@ fn openable(link: &str) -> bool {
 
 /// The UTC offset in seconds the OS keeps for the local time at unix
 /// second `wall`.
-pub(crate) fn local_offset(wall: i64) -> i64 {
+pub fn local_offset(wall: i64) -> i64 {
     let time = wall as libc::time_t;
     // SAFETY: `localtime_r` writes only the `tm` it is handed.
     unsafe {
@@ -425,7 +426,7 @@ pub(crate) fn local_offset(wall: i64) -> i64 {
 }
 
 /// Unix second `seconds` as its UTC day: `27 Sep 2026`.
-pub(crate) fn day(seconds: u64) -> String {
+pub fn day(seconds: u64) -> String {
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];

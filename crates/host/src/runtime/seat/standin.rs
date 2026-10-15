@@ -6,11 +6,11 @@ use super::*;
 /// of a view, or why there is none — named, with Retry where a retry helps.
 /// Compared: the seat notifies only when the words move.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Standin {
-    pub(crate) title: Option<&'static str>,
-    pub(crate) words: String,
-    pub(crate) loading: bool,
-    pub(crate) retry: bool,
+pub struct Standin {
+    pub title: Option<&'static str>,
+    pub words: String,
+    pub loading: bool,
+    pub retry: bool,
 }
 
 impl From<String> for Standin {
@@ -64,7 +64,7 @@ impl Standin {
     /// moves when it seats — and a failed one says what failed, why, and
     /// offers Retry, which asks the seat's view for again (`retry`) and so
     /// turns the seat.
-    pub(crate) fn element(
+    pub fn element(
         &self,
         program: &'static str,
         instance: u64,

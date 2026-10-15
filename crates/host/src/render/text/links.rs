@@ -17,11 +17,11 @@ use std::rc::Rc;
 
 /// What the host keeps for a text with links between frames: the box's
 /// focus handle, and which link the arrows picked.
-pub(crate) struct Links {
-    pub(crate) focus: FocusHandle,
-    pub(crate) picked: Rc<Cell<usize>>,
+pub struct Links {
+    pub focus: FocusHandle,
+    pub picked: Rc<Cell<usize>>,
     /// Set by the render that draws it; a render that does not drops it.
-    pub(crate) drawn: bool,
+    pub drawn: bool,
 }
 
 /// A press on a range: the view's handler hears the range's click, as a

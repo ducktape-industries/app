@@ -52,12 +52,12 @@ pub(crate) async fn create_account(
         Query::OfKey {
             key: device.clone(),
         },
-        &query_signer(),
+        &*query_signer(),
     )
     .await?
     {
         Reply::Number(Some(number)) => {
-            person(&account_by_number(client, network, number, &query_signer()).await?)?;
+            person(&account_by_number(client, network, number, &*query_signer()).await?)?;
             number
         }
         _ => create_seated(client, network, name).await?,
@@ -73,7 +73,7 @@ pub(crate) async fn create_account(
         abi::Scheme::Secp256r1,
         passkey.clone(),
         number,
-        &query_signer(),
+        &*query_signer(),
     )
     .await?;
     let (device, proof) = seated_sign(CONSENT_NAMESPACE, &admission.preimage())
@@ -105,7 +105,7 @@ pub(crate) async fn create_account(
 pub(crate) async fn sign_in(client: &RpcClient, network: &str) -> Result<(), String> {
     let hint = asserted(rand::random(), "1/2").await?;
     let number = account_of_handle(network, hint.user_handle.as_deref())?;
-    let account = account_by_number(client, network, number, &query_signer()).await?;
+    let account = account_by_number(client, network, number, &*query_signer()).await?;
     person(&account)?;
     let device = seated_key().await.map_err(|refusal| refusal.message)?;
     let admission = admission(
@@ -114,7 +114,7 @@ pub(crate) async fn sign_in(client: &RpcClient, network: &str) -> Result<(), Str
         abi::Scheme::Ed25519,
         device.clone(),
         number,
-        &query_signer(),
+        &*query_signer(),
     )
     .await?;
     let preimage = admission.preimage();

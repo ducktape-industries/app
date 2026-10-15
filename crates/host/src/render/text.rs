@@ -384,7 +384,7 @@ impl ViewTree {
         // itself has no AX node, so it is not a second, empty-named node
         // carrying the same content as its value.
         let element = announce(element.child(styled), accessible(node));
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let element = {
             use gpui_kit::test::TestSupportExt as _;
             element.test_support()

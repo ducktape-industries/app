@@ -167,7 +167,7 @@ pub(super) struct ViewCode {
     pub(super) targets: Vec<String>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl ViewCode {
     /// An empty program no blob lists, its manifest saying `name`, `icon`
     /// and `min_width`: a seat's compiled view no pane starts as it is.
@@ -203,7 +203,7 @@ impl Slot {
 /// Why a seat has no view, by name — the tab says it above the reason and
 /// offers Retry. The reason is the load's own sentence.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Failure {
+pub enum Failure {
     /// The node could not be asked, or does not hold the bytes (yet).
     Unreachable(String),
     /// The bytes do not hash to the code the programs role names.
@@ -222,7 +222,7 @@ pub(crate) enum Failure {
 /// What a view and the screen hear when the node did not answer — a load that
 /// could not ask, or a request that ran out of retries. The transport's own
 /// text stays in the log.
-pub(crate) const NODE_UNREACHABLE: &str = "The node could not be reached";
+pub const NODE_UNREACHABLE: &str = "The node could not be reached";
 
 impl Failure {
     pub(super) fn title(&self) -> &'static str {
@@ -315,7 +315,7 @@ pub(super) fn mounted(program: &'static str, instance: u64) -> Arc<Mutex<Mounted
 /// again now, under a new generation, past any hold-off a block's retries
 /// left. A failure goes back to loading, and a stopped view gives up its
 /// seat, so what lands is a fresh instance rather than a swap against it.
-pub(crate) fn retry(program: &'static str, instance: u64) {
+pub fn retry(program: &'static str, instance: u64) {
     let code = roster().code(program);
     let registry = lock(registry());
     let Some(seat) = registry.get(&(program, instance)).cloned() else {
@@ -796,16 +796,10 @@ impl LoadTiming {
 /// reads out of `DUCKTAPE_VIEWS_DIR`. While it is set, `<id>_view.wasm` in
 /// it is loaded for any view the app seats, in place of the network's
 /// bytes — unverified, and said so in app.log each time it is loaded.
-pub(super) static VIEW_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
-
-/// Sets (or, with `None`, clears) the developer's override directory.
-pub fn override_views_from(dir: Option<PathBuf>) {
-    *VIEW_OVERRIDE.lock().expect("view override") = dir;
-}
-
-/// The file the developer's override supplies for `program`, if any.
+/// The file the developer's override directory (`Dirs::views_override`)
+/// supplies for `program`, if any.
 pub(super) fn view_override(program: &str) -> Option<PathBuf> {
-    let dir = VIEW_OVERRIDE.lock().expect("view override").clone()?;
+    let dir = crate::backend::dirs().views_override.as_ref()?;
     let path = dir.join(format!("{program}_view.wasm"));
     path.is_file().then_some(path)
 }
@@ -813,7 +807,7 @@ pub(super) fn view_override(program: &str) -> Option<PathBuf> {
 mod entity;
 mod standin;
 
-pub(crate) use entity::Seat;
+pub use entity::Seat;
 
 #[cfg(test)]
 mod entity_tests;

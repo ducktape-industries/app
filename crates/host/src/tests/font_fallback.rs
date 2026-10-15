@@ -1,10 +1,14 @@
 //! Exercise the same Linux platform text system used by the native app.
-use super::{BUNDLED_FACES, EMOJI_FACE, fallback_chain, mono_fallback_chain};
+use super::{BUNDLED_FACES, fallback_chain, mono_fallback_chain};
 use gpui_kit::{FontRun, FontStyle, FontWeight, PlatformTextSystem, font, px};
 use gpui_wgpu::CosmicTextSystem;
 use std::borrow::Cow;
 
-pub(crate) fn text_system() -> CosmicTextSystem {
+/// Noto's CBDT color font: the face the Linux desktop registers beside the
+/// bundled ones (macOS supplies its own emoji; CoreGraphics cannot load it).
+const EMOJI_FACE: &[u8] = include_bytes!("../../../../assets/fonts/NotoColorEmoji.ttf");
+
+pub fn text_system() -> CosmicTextSystem {
     // No installed fonts: the application must be sufficient on a fresh Linux host.
     let system = CosmicTextSystem::new_without_system_fonts(super::FAMILY_UI);
     system

@@ -4,7 +4,6 @@
 //! when" is read off the log, not reasoned, and reads the events each
 //! tick carried (`View::ticked_with`).
 use super::*;
-use crate::ui::layout::Pane;
 use gpui_kit::{
     Entity, IntoElement, ParentElement as _, Render, Styled as _, Subscription, TestAppContext,
     VisualTestContext, div, px, size,
@@ -12,6 +11,13 @@ use gpui_kit::{
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
+
+/// A pane instance of this test's own, as `ui::layout::Pane::new` hands the
+/// shell one: unique for the process.
+fn instance() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
 
 /// `(ticks, frame_rev)` of the seated view as the window draws: logged by
 /// the root's render, which gpui runs first in every draw, so it is the
@@ -72,7 +78,7 @@ fn open_in(
     let drawn: DrawnLog = Default::default();
     let log = drawn.clone();
     let window = cx.open_window(size(px(WINDOW.0), px(WINDOW.1)), |window, cx| {
-        let seat = cx.new(|cx| Seat::new(program, Pane::new(program).instance, cx));
+        let seat = cx.new(|cx| Seat::new(program, instance(), cx));
         let key = seat.read(cx);
         let mounted = registry().lock().unwrap()[&(key.program(), key.instance())].clone();
         seat.update(cx, |seat, cx| {

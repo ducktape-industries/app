@@ -16,21 +16,21 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[cfg(test)]
-pub(crate) mod tests;
+pub mod tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum Severity {
+pub enum Severity {
     Error,
     Warn,
 }
 
 /// One row of the table, as `docs/ax.md` §7 lists it.
 #[derive(Debug, Serialize)]
-pub(crate) struct Rule {
-    pub(crate) id: &'static str,
-    pub(crate) severity: Severity,
-    pub(crate) predicate: &'static str,
+pub struct Rule {
+    pub id: &'static str,
+    pub severity: Severity,
+    pub predicate: &'static str,
 }
 
 const fn rule(id: &'static str, severity: Severity, predicate: &'static str) -> Rule {
@@ -43,7 +43,7 @@ const fn rule(id: &'static str, severity: Severity, predicate: &'static str) -> 
 
 use Severity::{Error, Warn};
 
-pub(crate) const RULES: [Rule; 43] = [
+pub const RULES: [Rule; 43] = [
     rule(
         "AX-001",
         Error,
@@ -234,41 +234,41 @@ fn severity(rule: &str) -> Severity {
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
-pub(crate) struct Violation {
-    pub(crate) rule: &'static str,
-    pub(crate) severity: Severity,
+pub struct Violation {
+    pub rule: &'static str,
+    pub severity: Severity,
     /// the node's door id; a walk step's `step N` (N presses in); a refused
     /// element's `<kept door id> <- <its GlobalElementId>` (AX-124)
-    pub(crate) id: String,
-    pub(crate) role: String,
-    pub(crate) name: String,
-    pub(crate) message: String,
+    pub id: String,
+    pub role: String,
+    pub name: String,
+    pub message: String,
 }
 
 /// `docs/ax.md` §2: `actionable` = actionable nodes with no error-severity
 /// violation over actionable nodes; `rule` = 1 − failed over applicable,
 /// every rule counted. Both 1 over an empty denominator.
 #[derive(Debug, Serialize, PartialEq)]
-pub(crate) struct Coverage {
-    pub(crate) actionable: f64,
-    pub(crate) rule: f64,
+pub struct Coverage {
+    pub actionable: f64,
+    pub rule: f64,
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct Report {
+pub struct Report {
     /// distinct ids over every snapshot
-    pub(crate) nodes: usize,
-    pub(crate) actionable: usize,
-    pub(crate) modal: bool,
+    pub nodes: usize,
+    pub actionable: usize,
+    pub modal: bool,
     /// walk presses taken (`tab`, or `escape tab` after a stay); 0 when
     /// the walk was not asked for
-    pub(crate) presses: usize,
+    pub presses: usize,
     /// AX-018 was evaluated: the caller said the screen is a launcher screen
-    pub(crate) launcher: bool,
-    pub(crate) violations: Vec<Violation>,
+    pub launcher: bool,
+    pub violations: Vec<Violation>,
     /// per rule: distinct nodes (or steps) its antecedent selected
-    pub(crate) applicable: BTreeMap<&'static str, usize>,
-    pub(crate) coverage: Coverage,
+    pub applicable: BTreeMap<&'static str, usize>,
+    pub coverage: Coverage,
 }
 
 /// What one screen state showed the door: the first snapshot, then one per
@@ -279,17 +279,17 @@ pub(crate) struct Report {
 /// the app's Help lists with a chord (AX-114); and `refused`, what the fork
 /// dropped from the tree on the frame of each snapshot (AX-124).
 #[derive(Debug, Default)]
-pub(crate) struct Reading {
-    pub(crate) snapshots: Vec<Vec<AxNode>>,
-    pub(crate) escape: Vec<bool>,
-    pub(crate) modal: bool,
-    pub(crate) arrows: Vec<Arrows>,
-    pub(crate) chords: Vec<(String, String)>,
-    pub(crate) refused: Vec<Refused>,
+pub struct Reading {
+    pub snapshots: Vec<Vec<AxNode>>,
+    pub escape: Vec<bool>,
+    pub modal: bool,
+    pub arrows: Vec<Arrows>,
+    pub chords: Vec<(String, String)>,
+    pub refused: Vec<Refused>,
     /// one per snapshot: the focus is on a node `keep` dropped, and on no
     /// node it kept (a `view=` audit's walk on a shell stop), so the step
     /// is not the view's to judge
-    pub(crate) outside: Vec<bool>,
+    pub outside: Vec<bool>,
 }
 
 /// An element the fork left out of the tree because an earlier one had its
@@ -299,10 +299,10 @@ pub(crate) struct Reading {
 /// `GlobalElementId`, and which of the identical refusals on that frame
 /// this is (two siblings given one element id refuse twice with one path).
 #[derive(Debug)]
-pub(crate) struct Refused {
-    pub(crate) kept: String,
-    pub(crate) element: String,
-    pub(crate) nth: usize,
+pub struct Refused {
+    pub kept: String,
+    pub element: String,
+    pub nth: usize,
 }
 
 /// Add what one frame refused, `list` (`Window::a11y_refused_elements`), to
@@ -339,11 +339,11 @@ fn note_refused(
 /// after its arrow back, with the row of a grid each sat in (else the id
 /// again).
 #[derive(Debug)]
-pub(crate) struct Arrows {
-    pub(crate) composite: AxNode,
-    pub(crate) keys: Vec<[&'static str; 2]>,
-    pub(crate) focused: [Option<String>; 3],
-    pub(crate) rows: [Option<String>; 3],
+pub struct Arrows {
+    pub composite: AxNode,
+    pub keys: Vec<[&'static str; 2]>,
+    pub focused: [Option<String>; 3],
+    pub rows: [Option<String>; 3],
 }
 
 impl Arrows {
@@ -1165,7 +1165,7 @@ fn walk_rules(reading: &Reading, tally: &mut Tally) {
 
 /// The report of `docs/ax.md` §2 over `reading`. `launcher`: the shell screen
 /// is a launcher screen (AX-018 applies); false leaves the rule unevaluated.
-pub(crate) fn audit(reading: &Reading, launcher: bool) -> Report {
+pub fn audit(reading: &Reading, launcher: bool) -> Report {
     let mut tally = Tally::default();
     for nodes in &reading.snapshots {
         let snapshot = Snapshot::of(nodes);
@@ -1221,9 +1221,9 @@ pub(crate) fn audit(reading: &Reading, launcher: bool) -> Report {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Report {
-    pub(crate) fn errors(&self) -> impl Iterator<Item = &Violation> {
+    pub fn errors(&self) -> impl Iterator<Item = &Violation> {
         self.violations
             .iter()
             .filter(|violation| violation.severity == Error)
@@ -1276,8 +1276,8 @@ fn escape_bound(window: &Window, cx: &App) -> bool {
 /// tree emits reaches it only once that update ends, so this is for tests
 /// of native windows. `GET /audit` drives the [`Observer`] a key per
 /// update.
-#[cfg(test)]
-pub(crate) fn observe(
+#[cfg(any(test, feature = "test-support"))]
+pub fn observe(
     window: &mut Window,
     cx: &mut App,
     name: &str,
@@ -1296,7 +1296,7 @@ pub(crate) fn observe(
 /// [`Observer::open`], then [`Observer::press`] and [`Observer::read`]
 /// until `press` says the walk is done, then [`Observer::finish`], each in
 /// any update the caller likes.
-pub(crate) struct Observer<K, S> {
+pub struct Observer<K, S> {
     name: String,
     walk: bool,
     keep: K,
@@ -1324,7 +1324,7 @@ pub(crate) struct Observer<K, S> {
 
 impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observer<K, S> {
     /// The first snapshot, and whether a modal scopes it.
-    pub(crate) fn open(
+    pub fn open(
         window: &mut Window,
         cx: &mut App,
         name: &str,
@@ -1385,7 +1385,7 @@ impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observ
 
     /// Presses the next key: the probe's, then the walk's. False, pressing
     /// nothing, once the walk is done.
-    pub(crate) fn press(&mut self, window: &mut Window, cx: &mut App) -> bool {
+    pub fn press(&mut self, window: &mut Window, cx: &mut App) -> bool {
         self.from = window.focused(cx);
         if let Some(probe) = &mut self.probe {
             // an arrow that moved nothing: the next pair, from where it began
@@ -1423,7 +1423,7 @@ impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observ
     /// an update of its own reads again until it has, or a deadline passes
     /// (the last read counts). A walk step is read once: Tab moves the
     /// focus natively.
-    pub(crate) fn read(&mut self, window: &mut Window, cx: &mut App) -> bool {
+    pub fn read(&mut self, window: &mut Window, cx: &mut App) -> bool {
         let now = window.focused(cx);
         let (nodes, outside, seen) = self.look(window, cx);
         if let Some(probe) = self.probe.as_mut().filter(|probe| probe.pressed > 0) {
@@ -1450,7 +1450,7 @@ impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observ
     }
 
     /// The reading, the focus given back where it was.
-    pub(crate) fn finish(mut self, window: &mut Window, cx: &mut App) -> Reading {
+    pub fn finish(mut self, window: &mut Window, cx: &mut App) -> Reading {
         if self.walk {
             match self.before {
                 Some(handle) => handle.focus(window, cx),
@@ -1500,4 +1500,40 @@ struct Probe {
     arrows: Arrows,
     left: Vec<[&'static str; 2]>,
     pressed: usize,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+/// What `GET /audit?walk=1` answers over `window`, served as `w`, with
+/// `view=` when given; `keep` is the door's (`Door::keep`), what the walk
+/// puts back once it ends.
+pub async fn door_audit(
+    window: gpui_kit::AnyWindowHandle,
+    view: Option<&str>,
+    keep: &'static (dyn Fn(&Window, &App) -> Option<crate::ax::Restore> + Send + Sync),
+    cx: &mut gpui_kit::TestAppContext,
+) -> serde_json::Value {
+    let key = crate::runtime::WindowKey::unique();
+    let served = move |_: &App| vec![("w".to_owned(), key, window)];
+    let filter = crate::ax::Filter {
+        window: None,
+        view: view.map(str::to_owned),
+    };
+    let reply = cx
+        .spawn(async move |mut cx| {
+            let request = crate::ax::Request::Audit {
+                filter,
+                walk: true,
+                launcher: false,
+            };
+            let door = crate::ax::Door {
+                keep,
+                chords: &Vec::new,
+                windows: &served,
+                settle: &|_| {},
+            };
+            crate::ax::answer(request, &door, &mut Default::default(), &mut cx).await
+        })
+        .await;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    serde_json::from_str(&reply.body).unwrap()
 }

@@ -270,7 +270,7 @@ impl Account {
                     .await
                     .unwrap_or_else(|_| Err("opening this device's key did not finish".into()));
             match opened {
-                Ok(Some(key)) => Ok(Some(backend::seat_key(key).await)),
+                Ok(Some(key)) => Ok(Some(backend::seat_key(std::sync::Arc::new(key)).await)),
                 Ok(None) => Ok(None),
                 Err(error) => Err(error),
             }
@@ -340,7 +340,7 @@ impl Account {
             .await
             .unwrap_or_else(|_| Err("opening this device's key did not finish".into()));
             match opened {
-                Ok(key) => Ok(backend::seat_key(key).await),
+                Ok(key) => Ok(backend::seat_key(std::sync::Arc::new(key)).await),
                 Err(error) => Err(backend::user_error(error)),
             }
         };
@@ -520,7 +520,7 @@ impl Account {
     pub(crate) fn recovery_key_start(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         self.clear_error(cx);
-        self.phrase = Some(backend::join::new_recovery_phrase().into());
+        self.phrase = Some(backend::recovery::new_recovery_phrase().into());
         cx.notify();
         self.show(Screen::Phrase { quiz: None }, cx);
     }
@@ -562,7 +562,8 @@ impl Account {
         }
         let (phrase, client, network) = (phrase.clone(), self.client(), self.network.clone());
         self.edit(|state| state.busy = true, cx);
-        let work = async move { backend::join::add_recovery_key(&client, &network, &phrase).await };
+        let work =
+            async move { backend::recovery::add_recovery_key(&client, &network, &phrase).await };
         self.call = Some(spawn_on_runtime(cx, work, |this, added, cx| {
             this.recovery_key_added(added, cx)
         }));
@@ -646,8 +647,9 @@ impl Account {
             },
             cx,
         );
-        let work =
-            async move { backend::join::join_with_recovery_key(&client, &network, &phrase).await };
+        let work = async move {
+            backend::recovery::join_with_recovery_key(&client, &network, &phrase).await
+        };
         self.call = Some(spawn_on_runtime(cx, work, |this, joined, cx| {
             this.joined(joined, cx)
         }));

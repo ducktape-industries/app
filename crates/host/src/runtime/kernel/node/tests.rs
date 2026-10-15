@@ -104,7 +104,10 @@ fn applying_node_with_a_lost_answer(
 async fn a_submit_whose_answer_was_lost_is_not_submitted_again() {
     use commonware_cryptography::Signer as _;
     let _seat = backend::seat_serial();
-    backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
+    backend::seat_key(std::sync::Arc::new(
+        commonware_cryptography::ed25519::PrivateKey::from_seed(41),
+    ))
+    .await;
     let (node, submits) = applying_node_with_a_lost_answer(noded::route::SUBMIT);
     let answer = submit(node.clone(), call_registry()).await;
     assert_eq!(
@@ -130,7 +133,10 @@ fn call_registry() -> Vec<u8> {
 async fn a_submit_whose_anchor_read_was_lost_is_refused_unsent() {
     use commonware_cryptography::Signer as _;
     let _seat = backend::seat_serial();
-    backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
+    backend::seat_key(std::sync::Arc::new(
+        commonware_cryptography::ed25519::PrivateKey::from_seed(41),
+    ))
+    .await;
     let (node, submits) = applying_node_with_a_lost_answer(noded::route::STATUS);
     let answer = submit(node.clone(), call_registry()).await;
     assert_eq!(
@@ -188,7 +194,10 @@ async fn a_held_answer_lands() {
 async fn a_redirected_submit_goes_nowhere_else() {
     use commonware_cryptography::Signer as _;
     let _seat = backend::seat_serial();
-    backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
+    backend::seat_key(std::sync::Arc::new(
+        commonware_cryptography::ed25519::PrivateKey::from_seed(41),
+    ))
+    .await;
     let elsewhere = fake_node(vec![(
         noded::route::SUBMIT,
         Mode::Answer(abi::encode(&noded::Submitted::Preconfirmed(
@@ -302,7 +311,10 @@ fn node_refusing_duplicates() -> (Node, std::sync::Arc<std::sync::atomic::Atomic
 async fn two_identical_submits_in_flight_are_two_frames() {
     use commonware_cryptography::Signer as _;
     let _seat = backend::seat_serial();
-    backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
+    backend::seat_key(std::sync::Arc::new(
+        commonware_cryptography::ed25519::PrivateKey::from_seed(41),
+    ))
+    .await;
     let (node, applied) = node_refusing_duplicates();
     let (first, second) = tokio::join!(
         submit(node.clone(), call_registry()),

@@ -108,7 +108,7 @@ impl ViewTree {
                 .track_scroll(&handle)
                 .child(over_padding(&style.padding, vertical_bar(&handle)));
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let element = {
             use gpui_kit::test::TestSupportExt as _;
             element.test_support()

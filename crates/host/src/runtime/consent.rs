@@ -25,8 +25,8 @@ use std::ops::Range;
 use std::sync::{Mutex, OnceLock};
 
 /// The card's title for an op to the person's account (identity's).
-pub(crate) const ACCOUNT: &str = "Confirm a change to your account";
-pub(crate) const NETWORK: &str = "Confirm a change to the network";
+pub const ACCOUNT: &str = "Confirm a change to your account";
+pub const NETWORK: &str = "Confirm a change to the network";
 
 /// What the dialog says for one op: its title ([`ACCOUNT`] or
 /// [`NETWORK`]), the sentence, the asking program's id in it (its bytes,
@@ -36,12 +36,12 @@ pub(crate) const NETWORK: &str = "Confirm a change to the network";
 /// of the op ([`shown`]), which the request's task reads in before it
 /// queues the ask.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Words {
-    pub(crate) title: &'static str,
-    pub(crate) said: String,
-    pub(crate) id: Option<Range<usize>>,
-    pub(crate) shown: Option<String>,
-    pub(crate) described: bool,
+pub struct Words {
+    pub title: &'static str,
+    pub said: String,
+    pub id: Option<Range<usize>>,
+    pub shown: Option<String>,
+    pub described: bool,
 }
 
 /// The request's end of its ask: what its task waits on for the person's
@@ -50,11 +50,11 @@ pub(crate) struct Words {
 /// view torn down), the ask is withdrawn, and the shell told to sync the
 /// card (`changes_channel`), so no card stays up whose Approve goes
 /// nowhere.
-pub(crate) struct Told(tokio::sync::oneshot::Receiver<bool>);
+pub struct Told(tokio::sync::oneshot::Receiver<bool>);
 
 impl Told {
     /// The person's answer; `None` when nobody can answer any more.
-    pub(crate) async fn answer(&mut self) -> Option<bool> {
+    pub async fn answer(&mut self) -> Option<bool> {
         (&mut self.0).await.ok()
     }
 }
@@ -68,7 +68,7 @@ impl Drop for Told {
 /// The shell's wake: one message each time a request queued its ask or
 /// let go of it, from whichever thread did. Installing it replaces the one before; the
 /// app installs one (`launch`); a test syncs by hand.
-pub(crate) fn changes_channel() -> futures::channel::mpsc::UnboundedReceiver<()> {
+pub fn changes_channel() -> futures::channel::mpsc::UnboundedReceiver<()> {
     let (send, receive) = futures::channel::mpsc::unbounded();
     *changes()
         .lock()
@@ -92,11 +92,11 @@ pub(super) fn moved() {
 }
 
 /// One confirmation a view waits on.
-pub(crate) struct Ask {
-    pub(crate) id: u64,
-    pub(crate) program: &'static str,
-    pub(crate) instance: u64,
-    pub(crate) words: Words,
+pub struct Ask {
+    pub id: u64,
+    pub program: &'static str,
+    pub instance: u64,
+    pub words: Words,
     tell: tokio::sync::oneshot::Sender<bool>,
 }
 
@@ -104,13 +104,13 @@ pub(crate) struct Ask {
 /// One queue for the process, as there is one person. Under test, one per
 /// test thread: the tests share the process, and a card one test asks for
 /// would open in another test's window as its dialog closed.
-pub(crate) fn waiting() -> &'static Mutex<VecDeque<Ask>> {
-    #[cfg(not(test))]
+pub fn waiting() -> &'static Mutex<VecDeque<Ask>> {
+    #[cfg(not(any(test, feature = "test-support")))]
     {
         static WAITING: OnceLock<Mutex<VecDeque<Ask>>> = OnceLock::new();
         WAITING.get_or_init(Mutex::default)
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     {
         thread_local! {
             static WAITING: &'static Mutex<VecDeque<Ask>> = Box::leak(Box::default());
@@ -136,7 +136,7 @@ fn lock_in(
 
 /// The front ask, as the dialog draws it: its id and its words. `None`
 /// while nothing waits.
-pub(crate) fn front() -> Option<(u64, Words)> {
+pub fn front() -> Option<(u64, Words)> {
     lock().front().map(|ask| (ask.id, ask.words.clone()))
 }
 
@@ -144,7 +144,7 @@ pub(crate) fn front() -> Option<(u64, Words)> {
 /// on to sign, anything else refuses it. An id that is not the front's is
 /// one already answered, and nothing happens. Answers whether another
 /// ask waits behind it.
-pub(crate) fn answer(id: u64, yes: bool) -> bool {
+pub fn answer(id: u64, yes: bool) -> bool {
     let mut waiting = lock();
     if waiting.front().is_some_and(|ask| ask.id == id)
         && let Some(ask) = waiting.pop_front()
@@ -156,7 +156,7 @@ pub(crate) fn answer(id: u64, yes: bool) -> bool {
 }
 
 /// Every ask refused: the person had nowhere to answer (no console).
-pub(crate) fn refuse_all() {
+pub fn refuse_all() {
     for ask in lock().drain(..) {
         let _ = ask.tell.send(false);
     }
@@ -285,7 +285,7 @@ pub(super) fn bound(program: &str, roles: Option<&abi::Roles>) -> bool {
 /// it describes nothing (no describe module, bytes it cannot read, the
 /// node not reached). The op is the view's: every title, label and value
 /// is [`clip`]ped.
-pub(crate) fn shown(description: Option<&describe::Description>, len: usize) -> String {
+pub fn shown(description: Option<&describe::Description>, len: usize) -> String {
     let Some(description) = description else {
         return format!("{len} bytes this app cannot read");
     };
@@ -388,8 +388,8 @@ pub(super) fn queue_in(
 }
 
 /// [`queue_in`] this thread's queue.
-#[cfg(test)]
-pub(crate) fn queue(program: &'static str, instance: u64, words: Words) -> Option<Told> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn queue(program: &'static str, instance: u64, words: Words) -> Option<Told> {
     queue_in(waiting(), program, instance, words)
 }
 

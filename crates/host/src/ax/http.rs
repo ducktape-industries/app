@@ -28,20 +28,18 @@ struct DoorFile {
     token: String,
 }
 
-/// `$XDG_RUNTIME_DIR/ducktape/ax-door.json`, else the app's cache directory:
+/// `ax-door.json` in the shell's runtime directory (`Dirs::runtime`:
+/// `$XDG_RUNTIME_DIR/ducktape` on the desktop, else its cache directory;
 /// never the state directory, which is `~/Library/Logs` on macOS, where
-/// support bundles collect.
+/// support bundles collect).
 #[cfg_attr(not(feature = "ax-door"), allow(dead_code))]
-fn door_file() -> Result<PathBuf, String> {
-    match std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()) {
-        Some(dir) => Ok(PathBuf::from(dir).join("ducktape").join("ax-door.json")),
-        None => Ok(crate::backend::cache_dir()?.join("ax-door.json")),
-    }
+fn door_file() -> PathBuf {
+    crate::backend::dirs().runtime.join("ax-door.json")
 }
 
 /// The door file as this app wrote it. Dropped (the app quitting), the file
 /// goes, unless another app has written its own door there since.
-pub(crate) struct Written {
+pub struct Written {
     path: PathBuf,
     text: String,
 }
@@ -75,11 +73,11 @@ fn write_door_file(path: PathBuf, door: &DoorFile) -> std::io::Result<Written> {
 /// arrive on the returned channel for [`serve`], and the door file stays
 /// while the [`Written`] does.
 #[cfg_attr(not(feature = "ax-door"), allow(dead_code))]
-pub(crate) fn open() -> Option<(futures::channel::mpsc::UnboundedReceiver<Call>, Written)> {
+pub fn open() -> Option<(futures::channel::mpsc::UnboundedReceiver<Call>, Written)> {
     open_env(
         std::env::var("DUCKTAPE_AX_DOOR").ok().as_deref(),
         std::env::var("DUCKTAPE_AX_DOOR_PRIVATE").ok().as_deref(),
-        door_file(),
+        Ok(door_file()),
     )
 }
 
@@ -384,16 +382,19 @@ fn point(word: &str) -> Option<[f32; 2]> {
 /// `ducktape-app ax …`: prints the door's JSON. Exit 0 answered, 1 not
 /// found, refused or timed out, 2 the door is not open.
 #[cfg_attr(not(feature = "ax-door"), allow(dead_code))]
-pub(crate) fn cli(args: &[String]) -> i32 {
+pub fn cli(args: &[String]) -> i32 {
     let Some((method, target, body)) = request(args) else {
         eprintln!("{USAGE}");
         return 1;
     };
-    let door = door_file().and_then(|path| {
-        let text = std::fs::read_to_string(&path)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-        serde_json::from_str::<DoorFile>(&text).map_err(|error| error.to_string())
-    });
+    let door = {
+        let path = door_file();
+        std::fs::read_to_string(&path)
+            .map_err(|error| format!("{}: {error}", path.display()))
+            .and_then(|text| {
+                serde_json::from_str::<DoorFile>(&text).map_err(|error| error.to_string())
+            })
+    };
     let shut = "the door is not open: launch the app with DUCKTAPE_AX_DOOR=<port|0>";
     let door = match door {
         Ok(door) => door,

@@ -24,7 +24,7 @@ pub(super) fn charge(bytes: u64, pictures: usize) -> u64 {
 }
 
 #[derive(Default)]
-pub(crate) struct Pictures {
+pub struct Pictures {
     held: Arc<PictureBytes>,
     bytes: u64,
     /// The first eviction is logged; later ones are the same story.
@@ -33,12 +33,12 @@ pub(crate) struct Pictures {
 
 impl Pictures {
     /// The bytes every tree the seat draws resolves its hashes through.
-    pub(crate) fn held(&self) -> Arc<PictureBytes> {
+    pub fn held(&self) -> Arc<PictureBytes> {
         self.held.clone()
     }
 
     /// Every byte held.
-    pub(crate) fn bytes(&self) -> u64 {
+    pub fn bytes(&self) -> u64 {
         self.bytes
     }
 
