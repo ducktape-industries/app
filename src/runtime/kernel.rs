@@ -136,7 +136,7 @@ mod replies;
 
 pub(super) use node::{NodeTask, reconnected, spawn_reply};
 use node::{
-    blob_get, block, blocks, changes, heads, invite, network, query, spawn_no_retry,
+    blob_get, blob_manifest, block, blocks, changes, heads, invite, network, query, spawn_no_retry,
     spawn_retrying, spawn_retrying_unsent, status, submit, tx,
 };
 use replies::InFlight;
@@ -329,6 +329,9 @@ pub(super) fn answer(
         }
         (Capability::Blob, "get") => {
             spawn_retrying(view, id, payload, blob_get, "host_call.blob.get")
+        }
+        (Capability::Blob, "manifest") => {
+            spawn_retrying(view, id, payload, blob_manifest, "host_call.blob.manifest")
         }
         (Capability::Program, "describe") => spawn_retrying(
             view,

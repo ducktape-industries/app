@@ -388,6 +388,121 @@ async fn blob_get_answers_the_blob_or_none() {
     assert_eq!(methods::decode::<Option<Vec<u8>>>(&answer).unwrap(), None);
 }
 
+/// A core module of custom sections, as a program's code is laid out.
+fn module(sections: &[(&str, &[u8])]) -> Vec<u8> {
+    fn leb(mut n: usize, out: &mut Vec<u8>) {
+        loop {
+            let byte = (n & 0x7f) as u8;
+            n >>= 7;
+            if n == 0 {
+                out.push(byte);
+                return;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+    let mut bytes = b"\0asm\x01\0\0\0".to_vec();
+    for (name, body) in sections {
+        let mut section = Vec::new();
+        leb(name.len(), &mut section);
+        section.extend_from_slice(name.as_bytes());
+        section.extend_from_slice(body);
+        bytes.push(0);
+        leb(section.len(), &mut bytes);
+        bytes.extend_from_slice(&section);
+    }
+    bytes
+}
+
+/// `blob.manifest` reads the blob as a seat would: a program's view out of
+/// its `ducktape.view` section with the manifest that view carries, a
+/// view-only blob as the view itself, a program with no section as none,
+/// a view this host cannot read as a view with no manifest, and a blob the
+/// node does not hold as `None`. The blob's bytes never reach the view.
+#[tokio::test]
+async fn blob_manifest_answers_what_the_view_in_a_blob_declares() {
+    use sha2::Digest as _;
+    use view_wire::manifest::Manifest;
+    let text = "ducktape.view.manifest\nChat\nRooms.\nchain,clipboard,\n480\n0123abcd\n\n";
+    let view = module(&[("ducktape.view.manifest", text.as_bytes())]);
+    let program = module(&[("ducktape.view", &view)]);
+    let manifest = Manifest {
+        wire_id: "0123abcd".into(),
+        name: "Chat".into(),
+        description: "Rooms.".into(),
+        capabilities: vec![methods::Capability::Chain, methods::Capability::Clipboard],
+        min_width: 480,
+        targets: Vec::new(),
+        icon: String::new(),
+    };
+    let ask = |body: &[u8]| {
+        let mut framed = format!("program {}\0", body.len()).into_bytes();
+        framed.extend_from_slice(body);
+        let id = sha2::Sha256::digest(&framed);
+        let held = fake_node(vec![(
+            noded_client::wire::route::BLOB_GET,
+            Mode::Answer(abi::encode(&Some(framed))),
+        )]);
+        let ask = methods::encode(&format!("sha256:{}", noded_client::hex::hex_encode(&id)));
+        async move {
+            let answer = blob_manifest(held.node.clone(), ask).await.unwrap();
+            methods::decode::<Option<methods::Manifested>>(&answer).unwrap()
+        }
+    };
+    assert_eq!(
+        ask(&program).await,
+        Some(methods::Manifested {
+            size: program.len() as u64,
+            view: Some(methods::CarriedView {
+                size: view.len() as u64,
+                manifest: Some(manifest.clone()),
+            }),
+        })
+    );
+    assert_eq!(
+        ask(&view).await,
+        Some(methods::Manifested {
+            size: view.len() as u64,
+            view: Some(methods::CarriedView {
+                size: view.len() as u64,
+                manifest: Some(manifest),
+            }),
+        }),
+        "a view-only blob is the view"
+    );
+    let bare = module(&[("ducktape.describe", b"not a view")]);
+    assert_eq!(
+        ask(&bare).await,
+        Some(methods::Manifested {
+            size: bare.len() as u64,
+            view: None,
+        }),
+        "a program that draws nothing"
+    );
+    let unreadable = module(&[(
+        "ducktape.view",
+        &module(&[("ducktape.view.manifest", b"?")]),
+    )]);
+    assert_eq!(
+        ask(&unreadable).await.and_then(|blob| blob.view),
+        Some(methods::CarriedView {
+            size: module(&[("ducktape.view.manifest", b"?")]).len() as u64,
+            manifest: None,
+        }),
+        "a view whose manifest this host cannot read"
+    );
+    let absent = fake_node(vec![(
+        noded_client::wire::route::BLOB_GET,
+        Mode::Answer(abi::encode(&None::<Vec<u8>>)),
+    )]);
+    let ask = methods::encode(&format!("sha256:{}", "00".repeat(32)));
+    let answer = blob_manifest(absent.node.clone(), ask).await.unwrap();
+    assert_eq!(
+        methods::decode::<Option<methods::Manifested>>(&answer).unwrap(),
+        None
+    );
+}
+
 /// A blob id is hex digits only: `+f` (which `from_str_radix` reads as 15)
 /// is a malformed id, refused before the node is asked, so each digest has
 /// one spelling.

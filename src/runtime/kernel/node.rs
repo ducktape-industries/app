@@ -753,18 +753,59 @@ async fn submitted(node: Node, target: String, payload: Vec<u8>) -> Answer {
     }
 }
 
+/// The blob id a `blob.*` ask spells, `sha256:<hex>` or `sha1:<hex>`.
+fn blob_id(ask: &[u8]) -> Result<abi::BlobId, wire::Error> {
+    let id: String = methods::decode(ask).map_err(malformed)?;
+    let (kind, hex) = id
+        .split_once(':')
+        .ok_or_else(|| malformed("id is `sha256:<hex>` or `sha1:<hex>`"))?;
+    let digest = noded_client::hex::hex_decode(hex).map_err(malformed)?;
+    Ok(match (kind, digest.len()) {
+        ("sha256", 32) => abi::BlobId::Sha256(digest.try_into().expect("32 bytes")),
+        ("sha1", 20) => abi::BlobId::Sha1(digest.try_into().expect("20 bytes")),
+        _ => return Err(malformed("id is `sha256:<hex>` or `sha1:<hex>`")),
+    })
+}
+
+/// `blob.manifest`: the blob read as a seat reads it (`views::program_bytes`,
+/// kept on disk once read), the view in its `ducktape.view` section or the
+/// blob itself for a view-only entry, and that view's manifest as
+/// `manifest_of` would read it. The bytes stay on the host.
+pub(super) fn blob_manifest(node: Node, ask: Vec<u8>) -> Answered {
+    Box::pin(async move {
+        use backend::views::{Fetch, program_bytes, view_section};
+        use view_wire::manifest::read_manifest;
+        let id = blob_id(&ask)?;
+        let bytes = match program_bytes(&node.client, &id).await {
+            Ok((bytes, _)) => bytes,
+            Err(Fetch::NotHeld) => return Ok(methods::encode(&None::<methods::Manifested>)),
+            // the transport: retried by the node method's loop
+            Err(Fetch::Unreachable(reason)) => {
+                return Err(wire::Error::new(refusal::RPC_CLIENT, reason));
+            }
+            Err(error) => return Err(host_fault(error)),
+        };
+        let view = match view_section(&bytes) {
+            Some(view) => Some(methods::CarriedView {
+                size: view.len() as u64,
+                manifest: read_manifest(&view),
+            }),
+            // no section: the blob is a view itself, or carries none
+            None => read_manifest(&bytes).map(|manifest| methods::CarriedView {
+                size: bytes.len() as u64,
+                manifest: Some(manifest),
+            }),
+        };
+        Ok(methods::encode(&Some(methods::Manifested {
+            size: bytes.len() as u64,
+            view,
+        })))
+    })
+}
+
 pub(super) fn blob_get(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
-        let id: String = methods::decode(&ask).map_err(malformed)?;
-        let (kind, hex) = id
-            .split_once(':')
-            .ok_or_else(|| malformed("id is `sha256:<hex>` or `sha1:<hex>`"))?;
-        let digest = noded_client::hex::hex_decode(hex).map_err(malformed)?;
-        let id = match (kind, digest.len()) {
-            ("sha256", 32) => abi::BlobId::Sha256(digest.try_into().expect("32 bytes")),
-            ("sha1", 20) => abi::BlobId::Sha1(digest.try_into().expect("20 bytes")),
-            _ => return Err(malformed("id is `sha256:<hex>` or `sha1:<hex>`")),
-        };
+        let id = blob_id(&ask)?;
         // absent is `None`, never a refusal: the ask itself did not fail.
         // Read no further than the cap and the blob's header (`kind len\0`,
         // under 32 bytes) in its borsh `Option<Vec<u8>>` (5)
