@@ -150,7 +150,7 @@ impl ViewTree {
             .as_deref()
             .unwrap_or(wire::Interactivity::none());
         let element = self.view_aria(element, node, interactivity, cx);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let element = {
             use gpui_kit::test::TestSupportExt as _;
             element.test_support()

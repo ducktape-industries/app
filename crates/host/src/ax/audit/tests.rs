@@ -1,4 +1,5 @@
 //! One passing and one failing case per rule, over hand-built nodes.
+use super::door_audit;
 use super::*;
 use Severity::Warn;
 use gpui_kit::accesskit::NodeId;
@@ -735,37 +736,6 @@ fn stops_window(
     native
 }
 
-/// What `GET /audit?walk=1` answers over `window`, served as `w`, with
-/// `view=` when given.
-pub(crate) async fn door_audit(
-    window: gpui_kit::AnyWindowHandle,
-    view: Option<&str>,
-    cx: &mut gpui_kit::TestAppContext,
-) -> serde_json::Value {
-    let key = crate::runtime::WindowKey::unique();
-    let served = move |_: &App| vec![("w".to_owned(), key, window)];
-    let filter = crate::ax::Filter {
-        window: None,
-        view: view.map(str::to_owned),
-    };
-    let reply = cx
-        .spawn(async move |mut cx| {
-            let request = crate::ax::Request::Audit {
-                filter,
-                walk: true,
-                launcher: false,
-            };
-            let door = crate::ax::Door {
-                windows: &served,
-                settle: &|_| {},
-            };
-            crate::ax::answer(request, &door, &mut Default::default(), &mut cx).await
-        })
-        .await;
-    assert_eq!(reply.status, 200, "{}", reply.body);
-    serde_json::from_str(&reply.body).unwrap()
-}
-
 /// The ids `rule` fails on in a `/audit` answer.
 fn door_fails(report: &serde_json::Value, rule: &str) -> Vec<String> {
     report["violations"]
@@ -893,8 +863,8 @@ async fn a_view_audit_does_not_judge_the_steps_tab_spends_outside_the_view(
 ) {
     let native = stops_window(cx, shell_then_view, 0);
     let window = gpui_kit::VisualContext::window_handle(&native);
-    let whole = door_audit(window, None, cx).await;
-    let view = door_audit(window, Some("x"), cx).await;
+    let whole = door_audit(window, None, &|_, _| None, cx).await;
+    let view = door_audit(window, Some("x"), &|_, _| None, cx).await;
     for (report, what) in [(&whole, "whole"), (&view, "view=x")] {
         for rule in ["AX-020", "AX-022"] {
             assert!(door_fails(report, rule).is_empty(), "{what}: {report}");
@@ -933,8 +903,8 @@ async fn a_view_audit_counts_focus_outside_the_view_as_focus(cx: &mut gpui_kit::
     // the dialog opens with the keys on its own stop
     let native = stops_window(cx, shell_then_dialog, 2);
     let window = gpui_kit::VisualContext::window_handle(&native);
-    let whole = door_audit(window, None, cx).await;
-    let view = door_audit(window, Some("x"), cx).await;
+    let whole = door_audit(window, None, &|_, _| None, cx).await;
+    let view = door_audit(window, Some("x"), &|_, _| None, cx).await;
     for (report, what) in [(&whole, "whole"), (&view, "view=x")] {
         assert!(door_fails(report, "AX-025").is_empty(), "{what}: {report}");
         assert_eq!(door_fails(report, "AX-104"), ["w:x/dlg"], "{what}");
@@ -1048,7 +1018,7 @@ async fn arrow_probe(
         window.render_frame(cx);
         window.focus_next(cx);
     });
-    let report = door_audit(window.into(), None, cx).await;
+    let report = door_audit(window.into(), None, &|_, _| None, cx).await;
     let heard = heard.borrow().clone();
     (report, heard)
 }
@@ -1281,7 +1251,7 @@ async fn composites_audit(
             window.render_frame(cx);
         }
     });
-    let report = door_audit(window.into(), None, cx).await;
+    let report = door_audit(window.into(), None, &|_, _| None, cx).await;
     let heard = heard.borrow().clone();
     (report, heard)
 }

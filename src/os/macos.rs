@@ -3,7 +3,7 @@
 //! caller can catch, the process dies. `cargo test`, `cargo run` and any
 //! bare binary are exactly that process, so the identifier is read first.
 
-use super::{Click, Notice};
+use ducktape_host::runtime::notify::{Click, Notice};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{ClassType, DeclaredClass, declare_class, msg_send_id, mutability};
@@ -80,7 +80,7 @@ declare_class!(
                 row => row.parse::<u64>().ok().map(Click::Row),
             });
             if let Some(click) = click.filter(|_| default) {
-                super::clicked(click);
+                ducktape_host::runtime::notify::clicked(click);
             }
             done.call(());
         }
@@ -146,7 +146,7 @@ pub(super) fn post(notice: &Notice, click: Option<Click>) -> bool {
         let host = click == Some(Click::Updates);
         let identifier = match host {
             true => HOST_NOTICE.to_string(),
-            false => super::request_id(),
+            false => ducktape_host::runtime::notify::request_id(),
         };
         if host {
             let standing = NSArray::from_vec(vec![NSString::from_str(&identifier)]);

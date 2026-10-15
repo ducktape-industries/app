@@ -5,31 +5,26 @@
 /// Inter and JetBrains Mono, which are not bundled; [`app_family`] swaps
 /// those names for these everywhere the app draws, so a view asking
 /// for a design-crate face gets the app's.
-pub(crate) const FAMILY_UI: &str = "Instrument Sans";
-pub(crate) const FAMILY_MONO: &str = "IBM Plex Mono";
+pub const FAMILY_UI: &str = "Instrument Sans";
+pub const FAMILY_MONO: &str = "IBM Plex Mono";
 
-pub(crate) const BUNDLED_FACES: &[&[u8]] = &[
-    include_bytes!("../assets/fonts/InstrumentSans-Regular.ttf"),
-    include_bytes!("../assets/fonts/InstrumentSans-Italic.ttf"),
-    include_bytes!("../assets/fonts/InstrumentSans-Medium.ttf"),
-    include_bytes!("../assets/fonts/InstrumentSans-Bold.ttf"),
-    include_bytes!("../assets/fonts/InstrumentSans-BoldItalic.ttf"),
-    include_bytes!("../assets/fonts/IBMPlexMono-Regular.ttf"),
-    include_bytes!("../assets/fonts/IBMPlexMono-Italic.ttf"),
-    include_bytes!("../assets/fonts/IBMPlexMono-Medium.ttf"),
-    include_bytes!("../assets/fonts/IBMPlexMono-Bold.ttf"),
-    include_bytes!("../assets/fonts/IBMPlexMono-BoldItalic.ttf"),
-    include_bytes!("../assets/fonts/Pretendard-Regular.otf"),
-    include_bytes!("../assets/fonts/Pretendard-Medium.otf"),
-    include_bytes!("../assets/fonts/Pretendard-Bold.otf"),
-    include_bytes!("../assets/fonts/D2Coding-Regular.ttf"),
-    include_bytes!("../assets/fonts/D2Coding-Bold.ttf"),
+pub const BUNDLED_FACES: &[&[u8]] = &[
+    include_bytes!("../../../assets/fonts/InstrumentSans-Regular.ttf"),
+    include_bytes!("../../../assets/fonts/InstrumentSans-Italic.ttf"),
+    include_bytes!("../../../assets/fonts/InstrumentSans-Medium.ttf"),
+    include_bytes!("../../../assets/fonts/InstrumentSans-Bold.ttf"),
+    include_bytes!("../../../assets/fonts/InstrumentSans-BoldItalic.ttf"),
+    include_bytes!("../../../assets/fonts/IBMPlexMono-Regular.ttf"),
+    include_bytes!("../../../assets/fonts/IBMPlexMono-Italic.ttf"),
+    include_bytes!("../../../assets/fonts/IBMPlexMono-Medium.ttf"),
+    include_bytes!("../../../assets/fonts/IBMPlexMono-Bold.ttf"),
+    include_bytes!("../../../assets/fonts/IBMPlexMono-BoldItalic.ttf"),
+    include_bytes!("../../../assets/fonts/Pretendard-Regular.otf"),
+    include_bytes!("../../../assets/fonts/Pretendard-Medium.otf"),
+    include_bytes!("../../../assets/fonts/Pretendard-Bold.otf"),
+    include_bytes!("../../../assets/fonts/D2Coding-Regular.ttf"),
+    include_bytes!("../../../assets/fonts/D2Coding-Bold.ttf"),
 ];
-
-/// Not on macOS: CoreGraphics cannot load Noto's CBDT color font, and macOS
-/// supplies its own emoji.
-#[cfg(not(target_os = "macos"))]
-pub(crate) const EMOJI_FACE: &[u8] = include_bytes!("../assets/fonts/NotoColorEmoji.ttf");
 
 /// Tried after the Hangul face, in order: emoji (macOS, then Noto), the
 /// macOS CJK faces, then the Linux ones, then symbols.
@@ -44,13 +39,13 @@ const FALLBACK_FAMILIES: &[&str] = &[
     "Apple Symbols",
 ];
 
-pub(crate) fn fallback_chain() -> gpui_kit::FontFallbacks {
+pub fn fallback_chain() -> gpui_kit::FontFallbacks {
     static CHAIN: std::sync::LazyLock<gpui_kit::FontFallbacks> =
         std::sync::LazyLock::new(|| chain_led_by(design::fonts::FAMILY_UI_HANGUL));
     CHAIN.clone()
 }
 
-pub(crate) fn mono_fallback_chain() -> gpui_kit::FontFallbacks {
+pub fn mono_fallback_chain() -> gpui_kit::FontFallbacks {
     static CHAIN: std::sync::LazyLock<gpui_kit::FontFallbacks> =
         std::sync::LazyLock::new(|| chain_led_by(design::fonts::FAMILY_MONO_HANGUL));
     CHAIN.clone()
@@ -66,7 +61,7 @@ fn chain_led_by(hangul: &str) -> gpui_kit::FontFallbacks {
 
 /// The face the app draws for `family`: a view names the design crate's
 /// faces, and the app's own stand in for them.
-pub(crate) fn app_family(family: &gpui_kit::SharedString) -> gpui_kit::SharedString {
+pub fn app_family(family: &gpui_kit::SharedString) -> gpui_kit::SharedString {
     match family.as_ref() {
         design::fonts::FAMILY_UI => FAMILY_UI.into(),
         design::fonts::FAMILY_MONO => FAMILY_MONO.into(),
@@ -80,7 +75,7 @@ pub(crate) fn app_family(family: &gpui_kit::SharedString) -> gpui_kit::SharedStr
 /// everything else to the proportional one. Wire styles arrive by
 /// assignment, so this runs at the assignment sites rather than through the
 /// Styled builder.
-pub(crate) fn refine_fallbacks(style: &mut gpui_kit::StyleRefinement) {
+pub fn refine_fallbacks(style: &mut gpui_kit::StyleRefinement) {
     let is_code_face = style
         .text
         .font_family
@@ -95,4 +90,4 @@ pub(crate) fn refine_fallbacks(style: &mut gpui_kit::StyleRefinement) {
 
 #[cfg(all(test, target_os = "linux"))]
 #[path = "tests/font_fallback.rs"]
-pub(crate) mod font_fallback;
+pub mod font_fallback;

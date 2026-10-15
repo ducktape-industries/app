@@ -51,18 +51,18 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 mod actions;
-pub(crate) mod audit;
+pub mod audit;
 mod http;
 mod tree;
 
 use actions::{current, drag_by_id, perform_by_id, press_keys, read, reveal, shortcuts};
 #[cfg(feature = "ax-door")]
-pub(crate) use http::{cli, open};
-pub(crate) use tree::{AxNode, snapshot};
+pub use http::{cli, open};
+pub use tree::{AxNode, snapshot};
 use tree::{compact, delta, nearest, offers};
 
 #[derive(Debug, Default, PartialEq)]
-pub(crate) struct Filter {
+pub struct Filter {
     window: Option<String>,
     view: Option<String>,
 }
@@ -80,7 +80,7 @@ impl Filter {
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
-pub(crate) struct Act {
+pub struct Act {
     id: String,
     action: String,
     #[serde(default)]
@@ -90,7 +90,7 @@ pub(crate) struct Act {
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
-pub(crate) struct Wait {
+pub struct Wait {
     #[serde(default)]
     role: Option<String>,
     #[serde(default)]
@@ -149,7 +149,7 @@ impl Wait {
 /// list alone, without a tree to find the focused node in: the named
 /// window, else the first one served.
 #[derive(Debug, Deserialize, PartialEq)]
-pub(crate) struct Key {
+pub struct Key {
     #[serde(default)]
     keys: String,
     #[serde(default)]
@@ -172,7 +172,7 @@ fn yes() -> bool {
 /// `steps` moves with the button held, a release at `to`. Logical px; with
 /// `id`, local to that node's painted bounds, else window coordinates.
 #[derive(Debug, Deserialize, PartialEq)]
-pub(crate) struct Drag {
+pub struct Drag {
     #[serde(default)]
     id: Option<String>,
     from: [f32; 2],
@@ -209,7 +209,7 @@ impl Drag {
 }
 
 #[derive(Debug, PartialEq)]
-pub(crate) enum Request {
+pub enum Request {
     Tree {
         filter: Filter,
         compact: bool,
@@ -242,17 +242,17 @@ pub(crate) enum Request {
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
-pub(crate) struct Motion {
+pub struct Motion {
     reduce: bool,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
-pub(crate) struct Reveal {
+pub struct Reveal {
     id: String,
 }
 
 #[derive(Debug, PartialEq)]
-pub(crate) struct Reply {
+pub struct Reply {
     status: u16,
     body: String,
     /// `X-Ax-Revision`
@@ -286,7 +286,7 @@ impl Reply {
 /// reads found a window's tree unlike the one before, so a caller sees
 /// whether the tree advanced between two answers.
 #[derive(Default)]
-pub(crate) struct Seen {
+pub struct Seen {
     trees: HashMap<String, TreeUpdate>,
     revision: u64,
 }
@@ -301,21 +301,30 @@ impl Seen {
 }
 
 /// A request and where its answer goes.
-pub(crate) type Call = (Request, std::sync::mpsc::Sender<Reply>);
+pub type Call = (Request, std::sync::mpsc::Sender<Reply>);
 
 /// One window the door serves: its door name (`console`, `console2`, …,
 /// kept for the window's life: `Windows::served`), the shell's key for it,
 /// and its handle.
-pub(crate) type Served = (String, crate::runtime::WindowKey, AnyWindowHandle);
+pub type Served = (String, crate::runtime::WindowKey, AnyWindowHandle);
+
+/// What a walk puts back once it ends (`Door::keep`).
+pub type Restore = Box<dyn FnOnce(&mut App)>;
 
 /// What the door serves: the windows, by name, and the seats behind them.
-pub(crate) struct Door<'a> {
+pub struct Door<'a> {
     /// The windows it serves, by name.
-    pub(crate) windows: &'a dyn Fn(&App) -> Vec<Served>,
+    pub windows: &'a dyn Fn(&App) -> Vec<Served>,
     /// Turns every seat, called before each read: a reply the view has
     /// answered is in the tree the read draws, as the draw itself took it
     /// in before the seat left the draw path (`Seats::settle`).
-    pub(crate) settle: &'a dyn Fn(&mut App),
+    pub settle: &'a dyn Fn(&mut App),
+    /// What the walk keeps before its arrows pick a radio group's choices
+    /// (a pick saves) and puts back after, however the walk ends: the
+    /// shell's own (`Kept`); `None` for a window that is not the shell's.
+    pub keep: &'a dyn Fn(&Window, &App) -> Option<Restore>,
+    /// The shell's command chords, `(control name, chord)`, for the audit.
+    pub chords: &'a dyn Fn() -> Vec<(String, String)>,
 }
 
 const POLL: Duration = Duration::from_millis(50);
@@ -338,7 +347,7 @@ fn passed(deadline: Option<Instant>) -> bool {
 
 /// Answers the door's calls on the app's thread until the door is gone.
 #[cfg_attr(not(feature = "ax-door"), allow(dead_code))]
-pub(crate) async fn serve(
+pub async fn serve(
     mut calls: futures::channel::mpsc::UnboundedReceiver<Call>,
     door: Door<'_>,
     cx: &mut AsyncApp,
@@ -483,7 +492,7 @@ async fn answer(request: Request, door: &Door<'_>, seen: &mut Seen, cx: &mut Asy
                 // the probe's arrows pick Settings' choices, and a pick
                 // saves: what they change goes back once the walk ends,
                 // however it ends
-                let kept = walk.then(|| crate::shell::Kept::of(window, cx)).flatten();
+                let kept = walk.then(|| (door.keep)(window, cx)).flatten();
                 let observer = audit::Observer::open(
                     window,
                     cx,
@@ -524,14 +533,14 @@ async fn answer(request: Request, door: &Door<'_>, seen: &mut Seen, cx: &mut Asy
                 handle
                     .update(cx, |_, window, cx| {
                         let mut reading = observer.finish(window, cx);
-                        reading.chords = crate::shell::chords();
+                        reading.chords = (door.chords)();
                         Reply::ok(json!(audit::audit(&reading, launcher)))
                     })
                     .unwrap_or_else(|_| gone())
             }
             .await;
             if let Some(kept) = kept {
-                cx.update(|cx| kept.restore(cx));
+                cx.update(|cx| kept(cx));
             }
             reply
         }
@@ -827,6 +836,8 @@ mod tests {
         let (answered, perf) = cx
             .spawn(async move |mut cx| {
                 let door = Door {
+                    keep: &|_, _| None,
+                    chords: &Vec::new,
                     windows: &served,
                     settle: &|_| {},
                 };
@@ -918,7 +929,7 @@ mod tests {
         let seat = cx.update(|cx| {
             use gpui_kit::AppContext as _;
             cx.new(|cx| {
-                let instance = crate::ui::layout::Pane::new(PROGRAM).instance;
+                let instance = 1;
                 crate::runtime::Seat::new(PROGRAM, instance, cx)
             })
         });
@@ -978,6 +989,8 @@ mod tests {
                 let settle = move |cx: &mut App| turning.update(cx, |seat, cx| seat.turn(cx));
                 let quiet = |_: &mut App| {};
                 let door = Door {
+                    keep: &|_, _| None,
+                    chords: &Vec::new,
                     windows: &served,
                     settle: if settles { &settle } else { &quiet },
                 };

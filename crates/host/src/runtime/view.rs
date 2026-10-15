@@ -10,7 +10,7 @@ use abi::{Exports, HostState, ViewLimits, first_line, panic_message};
 
 /// How long a press or key stays a view's activation: the web's transient
 /// activation duration.
-pub(crate) const ACTIVATION_EXPIRY: std::time::Duration = std::time::Duration::from_secs(5);
+pub const ACTIVATION_EXPIRY: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// What a fresh instance did with the state the drawn view left it. A trap
 /// is not one of these — it takes the instance with it and is the load's
@@ -41,111 +41,111 @@ pub(super) struct View {
     /// The connection this instance started on, or was last reconnected
     /// to: its node requests and its `store` file go there, and only while
     /// it is still the app's (the same `rev`).
-    pub(crate) connection: Connection,
+    pub connection: Connection,
     /// Transient user activation, as the web has it: when the host last
     /// received a real press or key aimed at this view's tree
     /// (`ViewTree::activate`, carried here by the seat's turn). Fresh for
     /// `ACTIVATION_EXPIRY`; a gated call (`link.open`, the clipboard) takes
     /// it, so one input admits one call (`take_activation`).
-    pub(crate) activation: Option<std::time::Instant>,
-    pub(crate) program: &'static str,
+    pub activation: Option<std::time::Instant>,
+    pub program: &'static str,
     /// The seat entity showing this seat (`Seat.instance`;
     /// 0 for a preloaded seat no tab has claimed): with `program`, the key
     /// this instance's perf samples land under.
-    pub(crate) instance: u64,
+    pub instance: u64,
     /// The manifest's name: what a registered view's tab is called.
-    pub(crate) name: String,
+    pub name: String,
     /// The manifest's icon: what the view's tab draws on a folded menu bar;
     /// empty when the view declares none.
-    pub(crate) icon: String,
+    pub icon: String,
     /// The capabilities the manifest declares: a method whose capability is
     /// not among them is refused before it is routed.
-    pub(crate) capabilities: Vec<Capability>,
+    pub capabilities: Vec<Capability>,
     /// The programs the manifest names as targets: a node method naming
     /// another is refused before it is routed.
-    pub(crate) targets: Vec<String>,
+    pub targets: Vec<String>,
     /// The manifest's `MIN_WINDOW_WIDTH`: the narrowest the view is laid
     /// out, and so the narrowest a window holding it is sized.
-    pub(crate) min_width: u32,
+    pub min_width: u32,
     /// The undeclared capabilities already logged, so each is logged once.
-    pub(crate) undeclared_logged: Vec<Capability>,
+    pub undeclared_logged: Vec<Capability>,
     store: Store<HostState>,
     exports: Exports,
     /// The view's events for its next tick.
-    pub(crate) pending: Vec<wire::Event>,
+    pub pending: Vec<wire::Event>,
     /// The host's facts as the view last heard them: the theme, the
     /// body it is laid out in, the reader's UTC offset. Each crosses once
     /// (`sync_theme`, `sync_viewport`, `sync_offset`), and a replacement
     /// hears them before its first frame (`seed`).
-    pub(crate) theme_dark: Option<bool>,
-    pub(crate) viewport_sent: Option<(f32, f32)>,
-    pub(crate) offset_sent: Option<i32>,
+    pub theme_dark: Option<bool>,
+    pub viewport_sent: Option<(f32, f32)>,
+    pub offset_sent: Option<i32>,
     /// The events every tick carried, in order, for tests of what a view
     /// knew when it drew.
-    #[cfg(test)]
-    pub(crate) ticked_with: Vec<Vec<wire::Event>>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub ticked_with: Vec<Vec<wire::Event>>,
     /// Requests wait for the native layout of a frame that still mounts
     /// their target, inside this instance only.
-    pub(crate) widget_commands: Vec<(u64, wire::WidgetCommand)>,
+    pub widget_commands: Vec<(u64, wire::WidgetCommand)>,
     /// The last frame, its `root` kept across `unchanged` ticks and patched
     /// in place by a frame that carries patches instead of a tree.
-    pub(crate) frame: wire::Frame,
+    pub frame: wire::Frame,
     /// The style table of `frame.root`: a whole frame's entries, and each
     /// one a later frame brought.
-    pub(crate) styles: wire::Styles,
-    pub(crate) frame_reports: wire::SanitizeReport,
-    pub(crate) display_diagnostics: display_diagnostics::DisplayDiagnostics,
-    pub(crate) installed_generation: Option<u64>,
+    pub styles: wire::Styles,
+    pub frame_reports: wire::SanitizeReport,
+    pub display_diagnostics: display_diagnostics::DisplayDiagnostics,
+    pub installed_generation: Option<u64>,
     /// Bumped when `frame.root` changes: the widget rebuilds when it sees a
     /// number it has not rendered.
-    pub(crate) frame_rev: u64,
+    pub frame_rev: u64,
     /// What the view built for tooltip routes since the seat last took
     /// them, each with the table of the frame it came in: for the tree the
     /// seat draws, which keeps them by route.
-    pub(crate) tooltip_responses: Vec<(wire::TooltipResponse, wire::Styles)>,
-    pub(crate) ticks: u64,
+    pub tooltip_responses: Vec<(wire::TooltipResponse, wire::Styles)>,
+    pub ticks: u64,
     /// Every picture the view has sent, by hash: the bytes cross once.
-    pub(crate) pictures: Pictures,
+    pub pictures: Pictures,
     /// The view's `<program>.props` subscription, once it asked, and the
     /// props it was last given on it.
-    pub(crate) props_subscription: Option<u64>,
-    pub(crate) props_sent: Option<Vec<u8>>,
-    pub(crate) visible: bool,
-    pub(crate) visibility_change: Option<bool>,
-    pub(crate) visibility_subscriptions: Vec<u64>,
+    pub props_subscription: Option<u64>,
+    pub props_sent: Option<Vec<u8>>,
+    pub visible: bool,
+    pub visibility_change: Option<bool>,
+    pub visibility_subscriptions: Vec<u64>,
     /// `host.route` subscriptions; the first is handed a pending link route.
-    pub(crate) route_subscriptions: Vec<u64>,
+    pub route_subscriptions: Vec<u64>,
     /// What the view asked the app to do this redraw.
-    pub(crate) intents: Vec<Intent>,
+    pub intents: Vec<Intent>,
     /// The kernel's answers to this view's node calls, on their way in.
-    pub(crate) replies: Arc<kernel::Replies>,
+    pub replies: Arc<kernel::Replies>,
     /// The view's `program.changes` subscriptions and the program each one
     /// watches: told on every block that wrote to that program.
-    pub(crate) live_subscriptions: Vec<(u64, String)>,
+    pub live_subscriptions: Vec<(u64, String)>,
     /// Pending host requests and subscriptions, each owned by this view
     /// the kernel opened for it: retired with the cancel, and with the view.
-    pub(crate) tasks: Vec<(u64, kernel::NodeTask)>,
-    pub(crate) clipboard: clipboard::Clipboard,
+    pub tasks: Vec<(u64, kernel::NodeTask)>,
+    pub clipboard: clipboard::Clipboard,
     /// The view's `clock.ticks` subscriptions: the period it asked for and
     /// the instant its next item is due. A view has no clock of its own,
     /// so periodic view subscriptions use this list — driven from the window
     /// thread's own redraw, never from a thread that would have to wake it.
-    pub(crate) clocks: Vec<kernel::Clock>,
+    pub clocks: Vec<kernel::Clock>,
     /// The trap that ended the view, if one did. A faulted view never ticks again.
-    pub(crate) fault: Option<String>,
+    pub fault: Option<String>,
     /// sha256 of the view bytes this instance was built from; none for a
     /// file the developer's override supplies.
-    pub(crate) hash: Option<[u8; 32]>,
+    pub hash: Option<[u8; 32]>,
     /// This instance's identity: a replacement prepared against it is
     /// installed only over it.
-    pub(crate) alive: Arc<()>,
+    pub alive: Arc<()>,
     /// A replacement's first tree is in `frame` with its requests still
     /// to dispatch — the first redraw does that, without another tick.
-    pub(crate) staged: bool,
+    pub staged: bool,
 }
 
 impl View {
-    pub(crate) fn perf_key(&self) -> crate::perf::Key {
+    pub fn perf_key(&self) -> crate::perf::Key {
         crate::perf::Key::View {
             program: self.program,
             instance: self.instance,
@@ -153,14 +153,14 @@ impl View {
     }
 
     /// How much of the budget the last call into the view took.
-    pub(crate) fn fuel_used(&self) -> u64 {
+    pub fn fuel_used(&self) -> u64 {
         FUEL_PER_TICK - self.store.get_fuel().unwrap_or(0)
     }
 
     /// What the seat hands its tree to draw: the held tree with its style
     /// table, pictures named by hash alone, and the bytes those hashes
     /// resolve to, shared.
-    pub(crate) fn drawn(&self) -> (crate::render::Tree, Arc<crate::render::PictureBytes>) {
+    pub fn drawn(&self) -> (crate::render::Tree, Arc<crate::render::PictureBytes>) {
         let tree = crate::render::Tree {
             root: self.frame.root.clone().unwrap_or_else(wire::Node::empty),
             styles: self.styles.clone(),
@@ -252,19 +252,14 @@ fn runtime() -> &'static (Engine, Option<Cache>) {
         config.cranelift_opt_level(OptLevel::Speed);
         config.consume_fuel(true);
         let mut disk = None;
-        match crate::backend::cache_dir() {
-            Ok(directory) => {
-                let mut cache = CacheConfig::new();
-                cache.with_directory(directory.join("view-code"));
-                match Cache::new(cache) {
-                    Ok(cache) => {
-                        disk = Some(cache.clone());
-                        config.cache(Some(cache));
-                    }
-                    Err(error) => tracing::warn!(reason = "view_cache_unavailable", %error),
-                }
+        let mut cache = CacheConfig::new();
+        cache.with_directory(crate::backend::dirs().cache.join("view-code"));
+        match Cache::new(cache) {
+            Ok(cache) => {
+                disk = Some(cache.clone());
+                config.cache(Some(cache));
             }
-            Err(error) => tracing::warn!(reason = "view_cache_directory_unavailable", %error),
+            Err(error) => tracing::warn!(reason = "view_cache_unavailable", %error),
         }
         (Engine::new(&config).expect("wasmtime engine"), disk)
     })

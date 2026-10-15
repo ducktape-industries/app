@@ -20,7 +20,7 @@ use std::cell::Cell;
 /// draws inside its window's; the host's layers over the desk (its dialogs,
 /// the bar's menus, the footer) defer at `HOST_BAND + n`, so no window and
 /// no view draw paints or takes a click above them.
-pub(crate) const HOST_BAND: usize = usize::MAX / 2;
+pub const HOST_BAND: usize = usize::MAX / 2;
 
 /// The highest priority a view draw takes: a `Deferred` asks for at most
 /// this, and a view tooltip draws at it.
@@ -143,7 +143,7 @@ impl Element for SlotDeferred {
 /// other draws at `priority`, and only inside the content mask it is laid
 /// out in (the desk's), so a window dragged past the desk's edge never
 /// paints or takes a press over the chrome beside it.
-pub(crate) fn clipped(child: AnyElement, priority: usize) -> Clipped {
+pub fn clipped(child: AnyElement, priority: usize) -> Clipped {
     Clipped {
         child: Some(child),
         priority,
@@ -151,7 +151,7 @@ pub(crate) fn clipped(child: AnyElement, priority: usize) -> Clipped {
 }
 
 /// See [`clipped`].
-pub(crate) struct Clipped {
+pub struct Clipped {
     /// Held until prepaint.
     child: Option<AnyElement>,
     priority: usize,

@@ -10,13 +10,13 @@ use noded_client::identity::submit;
 use super::{RpcClient, query_signer, seated_frame, seated_key};
 
 /// The label a device's key joins an account under, as Account lists it.
-pub(super) const DEVICE_KEY_LABEL: &str = "Desktop";
+pub const DEVICE_KEY_LABEL: &str = "Desktop";
 
 /// A self-serve account on `network` whose one key is this device's
 /// (seated) key: identity's `Create`, no passkey. Its number and name, as
 /// the rail shows them. A key that already holds an account (a retry after
 /// a lost answer) is not an error here: that account is the answer.
-pub(crate) async fn create_plain_account(
+pub async fn create_plain_account(
     client: &RpcClient,
     network: &str,
     name: &str,
@@ -29,11 +29,7 @@ pub(crate) async fn create_plain_account(
     Ok((number, name.trim().to_owned()))
 }
 
-pub(super) async fn create_seated(
-    client: &RpcClient,
-    network: &str,
-    name: &str,
-) -> Result<u64, String> {
+pub async fn create_seated(client: &RpcClient, network: &str, name: &str) -> Result<u64, String> {
     let create = Op::Create {
         name: name.to_owned(),
         scheme: abi::Scheme::Ed25519,
@@ -46,7 +42,7 @@ pub(super) async fn create_seated(
 /// own account. An agent's keys are its manager's to add, and a program's
 /// account holds none, so a key that holds either is told so instead of
 /// sending an `AddKey` identity would refuse.
-pub(super) fn person(account: &identity::Account) -> Result<(), String> {
+pub fn person(account: &identity::Account) -> Result<(), String> {
     let name = &account.card.name;
     match &account.control {
         Control::Person { .. } => Ok(()),
@@ -65,19 +61,15 @@ pub(super) fn person(account: &identity::Account) -> Result<(), String> {
 
 /// `noded_client::identity::account_of_key`, asked in a frame the seated
 /// key (or, locked, the reader key) signs. The rail's foot reads it.
-pub(crate) async fn account_of_key(
+pub async fn account_of_key(
     client: &RpcClient,
     network: &str,
     key: Vec<u8>,
 ) -> Result<Option<(u64, String)>, String> {
-    noded_client::identity::account_of_key(client, network, key, &query_signer()).await
+    noded_client::identity::account_of_key(client, network, key, &*query_signer()).await
 }
 
-pub(super) async fn submit_seated(
-    client: &RpcClient,
-    network: &str,
-    op: &Op,
-) -> Result<Vec<u8>, String> {
+pub async fn submit_seated(client: &RpcClient, network: &str, op: &Op) -> Result<Vec<u8>, String> {
     let frame = seated_frame(client, network, identity::PROGRAM, abi::encode(op))
         .await
         .map_err(|refusal| refusal.message)?;

@@ -8,32 +8,32 @@ use super::prefs::{edit_prefs, read_prefs};
 
 /// A node URL this device connected to, and the network name it reported.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct RecentEndpoint {
-    pub(crate) url: String,
-    pub(crate) network: String,
+pub struct RecentEndpoint {
+    pub url: String,
+    pub network: String,
     /// The network's founding time, which tells two chains with one name
     /// apart.
-    pub(crate) founded: u64,
+    pub founded: u64,
     /// This node's chain is not the one this device first met under its
     /// name ([`Keyring::other_chain`](noded_client::keyring::Keyring::other_chain)).
-    pub(crate) other_chain: bool,
+    pub other_chain: bool,
 }
 
 impl RecentEndpoint {
     /// The node's host and port — the URL without its scheme.
-    pub(crate) fn host(&self) -> &str {
+    pub fn host(&self) -> &str {
         host_of(&self.url)
     }
 
     /// The network's name.
-    pub(crate) fn name(&self) -> String {
+    pub fn name(&self) -> String {
         self.network.clone()
     }
 
     /// How a list names this node: its network and host, and — when two
     /// chains share the name — which one is the other chain. Two rows
     /// never read the same: the list holds one row per URL.
-    pub(crate) fn label(&self) -> String {
+    pub fn label(&self) -> String {
         match self.other_chain {
             false => format!("{} · {}", self.network, self.host()),
             true => format!("{} · {} · different network", self.network, self.host()),
@@ -43,7 +43,7 @@ impl RecentEndpoint {
 
 /// Node URLs this device connected to, most recent first. An entry that
 /// does not read as `{"url", "network", ..}` is dropped; the rest stand.
-pub(crate) fn recent_endpoints() -> Vec<RecentEndpoint> {
+pub fn recent_endpoints() -> Vec<RecentEndpoint> {
     endpoints_of(&read_prefs().unwrap_or_default())
 }
 
@@ -64,7 +64,7 @@ fn endpoint_of_json(value: &serde_json::Value) -> Option<RecentEndpoint> {
 }
 
 /// Moves `entry` to the front: its URL, with the network it just reported.
-pub(crate) fn note_endpoint(entry: RecentEndpoint) {
+pub fn note_endpoint(entry: RecentEndpoint) {
     edit_endpoints(|recent| note(recent, entry));
 }
 
@@ -75,7 +75,7 @@ fn note(recent: &mut Vec<RecentEndpoint>, entry: RecentEndpoint) {
 }
 
 /// Drops `endpoint` from the recent list — the row's Forget button.
-pub(crate) fn forget_endpoint(endpoint: &str) {
+pub fn forget_endpoint(endpoint: &str) {
     edit_endpoints(|recent| recent.retain(|known| known.url != endpoint));
 }
 

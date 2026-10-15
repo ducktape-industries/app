@@ -16,7 +16,7 @@ use view_wire::methods::{Delivery, Notification};
 /// One banner as the host words it; a later one under the same non-empty
 /// `tag` replaces the standing one.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Notice {
+pub struct Notice {
     pub title: String,
     pub body: String,
     pub tag: String,
@@ -24,21 +24,21 @@ pub(crate) struct Notice {
 
 /// One row of the centre.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Entry {
-    pub(crate) id: u64,
+pub struct Entry {
+    pub id: u64,
     /// The program whose view posted (its roster name).
-    pub(crate) program: String,
+    pub program: String,
     /// That view's own name when it posted.
-    pub(crate) view: String,
-    pub(crate) title: String,
-    pub(crate) body: String,
-    pub(crate) tag: String,
-    pub(crate) link: String,
+    pub view: String,
+    pub title: String,
+    pub body: String,
+    pub tag: String,
+    pub link: String,
     /// Unix seconds of the latest notice folded into the row.
-    pub(crate) at: i64,
+    pub at: i64,
     /// Notices folded into the row under its tag.
-    pub(crate) count: u32,
-    pub(crate) read: bool,
+    pub count: u32,
+    pub read: bool,
 }
 
 struct Bucket {
@@ -49,7 +49,7 @@ struct Bucket {
 /// The notification centre: the log of the network in hand, and what the
 /// policy remembers between notices.
 #[derive(Default)]
-pub(crate) struct Center {
+pub struct Center {
     /// The chain id (`<network>#<salt>`) the log is for.
     network: String,
     /// Where the log is saved: none with no network in hand, or when its
@@ -61,9 +61,9 @@ pub(crate) struct Center {
     /// Notices past the burst limit since the view's last banner.
     more: HashMap<String, u32>,
     /// The window in front and the view focused in it.
-    pub(crate) front: Option<(WindowKey, &'static str)>,
+    pub front: Option<(WindowKey, &'static str)>,
     /// Views that posted before the person said anything about them.
-    pub(crate) asking: BTreeSet<String>,
+    pub asking: BTreeSet<String>,
     pub(super) not_now: BTreeSet<String>,
     /// Moves with every change to the log: the bell's list is read again.
     rev: u64,
@@ -75,10 +75,10 @@ pub(crate) struct Center {
 /// ([`center`]), which its views post into and its windows draw, or a
 /// test's own.
 #[derive(Clone, Default)]
-pub(crate) struct CenterHandle(Arc<Mutex<Center>>);
+pub struct CenterHandle(Arc<Mutex<Center>>);
 
 impl CenterHandle {
-    pub(crate) fn lock(&self) -> MutexGuard<'_, Center> {
+    pub fn lock(&self) -> MutexGuard<'_, Center> {
         self.0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -86,13 +86,13 @@ impl CenterHandle {
 }
 
 /// The app's one centre.
-pub(crate) fn center() -> &'static CenterHandle {
+pub fn center() -> &'static CenterHandle {
     static CENTER: OnceLock<CenterHandle> = OnceLock::new();
     CENTER.get_or_init(CenterHandle::default)
 }
 
 /// Unix seconds now.
-pub(crate) fn wall() -> i64 {
+pub fn wall() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_secs() as i64)
@@ -102,7 +102,7 @@ impl Center {
     /// What to do with one notice from `program` (named `view`): the answer
     /// for the view, and the banner to raise, if any — the notice's own, or
     /// the view's "N more" once it is past its burst.
-    pub(crate) fn post(
+    pub fn post(
         &mut self,
         settings: &Settings,
         program: &str,
@@ -207,21 +207,21 @@ impl Center {
     }
 
     /// Newest first.
-    pub(crate) fn entries(&self) -> impl Iterator<Item = &Entry> {
+    pub fn entries(&self) -> impl Iterator<Item = &Entry> {
         self.entries.iter().rev()
     }
 
-    pub(crate) fn unread(&self) -> usize {
+    pub fn unread(&self) -> usize {
         self.entries.iter().filter(|entry| !entry.read).count()
     }
 
     /// How many times the log changed: equal, it lists what it listed.
-    pub(crate) fn rev(&self) -> u64 {
+    pub fn rev(&self) -> u64 {
         self.rev
     }
 
     /// A row picked: read now, and handed back to open.
-    pub(crate) fn open(&mut self, id: u64) -> Option<Entry> {
+    pub fn open(&mut self, id: u64) -> Option<Entry> {
         let entry = self.entries.iter_mut().find(|entry| entry.id == id)?;
         entry.read = true;
         let entry = entry.clone();
@@ -233,7 +233,7 @@ impl Center {
     /// `program` says the reader has seen what it posted under `tag`: its
     /// rows under it are read, and no other view's. Whether any changed.
     /// Written at the end of the view's redraw ([`Center::flush`]).
-    pub(crate) fn read_tag(&mut self, program: &str, tag: &str) -> bool {
+    pub fn read_tag(&mut self, program: &str, tag: &str) -> bool {
         let mut changed = false;
         for entry in &mut self.entries {
             if !tag.is_empty() && entry.program == program && entry.tag == tag && !entry.read {
@@ -247,7 +247,7 @@ impl Center {
         changed
     }
 
-    pub(crate) fn mark_all_read(&mut self) {
+    pub fn mark_all_read(&mut self) {
         for entry in &mut self.entries {
             entry.read = true;
         }
@@ -255,27 +255,27 @@ impl Center {
         self.flush();
     }
 
-    pub(crate) fn clear_read(&mut self) {
+    pub fn clear_read(&mut self) {
         self.entries.retain(|entry| !entry.read);
         self.rev += 1;
         self.flush();
     }
 
     /// Whether `program`'s window shows the permission bar.
-    #[cfg(test)]
-    pub(crate) fn asking(&self, program: &str) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn asking(&self, program: &str) -> bool {
         self.asking.contains(program)
     }
 
     /// `program`'s window asks, with nothing logged: the permission bar
     /// drawn without an unread count on the bell.
-    #[cfg(test)]
-    pub(crate) fn ask_for_test(&mut self, program: &str) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn ask_for_test(&mut self, program: &str) {
         self.asking.insert(program.to_owned());
     }
 
     /// Notices from `program` this past week, folded ones counted.
-    pub(crate) fn this_week(&self, program: &str, wall: i64) -> u32 {
+    pub fn this_week(&self, program: &str, wall: i64) -> u32 {
         self.entries
             .iter()
             .filter(|entry| entry.program == program && wall - entry.at <= 7 * 86_400)
@@ -286,7 +286,7 @@ impl Center {
     /// A window came to the front or left it, or its panes moved
     /// (`WindowRoot`'s activation and `Desk` observers): whether it is in
     /// front, and the view focused in it.
-    pub(crate) fn set_front(&mut self, window: WindowKey, active: bool, focused: &'static str) {
+    pub fn set_front(&mut self, window: WindowKey, active: bool, focused: &'static str) {
         match active {
             true => self.front = Some((window, focused)),
             false if self.front.is_some_and(|(key, _)| key == window) => self.front = None,
@@ -295,7 +295,7 @@ impl Center {
     }
 
     /// The network in hand: its log comes off disk, the policy starts over.
-    pub(crate) fn set_network(&mut self, network: &str) {
+    pub fn set_network(&mut self, network: &str) {
         if self.network != network {
             // the last network's rows go to its own file first
             self.flush();
@@ -330,7 +330,7 @@ impl Center {
     /// (`View::redraw`), never per post. Written whole through
     /// `noded_client::fs::atomic_write` on the blocking pool, one write after
     /// another (`kernel::in_order` under the log's path).
-    pub(crate) fn flush(&mut self) {
+    pub fn flush(&mut self) {
         if self.saved == self.rev {
             return;
         }
@@ -374,6 +374,6 @@ fn log_path(network: &str) -> Option<PathBuf> {
             },
         )
         .collect();
-    let dir = crate::backend::config_dir().ok()?.join("notifications");
+    let dir = crate::backend::dirs().config.join("notifications");
     Some(dir.join(format!("{file}.json")))
 }

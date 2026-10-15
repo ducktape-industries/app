@@ -5,7 +5,7 @@ use super::*;
 /// command's target by the id it holds; the view SDK, which lowered every
 /// id above it, sends the whole path, so two scopes holding one id are two
 /// targets and neither is taken for the other.
-pub(crate) fn target_names_mounted_node(root: &wire::Node, target: &[wire::ElementIdWire]) -> bool {
+pub fn target_names_mounted_node(root: &wire::Node, target: &[wire::ElementIdWire]) -> bool {
     fn contains(
         node: &wire::Node,
         row: Option<usize>,
@@ -27,7 +27,7 @@ pub(crate) fn target_names_mounted_node(root: &wire::Node, target: &[wire::Eleme
 }
 
 impl View {
-    pub(crate) fn sync_theme(&mut self, dark: bool) {
+    pub fn sync_theme(&mut self, dark: bool) {
         if self.theme_dark != Some(dark) {
             self.theme_dark = Some(dark);
             // Theme is driver state, shared by every view regardless of its
@@ -41,7 +41,7 @@ impl View {
     /// The body the view is laid out in, as the pane has it before the
     /// draw: the view's `Window::viewport_size()`. Sent when it moved;
     /// the latest size wins the tick.
-    pub(crate) fn sync_viewport(&mut self, width: f32, height: f32) {
+    pub fn sync_viewport(&mut self, width: f32, height: f32) {
         if self.viewport_sent != Some((width, height)) {
             self.viewport_sent = Some((width, height));
             self.pending
@@ -53,7 +53,7 @@ impl View {
     /// The reader's UTC offset in minutes, sent when it moved (a DST
     /// change): every time the view writes is in the reader's zone from
     /// its first frame on.
-    pub(crate) fn sync_offset(&mut self, minutes: i32) {
+    pub fn sync_offset(&mut self, minutes: i32) {
         if self.offset_sent != Some(minutes) {
             self.offset_sent = Some(minutes);
             self.pending
@@ -66,7 +66,7 @@ impl View {
     /// first frame — answer the requests, and say whether the view is due
     /// again at once. A view with nothing to deliver is left alone: the
     /// tree the host has is the tree it would send.
-    pub(crate) fn redraw(&mut self, props: &Option<Vec<u8>>) -> bool {
+    pub fn redraw(&mut self, props: &Option<Vec<u8>>) -> bool {
         if self.fault.is_some() {
             return false;
         }
@@ -122,7 +122,7 @@ impl View {
 
     /// Whether this view's activation is fresh, taking it: the gated call
     /// that asks first is the one the person's input admits.
-    pub(crate) fn take_activation(&mut self) -> bool {
+    pub fn take_activation(&mut self) -> bool {
         self.activation
             .take()
             .is_some_and(|at| at.elapsed() <= super::ACTIVATION_EXPIRY)
@@ -132,7 +132,7 @@ impl View {
     /// then the kernel contract (`kernel::answer`), then the three methods
     /// only this side has — `host.widget`, `host.session` answered from the
     /// props the app holds, `host.log` — and anything else is refused.
-    pub(crate) fn answer(&mut self, request: wire::Request, props: &Option<Vec<u8>>) {
+    pub fn answer(&mut self, request: wire::Request, props: &Option<Vec<u8>>) {
         let wire::Request { id, kind, payload } = request;
         let Some((capability, operation)) = Capability::of_kind(&kind) else {
             self.refuse(
@@ -195,14 +195,14 @@ impl View {
 
     /// The host's own refusal, in the shape a view gets a node's: a stable
     /// snake_case token it may branch on, and the sentence it may show.
-    pub(crate) fn refuse(&mut self, id: u64, reason: &'static str, message: impl Into<String>) {
+    pub fn refuse(&mut self, id: u64, reason: &'static str, message: impl Into<String>) {
         self.reply(id, Err(wire::Error::new(reason, message)));
     }
 
     /// The key a command acts on, or `None` for the two that act on focus
     /// order rather than a node. Exhaustive by design: adding a command
     /// requires reviewing its scope.
-    pub(crate) fn command_target(command: &wire::WidgetCommand) -> Option<&[wire::ElementIdWire]> {
+    pub fn command_target(command: &wire::WidgetCommand) -> Option<&[wire::ElementIdWire]> {
         use wire::WidgetCommand as C;
         match command {
             C::FocusPrevious | C::FocusNext | C::FocusHandle { .. } => None,
@@ -223,7 +223,7 @@ impl View {
     /// Whether a command moves the keyboard: the ones the seat runs only
     /// while its keys are free (`Seat::keys_free`). Exhaustive for the same
     /// reason as `command_target`.
-    pub(crate) fn moves_keys(command: &wire::WidgetCommand) -> bool {
+    pub fn moves_keys(command: &wire::WidgetCommand) -> bool {
         use wire::WidgetCommand as C;
         match command {
             C::Focus { .. } | C::FocusHandle { .. } | C::FocusNext | C::FocusPrevious => true,
@@ -246,7 +246,7 @@ impl View {
     /// question a queued command has to pass is whether its target is still
     /// there, never whether the frame it was made against is still the
     /// current one.
-    pub(crate) fn target_is_mounted(&self, command: &wire::WidgetCommand) -> bool {
+    pub fn target_is_mounted(&self, command: &wire::WidgetCommand) -> bool {
         let Some(target) = Self::command_target(command) else {
             return true;
         };
@@ -256,7 +256,7 @@ impl View {
             .is_some_and(|root| target_names_mounted_node(root, target))
     }
 
-    pub(crate) fn widget_request(&mut self, id: u64, payload: &[u8]) {
+    pub fn widget_request(&mut self, id: u64, payload: &[u8]) {
         let admitted = (|| -> Result<wire::WidgetCommand, String> {
             let mut command: wire::WidgetCommand = wire::decode(payload)?;
             let exact_payload = wire::encode(&command).len() == payload.len();
@@ -278,7 +278,7 @@ impl View {
     /// Called on this view's mounted tree with the queued commands. A
     /// command whose target left the tree in the meantime is answered with
     /// that, never performed.
-    pub(crate) fn execute_widget_commands(
+    pub fn execute_widget_commands(
         &mut self,
         mut execute: impl FnMut(wire::WidgetCommand) -> Result<Vec<u8>, String>,
     ) {
@@ -296,7 +296,7 @@ impl View {
         }
     }
 
-    pub(crate) fn reply(&mut self, id: u64, result: kernel::Answer) {
+    pub fn reply(&mut self, id: u64, result: kernel::Answer) {
         self.pending.push(wire::Event::Response {
             id,
             result,
@@ -305,7 +305,7 @@ impl View {
     }
 
     /// One item on the subscription `id`: the stream stays open.
-    pub(crate) fn stream_item(&mut self, id: u64, item: Vec<u8>) {
+    pub fn stream_item(&mut self, id: u64, item: Vec<u8>) {
         self.pending.push(wire::Event::Response {
             id,
             result: Ok(item),
@@ -313,7 +313,7 @@ impl View {
         });
     }
 
-    pub(crate) fn report_display_truncation(&mut self) {
+    pub fn report_display_truncation(&mut self) {
         let Some(generation) = self.installed_generation else {
             return;
         };
@@ -330,11 +330,11 @@ impl View {
     /// A trap ends the view; the widget shows the message in its place.
     /// Each stage is a perf sample under the seat's key: the call, the
     /// decode, the merge, the fuel and bytes each way, the frame's kind.
-    pub(crate) fn tick(&mut self) {
+    pub fn tick(&mut self) {
         use crate::perf;
         let key = self.perf_key();
         let events = std::mem::take(&mut self.pending);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         self.ticked_with.push(events.clone());
         let bytes = wire::encode(&events);
         perf::record(key, "events_bytes", bytes.len() as u64);

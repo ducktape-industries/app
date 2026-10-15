@@ -10,7 +10,7 @@ use super::*;
 /// What one wire node is to assistive technology: the role it plays, the
 /// name it is called, and the value and states it reports.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Accessible {
+pub struct Accessible {
     pub role: Option<gpui_kit::Role>,
     pub name: Option<String>,
     pub description: Option<String>,
@@ -67,7 +67,7 @@ fn descendant_text(node: &wire::Node) -> Option<String> {
 /// below; RichText has none. The node's accessibility id is its wire key
 /// under the program's view, the element id each variant is already built
 /// with.
-pub(crate) fn accessible(node: &wire::Node) -> Accessible {
+pub fn accessible(node: &wire::Node) -> Accessible {
     use gpui_kit::Role;
     use wire::Node;
     let labelled = |role: Role, label: &Option<String>| Accessible {
@@ -164,7 +164,7 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
 /// itself (disabled, a description, a placeholder) are the ones this adds,
 /// and those gpui has no setter for (invalid, required, read-only) go
 /// through the element's one `a11y::Patch`.
-pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: Accessible) -> E {
+pub fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: Accessible) -> E {
     let Accessible {
         role,
         name,
@@ -432,7 +432,7 @@ impl ViewTree {
     /// copied). Plain data otherwise: no native entity, callback, handler id
     /// or IME preedit crosses a generation, since the new view's handler ids
     /// mean different things.
-    pub(crate) fn presentation(&self, window: &Window, cx: &App) -> NativePresentation {
+    pub fn presentation(&self, window: &Window, cx: &App) -> NativePresentation {
         let inputs = self
             .fields
             .iter()
@@ -450,7 +450,7 @@ impl ViewTree {
     /// A fresh tree that starts from the old one's `presentation`: the caches
     /// are taken now, the rest is claimed by each node the first frame draws
     /// and dropped after it (`Render for ViewTree`).
-    pub(crate) fn with_presentation(mut self, mut presentation: NativePresentation) -> Self {
+    pub fn with_presentation(mut self, mut presentation: NativePresentation) -> Self {
         if let Some(images) = presentation.images.take() {
             self.images = images;
         }

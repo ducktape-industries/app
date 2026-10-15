@@ -20,7 +20,7 @@ use gpui_kit::{AnyWindowHandle, Context, Entity, EventEmitter, Subscription};
 /// Frame pacing for a busy view (`frame.busy`): one more turn, a frame later.
 const BUSY_FRAME: Duration = Duration::from_millis(16);
 
-pub(crate) struct Seat {
+pub struct Seat {
     program: &'static str,
     instance: u64,
     mounted: Arc<Mutex<Mounted>>,
@@ -63,7 +63,7 @@ pub(crate) struct Seat {
     busy: Option<gpui_kit::Task<()>>,
     /// Theme; Session and Account land as props through `Seats`.
     _observers: Vec<Subscription>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) turns: u64,
 }
 
@@ -97,7 +97,7 @@ pub(super) fn native_root(tree: crate::render::Tree) -> crate::render::Tree {
 impl Seat {
     /// The seat of the pane with this layout `instance`, which is its key
     /// in the registry: a link's route waits for it by that key.
-    pub(crate) fn new(program: &'static str, instance: u64, cx: &mut Context<Self>) -> Self {
+    pub fn new(program: &'static str, instance: u64, cx: &mut Context<Self>) -> Self {
         let theme = cx.observe_global::<gpui_kit::component::Theme>(|this, cx| this.turn(cx));
         let mounted = mounted(program, instance);
         let mut woken = lock(&mounted).wake.subscribe();
@@ -132,41 +132,41 @@ impl Seat {
             clock: None,
             busy: None,
             _observers: vec![theme],
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             turns: 0,
         }
     }
 
-    pub(crate) fn program(&self) -> &'static str {
+    pub fn program(&self) -> &'static str {
         self.program
     }
 
     /// Its pane's layout instance (its perf key).
-    pub(crate) fn instance(&self) -> u64 {
+    pub fn instance(&self) -> u64 {
         self.instance
     }
 
     /// The id around the view's tree, `view/<program>`: the AX test door
     /// (`ax::tree`) reads the program off it. A host id, so no id a view
     /// sends is one.
-    pub(crate) fn ax_mark(&self) -> gpui_kit::ElementId {
+    pub fn ax_mark(&self) -> gpui_kit::ElementId {
         crate::render::host_id(format!("{}{}", crate::render::VIEW_MARK, self.program))
     }
 
-    pub(crate) fn tree(&self) -> Option<Entity<crate::render::ViewTree>> {
+    pub fn tree(&self) -> Option<Entity<crate::render::ViewTree>> {
         self.tree.clone()
     }
 
-    pub(crate) fn min_width(&self) -> f32 {
+    pub fn min_width(&self) -> f32 {
         self.min_width
     }
 
-    pub(crate) fn standin(&self) -> Option<&Standin> {
+    pub fn standin(&self) -> Option<&Standin> {
         self.standin.as_ref()
     }
 
-    #[cfg(test)]
-    pub(crate) fn window(&self) -> Option<AnyWindowHandle> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn window(&self) -> Option<AnyWindowHandle> {
         self.window
     }
 
@@ -174,7 +174,7 @@ impl Seat {
     /// `window.update` closure): the window is borrowed there, so a nested
     /// `window.update` in `turn`/`mount` would fail ("window not found").
     /// Deferred, the turn runs after that update returns, at app level.
-    pub(crate) fn wake(&self, cx: &mut Context<Self>) {
+    pub fn wake(&self, cx: &mut Context<Self>) {
         let this = cx.weak_entity();
         cx.defer(move |cx| {
             let _ = this.update(cx, |this, cx| this.turn(cx));
@@ -184,7 +184,7 @@ impl Seat {
     /// `Seats::reconcile` places the pane: the window its commands run in,
     /// the body its view is laid out in (none until the desk is drawn), and
     /// whether that window is in front.
-    pub(crate) fn place(
+    pub fn place(
         &mut self,
         window: AnyWindowHandle,
         body: Option<(f32, f32)>,
@@ -202,28 +202,28 @@ impl Seat {
     /// `PaneLayer` says whether a view here may move the keys (see
     /// `keys_free`); the tree hears it too. Nothing draws from it, so no
     /// notify.
-    pub(crate) fn set_keys_free(&mut self, keys_free: bool, cx: &mut Context<Self>) {
+    pub fn set_keys_free(&mut self, keys_free: bool, cx: &mut Context<Self>) {
         self.keys_free = keys_free;
         if let Some(tree) = &self.tree {
             tree.update(cx, |tree, _| tree.set_keys_grant(keys_free));
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn keys_free(&self) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn keys_free(&self) -> bool {
         self.keys_free
     }
 
     /// The body its view is laid out in (`place`).
-    #[cfg(test)]
-    pub(crate) fn body(&self) -> Option<(f32, f32)> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn body(&self) -> Option<(f32, f32)> {
         self.body
     }
 
     /// Session, Account and the theme land here as encoded props: a turn
     /// only when the bytes moved. Called from `Seats`' observers and
     /// `Seats::reconcile`.
-    pub(crate) fn set_props(&mut self, props: Vec<u8>, cx: &mut Context<Self>) {
+    pub fn set_props(&mut self, props: Vec<u8>, cx: &mut Context<Self>) {
         if self.props.as_ref() == Some(&props) {
             return;
         }
@@ -236,7 +236,7 @@ impl Seat {
     /// about to drop this seat and its subscription in the same update, so
     /// an emit here would be lost.
     #[must_use]
-    pub(crate) fn hide(&mut self) -> Vec<Intent> {
+    pub fn hide(&mut self) -> Vec<Intent> {
         let mounted = self.mounted.clone();
         let mut locked = lock(&mounted);
         let Mounted { slot, props, .. } = &mut *locked;
@@ -264,13 +264,13 @@ impl Seat {
     /// callback (those go through `wake`). While a tick that changed what
     /// the tree draws waits for its draw, the turn waits too (`Drawn` runs
     /// it): one tick per draw, as when the view ticked on the draw path.
-    pub(crate) fn turn(&mut self, cx: &mut Context<Self>) {
+    pub fn turn(&mut self, cx: &mut Context<Self>) {
         if self.holding {
             self.owed = true;
             return;
         }
         self.owed = false;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             self.turns += 1;
         }

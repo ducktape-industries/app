@@ -641,8 +641,8 @@ fn an_unopened_program_runs_no_init() {
         || matches!(&lock(&seat).slot, Slot::Failed(failure) if failure.to_string().contains("init trapped")),
     );
     // the fetch kept the blob in the developer's own cache: it goes
-    let kept = crate::backend::cache_dir()
-        .unwrap()
+    let kept = crate::backend::dirs()
+        .cache
         .join("programs")
         .join(abi::hex(code.digest()));
     let _ = std::fs::remove_file(&kept);
@@ -703,8 +703,8 @@ fn a_rail_row_carries_the_icon_its_views_manifest_declares() {
     for (program, view) in &views {
         lock(registry()).remove(&(*program, 0));
         // the fetch kept the blob in the developer's own cache: it goes
-        let kept = crate::backend::cache_dir()
-            .unwrap()
+        let kept = crate::backend::dirs()
+            .cache
             .join("programs")
             .join(abi::hex(blob_id(view).digest()));
         let _ = std::fs::remove_file(&kept);
@@ -719,8 +719,8 @@ fn a_rail_row_carries_the_icon_its_views_manifest_declares() {
 fn a_program_read_once_is_read_off_the_disk() {
     let body = b"\0asm\x01\0\0\0 a program read once".to_vec();
     let code = blob_id(&body);
-    let kept = crate::backend::cache_dir()
-        .unwrap()
+    let kept = crate::backend::dirs()
+        .cache
         .join("programs")
         .join(abi::hex(code.digest()));
     let _ = std::fs::remove_file(&kept);
@@ -752,8 +752,8 @@ fn a_claimed_seat_starts_the_code_it_compiled() {
     let seat = lock(&registry)[&("quick-view", 0)].clone();
     eventually("the preload landed", || !lock(&seat).slot.loading());
     let _ = std::fs::remove_file(
-        crate::backend::cache_dir()
-            .unwrap()
+        crate::backend::dirs()
+            .cache
             .join("programs")
             .join(abi::hex(code.digest())),
     );
@@ -815,8 +815,8 @@ fn a_pane_opens_its_compiled_view_at_once() {
     eventually("the preload landed", || !lock(&seat).slot.loading());
     drop(node);
     let _ = std::fs::remove_file(
-        crate::backend::cache_dir()
-            .unwrap()
+        crate::backend::dirs()
+            .cache
             .join("programs")
             .join(abi::hex(code.digest())),
     );

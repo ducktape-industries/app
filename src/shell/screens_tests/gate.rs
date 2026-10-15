@@ -558,7 +558,13 @@ async fn a_door_walk_leaves_the_prefs_as_it_found_them(cx: &mut TestAppContext) 
     assert_eq!(prefs, serde_json::json!({}));
     let (_view, native) = open(scene, cx);
     let window = gpui_kit::VisualContext::window_handle(&native);
-    let report = crate::ax::audit::tests::door_audit(window, None, cx).await;
+    // the walk keeps Settings' choices and puts them back, as the app's door does
+    let keep = &|window: &gpui_kit::Window, cx: &gpui_kit::App| {
+        crate::shell::layers::Kept::of(window, cx).map(|kept| {
+            Box::new(move |cx: &mut gpui_kit::App| kept.restore(cx)) as crate::ax::Restore
+        })
+    };
+    let report = crate::ax::audit::door_audit(window, None, keep, cx).await;
     // the four radio groups and the page tabs were probed
     assert!(
         report["applicable"]["AX-107"].as_u64() >= Some(5),

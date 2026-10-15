@@ -22,13 +22,13 @@ use view_wire as wire;
 /// How far past its border a thing that sizes can still be taken hold of:
 /// a desk window's edges, a view's divider. Its grip reaches this much out
 /// into the gap around it.
-pub(crate) const GRAB: f32 = 5.;
+pub const GRAB: f32 = 5.;
 
 mod accessibility;
 mod anchored;
 mod canvas;
 mod commands;
-pub(crate) mod deferred;
+pub mod deferred;
 mod frame;
 mod inputs;
 mod interactivity;
@@ -43,19 +43,21 @@ mod text;
 mod tooltip_containment;
 mod uniform;
 mod variable_list;
-pub(crate) mod web;
+pub mod web;
 
+#[cfg(any(test, feature = "test-support"))]
+mod test_support;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-pub(crate) use tests::{answered, plain_style, sanitize_whole, sent, test_style};
+#[cfg(any(test, feature = "test-support"))]
+pub use test_support::{answered, plain_style, sanitize_whole, sent, test_style, test_styles};
 
 use accessibility::accessible;
-pub(crate) use accessibility::{Accessible, announce};
+pub use accessibility::{Accessible, announce};
 use canvas::{canvas_svg, native_canvas_commands, paint_canvas_commands};
-pub(crate) use commands::dialog_entry;
+pub use commands::dialog_entry;
 use inputs::Field;
-pub(crate) use pictures::PictureBytes;
+pub use pictures::PictureBytes;
 use pictures::SharedRasters;
 use sensors::SensorState;
 use style::{has_named_overlay, named_overlay, native_cursor};
@@ -68,11 +70,11 @@ use variable_list::VariableList;
 /// id (`Node::identity`) adds a segment; one without shares its nearest
 /// identified ancestor's path, so only identified nodes may write a map
 /// keyed by it.
-pub(crate) type AuthoredPath = Vec<wire::ElementIdWire>;
+pub type AuthoredPath = Vec<wire::ElementIdWire>;
 
 /// The gpui id for a sanitized wire id. Sanitize refuses every id that
 /// cannot lower, so a frame that reached the renderer holds none.
-pub(crate) fn native_id(id: &wire::ElementIdWire) -> ElementId {
+pub fn native_id(id: &wire::ElementIdWire) -> ElementId {
     id.to_gpui().expect("sanitized element ids lower to gpui")
 }
 
@@ -81,7 +83,7 @@ pub(crate) fn native_id(id: &wire::ElementIdWire) -> ElementId {
 /// `validate_host` refuses from a view, so no id a view can send equals it,
 /// by construction; the name is what tells one host element from another,
 /// and what the /tree door prints for it.
-pub(crate) fn host_id(name: impl Into<SharedString>) -> ElementId {
+pub fn host_id(name: impl Into<SharedString>) -> ElementId {
     static BASE: std::sync::LazyLock<Arc<ElementId>> = std::sync::LazyLock::new(|| {
         Arc::new(ElementId::CodeLocation(*std::panic::Location::caller()))
     });
@@ -89,18 +91,18 @@ pub(crate) fn host_id(name: impl Into<SharedString>) -> ElementId {
 }
 
 /// Whether `id` is one [`host_id`] made: the shape no view id has.
-pub(crate) fn is_host_id(id: &ElementId) -> bool {
+pub fn is_host_id(id: &ElementId) -> bool {
     matches!(id, ElementId::NamedChild(base, _) if matches!(**base, ElementId::CodeLocation(_)))
 }
 
 /// The name of the host id a seat draws around its view's tree, before the
 /// program (`Seat::ax_mark`): the AX door reads the program off it.
-pub(crate) const VIEW_MARK: &str = "view/";
+pub const VIEW_MARK: &str = "view/";
 
 /// Pushes the id `node` is filed under onto `path` (`wire::identity`: its
 /// own, else, as row `row` of a list, its index); the caller pops on the
 /// way out when this answers `true`.
-pub(crate) fn enter_scope(node: &wire::Node, row: Option<usize>, path: &mut AuthoredPath) -> bool {
+pub fn enter_scope(node: &wire::Node, row: Option<usize>, path: &mut AuthoredPath) -> bool {
     match wire::identity::segment(node.identity().cloned(), row) {
         Some(id) => {
             path.push(id);
@@ -156,7 +158,7 @@ fn keeps_words_unselected(role: gpui_kit::Role) -> bool {
 /// the new view's handler ids mean different things. Taken by
 /// `ViewTree::presentation`, consumed by the new tree's first frame.
 #[derive(Default)]
-pub(crate) struct NativePresentation {
+pub struct NativePresentation {
     /// The seat's rasters, the cache itself: the new tree draws on in it.
     images: Option<SharedRasters>,
     focused_container: Option<(AuthoredPath, std::mem::Discriminant<wire::Node>)>,
@@ -175,9 +177,9 @@ struct InputPresentation {
 /// A tree to draw and the table its nodes name their styles in: what a
 /// seat hands its [`ViewTree`] with each frame, and what a tooltip's
 /// content is kept as. An id means a style only beside its table.
-pub(crate) struct Tree {
-    pub(crate) root: wire::Node,
-    pub(crate) styles: wire::Styles,
+pub struct Tree {
+    pub root: wire::Node,
+    pub styles: wire::Styles,
 }
 
 /// The style `id` names in `styles`, as the app draws it: a view names the
@@ -308,12 +310,12 @@ struct TooltipContent {
 
 /// The tree has drawn: every render says so, and the seat that ticked
 /// waits for it before its next turn (one tick per draw).
-pub(crate) struct Drawn;
+pub struct Drawn;
 
 impl EventEmitter<Drawn> for ViewTree {}
 
 impl ViewTree {
-    pub(crate) fn new(tree: impl Into<Tree>) -> Self {
+    pub fn new(tree: impl Into<Tree>) -> Self {
         let Tree { root, styles } = tree.into();
         Self {
             activation: Default::default(),
@@ -353,14 +355,14 @@ impl ViewTree {
     }
 
     /// The perf key this tree's renders count under.
-    pub(crate) fn with_perf_key(mut self, key: crate::perf::Key) -> Self {
+    pub fn with_perf_key(mut self, key: crate::perf::Key) -> Self {
         self.perf_key = Some(key);
         self
     }
 
     /// The first one-line field this tree mounted, for a test to focus and blur.
-    #[cfg(test)]
-    pub(crate) fn first_input_for_test(&self) -> Option<Entity<InputState>> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn first_input_for_test(&self) -> Option<Entity<InputState>> {
         self.fields.values().find_map(|field| match &field.engine {
             inputs::Engine::Line(state) => Some(state.clone()),
             inputs::Engine::Area(_) => None,
@@ -368,8 +370,8 @@ impl ViewTree {
     }
 
     /// The native handle behind a view focus handle, for a test to ask who has the keys.
-    #[cfg(test)]
-    pub(crate) fn view_focus_for_test(&self, handle: u64) -> Option<FocusHandle> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn view_focus_for_test(&self, handle: u64) -> Option<FocusHandle> {
         self.view_focus_targets.get(&handle).cloned()
     }
 

@@ -1,16 +1,16 @@
 use super::*;
 
 /// The host's facts a drawn view holds for its replacement (`View::ambient`).
-pub(crate) struct Ambient {
-    pub(crate) theme_dark: Option<bool>,
-    pub(crate) viewport: Option<(f32, f32)>,
+pub struct Ambient {
+    pub theme_dark: Option<bool>,
+    pub viewport: Option<(f32, f32)>,
 }
 
 impl View {
     /// Reusing identical code over a new connection: the node subscriptions
     /// go on, opened on it, and the rest of the work started on the old one
     /// is retired (`kernel::reconnected`).
-    pub(crate) fn reconnect(&mut self, connection: &Connection) {
+    pub fn reconnect(&mut self, connection: &Connection) {
         if self.connection.rev == connection.rev {
             return;
         }
@@ -35,7 +35,7 @@ impl View {
     /// got past the roster fills `timing`, which the seat logs as one
     /// `view_load` line once the load is installed. Each stage is also a
     /// sample under the seat's perf key.
-    pub(crate) fn load(
+    pub fn load(
         program: &'static str,
         code: Option<(::abi::BlobId, bool)>,
         asked_of: &Connection,
@@ -221,7 +221,7 @@ impl View {
     /// tick (`mounted`). A seat that moved on meanwhile (a newer load, the
     /// program gone) has nothing here to start: the load is stale, and its
     /// failure lands nowhere.
-    pub(crate) fn start(
+    pub fn start(
         program: &'static str,
         code: Option<(::abi::BlobId, bool)>,
         generation: u64,
@@ -300,7 +300,7 @@ impl View {
     /// seat's lock against the very instance the load saw, is restored, and
     /// the first tree is verified ([`Self::prepared`]). `ticks` becomes the
     /// count the handover was taken at.
-    pub(crate) fn replacement(
+    pub fn replacement(
         fresh: Self,
         alive: &Arc<()>,
         ticks: &mut u64,
@@ -330,7 +330,7 @@ impl View {
     /// [`Self::replacement`] once more, on a new instance of `like`'s
     /// `code`, against `old` as it is now: the seat calls it under its lock
     /// when the view ticked or took work while `like` was prepared.
-    pub(crate) fn prepared_again(
+    pub fn prepared_again(
         old: &mut Self,
         like: &Self,
         code: &Module,
@@ -484,7 +484,7 @@ impl View {
             theme_dark: _,
             viewport_sent: _,
             offset_sent: _,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
                 ticked_with: _,
             widget_commands: _,
             frame: _,
@@ -546,14 +546,14 @@ impl View {
         ran.map_err(Failure::Trapped)
     }
 
-    pub(crate) fn deployed(&mut self, hash: [u8; 32]) {
+    pub fn deployed(&mut self, hash: [u8; 32]) {
         self.hash = Some(hash);
     }
 
     /// The load generation that seated this instance — zero for one built
     /// directly by a test — so a candidate still loading retires nothing
     /// of the seated view.
-    pub(crate) fn seated_generation(&self) -> u64 {
+    pub fn seated_generation(&self) -> u64 {
         self.installed_generation.unwrap_or_default()
     }
 
@@ -565,7 +565,7 @@ impl View {
     /// carries are the subscriptions its restore rebuilt, which its own
     /// replacement rebuilds again — a tab not shown between two
     /// deployments is not stuck on the first.
-    pub(crate) fn settled(&self) -> bool {
+    pub fn settled(&self) -> bool {
         self.fault.is_none()
             && self.pending.is_empty()
             && self.widget_commands.is_empty()
@@ -575,7 +575,7 @@ impl View {
     /// The view's state, or why it does not hand it over now. A trap ends
     /// the instance as one in `tick` does: the fault keeps it from being
     /// entered again.
-    pub(crate) fn snapshot(&mut self) -> Result<Snapshot, String> {
+    pub fn snapshot(&mut self) -> Result<Snapshot, String> {
         arm(&mut self.store);
         self.exports.snapshot(&mut self.store).map_err(|error| {
             let reason = panic_message(&mut self.store).unwrap_or_else(|| first_line(&error));
@@ -584,7 +584,7 @@ impl View {
         })
     }
 
-    pub(crate) fn restore(&mut self, snapshot: &[u8], shown: &str) -> Result<Restored, String> {
+    pub fn restore(&mut self, snapshot: &[u8], shown: &str) -> Result<Restored, String> {
         arm(&mut self.store);
         let answered = self
             .exports
@@ -600,7 +600,7 @@ impl View {
     }
 
     /// The view's `init` export: a fresh start, with no snapshot to restore.
-    pub(crate) fn init(&mut self, shown: &str) -> Result<(), String> {
+    pub fn init(&mut self, shown: &str) -> Result<(), String> {
         arm(&mut self.store);
         if let Err(error) = self.exports.init(&mut self.store) {
             let trap = format!("{shown}: init trapped: {}", first_line(&error));
@@ -613,7 +613,7 @@ impl View {
     /// (the resync a picture it names by hash alone may cost it,
     /// `Pictures::adopt`): its whole tree, or it is no replacement. Its
     /// requests wait for the first redraw.
-    pub(crate) fn first_frame(&mut self, shown: &str) -> Result<(), String> {
+    pub fn first_frame(&mut self, shown: &str) -> Result<(), String> {
         let mut requests = Vec::new();
         let mut cancels = Vec::new();
         loop {
@@ -640,18 +640,14 @@ impl View {
         Ok(())
     }
 
-    pub(crate) fn load_from(program: &'static str, path: &std::path::Path) -> Result<Self, String> {
+    pub fn load_from(program: &'static str, path: &std::path::Path) -> Result<Self, String> {
         let shown = path.display().to_string();
         let bytes = std::fs::read(path).map_err(|error| format!("{shown}: {error}"))?;
         Self::from_bytes(program, &bytes, &shown)
     }
 
     /// The view instantiated and mounted; `shown` names it in errors.
-    pub(crate) fn from_bytes(
-        program: &'static str,
-        bytes: &[u8],
-        shown: &str,
-    ) -> Result<Self, String> {
+    pub fn from_bytes(program: &'static str, bytes: &[u8], shown: &str) -> Result<Self, String> {
         let code = Self::compile(bytes, shown).map_err(|failure| failure.to_string())?;
         let mut view = Self::instantiate(program, &code, shown)?;
         (
@@ -668,7 +664,7 @@ impl View {
 
     /// The view's bytes checked and compiled — the cranelift stage of
     /// a load, measured on its own.
-    pub(crate) fn compile(bytes: &[u8], shown: &str) -> Result<Arc<Module>, Failure> {
+    pub fn compile(bytes: &[u8], shown: &str) -> Result<Arc<Module>, Failure> {
         Self::compile_sourced(bytes, shown).map(|(code, _)| code)
     }
 
@@ -685,11 +681,7 @@ impl View {
 
     /// The module instantiated, its exports bound, nothing run yet: a
     /// fresh view is `init`ed, a replacement `restore`d.
-    pub(crate) fn instantiate(
-        program: &'static str,
-        code: &Module,
-        shown: &str,
-    ) -> Result<Self, String> {
+    pub fn instantiate(program: &'static str, code: &Module, shown: &str) -> Result<Self, String> {
         let engine = engine();
         let budget = crate::backend::memory_bounds().view_bytes;
         let limits = ViewLimits::new(usize::try_from(budget).unwrap_or(usize::MAX));
@@ -751,7 +743,7 @@ impl View {
             theme_dark: None,
             viewport_sent: None,
             offset_sent: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             ticked_with: Vec::new(),
             widget_commands: Vec::new(),
             frame: wire::Frame::default(),
@@ -784,7 +776,7 @@ impl View {
 
     /// Hands the view the props the app holds, if they moved since the
     /// view last saw them. Before the view has subscribed they wait here.
-    pub(crate) fn sync_props(&mut self, props: &Option<Vec<u8>>) {
+    pub fn sync_props(&mut self, props: &Option<Vec<u8>>) {
         let Some(id) = self.props_subscription else {
             return;
         };
@@ -796,7 +788,7 @@ impl View {
         self.stream_item(id, props);
     }
 
-    pub(crate) fn set_visible(&mut self, visible: bool) {
+    pub fn set_visible(&mut self, visible: bool) {
         if self.visible == visible {
             return;
         }
@@ -806,7 +798,7 @@ impl View {
 
     /// A route a link left for this seat goes to its first route
     /// subscriber, once; with no subscriber it waits.
-    pub(crate) fn sync_route(&mut self) {
+    pub fn sync_route(&mut self) {
         let Some(&id) = self.route_subscriptions.first() else {
             return;
         };
@@ -815,7 +807,7 @@ impl View {
         }
     }
 
-    pub(crate) fn sync_visibility(&mut self) {
+    pub fn sync_visibility(&mut self) {
         let Some(visible) = self.visibility_change.take() else {
             return;
         };

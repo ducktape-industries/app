@@ -220,8 +220,8 @@ pub(super) mod tests {
         let code = abi::BlobId::Sha256(sha2::Sha256::digest(&framed).into());
         // the fetch keeps the blob in the developer's own cache: not there
         // before (it would answer instead of the node), gone after
-        let cached = crate::backend::cache_dir()
-            .unwrap()
+        let cached = crate::backend::dirs()
+            .cache
             .join("programs")
             .join(abi::hex(code.digest()));
         let _ = std::fs::remove_file(&cached);

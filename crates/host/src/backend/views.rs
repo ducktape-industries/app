@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use abi::BlobId;
 
-use super::{RpcClient, cache_dir};
+use super::RpcClient;
 use noded_client::wire::{Layer, unframe};
 
 pub const VIEW_SECTION: &str = "ducktape.view";
@@ -128,7 +128,9 @@ async fn ask(
     network: &str,
     query: ::programs::Query,
 ) -> Result<::programs::Reply, Fetch> {
-    let frame = super::query_frame(network, ::programs::PROGRAM, abi::encode(&query)).await;
+    let frame = super::query_frame(network, ::programs::PROGRAM, abi::encode(&query))
+        .await
+        .map_err(|refusal| Fetch::Refused(refusal.message))?;
     let answer = client
         .query(Layer::Preconfirmed, frame)
         .await
@@ -187,8 +189,8 @@ pub async fn program_bytes(
 
 fn cache_path(code: &BlobId) -> Option<PathBuf> {
     Some(
-        cache_dir()
-            .ok()?
+        super::dirs()
+            .cache
             .join("programs")
             .join(abi::hex(code.digest())),
     )

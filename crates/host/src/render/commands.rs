@@ -50,7 +50,7 @@ pub(super) fn walk_authored_paths(
 /// tracks `entry` as well: gpui's dispatch tree keys a handle to the last
 /// element that tracks it, so the trap would contain no focused node and
 /// Tab would leave the dialog.
-pub(crate) fn dialog_entry(entry: &FocusHandle, window: &mut Window, cx: &mut App) {
+pub fn dialog_entry(entry: &FocusHandle, window: &mut Window, cx: &mut App) {
     let entry = entry.clone();
     window.defer(cx, move |window, cx| {
         if !entry.contains_focused(window, cx) {
@@ -67,7 +67,7 @@ pub(crate) fn dialog_entry(entry: &FocusHandle, window: &mut Window, cx: &mut Ap
 /// `focus_next` is not Tab: gpui orders stops as they paint, a deferred
 /// popover's after everything painted in place, so one step from a dialog's
 /// trap lands on whatever is drawn after its opener, outside the dialog.
-pub(crate) fn tab(trap: Option<&FocusHandle>, forward: bool, window: &mut Window, cx: &mut App) {
+pub fn tab(trap: Option<&FocusHandle>, forward: bool, window: &mut Window, cx: &mut App) {
     let step = |window: &mut Window, cx: &mut App| match forward {
         true => window.focus_next(cx),
         false => window.focus_prev(cx),
@@ -98,7 +98,7 @@ pub(crate) fn tab(trap: Option<&FocusHandle>, forward: bool, window: &mut Window
 /// own root when its focused element vanishes (`WindowRoot::focus_lost`,
 /// shell/layers/root.rs) has them on the root by then. Focus moved to the
 /// opener before the draw compares focus paths is never lost.
-pub(crate) fn dialog_exit(
+pub fn dialog_exit(
     entry: &FocusHandle,
     opener: WeakFocusHandle,
     window: &mut Window,
@@ -116,21 +116,21 @@ impl ViewTree {
     /// an auxiliary click, a link's press, a key down but Escape, typing in
     /// a native field or editor, assistive technology's press. Nothing a
     /// view sends, no timer, no answer, no hover or scroll comes here.
-    pub(crate) fn activate(&self) {
+    pub fn activate(&self) {
         self.activation.set(Some(std::time::Instant::now()));
     }
 
     /// The activation, taken: the seat moves it to the view.
-    pub(crate) fn take_activation(&self) -> Option<std::time::Instant> {
+    pub fn take_activation(&self) -> Option<std::time::Instant> {
         self.activation.take()
     }
 
     /// See `keys_grant`: the seat mirrors its `keys_free` here.
-    pub(crate) fn set_keys_grant(&mut self, keys_grant: bool) {
+    pub fn set_keys_grant(&mut self, keys_grant: bool) {
         self.keys_grant = keys_grant;
     }
 
-    pub(crate) fn with_keys_grant(mut self, keys_grant: bool) -> Self {
+    pub fn with_keys_grant(mut self, keys_grant: bool) -> Self {
         self.keys_grant = keys_grant;
         self
     }

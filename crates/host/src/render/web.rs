@@ -19,7 +19,7 @@ use view_wire::methods::Capability;
 
 /// A CEF child process (this binary started with `--type=...`) runs CEF
 /// and exits here; the app's own process returns at once.
-pub(crate) fn subprocess() {
+pub fn subprocess() {
     #[cfg(feature = "web")]
     if let Some(code) = ducktape_web::child() {
         std::process::exit(code);
@@ -27,7 +27,7 @@ pub(crate) fn subprocess() {
 }
 
 /// CEF down, if a page started it: after the app's run returns.
-pub(crate) fn shutdown() {
+pub fn shutdown() {
     #[cfg(feature = "web")]
     ducktape_web::shutdown();
 }
@@ -36,7 +36,7 @@ pub(crate) fn shutdown() {
 /// or a tooltip) and its view's manifest does not declare `web`: a view
 /// draws a page only by saying it does. The refusal ends the view, as a
 /// frame that does not decode does: sent again, it would be refused again.
-pub(crate) fn declared(frame: &wire::Frame, capabilities: &[Capability]) -> Result<(), String> {
+pub fn declared(frame: &wire::Frame, capabilities: &[Capability]) -> Result<(), String> {
     match !capabilities.contains(&Capability::Web) && wire::web::carries_web(frame) {
         true => Err("the view draws a web page, and its manifest does not declare `web`".into()),
         false => Ok(()),
@@ -50,7 +50,7 @@ fn web_views() -> &'static Mutex<BTreeSet<&'static str>> {
 }
 
 /// `program`'s view manifest was read: whether it declares `web`.
-pub(crate) fn seen(program: &'static str, capabilities: &[Capability]) {
+pub fn seen(program: &'static str, capabilities: &[Capability]) {
     let mut views = web_views().lock().expect("web views");
     match capabilities.contains(&Capability::Web) {
         true => views.insert(program),
@@ -61,7 +61,7 @@ pub(crate) fn seen(program: &'static str, capabilities: &[Capability]) {
 /// The view an http(s) `link` opens in: the program whose view declares
 /// `web` (the first by name, if more do), when this build has a web view
 /// and the address is one a page loads. `None`: the system browser's.
-pub(crate) fn view_for(link: &str) -> Option<&'static str> {
+pub fn view_for(link: &str) -> Option<&'static str> {
     if !loadable(link) {
         return None;
     }
@@ -233,10 +233,7 @@ fn profile(key: Option<crate::perf::Key>) -> std::path::PathBuf {
         Some(crate::perf::Key::View { program, .. }) => program,
         _ => "unknown",
     };
-    crate::backend::cache_dir()
-        .unwrap_or_else(|_| std::env::temp_dir().join("ducktape"))
-        .join("web")
-        .join(program)
+    crate::backend::dirs().cache.join("web").join(program)
 }
 
 #[cfg(test)]

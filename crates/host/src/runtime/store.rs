@@ -74,9 +74,11 @@ fn file(view: &View) -> Result<PathBuf, wire::Error> {
             "not connected to a network",
         ));
     }
-    let config = crate::backend::config_dir()
-        .map_err(|error| refusal(methods::refusal::HOST_FAULT, error))?;
-    Ok(path(&config, &connection.chain, view.program))
+    Ok(path(
+        &crate::backend::dirs().config,
+        &connection.chain,
+        view.program,
+    ))
 }
 
 fn path(config: &Path, chain: &str, program: &str) -> PathBuf {

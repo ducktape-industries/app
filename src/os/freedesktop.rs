@@ -3,7 +3,7 @@
 //! each desktop answers through its own daemon. Pure Rust, and no new
 //! dependency — zbus is already in this binary's graph.
 
-use super::{Click, Notice};
+use ducktape_host::runtime::notify::{Click, Notice};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -84,7 +84,7 @@ fn listen(bus: &'static zbus::blocking::Connection) {
                         .get(&banner)
                         .copied();
                     if let Some(click) = click.filter(|_| action == "default") {
-                        super::clicked(click);
+                        ducktape_host::runtime::notify::clicked(click);
                     }
                 }
             });

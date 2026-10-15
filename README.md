@@ -64,7 +64,7 @@ tar xzf /tmp/ducktape.tar.gz -C /tmp
   `ducktape.view` custom section; the app reads it out, compiles it and
   seats it. The roster's order is the rail's order; a view's manifest names
   its tab. A program without the section is left off the rail.
-- **Relay.** A view asks through the kernel contract (`src/runtime/kernel.rs`),
+- **Relay.** A view asks through the kernel contract (`crates/host/src/runtime/kernel.rs`),
   every method a borsh type in `view_wire::methods`, named `<capability>.<op>`:
   `program.query`/`op.submit` `Call{target, body}`, `program.changes <program>`,
   `program.describe`, `chain.status`/`block`/`blocks`/`heads`, `invite.create`,
@@ -90,10 +90,12 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 | Path | What |
 |---|---|
 | `crates/noded-client` | the node's `/v1` wire and the signed frame, mirrored from the kernel branch, and the flows onto an account; shared with the phone |
-| `src/backend/views.rs` | roster → blob → `ducktape.view` section |
-| `src/backend/session.rs` | the seated key, its frames, preferences |
-| `src/runtime.rs`, `runtime/` | the wasm view runtime: seats, loads, swaps, the kernel relay |
-| `src/render.rs`, `render/` | the wire tree presenter, its text fields the kit's engine holds (IME, caret, clipboard, undo) |
+| `crates/host` | the blind host core the desktop shell and the phone shell share; `src/contract.rs` is the one interface a shell implements (directories, the reader key, banners, OS facts, invite minting) |
+| `crates/host/src/backend/views.rs` | roster → blob → `ducktape.view` section |
+| `crates/host/src/backend/session.rs` | the seated key (any `noded_client::Signer`), its frames, preferences |
+| `crates/host/src/runtime.rs`, `runtime/` | the wasm view runtime: seats, loads, swaps, the kernel relay |
+| `crates/host/src/render.rs`, `render/` | the wire tree presenter, its text fields the kit's engine holds (IME, caret, clipboard, undo) |
+| `src/os.rs`, `src/backend/` | the desktop's `OsServices` impl (its directories, the freedesktop / macOS banners, invites with the node this machine runs) and what only the desktop runs: the device key, passkeys, recovery keys |
 | `src/shell.rs`, `shell/` | the native chrome: the app's state as entities (`shell/entities/`, each written by its own methods) and each window's root with its layers (`shell/layers/`: launcher, menu bar, panes, dialogs, footer) |
 | `src/ui/layout.rs`, `src/shell/entities/{desk,windows}.rs` | panes floating on the desk, popped out into their own windows and back |
 

@@ -8,7 +8,7 @@ use super::super::consent;
 use super::*;
 use noded_client::wire as noded;
 
-pub(super) type Answered = std::pin::Pin<Box<dyn std::future::Future<Output = Answer> + Send>>;
+pub type Answered = std::pin::Pin<Box<dyn std::future::Future<Output = Answer> + Send>>;
 /// One node-backed method: the node to ask and the request's payload in,
 /// the answer out. Not a [`methods::Call`], which is `program.query`'s and
 /// `op.submit`'s envelope.
@@ -571,7 +571,7 @@ pub(super) fn targeted(
 pub(super) fn query(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
         let call = call_of(&ask)?;
-        let frame = backend::query_frame(&node.network, &call.target, call.body).await;
+        let frame = backend::query_frame(&node.network, &call.target, call.body).await?;
         node.client
             .query(backend::Layer::Preconfirmed, frame)
             .await
@@ -683,17 +683,21 @@ pub(super) fn invite(node: Node, ask: Vec<u8>) -> Answered {
         if ttl == 0 {
             return Err(malformed("ttl_days must be a positive integer"));
         }
-        let workspace = ducktape_home::root().map_err(host_fault)?;
-        let key = backend::invite::node_key(&workspace).map_err(host_fault)?;
-        let now = std::time::SystemTime::now()
+        let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(host_fault)?
             .as_millis() as u64;
-        let invite = backend::invite::mint(&node.client, key, ttl, now).await?;
-        Ok(methods::encode(&methods::Invite {
-            invite,
-            notes: Vec::new(),
-        }))
+        let ask = crate::contract::MintInvite {
+            ttl_days: ttl,
+            now_ms,
+        };
+        let Some(minted) = crate::contract::os().mint_invite(&node.client, ask) else {
+            return Err(wire::Error::new(
+                refusal::INVITE_UNSUPPORTED,
+                "Only the machine running this node can mint its invites.",
+            ));
+        };
+        minted.await
     })
 }
 

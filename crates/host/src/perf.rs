@@ -23,13 +23,13 @@ const RING: usize = 256;
 const SUMMARY_EVERY: Duration = Duration::from_secs(600);
 const RSS_EVERY: Duration = Duration::from_secs(1);
 
-pub(crate) fn on() -> bool {
+pub fn on() -> bool {
     ON.load(Ordering::Relaxed)
 }
 
 /// Called first thing in `main`: `t0` for the startup marks, and with
 /// `DUCKTAPE_PERF=1` the switch and the sampler thread.
-pub(crate) fn start() {
+pub fn start() {
     T0.get_or_init(Instant::now);
     let asked = std::env::var("DUCKTAPE_PERF").ok();
     if asked.as_deref().map(str::trim) != Some("1") {
@@ -51,7 +51,7 @@ pub(crate) fn start() {
 
 /// What a sample belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Key {
+pub enum Key {
     /// One seat: the program and the widget instance showing it.
     View {
         program: &'static str,
@@ -129,14 +129,14 @@ fn registry() -> MutexGuard<'static, Registry> {
 }
 
 /// A running measurement; its drop records the elapsed µs.
-pub(crate) struct Timer {
+pub struct Timer {
     key: Key,
     stage: &'static str,
     started: Instant,
 }
 
 impl Timer {
-    pub(crate) fn started(&self) -> Instant {
+    pub fn started(&self) -> Instant {
         self.started
     }
 }
@@ -158,7 +158,7 @@ fn fresh_hist(value: u64) -> Metric {
 }
 
 /// `None` when off: the caller never takes an `Instant`.
-pub(crate) fn time(key: Key, stage: &'static str) -> Option<Timer> {
+pub fn time(key: Key, stage: &'static str) -> Option<Timer> {
     on().then(|| Timer {
         key,
         stage,
@@ -166,7 +166,7 @@ pub(crate) fn time(key: Key, stage: &'static str) -> Option<Timer> {
     })
 }
 
-pub(crate) fn count(key: Key, stage: &'static str, n: u64) {
+pub fn count(key: Key, stage: &'static str, n: u64) {
     write(key, stage, n, true, |metric| match metric {
         Metric::Count(total) => *total += n,
         other => *other = Metric::Count(n),
@@ -174,7 +174,7 @@ pub(crate) fn count(key: Key, stage: &'static str, n: u64) {
 }
 
 /// Keeps the largest and the latest value.
-pub(crate) fn gauge(key: Key, stage: &'static str, value: u64) {
+pub fn gauge(key: Key, stage: &'static str, value: u64) {
     gauge_flagging(key, stage, value, true);
 }
 
@@ -194,7 +194,7 @@ fn gauge_flagging(key: Key, stage: &'static str, value: u64, flag: bool) {
 }
 
 /// A sample that is not a time: fuel, bytes, a count per tick.
-pub(crate) fn record(key: Key, stage: &'static str, value: u64) {
+pub fn record(key: Key, stage: &'static str, value: u64) {
     write(key, stage, value, true, |metric| match metric {
         Metric::Hist(samples) => samples.push(value),
         other => *other = fresh_hist(value),
@@ -216,7 +216,7 @@ fn write(key: Key, stage: &'static str, value: u64, flag: bool, apply: impl FnOn
 }
 
 /// A startup milestone: ms since `t0`, kept the first time it is reached.
-pub(crate) fn mark(stage: &'static str) {
+pub fn mark(stage: &'static str) {
     if !on() {
         return;
     }
@@ -229,7 +229,7 @@ pub(crate) fn mark(stage: &'static str) {
 
 /// A milestone reached at `at` rather than now: gpui's first present.
 #[cfg(feature = "perf-deep")]
-pub(crate) fn mark_at(stage: &'static str, at: Instant) {
+pub fn mark_at(stage: &'static str, at: Instant) {
     if !on() {
         return;
     }
@@ -243,13 +243,13 @@ pub(crate) fn mark_at(stage: &'static str, at: Instant) {
 
 /// `stage` with `suffix` appended, interned; built only when on, so an
 /// off run never allocates for it.
-pub(crate) fn suffixed(stage: &str, suffix: &str) -> Option<&'static str> {
+pub fn suffixed(stage: &str, suffix: &str) -> Option<&'static str> {
     on().then(|| crate::runtime::intern(&format!("{stage}{suffix}")))
 }
 
 /// The registry as JSON. Views aggregate by program unless `by_instance`;
 /// windows are keyed by their `WindowKey` number (the door adds the name).
-pub(crate) fn snapshot(by_instance: bool) -> serde_json::Value {
+pub fn snapshot(by_instance: bool) -> serde_json::Value {
     use serde_json::{Map, Value, json};
     let registry = registry();
     let mut views: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
@@ -351,8 +351,8 @@ fn json_of(metrics: &[&Metric]) -> serde_json::Value {
 }
 
 /// Clears every counter and sample; the startup marks stay.
-#[cfg(any(test, feature = "ax-door"))]
-pub(crate) fn reset() {
+#[cfg(any(test, feature = "ax-door", feature = "test-support"))]
+pub fn reset() {
     let mut registry = registry();
     registry.metrics.clear();
     registry.since = Instant::now();
@@ -361,7 +361,7 @@ pub(crate) fn reset() {
 
 /// One `perf_summary` line, if anything changed since the last: on the
 /// sampler's cadence, and once when the app quits.
-pub(crate) fn summary() {
+pub fn summary() {
     if !on() || !registry().changed {
         return;
     }
@@ -372,7 +372,7 @@ pub(crate) fn summary() {
 
 /// One `view_perf` line for an instance on its way out: its own numbers,
 /// under the same names as `/perf` gives them.
-pub(crate) fn retire(program: &'static str, instance: u64) {
+pub fn retire(program: &'static str, instance: u64) {
     if !on() {
         return;
     }
@@ -396,7 +396,7 @@ fn sample_rss() {
         }
         usage
     };
-    let unit = if cfg!(target_os = "macos") { 1 } else { 1024 };
+    let unit = crate::contract::os().facts().rss_unit;
     gauge_flagging(Key::Shell, "rss.peak", usage.ru_maxrss as u64 * unit, false);
     if let Some(current) = std::fs::read_to_string("/proc/self/statm")
         .ok()
@@ -408,48 +408,13 @@ fn sample_rss() {
     }
 }
 
-#[cfg(test)]
-pub(crate) use tests::{off_for_test, on_for_test};
+#[cfg(any(test, feature = "test-support"))]
+pub use test_support::{off_for_test, on_for_test};
 
 #[cfg(test)]
 mod tests {
+    use super::test_support::*;
     use super::*;
-
-    /// Tests share one process and one switch: each takes this while it
-    /// holds the switch where it needs it.
-    fn serial() -> MutexGuard<'static, ()> {
-        static SERIAL: Mutex<()> = Mutex::new(());
-        SERIAL
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    /// The switch on and the registry empty for one test, off again after.
-    pub(crate) struct Switched(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-    impl Drop for Switched {
-        fn drop(&mut self) {
-            ON.store(false, Ordering::Relaxed);
-            reset();
-            registry().marks.clear();
-        }
-    }
-
-    pub(crate) fn on_for_test() -> Switched {
-        let guard = Switched(serial());
-        reset();
-        registry().marks.clear();
-        ON.store(true, Ordering::Relaxed);
-        guard
-    }
-
-    pub(crate) fn off_for_test() -> Switched {
-        let guard = Switched(serial());
-        ON.store(false, Ordering::Relaxed);
-        reset();
-        registry().marks.clear();
-        guard
-    }
 
     const VIEW: Key = Key::View {
         program: "perf-test",
@@ -530,5 +495,48 @@ mod tests {
         assert!(cleared["views"]["perf-test/7"].is_null());
         assert!(cleared["windows"][&name].is_null());
         assert!(cleared["startup"]["desk"].is_number());
+    }
+}
+
+/// The switch for a test: on, with the registry empty, for one test at a
+/// time; off again after (feature `test-support` for the shells' tests).
+#[cfg(any(test, feature = "test-support"))]
+mod test_support {
+    use super::*;
+
+    /// Tests share one process and one switch: each takes this while it
+    /// holds the switch where it needs it.
+    fn serial() -> MutexGuard<'static, ()> {
+        static SERIAL: Mutex<()> = Mutex::new(());
+        SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The switch on and the registry empty for one test, off again after.
+    pub struct Switched(#[allow(dead_code)] MutexGuard<'static, ()>);
+
+    impl Drop for Switched {
+        fn drop(&mut self) {
+            ON.store(false, Ordering::Relaxed);
+            reset();
+            registry().marks.clear();
+        }
+    }
+
+    pub fn on_for_test() -> Switched {
+        let guard = Switched(serial());
+        reset();
+        registry().marks.clear();
+        ON.store(true, Ordering::Relaxed);
+        guard
+    }
+
+    pub fn off_for_test() -> Switched {
+        let guard = Switched(serial());
+        ON.store(false, Ordering::Relaxed);
+        reset();
+        registry().marks.clear();
+        guard
     }
 }

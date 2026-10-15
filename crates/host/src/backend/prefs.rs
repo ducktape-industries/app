@@ -3,15 +3,15 @@
 //! the recent-nodes list (`endpoints`) and the notification prefs
 //! (`runtime::notify`) go through [`read_prefs`] and [`edit_prefs`] too.
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn prefs_path() -> Option<std::path::PathBuf> {
-    super::config_dir().ok().map(|dir| dir.join("prefs.json"))
+    Some(super::dirs().config.join("prefs.json"))
 }
 
 /// What `prefs.json` holds. A missing file reads as `{}`; an unreadable one
 /// is an error, so no write lands over keys this read could not see.
-#[cfg(not(test))]
-pub(crate) fn read_prefs() -> std::io::Result<serde_json::Value> {
+#[cfg(not(any(test, feature = "test-support")))]
+pub fn read_prefs() -> std::io::Result<serde_json::Value> {
     let _timed = crate::perf::time(crate::perf::Key::Shell, "io.read_prefs");
     prefs_path().map_or_else(|| Ok(serde_json::json!({})), |path| read_prefs_at(&path))
 }
@@ -19,14 +19,15 @@ pub(crate) fn read_prefs() -> std::io::Result<serde_json::Value> {
 /// Reads, changes and writes back `prefs.json`; written only where `change`
 /// moved something. False when nothing landed, as when the file could not be
 /// read.
-#[cfg(not(test))]
-pub(crate) fn edit_prefs(change: impl FnOnce(&mut serde_json::Value)) -> bool {
+#[cfg(not(any(test, feature = "test-support")))]
+pub fn edit_prefs(change: impl FnOnce(&mut serde_json::Value)) -> bool {
     let _timed = crate::perf::time(crate::perf::Key::Shell, "io.write_prefs");
     prefs_path().is_some_and(|path| edit_prefs_at(&path, change))
 }
 
 /// What `path` holds; `{}` when it is missing or unparsable (the last is set
 /// aside as `prefs.json.bad`). Any other read error stays an error.
+#[cfg(any(test, not(feature = "test-support")))]
 fn read_prefs_at(path: &std::path::Path) -> std::io::Result<serde_json::Value> {
     super::read_or_set_aside(path, |bytes| serde_json::from_slice(bytes))
         .map(|prefs| prefs.unwrap_or_else(|| serde_json::json!({})))
@@ -35,6 +36,7 @@ fn read_prefs_at(path: &std::path::Path) -> std::io::Result<serde_json::Value> {
         })
 }
 
+#[cfg(any(test, not(feature = "test-support")))]
 fn edit_prefs_at(path: &std::path::Path, change: impl FnOnce(&mut serde_json::Value)) -> bool {
     let Ok(mut prefs) = read_prefs_at(path) else {
         return false;
@@ -52,7 +54,7 @@ fn edit_prefs_at(path: &std::path::Path, change: impl FnOnce(&mut serde_json::Va
         .is_some_and(|bytes| noded_client::fs::atomic_write(path, &bytes, false).is_ok())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     /// A test's own prefs: each test's thread starts with none, and no
     /// test reaches this machine's file (the audit's arrows pick Settings'
@@ -61,39 +63,39 @@ thread_local! {
         std::cell::RefCell::new(serde_json::json!({}));
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     /// How many times this test's thread read its prefs.
     static READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-#[cfg(test)]
-pub(crate) fn read_prefs() -> std::io::Result<serde_json::Value> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn read_prefs() -> std::io::Result<serde_json::Value> {
     READS.with(|reads| reads.set(reads.get() + 1));
     Ok(PREFS.with(|prefs| prefs.borrow().clone()))
 }
 
 /// How many times this test's thread has read its prefs.
-#[cfg(test)]
-pub(crate) fn prefs_reads() -> usize {
+#[cfg(any(test, feature = "test-support"))]
+pub fn prefs_reads() -> usize {
     READS.with(std::cell::Cell::get)
 }
 
-#[cfg(test)]
-pub(crate) fn edit_prefs(change: impl FnOnce(&mut serde_json::Value)) -> bool {
+#[cfg(any(test, feature = "test-support"))]
+pub fn edit_prefs(change: impl FnOnce(&mut serde_json::Value)) -> bool {
     PREFS.with(|kept| change(&mut kept.borrow_mut()));
     true
 }
 
 /// Light, dark, or as the OS says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Appearance {
+pub enum Appearance {
     System,
     Light,
     Dark,
 }
 
-pub(crate) fn load_appearance() -> Appearance {
+pub fn load_appearance() -> Appearance {
     match read_prefs().unwrap_or_default()["appearance"].as_str() {
         Some("light") => Appearance::Light,
         Some("dark") => Appearance::Dark,
@@ -101,7 +103,7 @@ pub(crate) fn load_appearance() -> Appearance {
     }
 }
 
-pub(crate) fn save_appearance(mode: Appearance) -> bool {
+pub fn save_appearance(mode: Appearance) -> bool {
     edit_prefs(|prefs| match mode {
         Appearance::System => {
             if let Some(prefs) = prefs.as_object_mut() {
@@ -116,7 +118,7 @@ pub(crate) fn save_appearance(mode: Appearance) -> bool {
 /// Where the programs are listed: across the top, or down the side. Per
 /// device, like the theme.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum Layout {
+pub enum Layout {
     #[default]
     MenuBar,
     Sidebar,
@@ -124,7 +126,7 @@ pub(crate) enum Layout {
 
 /// The layout this device picked; none until the launcher's last step
 /// asked (`Screen::Layout`).
-pub(crate) fn load_layout() -> Option<Layout> {
+pub fn load_layout() -> Option<Layout> {
     match read_prefs().unwrap_or_default()["layout"].as_str() {
         Some("menu_bar") => Some(Layout::MenuBar),
         Some("sidebar") => Some(Layout::Sidebar),
@@ -132,7 +134,7 @@ pub(crate) fn load_layout() -> Option<Layout> {
     }
 }
 
-pub(crate) fn save_layout(layout: Layout) -> bool {
+pub fn save_layout(layout: Layout) -> bool {
     let word = match layout {
         Layout::MenuBar => "menu_bar",
         Layout::Sidebar => "sidebar",
@@ -141,13 +143,13 @@ pub(crate) fn save_layout(layout: Layout) -> bool {
 }
 
 /// Whether the launcher's drawings move; on unless turned off.
-pub(crate) fn load_motion() -> bool {
+pub fn load_motion() -> bool {
     read_prefs().unwrap_or_default()["motion"]
         .as_bool()
         .unwrap_or(true)
 }
 
-pub(crate) fn save_motion(on: bool) -> bool {
+pub fn save_motion(on: bool) -> bool {
     edit_prefs(|prefs| prefs["motion"] = serde_json::json!(on))
 }
 
@@ -156,13 +158,13 @@ const DEFAULT_PICTURE_BYTES: u64 = 64 << 20;
 const DEFAULT_SVG_RASTER_BYTES: u64 = 256 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct MemoryBounds {
-    pub(crate) view_bytes: u64,
-    pub(crate) picture_bytes: u64,
-    pub(crate) svg_raster_bytes: u64,
+pub struct MemoryBounds {
+    pub view_bytes: u64,
+    pub picture_bytes: u64,
+    pub svg_raster_bytes: u64,
 }
 
-pub(crate) fn load_memory_bounds() -> MemoryBounds {
+pub fn load_memory_bounds() -> MemoryBounds {
     let prefs = read_prefs().unwrap_or_default();
     let memory = &prefs["memory"];
     let bytes = |key: &str, default: u64| memory[key].as_u64().unwrap_or(default);
@@ -173,7 +175,7 @@ pub(crate) fn load_memory_bounds() -> MemoryBounds {
     }
 }
 
-pub(crate) fn memory_bounds() -> MemoryBounds {
+pub fn memory_bounds() -> MemoryBounds {
     static BOUNDS: std::sync::OnceLock<MemoryBounds> = std::sync::OnceLock::new();
     *BOUNDS.get_or_init(load_memory_bounds)
 }

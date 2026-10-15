@@ -40,20 +40,20 @@ const TEXT_MAX: usize = 120;
 
 /// One visible node, as the door reports it.
 #[derive(Clone, Debug, Serialize)]
-pub(crate) struct AxNode {
-    pub(crate) id: String,
-    pub(crate) role: String,
-    pub(crate) name: String,
+pub struct AxNode {
+    pub id: String,
+    pub role: String,
+    pub name: String,
     /// what a screen reader reads after the name: why a control is
     /// disabled, a field's placeholder
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) value: Option<String>,
-    pub(crate) state: Vec<&'static str>,
-    pub(crate) actions: Vec<&'static str>,
+    pub value: Option<String>,
+    pub state: Vec<&'static str>,
+    pub actions: Vec<&'static str>,
     #[serde(flatten)]
-    pub(crate) more: Properties,
+    pub more: Properties,
     /// `<window>` or `<window>/<program>`.
     #[serde(rename = "in")]
     pub(super) scope: String,
@@ -71,45 +71,45 @@ pub(crate) struct AxNode {
 /// What a node says beyond its role, name, value, states and actions: each
 /// key only when the node has it.
 #[derive(Clone, Debug, Default, Serialize)]
-pub(crate) struct Properties {
+pub struct Properties {
     /// `polite` or `assertive`: how a change inside it is announced.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) live: Option<&'static str>,
+    pub live: Option<&'static str>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub(crate) modal: bool,
+    pub modal: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) level: Option<usize>,
+    pub level: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) placeholder: Option<String>,
+    pub placeholder: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) keyboard_shortcut: Option<String>,
+    pub keyboard_shortcut: Option<String>,
     /// The door id of the focused node inside this composite: gpui moves
     /// the tree's focus to the row that claims it, and sets the AccessKit
     /// property only on a web page's node, for the page's own focus.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) active_descendant: Option<String>,
+    pub active_descendant: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) position_in_set: Option<usize>,
+    pub position_in_set: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) size_of_set: Option<usize>,
+    pub size_of_set: Option<usize>,
     /// `true`, `grammar` or `spelling`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) invalid: Option<&'static str>,
+    pub invalid: Option<&'static str>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub(crate) required: bool,
+    pub required: bool,
     /// A field whose text is read and selected, never changed.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub(crate) read_only: bool,
+    pub read_only: bool,
     /// `menu`, `listbox`, `tree`, `grid` or `dialog`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) has_popup: Option<&'static str>,
+    pub has_popup: Option<&'static str>,
     /// `horizontal` or `vertical`, on any node that has one; AX-107's probe
     /// presses a composite's arrows by it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) orientation: Option<&'static str>,
+    pub orientation: Option<&'static str>,
     /// The door id of the nearest ancestor the snapshot has; none at its root.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) parent: Option<String>,
+    pub parent: Option<String>,
 }
 
 impl Properties {
@@ -152,7 +152,7 @@ impl Properties {
 /// The visible nodes of `window`'s last tree, in tree order; empty before
 /// the window has built one. An active modal returns only its reachable
 /// subtree, matching what the door promises a screen reader can reach.
-pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode> {
+pub fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode> {
     let Some(update) = window.a11y_tree() else {
         return Vec::new();
     };

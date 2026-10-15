@@ -12,9 +12,9 @@ use std::{cell::RefCell, rc::Rc};
 /// store (`runtime::pictures`) owns and evicts them, and hands every tree
 /// it draws this map to resolve the hashes it names.
 #[derive(Clone, Default)]
-pub(crate) struct PictureBytes {
-    pub(crate) raster: HashMap<u64, Arc<wire::ImageData>>,
-    pub(crate) vector: HashMap<u64, Arc<[u8]>>,
+pub struct PictureBytes {
+    pub raster: HashMap<u64, Arc<wire::ImageData>>,
+    pub vector: HashMap<u64, Arc<[u8]>>,
 }
 
 /// The rasters decoded from a seat's picture bytes, by content hash: one
@@ -26,7 +26,7 @@ pub(crate) struct PictureBytes {
 /// beside the current frame's is refused, and its Image draws the view's
 /// fallback.
 #[derive(Default)]
-pub(crate) struct Rasters {
+pub struct Rasters {
     /// Each raster, and the frame that last drew it.
     held: HashMap<u64, (Arc<RenderImage>, u64)>,
     bytes: usize,
@@ -37,7 +37,7 @@ pub(crate) struct Rasters {
 }
 
 /// [`Rasters`] as the seat's trees share it.
-pub(crate) type SharedRasters = Rc<RefCell<Rasters>>;
+pub type SharedRasters = Rc<RefCell<Rasters>>;
 
 fn raster_len(image: &RenderImage) -> usize {
     image.as_bytes(0).map_or(0, <[u8]>::len)
@@ -345,14 +345,14 @@ impl ViewTree {
     }
 
     /// The raster held under `hash`, for a test to find its atlas tiles.
-    #[cfg(test)]
-    pub(crate) fn image_for_test(&self, hash: u64) -> Option<Arc<RenderImage>> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn image_for_test(&self, hash: u64) -> Option<Arc<RenderImage>> {
         self.images.borrow().get(hash)
     }
 
     /// The seat is dropping this tree: its rasters leave every window's
     /// atlas. Never on a hot swap, whose next tree carries them.
-    pub(crate) fn release(&mut self, cx: &mut App) {
+    pub fn release(&mut self, cx: &mut App) {
         self.images.borrow_mut().release(cx);
     }
 

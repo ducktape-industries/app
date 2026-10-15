@@ -47,7 +47,7 @@ pub(super) fn connection() -> &'static Mutex<Connection> {
 /// views load from and its windows draw, or a test's own. A change tells
 /// the rail ([`changes_channel`]), never a window.
 #[derive(Clone, Default)]
-pub(crate) struct Roster {
+pub struct Roster {
     programs: Arc<Mutex<Vec<crate::backend::views::Program>>>,
     bound: Arc<Mutex<Bound>>,
 }
@@ -78,20 +78,20 @@ impl Roster {
     /// The programs genesis bound to the roles the kernel calls (the
     /// programs role, the validators, identity), as the node's programs role
     /// answers them: `None` until read.
-    pub(crate) fn roles(&self) -> Option<abi::Roles> {
+    pub fn roles(&self) -> Option<abi::Roles> {
         self.bound().roles.clone()
     }
 
     /// The role bindings as if the programs role had answered `roles`.
-    #[cfg(test)]
-    pub(crate) fn bind(&self, roles: Option<abi::Roles>) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn bind(&self, roles: Option<abi::Roles>) {
         self.bound().roles = roles;
     }
 
     /// A roster of its own that lists `programs`, for a test to draw or
     /// open.
-    #[cfg(test)]
-    pub(crate) fn listing(programs: &[&str]) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn listing(programs: &[&str]) -> Self {
         let roster = Self::default();
         roster.lock().extend(
             programs
@@ -115,13 +115,13 @@ impl Roster {
     }
 
     /// Whether it lists `program`: a link to anything else names nothing.
-    pub(crate) fn lists(&self, program: &str) -> bool {
+    pub fn lists(&self, program: &str) -> bool {
         self.code(program).is_some()
     }
 }
 
 /// The app's one roster.
-pub(crate) fn roster() -> &'static Roster {
+pub fn roster() -> &'static Roster {
     static ROSTER: OnceLock<Roster> = OnceLock::new();
     ROSTER.get_or_init(Roster::default)
 }
@@ -138,7 +138,7 @@ fn changes() -> &'static Mutex<Option<Changes>> {
 /// it replaces the one before; the app installs one; of the tests only
 /// `a_seat_claimed_or_dropped_wakes_the_rail` does (the others' rails are
 /// refreshed by hand, and no loader thread wakes their scheduler).
-pub(crate) fn changes_channel() -> futures::channel::mpsc::UnboundedReceiver<()> {
+pub fn changes_channel() -> futures::channel::mpsc::UnboundedReceiver<()> {
     let (send, receive) = futures::channel::mpsc::unbounded();
     *changes().lock().expect("roster changes") = Some(send);
     receive
@@ -206,7 +206,7 @@ fn readiness(slot: &Slot) -> u8 {
 }
 
 impl Roster {
-    pub(crate) fn rail(&self) -> Vec<RailRow> {
+    pub fn rail(&self) -> Vec<RailRow> {
         let _timed = crate::perf::time(crate::perf::Key::Shell, "rail");
         crate::perf::count(crate::perf::Key::Shell, "rail.calls", 1);
         // the names first, and the roster let go before the seats are
@@ -262,7 +262,7 @@ impl Roster {
     }
 
     /// The one reading of a link, against the views this roster lists.
-    pub(crate) fn parse_link(&self, link: &str) -> Link {
+    pub fn parse_link(&self, link: &str) -> Link {
         parse_link_among(link, &self.rail())
     }
 }
