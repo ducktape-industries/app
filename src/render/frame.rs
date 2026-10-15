@@ -16,9 +16,7 @@ impl ViewTree {
     /// table of the frame that brought it, whatever table the tree has by
     /// now. A response is kept by its route while the tree holds that
     /// route, the newest for a route winning, and a response for a route
-    /// the tree does not hold is for nothing. Together the contents are held to the frame's node budget,
-    /// as the frames that brought them were: one that would take them past
-    /// it starts the store over, so the tooltip the pointer rests on shows.
+    /// the tree does not hold is for nothing.
     pub fn tooltip_responses(
         &mut self,
         responses: Vec<(wire::TooltipResponse, wire::Styles)>,
@@ -42,13 +40,6 @@ impl ViewTree {
             });
             if same {
                 continue;
-            }
-            let held: usize = (self.tooltips.iter())
-                .filter(|(request, _)| **request != response.request)
-                .map(|(_, held)| held.content.count())
-                .sum();
-            if held + content.count() > wire::MAX_NODES {
-                self.tooltips.clear();
             }
             self.tooltips.insert(
                 response.request,

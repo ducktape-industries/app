@@ -99,8 +99,8 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 
 ## Dependency line
 
-`ducktape-industries/programs` (`crates/sdk`; pinned by rev to programs `dev` until the next `dev` → `main` promotion): `abi`, `view-wire`, `ducklink`, `design`.
-`ducktape` (`feat/capable-sandbox`): `ducktape-home`, `keystore`.
+`ducktape-industries/programs` (`crates/sdk`; rev `291180edf331a133ff3d64c7b6c48d8f6c321ebd`): `abi`, `view-wire`, `ducklink`, `design`.
+`ducktape-industries/ducktape`: `blob` (rev `d57fad49bc62250f93f76b2a289b38dc8958a0f2`), `keyscheme` (rev `9dfffb0662bd8a16293df8c75de8817a79b0810b`), `ducktape-home` and `keystore` (branch `feat/capable-sandbox`).
 
 ## Building
 

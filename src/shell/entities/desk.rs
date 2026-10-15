@@ -46,7 +46,7 @@ impl Slice<Layout> {
 
     /// Another pane showing `program`.
     pub(crate) fn split(&mut self, program: &'static str, cx: &mut Context<Self>) {
-        self.moved(|layout| _ = layout.split(program), cx);
+        self.moved(|layout| layout.split(program), cx);
     }
 
     pub(crate) fn focus(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -62,7 +62,7 @@ impl Slice<Layout> {
 
     /// A pane from another window onto this desk.
     pub(crate) fn popin(&mut self, pane: Pane, cx: &mut Context<Self>) {
-        self.moved(|layout| _ = layout.popin(pane), cx);
+        self.moved(|layout| layout.popin(pane), cx);
     }
 
     /// ⌘` / ⌘⇧` / ctrl-tab.

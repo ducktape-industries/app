@@ -1,23 +1,25 @@
-//! Decoding a view's raster into a gpui `RenderImage`, and the caps the
-//! picture caches in pictures.rs share: one picture's bytes, and a whole
-//! cache's bytes and entries.
+//! Decoding a view's raster into a gpui `RenderImage`, and the bound the
+//! picture caches in pictures.rs share: the device's picture memory setting
+//! (`backend::memory_bounds`), which also bounds what one decode allocates.
 use super::*;
 use image::ImageDecoder;
 
-/// Both the one-picture ceiling (decoded size, decoder allocation) and a
-/// whole cache's byte ceiling.
-const MAX_PICTURE_BYTES: usize = 64 << 20;
-/// A whole cache's entry ceiling.
-const MAX_PICTURES: usize = 4096;
+const ENTRY_BYTES: usize = std::mem::size_of::<(u64, (Arc<RenderImage>, u64))>();
 
-fn rgba_fits(width: u32, height: u32) -> bool {
-    width <= 8192
-        && height <= 8192
-        && u64::from(width) * u64::from(height) * 4 <= MAX_PICTURE_BYTES as u64
+fn picture_bytes() -> u64 {
+    crate::backend::memory_bounds().picture_bytes
 }
 
-pub(super) fn cache_fits(count: usize, used: usize, additional: usize) -> bool {
-    count < MAX_PICTURES && additional <= MAX_PICTURE_BYTES.saturating_sub(used)
+fn rgba_fits(width: u32, height: u32, budget: u64) -> bool {
+    (u64::from(width) * u64::from(height)).saturating_mul(4) <= budget
+}
+
+pub(super) fn cache_fits(count: usize, used: usize, additional: usize, budget: u64) -> bool {
+    let charged = (count.saturating_add(1))
+        .saturating_mul(ENTRY_BYTES)
+        .saturating_add(used)
+        .saturating_add(additional);
+    charged as u64 <= budget
 }
 
 pub(super) fn decode_image(data: &wire::ImageData) -> Option<RenderImage> {
@@ -27,25 +29,19 @@ pub(super) fn decode_image(data: &wire::ImageData) -> Option<RenderImage> {
             width,
             height,
             pixels,
-        } => {
-            if !rgba_fits(*width, *height) {
-                return None;
-            }
-            image::RgbaImage::from_raw(*width, *height, pixels.clone())?
-        }
+        } => image::RgbaImage::from_raw(*width, *height, pixels.clone())?,
         wire::ImageData::Encoded(bytes) => {
+            let budget = picture_bytes();
             let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
                 .with_guessed_format()
                 .ok()?;
-            let mut limits = image::Limits::default();
-            limits.max_image_width = Some(8192);
-            limits.max_image_height = Some(8192);
-            limits.max_alloc = Some(MAX_PICTURE_BYTES as u64);
+            let mut limits = image::Limits::no_limits();
+            limits.max_alloc = Some(budget);
             reader.limits(limits);
             let decoder = reader.into_decoder().ok()?;
             let (width, height) = decoder.dimensions();
             // Decoder limits do not include expansion from grayscale to RGBA.
-            if !rgba_fits(width, height) {
+            if !rgba_fits(width, height, budget) {
                 return None;
             }
             image::DynamicImage::from_decoder(decoder)
@@ -66,10 +62,9 @@ mod resource_limits {
 
     #[test]
     fn rgba_expansion_is_bounded_before_allocation() {
-        assert!(rgba_fits(4096, 4096));
-        assert!(!rgba_fits(4097, 4096));
-        assert!(!rgba_fits(8192, 8192));
-        assert!(!rgba_fits(u32::MAX, u32::MAX));
+        assert!(rgba_fits(4096, 4096, 64 << 20));
+        assert!(!rgba_fits(4097, 4096, 64 << 20));
+        assert!(!rgba_fits(u32::MAX, u32::MAX, 64 << 20));
         assert!(
             decode_image(&wire::ImageData::Rgba {
                 width: u32::MAX,
@@ -81,11 +76,43 @@ mod resource_limits {
     }
 
     #[test]
-    fn cache_limits_bound_both_bytes_and_empty_entries() {
-        assert!(cache_fits(MAX_PICTURES - 1, MAX_PICTURE_BYTES - 4, 4));
-        assert!(!cache_fits(MAX_PICTURES, 0, 0));
-        assert!(!cache_fits(1, MAX_PICTURE_BYTES - 4, 5));
-        assert!(!cache_fits(1, MAX_PICTURE_BYTES, 1));
-        assert!(!cache_fits(1, 0, usize::MAX));
+    fn a_header_claiming_more_than_the_picture_bytes_is_refused_unallocated() {
+        let side = 300_000u32;
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        let mut chunk = |kind: &[u8], data: &[u8]| {
+            png.extend((data.len() as u32).to_be_bytes());
+            let body = [kind, data].concat();
+            png.extend(&body);
+            let mut crc = 0xffff_ffffu32;
+            for byte in &body {
+                crc ^= u32::from(*byte);
+                for _ in 0..8 {
+                    crc = match crc & 1 {
+                        1 => (crc >> 1) ^ 0xedb8_8320,
+                        _ => crc >> 1,
+                    };
+                }
+            }
+            png.extend((!crc).to_be_bytes());
+        };
+        let header = [
+            &side.to_be_bytes()[..],
+            &side.to_be_bytes(),
+            &[8, 6, 0, 0, 0],
+        ]
+        .concat();
+        chunk(b"IHDR", &header);
+        chunk(b"IDAT", &[0x78, 0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01]);
+        chunk(b"IEND", &[]);
+        assert!(decode_image(&wire::ImageData::Encoded(png)).is_none());
+    }
+
+    #[test]
+    fn the_cache_charges_each_raster_its_bytes_and_its_entry() {
+        let budget = 10 * ENTRY_BYTES as u64 + 100;
+        assert!(cache_fits(9, 100, 0, budget));
+        assert!(!cache_fits(10, 100, 0, budget));
+        assert!(!cache_fits(9, 100, 1, budget));
+        assert!(!cache_fits(1, 0, usize::MAX, budget));
     }
 }

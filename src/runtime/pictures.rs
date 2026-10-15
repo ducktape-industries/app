@@ -5,9 +5,10 @@
 //! the seat draws the same bytes to resolve hashes through
 //! (`render::PictureBytes`).
 //!
-//! The store is bounded. Past [`MAX_PICTURE_BYTES`] or [`MAX_PICTURES`] it
-//! keeps what the current tree names, in tree order, while it fits, and
-//! evicts the rest. The view names a picture by hash alone once it has
+//! The store is bounded by the device's picture memory setting
+//! (`backend::memory_bounds`), each picture charged its bytes and its entry.
+//! Past it the store keeps what the current tree names, in tree order, while
+//! it fits, and evicts the rest. The view names a picture by hash alone once it has
 //! sent it, so an evicted picture could never come back unasked: an
 //! eviction owes the view `Event::Resync`, which makes it forget what it
 //! sent and send every picture it draws again.
@@ -16,12 +17,11 @@ use crate::render::PictureBytes;
 use std::sync::Arc;
 use view_wire as wire;
 
-/// The raw picture bytes one seat holds: a view at the budget costs this
-/// much host memory, whatever it draws (P16's measurement is in its report).
-pub(super) const MAX_PICTURE_BYTES: u64 = 64 << 20;
-/// The pictures one seat holds, however small: the view SDK forgets what
-/// it sent at the same count.
-pub(super) const MAX_PICTURES: usize = 4096;
+const ENTRY_BYTES: u64 = std::mem::size_of::<(u64, Arc<wire::ImageData>)>() as u64;
+
+pub(super) fn charge(bytes: u64, pictures: usize) -> u64 {
+    bytes.saturating_add((pictures as u64).saturating_mul(ENTRY_BYTES))
+}
 
 #[derive(Default)]
 pub(crate) struct Pictures {
@@ -100,8 +100,10 @@ impl Pictures {
     /// Past the budget, keeps what `root` names, in tree order, while it
     /// fits, and evicts the rest. `true` when it evicted.
     fn hold(&mut self, root: &mut wire::Node, program: &str) -> bool {
+        let budget = crate::backend::memory_bounds().picture_bytes;
         let count = self.held.raster.len() + self.held.vector.len();
-        if self.bytes <= MAX_PICTURE_BYTES && count <= MAX_PICTURES {
+        let within = charge(self.bytes, count) <= budget;
+        if within {
             return false;
         }
         let held = &self.held;
@@ -109,7 +111,7 @@ impl Pictures {
         let mut bytes = 0;
         each_picture(root, &mut |picture| {
             let count = kept.raster.len() + kept.vector.len();
-            let fits = |len: usize| count < MAX_PICTURES && bytes + len as u64 <= MAX_PICTURE_BYTES;
+            let fits = |len: usize| charge(bytes + len as u64, count + 1) <= budget;
             match picture {
                 Picture::Raster(hash, _) => {
                     if let Some(data) = held.raster.get(&hash)
@@ -139,7 +141,7 @@ impl Pictures {
                 reason = "program_view_pictures_evicted",
                 held = self.bytes,
                 kept = bytes,
-                budget = MAX_PICTURE_BYTES,
+                budget,
                 "program view pictures past the seat's budget; evicted, view asked to resend"
             );
         }

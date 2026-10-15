@@ -5,7 +5,7 @@ use super::tests::{active, desk_of, entities, notifies, programs};
 use super::{Entities, Overlay, SessionState, Windows};
 use crate::runtime::WindowKey;
 use crate::shell::WindowKind;
-use crate::ui::layout::{EMPTY, Frame, MAX_PANES};
+use crate::ui::layout::{EMPTY, Frame};
 use gpui_kit::{AppContext as _, Bounds, TestAppContext, point, px, size};
 
 const DESK: (f32, f32) = (1280., 764.);
@@ -85,16 +85,20 @@ fn a_picked_view_opens_beside_the_focused_one(cx: &mut TestAppContext) {
         "the window it is in"
     );
     assert_eq!(active(&app, cx), Some("chat"));
-    // a full desk has no room for one of its own: the focused window's
-    // place, not nothing
+    // a desk of many windows opens one more of its own
     let desk = desk_of(&app, key, cx);
-    while desk.read_with(cx, |desk, _| desk.get().panes.len()) < MAX_PANES {
+    for _ in 0..16 {
         desk.update(cx, |desk, cx| desk.split("files", cx));
     }
+    let before = desk.read_with(cx, |desk, _| desk.get().panes.len());
     pick("calendar", cx);
     assert_eq!(
         desk.read_with(cx, |desk, _| desk.get().shown()),
         Some("calendar")
+    );
+    assert_eq!(
+        desk.read_with(cx, |desk, _| desk.get().panes.len()),
+        before + 1
     );
 }
 

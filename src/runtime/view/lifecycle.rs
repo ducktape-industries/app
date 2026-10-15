@@ -1,17 +1,5 @@
 use super::*;
 
-/// Ticks a replacement gets to publish its tree: the tree itself, the
-/// resync a picture it names by hash alone may cost it (`Pictures::adopt`),
-/// and the quiet tick that shows nothing more is owed.
-const FIRST_FRAME_TICK_LIMIT: usize = 3;
-/// Tables are allocated eagerly at their declared minimum, before any fuel
-/// or memory limit is consulted; a view is one core instance and one memory.
-const MAX_TABLES: usize = 4;
-const MAX_TABLE_ELEMENTS: usize = 1 << 20;
-/// How much of a panic message the host keeps: this many bytes read from
-/// the view, the first line, at most this many chars.
-const MAX_PANIC_BYTES: u32 = 1024;
-
 /// The host's facts a drawn view holds for its replacement (`View::ambient`).
 pub(crate) struct Ambient {
     pub(crate) theme_dark: Option<bool>,
@@ -377,10 +365,10 @@ impl View {
         self.sync_offset(kernel::offset_minutes());
     }
 
-    /// What this drawn view hands `to`, its replacement: its snapshot, held
-    /// to `MAX_SNAPSHOT_BYTES`, or none. A view that never ticked has no
-    /// state. One that cannot hand its state over — it stopped, its state
-    /// is past the budget, or its snapshot traps — never will: `to` starts
+    /// What this drawn view hands `to`, its replacement: its snapshot, or
+    /// none. A view that never ticked has no
+    /// state. One that cannot hand its state over — it stopped, or its
+    /// snapshot traps — never will: `to` starts
     /// clean, with a warn saying why. One with work unfinished refuses the
     /// replacement until its next turns finish it, and the seat asks again:
     /// the host's own (an event, a widget command, an editor transfer), or
@@ -389,7 +377,7 @@ impl View {
         if self.ticks == 0 {
             return Ok(None);
         }
-        if let Some(fault) = self.fault.clone().or_else(|| self.replies.fault()) {
+        if let Some(fault) = self.fault.clone() {
             to.state_dropped("view_stopped", &fault);
             return Ok(None);
         }
@@ -409,13 +397,6 @@ impl View {
                 timing.snapshot_bytes = snapshot.len();
                 crate::perf::gauge(key, "snapshot_bytes", snapshot.len() as u64);
                 Ok(Some(snapshot))
-            }
-            Ok(Snapshot::TooLarge) => {
-                to.state_dropped(
-                    "snapshot_too_large",
-                    "the view's state is past the snapshot byte budget",
-                );
-                Ok(None)
             }
             Ok(Snapshot::Refused(refusal)) => Err(Failure::Refused(format!(
                 "the view does not hand its state over yet ({refusal}); its replacement waits"
@@ -496,7 +477,6 @@ impl View {
             hash,
             connection: _,
             activation: _,
-            links: _,
             undeclared_logged: _,
             store: _,
             exports: _,
@@ -587,7 +567,6 @@ impl View {
     /// deployments is not stuck on the first.
     pub(crate) fn settled(&self) -> bool {
         self.fault.is_none()
-            && self.replies.fault().is_none()
             && self.pending.is_empty()
             && self.widget_commands.is_empty()
             && (self.staged || self.frame.requests.is_empty())
@@ -630,12 +609,14 @@ impl View {
         Ok(())
     }
 
-    /// A restored instance's first tick: its whole tree, or it is no
-    /// replacement. Its requests wait for the first redraw.
+    /// A restored instance's first ticks, until one leaves nothing owed
+    /// (the resync a picture it names by hash alone may cost it,
+    /// `Pictures::adopt`): its whole tree, or it is no replacement. Its
+    /// requests wait for the first redraw.
     pub(crate) fn first_frame(&mut self, shown: &str) -> Result<(), String> {
         let mut requests = Vec::new();
         let mut cancels = Vec::new();
-        for _ in 0..FIRST_FRAME_TICK_LIMIT {
+        loop {
             self.tick();
             if let Some(fault) = &self.fault {
                 return Err(format!("{shown}: {fault}"));
@@ -647,17 +628,9 @@ impl View {
             }
             requests.append(&mut self.frame.requests);
             cancels.append(&mut self.frame.cancels);
-            if requests.len() > wire::MAX_REQUESTS || cancels.len() > wire::MAX_CANCELS {
-                return Err(format!(
-                    "{shown}: replacement requests exceed the first-frame budget"
-                ));
-            }
             if self.pending.is_empty() {
                 break;
             }
-        }
-        if !self.pending.is_empty() {
-            return Err(format!("{shown}: the replacement did not settle"));
         }
         requests.retain(|request| !cancels.contains(&request.id));
         self.frame.requests = requests;
@@ -718,14 +691,8 @@ impl View {
         shown: &str,
     ) -> Result<Self, String> {
         let engine = engine();
-        let limits = StoreLimitsBuilder::new()
-            .memory_size(MEMORY_LIMIT)
-            .memories(1)
-            .instances(1)
-            .tables(MAX_TABLES)
-            .table_elements(MAX_TABLE_ELEMENTS)
-            .trap_on_grow_failure(true)
-            .build();
+        let budget = crate::backend::memory_bounds().view_bytes;
+        let limits = ViewLimits::new(usize::try_from(budget).unwrap_or(usize::MAX));
         let mut store = Store::new(
             engine,
             HostState {
@@ -747,15 +714,14 @@ impl View {
                         .and_then(|export| export.into_memory())
                         .and_then(|memory| {
                             let start = ptr as usize;
-                            let bytes = memory.data(&caller).get(
-                                start..start.saturating_add(len.min(MAX_PANIC_BYTES) as usize),
-                            )?;
+                            let bytes = memory
+                                .data(&caller)
+                                .get(start..start.saturating_add(len as usize))?;
                             Some(String::from_utf8_lossy(bytes).into_owned())
                         })
                         .unwrap_or_default();
                     let line = message.lines().next().unwrap_or_default();
-                    caller.data_mut().panic =
-                        Some(line.chars().take(MAX_PANIC_BYTES as usize).collect());
+                    caller.data_mut().panic = Some(line.to_owned());
                 },
             )
             .map_err(|error| error.to_string())?;
@@ -771,7 +737,6 @@ impl View {
         Ok(Self {
             connection: connection().lock().expect("views rpc").clone(),
             activation: None,
-            links: Vec::new(),
             program,
             instance: 0,
             name: String::new(),

@@ -463,15 +463,10 @@ impl Account {
             self.state.signer_key.clone(),
         );
         let work = async move {
-            let lookup = backend::identity::account_of_key(&client, &network, key);
-            match tokio::time::timeout(noded_client::ANSWER_DEADLINE, lookup).await {
-                Ok(Ok(account)) => Some(account),
-                Ok(Err(error)) => {
+            match backend::identity::account_of_key(&client, &network, key).await {
+                Ok(account) => Some(account),
+                Err(error) => {
                     tracing::debug!(target: "ducktape::app", %error, "account not resolved");
-                    None
-                }
-                Err(_) => {
-                    tracing::debug!(target: "ducktape::app", "account lookup unanswered");
                     None
                 }
             }
