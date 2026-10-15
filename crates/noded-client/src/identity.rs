@@ -180,8 +180,8 @@ mod tests {
     use super::*;
     use crate::{FixedSigner, SignError};
 
-    /// A node answering every request with `status` and `body`.
-    async fn fake_node(status: &'static str, body: Vec<u8>) -> Client {
+    /// A node answering every request with `status`, `body` and its `Content-Type`.
+    async fn fake_node(status: &'static str, kind: &'static str, body: Vec<u8>) -> Client {
         use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -202,7 +202,7 @@ mod tests {
                 }
                 let _ = reader.read_exact(&mut vec![0; length]).await;
                 let head = format!(
-                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 );
                 let _ = stream.write_all(head.as_bytes()).await;
@@ -212,15 +212,36 @@ mod tests {
         Client::new(url)
     }
 
+    const BYTES: &str = "application/octet-stream";
+    const PLAIN: &str = "text/plain; charset=utf-8";
+
+    /// A node's failure reads as its own sentence; a page from whatever else answered (a redirect to https, a
+    /// proxy's 502) never does.
+    #[tokio::test]
+    async fn only_a_node_s_own_sentence_reaches_a_failure() {
+        let client = fake_node(
+            "503 Service Unavailable",
+            PLAIN,
+            b"the node is catching up".to_vec(),
+        )
+        .await;
+        let error = client.status().await.unwrap_err().to_string();
+        assert_eq!(error, "node answered 503: the node is catching up");
+        let page = b"<html><head><title>301 Moved Permanently</title></head></html>".to_vec();
+        let client = fake_node("301 Moved Permanently", "text/html", page).await;
+        let error = client.status().await.unwrap_err().to_string();
+        assert_eq!(error, format!("node answered 301: {}", crate::NOT_A_NODE));
+    }
+
     /// A suspended account's key is refused by identity: that is an answer
     /// (no account), where a node that failed is not one.
     #[tokio::test]
     async fn a_refused_key_holds_no_account_and_a_failed_node_is_no_answer() {
         let refused = abi::Refusal::new(abi::reason::UNAUTHORIZED, "account 7 is suspended");
-        let client = fake_node("400 Bad Request", abi::encode(&refused)).await;
+        let client = fake_node("400 Bad Request", BYTES, abi::encode(&refused)).await;
         let lookup = account_of_key(&client, "testkit", vec![1], &FixedSigner).await;
         assert_eq!(lookup, Ok(None));
-        let client = fake_node("503 Service Unavailable", b"down".to_vec()).await;
+        let client = fake_node("503 Service Unavailable", PLAIN, b"down".to_vec()).await;
         let lookup = account_of_key(&client, "testkit", vec![1], &FixedSigner).await;
         assert!(lookup.is_err());
     }
@@ -232,7 +253,7 @@ mod tests {
     async fn an_admission_is_the_literal_every_flow_signed() {
         // a query's 200 carries the reply's bytes as one borsh Vec<u8>
         let reply = abi::encode(&abi::encode(&Reply::Generation(3)));
-        let client = fake_node("200 OK", reply).await;
+        let client = fake_node("200 OK", BYTES, reply).await;
         let before = expires_at();
         let built = admission(
             &client,
@@ -290,7 +311,7 @@ mod tests {
                 blobs: "b".into(),
             },
         };
-        let client = fake_node("200 OK", abi::encode(&status)).await;
+        let client = fake_node("200 OK", BYTES, abi::encode(&status)).await;
         let create = Op::Create {
             name: "a".into(),
             scheme: abi::Scheme::Ed25519,
