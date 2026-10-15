@@ -61,6 +61,12 @@ const IDLE: Duration = Duration::from_secs(30);
 /// node hears the quit at once and not at [`IDLE`]: well inside gpui's
 /// 200 ms for every quit hook.
 const QUIT_FLUSH: Duration = Duration::from_millis(100);
+/// The server name of a QUIC dial: the wire's one name, which the pinned
+/// verifier does not read.
+const SERVER_NAME: &str = match std::str::from_utf8(live_wire::ALPN) {
+    Ok(name) => name,
+    Err(_) => panic!("the live ALPN is text"),
+};
 /// An ed25519 key's DER `SubjectPublicKeyInfo`, up to the key itself.
 const ED25519_SPKI: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
@@ -320,7 +326,7 @@ impl Session for Client {
             let Some(conn) = conn else {
                 return;
             };
-            conn.close("quit");
+            conn.close(Close::Quit);
             if let Some(udp) = &conn.udp {
                 let _ = tokio::time::timeout(QUIT_FLUSH, udp.wait_idle()).await;
             }
@@ -331,7 +337,7 @@ impl Session for Client {
 impl Drop for Inner {
     fn drop(&mut self) {
         if let Some(conn) = self.conn.get_mut().take() {
-            conn.close("the connection changed");
+            conn.close(Close::ConnectionChanged);
         }
     }
 }
@@ -372,38 +378,40 @@ struct Table {
     aliases: HashMap<Alias, RequestId>,
 }
 
-/// Which request an entry is, so it is withdrawn in its own word.
-#[derive(Clone, Copy, PartialEq)]
-enum Kind {
-    Publish,
-    Subscribe,
-    Watch,
-}
-
 /// One node request. The node holds one subscriber per track and one
 /// watcher per room for a session, so every request of the app that follows
 /// the same track or room shares one: its readers. A publication has one
 /// reader; a second publisher of a track in the app is refused.
 struct Entry {
-    kind: Kind,
-    /// What it asked ([`same_ask`]).
-    asked: Ask,
     readers: Vec<Reader>,
-    /// A publication's alias, handed to its writer once the node took it.
-    taken: Option<oneshot::Sender<Alias>>,
-    established: bool,
-    alias: Option<Alias>,
-    /// Over the websocket, the group a subscription is in and its next
-    /// object's number: the stream's implicit count.
-    counted: Option<(u64, u32)>,
-    /// A subscription's publisher and mode, once the node answered: a
-    /// later reader's `Subscribed`.
-    opened: Option<(u64, Mode)>,
-    /// A subscription's group in flight, for a later reader that asks
-    /// `Latest`.
-    in_flight: Option<InFlight>,
-    /// A room's tracks up now, for a later reader of its list.
-    up: Vec<Heard>,
+    kind: Kind,
+}
+
+/// What a node request is, and what the session keeps of it.
+enum Kind {
+    Publish {
+        track: Track,
+        /// The alias, handed to the publication's writer once the node
+        /// took it; `None` once it did.
+        taken: Option<oneshot::Sender<Alias>>,
+    },
+    Subscribe {
+        track: Track,
+        alias: Option<Alias>,
+        /// Over the websocket, the group the subscription is in and its
+        /// next object's number: the stream's implicit count.
+        counted: Option<(u64, u32)>,
+        /// The publisher and mode, once the node answered: a later
+        /// reader's `Subscribed`.
+        opened: Option<(u64, Mode)>,
+        /// The group in flight, for a later reader that asks `Latest`.
+        in_flight: Option<InFlight>,
+    },
+    Watch {
+        namespace: String,
+        /// The room's tracks up now, for a later reader of its list.
+        up: Vec<Heard>,
+    },
 }
 
 /// One request of the app that a node request serves.
@@ -415,20 +423,20 @@ struct Reader {
     /// Groups up to this one are not its: it asked `Next` while the group
     /// was in flight.
     after: Option<u64>,
-    /// It asked `Next` before the node answered: the group the node
-    /// replays first (`Subscribed.latest`) is not its.
-    next_only: bool,
+    /// Where it asked to start: with `Next` the group the node replays
+    /// first (`Subscribed.latest`) is not its.
+    from: Start,
 }
 
 impl Reader {
-    fn new(id: u64, ends: &Ends, next_only: bool) -> Reader {
+    fn new(id: u64, ends: &Ends, from: Start) -> Reader {
         Reader {
             id,
             heard: ends.heard.clone(),
             data: ends.data.clone(),
             latest: ends.latest.clone(),
             after: None,
-            next_only,
+            from,
         }
     }
 
@@ -453,22 +461,32 @@ struct InFlight {
     whole: bool,
 }
 
-impl Entry {
-    fn new(kind: Kind, asked: Ask, reader: Reader) -> Entry {
-        Entry {
-            kind,
-            asked,
-            readers: vec![reader],
-            taken: None,
-            established: false,
-            alias: None,
-            counted: None,
-            opened: None,
-            in_flight: None,
-            up: Vec::new(),
+impl Kind {
+    /// Whether `ask` asks what this request asks of the node: the same
+    /// track published or followed, or the same room's list.
+    fn serves(&self, ask: &Ask) -> bool {
+        match (self, ask) {
+            (Kind::Publish { track: held, .. }, Ask::Publish { track, .. })
+            | (Kind::Subscribe { track: held, .. }, Ask::Subscribe { track, .. }) => held == track,
+            (
+                Kind::Watch {
+                    namespace: held, ..
+                },
+                Ask::Watch { namespace },
+            ) => held == namespace,
+            _ => false,
         }
     }
 
+    fn alias(&self) -> Option<Alias> {
+        match self {
+            Kind::Subscribe { alias, .. } => *alias,
+            Kind::Publish { .. } | Kind::Watch { .. } => None,
+        }
+    }
+}
+
+impl Entry {
     /// `heard` to every reader.
     fn tell(&self, heard: Heard) {
         for reader in &self.readers {
@@ -479,52 +497,62 @@ impl Entry {
     /// One item of the subscription's data: kept in the group in flight,
     /// and the readers it is for.
     fn keep(&mut self, data: &Data) -> impl Iterator<Item = &Reader> {
-        match data {
-            Data::Object {
-                group,
-                object,
-                body,
-            } => {
-                let datagram = matches!(self.opened, Some((_, Mode::Datagram)));
-                let fresh = self
-                    .in_flight
-                    .as_ref()
-                    .is_none_or(|in_flight| in_flight.group != *group);
-                if fresh || datagram {
-                    self.in_flight = Some(InFlight {
-                        group: *group,
-                        objects: Vec::new(),
-                        bytes: 0,
-                        whole: datagram || *object == 0,
-                    });
-                }
-                let in_flight = self.in_flight.as_mut().expect("kept just now");
-                let fits = in_flight.bytes + body.len() <= live_wire::MAX_GROUP_BYTES;
-                match in_flight.whole && fits {
-                    true => {
-                        in_flight.bytes += body.len();
-                        in_flight.objects.push(data.clone());
+        if let Kind::Subscribe {
+            opened, in_flight, ..
+        } = &mut self.kind
+        {
+            match data {
+                Data::Object {
+                    group,
+                    object,
+                    body,
+                } => {
+                    let datagram = matches!(opened, Some((_, Mode::Datagram)));
+                    let fresh = in_flight
+                        .as_ref()
+                        .is_none_or(|in_flight| in_flight.group != *group);
+                    if fresh || datagram {
+                        *in_flight = Some(InFlight {
+                            group: *group,
+                            objects: Vec::new(),
+                            bytes: 0,
+                            whole: datagram || *object == 0,
+                        });
                     }
-                    false => {
-                        in_flight.whole = false;
-                        in_flight.objects = Vec::new();
+                    let in_flight = in_flight.as_mut().expect("kept just now");
+                    let fits = in_flight.bytes + body.len() <= live_wire::MAX_GROUP_BYTES;
+                    match in_flight.whole && fits {
+                        true => {
+                            in_flight.bytes += body.len();
+                            in_flight.objects.push(data.clone());
+                        }
+                        false => {
+                            in_flight.whole = false;
+                            in_flight.objects = Vec::new();
+                        }
                     }
                 }
+                Data::GroupEnd { .. } => *in_flight = None,
             }
-            Data::GroupEnd { .. } => self.in_flight = None,
         }
         self.readers.iter().filter(|reader| reader.follows(data))
     }
 
     /// A later request that follows this subscription: it hears what the
     /// node answered, and with `Latest` the group in flight first.
-    fn join_subscription(&mut self, reader: Reader, ends: &Ends, from: Start) {
+    fn join_subscription(&mut self, reader: Reader, ends: &Ends) {
         let mut reader = reader;
-        if let Some((by, mode)) = self.opened {
-            let replay = match from {
-                Start::Latest => self.in_flight.as_ref().filter(|in_flight| in_flight.whole),
+        let Kind::Subscribe {
+            opened, in_flight, ..
+        } = &self.kind
+        else {
+            return;
+        };
+        if let Some((by, mode)) = *opened {
+            let replay = match reader.from {
+                Start::Latest => in_flight.as_ref().filter(|in_flight| in_flight.whole),
                 Start::Next => {
-                    reader.after = self.in_flight.as_ref().map(|in_flight| in_flight.group);
+                    reader.after = in_flight.as_ref().map(|in_flight| in_flight.group);
                     None
                 }
             };
@@ -546,10 +574,42 @@ impl Entry {
     /// A later request that follows this room's list: the tracks up now
     /// first.
     fn join_list(&mut self, reader: Reader) {
-        for announce in &self.up {
-            let _ = reader.heard.send(announce.clone());
+        if let Kind::Watch { up, .. } = &self.kind {
+            for announce in up {
+                let _ = reader.heard.send(announce.clone());
+            }
         }
         self.readers.push(reader);
+    }
+}
+
+/// Why a session closed: the log's `reason`, and the QUIC close's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Close {
+    Quit,
+    ConnectionChanged,
+    GoAway,
+    ControlClosed,
+    ConnectionClosed,
+    SocketClosed,
+    SocketQuiet,
+    WireMismatch,
+    ClientOnlyMessage,
+}
+
+impl Close {
+    fn as_str(self) -> &'static str {
+        match self {
+            Close::Quit => "quit",
+            Close::ConnectionChanged => "connection_changed",
+            Close::GoAway => "go_away",
+            Close::ControlClosed => "control_closed",
+            Close::ConnectionClosed => "connection_closed",
+            Close::SocketClosed => "socket_closed",
+            Close::SocketQuiet => "socket_quiet",
+            Close::WireMismatch => "wire_mismatch",
+            Close::ClientOnlyMessage => "client_only_message",
+        }
     }
 }
 
@@ -560,14 +620,14 @@ impl Conn {
 
     /// Ends the session: every request's channels close, which its reader
     /// hears as the session gone.
-    fn close(&self, why: &str) {
+    fn close(&self, why: Close) {
         if self.closed.swap(true, Ordering::SeqCst) {
             return;
         }
-        tracing::info!(target: "ducktape::app", event = "live_session", reason = why, "a live session closed");
+        tracing::info!(target: "ducktape::app", event = "live_session", reason = why.as_str(), "a live session closed");
         *lock(&self.table) = Table::default();
         if let Path::Quic(connection) = &self.path {
-            connection.close(0u32.into(), why.as_bytes());
+            connection.close(0u32.into(), why.as_str().as_bytes());
         }
     }
 
@@ -581,7 +641,7 @@ impl Conn {
         if let Some(client) = self.client.upgrade() {
             client.hold_off();
         }
-        self.close("wire_mismatch");
+        self.close(Close::WireMismatch);
     }
 
     /// `ask` as a request of the session: a new node request, or a share
@@ -600,7 +660,7 @@ impl Conn {
         let held = table
             .requests
             .values_mut()
-            .find(|held| same_ask(&held.asked, &ask));
+            .find(|held| held.kind.serves(&ask));
         if let Some(held) = held {
             return match ask {
                 Ask::Publish { .. } => Err(Error::new(
@@ -608,64 +668,84 @@ impl Conn {
                     "another window of this app publishes this track",
                 )),
                 Ask::Subscribe { from, .. } => {
-                    let replayed = held
-                        .in_flight
-                        .as_ref()
-                        .map_or(0, |in_flight| in_flight.objects.len());
+                    let replayed = match &held.kind {
+                        Kind::Subscribe {
+                            in_flight: Some(in_flight),
+                            ..
+                        } => in_flight.objects.len(),
+                        _ => 0,
+                    };
                     let (request, ends) = request_holding(withdraw, replayed);
-                    let reader = Reader::new(id, &ends, from == Start::Next);
-                    held.join_subscription(reader, &ends, from);
+                    held.join_subscription(Reader::new(id, &ends, from), &ends);
                     Ok(request)
                 }
                 Ask::Watch { .. } => {
                     let (request, ends) = request(withdraw);
-                    held.join_list(Reader::new(id, &ends, false));
+                    held.join_list(Reader::new(id, &ends, Start::Latest));
                     Ok(request)
                 }
             };
         }
         let (request, ends) = request(withdraw);
-        let kind = match ask {
-            Ask::Publish { .. } => Kind::Publish,
-            Ask::Subscribe { .. } => Kind::Subscribe,
-            Ask::Watch { .. } => Kind::Watch,
+        let from = match ask {
+            Ask::Subscribe { from, .. } => from,
+            Ask::Publish { .. } | Ask::Watch { .. } => Start::Latest,
         };
-        let next_only = matches!(
-            ask,
-            Ask::Subscribe {
-                from: Start::Next,
-                ..
-            }
-        );
-        let mut entry = Entry::new(kind, ask.clone(), Reader::new(id, &ends, next_only));
-        let (taken, alias) = oneshot::channel();
-        entry.taken = (kind == Kind::Publish).then_some(taken);
-        table.requests.insert(id, entry);
-        drop(table);
-        let control = match ask {
+        let reader = Reader::new(id, &ends, from);
+        let (kind, control) = match ask {
             Ask::Publish {
                 track,
                 mode,
                 priority,
             } => {
+                let (taken, alias) = oneshot::channel();
                 tokio::spawn(write(self.clone(), alias, ends.objects, mode));
-                Control::Publish {
+                (
+                    Kind::Publish {
+                        track: track.clone(),
+                        taken: Some(taken),
+                    },
+                    Control::Publish {
+                        request: id,
+                        track,
+                        mode,
+                        priority,
+                    },
+                )
+            }
+            Ask::Subscribe { track, from } => (
+                Kind::Subscribe {
+                    track: track.clone(),
+                    alias: None,
+                    counted: None,
+                    opened: None,
+                    in_flight: None,
+                },
+                Control::Subscribe {
                     request: id,
                     track,
-                    mode,
-                    priority,
-                }
-            }
-            Ask::Subscribe { track, from } => Control::Subscribe {
-                request: id,
-                track,
-                from,
-            },
-            Ask::Watch { namespace } => Control::Watch {
-                request: id,
-                namespace,
-            },
+                    from,
+                },
+            ),
+            Ask::Watch { namespace } => (
+                Kind::Watch {
+                    namespace: namespace.clone(),
+                    up: Vec::new(),
+                },
+                Control::Watch {
+                    request: id,
+                    namespace,
+                },
+            ),
         };
+        table.requests.insert(
+            id,
+            Entry {
+                readers: vec![reader],
+                kind,
+            },
+        );
+        drop(table);
         let _ = self.control.send(control);
         Ok(request)
     }
@@ -688,29 +768,34 @@ impl Conn {
                 return;
             }
             let entry = table.requests.remove(&request).expect("found just now");
-            if let Some(alias) = entry.alias {
+            if let Some(alias) = entry.kind.alias() {
                 table.aliases.remove(&alias);
             }
             (request, entry.kind)
         };
         let control = match gone {
-            (request, Kind::Publish) => Control::Unpublish { request },
-            (request, Kind::Subscribe) => Control::Unsubscribe { request },
-            (request, Kind::Watch) => Control::Unwatch { request },
+            (request, Kind::Publish { .. }) => Control::Unpublish { request },
+            (request, Kind::Subscribe { .. }) => Control::Unsubscribe { request },
+            (request, Kind::Watch { .. }) => Control::Unwatch { request },
         };
         let _ = self.control.send(control);
     }
 
     /// One control message from the node.
-    fn heard(&self, control: Control) -> Result<(), &'static str> {
+    fn heard(&self, control: Control) -> Result<(), Close> {
         let mut table = lock(&self.table);
         match control {
             Control::Published { request, alias } => {
-                if let Some(entry) = table.requests.get_mut(&request) {
-                    entry.established = true;
-                    if let Some(taken) = entry.taken.take() {
+                if let Some(Entry {
+                    kind: Kind::Publish { taken, .. },
+                    ..
+                }) = table.requests.get_mut(&request)
+                {
+                    if let Some(taken) = taken.take() {
                         let _ = taken.send(alias);
                     }
+                }
+                if let Some(entry) = table.requests.get(&request) {
                     entry.tell(Heard::Published);
                 }
             }
@@ -721,18 +806,26 @@ impl Conn {
                 mode,
                 latest,
             } => {
-                if let Some(entry) = table.requests.get_mut(&request) {
-                    entry.established = true;
-                    entry.alias = Some(alias);
-                    entry.opened = Some((by, mode));
-                    for reader in &mut entry.readers {
+                if let Some(Entry {
+                    readers,
+                    kind:
+                        Kind::Subscribe {
+                            alias: held,
+                            opened,
+                            ..
+                        },
+                }) = table.requests.get_mut(&request)
+                {
+                    *held = Some(alias);
+                    *opened = Some((by, mode));
+                    for reader in readers {
                         // the group the node replays is not a `Next` reader's
-                        let latest = match reader.next_only {
-                            true => {
+                        let latest = match reader.from {
+                            Start::Next => {
                                 reader.after = latest;
                                 None
                             }
-                            false => latest,
+                            Start::Latest => latest,
                         };
                         let _ = reader.heard.send(Heard::Subscribed { by, mode, latest });
                     }
@@ -758,11 +851,13 @@ impl Conn {
                         mode,
                         up,
                     };
-                    entry.up.retain(
-                        |held| !matches!(held, Heard::Announce { track: held, .. } if *held == track),
-                    );
-                    if up {
-                        entry.up.push(announce.clone());
+                    if let Kind::Watch { up: held, .. } = &mut entry.kind {
+                        held.retain(
+                            |held| !matches!(held, Heard::Announce { track: held, .. } if *held == track),
+                        );
+                        if up {
+                            held.push(announce.clone());
+                        }
                     }
                     entry.tell(announce);
                 }
@@ -781,10 +876,14 @@ impl Conn {
                 }
             }
             Control::Refused { request, code } => {
-                let dropped = table
-                    .requests
-                    .get(&request)
-                    .is_some_and(|entry| entry.kind == Kind::Publish && entry.established);
+                // a publication the node took: one object of it refused
+                let dropped = matches!(
+                    table.requests.get(&request),
+                    Some(Entry {
+                        kind: Kind::Publish { taken: None, .. },
+                        ..
+                    })
+                );
                 match dropped {
                     true => table.requests[&request].tell(Heard::Dropped(code)),
                     false => end(&mut table, request, code.as_str()),
@@ -796,7 +895,7 @@ impl Conn {
                     *lock(&client.not_before) =
                         Some(Instant::now() + Duration::from_millis(u64::from(in_ms)));
                 }
-                return Err("the node is going away");
+                return Err(Close::GoAway);
             }
             Control::Hello(_)
             | Control::Challenge(_)
@@ -807,9 +906,7 @@ impl Conn {
             | Control::Subscribe { .. }
             | Control::Unsubscribe { .. }
             | Control::Watch { .. }
-            | Control::Unwatch { .. } => {
-                return Err("the node sent a message only a client sends");
-            }
+            | Control::Unwatch { .. } => return Err(Close::ClientOnlyMessage),
         }
         Ok(())
     }
@@ -842,13 +939,13 @@ impl Conn {
 /// Request `id` ends with `word`: its entry goes, and its reader hears it.
 fn end(table: &mut Table, id: RequestId, word: &'static str) {
     if let Some(entry) = table.requests.remove(&id) {
-        if let Some(alias) = entry.alias {
+        if let Some(alias) = entry.kind.alias() {
             table.aliases.remove(&alias);
         }
         let what = match entry.kind {
-            Kind::Publish => "the node ended this track",
-            Kind::Subscribe => "the node ended this subscription",
-            Kind::Watch => "the node ended this list",
+            Kind::Publish { .. } => "the node ended this track",
+            Kind::Subscribe { .. } => "the node ended this subscription",
+            Kind::Watch { .. } => "the node ended this list",
         };
         entry.tell(Heard::Closed(Error::new(word, what)));
     }
@@ -875,17 +972,6 @@ impl Unread {
     }
 }
 
-/// Whether `ask` asks what `held` asks of the node: the same track
-/// published or followed, or the same room's list.
-fn same_ask(held: &Ask, ask: &Ask) -> bool {
-    match (held, ask) {
-        (Ask::Publish { track: held, .. }, Ask::Publish { track, .. })
-        | (Ask::Subscribe { track: held, .. }, Ask::Subscribe { track, .. }) => held == track,
-        (Ask::Watch { namespace: held }, Ask::Watch { namespace }) => held == namespace,
-        _ => false,
-    }
-}
-
 /// The node speaks another live wire than this client (`what` names the
 /// message and the decode error): said in the log, and the refusal that
 /// ends the requests.
@@ -895,6 +981,14 @@ fn mismatch(what: String) -> Error {
         refusal::NODE_FAILED,
         format!("the node speaks another live wire: {what}"),
     )
+}
+
+/// A control message or a stream-mode object on the wire: its `u32`
+/// little-endian length, then the bytes.
+fn framed(bytes: Vec<u8>) -> Vec<u8> {
+    let mut framed = (bytes.len() as u32).to_le_bytes().to_vec();
+    framed.extend(bytes);
+    framed
 }
 
 /// `bytes` did not decode as a `kind`: which message it was (its borsh
@@ -948,9 +1042,14 @@ async fn dial(rpc: &RpcClient, client: Weak<Inner>) -> Result<Arc<Conn>, Error> 
                 .map_err(|error| unavailable(format!("no control stream: {error}")))?;
             let (control, queue) = mpsc::unbounded_channel();
             (
-                Path::Quic(connection),
+                Path::Quic(connection.clone()),
                 control,
-                Link::Quic { send, recv, queue },
+                Link::Quic {
+                    connection,
+                    send,
+                    recv,
+                    queue,
+                },
             )
         }
         None => {
@@ -1002,6 +1101,7 @@ async fn dial(rpc: &RpcClient, client: Weak<Inner>) -> Result<Arc<Conn>, Error> 
 /// The control side of a session as the handshake and the readers see it.
 enum Link {
     Quic {
+        connection: quinn::Connection,
         send: quinn::SendStream,
         recv: quinn::RecvStream,
         queue: mpsc::UnboundedReceiver<Control>,
@@ -1068,14 +1168,10 @@ async fn handshake(link: &mut Link, hello: Hello, node: &[u8]) -> Result<bool, E
 impl Link {
     async fn send(&mut self, control: &Control) -> Result<(), Error> {
         match self {
-            Link::Quic { send, .. } => {
-                let bytes = abi::encode(control);
-                let mut framed = (bytes.len() as u32).to_le_bytes().to_vec();
-                framed.extend(bytes);
-                send.write_all(&framed)
-                    .await
-                    .map_err(|error| unavailable(format!("the control stream closed: {error}")))
-            }
+            Link::Quic { send, .. } => send
+                .write_all(&framed(abi::encode(control)))
+                .await
+                .map_err(|error| unavailable(format!("the control stream closed: {error}"))),
             Link::Ws { socket, .. } => socket
                 .send(Message::Binary(abi::encode(&WsFrame::Control(
                     control.clone(),
@@ -1113,25 +1209,23 @@ impl Link {
     fn run(self, conn: Arc<Conn>) {
         match self {
             Link::Quic {
+                connection,
                 mut send,
                 mut recv,
                 mut queue,
             } => {
-                let Path::Quic(connection) = &conn.path else {
-                    unreachable!("a QUIC link runs a QUIC session")
-                };
-                let connection = connection.clone();
                 let writer = conn.clone();
                 tokio::spawn(async move {
                     while let Some(control) = queue.recv().await {
-                        let bytes = abi::encode(&control);
-                        let mut framed = (bytes.len() as u32).to_le_bytes().to_vec();
-                        framed.extend(bytes);
-                        if send.write_all(&framed).await.is_err() {
+                        if send
+                            .write_all(&framed(abi::encode(&control)))
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
                     }
-                    writer.close("the control stream closed");
+                    writer.close(Close::ControlClosed);
                 });
                 let reader = conn.clone();
                 tokio::spawn(async move {
@@ -1142,7 +1236,7 @@ impl Link {
                                     break why;
                                 }
                             }
-                            Err(Unread::Closed(_)) => break "the control stream closed",
+                            Err(Unread::Closed(_)) => break Close::ControlClosed,
                             Err(Unread::Mismatch(what)) => {
                                 return reader.fail(mismatch(what));
                             }
@@ -1156,7 +1250,7 @@ impl Link {
                     while let Ok(stream) = streams.accept_uni().await {
                         tokio::spawn(read_group(groups.clone(), stream));
                     }
-                    groups.close("the connection closed");
+                    groups.close(Close::ConnectionClosed);
                 });
                 tokio::spawn(async move {
                     while let Ok(bytes) = connection.read_datagram().await {
@@ -1209,15 +1303,15 @@ fn run_ws<S>(
             }
         }
         let _ = sink.close().await;
-        writer.close("the live socket closed");
+        writer.close(Close::SocketClosed);
     });
     tokio::spawn(async move {
         let why = loop {
             let bytes = match tokio::time::timeout(IDLE, stream.next()).await {
                 Ok(Some(Ok(Message::Binary(bytes)))) => bytes,
                 Ok(Some(Ok(_))) => continue,
-                Ok(_) => break "the live socket closed",
-                Err(_) => break "the live socket went quiet",
+                Ok(_) => break Close::SocketClosed,
+                Err(_) => break Close::SocketQuiet,
             };
             match abi::decode::<WsFrame>(&bytes) {
                 Ok(WsFrame::Control(control)) => {
@@ -1358,7 +1452,10 @@ fn heard_slice(conn: &Conn, header: GroupHeader, objects: Vec<Vec<u8>>, end: boo
             }
         }
     };
-    let mut next = match entry.counted {
+    let Kind::Subscribe { counted, .. } = &mut entry.kind else {
+        return;
+    };
+    let mut next = match *counted {
         Some((group, next)) if group == header.group => next,
         // the node starts the next group without ending this one: it was
         // cut short (an object refused, the track ended), not malformed
@@ -1381,7 +1478,9 @@ fn heard_slice(conn: &Conn, header: GroupHeader, objects: Vec<Vec<u8>>, end: boo
         hand(entry, item);
         next += 1;
     }
-    entry.counted = (!end).then_some((header.group, next));
+    if let Kind::Subscribe { counted, .. } = &mut entry.kind {
+        *counted = (!end).then_some((header.group, next));
+    }
     if end {
         let item = Data::GroupEnd {
             group: header.group,
@@ -1453,9 +1552,7 @@ async fn write(
                     continue;
                 };
                 if !body.is_empty() || !end {
-                    let mut framed = (body.len() as u32).to_le_bytes().to_vec();
-                    framed.extend(body);
-                    if stream.write_all(&framed).await.is_err() {
+                    if stream.write_all(&framed(body)).await.is_err() {
                         open = None;
                         continue;
                     }
@@ -1516,7 +1613,7 @@ async fn quic(
     };
     let udp = quinn::Endpoint::client(local).map_err(|error| error.to_string())?;
     let connecting = udp
-        .connect_with(client_config(key)?, at, "ducktape-live")
+        .connect_with(client_config(key)?, at, SERVER_NAME)
         .map_err(|error| error.to_string())?;
     let connection = tokio::time::timeout(QUIC_ANSWER, connecting)
         .await

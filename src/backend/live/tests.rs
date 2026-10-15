@@ -821,13 +821,16 @@ fn a_group_the_next_one_cuts_short_ends_incomplete() {
         client: Weak::new(),
     };
     let (mut request, ends) = request(|| {});
-    let mut entry = Entry::new(
-        Kind::Subscribe,
-        follow(Start::Latest),
-        Reader::new(1, &ends, false),
-    );
-    entry.established = true;
-    entry.alias = Some(9);
+    let entry = Entry {
+        readers: vec![Reader::new(1, &ends, Start::Latest)],
+        kind: Kind::Subscribe {
+            track: track("doc"),
+            alias: Some(9),
+            counted: None,
+            opened: None,
+            in_flight: None,
+        },
+    };
     {
         let mut table = lock(&conn.table);
         table.requests.insert(1, entry);
