@@ -31,7 +31,7 @@ Three things cross between a view and the app, and only three:
   controls.
   Events go back the other way as `wire::Event` values carrying the view's
   own handler ids.
-- **The kernel contract** (`src/runtime/kernel.rs`): the fixed set of
+- **The kernel contract** (`crates/host/src/runtime/kernel.rs`): the fixed set of
   methods every view may call, named `<capability>.<operation>`, request
   and reply types borsh in `wire::methods`. A view reaches only the
   capabilities its manifest declares (`wire::methods::Capability`, typed
@@ -651,13 +651,13 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
 
 ## 7. Accessibility and the AX test door
 
-- **Helpers** (`src/a11y.rs`): `Control::control(role, name)` (a role never
+- **Helpers** (`crates/host/src/a11y.rs`): `Control::control(role, name)` (a role never
   without a name), `keyboard` (Tab stop, Enter/Space press, focus ring,
   pointer press does not steal focus), `focus_shown`, `Aria` (reach the
   accessibility setters of any interactive element), `text_field`,
   `disabled`, `modal`, and the class markers `AX_PRIVATE` (`private`: the
   door masks it) and `AX_WHOLE` (`whole`: the door does not truncate it).
-- **Renderer mapping** (`src/render/accessibility.rs`): `Accessible` is what
+- **Renderer mapping** (`crates/host/src/render/accessibility.rs`): `Accessible` is what
   one wire node is to assistive technology (role, name, description,
   placeholder, value, disabled, and a field's invalid, required and
   read-only);
@@ -674,7 +674,7 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   `with_presentation` (the `NativePresentation` copy across view
   instances) also live in this file for now; the struct itself is in
   `render.rs`.
-- **The door** (`src/ax.rs`, `src/ax/{http,tree,actions}.rs`). Built only
+- **The door** (`crates/host/src/ax.rs`, `crates/host/src/ax/{http,tree,actions}.rs`). Built only
   with the `ax-door` cargo feature (the kit and qa builds); a default build
   has no door and no `ax` client. Off unless
   `DUCKTAPE_AX_DOOR=<port|0>` is set (0 picks a port). `ax::open`
@@ -750,7 +750,7 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   key opening are off the window thread (§2).
 - **Measured.** A `view_load` info line per network load
   (`seat::LoadTiming`) and the fuel debug line, both on `ducktape::perf`.
-  With `DUCKTAPE_PERF=1`, `src/perf.rs` also times and counts the shell,
+  With `DUCKTAPE_PERF=1`, `crates/host/src/perf.rs` also times and counts the shell,
   each window and each view's load, tick and render stages, served at
   `GET /perf` and logged as a `perf_summary` line every 10 minutes and at
   quit ([docs/perf.md](docs/perf.md)).
@@ -824,7 +824,7 @@ House words, and where one word means several things.
 - **widget command** — a `host.widget` request acting on a native control
   (focus, next/previous, scroll, cursor, a field's edit); its **target** is
   a whole authored path, as the view SDK names it from the frame it
-  lowered (`ViewTree::input_command`, `src/render/commands.rs`).
+  lowered (`ViewTree::input_command`, `crates/host/src/render/commands.rs`).
 - **method / capability / operation** — a request kind is
   `<capability>.<operation>`; `Capability` is the typed part before the dot
   that a manifest must declare; `wire::methods` holds every request and

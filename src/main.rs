@@ -15,7 +15,6 @@ mod update;
 fn main() {
     // a CEF child process (feature `web`) is this binary with `--type=...`
     render::web::subprocess();
-    perf::start();
     #[cfg(debug_assertions)]
     if std::env::args().nth(1).as_deref() == Some("--render-tree") {
         shell::render_tree_fixture();
@@ -67,6 +66,8 @@ fn main() {
         _ => {}
     }
     install_os();
+    // the sampler reads the OS facts: after them
+    perf::start();
     install_log();
     perf::mark("log");
     // the self-update's boot step: flip to a staged release, or back from
@@ -119,8 +120,9 @@ fn raise_open_file_limit() {
 }
 
 /// The app's sink is `app.log` in its platform state directory, plus a
-/// panic hook that lands in it. `RUST_LOG` ADDS to `info`; no home, no
-/// file: the events go nowhere rather than a GUI refusing to start.
+/// panic hook that lands in it. `RUST_LOG` ADDS to `info`. The GUI has a
+/// home by now (`install_os` refused without one); the restart waiter, which
+/// has no OS services, logs nowhere when it has none.
 fn install_log() {
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::util::SubscriberInitExt as _;

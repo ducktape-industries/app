@@ -1,4 +1,5 @@
 //! Exercise the same Linux platform text system used by the native app.
+#![cfg(target_os = "linux")]
 use super::{BUNDLED_FACES, fallback_chain, mono_fallback_chain};
 use gpui_kit::{FontRun, FontStyle, FontWeight, PlatformTextSystem, font, px};
 use gpui_wgpu::CosmicTextSystem;

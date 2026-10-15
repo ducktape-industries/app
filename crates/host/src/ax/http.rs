@@ -52,18 +52,14 @@ impl Drop for Written {
     }
 }
 
-/// Writes the door's port and token, readable by this user only.
+/// Writes the door's port and token. Readable by this user only because
+/// `Dirs::runtime` is: the shell makes that directory private (the
+/// desktop: `$XDG_RUNTIME_DIR/ducktape`, else one it creates mode 0700).
 fn write_door_file(path: PathBuf, door: &DoorFile) -> std::io::Result<Written> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut file = options.open(&path)?;
-    #[cfg(unix)]
-    file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    let mut file = std::fs::File::create(&path)?;
     let text = serde_json::to_string(door).unwrap_or_default();
     file.write_all(text.as_bytes())?;
     Ok(Written { path, text })

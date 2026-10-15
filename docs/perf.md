@@ -26,7 +26,7 @@ claim comes from another session's measurement it says so.
   through the app's one `fmt` file layer (`src/main.rs` `install_log`), so
   there is no second log format. The former `ducktape::fuel` target was
   renamed into it, with no alias.
-- One door endpoint, `GET /perf`, on the AX door (`src/ax/http.rs`), same
+- One door endpoint, `GET /perf`, on the AX door (`crates/host/src/ax/http.rs`), same
   token, same loopback bind. It returns the registry as JSON and must not
   draw a window.
 - One summary line in app.log, so a user's log tells the story without the
@@ -53,8 +53,8 @@ claim comes from another session's measurement it says so.
   gpui-level long-frame causes.
 - **Not measured from inside the view.** A view has no clock: its only wasm
   import is the panic hook the host binds in `View::instantiate`
-  (`src/runtime/view/lifecycle.rs`), and `clock.ticks` items carry an empty
-  payload (`kernel::ticked`, `src/runtime/kernel.rs`). Every timing here is
+  (`crates/host/src/runtime/view/lifecycle.rs`), and `clock.ticks` items carry an empty
+  payload (`kernel::ticked`, `crates/host/src/runtime/kernel.rs`). Every timing here is
   host-side. View-side counters could travel through the `host.log` request
   at one request per tick; fuel, frame bytes and the `Frame` fields already
   cover the continuous signal, so this design does not ask for it.
@@ -84,7 +84,7 @@ and is reported only under Xvfb.
 
 Threads: a load runs on one of the loader threads (`seat::queue`); the tick
 loop runs on the window thread inside `Seat::turn`
-(`src/runtime/seat/entity.rs`), off the draw path, which holds the seat mutex while it runs.
+(`crates/host/src/runtime/seat/entity.rs`), off the draw path, which holds the seat mutex while it runs.
 
 | Stage | Measured today | Hook point | Metric | Held |
 |---|---|---|---|---|
@@ -106,13 +106,13 @@ loop runs on the window thread inside `Seat::turn`
 | Frame bytes | nothing | `Exports::tick` answer length; `wire::encode(&events)` length in `View::tick` | H `frame_bytes`, H `events_bytes` (D) | a3 |
 | Frame kind, busy, node count | nothing | after `view::shape` in `View::tick`: `frame.root.is_some()`, `frame.patches.len()`, `frame.unchanged`, `frame.busy`; the node count from a `root.for_each_mut` walk (view-wire has no `count`), only when `frame_rev` bumps (O(n), so only when on) | C `frame.{full,patch,unchanged}`, C `busy_ticks`, G `nodes` (D) | a3 |
 | Sanitize truncations | a `frame_cut` warn (`View::report_display_truncation`) | the `SanitizeReport` after `view::shape` | C `truncations` (D) | a3 |
-| Tree merge and replace | nothing | `view::merge` (patch frames clone the held tree before applying); `Seat::turn`, the `fresh` branch: root clone (`View::drawn`; picture bytes are shared, not cloned), `native_root`, `ViewTree::replace` (`src/render/commands.rs`) | H `merge`, H `replace` (W) | a3 / 70 |
-| ViewTree render | `ViewTree.renders`, `#[cfg(test)]` only (`src/render.rs`) | `ViewTree::render` (`Render` impl); promote the counter out of `cfg(test)` | C `renders` (D), H `render` (W) | 70 |
+| Tree merge and replace | nothing | `view::merge` (patch frames clone the held tree before applying); `Seat::turn`, the `fresh` branch: root clone (`View::drawn`; picture bytes are shared, not cloned), `native_root`, `ViewTree::replace` (`crates/host/src/render/commands.rs`) | H `merge`, H `replace` (W) | a3 / 70 |
+| ViewTree render | `ViewTree.renders`, `#[cfg(test)]` only (`crates/host/src/render.rs`) | `ViewTree::render` (`Render` impl); promote the counter out of `cfg(test)` | C `renders` (D), H `render` (W) | 70 |
 | Cache hit / miss per view | nothing | On the cached path (`layers::PaneView` draws the seat's tree as a cached `AnyView`, with or without a11y) gpui reuses the last prepaint when bounds, content mask and text style match, the entity is not dirty and the window is not refreshing (`gpui:src/view.rs`, the `AnyView` `prepaint` reuse branch); otherwise it calls `ViewTree::render` again. So `draws` = `PaneView` draws of the seat, `misses` = `ViewTree` renders, `hits = draws − misses`. Before #347 every draw was a miss | C `draws` (D); `misses`, `hits` derived | 70 |
 | Full redraws per interaction | nothing (#347 measured it with temporary spans: 57–67 per window switch before, 11–14 after) | the `misses` delta between two door reads around the interaction | derived (D) | 70 |
-| Refresh causes | nothing | every `window.refresh()` caller in `src` is a cache-buster for all cached views in that window (`gpui:src/view.rs`, `!window.refreshing`). Today there are two, both in `src/render/text.rs`: the selection path (post-#347 `refresh_on_change`, only when the shown selection changes; before it, gpui-base's `refresh_window_on_change`) and the drag mouse-up handler (`MouseUpEvent` while `DRAG_CLIP` is set). `Window::activate_a11y` also refreshes, and so does gpui when the input turns from the pointer to the keys or back (the focus ring follows it). A focus move does not: the pinned fork (gpui-pre#9) draws the view that drew the old focus and the one that draws the new, with their ancestors, so a view that reads at its render a focus handle drawn outside its own subtree (neither by it nor by a view under it) stays stale unless it observes focus (`on_focus`/`on_blur`); no view in `src` draws from such a read (audited 2026-10-01). The two views' draw is held by `shell::layers::root_tests::a_focus_move_re_renders_two_layers_not_the_window`. Count per site | C `refresh.<site>` (D) | free (`text.rs`) |
+| Refresh causes | nothing | every `window.refresh()` caller in `src` is a cache-buster for all cached views in that window (`gpui:src/view.rs`, `!window.refreshing`). Today there are two, both in `crates/host/src/render/text.rs`: the selection path (post-#347 `refresh_on_change`, only when the shown selection changes; before it, gpui-base's `refresh_window_on_change`) and the drag mouse-up handler (`MouseUpEvent` while `DRAG_CLIP` is set). `Window::activate_a11y` also refreshes, and so does gpui when the input turns from the pointer to the keys or back (the focus ring follows it). A focus move does not: the pinned fork (gpui-pre#9) draws the view that drew the old focus and the one that draws the new, with their ancestors, so a view that reads at its render a focus handle drawn outside its own subtree (neither by it nor by a view under it) stays stale unless it observes focus (`on_focus`/`on_blur`); no view in `src` draws from such a read (audited 2026-10-01). The two views' draw is held by `shell::layers::root_tests::a_focus_move_re_renders_two_layers_not_the_window`. Count per site | C `refresh.<site>` (D) | free (`text.rs`) |
 | gpui layout / paint per view | nothing. gpui's own histograms are behind the fork's `profiler` feature (§1) | `render::deferred::Layer`, the element `ViewTree::render` puts every element of the tree under, timed under the seat's key. A pane draws the tree as a cached view, so on a miss gpui runs, in a row, `ViewTree::render`, `layout_as_root` and `prepaint_at` (`gpui:src/view.rs`, `prepaint_view`), and the paint later in the frame; `render` holds the first alone. `layout.request`: `request_layout` of every element (its style resolved, its element state read, one taffy node made; nothing solved). `layout.solve`: from that call's return to the tree's prepaint, which is gpui's `compute_layout` (the taffy solve of the view's own tree with its text measures), and with it one taffy node and the prepaint entry of the host's clip box. `prepaint`: bounds from the solved layout, element state again, hitboxes, the closure of the canvas over a node that claims (`ViewTree::reveals`), and the rows of a list, which gpui builds and lays out as the list prepaints. `paint`: element state a third time, quads, text, the frame's listeners, a canvas's commands. A view `Deferred`'s content and a tooltip are prepainted and painted later in the frame, in neither sample. One timer a pass for the whole tree, nothing for a node; a draw the cache answers runs no pass and leaves no sample | H `layout.request`, H `layout.solve`, H `prepaint`, H `paint` (W) | a3 |
-| Pictures | nothing | `Pictures::adopt` (`src/runtime/pictures.rs`) keeps a running byte total, held under the device's `memory.picture_bytes` (64 MiB unless set) by eviction | G `picture_bytes` (D) | free |
+| Pictures | nothing | `Pictures::adopt` (`crates/host/src/runtime/pictures.rs`) keeps a running byte total, held under the device's `memory.picture_bytes` (64 MiB unless set) by eviction | G `picture_bytes` (D) | free |
 | Linear memory | nothing (the trap past `memory.view_bytes`, `ViewLimits`) | `Exports.memory.data_size(&store)` after `View::tick` | G `memory` max (D) | a3 |
 | Snapshot on the way out | nothing | `View::snapshot` (covered above) | | a3 |
 | Faults | warns `program_view_trapped` (`View::tick`), `program_view_unloadable` (`Mounted::load_failed`) | same sites | C `faults` (D) | a3 / free |
@@ -123,7 +123,7 @@ Two findings the table depends on:
   `cranelift_opt_level`, `consume_fuel(true)` and the disk cache; no
   `epoch_interruption`, `set_epoch_deadline` or `increment_epoch` appears in
   `src`. The only bound is `FUEL_PER_TICK`, re-armed by `view::arm` before
-  every call. The owner kept it that way (§7), and the `src/runtime.rs`
+  every call. The owner kept it that way (§7), and the `crates/host/src/runtime.rs`
   module doc now says so.
 - **`LoadTiming` had already lost `status` and `check`** by the time phase
   0 landed; the split above is what it holds now (`seat.rs`).
@@ -132,7 +132,7 @@ Two findings the table depends on:
 
 Threads: the entities' methods and their timers, all rendering, view
 ticks and the door's answers run on the gpui foreground thread
-(`src/shell/entities/`; `ax::serve` in `src/ax.rs`). I/O is
+(`src/shell/entities/`; `ax::serve` in `crates/host/src/ax.rs`). I/O is
 driven by the `views-kernel` tokio thread (`kernel::handle`), but the
 entities' `Task` futures are polled on the foreground under
 `runtime.enter()` (`spawn_on_runtime`), so response bodies are decoded
@@ -166,7 +166,7 @@ are what will show which of these matter.
 
 ## 3. The mechanism
 
-### 3.1 The registry (`src/perf.rs`, stdlib only)
+### 3.1 The registry (`crates/host/src/perf.rs`, stdlib only)
 
 ```rust
 //! Performance counters, on with `DUCKTAPE_PERF=1`, read at `GET /perf`.
@@ -218,7 +218,7 @@ pub(crate) fn retire(program: &'static str, instance: u64) // one `view_perf` li
 - Why not on `View`: stats must survive a swap and cover load stages that
   run before the `View` exists. The registry is a leaf lock; reading it
   never takes a seat lock.
-- Windows are keyed by `WindowKey` (`src/runtime.rs`). The door names
+- Windows are keyed by `WindowKey` (`crates/host/src/runtime.rs`). The door names
   windows `console`, `console2`, … (`Windows::served`: the console
   `console`, any other `console<key>`), each for its life, and the
   snapshot carries both.
@@ -240,7 +240,7 @@ only when on and only when the tree changed.
   Callsite-filtered, so it costs nothing unless
   `RUST_LOG=ducktape::perf=debug` (the filter is `info` plus `RUST_LOG`,
   `install_log`). There is no `ducktape::fuel` target and no alias; the
-  `FUEL_PER_TICK` doc in `src/runtime.rs` names the new one.
+  `FUEL_PER_TICK` doc in `crates/host/src/runtime.rs` names the new one.
 - `view_load` (`LoadTiming::log`) is on this target as well, with `blob`,
   `code`, `instantiate_ms`, `restore_ms`, `snapshot_ms`, `snapshot_bytes`,
   `lock_wait_ms` and `install_ms`, and is logged after install rather than
@@ -250,7 +250,7 @@ only when on and only when the tree changed.
 
 - Route: `("GET", "perf")` and `("POST", "perf/reset")` in
   `ax::http::route`, listed in its 404 endpoint list; `Request::Perf` and
-  `Request::PerfReset` in `src/ax.rs`; the CLI verb `ducktape-app ax perf
+  `Request::PerfReset` in `crates/host/src/ax.rs`; the CLI verb `ducktape-app ax perf
   [--by instance | --reset]` in `ax::http::request` (`--reset` sends the
   POST). `POST /perf/reset` clears the
   counters and samples (the startup marks stay); `GET` never mutates.
@@ -409,10 +409,10 @@ Measured so far (fold in, attribute, do not over-trust):
   container measured on its named ancestor's path and flagged a change
   ~2,900 times per 2 s (`ViewTree::measure`, gone since: nothing records a
   node's bounds, and only a node that claims has a canvas over it,
-  `ViewTree::reveals`, `src/render/layout.rs`);
+  `ViewTree::reveals`, `crates/host/src/render/layout.rs`);
   gpui-base's selection sweep sent `SelectionChanged(None)` every frame and
   `refresh_window_on_change` refreshed the window on each (now
-  `refresh_on_change`, `src/render/text.rs`). The 57–67 / 11–14, 11–12 /
+  `refresh_on_change`, `crates/host/src/render/text.rs`). The 57–67 / 11–14, 11–12 /
   2.5–3.5 ms and 979 / 334 ms figures and the ~2,900 count are the PR's;
   the rest of the idle story is ducktape-70's session. Wall numbers are one
   rig, one run: **report-only until three baseline runs on the reference
@@ -501,7 +501,7 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by program and by window:
    ask back after). In both windows:
    - `busy_ticks == 0`;
    - `ticks ≤ clock items + block-subscription items + 1`. A clock gives
-     at most one item per redraw (`kernel::ticked`, `src/runtime/kernel.rs`); `program.changes`
+     at most one item per redraw (`kernel::ticked`, `crates/host/src/runtime/kernel.rs`); `program.changes`
      delivers one item per block that wrote to the program, `chain.heads` polls
      at half the node's block time and delivers one item per block
      (`kernel::node::changes`, `heads`);
@@ -676,14 +676,14 @@ Design:
   delta) and `settle`s on tree reads after it, so it activates a11y like
   `/tree`, `/act` and `/wait`; so do `/keys` and `/drag`. The scenario needs
   a press that reads nothing: a `POST /key` body flag (`"delta": false`, say)
-  that skips both reads and answers `{}` — in `src/ax.rs`, which is free —
+  that skips both reads and answers `{}` — in `crates/host/src/ax.rs`, which is free —
   or OS-level key injection on the rig's Xvfb. This document picks the flag.
   With `window` named, `keyboard_window` already resolves the handle from the
   door's window list (`Windows::served`) without a tree; unnamed, it
   finds the focused node in the tree it just read, so the flag makes
   `window` required (falling back to the first window, as it does today).
 
-  **Landed (`perf/key-no-read`).** `Key` in `src/ax.rs` has `delta`, true
+  **Landed (`perf/key-no-read`).** `Key` in `crates/host/src/ax.rs` has `delta`, true
   unless the body says `"delta": false`. With it false, `answer` presses
   through `press_keys` and answers `{}`: it calls neither `read` nor
   `settle`, so a11y stays off and the door draws nothing (`door_draws`
@@ -725,11 +725,11 @@ Design:
   idle in one pass.
 - **`cargo test` counts**, already in CI. An idle ViewTree renders zero
   times across N frames (#347's `an_unchanged_view_tree_is_not_drawn_again`
-  in `src/render/tests/layout.rs`, on the `cfg(test)` field
+  in `crates/host/src/render/tests/layout.rs`, on the `cfg(test)` field
   `ViewTree.renders`). A seated view drawing #347's tree shape renders no
   more than it ticks, read off the registry's `renders` and `ticks` as
   `/perf` serves them (`an_idle_view_renders_no_more_than_it_ticks`,
-  `src/runtime/seat/entity_tests.rs`): undoing #347's selection fix fails it.
+  `crates/host/src/runtime/seat/entity_tests.rs`): undoing #347's selection fix fails it.
   Undoing its layout fix does not — under the test scheduler a notify from
   inside a draw is cleared with that frame — so the bounds assertion in
   #347's own test guards that one. Also counts: a redraw of the desk with
@@ -751,11 +751,11 @@ GO for both together.** The sessions that held the view files
 (ducktape-70, ducktape-a3) had merged, so both phases went in one branch.
 
 Phase 0, as listed:
-- `src/perf.rs`: switch, registry, `snapshot`, `reset`, `mark`, the
+- `crates/host/src/perf.rs`: switch, registry, `snapshot`, `reset`, `mark`, the
   sampler thread (RSS each second, `perf_summary` every 10 minutes),
   `perf_summary` on `on_app_quit`.
 - `GET /perf`, `POST /perf/reset`, `Request::Perf`, `Request::PerfReset`,
-  `ax perf [--by instance]` (`src/ax.rs`, `src/ax/http.rs`), answered
+  `ax perf [--by instance]` (`crates/host/src/ax.rs`, `crates/host/src/ax/http.rs`), answered
   without a draw.
 - Shell hooks: startup marks (`main.rs`, `shell/launch.rs`,
   `shell/windows.rs`, `shell/entities/session.rs`, `first_seated` in
@@ -868,7 +868,7 @@ design, not merged. What still informs:
    **Answered (owner, 2026-09-28): (b).** `perf-deep` is declared; under it
    `/perf` carries each window's frame and input histograms and the
    `first_present` mark (§3.5). A default build compiles none of it.
-2. **A time budget.** The `src/runtime.rs` doc claimed one; none exists.
+2. **A time budget.** The `crates/host/src/runtime.rs` doc claimed one; none exists.
    Either add epoch interruption (always on; then the view profiler no
    longer splits the compile cache) or delete the claim.
 

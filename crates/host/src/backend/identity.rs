@@ -9,9 +9,6 @@ use noded_client::identity::submit;
 
 use super::{RpcClient, query_signer, seated_frame, seated_key};
 
-/// The label a device's key joins an account under, as Account lists it.
-pub const DEVICE_KEY_LABEL: &str = "Desktop";
-
 /// A self-serve account on `network` whose one key is this device's
 /// (seated) key: identity's `Create`, no passkey. Its number and name, as
 /// the rail shows them. A key that already holds an account (a retry after

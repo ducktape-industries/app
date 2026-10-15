@@ -27,6 +27,24 @@ fn a_nameless_changes_subscription_is_malformed() {
     );
 }
 
+/// A host that runs no node (`OsServices::mint_invite` answers `None`)
+/// refuses `invite.create` with the account gate's sentence, before any
+/// request reaches the node.
+#[tokio::test]
+async fn a_host_that_runs_no_node_mints_no_invite() {
+    let node = Node {
+        client: RpcClient::new("http://127.0.0.1:1"),
+        network: "test-network".into(),
+    };
+    let ask = methods::encode(&methods::CreateInvite { ttl_days: 7 });
+    let refusal = invite(node, ask).await.unwrap_err();
+    assert_eq!(refusal.code, refusal::INVITE_UNSUPPORTED);
+    assert_eq!(
+        refusal.message,
+        "Only the machine running this node can mint its invites."
+    );
+}
+
 fn status_at(anchor: noded::Tip) -> noded::Status {
     noded::Status {
         network: "test-network".into(),

@@ -7,8 +7,8 @@
 # door (feature `ax-door`).
 #
 # It names no shell, no window manager and no user program. What a shell
-# must provide arrives through its interface file (`src/contract.rs`, the
-# next PR); `tools/dep-gate.sh` keeps the dependency direction.
+# must provide arrives through its interface file (`src/contract.rs`);
+# `tools/dep-gate.sh` keeps the dependency direction.
 
 [package]
 name = "ducktape-host"

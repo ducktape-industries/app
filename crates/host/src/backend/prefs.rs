@@ -3,23 +3,22 @@
 //! the recent-nodes list (`endpoints`) and the notification prefs
 //! (`runtime::notify`) go through [`read_prefs`] and [`edit_prefs`] too.
 
-#[cfg(not(any(test, feature = "test-support")))]
 fn prefs_path() -> Option<std::path::PathBuf> {
     Some(super::dirs().config.join("prefs.json"))
 }
 
 /// What `prefs.json` holds. A missing file reads as `{}`; an unreadable one
 /// is an error, so no write lands over keys this read could not see.
-#[cfg(not(any(test, feature = "test-support")))]
 pub fn read_prefs() -> std::io::Result<serde_json::Value> {
     let _timed = crate::perf::time(crate::perf::Key::Shell, "io.read_prefs");
+    #[cfg(any(test, feature = "test-support"))]
+    READS.with(|reads| reads.set(reads.get() + 1));
     prefs_path().map_or_else(|| Ok(serde_json::json!({})), |path| read_prefs_at(&path))
 }
 
 /// Reads, changes and writes back `prefs.json`; written only where `change`
 /// moved something. False when nothing landed, as when the file could not be
 /// read.
-#[cfg(not(any(test, feature = "test-support")))]
 pub fn edit_prefs(change: impl FnOnce(&mut serde_json::Value)) -> bool {
     let _timed = crate::perf::time(crate::perf::Key::Shell, "io.write_prefs");
     prefs_path().is_some_and(|path| edit_prefs_at(&path, change))
@@ -27,7 +26,6 @@ pub fn edit_prefs(change: impl FnOnce(&mut serde_json::Value)) -> bool {
 
 /// What `path` holds; `{}` when it is missing or unparsable (the last is set
 /// aside as `prefs.json.bad`). Any other read error stays an error.
-#[cfg(any(test, not(feature = "test-support")))]
 fn read_prefs_at(path: &std::path::Path) -> std::io::Result<serde_json::Value> {
     super::read_or_set_aside(path, |bytes| serde_json::from_slice(bytes))
         .map(|prefs| prefs.unwrap_or_else(|| serde_json::json!({})))
@@ -36,7 +34,6 @@ fn read_prefs_at(path: &std::path::Path) -> std::io::Result<serde_json::Value> {
         })
 }
 
-#[cfg(any(test, not(feature = "test-support")))]
 fn edit_prefs_at(path: &std::path::Path, change: impl FnOnce(&mut serde_json::Value)) -> bool {
     let Ok(mut prefs) = read_prefs_at(path) else {
         return false;
@@ -56,35 +53,16 @@ fn edit_prefs_at(path: &std::path::Path, change: impl FnOnce(&mut serde_json::Va
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    /// A test's own prefs: each test's thread starts with none, and no
-    /// test reaches this machine's file (the audit's arrows pick Settings'
-    /// choices, and a choice is saved).
-    static PREFS: std::cell::RefCell<serde_json::Value> =
-        std::cell::RefCell::new(serde_json::json!({}));
-}
-
-#[cfg(any(test, feature = "test-support"))]
-thread_local! {
-    /// How many times this test's thread read its prefs.
+    /// How many times this test's thread read its prefs (a test's prefs are
+    /// its own: `contract::testing::TestOs` gives each test thread a config
+    /// directory of its own).
     static READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn read_prefs() -> std::io::Result<serde_json::Value> {
-    READS.with(|reads| reads.set(reads.get() + 1));
-    Ok(PREFS.with(|prefs| prefs.borrow().clone()))
 }
 
 /// How many times this test's thread has read its prefs.
 #[cfg(any(test, feature = "test-support"))]
 pub fn prefs_reads() -> usize {
     READS.with(std::cell::Cell::get)
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn edit_prefs(change: impl FnOnce(&mut serde_json::Value)) -> bool {
-    PREFS.with(|kept| change(&mut kept.borrow_mut()));
-    true
 }
 
 /// Light, dark, or as the OS says.

@@ -470,7 +470,7 @@ impl Updater {
         match ready {
             Some(display) => notify_ready(display),
             None => {
-                crate::runtime::notify::withdraw_host();
+                crate::os::withdraw_host();
                 debug!(target: TARGET, event = "app_update_notice_withdrawn");
             }
         }
@@ -559,7 +559,7 @@ fn notify_ready(display: &str) {
         body: "Restart to update.".into(),
         tag: NOTICE_TAG.into(),
     };
-    let raised = crate::runtime::notify::post_host(&notice);
+    let raised = crate::os::post_host(&notice);
     debug!(target: TARGET, event = "app_update_notice", raised);
 }
 

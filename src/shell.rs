@@ -28,8 +28,17 @@ pub(crate) mod entities;
 mod figure;
 mod help;
 pub(crate) use help::chords;
-#[cfg(feature = "ax-door")]
-pub(crate) use layers::Kept;
+
+/// The door walk keeps Settings' choices and puts them back: what the
+/// app's door and the gate test both hand `Door::keep`.
+#[cfg(any(test, feature = "ax-door"))]
+pub(crate) fn kept_restore(
+    window: &gpui_kit::Window,
+    cx: &gpui_kit::App,
+) -> Option<crate::ax::Restore> {
+    layers::Kept::of(window, cx)
+        .map(|kept| Box::new(move |cx: &mut gpui_kit::App| kept.restore(cx)) as crate::ax::Restore)
+}
 mod ink;
 mod keys;
 mod launch;
