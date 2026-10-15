@@ -898,9 +898,11 @@ fn ws_conn() -> (Conn, Request) {
         table: Mutex::new(Table::default()),
         next: AtomicU64::new(1),
         closed: AtomicBool::new(false),
+        aliased: Notify::new(),
         client: Weak::new(),
     };
     let (request, ends) = request(|| {});
+    conn.next.store(2, Ordering::SeqCst);
     let entry = Entry {
         readers: vec![Reader::new(1, &ends, Start::Latest)],
         waiting: false,
@@ -961,6 +963,62 @@ fn a_late_end_of_the_old_group_leaves_the_new_groups_count_alone() {
                 complete: true
             },
         ]
+    );
+}
+
+/// The node sends `Subscribed` on the control stream and the replayed group
+/// on its own stream; the group can land first. An alias not yet named is
+/// "not yet": the group's reader waits for the `Subscribed` that names it,
+/// then delivers. An alias whose subscription went is "nobody": the stream
+/// is stopped.
+#[tokio::test]
+async fn a_group_of_an_alias_not_yet_subscribed_waits_for_its_name() {
+    let (conn, _request) = ws_conn();
+    let conn = Arc::new(conn);
+    let item = Data::Object {
+        group: 1,
+        object: 0,
+        body: vec![1],
+    };
+    let mut parked = std::pin::pin!(conn.readers_of(10, &item));
+    assert!(
+        futures::poll!(parked.as_mut()).is_pending(),
+        "not yet: parked"
+    );
+    // a second track's request, named alias 10 by the node
+    let mut second = conn
+        .open(Ask::Subscribe {
+            track: track("other"),
+            from: Start::Latest,
+        })
+        .unwrap();
+    let request = *lock(&conn.table)
+        .requests
+        .iter()
+        .find(|(_, entry)| matches!(&entry.kind, Kind::Subscribe { track, .. } if track.name == "other"))
+        .unwrap()
+        .0;
+    conn.heard(Control::Subscribed {
+        request,
+        alias: 10,
+        by: ACCOUNT,
+        mode: Mode::Stream,
+        latest: Some(1),
+    })
+    .unwrap();
+    let readers = parked.await.expect("named now");
+    assert_eq!(readers.len(), 1);
+    readers[0].send(item.clone()).await.unwrap();
+    assert_eq!(second.data.recv().await, Some(item.clone()));
+    drop(second);
+    assert!(
+        conn.readers_of(10, &item).await.is_none(),
+        "the subscription went: nobody"
+    );
+    conn.close(Close::Quit);
+    assert!(
+        conn.readers_of(11, &item).await.is_none(),
+        "a closed session parks nothing"
     );
 }
 
@@ -1130,6 +1188,7 @@ async fn the_websocket_is_kept_alive_and_a_silent_one_ends() {
         table: Mutex::new(Table::default()),
         next: AtomicU64::new(1),
         closed: AtomicBool::new(false),
+        aliased: Notify::new(),
         client: Weak::new(),
     });
     run_ws(app, queue, controls, conn.clone());

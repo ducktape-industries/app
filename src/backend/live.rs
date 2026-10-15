@@ -17,7 +17,7 @@
 //!
 //! Nothing here knows a view: a track's namespace comes stamped.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -513,6 +513,9 @@ struct Conn {
     table: Mutex<Table>,
     next: AtomicU64,
     closed: AtomicBool,
+    /// A `Subscribed` named an alias, or the session closed: a group
+    /// stream parked on an alias not yet named looks again.
+    aliased: Notify,
     client: Weak<Inner>,
 }
 
@@ -521,6 +524,19 @@ struct Table {
     requests: HashMap<RequestId, Entry>,
     /// The subscription each alias in a data header names.
     aliases: HashMap<Alias, RequestId>,
+    /// Aliases whose subscription went (withdrawn, or ended by the node):
+    /// a stream of one is stopped, not parked.
+    gone: HashSet<Alias>,
+}
+
+/// Who a stream-mode item is for ([`Conn::deliver`]).
+enum Delivery {
+    Readers(Vec<mpsc::Sender<Data>>),
+    /// No `Subscribed` has named the alias yet: the control stream and the
+    /// group's stream are two streams, and the group's can land first.
+    NotYet,
+    /// The alias's subscription went: the node is told to stop.
+    Gone,
 }
 
 /// One node request. The node holds one subscriber per track and one
@@ -871,6 +887,7 @@ impl Conn {
         }
         tracing::info!(target: "ducktape::app", event = "live_session", reason = why.as_str(), "a live session closed");
         *lock(&self.table) = Table::default();
+        self.aliased.notify_waiters();
         if let Path::Quic(connection) = &self.path {
             connection.close(0u32.into(), why.as_str().as_bytes());
         }
@@ -1017,6 +1034,7 @@ impl Conn {
             let entry = table.requests.remove(&request).expect("found just now");
             if let Some(alias) = entry.kind.alias() {
                 table.aliases.remove(&alias);
+                table.gone.insert(alias);
             }
             (request, entry.kind)
         };
@@ -1080,6 +1098,7 @@ impl Conn {
                         let _ = reader.heard.send(Heard::Subscribed { by, mode, latest });
                     }
                     table.aliases.insert(alias, request);
+                    self.aliased.notify_waiters();
                 }
             }
             Control::Subscribers { request, count } => {
@@ -1165,12 +1184,35 @@ impl Conn {
 
     /// One stream-mode item of the subscription `alias` names, kept in
     /// its group in flight: the data paths of the readers it is for, to
-    /// send to outside the lock. `None` when nothing follows `alias`.
-    fn deliver(&self, alias: Alias, data: &Data) -> Option<Vec<mpsc::Sender<Data>>> {
+    /// send to outside the lock.
+    fn deliver(&self, alias: Alias, data: &Data) -> Delivery {
         let mut table = lock(&self.table);
-        let request = *table.aliases.get(&alias)?;
-        let entry = table.requests.get_mut(&request)?;
-        Some(entry.keep(data).map(|reader| reader.data.clone()).collect())
+        let Some(request) = table.aliases.get(&alias).copied() else {
+            return match table.gone.contains(&alias) {
+                true => Delivery::Gone,
+                false => Delivery::NotYet,
+            };
+        };
+        let Some(entry) = table.requests.get_mut(&request) else {
+            return Delivery::Gone;
+        };
+        Delivery::Readers(entry.keep(data).map(|reader| reader.data.clone()).collect())
+    }
+
+    /// [`Conn::deliver`], parked while no `Subscribed` has named `alias`
+    /// yet; `None` once the alias's subscription went, or the session
+    /// closed first.
+    async fn readers_of(&self, alias: Alias, data: &Data) -> Option<Vec<mpsc::Sender<Data>>> {
+        loop {
+            let mut named = std::pin::pin!(self.aliased.notified());
+            named.as_mut().enable();
+            match self.deliver(alias, data) {
+                Delivery::Readers(readers) => return Some(readers),
+                Delivery::Gone => return None,
+                Delivery::NotYet if self.closed() => return None,
+                Delivery::NotYet => named.await,
+            }
+        }
     }
 
     /// One datagram-mode object of the subscription `alias` names: the
@@ -1193,6 +1235,9 @@ fn end(table: &mut Table, id: RequestId, word: &'static str) {
     if let Some(entry) = table.requests.remove(&id) {
         if let Some(alias) = entry.kind.alias() {
             table.aliases.remove(&alias);
+        }
+        if let Some(alias) = entry.kind.alias() {
+            table.gone.insert(alias);
         }
         let what = match entry.kind {
             Kind::Publish { .. } => "the node ended this track",
@@ -1337,6 +1382,7 @@ async fn dial(rpc: &RpcClient, client: Weak<Inner>) -> Result<Arc<Conn>, Error> 
         table: Mutex::new(Table::default()),
         next: AtomicU64::new(1),
         closed: AtomicBool::new(false),
+        aliased: Notify::new(),
         client,
     });
     tracing::info!(
@@ -1619,7 +1665,9 @@ async fn read_control(recv: &mut quinn::RecvStream) -> Result<Control, Unread> {
 }
 
 /// One group stream from the node: its objects in order, then whether it
-/// ended whole (FIN) or was cut short (RESET, or a stream that broke).
+/// ended whole (FIN) or was cut short (RESET, or a stream that broke). A
+/// group of an alias no `Subscribed` has named yet (the node's replay can
+/// land before its answer) waits for the name.
 async fn read_group(conn: Arc<Conn>, mut stream: quinn::RecvStream) {
     let mut head = [0u8; GroupHeader::LEN];
     if stream.read_exact(&mut head).await.is_err() {
@@ -1652,7 +1700,7 @@ async fn read_group(conn: Arc<Conn>, mut stream: quinn::RecvStream) {
             body,
         };
         // nothing follows the track any more: the node is told to stop
-        let Some(readers) = conn.deliver(header.alias, &item) else {
+        let Some(readers) = conn.readers_of(header.alias, &item).await else {
             let _ = stream.stop(0u32.into());
             return;
         };
@@ -1662,7 +1710,11 @@ async fn read_group(conn: Arc<Conn>, mut stream: quinn::RecvStream) {
         object += 1;
     };
     let end = Data::GroupEnd { group, complete };
-    for reader in conn.deliver(header.alias, &end).unwrap_or_default() {
+    for reader in conn
+        .readers_of(header.alias, &end)
+        .await
+        .unwrap_or_default()
+    {
         let _ = reader.send(end.clone()).await;
     }
 }
