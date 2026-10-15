@@ -19,7 +19,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
@@ -29,7 +29,8 @@ use live_wire::{
     Alias, Control, DatagramHeader, End, GroupHeader, Hello, KeyScheme, Proof, RequestId, WsFrame,
 };
 pub(crate) use live_wire::{Code, Mode, Priority, Start, Track};
-use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot, watch};
+use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 use view_wire::Error;
 use view_wire::methods::refusal;
@@ -464,7 +465,8 @@ impl Session for Client {
 
     /// Over QUIC the close is a CONNECTION_CLOSE the endpoint sends after
     /// this returns: the process waits up to [`QUIT_FLUSH`] for it to
-    /// leave. A websocket's TCP closes with the process.
+    /// leave and for the session's tasks to end. A websocket's TCP closes
+    /// with the process.
     fn quit(&self) -> BoxFuture<'static, ()> {
         // a dial in flight holds the lock: no session is open to close
         let conn = self.0.conn.try_lock().ok().and_then(|mut held| held.take());
@@ -473,9 +475,14 @@ impl Session for Client {
                 return;
             };
             conn.close(Close::Quit);
-            if let Some(udp) = &conn.udp {
-                let _ = tokio::time::timeout(QUIT_FLUSH, udp.wait_idle()).await;
-            }
+            let tasks = std::mem::take(&mut *lock(&conn.tasks));
+            let flushed = async {
+                if let Some(udp) = &conn.udp {
+                    udp.wait_idle().await;
+                }
+                futures::future::join_all(tasks).await;
+            };
+            let _ = tokio::time::timeout(QUIT_FLUSH, flushed).await;
         })
     }
 }
@@ -513,10 +520,15 @@ struct Conn {
     control: mpsc::UnboundedSender<Control>,
     table: Mutex<Table>,
     next: AtomicU64,
-    closed: AtomicBool,
+    /// The session closed: every task of it that waits on something else
+    /// (a writer on its queue) wakes and ends.
+    closed: watch::Sender<bool>,
     /// A `Subscribed` named an alias, or the session closed: a group
     /// stream parked on an alias not yet named looks again.
     aliased: Notify,
+    /// The session's tasks: a quit waits for them to end, so the session
+    /// and its socket are freed with the close.
+    tasks: Mutex<Vec<JoinHandle<()>>>,
     client: Weak<Inner>,
 }
 
@@ -877,7 +889,19 @@ impl Close {
 
 impl Conn {
     fn closed(&self) -> bool {
-        self.closed.load(Ordering::SeqCst)
+        *self.closed.borrow()
+    }
+
+    /// Resolves once the session closed.
+    async fn closing(&self) {
+        let _ = self.closed.subscribe().wait_for(|closed| *closed).await;
+    }
+
+    fn task(&self, task: JoinHandle<()>) {
+        let mut tasks = lock(&self.tasks);
+        // one per group stream: the ones that ended are let go
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(task);
     }
 
     /// Ends the session: every request's channels close, which its reader
@@ -885,7 +909,7 @@ impl Conn {
     /// connection changing, not the node's own `GoAway`, which names its
     /// wait) holds the next dial off: the one wait before a dial.
     fn close(&self, why: Close) {
-        if self.closed.swap(true, Ordering::SeqCst) {
+        if self.closed.send_replace(true) {
             return;
         }
         tracing::info!(target: "ducktape::app", event = "live_session", reason = why.as_str(), "a live session closed");
@@ -966,7 +990,7 @@ impl Conn {
                 objects,
             } => {
                 let (taken, alias) = oneshot::channel();
-                tokio::spawn(write(self.clone(), alias, objects, mode));
+                self.task(tokio::spawn(write(self.clone(), alias, objects, mode)));
                 (
                     Kind::Publish {
                         track: track.clone(),
@@ -1385,8 +1409,9 @@ async fn dial(rpc: &RpcClient, client: Weak<Inner>) -> Result<Arc<Conn>, Error> 
         control,
         table: Mutex::new(Table::default()),
         next: AtomicU64::new(1),
-        closed: AtomicBool::new(false),
+        closed: watch::Sender::new(false),
         aliased: Notify::new(),
+        tasks: Mutex::new(Vec::new()),
         client,
     });
     tracing::info!(
@@ -1507,7 +1532,8 @@ impl Link {
     }
 
     /// The session's tasks: the control writer and reader, and the data
-    /// readers. Any of them failing closes the session.
+    /// readers. Any of them failing closes the session, and the close ends
+    /// them all at once.
     fn run(self, conn: Arc<Conn>) {
         match self {
             Link::Quic {
@@ -1517,8 +1543,16 @@ impl Link {
                 mut queue,
             } => {
                 let writer = conn.clone();
-                tokio::spawn(async move {
-                    while let Some(control) = queue.recv().await {
+                conn.task(tokio::spawn(async move {
+                    loop {
+                        let control = tokio::select! {
+                            biased;
+                            _ = writer.closing() => break,
+                            control = queue.recv() => control,
+                        };
+                        let Some(control) = control else {
+                            break;
+                        };
                         if send
                             .write_all(&framed(abi::encode(&control)))
                             .await
@@ -1528,9 +1562,9 @@ impl Link {
                         }
                     }
                     writer.close(Close::ControlClosed);
-                });
+                }));
                 let reader = conn.clone();
-                tokio::spawn(async move {
+                conn.task(tokio::spawn(async move {
                     let why = loop {
                         match read_control(&mut recv).await {
                             Ok(control) => {
@@ -1545,20 +1579,21 @@ impl Link {
                         }
                     };
                     reader.close(why);
-                });
+                }));
                 let groups = conn.clone();
                 let streams = connection.clone();
-                tokio::spawn(async move {
+                conn.task(tokio::spawn(async move {
                     while let Ok(stream) = streams.accept_uni().await {
-                        tokio::spawn(read_group(groups.clone(), stream));
+                        groups.task(tokio::spawn(read_group(groups.clone(), stream)));
                     }
                     groups.close(Close::ConnectionClosed);
-                });
-                tokio::spawn(async move {
+                }));
+                let datagrams = conn.clone();
+                conn.task(tokio::spawn(async move {
                     while let Ok(bytes) = connection.read_datagram().await {
-                        heard_datagram(&conn, &bytes);
+                        heard_datagram(&datagrams, &bytes);
                     }
-                });
+                }));
             }
             Link::Ws {
                 socket,
@@ -1574,7 +1609,7 @@ impl Link {
 /// idle (Cloudflare's tunnel closes one after about two minutes). In:
 /// frames, and the session ends after [`IDLE`] with nothing heard, the
 /// node's pongs included: the QUIC path's keep-alive and idle limit. The
-/// writer stops at its first tick after the session closed.
+/// close ends the writer at once, with the socket's close frame.
 fn run_ws<S>(
     socket: tokio_tungstenite::WebSocketStream<S>,
     mut queue: mpsc::UnboundedReceiver<WsFrame>,
@@ -1585,20 +1620,18 @@ fn run_ws<S>(
 {
     let (mut sink, mut stream) = socket.split();
     let writer = conn.clone();
-    tokio::spawn(async move {
+    conn.task(tokio::spawn(async move {
         let mut ping = tokio::time::interval(KEEP_ALIVE);
         loop {
             // control first: an answer never waits behind a group
             let message = tokio::select! {
                 biased;
+                _ = writer.closing() => break,
                 Some(control) = controls.recv() => {
                     Message::Binary(abi::encode(&WsFrame::Control(control)))
                 }
                 Some(frame) = queue.recv() => Message::Binary(abi::encode(&frame)),
-                _ = ping.tick() => match writer.closed.load(Ordering::SeqCst) {
-                    true => break,
-                    false => Message::Ping(Vec::new()),
-                },
+                _ = ping.tick() => Message::Ping(Vec::new()),
             };
             if sink.send(message).await.is_err() {
                 break;
@@ -1606,8 +1639,10 @@ fn run_ws<S>(
         }
         let _ = sink.close().await;
         writer.close(Close::SocketClosed);
-    });
-    tokio::spawn(async move {
+    }));
+    let reader = conn.clone();
+    conn.task(tokio::spawn(async move {
+        let conn = reader;
         let why = loop {
             let bytes = match tokio::time::timeout(IDLE, stream.next()).await {
                 Ok(Some(Ok(Message::Binary(bytes)))) => bytes,
@@ -1641,7 +1676,7 @@ fn run_ws<S>(
             }
         };
         conn.close(why);
-    });
+    }));
 }
 
 /// One length-prefixed control message: a stream that ends or breaks is
@@ -1799,10 +1834,15 @@ async fn write(conn: Arc<Conn>, alias: oneshot::Receiver<Alias>, objects: Arc<Ou
         return;
     };
     let mut open: Option<(u64, Option<quinn::SendStream>)> = None;
-    while let Some(out) = objects.take().await {
-        if conn.closed() {
-            return;
-        }
+    loop {
+        let out = tokio::select! {
+            biased;
+            _ = conn.closing() => return,
+            out = objects.take() => out,
+        };
+        let Some(out) = out else {
+            break;
+        };
         let Object {
             group,
             object,

@@ -621,6 +621,7 @@ async fn a_lost_session_ends_its_requests_and_holds_the_next_dial_off() {
     };
     // the node's side goes: as a restart looks from here
     connection.close(1u32.into(), b"node restart");
+    drop(conn);
     assert!(
         watch.heard.recv().await.is_none(),
         "the request's channel closes"
@@ -934,8 +935,9 @@ fn ws_conn() -> (Conn, Request) {
         control,
         table: Mutex::new(Table::default()),
         next: AtomicU64::new(1),
-        closed: AtomicBool::new(false),
+        closed: watch::Sender::new(false),
         aliased: Notify::new(),
+        tasks: Mutex::new(Vec::new()),
         client: Weak::new(),
     };
     let (request, ends) = request(|| {});
@@ -1224,8 +1226,9 @@ async fn the_websocket_is_kept_alive_and_a_silent_one_ends() {
         control,
         table: Mutex::new(Table::default()),
         next: AtomicU64::new(1),
-        closed: AtomicBool::new(false),
+        closed: watch::Sender::new(false),
         aliased: Notify::new(),
+        tasks: Mutex::new(Vec::new()),
         client: Weak::new(),
     });
     run_ws(app, queue, controls, conn.clone());
@@ -1234,8 +1237,66 @@ async fn the_websocket_is_kept_alive_and_a_silent_one_ends() {
         let heard = tokio::time::timeout(KEEP_ALIVE * 2, node.next()).await;
         assert!(matches!(heard, Ok(Some(Ok(Message::Ping(_))))));
     }
-    assert!(!conn.closed.load(Ordering::SeqCst));
+    assert!(!conn.closed());
     // the node stops reading: its last pong left a ping ago
     tokio::time::sleep(IDLE).await;
-    assert!(conn.closed.load(Ordering::SeqCst));
+    assert!(conn.closed());
+}
+
+/// Closing a websocket session ends its writer at once, with the socket's
+/// close frame: not at the writer's next ping tick.
+#[tokio::test(start_paused = true)]
+async fn a_closed_websocket_session_sends_its_close_frame_at_once() {
+    use tokio_tungstenite::{WebSocketStream, tungstenite::protocol::Role};
+    let (app, node) = tokio::io::duplex(1 << 16);
+    let app = WebSocketStream::from_raw_socket(app, Role::Client, None).await;
+    let mut node = WebSocketStream::from_raw_socket(node, Role::Server, None).await;
+    let (control, controls) = mpsc::unbounded_channel();
+    let (frames, queue) = mpsc::unbounded_channel();
+    let conn = Arc::new(Conn {
+        path: Path::Ws(frames),
+        udp: None,
+        control,
+        table: Mutex::new(Table::default()),
+        next: AtomicU64::new(1),
+        closed: watch::Sender::new(false),
+        aliased: Notify::new(),
+        tasks: Mutex::new(Vec::new()),
+        client: Weak::new(),
+    });
+    run_ws(app, queue, controls, conn.clone());
+    let first = tokio::time::timeout(KEEP_ALIVE * 2, node.next()).await;
+    assert!(matches!(first, Ok(Some(Ok(Message::Ping(_))))));
+    let closed_at = tokio::time::Instant::now();
+    conn.close(Close::Quit);
+    let heard = node.next().await;
+    assert!(matches!(heard, Some(Ok(Message::Close(_)))), "{heard:?}");
+    // on paused time an idle wait would have advanced the clock to the tick
+    assert_eq!(tokio::time::Instant::now(), closed_at);
+    let tasks = std::mem::take(&mut *lock(&conn.tasks));
+    futures::future::join_all(tasks).await;
+}
+
+/// A closed QUIC session is freed with its close: every task of it ends
+/// (the control writer waited on a queue only the session fed), so the
+/// quinn connection, endpoint and UDP socket go with it, not at the
+/// process's end.
+#[tokio::test]
+async fn a_closed_quic_session_is_freed() {
+    let _seat = seated().await;
+    let (client, published, _objects) = publishing(31).await;
+    let conn = client.0.conn.lock().await.clone().unwrap();
+    assert!(conn.udp.is_some(), "the test needs the QUIC path");
+    let weak = Arc::downgrade(&conn);
+    drop(conn);
+    drop(published);
+    // the Unpublish goes out before the close: no queued message wakes
+    // the writer after it
+    tokio::task::yield_now().await;
+    client.quit().await;
+    assert!(
+        weak.upgrade().is_none(),
+        "still held: strong {}",
+        weak.strong_count()
+    );
 }
