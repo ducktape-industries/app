@@ -48,12 +48,6 @@ const HELLO_WAIT: Duration = Duration::from_secs(5);
 /// A control message is names and numbers: past this the node is not
 /// speaking the wire, and the session ends.
 const MAX_CONTROL: usize = 16 << 10;
-/// A group stream's first bytes, a `GroupHeader` as borsh writes it: its
-/// alias (4) and group (8).
-const GROUP_HEADER: usize = 12;
-/// A datagram's first bytes, a `DatagramHeader`: its alias (4), group (8)
-/// and object (4).
-const DATAGRAM_HEADER: usize = 16;
 /// Stream-mode objects one subscription holds for its view. Past it the
 /// group's QUIC stream waits, which holds the node back by flow control;
 /// over the websocket, which carries every track on one socket, the object
@@ -1281,7 +1275,7 @@ async fn read_control(recv: &mut quinn::RecvStream) -> Result<Control, Unread> {
 /// One group stream from the node: its objects in order, then whether it
 /// ended whole (FIN) or was cut short (RESET, or a stream that broke).
 async fn read_group(conn: Arc<Conn>, mut stream: quinn::RecvStream) {
-    let mut head = [0u8; GROUP_HEADER];
+    let mut head = [0u8; GroupHeader::LEN];
     if stream.read_exact(&mut head).await.is_err() {
         return;
     }
@@ -1328,8 +1322,10 @@ async fn read_group(conn: Arc<Conn>, mut stream: quinn::RecvStream) {
 }
 
 fn heard_datagram(conn: &Conn, bytes: &[u8]) {
-    let (Some(head), Some(payload)) = (bytes.get(..DATAGRAM_HEADER), bytes.get(DATAGRAM_HEADER..))
-    else {
+    let (Some(head), Some(payload)) = (
+        bytes.get(..DatagramHeader::LEN),
+        bytes.get(DatagramHeader::LEN..),
+    ) else {
         return;
     };
     let Ok(header) = abi::decode::<DatagramHeader>(head) else {
