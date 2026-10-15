@@ -54,7 +54,7 @@ impl View {
         if let Some(path) = view_override(program) {
             let reason = format!("DUCKTAPE_VIEWS_DIR developer override: {}", path.display());
             logged(None, "Overridden", &reason);
-            if instance == 0 {
+            if instance == 0 && preload_compiles() {
                 let shown = path.display().to_string();
                 let bytes = std::fs::read(&path).map_err(|error| {
                     before_any_candidate(Failure::Refused(format!("{shown}: {error}")))
@@ -92,12 +92,18 @@ impl View {
         timing.path = "first";
         let key = crate::perf::Key::View { program, instance };
         let show = |stage: Slot| lock(mounted).show(generation, stage);
-        show(Slot::Fetching {
-            received: 0,
-            total: None,
-        });
         let fetched = Instant::now();
-        let bytes = runtime.block_on(crate::backend::views::view_of(client, &blob, bare));
+        let bytes = match crate::contract::os().bundled_view(&blob) {
+            // the app ships the view section this blob holds: no fetch
+            Some(view_bytes) => Ok(Some((view_bytes, "bundle"))),
+            None => {
+                show(Slot::Fetching {
+                    received: 0,
+                    total: None,
+                });
+                runtime.block_on(crate::backend::views::view_of(client, &blob, bare))
+            }
+        };
         timing.fetch = fetched.elapsed();
         crate::perf::record(key, "fetch", timing.fetch.as_micros() as u64);
         let bytes = match bytes {
@@ -120,6 +126,7 @@ impl View {
         crate::perf::count(
             key,
             match from {
+                "bundle" => "fetch.bundle",
                 "disk" => "fetch.disk",
                 _ => "fetch.node",
             },
@@ -131,6 +138,10 @@ impl View {
             sha2::Sha256::digest(&view_bytes).into()
         };
         let shown = shown_as(program, &hash);
+        // the bytes are here: the rail and Home list the program by its
+        // manifest before any of its code is compiled
+        let listing = manifest_of(&view_bytes);
+        show(Slot::Listed(Box::new(listing.clone())));
         let outcome = (|| -> Result<Loaded, Failure> {
             // the instance in the slot, if the deployment is a new one for
             // it: the replacement is seated only against that very
@@ -146,7 +157,7 @@ impl View {
             if against.is_some() {
                 timing.path = "swap";
             }
-            show(Slot::Compiling);
+            show(Slot::Compiling(Box::new(listing)));
             let compiled = Instant::now();
             let runner = crate::contract::runner();
             let code = Self::prepare(&**runner, &view_bytes, &shown);
@@ -164,9 +175,11 @@ impl View {
                 1,
             );
             let view = view_code(program, runner, Some(blob), hash, &view_bytes);
-            // a seat no pane holds stops here: the rail reads its name and
-            // its icon off the manifest, and the pane that claims it starts it
-            if instance == 0 && against.is_none() {
+            // a seat no pane holds stops here where the host preloads by
+            // compiling (`Preload::Compile`, the desktop): the rail reads its
+            // name and its icon off the manifest, and the pane that claims
+            // it starts it. `Preload::Seat` (the phone) seats and inits it
+            if instance == 0 && against.is_none() && preload_compiles() {
                 return Ok(Loaded::Compiled(Box::new(view)));
             }
             let fresh = Self::instance_of(program, instance, &view, &shown, timing)?;
@@ -287,6 +300,7 @@ impl View {
         crate::perf::record(key, "fuel.instantiate", fresh.fuel_used());
         fresh.name = view.name.clone();
         fresh.icon = view.icon.clone();
+        fresh.description = view.description.clone();
         fresh.capabilities = view.capabilities.clone();
         fresh.targets = view.targets.clone();
         fresh.min_width = view.min_width;
@@ -467,6 +481,7 @@ impl View {
             instance,
             name,
             icon,
+            description,
             capabilities,
             targets,
             min_width,
@@ -515,6 +530,7 @@ impl View {
         sibling.instance = *instance;
         sibling.name = name.clone();
         sibling.icon = icon.clone();
+        sibling.description = description.clone();
         sibling.capabilities = capabilities.clone();
         sibling.targets = targets.clone();
         sibling.min_width = *min_width;
@@ -650,13 +666,13 @@ impl View {
         let (code, _) =
             Self::prepare(&**runner, bytes, shown).map_err(|failure| failure.to_string())?;
         let mut view = Self::instantiate(program, runner, code, shown)?;
-        (
-            view.name,
-            view.capabilities,
-            view.min_width,
-            view.targets,
-            view.icon,
-        ) = manifest_of(bytes);
+        let listing = manifest_of(bytes);
+        view.name = listing.name;
+        view.icon = listing.icon;
+        view.description = listing.description;
+        view.capabilities = listing.capabilities;
+        view.targets = listing.targets;
+        view.min_width = listing.min_width;
         crate::render::web::seen(program, &view.capabilities);
         view.init(shown)?;
         Ok(view)
@@ -712,6 +728,7 @@ impl View {
             instance: 0,
             name: String::new(),
             icon: String::new(),
+            description: String::new(),
             capabilities: Vec::new(),
             targets: Vec::new(),
             min_width: 0,
@@ -817,18 +834,25 @@ fn view_code(
     hash: [u8; 32],
     bytes: &[u8],
 ) -> ViewCode {
-    let (name, capabilities, min_width, targets, icon) = manifest_of(bytes);
-    crate::render::web::seen(program, &capabilities);
+    let listing = manifest_of(bytes);
+    crate::render::web::seen(program, &listing.capabilities);
     ViewCode {
         runner: runner.clone(),
         blob,
         hash,
-        name,
-        icon,
-        min_width,
-        capabilities,
-        targets,
+        name: listing.name,
+        icon: listing.icon,
+        description: listing.description,
+        min_width: listing.min_width,
+        capabilities: listing.capabilities,
+        targets: listing.targets,
     }
+}
+
+/// Whether a seat no pane holds stops at its compiled code (the
+/// desktop's `Preload::Compile`) rather than being seated and inited.
+fn preload_compiles() -> bool {
+    crate::contract::os().limits().preload == crate::contract::Preload::Compile
 }
 
 /// What a call answered that is not its answer, as the sentence it fails

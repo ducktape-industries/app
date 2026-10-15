@@ -175,19 +175,30 @@ mod display_diagnostics;
 
 pub mod pictures;
 
-/// The name a view's manifest gives it, the capabilities it declares, the
-/// narrowest it is laid out, its targets and its icon; empty and 0 for one
-/// whose manifest cannot be read (`compile` refuses those before a seat).
-fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>, u32, Vec<String>, String) {
+/// What a view's manifest says, read before any of its code runs: the
+/// name, icon and description the rail and Home list it by, the narrowest
+/// it is laid out, the capabilities it declares and its targets.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Listing {
+    pub name: String,
+    pub icon: String,
+    pub description: String,
+    pub min_width: u32,
+    pub capabilities: Vec<Capability>,
+    pub targets: Vec<String>,
+}
+
+/// `bytes`' manifest as the host reads it; empty and 0 for one whose
+/// manifest cannot be read (`prepare` refuses those before a seat).
+fn manifest_of(bytes: &[u8]) -> Listing {
     view_wire::manifest::read_manifest(bytes)
-        .map(|manifest| {
-            (
-                manifest.name,
-                manifest.capabilities,
-                manifest.min_width,
-                manifest.targets,
-                manifest.icon,
-            )
+        .map(|manifest| Listing {
+            name: manifest.name,
+            icon: manifest.icon,
+            description: manifest.description,
+            min_width: manifest.min_width,
+            capabilities: manifest.capabilities,
+            targets: manifest.targets,
         })
         .unwrap_or_default()
 }

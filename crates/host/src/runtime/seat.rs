@@ -137,8 +137,11 @@ pub(super) enum Slot {
         received: u64,
         total: Option<u64>,
     },
-    /// Verified; its code compiles.
-    Compiling,
+    /// The bytes here and their manifest read, no code compiled: the rail
+    /// and Home list the program by it (SPEC §4.7).
+    Listed(Box<Listing>),
+    /// Verified; its code compiles. The listing stays what the rail reads.
+    Compiling(Box<Listing>),
     /// Compiled, and not started: a seat no pane has claimed keeps its
     /// view's code and what its manifest says, which the rail and the
     /// layout read. The pane that claims it starts that code.
@@ -163,6 +166,7 @@ pub(super) struct ViewCode {
     pub(super) hash: [u8; 32],
     pub(super) name: String,
     pub(super) icon: String,
+    pub(super) description: String,
     pub(super) min_width: u32,
     pub(super) capabilities: Vec<Capability>,
     pub(super) targets: Vec<String>,
@@ -179,6 +183,7 @@ impl ViewCode {
             hash: [0; 32],
             name: name.into(),
             icon: icon.into(),
+            description: String::new(),
             min_width,
             capabilities: Vec::new(),
             targets: Vec::new(),
@@ -196,7 +201,7 @@ impl Slot {
     pub(super) fn loading(&self) -> bool {
         matches!(
             self,
-            Slot::Loading | Slot::Fetching { .. } | Slot::Compiling
+            Slot::Loading | Slot::Fetching { .. } | Slot::Listed(_) | Slot::Compiling(_)
         )
     }
 }

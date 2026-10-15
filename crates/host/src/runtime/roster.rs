@@ -191,6 +191,9 @@ pub struct RailRow {
     /// The icon its view's manifest declares (`icons/hammer.svg`); empty
     /// until the manifest is read, and for a view that declares none.
     pub icon: String,
+    /// The manifest's description (Home's tile and product page); empty
+    /// until the manifest is read.
+    pub description: String,
     /// `Some` while the seat is on its way or failed; `None` once drawn.
     pub note: Option<&'static str>,
     /// The program ships no view: the rail leaves it out.
@@ -206,7 +209,7 @@ fn readiness(slot: &Slot) -> u8 {
         Slot::Ready(_) | Slot::Compiled(_) => 2,
         Slot::Empty => 3,
         Slot::Failed(_) => 4,
-        Slot::Loading | Slot::Fetching { .. } | Slot::Compiling => 5,
+        Slot::Loading | Slot::Fetching { .. } | Slot::Listed(_) | Slot::Compiling(_) => 5,
     }
 }
 
@@ -242,6 +245,13 @@ impl Roster {
                         (view.name.clone(), None, false)
                     }
                     Some(Slot::Ready(_) | Slot::Compiled(_)) => (program.to_owned(), None, false),
+                    // the bytes are here, the code not started: listed by
+                    // its manifest, still loading
+                    Some(Slot::Listed(listing) | Slot::Compiling(listing))
+                        if !listing.name.is_empty() =>
+                    {
+                        (listing.name.clone(), Some("Loading"), false)
+                    }
                     Some(Slot::Empty) => (program.to_owned(), None, true),
                     Some(Slot::Failed(_)) => (program.to_owned(), Some("Failed"), false),
                     // No seat yet (a pane just let go of it, the roster hasn't
@@ -250,15 +260,19 @@ impl Roster {
                     Some(_) | None => (program.to_owned(), Some("Loading"), false),
                 };
                 // the manifest's, as the name is: none before it is read
-                let icon = match seat.as_ref().map(|seat| &seat.slot) {
-                    Some(Slot::Ready(view)) => view.icon.clone(),
-                    Some(Slot::Compiled(view)) => view.icon.clone(),
-                    _ => String::new(),
+                let (icon, description) = match seat.as_ref().map(|seat| &seat.slot) {
+                    Some(Slot::Ready(view)) => (view.icon.clone(), view.description.clone()),
+                    Some(Slot::Compiled(view)) => (view.icon.clone(), view.description.clone()),
+                    Some(Slot::Listed(listing) | Slot::Compiling(listing)) => {
+                        (listing.icon.clone(), listing.description.clone())
+                    }
+                    _ => Default::default(),
                 };
                 RailRow {
                     program,
                     label,
                     icon,
+                    description,
                     note,
                     empty,
                 }
@@ -525,6 +539,7 @@ mod local_link_tests {
             program: "catalog",
             label: "Preferences".into(),
             icon: String::new(),
+            description: String::new(),
             note: None,
             empty: false,
         }];
@@ -562,6 +577,7 @@ mod local_link_tests {
             program: "other",
             label: "Preferences".into(),
             icon: String::new(),
+            description: String::new(),
             note: None,
             empty: false,
         });
@@ -578,6 +594,7 @@ mod local_link_tests {
             program: "catalog",
             label: "Preferences".into(),
             icon: String::new(),
+            description: String::new(),
             note: None,
             empty: false,
         }];
@@ -612,6 +629,7 @@ mod local_link_tests {
             program: "catalog",
             label: "Preferences".into(),
             icon: String::new(),
+            description: String::new(),
             note: None,
             empty: false,
         }];
@@ -697,6 +715,49 @@ mod rail_tests {
         lock(registry()).remove(&(program, 0));
         assert_eq!((row.label.as_str(), row.note), ("Compiled view", None));
         assert!(!row.empty);
+    }
+
+    /// A seat whose bytes are here and whose manifest is read, its code not
+    /// yet compiled or compiling, is listed by its manifest (name, icon,
+    /// description: what Home's tile draws) and still loading; the row
+    /// keeps the name from the listing through the compile.
+    #[test]
+    fn a_listed_seat_is_named_by_its_manifest_and_still_loading() {
+        let program = "rail-tests-listed";
+        let listing = || {
+            Box::new(Listing {
+                name: "Listed view".into(),
+                icon: "icons/hammer.svg".into(),
+                description: "What it does".into(),
+                ..Default::default()
+            })
+        };
+        let seat = Mounted::seat();
+        lock(registry()).insert((program, 0), seat.clone());
+        let row = |slot: Slot| {
+            lock(&seat).slot = slot;
+            Roster::listing(&[program])
+                .rail()
+                .into_iter()
+                .find(|row| row.program == program)
+                .expect("listed program appears in the rail")
+        };
+        let rows = [
+            row(Slot::Listed(listing())),
+            row(Slot::Compiling(listing())),
+        ];
+        lock(registry()).remove(&(program, 0));
+        for row in rows {
+            assert_eq!(
+                (
+                    row.label.as_str(),
+                    row.icon.as_str(),
+                    row.description.as_str()
+                ),
+                ("Listed view", "icons/hammer.svg", "What it does")
+            );
+            assert_eq!(row.note, Some("Loading"));
+        }
     }
 
     /// Two panes of one program hold a seat each; while one is still on

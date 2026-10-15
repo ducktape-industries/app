@@ -195,6 +195,11 @@ impl OsServices for DesktopOs {
         }
     }
 
+    /// The desktop ships no view: every one is the network's.
+    fn bundled_view(&self, _: &abi::BlobId) -> Option<Vec<u8>> {
+        None
+    }
+
     /// With the key of the validator node this machine runs, read from
     /// the node's workspace; a node that is not this one refuses inside
     /// `mint`.

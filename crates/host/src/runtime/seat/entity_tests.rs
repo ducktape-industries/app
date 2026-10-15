@@ -468,10 +468,22 @@ fn a_stage_change_and_a_retry_each_turn_the_seat_once(cx: &mut TestAppContext) {
     assert_eq!(notifies.get(), 1);
     assert_eq!(words(&native).as_deref(), Some("Fetching the view — 12 KB"));
 
-    mounted.lock().unwrap().show(0, Slot::Compiling);
+    mounted
+        .lock()
+        .unwrap()
+        .show(0, Slot::Listed(Default::default()));
     native.run_until_parked();
     assert_eq!(turns_of(&seat, &native), turns + 2);
     assert_eq!(notifies.get(), 2);
+    assert_eq!(words(&native).as_deref(), Some("Opening the view…"));
+
+    mounted
+        .lock()
+        .unwrap()
+        .show(0, Slot::Compiling(Default::default()));
+    native.run_until_parked();
+    assert_eq!(turns_of(&seat, &native), turns + 3);
+    assert_eq!(notifies.get(), 3);
     assert_eq!(words(&native).as_deref(), Some("Compiling the view…"));
 
     // Retry: the load it starts fails at once (no node), so its signal and
@@ -484,7 +496,7 @@ fn a_stage_change_and_a_retry_each_turn_the_seat_once(cx: &mut TestAppContext) {
     native.run_until_parked();
     assert_eq!(
         turns_of(&seat, &native),
-        turns + 3,
+        turns + 4,
         "a retry turns the seat once"
     );
     assert!(

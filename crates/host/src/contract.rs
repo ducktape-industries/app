@@ -74,6 +74,11 @@ pub trait OsServices: Send + Sync + 'static {
     fn facts(&self) -> OsFacts;
     /// Values that differ by device and have a measured owner (SPEC §4.5).
     fn limits(&self) -> Limits;
+    /// The view section the app ships for the roster's blob `blob` (the
+    /// phone's `views.lock`, SPEC §4.7), read on a loader thread in place
+    /// of a fetch. `None` on the desktop, which ships no view. The roster
+    /// decides what runs: a miss is a fetch, never a refusal.
+    fn bundled_view(&self, blob: &::abi::BlobId) -> Option<Vec<u8>>;
     /// `invite.create`: mint with the node key of a node THIS device runs
     /// (the desktop reads it out of the node's workspace). `None` on a host
     /// that runs no node: the kernel refuses `invite_unsupported` with
@@ -210,7 +215,7 @@ pub struct Limits {
     /// memory killer is the owner.
     pub loaders: usize,
     /// What a roster read does for a program nobody opened (SPEC §4.7).
-    /// Read by the seating policy (the runner cut).
+    /// Read by `View::load`.
     pub preload: Preload,
     /// Whether settled snapshots are written under `Dirs::data` so a cold
     /// start reopens where the person was. Phone true; desktop false.
@@ -729,6 +734,10 @@ pub mod testing {
                 preload: Preload::Compile,
                 snapshot_to_disk: false,
             }
+        }
+
+        fn bundled_view(&self, _: &::abi::BlobId) -> Option<Vec<u8>> {
+            None
         }
 
         fn mint_invite(&self, _: MintInvite) -> Option<Answered> {
