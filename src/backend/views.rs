@@ -112,17 +112,14 @@ fn misspelled_said(ids: Vec<String>) {
 }
 
 /// Which programs fill the roles the kernel calls, as genesis bound them
-/// and the programs role answers them. `None` from a programs role that
-/// predates the question, which refuses it: no program is known by its role.
-pub async fn roles(client: &RpcClient, network: &str) -> Result<Option<abi::Roles>, Fetch> {
+/// and the programs role answers them.
+pub async fn roles(client: &RpcClient, network: &str) -> Result<abi::Roles, Fetch> {
     use ::programs::{Query, Reply};
-    match ask(client, network, Query::Roles).await {
-        Ok(Reply::Roles(roles)) => Ok(Some(roles)),
-        Ok(_) => Err(Fetch::Unreadable(
+    match ask(client, network, Query::Roles).await? {
+        Reply::Roles(roles) => Ok(roles),
+        _ => Err(Fetch::Unreadable(
             "the programs role answered the roles question with another reply".into(),
         )),
-        Err(Fetch::Refused(_)) => Ok(None),
-        Err(error) => Err(error),
     }
 }
 

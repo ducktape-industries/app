@@ -84,7 +84,7 @@ pub(super) fn eventually(what: &str, done: impl Fn() -> bool) {
 
 /// A node on a local socket: it answers the programs role's two roster
 /// questions with `programs` and `views`, the roles question with `roles`
-/// (refused, as a programs role that predates it does, when `None`; counted), and
+/// (counted), and
 /// a blob among `blobs` (bodies) with its bytes. Any other blob it holds —
 /// the request read, no answer — until it is dropped, counting the blobs it
 /// holds at once and the most it ever did.
@@ -121,7 +121,7 @@ impl FakeNode {
         views: Vec<::programs::View>,
         blobs: Vec<Vec<u8>>,
     ) -> Self {
-        Self::with_roles(programs, views, RolesAnswer::Refused, blobs)
+        Self::with_roles(programs, views, RolesAnswer::Bound(roles()), blobs)
     }
 
     fn with_roles(
@@ -406,11 +406,6 @@ fn listed(name: &str, seed: &str) -> ::programs::Entry {
     }
 }
 
-/// Claim: a roster read takes the programs role's role bindings with the
-/// programs, and asks for them once on a connection, not again while the
-/// roster stands, and again once it moved; a programs role that predates the
-/// question refuses it, and the roster is still listed, with no bindings
-/// known.
 fn roles() -> abi::Roles {
     abi::Roles {
         programs: "roles-programs".into(),
@@ -437,7 +432,6 @@ fn the_roles_come_with_the_roster_and_are_asked_once() {
     read_roster(node.asked_of.clone(), &roster, &registry);
     let asked = node.held.lock().unwrap().roles_asked;
     assert_eq!(asked, 1, "not every block");
-    // the roster moved (a programs upgrade moves its code): asked again
     let upgraded = FakeNode::with_roles(
         vec![listed("roles-programs", "upgraded")],
         Vec::new(),
@@ -447,51 +441,28 @@ fn the_roles_come_with_the_roster_and_are_asked_once() {
     read_roster(upgraded.asked_of.clone(), &roster, &registry);
     let asked = upgraded.held.lock().unwrap().roles_asked;
     assert_eq!(asked, 1, "asked again once the roster moved");
-
-    let old = FakeNode::new(vec![listed("roles-old", "roles")], Vec::new(), Vec::new());
-    let (roster, registry) = (Roster::default(), Registry::default());
-    read_roster(old.asked_of.clone(), &roster, &registry);
-    let asked = old.held.lock().unwrap().roles_asked;
-    assert_eq!(asked, 1);
-    assert_eq!(roster.roles(), None);
-    assert_eq!(roster.lock().len(), 1, "the roster is listed all the same");
-}
-
-/// Claim: a roles answer with no bindings (a programs role that refuses the
-/// question: an old one, or a node's 400 that reads the same) pins nothing
-/// for the connection: the next read, the roster unmoved, asks again.
-#[test]
-fn a_roles_answer_this_app_cannot_read_lists_no_program() {
-    let node = FakeNode::with_roles(
-        vec![listed("roles-newer", "roles")],
-        Vec::new(),
-        RolesAnswer::Unreadable,
-        Vec::new(),
-    );
-    let (roster, registry) = (Roster::default(), Registry::default());
-    read_roster(node.asked_of.clone(), &roster, &registry);
-    assert_eq!(roster.roles(), None);
-    assert!(
-        roster.lock().is_empty(),
-        "no view loads while the role bindings cannot be read"
-    );
-    assert!(lock(&registry).is_empty());
-    read_roster(node.asked_of.clone(), &roster, &registry);
-    assert_eq!(node.held.lock().unwrap().roles_asked, 2, "asked again");
 }
 
 #[test]
-fn a_refused_roles_answer_is_asked_again_on_the_next_read() {
-    let old = FakeNode::new(
-        vec![listed("roles-refused", "roles")],
-        Vec::new(),
-        Vec::new(),
-    );
-    let (roster, registry) = (Roster::default(), Registry::default());
-    read_roster(old.asked_of.clone(), &roster, &registry);
-    read_roster(old.asked_of.clone(), &roster, &registry);
-    assert_eq!(old.held.lock().unwrap().roles_asked, 2);
-    assert_eq!(roster.roles(), None);
+fn a_roles_answer_refused_or_unreadable_lists_no_program_and_is_asked_again() {
+    for answer in [RolesAnswer::Refused, RolesAnswer::Unreadable] {
+        let node = FakeNode::with_roles(
+            vec![listed("roles-unknown", "roles")],
+            Vec::new(),
+            answer,
+            Vec::new(),
+        );
+        let (roster, registry) = (Roster::default(), Registry::default());
+        read_roster(node.asked_of.clone(), &roster, &registry);
+        assert_eq!(roster.roles(), None);
+        assert!(
+            roster.lock().is_empty(),
+            "no view loads while the role bindings are unknown"
+        );
+        assert!(lock(&registry).is_empty());
+        read_roster(node.asked_of.clone(), &roster, &registry);
+        assert_eq!(node.held.lock().unwrap().roles_asked, 2, "asked again");
+    }
 }
 
 /// Claim: the roster takes a chain id only in its one spelling

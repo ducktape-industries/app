@@ -77,8 +77,7 @@ impl Roster {
 
     /// The programs genesis bound to the roles the kernel calls (the
     /// programs role, the validators, identity), as the node's programs role
-    /// answers them: `None` until read, and from a programs role that
-    /// refuses the question (one that predates it).
+    /// answers them: `None` until read.
     pub(crate) fn roles(&self) -> Option<abi::Roles> {
         self.bound().roles.clone()
     }
@@ -370,13 +369,10 @@ pub(super) fn read_roster(asked_of: Connection, roster: &Roster, registry: &Regi
         if node_since_left {
             return;
         }
-        // no bindings (an old programs program, or a refusal: one 400 reads the
-        // same) are asked again on the next read: a `None` kept for the
-        // connection would keep the consent card off all that time
         if let Some(roles) = roles {
             *roster.bound() = Bound {
-                asked_of: roles.is_some().then_some(asked_of.rev),
-                roles,
+                asked_of: Some(asked_of.rev),
+                roles: Some(roles),
             };
         }
         let mut registry = lock(registry);

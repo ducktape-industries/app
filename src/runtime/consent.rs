@@ -179,8 +179,7 @@ pub(crate) fn refuse_all() {
 /// words, whoever asks. Any other op to a role's program is asked when the
 /// requesting program is bound to no role, in a sentence that names the
 /// role and the target's own description of the op (`described`, read by
-/// the request's task). With no bindings known (a programs role that
-/// predates the question) no program is a role's and only the first rule asks.
+/// the request's task).
 pub(super) fn needed(
     program: &str,
     roles: Option<&abi::Roles>,
