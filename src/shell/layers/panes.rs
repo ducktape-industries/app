@@ -1094,54 +1094,28 @@ impl Strip {
         let line =
             format!("{name} shares live data with the people in its rooms, through your node.");
         let notifications = self.notifications.entity().clone();
-        let ok = crate::a11y::keyboard(
-            sans(500, 14.)
-                .id(SharedString::from(format!("live-line/{program}/ok")))
-                .control(Role::Button, "OK")
-                .h(px(tall(30.)))
-                .px(px(12.))
-                .flex()
-                .flex_shrink_0()
-                .items_center()
-                .cursor_pointer()
-                .border(px(1.5))
-                .border_color(ink.ink)
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(move |_, _, cx| {
-                    cx.stop_propagation();
-                    notifications.update(cx, |notifications, cx| {
-                        notifications.put_away_live(program, cx)
-                    });
+        let ok = bar_button(
+            format!("live-line/{program}/ok"),
+            "OK",
+            false,
+            ink,
+            Box::new(move |cx| {
+                notifications.update(cx, |notifications, cx| {
+                    notifications.put_away_live(program, cx)
                 })
-                .child("OK"),
-            ink.ring(false),
+            }),
         );
         // announced as it appears: nothing else says the data leaves
-        crate::a11y::live(
-            div()
-                .id(SharedString::from(format!("live-line/{program}")))
-                .role(Role::Group),
-            accesskit::Live::Polite,
-            line.clone(),
-        )
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .gap(px(12.))
-        .px(px(14.))
-        .py(px(10.))
-        .bg(ink.surface)
-        .border_b_1()
-        .border_color(ink.line)
-        .child(
-            sans(500, 14.)
-                .flex_1()
-                .min_w_0()
-                .text_color(ink.ink)
-                .child(line),
-        )
-        .child(ok)
-        .into_any_element()
+        bar(format!("live-line/{program}"), line.clone(), ink)
+            .child(
+                sans(500, 14.)
+                    .flex_1()
+                    .min_w_0()
+                    .text_color(ink.ink)
+                    .child(line),
+            )
+            .child(ok)
+            .into_any_element()
     }
 
     /// The NotifPermission board: a view posted before the person said
@@ -1161,47 +1135,21 @@ impl Strip {
             self.notifications.entity().clone(),
             self.prefs.entity().clone(),
         );
-        let button =
-            |id: &'static str, text: &'static str, filled: bool, answer: Box<dyn Fn(&mut App)>| {
-                crate::a11y::keyboard(
-                    sans(500, 14.)
-                        .id(SharedString::from(format!("notify-ask/{program}/{id}")))
-                        .control(Role::Button, text)
-                        .h(px(tall(30.)))
-                        .px(px(12.))
-                        .flex()
-                        .flex_shrink_0()
-                        .items_center()
-                        .cursor_pointer()
-                        .border(px(1.5))
-                        .border_color(ink.ink)
-                        .when(filled, |button| button.bg(ink.ink).text_color(ink.bg))
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(move |_, _, cx| {
-                            cx.stop_propagation();
-                            answer(cx);
-                        })
-                        .child(text),
-                    ink.ring(filled),
-                )
-            };
+        let button = |id: &str, text: &'static str, filled: bool, answer: Box<dyn Fn(&mut App)>| {
+            bar_button(
+                format!("notify-ask/{program}/{id}"),
+                text,
+                filled,
+                ink,
+                answer,
+            )
+        };
         // announced as it appears: nothing else says a view is waiting
-        crate::a11y::live(
-            div()
-                .id(SharedString::from(format!("notify-ask/{program}")))
-                .role(Role::Group),
-            accesskit::Live::Polite,
+        bar(
+            format!("notify-ask/{program}"),
             format!("{name} wants to show desktop notifications"),
+            ink,
         )
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .gap(px(12.))
-        .px(px(14.))
-        .py(px(10.))
-        .bg(ink.surface)
-        .border_b_1()
-        .border_color(ink.line)
         .child(
             gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Bell)
                 .size(px(14.))
@@ -1247,6 +1195,58 @@ impl Strip {
         ))
         .into_any_element()
     }
+}
+
+/// The frame of a strip's bar (the permission bar, the live line): one
+/// row under the title bar, announced as it appears.
+fn bar(id: String, announced: String, ink: &super::super::ink::Ink) -> Stateful<Div> {
+    crate::a11y::live(
+        div().id(SharedString::from(id)).role(Role::Group),
+        accesskit::Live::Polite,
+        announced,
+    )
+    .flex_shrink_0()
+    .flex()
+    .items_center()
+    .gap(px(12.))
+    .px(px(14.))
+    .py(px(10.))
+    .bg(ink.surface)
+    .border_b_1()
+    .border_color(ink.line)
+}
+
+/// A bar's bordered button, filled for the one answer the bar leans to.
+fn bar_button(
+    id: String,
+    text: &'static str,
+    filled: bool,
+    ink: &super::super::ink::Ink,
+    answer: Box<dyn Fn(&mut App)>,
+) -> AnyElement {
+    use super::super::ink::{sans, tall};
+    crate::a11y::keyboard(
+        sans(500, 14.)
+            .id(SharedString::from(id))
+            .control(Role::Button, text)
+            .h(px(tall(30.)))
+            .px(px(12.))
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .cursor_pointer()
+            .border(px(1.5))
+            .border_color(ink.ink)
+            .when(filled, |button| button.bg(ink.ink).text_color(ink.bg))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                answer(cx);
+            })
+            .child(text),
+        ink.ring(filled),
+    )
+    .into_any_element()
 }
 
 impl Render for Strip {

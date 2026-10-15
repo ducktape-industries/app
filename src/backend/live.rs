@@ -1074,10 +1074,9 @@ impl Conn {
                     kind: Kind::Publish { taken, .. },
                     ..
                 }) = table.requests.get_mut(&request)
+                    && let Some(taken) = taken.take()
                 {
-                    if let Some(taken) = taken.take() {
-                        let _ = taken.send(alias);
-                    }
+                    let _ = taken.send(alias);
                 }
                 if let Some(entry) = table.requests.get_mut(&request) {
                     entry.waiting = false;
@@ -1890,10 +1889,10 @@ fn heard_slice(conn: &Conn, header: GroupHeader, objects: Vec<Vec<u8>>, end: boo
         hand(entry, item);
         next += 1;
     }
-    if let Kind::Subscribe { counted, .. } = &mut entry.kind {
-        if let Some(count) = counted.get_mut(&header.group) {
-            *count = next;
-        }
+    if let Kind::Subscribe { counted, .. } = &mut entry.kind
+        && let Some(count) = counted.get_mut(&header.group)
+    {
+        *count = next;
     }
     if end {
         let item = Data::GroupEnd {
@@ -1932,10 +1931,8 @@ async fn write(conn: Arc<Conn>, alias: oneshot::Receiver<Alias>, objects: Arc<Ou
         } = match out {
             Out::Object(object) => object,
             Out::Cut(group) => {
-                if let Some((_, stream)) = open.take_if(|(at, _)| *at == group) {
-                    if let Some(mut stream) = stream {
-                        let _ = stream.reset(0u32.into());
-                    }
+                if let Some((_, Some(mut stream))) = open.take_if(|(at, _)| *at == group) {
+                    let _ = stream.reset(0u32.into());
                 }
                 continue;
             }
@@ -1976,11 +1973,9 @@ async fn write(conn: Arc<Conn>, alias: oneshot::Receiver<Alias>, objects: Arc<Ou
                 let Some((_, Some(stream))) = open.as_mut() else {
                     continue;
                 };
-                if !body.is_empty() || !end {
-                    if stream.write_all(&framed(body)).await.is_err() {
-                        open = None;
-                        continue;
-                    }
+                if (!body.is_empty() || !end) && stream.write_all(&framed(body)).await.is_err() {
+                    open = None;
+                    continue;
                 }
                 if end {
                     let _ = stream.finish();
