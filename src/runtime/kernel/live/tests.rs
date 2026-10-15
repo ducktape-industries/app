@@ -233,7 +233,7 @@ fn a_subscription_hears_the_track_and_its_end() {
     let mut changes = view.replies.changes();
     let subscribe = LiveSubscribe {
         track: track("doc"),
-        latest: true,
+        from: LiveStart::Latest,
     };
     ask(&mut view, 1, "live.subscribe", methods::encode(&subscribe));
     let (asked, ends) = opened(&opens);
@@ -288,9 +288,9 @@ fn a_subscription_hears_the_track_and_its_end() {
     );
 }
 
-/// A request the node holds for its grant: each kind hears one
-/// `not_granted` item that ends nothing, and goes on when the node answers.
-/// A publication's sends wait for it.
+/// A request the node holds for its grant: each kind hears one `Waiting`
+/// item, and goes on when the node answers. A publication's sends wait for
+/// it.
 #[test]
 fn a_request_the_node_holds_hears_not_granted_and_goes_on() {
     let _serial = serial();
@@ -304,14 +304,10 @@ fn a_request_the_node_holds_hears_not_granted_and_goes_on() {
     ask(&mut view, 1, "live.publish", methods::encode(&publish));
     let (_, mut published) = opened(&opens);
     send(&mut view, 2, 0);
-    published
-        .heard
-        .send(Heard::Waiting(Code::NotGranted))
-        .unwrap();
-    let (id, waits, done) = item::<Publishing>(next(&view, &mut changes));
+    published.heard.send(Heard::Waiting).unwrap();
     assert_eq!(
-        (id, waits, done),
-        (1, Err(refusal::NOT_GRANTED.into()), false)
+        item(next(&view, &mut changes)),
+        (1, Ok(Publishing::Waiting), false)
     );
     assert!(published.objects.try_recv().is_err(), "a send waits too");
     published.heard.send(Heard::Published).unwrap();
@@ -325,17 +321,14 @@ fn a_request_the_node_holds_hears_not_granted_and_goes_on() {
 
     let subscribe = LiveSubscribe {
         track: track("doc"),
-        latest: false,
+        from: LiveStart::Next,
     };
     ask(&mut view, 3, "live.subscribe", methods::encode(&subscribe));
     let (_, subscribed) = opened(&opens);
-    subscribed
-        .heard
-        .send(Heard::Waiting(Code::NotGranted))
-        .unwrap();
+    subscribed.heard.send(Heard::Waiting).unwrap();
     assert_eq!(
-        item::<LiveItem>(next(&view, &mut changes)),
-        (3, Err(refusal::NOT_GRANTED.into()), false)
+        item(next(&view, &mut changes)),
+        (3, Ok(LiveItem::Waiting), false)
     );
     subscribed
         .heard
@@ -359,13 +352,10 @@ fn a_request_the_node_holds_hears_not_granted_and_goes_on() {
         methods::encode(&"lobby".to_owned()),
     );
     let (_, watched) = opened(&opens);
-    watched
-        .heard
-        .send(Heard::Waiting(Code::NotGranted))
-        .unwrap();
+    watched.heard.send(Heard::Waiting).unwrap();
     assert_eq!(
-        item::<LiveAnnounce>(next(&view, &mut changes)),
-        (4, Err(refusal::NOT_GRANTED.into()), false)
+        item(next(&view, &mut changes)),
+        (4, Ok(Watching::Waiting), false)
     );
     watched
         .heard
@@ -379,9 +369,45 @@ fn a_request_the_node_holds_hears_not_granted_and_goes_on() {
             up: true,
         })
         .unwrap();
-    let (id, announce, done) = item::<LiveAnnounce>(next(&view, &mut changes));
-    assert_eq!((id, done), (4, false));
-    assert!(announce.is_ok_and(|announce| announce.name == "doc" && announce.up));
+    let announce = LiveAnnounce {
+        name: "doc".into(),
+        by: 7,
+        mode: LiveMode::Stream,
+        up: true,
+    };
+    assert_eq!(
+        item(next(&view, &mut changes)),
+        (4, Ok(Watching::Announce(announce)), false)
+    );
+}
+
+/// Every word the node can end a request with is a word a view reads: a
+/// view-wire refusal, or `no_account`, which the host asks again
+/// (`opened`) and no view hears. A code the live wire gains fails this
+/// match until it is given its word.
+#[test]
+fn every_code_the_node_says_is_a_word_a_view_knows() {
+    let codes = [
+        Code::NoAccount,
+        Code::BadProof,
+        Code::NotGranted,
+        Code::Unknown,
+        Code::Duplicate,
+        Code::TooLarge,
+        Code::Malformed,
+    ];
+    for code in codes {
+        let word = match code {
+            Code::NoAccount => continue,
+            Code::BadProof => refusal::BAD_PROOF,
+            Code::NotGranted => refusal::NOT_GRANTED,
+            Code::Unknown => refusal::UNKNOWN_TRACK,
+            Code::Duplicate => refusal::DUPLICATE_TRACK,
+            Code::TooLarge => refusal::TOO_LARGE,
+            Code::Malformed => refusal::MALFORMED_REQUEST,
+        };
+        assert_eq!(code.as_str(), word);
+    }
 }
 
 /// A room's list: the tracks it hears come and go, and a lost session takes
@@ -413,11 +439,13 @@ fn a_lost_session_takes_a_rooms_tracks_down_and_opens_the_list_again() {
         mode: Mode::Stream,
         up,
     };
-    let announce = |name: &str, up| LiveAnnounce {
-        name: name.into(),
-        by: 7,
-        mode: LiveMode::Stream,
-        up,
+    let announce = |name: &str, up| {
+        Watching::Announce(LiveAnnounce {
+            name: name.into(),
+            by: 7,
+            mode: LiveMode::Stream,
+            up,
+        })
     };
     ends.heard.send(up("echo/7", true)).unwrap();
     assert_eq!(
@@ -443,7 +471,7 @@ fn a_reconnect_opens_a_live_subscription_again_on_the_new_session() {
     let (mut view, opens) = live_guest();
     let subscribe = LiveSubscribe {
         track: track("doc"),
-        latest: false,
+        from: LiveStart::Next,
     };
     ask(&mut view, 1, "live.subscribe", methods::encode(&subscribe));
     let (first, _ends) = opened(&opens);
@@ -490,7 +518,7 @@ fn a_room_or_a_name_outside_the_rule_is_malformed() {
                 room: room.into(),
                 name: name.into(),
             },
-            latest: true,
+            from: LiveStart::Latest,
         };
         ask(&mut view, id, "live.subscribe", methods::encode(&subscribe));
         assert_eq!(
@@ -543,7 +571,7 @@ fn a_session_refused_no_account_is_asked_again() {
     let mut changes = view.replies.changes();
     let subscribe = LiveSubscribe {
         track: track("presence/7"),
-        latest: true,
+        from: LiveStart::Latest,
     };
     ask(&mut view, 1, "live.subscribe", methods::encode(&subscribe));
     let (asked, ends) = opened(&opens_again);

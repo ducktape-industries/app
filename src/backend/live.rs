@@ -115,10 +115,10 @@ pub(crate) enum Heard {
     },
     /// The node dropped one object of this publication; the track goes on.
     Dropped(Code),
-    /// The node holds the request until it may answer it (`NotGranted`:
-    /// the room grants it nothing yet); it answers on the block that
-    /// does, and the request goes on.
-    Waiting(Code),
+    /// The node holds the request until the room grants it (core's
+    /// `Waiting` says `NotGranted`, the one reason it waits); it answers on
+    /// the block that does, and the request goes on.
+    Waiting,
     /// The node ended the request, or the session ended it as a wire
     /// mismatch: the refusal a view reads.
     Closed(Error),
@@ -785,9 +785,9 @@ impl Conn {
                 };
                 end(&mut table, request, word);
             }
-            Control::Waiting { request, code } => {
+            Control::Waiting { request, .. } => {
                 if let Some(entry) = table.requests.get(&request) {
-                    entry.tell(Heard::Waiting(code));
+                    entry.tell(Heard::Waiting);
                 }
             }
             Control::Refused { request, code } => {

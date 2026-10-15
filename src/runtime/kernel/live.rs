@@ -44,7 +44,8 @@ use super::node::{Follow, connected};
 use super::*;
 use crate::backend::live::{self as client, Ask, Data, Heard, Mode, Object, Session, Start, Track};
 use wire::methods::{
-    LiveAnnounce, LiveItem, LiveMode, LivePublish, LiveSend, LiveSubscribe, LiveTrack, Publishing,
+    LiveAnnounce, LiveItem, LiveMode, LivePublish, LiveSend, LiveStart, LiveSubscribe, LiveTrack,
+    Publishing, Watching,
 };
 
 /// The live tracks a view publishes: where its `live.send`s go, by track.
@@ -269,9 +270,9 @@ async fn publishing(
                             return;
                         }
                     }
-                    Some(Heard::Waiting(code)) => {
+                    Some(Heard::Waiting) => {
                         lost = 0;
-                        if !items.send(Err(waiting(code))).await {
+                        if !items.send(Ok(methods::encode(&Publishing::Waiting))).await {
                             return;
                         }
                     }
@@ -382,9 +383,9 @@ pub(super) fn subscribe(view: &mut View, id: u64, payload: &[u8]) {
     let Some(session) = ready(view, id) else {
         return;
     };
-    let from = match ask.latest {
-        true => Start::Latest,
-        false => Start::Next,
+    let from = match ask.from {
+        LiveStart::Latest => Start::Latest,
+        LiveStart::Next => Start::Next,
     };
     open_subscription(view, id, session, ask.track, from);
 }
@@ -435,12 +436,9 @@ async fn subscribing(
                         lost = 0;
                         LiveItem::Opened { by, mode: live_mode(mode), latest }
                     }
-                    Some(Heard::Waiting(code)) => {
+                    Some(Heard::Waiting) => {
                         lost = 0;
-                        if !items.send(Err(waiting(code))).await {
-                            return;
-                        }
-                        continue;
+                        LiveItem::Waiting
                     }
                     Some(Heard::Closed(refusal)) => return items.last(refusal),
                     Some(
@@ -471,16 +469,6 @@ async fn subscribing(
         lost += 1;
         tokio::time::sleep(backend::retry_delay(lost)).await;
     }
-}
-
-/// The item a request hears while the node holds it: not its end. The
-/// view reads it as "not open yet" before `Opened`/`Published`, unlike the
-/// same word as a request's last item, a grant taken back.
-fn waiting(code: client::Code) -> wire::Error {
-    wire::Error::new(
-        code.as_str(),
-        "the room does not grant this yet; the node holds the request until it does",
-    )
 }
 
 fn live_item(data: Data) -> LiveItem {
@@ -551,9 +539,9 @@ async fn watching(session: Arc<dyn Session>, namespace: String, mut items: Items
                     mode: live_mode(mode),
                     up,
                 },
-                Heard::Waiting(code) => {
+                Heard::Waiting => {
                     lost = 0;
-                    if !items.send(Err(waiting(code))).await {
+                    if !items.send(Ok(methods::encode(&Watching::Waiting))).await {
                         return;
                     }
                     continue;
@@ -569,13 +557,19 @@ async fn watching(session: Arc<dyn Session>, namespace: String, mut items: Items
             if announce.up {
                 up.push(announce.clone());
             }
-            if !items.send(Ok(methods::encode(&announce))).await {
+            if !items
+                .send(Ok(methods::encode(&Watching::Announce(announce))))
+                .await
+            {
                 return;
             }
         }
         for gone in std::mem::take(&mut up) {
             let down = LiveAnnounce { up: false, ..gone };
-            if !items.send(Ok(methods::encode(&down))).await {
+            if !items
+                .send(Ok(methods::encode(&Watching::Announce(down))))
+                .await
+            {
                 return;
             }
         }

@@ -764,10 +764,7 @@ async fn a_request_the_node_holds_hears_it_waits_and_the_session_goes_on() {
         })
         .await
         .unwrap();
-    assert_eq!(
-        held.heard.recv().await,
-        Some(Heard::Waiting(Code::NotGranted))
-    );
+    assert_eq!(held.heard.recv().await, Some(Heard::Waiting));
     let (_following, latest) = following(&client, Start::Next).await;
     assert_eq!(latest, None);
 }

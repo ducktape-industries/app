@@ -286,16 +286,10 @@ pub(super) fn needed(
 /// the node's programs role answers them): never while no bindings are known.
 pub(super) fn bound(program: &str, roles: Option<&abi::Roles>) -> bool {
     roles.is_some_and(|roles| {
-        [
-            &roles.programs,
-            &roles.validators,
-            &roles.identity,
-            &roles.blobs,
-            &roles.awaits,
-            &roles.halo,
-        ]
-        .iter()
-        .any(|role| role.as_str() == program)
+        roles
+            .named()
+            .iter()
+            .any(|(_, role)| role.as_str() == program)
     })
 }
 
