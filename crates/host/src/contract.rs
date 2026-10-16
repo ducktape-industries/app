@@ -352,19 +352,13 @@ pub fn runner() -> &'static Arc<dyn ViewRunner> {
 /// compiles; JSC runs the meter pass; neither touches a page). `describe`
 /// may be called from the kernel's blocking pool and may block it, NEVER
 /// from the window thread (a JSC impl posts to main and blocks the pool
-/// thread on a oneshot; main never waits on the pool). `instantiate` is
-/// called today on two threads, and on both a seating outside a swap or a
-/// revive takes the answer only if it landed before the call returned (a
-/// runner that answers later fails those loads, without waiting): a loader
-/// thread seats a first load, the developer override and
-/// `Preload::Seat`'s instance; a pane claiming a compiled seat
-/// (`View::start`) is seated on the window thread, from `Seat::new`
-/// (`mounted`), or on a loader thread when the claim lands with a load.
-/// The seat's thread (the window thread) seats a swap's replacement, a
-/// sibling after a restore trap, and a revive, and waits for the answer.
-/// Lane J part 2 moves every seating to the seat's thread. Every `begin_*`
-/// is called on the seat's thread, and each answers through the seat's
-/// [`Landing`], at once or later.
+/// thread on a oneshot; main never waits on the pool). `instantiate` and
+/// every `begin_*` are called only on the seat's thread (the window
+/// thread), which awaits each answer as it lands on the seat's
+/// [`Landing`], at once or later: a first load, a pane claiming a compiled
+/// seat, the developer's override and `Preload::Seat`'s instance (a loader
+/// prepares the code and parks it; the window thread seats and inits it),
+/// a swap's replacement, a sibling after a restore trap, and a revive.
 pub trait ViewRunner: Send + Sync + 'static {
     /// Compile (wasmtime) or validate + meter + cache (JSC) `code`, whose
     /// sha256 is `hash`, for a view whose linear memory may reach
@@ -378,7 +372,8 @@ pub trait ViewRunner: Send + Sync + 'static {
     /// dead-page rules).
     fn instantiate(&self, hash: [u8; 32], seat: SeatId, land: Landing);
     /// `program.describe`: run the import-free describe module `module`
-    /// (sha256 `hash`) on `op`, bounded by the same fuel; `None` on any
+    /// (sha256 `hash`) on `op`, bounded by the same fuel, once
+    /// `view_meter::accepts` takes it as it would a view; `None` on any
     /// failure.
     fn describe(
         &self,
@@ -495,11 +490,11 @@ pub trait ViewInstance: Send {
     }
 }
 
-/// Which seat an instance is for: (program, instance). Today the host names
-/// every instance `(program, 0)`, whichever pane it is for (lane J part 2
-/// carries the pane's), and during a swap or a revive two live instances
-/// share one id: it names a program's seat for a runner's own logs and
-/// bookkeeping, and is no key two instances may not share.
+/// Which seat an instance is for: (program, the pane's layout instance; 0
+/// for a seat no pane held when it was seated).
+/// During a swap or a revive two live instances share one id: it names a
+/// program's seat for a runner's own logs and bookkeeping, and is no key
+/// two instances may not share.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SeatId(pub &'static str, pub u64);
 

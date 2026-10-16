@@ -72,6 +72,13 @@ fn a_failed_view_is_held_off_under_the_code_the_roster_names() {
     assert!(locked.reload_due(true, true, code));
 }
 
+/// The start a load parked on `seat`, once it is there, run as the
+/// window thread runs it (`start_in`): at once, on the wasmtime runner.
+fn start_parked(seat: &Arc<Mutex<Mounted>>, program: &'static str) {
+    eventually("a start was parked", || lock(seat).to_start.is_some());
+    futures::executor::block_on(start_in(seat.clone(), program));
+}
+
 /// Waits, up to ten seconds, for `done`; panics naming `what` if it never
 /// is.
 pub(super) fn eventually(what: &str, done: impl Fn() -> bool) {
@@ -652,6 +659,7 @@ fn an_unopened_program_runs_no_init() {
         asked_of: node.asked_of.clone(),
         code: Some((code, true)),
     });
+    start_parked(&seat, "lazy-view");
     eventually(
         "the claiming pane's load ran init",
         || matches!(&lock(&seat).slot, Slot::Failed(failure) if failure.to_string().contains("init trapped")),
@@ -712,6 +720,7 @@ fn a_rail_row_carries_the_icon_its_views_manifest_declares() {
         asked_of: node.asked_of.clone(),
         code: Some((blob_id(&views[0].1), true)),
     });
+    start_parked(&seat, "iconed-view");
     eventually("the claiming pane's load started the view", || {
         matches!(lock(&seat).slot, Slot::Ready(_))
     });
@@ -794,17 +803,17 @@ fn a_claimed_seat_starts_the_code_it_compiled() {
             code: Some((code, true)),
         }
     };
-    // as `mounted` starts it, on the claiming thread
-    claim(7).land(|load, timing| {
-        View::start(load.program, load.code, load.generation, &load.seat, timing)
-    });
+    // as `mounted` claims it, on the claiming thread, which then starts it
+    claim(7).land(|load, timing| View::start(load.program, load.code, &load.seat, timing));
+    start_parked(&seat, "quick-view");
     assert!(
         matches!(&lock(&seat).slot, Slot::Ready(view) if view.name == "Quick" && view.instance == 7),
         "the claim did not start the compiled view"
     );
-    // as a loader starts a seat claimed while its preload was on the way
+    // as a loader hands on a seat claimed while its preload was on the way
     lock(&seat).slot = Slot::Compiled(preloaded);
     queue(claim(8));
+    start_parked(&seat, "quick-view");
     eventually(
         "the loader started the compiled view",
         || matches!(&lock(&seat).slot, Slot::Ready(view) if view.instance == 8),
@@ -812,9 +821,10 @@ fn a_claimed_seat_starts_the_code_it_compiled() {
 }
 
 /// A pane that opens a program whose seat compiled out of the blob the
-/// roster lists has its view up when `mounted` returns: started on the
-/// thread that claimed it, with no loader and no stand-in between. The
-/// node is gone and the blob off the disk by then, so a load would fail.
+/// roster lists has its view up in one poll of the start `mounted` parks
+/// (`Seat::new` polls it on the claiming thread, `start_here`): no loader
+/// and no stand-in between on the wasmtime runner. The node is gone and
+/// the blob off the disk by then, so a load would fail.
 #[test]
 fn a_pane_opens_its_compiled_view_at_once() {
     const PROGRAM: &str = "opened-at-once";
@@ -846,7 +856,9 @@ fn a_pane_opens_its_compiled_view_at_once() {
         });
     lock(registry()).insert((PROGRAM, 0), seat);
     let opened = mounted(PROGRAM, 7101);
-    let started = matches!(&lock(&opened).slot, Slot::Ready(view) if view.name == "At once");
+    let polled = futures::FutureExt::now_or_never(start_in(opened.clone(), PROGRAM));
+    let started = polled.is_some()
+        && matches!(&lock(&opened).slot, Slot::Ready(view) if view.name == "At once");
     lock(registry()).remove(&(PROGRAM, 7101));
     super::super::roster::roster()
         .lock()

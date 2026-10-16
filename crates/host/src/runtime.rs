@@ -40,7 +40,7 @@ pub use kernel::shown_title;
 pub use kernel::plain;
 pub use roster::{Link, RailRow, connected, deployments_checked, props, valid_route};
 pub use roster::{Roster, changes_channel, roster};
-pub use seat::{Back, Backgrounded, Failure, Placed, Seat};
+pub use seat::{Back, Backgrounded, Failure, Placed, Seat, serve_starts};
 
 use roster::{Connection, code_digest, connection, rail_moved};
 use seat::{

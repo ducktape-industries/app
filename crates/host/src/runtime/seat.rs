@@ -23,7 +23,12 @@ pub(super) struct Mounted {
     pub(super) wake: tokio::sync::watch::Sender<()>,
     /// A replacement for the drawn view, its code prepared on a loader
     /// thread, waiting for the seat's thread to run it (`swap_in`).
-    pub(super) swap: Option<Box<PendingSwap>>,
+    pub(super) swap: Option<Box<Parked>>,
+    /// A view to start where none is drawn, its code prepared on a loader
+    /// thread (or compiled before, for a pane claiming the seat), waiting
+    /// for the seat's thread to seat and init it (`start_in`): no instance
+    /// is seated and no call begun anywhere else.
+    pub(super) to_start: Option<Box<Parked>>,
     /// A sequence of calls the seat's thread runs owns the drawn view (a
     /// swap, `swap_in`; a kept snapshot, `keep_in`): the seat does not turn
     /// it until the sequence is done, which wakes the seat. One owner at a
@@ -33,10 +38,11 @@ pub(super) struct Mounted {
     pub(super) owned: bool,
 }
 
-/// A replacement prepared by a load and parked on the seat: its code, the
-/// name it is shown by, the load that prepared it (installed on the same
-/// conditions as any load, `install`) and the load's timing so far.
-pub(super) struct PendingSwap {
+/// Code a load prepared and parked on the seat for the seat's thread to
+/// run (a replacement, `Mounted::swap`; a start, `Mounted::to_start`): its
+/// code, the name it is shown by, the load that prepared it (installed on
+/// the same conditions as any load, `install`) and the load's timing so far.
+pub(super) struct Parked {
     pub(super) code: Box<ViewCode>,
     pub(super) shown: String,
     pub(super) generation: u64,
@@ -65,6 +71,7 @@ impl Mounted {
             retry: None,
             wake: tokio::sync::watch::Sender::new(()),
             swap: None,
+            to_start: None,
             owned: false,
         }))
     }
@@ -335,9 +342,9 @@ pub(super) fn mounted(program: &'static str, instance: u64) -> Arc<Mutex<Mounted
     drop(locked);
     drop(registry);
     match load {
-        Some(load) if here => load.land(|load, timing| {
-            View::start(load.program, load.code, load.generation, &load.seat, timing)
-        }),
+        Some(load) if here => {
+            load.land(|load, timing| View::start(load.program, load.code, &load.seat, timing))
+        }
         Some(load) => queue(load),
         None => {}
     }
@@ -548,6 +555,8 @@ impl Load {
         // left-node load lands nothing, and hands off nothing
         let claimed = matches!(landed, Ok(true)) && locked.instance != 0;
         let start = claimed.then(|| locked.start());
+        let parked =
+            (locked.to_start.as_ref()).is_some_and(|parked| parked.generation == generation);
         rail_moved();
         locked.wake.send_replace(());
         timing.install = installed.elapsed();
@@ -561,6 +570,9 @@ impl Load {
             timing.log(program);
         }
         drop(locked);
+        if parked {
+            entity::begin_start(self.seat.clone(), program);
+        }
         if let Some(generation) = start {
             queue(Load { generation, ..self });
         }
@@ -619,6 +631,7 @@ fn install(
         slot,
         instance,
         swap,
+        to_start,
         ..
     } = &mut *locked;
     match loaded {
@@ -640,11 +653,27 @@ fn install(
             *slot = Slot::Compiled(view);
             return true;
         }
+        // the seat's thread seats and inits it (`start_in`), which `land`
+        // asks for once the lock is let go; the rail reads the manifest
+        // meanwhile, and a view drawn (the developer's file read again)
+        // stays up until the new one is
+        Loaded::Seat { code, shown } => {
+            if !matches!(slot, Slot::Ready(_)) {
+                *slot = Slot::Compiled(code.clone());
+            }
+            *to_start = Some(Box::new(Parked {
+                code,
+                shown,
+                generation,
+                asked_of: asked_of.clone(),
+                timing: std::mem::take(timing),
+            }));
+        }
         // the same tab, the same surface handle, the same host-side
         // input text and pictures: only the instance behind them moves, on
         // the seat's own thread (`swap_in`), which this wakes
         Loaded::Swap { code, shown } => {
-            *swap = Some(Box::new(PendingSwap {
+            *swap = Some(Box::new(Parked {
                 code,
                 shown,
                 generation,
@@ -692,7 +721,7 @@ pub(super) async fn swap_in(mounted: Arc<Mutex<Mounted>>, program: &'static str)
         (pending, alive, instance)
     };
     let (pending, alive, instance) = started;
-    let PendingSwap {
+    let Parked {
         code,
         shown,
         generation,
@@ -741,6 +770,82 @@ pub(super) async fn swap_in(mounted: Arc<Mutex<Mounted>>, program: &'static str)
             }
         }
     }
+    rail_moved();
+    locked.wake.send_replace(());
+    timing.install = installed.elapsed();
+    if timing.started.is_some() {
+        let key = crate::perf::Key::View {
+            program,
+            instance: locked.instance,
+        };
+        crate::perf::record(
+            key,
+            "install.lock_wait",
+            timing.lock_wait.as_micros() as u64,
+        );
+        crate::perf::record(key, "install", timing.install.as_micros() as u64);
+        timing.log(program);
+    }
+}
+
+/// A view a load parked to start where none is drawn (`Mounted::to_start`),
+/// run on the seat's thread (SPEC §4.4: `instantiate` and every `begin_*`
+/// are that thread's): an instance seated, then its `init`, each answer
+/// awaited as it lands (at once on the wasmtime runner, so the whole
+/// sequence runs in one poll there, later on JSC), then installed on the
+/// conditions a load installs on (`install`). It logs the `view_source`
+/// line and the `view_load` line the load left to it.
+pub(super) async fn start_in(mounted: Arc<Mutex<Mounted>>, program: &'static str) {
+    let (pending, instance) = {
+        let mut locked = lock(&mounted);
+        let Some(pending) = locked.to_start.take() else {
+            return;
+        };
+        // a later load moved the seat on: this start would install nowhere
+        if pending.generation != locked.generation {
+            return;
+        }
+        (pending, locked.instance)
+    };
+    let Parked {
+        code,
+        shown,
+        generation,
+        asked_of,
+        mut timing,
+    } = *pending;
+    let started = async {
+        let mut fresh = View::seated_from(program, instance, &code, &shown, &mut timing).await?;
+        fresh.timed_inited(&shown, &mut timing).await?;
+        Ok::<View, Failure>(fresh)
+    }
+    .await;
+    let (state, reason) = match &started {
+        Ok(_) => ("Ready", String::new()),
+        Err(failure) => ("Failed", failure.to_string()),
+    };
+    log_source(program, Some(&code.hash), state, generation, &reason);
+    timing.outcome = state;
+    let loaded = started
+        .map(|fresh| Loaded::Fresh(Box::new(fresh)))
+        .map_err(|failure| Unloaded {
+            hash: Some(code.hash),
+            failure,
+        });
+    let asked_for = code.blob.map(|blob| code_digest(&blob));
+    let waited = Instant::now();
+    let mut locked = lock(&mounted);
+    timing.lock_wait = waited.elapsed();
+    let installed = Instant::now();
+    install(
+        program,
+        &mut locked,
+        generation,
+        &asked_of,
+        asked_for,
+        loaded,
+        &mut timing,
+    );
     rail_moved();
     locked.wake.send_replace(());
     timing.install = installed.elapsed();
@@ -863,6 +968,9 @@ pub(super) enum Loaded {
     Empty,
     /// The view compiles, and was not started: no pane holds the seat.
     Compiled(Box<ViewCode>),
+    /// Code prepared to start where no view is drawn, `shown` naming it:
+    /// the seat's thread seats and inits it (`start_in`).
+    Seat { code: Box<ViewCode>, shown: String },
 }
 
 /// A load that came back with no view, and the view bytes it failed on —
@@ -976,7 +1084,7 @@ pub(super) fn view_override(program: &str) -> Option<PathBuf> {
 mod entity;
 mod standin;
 
-pub use entity::{Backgrounded, Placed, Seat};
+pub use entity::{Backgrounded, Placed, Seat, serve_starts};
 
 /// What a Back the shell took came to at the seat in front
 /// ([`Seat::back`]).

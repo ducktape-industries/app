@@ -96,6 +96,7 @@ impl Join {
             InputState::new(window, cx)
                 .placeholder("garage.ducktape.industries")
                 .default_value(last.clone().unwrap_or_default())
+                .text_input(url_keyboard())
         });
         let subscriptions = vec![
             cx.subscribe_in(&node, window, |this, _, event: &InputEvent, window, cx| {
@@ -772,14 +773,19 @@ fn button(
         .child(drawn)
 }
 
-/// The keyboard for the address: gm is told (a URL keyboard on Android);
-/// gpui_ios raises its own with the focused field.
+/// The address field's keyboard: a URL one, nothing corrected or capitalized.
+fn url_keyboard() -> TextInputConfiguration {
+    TextInputConfiguration {
+        virtual_keyboard: VirtualKeyboard::Url,
+        ..TextInputConfiguration::default()
+    }
+}
+
+/// The keyboard for the address: gm is told (Android); gpui_ios raises its
+/// own with the focused field, from the field's `text_input`.
 fn keyboard(window: &mut Window, up: bool) {
     let want = if up {
-        SoftKeyboard::Show(TextInputConfiguration {
-            virtual_keyboard: VirtualKeyboard::Url,
-            ..TextInputConfiguration::default()
-        })
+        SoftKeyboard::Show(url_keyboard())
     } else {
         SoftKeyboard::Hide
     };

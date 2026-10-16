@@ -82,7 +82,7 @@ impl ViewTree {
             (None, 0) => None,
             (None, len) => Some(body.height * detents[state.rest.min(len - 1)]),
         };
-        let fit = state.fit;
+        let fitted = detents.is_empty();
         let content = self.node(child, window, cx);
         let dismiss = *on_dismiss;
         let mut panel = div()
@@ -101,11 +101,9 @@ impl ViewTree {
             let view = cx.entity().downgrade();
             let (pressed, moved, released) = (path.clone(), path.clone(), path.clone());
             // a fitted sheet rests at the height its child gave it, measured
-            // as it last lay at rest
-            let heights: Vec<Pixels> = match detents.is_empty() {
-                true => fit.into_iter().collect(),
-                false => detents.iter().map(|d| body.height * *d).collect(),
-            };
+            // as it last lay at rest, and read as the drag moves and ends:
+            // the frame that first draws it has measured nothing yet
+            let heights: Vec<Pixels> = detents.iter().map(|d| body.height * *d).collect();
             let highest = heights.last().copied().unwrap_or(body.height);
             let grab = div()
                 .id(host_id("sheet-handle"))
@@ -149,9 +147,14 @@ impl ViewTree {
                             return;
                         }
                         let _ = moving.update(cx, |this, cx| {
-                            let Some(drag) =
-                                this.sheets.get_mut(&moved).and_then(|s| s.drag.as_mut())
-                            else {
+                            let Some(state) = this.sheets.get_mut(&moved) else {
+                                return;
+                            };
+                            let highest = match fitted {
+                                true => state.fit.unwrap_or(highest),
+                                false => highest,
+                            };
+                            let Some(drag) = state.drag.as_mut() else {
                                 return;
                             };
                             let now = (drag.start - (event.position.y - drag.from))
@@ -178,6 +181,12 @@ impl ViewTree {
                             let Some(drag) = state.drag.take() else {
                                 return;
                             };
+                            // a fitted sheet's one rest; unmeasured, where
+                            // the press found it, so a tap never dismisses
+                            let heights = match fitted {
+                                true => vec![state.fit.unwrap_or(drag.start)],
+                                false => heights.clone(),
+                            };
                             match snap(drag.now, &heights) {
                                 Some(rest) => state.rest = rest,
                                 None => {
@@ -198,7 +207,7 @@ impl ViewTree {
             .size_0();
             // the height a fitted panel's child gives it, taken at rest:
             // mid-drag the panel is as tall as the drag
-            let measure = detents.is_empty().then(|| {
+            let measure = fitted.then(|| {
                 let view = cx.entity().downgrade();
                 let measured = path.clone();
                 canvas(
@@ -231,7 +240,9 @@ impl ViewTree {
             panel = panel
                 .w_full()
                 .max_w(px(WIDEST))
-                .max_h(body.height * *detents.last().unwrap_or(&1.))
+                // a modal is as tall as its child, at most the body: the
+                // detents are the docked sheet's
+                .max_h(body.height)
                 .rounded(px(8.))
                 // under touch the view leaves the panel's top to the
                 // handle's band; a centred modal does not drag, so the band
@@ -276,16 +287,7 @@ impl ViewTree {
             true => layer.justify_end(),
             false => layer.justify_center().items_center().p(px(16.)),
         };
-        if let Some(message) = dismiss {
-            layer = layer.on_key_down(cx.listener(move |_, event: &KeyDownEvent, _, cx| {
-                // a dismissal is no gesture, as Escape is not on the web
-                if event.keystroke.key == "escape" {
-                    cx.stop_propagation();
-                    cx.emit(wire::Event::Message(message));
-                }
-            }));
-        }
-        let layer = self.dialog(path, named, nested, layer, node, window, cx);
+        let layer = self.dialog(path, named, nested, layer, dismiss, node, window, cx);
         // the walk goes on where the node sits; the layer goes over the body
         self.sheet_layer = Some(layer);
         div().absolute().into_any_element()

@@ -43,6 +43,62 @@ fn backgrounded(cx: &App) -> bool {
     cx.try_global::<Backgrounded>().is_some_and(|phase| phase.0)
 }
 
+/// A seat a load parked a start on (`Mounted::to_start`), and its program.
+type ToStart = (Arc<Mutex<Mounted>>, &'static str);
+
+/// The window thread's end of the parked starts, installed by `start`
+/// ([`serve_starts`]).
+static STARTS: OnceLock<async_channel::Sender<ToStart>> = OnceLock::new();
+
+/// Runs every start a load parks (`seat::start_in`) on this, the window
+/// thread, whether or not a pane holds the seat: a seat `Preload::Seat`
+/// preloads has no `Seat` to turn it. A pane's seat usually starts its own
+/// first (`start_here`), and this finds nothing parked. Nothing starts in
+/// the background; the pane's turn in front again does. Installed once per
+/// process, by `start`.
+pub fn serve_starts(cx: &mut App) {
+    let (send, starts) = async_channel::unbounded();
+    if STARTS.set(send).is_err() {
+        return;
+    }
+    cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
+        while let Ok((mounted, program)) = starts.recv().await {
+            if !cx.update(|cx| backgrounded(cx)) {
+                cx.spawn(async move |_: &mut gpui_kit::AsyncApp| start_in(mounted, program).await)
+                    .detach();
+            }
+        }
+    })
+    .detach();
+}
+
+/// Asks the window thread to start the view a load just parked on
+/// `mounted` ([`serve_starts`]); a test with no host started has its
+/// pane's turn start it, or starts it by hand.
+pub(in crate::runtime) fn begin_start(mounted: Arc<Mutex<Mounted>>, program: &'static str) {
+    if let Some(starts) = STARTS.get() {
+        let _ = starts.try_send((mounted, program));
+    }
+}
+
+/// The start parked on `mounted`, run here on the window thread: polled at
+/// once, so on the wasmtime runner the view is up before this returns (a
+/// pane opening a program it compiled shows no stand-in between), and
+/// finished by a task when its answers land later. Whether it finished.
+fn start_here(mounted: &Arc<Mutex<Mounted>>, program: &'static str, cx: &mut App) -> bool {
+    use futures::FutureExt as _;
+    if lock(mounted).to_start.is_none() {
+        return false;
+    }
+    let mut started = Box::pin(start_in(mounted.clone(), program));
+    if (&mut started).now_or_never().is_some() {
+        return true;
+    }
+    cx.spawn(async move |_: &mut gpui_kit::AsyncApp| started.await)
+        .detach();
+    false
+}
+
 pub struct Seat {
     program: &'static str,
     instance: u64,
@@ -150,6 +206,8 @@ impl Seat {
         let theme = cx.observe_global::<gpui_kit::component::Theme>(|this, cx| this.turn(cx));
         let phase = cx.observe_global::<Backgrounded>(|this, cx| this.turn(cx));
         let mounted = mounted(program, instance);
+        // a seat claimed with its code compiled starts here and now
+        start_here(&mounted, program, cx);
         let mut woken = lock(&mounted).wake.subscribe();
         let wake = cx.spawn(async move |this, cx| {
             while woken.changed().await.is_ok() {
@@ -411,7 +469,11 @@ impl Seat {
         let shown = Instant::now();
         let program = self.program;
         let Mounted {
-            slot, props, swap, ..
+            slot,
+            props,
+            swap,
+            to_start,
+            ..
         } = &mut *locked;
         let view = match slot {
             Slot::Ready(view) => view,
@@ -426,6 +488,23 @@ impl Seat {
                 let standin = Standin::from(&*failure);
                 drop(locked);
                 return self.show_standin(standin, cx);
+            }
+            // compiled, a load parked its start: seated and inited here,
+            // then drawn
+            Slot::Compiled(_) if to_start.is_some() => {
+                drop(locked);
+                if start_here(&mounted, program, cx) {
+                    return self.turn(cx);
+                }
+                return self.show_standin(
+                    Standin {
+                        title: None,
+                        words: stage_words(&Slot::Loading),
+                        loading: true,
+                        retry: false,
+                    },
+                    cx,
+                );
             }
             // on its way, or compiled and being started for this pane
             loading => {

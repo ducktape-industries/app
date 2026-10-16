@@ -390,7 +390,7 @@ impl ViewTree {
         // the words as written, so a text whose case change moves them (a
         // `ß` drawn `SS`) is not selectable; a drawn-to-written offset map in
         // the selection run would make it so.
-        let unselected = self.unselected || !same_offsets(content, &drawn);
+        let unselected = self.unselected || (transform.is_some() && !same_offsets(content, &drawn));
         let styled = StyledText::new(drawn);
         let layout = styled.layout().clone();
         let selection_range = std::rc::Rc::new(std::cell::RefCell::new(None));
