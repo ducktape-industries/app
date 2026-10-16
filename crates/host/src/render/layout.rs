@@ -113,7 +113,10 @@ impl ViewTree {
             use gpui_kit::test::TestSupportExt as _;
             element.test_support()
         };
-        element.into_any_element()
+        match interactivity.page {
+            Some(_) => self.moving_page(element.into_any_element(), window, cx),
+            None => element.into_any_element(),
+        }
     }
 
     /// A zero-paint absolute canvas over the node at `path`, which claims

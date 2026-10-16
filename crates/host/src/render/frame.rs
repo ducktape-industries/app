@@ -86,8 +86,10 @@ impl ViewTree {
         let mut sheets = std::collections::HashSet::new();
         let mut sensors = std::collections::HashSet::new();
         let mut tooltip_routes = std::collections::HashSet::new();
+        let mut page = None;
         walk_authored_paths(&root, None, &mut Vec::new(), &mut |node, path| {
             tooltip_routes.extend(tooltip_route(node));
+            super::page_motion::first(&mut page, node, path);
             // a scrolling container with an id keeps its handle; an id-less
             // one has no path of its own to keep it at
             if let wire::Node::Container(view_wire::ContainerNode {
@@ -157,6 +159,8 @@ impl ViewTree {
                 _ => {}
             }
         });
+        // while the old frame and its scroll offsets are still held
+        self.turn_page(page, cx);
         self.images.borrow_mut().next_frame();
         root.for_each_mut(&mut |node| {
             if let wire::Node::Image {

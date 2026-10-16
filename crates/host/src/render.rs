@@ -34,6 +34,7 @@ mod frame;
 mod inputs;
 mod interactivity;
 mod layout;
+mod page_motion;
 mod picture_resources;
 mod pictures;
 mod sensors;
@@ -245,6 +246,10 @@ pub struct ViewTree {
     media: av::Media,
     /// A resize handle's press position while its drag lasts.
     drags: HashMap<AuthoredPath, Point<Pixels>>,
+    /// The page the frame shows on top of the view's stack, and the change
+    /// from the page before it while that moves (`page_motion.rs`).
+    page: Option<page_motion::Shown>,
+    page_motion: Option<page_motion::PageMotion>,
     /// A drawn sheet's detent and drag.
     sheets: HashMap<AuthoredPath, sheet::SheetState>,
     /// The sheet this render built, laid over the root (`sheet.rs`).
@@ -329,6 +334,7 @@ impl EventEmitter<Drawn> for ViewTree {}
 impl ViewTree {
     pub fn new(tree: impl Into<Tree>) -> Self {
         let Tree { root, styles } = tree.into();
+        let page = page_motion::shown(&root);
         Self {
             activation: Default::default(),
             keys_grant: false,
@@ -348,6 +354,8 @@ impl ViewTree {
             drags: HashMap::new(),
             sheets: HashMap::new(),
             sheet_layer: None,
+            page,
+            page_motion: None,
             body: None,
             dialogs: HashMap::new(),
             opener: None,
