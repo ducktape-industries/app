@@ -227,13 +227,13 @@ impl OsServices for PhoneOs {
 /// iOS, where no process of ours may JIT (`ducktape_host_jsc`); wasmtime
 /// elsewhere, its traps without signals on Android (which make every arm64
 /// guest trap a clean error on libc 0.2.189: SPEC C3, S0-android §A).
-/// Either keeps its code under the
-/// cache. A runner iOS cannot make (not on the main thread, which the
-/// launch is) stops the phone with the reason logged.
+/// Either keeps its code under the cache ([`code_cache`]). A runner iOS
+/// cannot make (not on the main thread, which the launch is) stops the
+/// phone with the reason logged.
 pub fn runner(dirs: &Dirs) -> Arc<dyn ViewRunner> {
     let config = RunnerConfig {
         signals_based_traps: !cfg!(target_os = "android"),
-        cache_dir: Some(dirs.cache.join("view-code")),
+        cache_dir: Some(code_cache(&dirs.cache)),
     };
     #[cfg(target_os = "ios")]
     {
@@ -249,6 +249,30 @@ pub fn runner(dirs: &Dirs) -> Arc<dyn ViewRunner> {
     {
         Arc::new(ducktape_host::runner::WasmtimeRunner::new(config))
     }
+}
+
+/// Where the runner keeps its code under `cache`. On iOS, one folder per
+/// app build (`DUCKTAPE_APP_BUILD`, the commit and any uncommitted change),
+/// the other builds' removed: the code kept there is the meter pass's
+/// output, and another build's pass may differ. wasmtime keys its own
+/// cache by its version and settings, so it shares one across builds.
+fn code_cache(cache: &Path) -> PathBuf {
+    let dir = cache.join("view-code");
+    match cfg!(target_os = "ios") {
+        true => per_build(&dir, option_env!("DUCKTAPE_APP_BUILD").unwrap_or("unknown")),
+        false => dir,
+    }
+}
+
+/// `dir`'s folder for `build`, every other one under `dir` removed.
+fn per_build(dir: &Path, build: &str) -> PathBuf {
+    for old in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if old.file_name() != build {
+            // a folder that stays is read by no build: the OS purges it
+            let _gone = std::fs::remove_dir_all(old.path());
+        }
+    }
+    dir.join(build)
 }
 
 /// What a build for neither phone answers for a key: such a build exists
@@ -314,6 +338,21 @@ pub fn back_at_root() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An app build keeps its code in a folder of its own, and the other
+    /// builds' folders go: no build reads another build's metered code.
+    #[test]
+    fn each_app_build_keeps_its_code_apart() {
+        let cache = tempfile::tempdir().unwrap();
+        let dir = cache.path().join("view-code");
+        let old = per_build(&dir, "a1");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("code.metered.wasm"), b"old pass").unwrap();
+        assert_eq!(per_build(&dir, "a1"), old, "the same build reads its own");
+        let new = per_build(&dir, "b2");
+        assert_eq!(new, dir.join("b2"));
+        assert!(!old.exists(), "another build's code stays");
+    }
 
     /// The host's files sit under `ducktape/`, beside the Expo build's
     /// `store`; the keyrings stay where the Expo build put them; the runtime

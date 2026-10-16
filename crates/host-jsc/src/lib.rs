@@ -79,12 +79,9 @@ fn file_name(hash: &[u8; 32], view_bytes: u64) -> String {
 /// `view_meter::meter` and kept there. A file is written whole or not at
 /// all (a sibling, renamed into place), so a half-written one is never
 /// read. A cache that cannot be written costs the next launch the pass
-/// again, nothing else.
-///
-/// ponytail: the file's name says the input and the budget, not the pass:
-/// an app update that changes the pass reads the old pass's output until
-/// the OS purges the cache. Upgrade path: the shell scopes `cache_dir` per
-/// app build.
+/// again, nothing else. The file's name says the input and the budget, not
+/// the pass: the shell gives each app build a `cache_dir` of its own (the
+/// phone's `os::code_cache`).
 #[cfg_attr(
     not(target_os = "ios"),
     allow(dead_code, reason = "the iOS runner's; tested everywhere")

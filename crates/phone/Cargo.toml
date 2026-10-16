@@ -17,6 +17,9 @@ name = "ducktape-phone"
 edition.workspace = true
 version.workspace = true
 publish = false
+# the desktop's own: `DUCKTAPE_APP_BUILD`, which names the build the iOS
+# runner's code cache is kept for (`os::code_cache`)
+build = "../../build.rs"
 
 [lib]
 name = "ducktape_phone"
