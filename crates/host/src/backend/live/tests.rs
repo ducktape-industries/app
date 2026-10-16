@@ -798,6 +798,37 @@ async fn a_later_request_after_the_group_ended_is_handed_it_whole() {
     assert_eq!(heard(&mut third, 1).await, [object(5, 0, b"next")]);
 }
 
+/// A watch the node held and then granted on a room with nothing up is
+/// answered by `Watching` alone: a window joining it after that hears no
+/// stale Waiting (and no Announce, there being none).
+#[test]
+fn a_granted_watch_of_an_empty_room_ends_its_waiting() {
+    let (conn, _request) = ws_conn();
+    let room = "loopback#1/echo/lobby";
+    {
+        let mut table = lock(&conn.table);
+        let entry = table.requests.get_mut(&1).unwrap();
+        entry.kind = Kind::Watch {
+            namespace: room.into(),
+            up: Vec::new(),
+        };
+        table.aliases.clear();
+    }
+    conn.heard(Control::Waiting {
+        request: 1,
+        code: Code::NotGranted,
+    })
+    .unwrap();
+    conn.heard(Control::Watching { request: 1 }).unwrap();
+    let conn = Arc::new(conn);
+    let mut later = conn
+        .open(Ask::Watch {
+            namespace: room.into(),
+        })
+        .unwrap();
+    assert_eq!(later.heard.try_recv().ok(), None);
+}
+
 /// A window that joins an ask the node holds hears that it waits, as the
 /// first did, and the node's answer when it comes.
 #[test]
