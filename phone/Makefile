@@ -5,7 +5,7 @@
 #   make android            the APK, x86_64 (the emulator); ANDROID_ABI=arm64-v8a for a phone
 #   make android-run        installs it and starts it (adb's one device)
 #   make ios-sim            the simulator app (on a Mac)
-#   make ios-archive        the App Store archive, unsigned (on a Mac); BUILD=<n> is its CFBundleVersion
+#   make ios-archive        the App Store archive, ad-hoc signed with its entitlements (on a Mac); BUILD=<n> is its CFBundleVersion
 #
 # FEATURES=ax-door (the default) is the gate build with the AX test door on
 # 127.0.0.1:7777; FEATURES= builds without it.
@@ -64,8 +64,8 @@ ios-sim:
 	@echo $(IOS_APP)
 
 # What ships to TestFlight (.github/workflows/testflight.yml): the phone's
-# library without the AX door, whatever FEATURES says, archived unsigned; the
-# workflow signs it on export.
+# library without the AX door, whatever FEATURES says, archived without a
+# signing identity; the workflow signs it on export.
 ios-archive:
 	mkdir -p $(IOS_OUT)/iphoneos
 	cd $(ROOT) && IPHONEOS_DEPLOYMENT_TARGET=15.0 cargo rustc --color never -p ducktape-phone --lib --profile phone \
@@ -77,4 +77,9 @@ ios-archive:
 	cd $(ROOT)/phone/ios && xcodebuild -project Ducktape.xcodeproj -scheme Ducktape -sdk iphoneos \
 		-configuration Release -destination 'generic/platform=iOS' -derivedDataPath build/derived -jobs 4 -quiet \
 		archive -archivePath $(IOS_ARCHIVE) CODE_SIGNING_ALLOWED=NO CURRENT_PROJECT_VERSION=$(BUILD)
+	# an unsigned archive carries no entitlements, and the export signs the app
+	# with those it carries: Push (the ring's PushKit) travels in an ad-hoc
+	# signature, which needs no identity
+	codesign --force --sign - --timestamp=none --entitlements $(ROOT)/phone/ios/Ducktape.entitlements \
+		$(IOS_ARCHIVE)/Products/Applications/Ducktape.app
 	@echo $(IOS_ARCHIVE)

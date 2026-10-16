@@ -27,6 +27,8 @@ targets:
         PRODUCT_NAME: Ducktape
         PRODUCT_BUNDLE_IDENTIFIER: industries.ducktape.mobile
         INFOPLIST_FILE: Info.plist
+        # Push Notifications (PushKit's VoIP pushes, the ring): the App ID must have it on
+        CODE_SIGN_ENTITLEMENTS: Ducktape.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # CFBundleVersion; the TestFlight workflow passes its own (the commit's time)
         CURRENT_PROJECT_VERSION: "1"
