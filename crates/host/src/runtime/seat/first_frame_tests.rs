@@ -120,14 +120,18 @@ fn ticked_with(mounted: &Mutex<Mounted>) -> Vec<Vec<wire::Event>> {
     }
 }
 
-/// The host's facts among `events`: the theme, the viewport, the offset.
-fn facts(events: &[wire::Event]) -> (Option<bool>, Option<(f32, f32)>, Option<i32>) {
-    let mut facts = (None, None, None);
+/// The host's facts among `events`: the theme, the viewport, the offset,
+/// whether the pointer is a finger.
+type Facts = (Option<bool>, Option<(f32, f32)>, Option<i32>, Option<bool>);
+
+fn facts(events: &[wire::Event]) -> Facts {
+    let mut facts = (None, None, None, None);
     for event in events {
         match event {
             wire::Event::Theme { dark } => facts.0 = Some(*dark),
             wire::Event::Viewport { width, height } => facts.1 = Some((*width, *height)),
             wire::Event::Offset { minutes } => facts.2 = Some(*minutes),
+            wire::Event::Pointer { touch } => facts.3 = Some(*touch),
             _ => {}
         }
     }
@@ -159,7 +163,9 @@ fn boxed(key: &str) -> wire::Node {
 }
 
 /// A view's first tick carries the host's facts: the theme, the body its
-/// pane lays it out in, the reader's offset. A pane resized before the
+/// pane lays it out in, the reader's offset, whether the device's pointer
+/// is a finger (`OsFacts::touch_first`: the desktop's is not, and says
+/// so, so a view picks its ladder before its first frame). A pane resized before the
 /// draw tells the view the new body ahead of the frame that shows it, and
 /// nothing else: a fact that did not move does not cross again.
 #[gpui_kit::test]
@@ -172,10 +178,11 @@ fn a_views_first_tick_carries_the_hosts_facts(cx: &mut TestAppContext) {
     assert_eq!(*drawn.borrow(), vec![(1, 1)]);
     let ticks = ticked_with(&mounted);
     assert_eq!(ticks.len(), 1);
-    let (theme, viewport, offset) = facts(&ticks[0]);
+    let (theme, viewport, offset, touch) = facts(&ticks[0]);
     assert!(theme.is_some(), "the theme: {:?}", ticks[0]);
     assert_eq!(viewport, Some(WINDOW), "the body: {:?}", ticks[0]);
     assert_eq!(offset, Some(crate::runtime::kernel::offset_minutes()));
+    assert_eq!(touch, Some(false), "the pointer: {:?}", ticks[0]);
 
     seat.update(&mut native, |seat, cx| {
         seat.place(handle, Some((420., WINDOW.1)), true, cx)
@@ -293,6 +300,7 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
             "first_frame ticked it once; the install turn nothing"
         );
         assert_eq!(fresh.theme_dark, old_theme);
+        assert_eq!(fresh.touch_sent, Some(false));
         assert_eq!(fresh.viewport_sent, Some(WINDOW));
         assert!(
             fresh.pending.is_empty(),
@@ -303,9 +311,10 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
             (
                 old_theme,
                 Some(WINDOW),
-                Some(crate::runtime::kernel::offset_minutes())
+                Some(crate::runtime::kernel::offset_minutes()),
+                Some(false)
             ),
-            "the replacement made its first tree knowing the theme, its body and the offset"
+            "the replacement made its first tree knowing the theme, its body, the offset and the pointer"
         );
     }
     assert_eq!(
@@ -368,4 +377,41 @@ pub(super) fn frames_wat(frames: &[wire::Frame]) -> String {
             (global.set $n (i32.load8_u (local.get 0)))
             i64.const {ok}))"#
     )
+}
+
+/// Back goes to the root's `on_back` in the frame that landed last, as the
+/// view's next tick; a view whose frame has none (it is at its root) has
+/// nowhere to go back to, and the shell leaves the program: nothing is
+/// sent to it.
+#[gpui_kit::test]
+fn back_goes_to_the_roots_on_back_and_otherwise_leaves(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "first-frame-back-test";
+    let paged = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("pages".into())),
+        style: crate::render::test_style(div().size_full().style().clone()),
+        interactivity: Some(Box::new(wire::Interactivity {
+            on_back: Some(3),
+            ..Default::default()
+        })),
+        children: Vec::new(),
+    });
+    frames_in_order(PROGRAM, 320, &[full(paged), full(boxed("root"))]);
+    let (seat, _drawn, mounted, opened) = open(cx, PROGRAM);
+    let Opened { mut native, .. } = opened;
+    native.run_until_parked();
+    let back = seat.update(&mut native, |seat, cx| seat.back(cx));
+    assert_eq!(back, Back::Heard);
+    native.run_until_parked();
+    let ticks = ticked_with(&mounted);
+    assert_eq!(ticks.len(), 2, "the Back ticked the view");
+    assert_eq!(ticks[1], [wire::Event::Back { handler: 3 }]);
+    // the view went back to its root: its frame has no `on_back`
+    let back = seat.update(&mut native, |seat, cx| seat.back(cx));
+    assert_eq!(back, Back::Leave);
+    native.run_until_parked();
+    assert_eq!(
+        ticked_with(&mounted).len(),
+        2,
+        "a Back it cannot take is not sent"
+    );
 }

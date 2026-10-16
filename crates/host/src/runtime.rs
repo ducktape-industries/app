@@ -35,7 +35,7 @@ pub use kernel::{Answered, day, local_offset};
 pub use kernel::shown_title;
 pub use roster::{Link, RailRow, connected, deployments_checked, props, valid_route};
 pub use roster::{Roster, changes_channel, roster};
-pub use seat::{Backgrounded, Failure, Seat, serve_starts};
+pub use seat::{Back, Backgrounded, Failure, Seat, serve_starts};
 
 use roster::{Connection, code_digest, connection, rail_moved};
 use seat::{
@@ -114,6 +114,10 @@ pub enum Intent {
     Title(String),
     /// `link.open`: a link it pressed.
     OpenLink(String),
+    /// `host.show`: one of the host's own places, asked for by a press in
+    /// the view; how it looks is each shell's (the desktop's account menu,
+    /// the phone's account sheet).
+    Show(view_wire::methods::Place),
     /// A notice was posted: the bell and the permission bar redraw.
     Notified,
     /// A view was seated in its tab, first or after a new deployment: its

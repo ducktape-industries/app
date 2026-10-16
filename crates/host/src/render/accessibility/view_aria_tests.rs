@@ -20,6 +20,7 @@ fn text(id: &str) -> wire::Node {
         id: Some(key(id)),
         style: crate::render::plain_style(),
         content: WORDS.into(),
+        transform: None,
     })
 }
 

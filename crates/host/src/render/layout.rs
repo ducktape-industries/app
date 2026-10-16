@@ -205,12 +205,18 @@ pub(super) fn over_padding(
     frame(1.).child(frame(-1.).child(overlay))
 }
 
-/// A scroller's vertical bar, always shown while it scrolls: a plain
-/// scroller's or a uniform list's, by the handle that knows its offset.
+/// A scroller's vertical bar, by the handle that knows its offset (a plain
+/// scroller's or a uniform list's): always shown on the desktop; on a
+/// touch device, over the content while it scrolls and gone after, as a
+/// phone's own bar is (the view leaves no gutter for it there).
 pub(super) fn vertical_bar(
     handle: &(impl gpui_base::ScrollbarHandle + Clone),
 ) -> gpui_kit::component::scroll::Scrollbar {
+    use gpui_kit::component::scroll::ScrollbarMode;
     gpui_kit::component::scroll::Scrollbar::vertical(handle)
         .id(host_id("scrollbar"))
-        .mode(gpui_kit::component::scroll::ScrollbarMode::Always)
+        .mode(match crate::contract::os().facts().touch_first {
+            true => ScrollbarMode::Scrolling,
+            false => ScrollbarMode::Always,
+        })
 }

@@ -57,12 +57,48 @@ impl Replies {
     pub(super) async fn subscription_item(
         &self,
         drained: &mut tokio::sync::watch::Receiver<()>,
+        claim: &Claim,
         id: u64,
         result: Answer,
     ) -> bool {
         drained.borrow_and_update();
-        self.item(id, result, false);
+        if !self.answer(claim, id, result, false) {
+            return false;
+        }
         drained.changed().await.is_ok()
+    }
+
+    /// One item from a task holding `claim` on request `id`; `done` ends
+    /// it, and gives the claim up with it. `false`, and nothing queued,
+    /// once the claim is gone: the task ended the request already, or a
+    /// reconnect took it ([`Replies::take`]) and the task is the old
+    /// connection's.
+    pub(super) fn answer(&self, claim: &Claim, id: u64, result: Answer, done: bool) -> bool {
+        let mut events = self.events.lock().expect("kernel replies");
+        let mut hold = claim.0.lock().expect("a request's claim");
+        if hold.taken {
+            return false;
+        }
+        hold.taken = done;
+        events.push(wire::Event::Response { id, result, done });
+        self.changed.send_replace(());
+        true
+    }
+
+    /// The kernel takes request `claim` from its task, to answer it or
+    /// open it again (a reconnect): `None` when the task ended it first,
+    /// else what the task left standing for it ([`Claim::stand`]). Under
+    /// the queue's lock, as every answer of a task is, so the request is
+    /// the task's or the kernel's, never both: no id is ended twice, and
+    /// nothing the old task sends lands after it is taken.
+    pub(super) fn take(&self, claim: &Claim) -> Option<Option<Answer>> {
+        let _events = self.events.lock().expect("kernel replies");
+        let mut hold = claim.0.lock().expect("a request's claim");
+        if hold.taken {
+            return None;
+        }
+        hold.taken = true;
+        Some(hold.standing.take())
     }
 
     pub(super) fn admit(self: &std::sync::Arc<Self>) -> InFlight {
@@ -101,6 +137,26 @@ impl Replies {
         let _events = self.events.lock().expect("kernel replies");
         self.in_flight.fetch_sub(1, Ordering::SeqCst);
         self.changed.send_replace(());
+    }
+}
+
+/// A task's hold on its request: the right to answer it, which its last
+/// answer gives up and a reconnect can take ([`Replies::answer`],
+/// [`Replies::take`]).
+#[derive(Clone, Default)]
+pub(in crate::runtime) struct Claim(std::sync::Arc<Mutex<Hold>>);
+
+#[derive(Default)]
+struct Hold {
+    taken: bool,
+    standing: Option<Answer>,
+}
+
+impl Claim {
+    /// What the request answers if it is taken from its task from now on:
+    /// a submit whose frame is going out is in doubt, not unsent.
+    pub(super) fn stand(&self, answer: Answer) {
+        self.0.lock().expect("a request's claim").standing = Some(answer);
     }
 }
 
@@ -151,7 +207,8 @@ fn a_subscription_item_waits_for_the_redraw_that_takes_it() {
     use std::future::Future as _;
     let replies = std::sync::Arc::new(Replies::default());
     let mut drained = replies.drains();
-    let mut item = Box::pin(replies.subscription_item(&mut drained, 7, Ok(vec![1])));
+    let claim = Claim::default();
+    let mut item = Box::pin(replies.subscription_item(&mut drained, &claim, 7, Ok(vec![1])));
     let waker = futures::task::noop_waker();
     let mut poll = std::task::Context::from_waker(&waker);
     assert!(
