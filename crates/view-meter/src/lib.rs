@@ -24,12 +24,15 @@
 //!   (function entry, every loop header, after a size-charged operator whose
 //!   length is not a constant of at most 128), and a check traps when the
 //!   count is `<= 0`. As in wasmtime, the count lives in a function-local
-//!   (a register) while a function runs and is kept in one exported mutable
-//!   `i64` global, [`GAS`], wherever the host or another function can read
-//!   it: loaded at function entry and after a call, stored before a call, a
-//!   return, a trap and at the function's end. The host sets [`GAS`] to its
-//!   budget before a call and reads it after: used = budget - left, equal to
-//!   wasmtime's fuel count per call, and fuel runs out at the same check.
+//!   (a register) while a function runs and in one global between
+//!   functions: loaded at function entry and after a call, stored before a
+//!   call, a return and at the function's end. That global is internal;
+//!   the host's side is one exported mutable `i64` global, [`GAS`], which
+//!   every exported function's wrapper copies in before the call and out
+//!   after it, and which a fuel or memory trap writes. The host sets [`GAS`]
+//!   to its budget before a call and reads it after: used = budget - left,
+//!   equal to wasmtime's fuel count per call, and fuel runs out at the same
+//!   check.
 //! - **Memory.** Every `memory.grow` and `table.grow` first checks the whole
 //!   budget the way `ViewLimits` does (the grown size, plus the memory or
 //!   tables it does not grow, against `view_bytes`); past it the call traps
@@ -146,14 +149,15 @@ pub enum Stop {
 
 /// Classifies a trap of a metered call by [`GAS`] read after it.
 ///
-/// A view trap in the few operators between a charge that took [`GAS`] to
-/// zero or below and the next check reads as [`Stop::OutOfFuel`]; wasmtime
-/// would name the view's trap there. Both stop the call at the same point.
+/// [`GAS`] is written only by the exports' wrappers and by the pass's own
+/// traps, so a view's own trap leaves it at what the host armed: positive.
 pub fn stop(gas_left: i64) -> Stop {
-    match gas_left {
-        GROW_REFUSED => Stop::Memory,
-        ..=0 => Stop::OutOfFuel,
-        _ => Stop::Trap,
+    if gas_left == GROW_REFUSED {
+        Stop::Memory
+    } else if gas_left <= 0 {
+        Stop::OutOfFuel
+    } else {
+        Stop::Trap
     }
 }
 
@@ -218,9 +222,14 @@ pub fn meter(code: &[u8], view_bytes: u64) -> Result<Vec<u8>, Refusal> {
     let gas = module
         .globals
         .add_local(ValType::I64, true, false, ConstExpr::Value(Value::I64(0)));
-    module.exports.add(GAS, gas);
     let cx = Cx {
         gas,
+        shared: module.globals.add_local(
+            ValType::I64,
+            true,
+            false,
+            ConstExpr::Value(Value::I64(0)),
+        ),
         // one local id each serves every function (walrus numbers locals per
         // function on emit)
         fuel: module.locals.add(ValType::I64),
@@ -235,16 +244,62 @@ pub fn meter(code: &[u8], view_bytes: u64) -> Result<Vec<u8>, Refusal> {
         // a function invocation costs 1 (wasmtime: `fuel_consumed: 1`)
         meter_seq(function.builder_mut(), &cx, entry, entry, 1, true);
     }
+    hand_over(&mut module, &cx);
+    module.exports.add(GAS, gas);
     Ok(module.emit_wasm())
+}
+
+/// Every exported function becomes a wrapper that hands the count over:
+/// [`GAS`] into the internal global before the call, back after it. The
+/// count crosses every internal call in the internal global, which engines
+/// reach without the indirection an exported mutable global costs (in
+/// JavaScriptCore the difference was 1.32x against 1.17x of the unmetered
+/// tick). The wrapper is the pass's own code: never charged.
+fn hand_over(module: &mut walrus::Module, cx: &Cx) {
+    let exported: Vec<(walrus::ExportId, walrus::FunctionId)> = module
+        .exports
+        .iter()
+        .filter_map(|export| match export.item {
+            walrus::ExportItem::Function(function)
+                if matches!(
+                    module.funcs.get(function).kind,
+                    walrus::FunctionKind::Local(_)
+                ) =>
+            {
+                Some((export.id(), function))
+            }
+            _ => None,
+        })
+        .collect();
+    for (export, function) in exported {
+        let ty = module.types.get(module.funcs.get(function).ty());
+        let (params, results) = (ty.params().to_vec(), ty.results().to_vec());
+        let args: Vec<LocalId> = params
+            .iter()
+            .map(|&param| module.locals.add(param))
+            .collect();
+        let mut wrapper = FunctionBuilder::new(&mut module.types, &params, &results);
+        let mut body = wrapper.func_body();
+        body.global_get(cx.gas).global_set(cx.shared);
+        for &arg in &args {
+            body.local_get(arg);
+        }
+        body.call(function).global_get(cx.shared).global_set(cx.gas);
+        let wrapper = wrapper.finish(args, &mut module.funcs);
+        module.exports.get_mut(export).item = walrus::ExportItem::Function(wrapper);
+    }
 }
 
 /// What every rewritten sequence needs.
 struct Cx {
-    /// [`GAS`]: what the host and the other functions read
+    /// [`GAS`]: what the host sets and reads, written by the wrappers of the
+    /// exports and by a trap
     gas: GlobalId,
+    /// the count between functions (internal, so cheap to reach)
+    shared: GlobalId,
     /// the count while the function runs (wasmtime's `fuel_var`): loaded
-    /// from [`GAS`] at entry and after a call, stored back before a call, a
-    /// return, a trap and the function's end
+    /// from `shared` at entry and after a call, stored back before a call,
+    /// a return and the function's end
     fuel: LocalId,
     /// a size-charged operator's length, a grow's delta
     scratch: LocalId,
@@ -283,16 +338,16 @@ fn charge(cx: &Cx, seq: &mut Seq, pending: &mut i64) {
     *pending = 0;
 }
 
-/// [`GAS`] = the function's count: before control leaves the function or
-/// another function may read it (a call, a return, a trap, the end).
+/// `shared` = the function's count: before control leaves the function or
+/// another function may read it (a call, a return, the end).
 fn store(cx: &Cx, seq: &mut Seq) {
     put(seq, LocalGet { local: cx.fuel });
-    put(seq, GlobalSet { global: cx.gas });
+    put(seq, GlobalSet { global: cx.shared });
 }
 
-/// The function's count = [`GAS`]: at entry and after a call returns.
+/// The function's count = `shared`: at entry and after a call returns.
 fn load(cx: &Cx, seq: &mut Seq) {
-    put(seq, GlobalGet { global: cx.gas });
+    put(seq, GlobalGet { global: cx.shared });
     put(seq, LocalSet { local: cx.fuel });
 }
 
@@ -557,10 +612,13 @@ fn meter_seq(
                 charge(cx, &mut new, &mut pending);
                 store(cx, &mut new);
             }
-            Instr::Return(_) | Instr::Unreachable(Unreachable { .. }) => {
+            Instr::Return(_) => {
                 charge(cx, &mut new, &mut pending);
                 store(cx, &mut new);
             }
+            // a trap: nothing reads the count after it but the host, from
+            // [`GAS`], which keeps what it was armed with: the view's trap
+            Instr::Unreachable(Unreachable { .. }) => charge(cx, &mut new, &mut pending),
             Instr::Drop(_) => {}
             Instr::MemoryCopy(_)
             | Instr::MemoryFill(_)
