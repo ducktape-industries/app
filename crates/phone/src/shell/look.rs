@@ -15,6 +15,13 @@ pub struct Role {
     line: f32,
 }
 
+impl Role {
+    /// Its size in points.
+    pub fn size(self) -> f32 {
+        self.size
+    }
+}
+
 /// body 15 / 21
 pub const BODY: Role = Role {
     size: 15.,
@@ -24,6 +31,11 @@ pub const BODY: Role = Role {
 pub const SECONDARY: Role = Role {
     size: 13.,
     line: 18.,
+};
+/// small 14 / 19: a toast's words
+pub const SMALL: Role = Role {
+    size: 14.,
+    line: 19.,
 };
 /// caption 12 / 16
 pub const CAPTION: Role = Role {
@@ -120,6 +132,11 @@ pub struct Palette {
 }
 
 impl Palette {
+    /// Whether it is the dark appearance's.
+    pub fn dark(self) -> bool {
+        self.dark
+    }
+
     /// The scrim under a sheet (theme.ts: black at 0.4, 0.55 in the dark).
     pub fn scrim(self) -> Hsla {
         let alpha = if self.dark { 0.55 } else { 0.4 };
@@ -155,10 +172,5 @@ colours!(
     foreground,
     muted,
     faint,
-    accent,
-    accent_soft,
-    primary,
-    primary_foreground,
-    success,
-    danger
+    accent
 );

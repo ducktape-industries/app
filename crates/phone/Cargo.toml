@@ -40,6 +40,10 @@ ring = "0.17"
 # the links the OS hands the app, from its own thread (`os::link`); the
 # host's channel crate
 async-channel = "2"
+# the host's consent queue wakes the shell on a futures channel
+futures.workspace = true
+# a program's own link, for the capsule's Copy link
+ducklink.workspace = true
 
 [target.'cfg(target_os = "ios")'.dependencies]
 gpui-pre-ios.workspace = true
