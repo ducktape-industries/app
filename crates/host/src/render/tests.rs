@@ -309,6 +309,7 @@ mod picture_presentation;
 mod primitives;
 mod rich_tooltip;
 mod selection;
+mod sheet;
 mod svg_real;
 mod uniform_list;
 mod variable_list;

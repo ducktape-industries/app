@@ -21,6 +21,14 @@ pub(super) struct SheetState {
     drag: Option<Drag>,
 }
 
+impl SheetState {
+    /// The detent it rests at, by its place in the sheet's `detents`.
+    #[cfg(test)]
+    pub(super) fn rest(&self) -> usize {
+        self.rest
+    }
+}
+
 /// A drag of the handle: where the press was, the panel's height then, and
 /// its height now.
 struct Drag {
@@ -79,7 +87,7 @@ impl ViewTree {
             // the view's own look (its ground, its padding) is the panel's
             .refine_style(&style)
             // a press on the panel is the panel's, not the scrim's
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+            .occlude();
         if compact {
             let top = *detents.last().unwrap_or(&1.);
             let view = cx.entity().downgrade();
@@ -201,26 +209,20 @@ impl ViewTree {
             .opacity(0.5)
             .role(gpui_kit::Role::Button)
             .aria_label("Close")
+            // a tap on the scrim, or assistive technology's press on Close:
+            // a press, so a gesture
             .when_some(dismiss, |scrim, message| {
-                scrim
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
-                            // the press outside is a press: a gesture
-                            this.activate();
-                            cx.emit(wire::Event::Message(message))
-                        }),
-                    )
-                    // assistive technology's press on Close
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.activate();
-                        cx.emit(wire::Event::Message(message))
-                    }))
+                scrim.on_click(cx.listener(move |this, _, _, cx| {
+                    this.activate();
+                    cx.emit(wire::Event::Message(message))
+                }))
             });
         let mut layer = div()
             .id(native_id(id))
             .absolute()
             .inset_0()
+            // what the sheet covers takes no press while it is open
+            .occlude()
             .flex()
             .flex_col()
             .child(scrim)
