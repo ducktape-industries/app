@@ -5,7 +5,9 @@
 //! - [`render`]: `ViewTree`, one wire tree drawn as GPUI elements.
 //! - [`runtime`]: seats, views, the kernel relay, replies, notify, store,
 //!   clipboard, the roster.
-//! - [`runner`]: the wasmtime view runner (`contract::ViewRunner`).
+//! - [`runner`]: the wasmtime view runner (`contract::ViewRunner`), feature
+//!   `wasmtime` (on by default; off on iOS, whose runner is
+//!   `crates/host-jsc`).
 //! - [`backend`]: the node client and the frames the seated key signs, a
 //!   view's wasm out of its program's blob, prefs, recent nodes, the app's
 //!   own directories.

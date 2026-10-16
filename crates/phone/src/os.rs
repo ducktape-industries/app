@@ -20,7 +20,7 @@ pub mod ios {
 
 use ducktape_host::contract::{
     Banners, Dirs, Inbound, KeyRefusal, KeyStorage, Limits, MintInvite, OsFacts, OsServices,
-    Preload, Signal, SoftKeyboard,
+    Preload, RunnerConfig, Signal, SoftKeyboard, ViewRunner,
 };
 use ducktape_host::runtime::Answered;
 use ducktape_host::runtime::notify::{Click, Notice};
@@ -202,12 +202,42 @@ impl OsServices for PhoneOs {
             // killer is the owner of this bound (SPEC §4.5)
             loaders: 1,
             preload: Preload::Seat,
+            // iOS's views run in WebKit's content process, which can die
+            // under them (SPEC §6.5); Android's in this one, with the app
+            snapshot_every: cfg!(target_os = "ios").then_some(std::time::Duration::from_secs(1)),
             snapshot_to_disk: true,
         }
     }
 
     fn mint_invite(&self, _: MintInvite) -> Option<Answered> {
         None
+    }
+}
+
+/// What runs the views (`contract::ViewRunner`): JavaScriptCore's page on
+/// iOS, where no process of ours may JIT (`ducktape_host_jsc`); wasmtime
+/// elsewhere, its traps without signals on Android (an arm64 guest trap
+/// would otherwise take the process down). Either keeps its code under the
+/// cache. A runner iOS cannot make (not on the main thread, which the
+/// launch is) stops the phone with the reason logged.
+pub fn runner(dirs: &Dirs) -> Arc<dyn ViewRunner> {
+    let config = RunnerConfig {
+        signals_based_traps: !cfg!(target_os = "android"),
+        cache_dir: Some(dirs.cache.join("view-code")),
+    };
+    #[cfg(target_os = "ios")]
+    {
+        match ducktape_host_jsc::JscRunner::new(config) {
+            Ok(runner) => Arc::new(runner),
+            Err(failure) => {
+                tracing::error!(target: "ducktape::phone", %failure, "no view runner");
+                std::process::abort();
+            }
+        }
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        Arc::new(ducktape_host::runner::WasmtimeRunner::new(config))
     }
 }
 

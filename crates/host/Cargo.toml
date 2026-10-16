@@ -17,6 +17,11 @@ version.workspace = true
 publish = false
 
 [features]
+default = ["wasmtime"]
+# the wasmtime view runner (`runner::WasmtimeRunner`) and `program.describe`
+# on it: the desktop and Android. Off for iOS, where views run in
+# JavaScriptCore (`crates/host-jsc`) and no process of ours may JIT.
+wasmtime = ["dep:wasmtime", "describe/host"]
 # the AX test door (`src/ax`): kit and qa builds, and every test
 ax-door = []
 # gpui's own frame and input histograms into `GET /perf` (docs/perf.md §3.5)
@@ -25,7 +30,7 @@ perf-deep = ["gpui-kit/profiler"]
 web = ["dep:ducktape-web", "ducktape-web/cef"]
 # the test helpers the desktop shell's tests reach (`*_for_test`,
 # `test_style`, ...): on for every test build, never for a shipped one
-test-support = ["gpui-kit/test-support"]
+test-support = ["gpui-kit/test-support", "wasmtime"]
 
 [dependencies]
 gpui-kit = "=0.7.3"
@@ -35,7 +40,7 @@ futures.workspace = true
 async-channel = "2"
 zeroize.workspace = true
 design.workspace = true
-describe = { workspace = true, features = ["host"] }
+describe.workspace = true
 sha2.workspace = true
 identity.workspace = true
 # The roster's full query surface: its programs and its view-only entries.
@@ -65,7 +70,7 @@ view-wire = { workspace = true, features = ["manifest"] }
 program.workspace = true
 abi.workspace = true
 ducklink.workspace = true
-wasmtime.workspace = true
+wasmtime = { workspace = true, optional = true }
 wasmparser = "0.251"
 libc.workspace = true
 sha1 = "0.10"

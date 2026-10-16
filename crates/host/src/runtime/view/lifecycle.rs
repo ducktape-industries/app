@@ -27,14 +27,17 @@ impl View {
     /// pane holds yet (instance 0) stops at the compiled code under
     /// `Preload::Compile`: `Compiled`, its manifest read, nothing
     /// instantiated or run; the pane that claims it starts that code
-    /// ([`Self::start`]). Over an empty seat a pane holds the view is
-    /// `init`ed. With a view of the program already drawn, the same code is
-    /// `Unchanged`, and different code is prepared and parked on the seat,
-    /// whose own thread swaps it in (`seat::swap_in`): instantiated without
-    /// `init`, restored from the drawn view's snapshot, its first tree
-    /// verified. Overridden, Missing, Compiled, Ready and Failed each log one
-    /// `view_source` line here (the seat logs `Swapped`); every load that
-    /// got past the roster fills `timing`, which the seat logs as one
+    /// ([`Self::start`]). Over an empty seat a pane holds (or any seat,
+    /// under `Preload::Seat`) the prepared code is parked on the seat, whose
+    /// own thread seats and `init`s it (`Loaded::Seat`, `seat::start_in`):
+    /// no loader seats a view or begins a call into one. With a view of the
+    /// program already drawn, the same code is `Unchanged`, and different
+    /// code is prepared and parked on the seat, whose own thread swaps it in
+    /// (`seat::swap_in`): instantiated without `init`, restored from the
+    /// drawn view's snapshot, its first tree verified. Overridden, Missing,
+    /// Compiled and Failed each log one `view_source` line here (the seat's
+    /// thread logs a start's `Ready` or `Failed`, and `Swapped`); every load
+    /// that got past the roster fills `timing`, which is logged as one
     /// `view_load` line once the load is installed. Each stage is also a
     /// sample under the seat's perf key.
     pub fn load(
@@ -56,20 +59,24 @@ impl View {
         if let Some(path) = view_override(program) {
             let reason = format!("DUCKTAPE_VIEWS_DIR developer override: {}", path.display());
             logged(None, "Overridden", &reason);
-            if instance == 0 && preload_compiles() {
-                let shown = path.display().to_string();
-                let bytes = std::fs::read(&path).map_err(|error| {
-                    before_any_candidate(Failure::Refused(format!("{shown}: {error}")))
-                })?;
-                let runner = crate::contract::runner();
-                let (hash, prepared) =
-                    Self::prepare(&**runner, &bytes, &shown).map_err(before_any_candidate)?;
-                let view = view_code(program, runner, None, (hash, prepared.hold), &bytes);
-                return Ok(Loaded::Compiled(Box::new(view)));
-            }
-            return Self::load_from(program, &path)
-                .map(|view| Loaded::Fresh(Box::new(view)))
-                .map_err(|reason| before_any_candidate(Failure::Refused(reason)));
+            let shown = path.display().to_string();
+            let bytes = std::fs::read(&path).map_err(|error| {
+                before_any_candidate(Failure::Refused(format!("{shown}: {error}")))
+            })?;
+            let runner = crate::contract::runner();
+            let (hash, prepared) =
+                Self::prepare(&**runner, &bytes, &shown).map_err(before_any_candidate)?;
+            let view = Box::new(view_code(
+                program,
+                runner,
+                None,
+                (hash, prepared.hold),
+                &bytes,
+            ));
+            return Ok(match instance == 0 && preload_compiles() {
+                true => Loaded::Compiled(view),
+                false => Loaded::Seat { code: view, shown },
+            });
         }
         let Some(client) = asked_of.client.as_ref() else {
             let reason = "not connected to a node yet";
@@ -87,7 +94,7 @@ impl View {
         // is. A seat no pane holds is never started, however often it loads
         let startable = instance != 0 && lock(mounted).slot.startable(code);
         if startable {
-            return Self::start(program, code, generation, mounted, timing);
+            return Self::start(program, code, mounted, timing);
         }
         let runtime = handle();
         timing.started = Some(Instant::now());
@@ -195,9 +202,12 @@ impl View {
             if instance == 0 && preload_compiles() {
                 return Ok(Loaded::Compiled(Box::new(view)));
             }
-            let mut fresh = Self::instance_of(program, instance, &view, &shown, timing)?;
-            fresh.timed_init(&shown, timing)?;
-            Ok(Loaded::Fresh(Box::new(fresh)))
+            // seated and inited on the seat's own thread (`seat::start_in`),
+            // which logs the outcome
+            Ok(Loaded::Seat {
+                code: Box::new(view),
+                shown,
+            })
         })();
         timing.hash = Some(hash);
         timing.outcome = match &outcome {
@@ -205,6 +215,7 @@ impl View {
                 logged(Some(&hash), "Ready", "");
                 "Ready"
             }
+            Ok(Loaded::Seat { .. }) => "Seat",
             Ok(Loaded::Unchanged) => "Unchanged",
             Ok(Loaded::Compiled(_)) => {
                 logged(Some(&hash), "Compiled", "");
@@ -222,25 +233,22 @@ impl View {
         })
     }
 
-    /// The view a seat holds compiled out of the blob `code` names, started
-    /// for the pane that claimed it: an instance and its `init`, nothing
-    /// fetched or compiled again, which the window thread runs as it runs a
-    /// tick (`mounted`). A seat that moved on meanwhile (a newer load, the
+    /// The view a seat holds compiled out of the blob `code` names, handed
+    /// to the seat's thread to start for the pane that claimed it
+    /// (`seat::start_in`: an instance and its `init`), nothing fetched or
+    /// compiled again. A seat that moved on meanwhile (a newer load, the
     /// program gone) has nothing here to start: the load is stale, and its
     /// failure lands nowhere.
     pub fn start(
         program: &'static str,
         code: Option<(::abi::BlobId, bool)>,
-        generation: u64,
         mounted: &Arc<Mutex<Mounted>>,
         timing: &mut LoadTiming,
     ) -> Result<Loaded, Unloaded> {
-        let (view, instance) = {
+        let view = {
             let locked = lock(mounted);
             match &locked.slot {
-                Slot::Compiled(view) if locked.slot.startable(code) => {
-                    ((**view).clone(), locked.instance)
-                }
+                Slot::Compiled(view) if locked.slot.startable(code) => view.clone(),
                 _ => {
                     return Err(Unloaded {
                         hash: None,
@@ -256,41 +264,15 @@ impl View {
         timing.blob = "seat";
         timing.code = "seat";
         timing.hash = Some(view.hash);
+        timing.outcome = "Seat";
         let shown = shown_as(program, &view.hash);
-        let started =
-            Self::instance_of(program, instance, &view, &shown, timing).and_then(|mut fresh| {
-                fresh.timed_init(&shown, timing)?;
-                Ok(fresh)
-            });
-        let (state, reason) = match &started {
-            Ok(_) => ("Ready", String::new()),
-            Err(failure) => ("Failed", failure.to_string()),
-        };
-        log_source(program, Some(&view.hash), state, generation, &reason);
-        timing.outcome = state;
-        started
-            .map(|fresh| Loaded::Fresh(Box::new(fresh)))
-            .map_err(|failure| Unloaded {
-                hash: Some(view.hash),
-                failure,
-            })
+        Ok(Loaded::Seat { code: view, shown })
     }
 
     /// An instance of `view` for the pane `instance`, its manifest's facts
     /// on it, nothing run yet: `init`ed fresh, or `restore`d as a
-    /// replacement.
-    fn instance_of(
-        program: &'static str,
-        instance: u64,
-        view: &ViewCode,
-        shown: &str,
-        timing: &mut LoadTiming,
-    ) -> Result<Self, Failure> {
-        now(async { Ok(Self::seated_from(program, instance, view, shown, timing).await) })
-            .unwrap_or_else(|stuck| Err(Failure::Refused(stuck)))
-    }
-
-    /// [`Self::instance_of`], its seating awaited.
+    /// replacement. Each answer is awaited as it lands, on the seat's
+    /// thread.
     pub async fn seated_from(
         program: &'static str,
         instance: u64,
@@ -299,11 +281,10 @@ impl View {
         timing: &mut LoadTiming,
     ) -> Result<Self, Failure> {
         let instantiated = Instant::now();
-        let mut fresh = Self::seated(program, &view.runner, view.hash, shown)
+        let mut fresh = Self::seated(program, instance, &view.runner, view.hash, shown)
             .await
             .map_err(Failure::Refused)?;
         timing.instantiate = instantiated.elapsed();
-        fresh.instance = instance;
         let key = fresh.perf_key();
         crate::perf::record(key, "instantiate", timing.instantiate.as_micros() as u64);
         crate::perf::record(key, "fuel.instantiate", fresh.fuel_used());
@@ -379,12 +360,12 @@ impl View {
         alive: &Arc<()>,
         in_flight: bool,
     ) -> Result<async_channel::Receiver<Landed>, String> {
-        let (program, runner, hash, kept) = {
+        let (seat, runner, hash, kept) = {
             let mut locked = lock(mounted);
             let view = drawn(&mut locked, alive).map_err(|failure| failure.to_string())?;
             let kept = view.kept.clone().ok_or("no replay is kept")?;
             (
-                view.program,
+                SeatId(view.program, view.instance),
                 view.runner.clone(),
                 view.running.code_hash(),
                 kept,
@@ -399,7 +380,7 @@ impl View {
         };
         let (running, landing) = loop {
             let (land, landing) = Landing::channel();
-            runner.instantiate(hash, SeatId(program, 0), land);
+            runner.instantiate(hash, seat, land);
             // a runner that cannot seat the code at all is no page's death
             let running = match next(&landing).await {
                 Landed::Seated(running) => running,
@@ -695,8 +676,8 @@ impl View {
             alive: _,
             staged: _,
         } = self;
-        let mut sibling = Self::seated(program, runner, running.code_hash(), shown).await?;
-        sibling.instance = *instance;
+        let mut sibling =
+            Self::seated(program, *instance, runner, running.code_hash(), shown).await?;
         sibling.name = name.clone();
         sibling.icon = icon.clone();
         sibling.description = description.clone();
@@ -708,14 +689,13 @@ impl View {
         Ok(sibling)
     }
 
-    /// `init`, timed into `timing` and the registry, as a load runs it.
-    fn timed_init(&mut self, shown: &str, timing: &mut LoadTiming) -> Result<(), Failure> {
-        now(async { Ok(self.timed_inited(shown, timing).await) })
-            .unwrap_or_else(|stuck| Err(Failure::Trapped(stuck)))
-    }
-
-    /// [`Self::timed_init`], its answer awaited.
-    async fn timed_inited(&mut self, shown: &str, timing: &mut LoadTiming) -> Result<(), Failure> {
+    /// `init`, timed into `timing` and the registry, as a load runs it, its
+    /// answer awaited.
+    pub async fn timed_inited(
+        &mut self,
+        shown: &str,
+        timing: &mut LoadTiming,
+    ) -> Result<(), Failure> {
         let started = Instant::now();
         let ran = self.inited(shown).await;
         timing.init = started.elapsed();
@@ -792,7 +772,9 @@ impl View {
         }
     }
 
-    /// The view's `init` export: a fresh start, with no snapshot to restore.
+    /// The view's `init` export: a fresh start, with no snapshot to restore,
+    /// taken at once (a test's, on the wasmtime runner).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn init(&mut self, shown: &str) -> Result<(), String> {
         now(self.inited(shown))
     }
@@ -841,13 +823,16 @@ impl View {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn load_from(program: &'static str, path: &std::path::Path) -> Result<Self, String> {
         let shown = path.display().to_string();
         let bytes = std::fs::read(path).map_err(|error| format!("{shown}: {error}"))?;
         Self::from_bytes(program, &bytes, &shown)
     }
 
-    /// The view instantiated and mounted; `shown` names it in errors.
+    /// The view instantiated and mounted; `shown` names it in errors: a
+    /// test's, on the wasmtime runner, which answers at once.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn from_bytes(program: &'static str, bytes: &[u8], shown: &str) -> Result<Self, String> {
         let runner = crate::contract::runner();
         // held until the instance holds the code itself
@@ -898,14 +883,16 @@ impl View {
         Ok((hash, prepared))
     }
 
-    /// [`Self::seated`], taken at once: a load on its own thread, a test.
+    /// [`Self::seated`] for a seat no pane holds, taken at once: a test's,
+    /// on the wasmtime runner.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn instantiate(
         program: &'static str,
         runner: &Arc<dyn ViewRunner>,
         code: [u8; 32],
         shown: &str,
     ) -> Result<Self, String> {
-        now(Self::seated(program, runner, code, shown))
+        now(Self::seated(program, 0, runner, code, shown))
     }
 
     /// An instance of the prepared `code` seated by `runner`, its exports
@@ -913,12 +900,13 @@ impl View {
     /// `restore`d. Its answers land on a channel of its own.
     pub async fn seated(
         program: &'static str,
+        instance: u64,
         runner: &Arc<dyn ViewRunner>,
         code: [u8; 32],
         shown: &str,
     ) -> Result<Self, String> {
         let (land, landing) = Landing::channel();
-        runner.instantiate(code, SeatId(program, 0), land);
+        runner.instantiate(code, SeatId(program, instance), land);
         let running = match landing.recv().await {
             Ok(Landed::Seated(running)) => running,
             Ok(other) => return Err(format!("{shown}: {}", unexpected(other))),
@@ -932,7 +920,7 @@ impl View {
             connection: connection().lock().expect("views rpc").clone(),
             activation: None,
             program,
-            instance: 0,
+            instance,
             name: String::new(),
             icon: String::new(),
             description: String::new(),
@@ -1091,10 +1079,11 @@ fn drawn<'a>(locked: &'a mut Mounted, alive: &Arc<()>) -> Result<&'a mut View, F
     }
 }
 
-/// `call` taken at once, on a path that cannot wait for a later landing
-/// (a load on its own thread, a test): the wasmtime runner lands every
-/// answer before its call returns; a runner that answers later is refused
-/// here, never waited for.
+/// `call` taken at once, as a test takes it: the wasmtime runner lands
+/// every answer before its call returns; a runner that answers later is
+/// refused here, never waited for. Nothing else seats a view off the seat's
+/// thread (`seat::start_in`).
+#[cfg(any(test, feature = "test-support"))]
 fn now<T>(call: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
     use futures::FutureExt as _;
     call.now_or_never()

@@ -2022,7 +2022,11 @@ fn a_refused_kept_snapshot_is_asked_again_after_a_tick(cx: &mut TestAppContext) 
     assert_eq!(pump.held_kinds(), ["Frame"]);
     assert!(pump.release_next());
     native.run_until_parked();
-    assert_eq!(pump.held_kinds(), ["SnapshotRefused"], "asked after the tick");
+    assert_eq!(
+        pump.held_kinds(),
+        ["SnapshotRefused"],
+        "asked after the tick"
+    );
     crate::contract::testing::snapshot_every_for_test(None);
     pump.at_once();
     pump.release_all();
@@ -2119,7 +2123,11 @@ fn a_death_during_a_revive_starts_it_over(cx: &mut TestAppContext) {
     draw_now(&mut native);
     crate::contract::testing::snapshot_every_for_test(None);
     assert!(!in_flight(&seat, &native));
-    assert_eq!(ticks_of(&seat, &native), ticks + 1, "the tick that died landed");
+    assert_eq!(
+        ticks_of(&seat, &native),
+        ticks + 1,
+        "the tick that died landed"
+    );
     assert!(
         matches!(&mounted_of(&seat, &native).lock().unwrap().slot, Slot::Ready(view) if view.fault.is_none()),
         "a second death faulted the view"

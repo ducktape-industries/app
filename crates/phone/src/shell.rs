@@ -56,7 +56,15 @@ pub fn launch(os: Arc<dyn OsServices>, cx: &mut App) {
         tracing::error!(target: "ducktape::phone", %error, "the bundled faces could not be registered");
     }
     ducktape_host::theme::configure_native_theme(cx);
-    let (host, inbound) = ducktape_host::start::start(Boot { os }, cx);
+    let runner = crate::os::runner(os.dirs());
+    let (host, inbound) = ducktape_host::start::start(
+        Boot {
+            os,
+            runner,
+            open: opened,
+        },
+        cx,
+    );
     crate::os::install_inbound(inbound);
     if let Some(target) = Session::boot_target() {
         host.shared
@@ -75,6 +83,10 @@ pub fn launch(os: Arc<dyn OsServices>, cx: &mut App) {
     })
     .detach();
 }
+
+/// What a banner click names, opened: the phone posts no banners yet
+/// (`os::NoBanners`), so no click ever names anything.
+fn opened(_: ducktape_host::runtime::notify::Opened) {}
 
 /// Opens the phone's window over the host [`launch`] started.
 pub fn open_window(cx: &mut App) {
