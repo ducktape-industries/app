@@ -65,6 +65,11 @@ pub struct Center {
     /// Views that posted before the person said anything about them.
     pub asking: BTreeSet<String>,
     pub(super) not_now: BTreeSet<String>,
+    /// Views that opened a live track, their window's line not yet put
+    /// away (the consent line, [`Center::went_live`]).
+    pub(crate) sharing: BTreeSet<String>,
+    /// Views whose live line the person put away this run.
+    told: BTreeSet<String>,
     /// Moves with every change to the log: the bell's list is read again.
     rev: u64,
     /// The `rev` last handed to the disk ([`Center::flush`]).
@@ -272,6 +277,18 @@ impl Center {
     #[cfg(any(test, feature = "test-support"))]
     pub fn ask_for_test(&mut self, program: &str) {
         self.asking.insert(program.to_owned());
+    }
+
+    /// `program` opened a live track: its window says so in a line, once a
+    /// run. `true` when the line is new.
+    pub(crate) fn went_live(&mut self, program: &str) -> bool {
+        !self.told.contains(program) && self.sharing.insert(program.to_owned())
+    }
+
+    /// The person read `program`'s live line: it goes for this run.
+    pub fn put_away_live(&mut self, program: &str) {
+        self.sharing.remove(program);
+        self.told.insert(program.to_owned());
     }
 
     /// Notices from `program` this past week, folded ones counted.

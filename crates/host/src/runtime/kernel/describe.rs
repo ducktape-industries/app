@@ -98,7 +98,7 @@ async fn module(node: &Node, code: abi::BlobId) -> Result<Option<Arc<Module>>, w
                 Err(_) => return Err(None),
             };
             Ok(tokio::task::spawn_blocking(move || {
-                ::describe::host::section(&bytes)
+                ::describe::section(&bytes)
                     .and_then(|section| {
                         ::describe::host::compile(super::super::view::engine(), section)
                     })

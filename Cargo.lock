@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "abi"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=c0eebb0e761669e9442f8d0c203cd37b0b8c9165#c0eebb0e761669e9442f8d0c203cd37b0b8c9165"
+source = "git+https://github.com/ducktape-industries/programs?rev=742d4f7032ff93134df7998bf0efcadcd3bcd04b#742d4f7032ff93134df7998bf0efcadcd3bcd04b"
 dependencies = [
  "borsh",
  "design",
@@ -317,7 +317,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -328,7 +328,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -436,6 +436,45 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "zbus 5.19.0",
+]
+
+[[package]]
+name = "asn1-rs"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7f43a50ac4fdca5df8e885c21b835997f0a1cdee65494a6847694a98652d9d8"
+dependencies = [
+ "asn1-rs-derive",
+ "asn1-rs-impl",
+ "displaydoc",
+ "nom 7.1.3",
+ "num-traits",
+ "rusticata-macros",
+ "thiserror 2.0.20",
+ "time",
+]
+
+[[package]]
+name = "asn1-rs-derive"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3109e49b1e4909e9db6515a30c633684d68cdeaa252f215214cb4fa1a5bfee2c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "synstructure 0.13.2",
+]
+
+[[package]]
+name = "asn1-rs-impl"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b18050c2cd6fe86c3a76584ef5e0baf286d038cda203eb6223df2cc413565f7"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -675,7 +714,7 @@ dependencies = [
  "anyhow",
  "arrayvec",
  "log",
- "nom",
+ "nom 8.0.0",
  "num-rational",
  "v_frame",
 ]
@@ -804,6 +843,9 @@ name = "bit-vec"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b71798fca2c1fe1086445a7258a4bc81e6e49dcd24c8d0dd9a1e57395b603f51"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "bit_field"
@@ -870,7 +912,7 @@ dependencies = [
 [[package]]
 name = "blob"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape?rev=a4360f6d6ac3b807df95e3fda24d8d8a8b130049#a4360f6d6ac3b807df95e3fda24d8d8a8b130049"
+source = "git+https://github.com/ducktape-industries/ducktape?rev=8a0151a411c3558453c34bb8272b93dfc428cb74#8a0151a411c3558453c34bb8272b93dfc428cb74"
 dependencies = [
  "abi",
  "borsh",
@@ -881,7 +923,7 @@ dependencies = [
 [[package]]
 name = "blobs"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=c0eebb0e761669e9442f8d0c203cd37b0b8c9165#c0eebb0e761669e9442f8d0c203cd37b0b8c9165"
+source = "git+https://github.com/ducktape-industries/programs?rev=742d4f7032ff93134df7998bf0efcadcd3bcd04b#742d4f7032ff93134df7998bf0efcadcd3bcd04b"
 dependencies = [
  "abi",
  "blob",
@@ -2264,6 +2306,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "der-parser"
+version = "10.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07da5016415d5a3c4dd39b11ed26f915f52fc4e0dc197d87908bc916e51bc1a6"
+dependencies = [
+ "asn1-rs",
+ "displaydoc",
+ "nom 7.1.3",
+ "num-bigint",
+ "num-traits",
+ "rusticata-macros",
+]
+
+[[package]]
 name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2294,7 +2350,7 @@ dependencies = [
 [[package]]
 name = "describe"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=c0eebb0e761669e9442f8d0c203cd37b0b8c9165#c0eebb0e761669e9442f8d0c203cd37b0b8c9165"
+source = "git+https://github.com/ducktape-industries/programs?rev=742d4f7032ff93134df7998bf0efcadcd3bcd04b#742d4f7032ff93134df7998bf0efcadcd3bcd04b"
 dependencies = [
  "borsh",
  "serde",
@@ -2304,7 +2360,7 @@ dependencies = [
 [[package]]
 name = "design"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=c0eebb0e761669e9442f8d0c203cd37b0b8c9165#c0eebb0e761669e9442f8d0c203cd37b0b8c9165"
+source = "git+https://github.com/ducktape-industries/programs?rev=742d4f7032ff93134df7998bf0efcadcd3bcd04b#742d4f7032ff93134df7998bf0efcadcd3bcd04b"
 
 [[package]]
 name = "digest"
@@ -2379,7 +2435,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.3",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2474,7 +2530,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 [[package]]
 name = "ducklink"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=c0eebb0e761669e9442f8d0c203cd37b0b8c9165#c0eebb0e761669e9442f8d0c203cd37b0b8c9165"
+source = "git+https://github.com/ducktape-industries/programs?rev=742d4f7032ff93134df7998bf0efcadcd3bcd04b#742d4f7032ff93134df7998bf0efcadcd3bcd04b"
 dependencies = [
  "abi",
  "program",
@@ -2543,6 +2599,7 @@ dependencies = [
  "async-channel",
  "blob",
  "blobs",
+ "borsh",
  "commonware-codec",
  "commonware-cryptography",
  "describe",
@@ -2555,11 +2612,17 @@ dependencies = [
  "gpui-pre-wgpu",
  "identity",
  "image",
+ "keyscheme",
  "libc",
+ "live-wire",
  "noded-client",
  "program",
  "programs",
+ "quinn",
  "rand 0.8.8",
+ "rcgen",
+ "rustls",
+ "rustls-webpki",
  "serde",
  "serde_json",
  "sha1",
@@ -2569,7 +2632,9 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "unicode-segmentation",
+ "url",
  "usvg 0.46.0",
+ "valset",
  "view-wire",
  "wasmparser 0.251.0",
  "wasmtime",
@@ -2874,13 +2939,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
 name = "error"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=c0eebb0e761669e9442f8d0c203cd37b0b8c9165#c0eebb0e761669e9442f8d0c203cd37b0b8c9165"
+source = "git+https://github.com/ducktape-industries/programs?rev=742d4f7032ff93134df7998bf0efcadcd3bcd04b#742d4f7032ff93134df7998bf0efcadcd3bcd04b"
 dependencies = [
  "borsh",
  "serde",
@@ -3524,7 +3589,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.20",
- "windows 0.62.2",
+ "windows 0.58.0",
 ]
 
 [[package]]
@@ -3997,7 +4062,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre"
 version = "0.3.9"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=2693d02b570f0d3dabdc69b2c5e72b1dc19db83a#2693d02b570f0d3dabdc69b2c5e72b1dc19db83a"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=1026d7a2bac0a21cc73cd9f31a2a56b23f973cea#1026d7a2bac0a21cc73cd9f31a2a56b23f973cea"
 dependencies = [
  "accesskit 0.25.1",
  "anyhow",
@@ -4151,7 +4216,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-linux"
 version = "0.3.9"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=2693d02b570f0d3dabdc69b2c5e72b1dc19db83a#2693d02b570f0d3dabdc69b2c5e72b1dc19db83a"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=1026d7a2bac0a21cc73cd9f31a2a56b23f973cea#1026d7a2bac0a21cc73cd9f31a2a56b23f973cea"
 dependencies = [
  "accesskit 0.25.1",
  "accesskit_unix 0.24.0",
@@ -4195,7 +4260,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-macos"
 version = "0.3.9"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=2693d02b570f0d3dabdc69b2c5e72b1dc19db83a#2693d02b570f0d3dabdc69b2c5e72b1dc19db83a"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=1026d7a2bac0a21cc73cd9f31a2a56b23f973cea#1026d7a2bac0a21cc73cd9f31a2a56b23f973cea"
 dependencies = [
  "accesskit 0.25.1",
  "accesskit_macos 0.27.1",
@@ -4322,7 +4387,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-scheduler"
 version = "0.3.9"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=2693d02b570f0d3dabdc69b2c5e72b1dc19db83a#2693d02b570f0d3dabdc69b2c5e72b1dc19db83a"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=1026d7a2bac0a21cc73cd9f31a2a56b23f973cea#1026d7a2bac0a21cc73cd9f31a2a56b23f973cea"
 dependencies = [
  "async-task",
  "backtrace",
@@ -4402,7 +4467,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-wgpu"
 version = "0.3.9"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=2693d02b570f0d3dabdc69b2c5e72b1dc19db83a#2693d02b570f0d3dabdc69b2c5e72b1dc19db83a"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=1026d7a2bac0a21cc73cd9f31a2a56b23f973cea#1026d7a2bac0a21cc73cd9f31a2a56b23f973cea"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -4533,6 +4598,18 @@ dependencies = [
  "crunchy",
  "num-traits",
  "zerocopy",
+]
+
+[[package]]
+name = "halo"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/programs?rev=742d4f7032ff93134df7998bf0efcadcd3bcd04b#742d4f7032ff93134df7998bf0efcadcd3bcd04b"
+dependencies = [
+ "abi",
+ "borsh",
+ "describe",
+ "program",
+ "store",
 ]
 
 [[package]]
@@ -4817,7 +4894,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.58.0",
 ]
 
 [[package]]
@@ -4921,7 +4998,7 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 [[package]]
 name = "identity"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=c0eebb0e761669e9442f8d0c203cd37b0b8c9165#c0eebb0e761669e9442f8d0c203cd37b0b8c9165"
+source = "git+https://github.com/ducktape-industries/programs?rev=742d4f7032ff93134df7998bf0efcadcd3bcd04b#742d4f7032ff93134df7998bf0efcadcd3bcd04b"
 dependencies = [
  "abi",
  "borsh",
@@ -5302,8 +5379,9 @@ dependencies = [
 [[package]]
 name = "keyscheme"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape?rev=9dfffb0662bd8a16293df8c75de8817a79b0810b#9dfffb0662bd8a16293df8c75de8817a79b0810b"
+source = "git+https://github.com/ducktape-industries/ducktape?rev=8a0151a411c3558453c34bb8272b93dfc428cb74#8a0151a411c3558453c34bb8272b93dfc428cb74"
 dependencies = [
+ "abi",
  "base64 0.22.1",
  "borsh",
  "commonware-codec",
@@ -5513,6 +5591,15 @@ name = "litrs"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
+
+[[package]]
+name = "live-wire"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/ducktape?rev=8a0151a411c3558453c34bb8272b93dfc428cb74#8a0151a411c3558453c34bb8272b93dfc428cb74"
+dependencies = [
+ "abi",
+ "borsh",
+]
 
 [[package]]
 name = "lock_api"
@@ -5777,6 +5864,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "minimal-lexical"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5834,7 +5927,7 @@ dependencies = [
  "once_cell",
  "png 0.18.1",
  "thiserror 2.0.20",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5955,6 +6048,16 @@ checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
 
 [[package]]
 name = "nom"
+version = "7.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
+dependencies = [
+ "memchr",
+ "minimal-lexical",
+]
+
+[[package]]
+name = "nom"
 version = "8.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df9761775871bdef83bee530e60050f7e54b1105350d6884eb0fb4f46c2f9405"
@@ -6033,7 +6136,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6529,6 +6632,15 @@ dependencies = [
  "hashbrown 0.17.1",
  "indexmap",
  "memchr",
+]
+
+[[package]]
+name = "oid-registry"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12f40cff3dde1b6087cc5d5f5d4d65712f34016a03ed60e9c08dcc392736b5b7"
+dependencies = [
+ "asn1-rs",
 ]
 
 [[package]]
@@ -7185,7 +7297,7 @@ dependencies = [
 [[package]]
 name = "program"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=c0eebb0e761669e9442f8d0c203cd37b0b8c9165#c0eebb0e761669e9442f8d0c203cd37b0b8c9165"
+source = "git+https://github.com/ducktape-industries/programs?rev=742d4f7032ff93134df7998bf0efcadcd3bcd04b#742d4f7032ff93134df7998bf0efcadcd3bcd04b"
 dependencies = [
  "abi",
  "blob",
@@ -7198,7 +7310,7 @@ dependencies = [
 [[package]]
 name = "program-derive"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=c0eebb0e761669e9442f8d0c203cd37b0b8c9165#c0eebb0e761669e9442f8d0c203cd37b0b8c9165"
+source = "git+https://github.com/ducktape-industries/programs?rev=742d4f7032ff93134df7998bf0efcadcd3bcd04b#742d4f7032ff93134df7998bf0efcadcd3bcd04b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7208,7 +7320,7 @@ dependencies = [
 [[package]]
 name = "programs"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=c0eebb0e761669e9442f8d0c203cd37b0b8c9165#c0eebb0e761669e9442f8d0c203cd37b0b8c9165"
+source = "git+https://github.com/ducktape-industries/programs?rev=742d4f7032ff93134df7998bf0efcadcd3bcd04b#742d4f7032ff93134df7998bf0efcadcd3bcd04b"
 dependencies = [
  "abi",
  "blob",
@@ -7385,7 +7497,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7620,6 +7732,19 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
+]
+
+[[package]]
+name = "rcgen"
+version = "0.14.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8774e05a7d0de114588e6a28fe7e71694b82614ed569d86d8b389dfbc98b8ad8"
+dependencies = [
+ "ring",
+ "rustls-pki-types",
+ "time",
+ "x509-parser",
+ "yasna",
 ]
 
 [[package]]
@@ -7877,7 +8002,7 @@ dependencies = [
 [[package]]
 name = "rmp-serde"
 version = "1.3.1"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=2693d02b570f0d3dabdc69b2c5e72b1dc19db83a#2693d02b570f0d3dabdc69b2c5e72b1dc19db83a"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=1026d7a2bac0a21cc73cd9f31a2a56b23f973cea#1026d7a2bac0a21cc73cd9f31a2a56b23f973cea"
 dependencies = [
  "rmp",
  "serde",
@@ -8019,6 +8144,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusticata-macros"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "faf0c4a6ece9950b9abdb62b1cfcf2a68b3b67a10ba445b3bb85be2a293d0632"
+dependencies = [
+ "nom 7.1.3",
+]
+
+[[package]]
 name = "rustix"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8028,7 +8162,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -8683,7 +8817,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -8759,7 +8893,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "store"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=c0eebb0e761669e9442f8d0c203cd37b0b8c9165#c0eebb0e761669e9442f8d0c203cd37b0b8c9165"
+source = "git+https://github.com/ducktape-industries/programs?rev=742d4f7032ff93134df7998bf0efcadcd3bcd04b#742d4f7032ff93134df7998bf0efcadcd3bcd04b"
 dependencies = [
  "abi",
  "borsh",
@@ -8910,6 +9044,17 @@ dependencies = [
 
 [[package]]
 name = "synstructure"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "728a70f3dbaf5bab7f0c4b1ac8d7ae5ea60a4b5549c8a5914361c99147a709d2"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "synstructure"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "901704edd0dfe137f1987838ee4f259e4e063c31371bdb423f7ae38ec6f77f02"
@@ -9025,7 +9170,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -9519,7 +9664,7 @@ dependencies = [
  "once_cell",
  "png 0.18.1",
  "thiserror 2.0.20",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -9582,7 +9727,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -9866,11 +10011,12 @@ dependencies = [
 [[package]]
 name = "valset"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=c0eebb0e761669e9442f8d0c203cd37b0b8c9165#c0eebb0e761669e9442f8d0c203cd37b0b8c9165"
+source = "git+https://github.com/ducktape-industries/programs?rev=742d4f7032ff93134df7998bf0efcadcd3bcd04b#742d4f7032ff93134df7998bf0efcadcd3bcd04b"
 dependencies = [
  "abi",
  "borsh",
  "describe",
+ "halo",
  "program",
  "programs",
  "store",
@@ -9891,7 +10037,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "view-wire"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=c0eebb0e761669e9442f8d0c203cd37b0b8c9165#c0eebb0e761669e9442f8d0c203cd37b0b8c9165"
+source = "git+https://github.com/ducktape-industries/programs?rev=742d4f7032ff93134df7998bf0efcadcd3bcd04b#742d4f7032ff93134df7998bf0efcadcd3bcd04b"
 dependencies = [
  "accesskit 0.25.1",
  "borsh",
@@ -9903,6 +10049,7 @@ dependencies = [
  "rmp-serde",
  "serde",
  "slotmap",
+ "strum",
  "unicode-segmentation",
  "uuid",
  "wasmparser 0.251.0",
@@ -10743,7 +10890,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -11450,6 +11597,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "x509-parser"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d43b0f71ce057da06bc0851b23ee24f3f86190b07203dd8f567d0b706a185202"
+dependencies = [
+ "asn1-rs",
+ "data-encoding",
+ "der-parser",
+ "lazy_static",
+ "nom 7.1.3",
+ "oid-registry",
+ "ring",
+ "rusticata-macros",
+ "thiserror 2.0.20",
+ "time",
+]
+
+[[package]]
 name = "xattr"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11553,6 +11718,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a5a4b21e1a62b67a2970e6831bc091d7b87e119e7f9791aef9702e3bef04448"
 
 [[package]]
+name = "yasna"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5f6765e852b9b4dc8e2a76843e4d64d1cea8e79bcde0b6901aea8e7c7f08282"
+dependencies = [
+ "bit-vec 0.9.1",
+ "time",
+]
+
+[[package]]
 name = "yazi"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11589,7 +11764,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
- "synstructure",
+ "synstructure 0.14.0",
 ]
 
 [[package]]
@@ -11810,7 +11985,7 @@ dependencies = [
 [[package]]
 name = "zed-xim"
 version = "0.4.0-zed"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=2693d02b570f0d3dabdc69b2c5e72b1dc19db83a#2693d02b570f0d3dabdc69b2c5e72b1dc19db83a"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=1026d7a2bac0a21cc73cd9f31a2a56b23f973cea#1026d7a2bac0a21cc73cd9f31a2a56b23f973cea"
 dependencies = [
  "ahash",
  "hashbrown 0.14.5",
@@ -11864,7 +12039,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
- "synstructure",
+ "synstructure 0.14.0",
 ]
 
 [[package]]

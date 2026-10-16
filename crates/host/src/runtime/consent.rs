@@ -255,7 +255,7 @@ pub(super) fn needed(
             | identity::Op::SetProfile { .. }
             | identity::Op::Resume { .. }
             | identity::Op::SetAudience { .. }
-            | identity::Op::SetRunner { .. } => None,
+            | identity::Op::SetScript { .. } => None,
         };
         if asked.is_some() {
             return asked;
@@ -552,8 +552,8 @@ mod tests {
     }
 
     /// Claim: a view whose program is bound to no role asks for every op to
-    /// a role's program, the network's title for the programs role and the
-    /// validators, the account's for identity, and leaves the words to the
+    /// a bound role's program (egress among them), the account's title for
+    /// identity and the network's for every other, and leaves the words to the
     /// target's description; its op to any other program, any op from a
     /// role's own program, and every op while no bindings are known ask
     /// nothing new. The identity ops that remove or suspend keep their own
@@ -652,6 +652,33 @@ mod tests {
             );
             assert_eq!((words.title, words.described), (ACCOUNT, false));
         }
+    }
+
+    /// Claim: a vote on a role's op reads on the card in that program's own
+    /// words (halo's here), through the validators' program's description;
+    /// a vote on the roles table names the role and the program it binds.
+    #[test]
+    fn a_role_vote_reads_in_its_programs_words_and_a_bind_names_both() {
+        let open = abi::role::halo::Op::Open {
+            name: "ducktape/live".into(),
+            cap: abi::role::halo::Class::Client,
+        };
+        let vote = valset::Op::Vote(valset::Motion::Role {
+            role: abi::role::HALO.into(),
+            op: abi::encode(&open),
+        });
+        assert_eq!(
+            shown(Some(&valset::describe(&vote)), 0),
+            "Vote · Open lane · ducktape/live\ncap Client"
+        );
+        let bind = valset::Op::Vote(valset::Motion::Bind {
+            role: abi::role::EGRESS.into(),
+            program: Some("gateway".into()),
+        });
+        assert_eq!(
+            shown(Some(&valset::describe(&bind)), 0),
+            "Vote · bind egress to gateway\nrole egress · program gateway"
+        );
     }
 
     /// Claim: the card shows a description as the program's title, then
