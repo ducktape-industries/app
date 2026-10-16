@@ -57,7 +57,7 @@ mod tree;
 
 use actions::{current, drag_by_id, perform_by_id, press_keys, read, reveal, shortcuts};
 #[cfg(feature = "ax-door")]
-pub use http::{cli, open};
+pub use http::{cli, open, open_at};
 pub use tree::{AxNode, snapshot};
 use tree::{compact, delta, nearest, offers};
 
