@@ -181,6 +181,8 @@ impl OsServices for DesktopOs {
             rss_unit: if cfg!(target_os = "macos") { 1 } else { 1024 },
             touch_first: false,
             device_label: DEVICE_LABEL,
+            device_noun: "computer",
+            one_layout: false,
         }
     }
 

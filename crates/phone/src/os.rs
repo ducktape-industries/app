@@ -193,6 +193,8 @@ impl OsServices for PhoneOs {
             touch_first: true,
             // the Expo build's label for this key (mobile `node.rs:344`)
             device_label: "Phone",
+            device_noun: "phone",
+            one_layout: true,
         }
     }
 

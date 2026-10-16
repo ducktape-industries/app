@@ -158,6 +158,12 @@ pub struct OsFacts {
     /// What this device's key is labelled on the account it joins
     /// (`identity::DeviceKey.label`): "Desktop", "iPhone", ...
     pub device_label: &'static str,
+    /// What the person calls this device in a sentence ("this phone's
+    /// network"): "phone", "computer".
+    pub device_noun: &'static str,
+    /// The device has one layout: the desk comes without the layout
+    /// question (`Account::show`). A phone.
+    pub one_layout: bool,
 }
 
 /// Values that differ by device and have a measured owner (SPEC §4.5).
@@ -431,6 +437,8 @@ pub mod testing {
                 rss_unit: 1024,
                 touch_first: false,
                 device_label: "Test",
+                device_noun: "computer",
+                one_layout: false,
             }
         }
 
