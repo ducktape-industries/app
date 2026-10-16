@@ -89,6 +89,9 @@
 //! In a sibling module [`answer`] asks first:
 //! - `clipboard.read`, `clipboard.write` — `clipboard`, run on the window
 //!   thread after the tick.
+//! - `file.pick`, `file.read` — `picker`: the system's picker opened on
+//!   the window thread after the tick, the files picked held open and read
+//!   a slice at a time on a blocking thread.
 //! - `notify.post`, `notify.seen` — `notify`, the notification centre.
 //! - `store.get`, `store.set` — `store`, the view's file on this device;
 //!   `store.changes` — a subscription to the keys another instance of the
@@ -232,6 +235,7 @@ pub(super) fn answer(
     props: &Option<Vec<u8>>,
 ) -> bool {
     if super::clipboard::answer(view, capability, operation, id, payload)
+        || super::picker::answer(view, capability, operation, id, payload)
         || super::notify::answer(view, capability, operation, id, payload)
         || super::store::answer(view, capability, operation, id, payload)
     {
