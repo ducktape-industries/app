@@ -20,6 +20,44 @@ pub struct Notice {
     pub title: String,
     pub body: String,
     pub tag: String,
+    pub kind: NoticeKind,
+    /// Unix seconds past which the notice is stale: never raised past it,
+    /// and taken down at it ([`Center::ring_over`]). 0: none.
+    pub until: u64,
+}
+
+/// What a notice is to its carrier.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NoticeKind {
+    /// Shown and logged.
+    #[default]
+    Notice,
+    /// Rings: a banner with Answer and Decline where the OS has actions,
+    /// standing until `notify.seen` of its tag or its `until`. Never held
+    /// back by the burst limit, and raised once before the person said
+    /// anything about its view.
+    Call,
+}
+
+/// A view's notice and what it is to a carrier. The wire's `Notification`
+/// carries neither yet: until the SDK's `kind` and `until` reach this pin,
+/// a view's notice is a plain one ([`From<Notification>`]), and that `From`
+/// is where they map.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Posted {
+    pub notification: Notification,
+    pub kind: NoticeKind,
+    pub until: u64,
+}
+
+impl From<Notification> for Posted {
+    fn from(notification: Notification) -> Self {
+        Self {
+            notification,
+            kind: NoticeKind::Notice,
+            until: 0,
+        }
+    }
 }
 
 /// One row of the centre.
@@ -70,6 +108,11 @@ pub struct Center {
     pub(crate) sharing: BTreeSet<String>,
     /// Views whose live line the person put away this run.
     told: BTreeSet<String>,
+    /// Views whose call rang before the person said anything about them:
+    /// one does, once a run.
+    rang_unasked: BTreeSet<String>,
+    /// The `until` of each banner standing under a tag that has one.
+    until: HashMap<String, u64>,
     /// Moves with every change to the log: the bell's list is read again.
     rev: u64,
     /// The `rev` last handed to the disk ([`Center::flush`]).
@@ -106,16 +149,24 @@ pub fn wall() -> i64 {
 impl Center {
     /// What to do with one notice from `program` (named `view`): the answer
     /// for the view, and the banner to raise, if any — the notice's own, or
-    /// the view's "N more" once it is past its burst.
+    /// the view's "N more" once it is past its burst. A call is never held
+    /// back by the burst nor folded into "N more", and rings once before
+    /// the person said anything about its view; a notice past its `until`
+    /// is logged only.
     pub fn post(
         &mut self,
         settings: &Settings,
         program: &str,
         view: &str,
-        post: Notification,
+        post: impl Into<Posted>,
         now: Instant,
         wall: i64,
     ) -> (Delivery, Option<Notice>) {
+        let Posted {
+            notification: post,
+            kind,
+            until,
+        } = post.into();
         let permission = settings.views.get(program).copied();
         if permission == Some(Permission::Block) {
             return (Delivery::Blocked, None);
@@ -128,14 +179,22 @@ impl Center {
                 true => String::new(),
                 false => format!("{program}/{}", post.tag),
             },
+            kind,
+            until,
         };
         self.log(program, view, post, wall);
+        if until != 0 && until <= u64::try_from(wall).unwrap_or(0) {
+            return (Delivery::Logged, None);
+        }
+        let call = kind == NoticeKind::Call;
         match permission {
             None => {
                 if !self.not_now.contains(program) {
                     self.asking.insert(program.to_owned());
                 }
-                return (Delivery::Logged, None);
+                if !(call && self.rang_unasked.insert(program.to_owned())) {
+                    return (Delivery::Logged, None);
+                }
             }
             Some(Permission::Silent) => return (Delivery::Logged, None),
             _ => {}
@@ -143,6 +202,10 @@ impl Center {
         let in_front = self.front.is_some_and(|(_, focused)| focused == program);
         if !settings.banners || (in_front && !settings.in_front) {
             return (Delivery::Logged, None);
+        }
+        if call {
+            self.raised(&notice);
+            return (Delivery::Banner, Some(notice));
         }
         let burst = f64::from(settings.burst.max(1));
         let bucket = self.buckets.entry(program.to_owned()).or_insert(Bucket {
@@ -155,6 +218,7 @@ impl Center {
         if bucket.tokens >= 1. {
             bucket.tokens -= 1.;
             self.more.remove(program);
+            self.raised(&notice);
             return (Delivery::Banner, Some(notice));
         }
         let more = self.more.entry(program.to_owned()).or_default();
@@ -163,8 +227,33 @@ impl Center {
             title: format!("{more} more from {view}"),
             body: "They're waiting in Notifications.".into(),
             tag: format!("more/{program}"),
+            ..Notice::default()
         };
         (Delivery::Logged, Some(more))
+    }
+
+    /// `notice`'s banner goes up: it stands under its tag until its
+    /// `until`, or with none when it has none.
+    fn raised(&mut self, notice: &Notice) {
+        if notice.tag.is_empty() {
+            return;
+        }
+        match notice.until {
+            0 => self.until.remove(&notice.tag),
+            until => self.until.insert(notice.tag.clone(), until),
+        };
+    }
+
+    /// The host's timer at `until` for the banner raised under `tag`
+    /// (`notify::withdraw_at`): whether that banner is still the one
+    /// standing there, now taken off the list. A later banner under the
+    /// tag (a call rung again), or one already taken down, is not.
+    pub fn ring_over(&mut self, tag: &str, until: u64) -> bool {
+        let over = self.until.get(tag) == Some(&until);
+        if over {
+            self.until.remove(tag);
+        }
+        over
     }
 
     /// Into the log: a notice under a tag the view already has a row for
@@ -239,6 +328,8 @@ impl Center {
     /// rows under it are read, and no other view's. Whether any changed.
     /// Written at the end of the view's redraw ([`Center::flush`]).
     pub fn read_tag(&mut self, program: &str, tag: &str) -> bool {
+        // its banner is taken down (`notify::seen`): no timer of its stays
+        self.until.remove(&format!("{program}/{tag}"));
         let mut changed = false;
         for entry in &mut self.entries {
             if !tag.is_empty() && entry.program == program && entry.tag == tag && !entry.read {
