@@ -764,6 +764,14 @@ impl Windows {
                     self.notice(said, cx);
                 }
             }
+            // another chain's page is not this chain's to show
+            Opening::Elsewhere { program, chain } => {
+                self.open_seat(program, None, from, cx);
+                self.notice(
+                    format!("That link is to {chain}, not this network; opened {program}."),
+                    cx,
+                );
+            }
             Opening::Browser(url) => cx.open_url(&url),
             Opening::Nothing(said) => self.notice(said, cx),
         }

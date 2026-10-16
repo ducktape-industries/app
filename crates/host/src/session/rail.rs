@@ -133,6 +133,10 @@ pub enum Opening {
         route: Option<String>,
         notice: Option<String>,
     },
+    /// A chain link to `program` on another chain, labelled `chain`: not
+    /// this chain's page to show. The desktop opens `program` and says so;
+    /// the phone, as the Expo app, says whose link it is and opens nothing.
+    Elsewhere { program: &'static str, chain: String },
     /// An address for the system browser.
     Browser(String),
     /// Nothing opens; the notice says why.
@@ -158,12 +162,10 @@ fn opening(parsed: Link, lists: impl Fn(&str) -> bool, chain: &str) -> Opening {
             let program = crate::runtime::intern(&parsed.program);
             let route = parsed.tail.join("/");
             if parsed.chain.to_string() != chain {
-                // another chain's page is not this chain's to show
-                let said = format!(
-                    "That link is to {}, not this network; opened {program}.",
-                    parsed.chain.label
-                );
-                seat(program, None, Some(said))
+                Opening::Elsewhere {
+                    program,
+                    chain: parsed.chain.label,
+                }
             } else if route.is_empty() || crate::runtime::valid_route(&route) {
                 seat(program, (!route.is_empty()).then_some(route), None)
             } else {
@@ -186,9 +188,9 @@ mod tests {
     use super::*;
     use gpui_kit::{AppContext as _, TestAppContext};
 
-    /// A chain link opens its program on this chain with its route, on
-    /// another chain without it and says so; one no view lists, or no
-    /// link at all, opens nothing and says why.
+    /// A chain link opens its program on this chain with its route, and is
+    /// told apart on another chain; one no view lists, or no link at all,
+    /// opens nothing and says why.
     #[test]
     fn a_link_opens_its_program_on_this_chain_only() {
         let lists = |program: &str| program == "chat";
@@ -205,17 +207,16 @@ mod tests {
                 notice: None
             }
         );
-        let Opening::Seat { route, notice, .. } = opening(
-            Link::Chain(link("elsewhere#0a1b2c3d", "chat", &["room"])),
-            lists,
-            here,
-        ) else {
-            panic!("another chain's link still opens its program");
-        };
-        assert_eq!(route, None);
         assert_eq!(
-            notice.as_deref(),
-            Some("That link is to elsewhere, not this network; opened chat.")
+            opening(
+                Link::Chain(link("elsewhere#0a1b2c3d", "chat", &["room"])),
+                lists,
+                here
+            ),
+            Opening::Elsewhere {
+                program: "chat",
+                chain: "elsewhere".into()
+            }
         );
         assert_eq!(
             opening(Link::Chain(link(here, "forge", &[])), lists, here),
