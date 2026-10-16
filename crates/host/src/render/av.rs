@@ -830,6 +830,9 @@ mod tests {
         let microphone = settings_page(Place::MicrophoneSettings);
         assert_eq!(camera, ducktape_av::settings_page(Kind::Camera));
         assert_eq!(microphone, ducktape_av::settings_page(Kind::Microphone));
+        // macOS has a privacy pane for each
+        #[cfg(target_os = "macos")]
+        assert_ne!(camera, microphone);
         assert_eq!(settings_page(Place::Account), None);
     }
 
