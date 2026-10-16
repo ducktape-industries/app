@@ -48,4 +48,7 @@ object Native {
 
     /** A `duck://` or `ducktape://` link an intent carried. */
     @JvmStatic external fun link(url: String)
+
+    /** This device's push token of [kind] (`fcm`), for the device registry; empty when withdrawn. */
+    @JvmStatic external fun pushToken(kind: String, token: String)
 }

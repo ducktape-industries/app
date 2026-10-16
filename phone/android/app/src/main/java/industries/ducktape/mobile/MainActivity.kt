@@ -67,6 +67,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         // the launching link once: not again when the Activity is made again (a font or locale change) or the app is
         // relaunched from Recents, which hands the old intent back
         if (state == null && (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0) handOn(intent)
+        if (state == null) {
+            Ring.askOnce(this)
+            intent?.getStringExtra("DUCKTAPE_RING_TEST")?.let { Ring.test(applicationContext, it) }
+        }
+        Ring.token(applicationContext)
     }
 
     /** `singleTask`: a link while the app runs comes here, not to a new instance. */
@@ -79,6 +84,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     private fun handOn(intent: Intent?) {
         val url = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.dataString ?: return
+        // a call's Answer: its ring goes
+        intent.getStringExtra(Ring.TAG)?.let {
+            Log.i("ducktape", "a call was answered: $url")
+            Ring.withdraw(this, it)
+        }
         Native.link(url)
     }
 
