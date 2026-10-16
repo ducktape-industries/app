@@ -693,7 +693,8 @@ fn editor_obeys_authored_size_and_height_limits(cx: &mut gpui_kit::TestAppContex
         options.read_only = true;
         let (_, mut native) = mounted(root, cx);
         native.update(|window, cx| window.render_frame(cx));
-        let bounds = native.update(|window, _| window.find("document").bounds());
+        // the authored box, under a host name: the view's id is its field
+        let bounds = native.update(|window, _| window.find(host_id("field")).bounds());
         assert_eq!(bounds.size, size(px(240.), px(expected)));
     }
 }
@@ -719,7 +720,8 @@ fn a_shrunk_editor_is_as_tall_as_all_of_its_lines(cx: &mut gpui_kit::TestAppCont
     let root = sized("card", root, Some(fill()), Some(fill()));
     let (_, mut native) = mounted(root, cx);
     native.update(|window, cx| window.render_frame(cx));
-    let bounds = native.update(|window, _| window.find("document").bounds());
+    // the authored box, under a host name: the view's id is its field
+    let bounds = native.update(|window, _| window.find(host_id("field")).bounds());
     let lines = f32::from(bounds.size.height) / leading;
     assert!(
         (lines - 6.).abs() < 0.5,

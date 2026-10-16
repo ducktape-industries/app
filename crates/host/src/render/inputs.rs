@@ -370,9 +370,11 @@ impl ViewTree {
                         }),
                     )
                     .child(announce(
-                        // the base Textarea draws no node of its own, nor a box
+                        // the base Textarea draws no node of its own, nor a
+                        // box: the field's one node wears the view's id, as
+                        // a one-line field's does
                         crate::a11y::text_field(
-                            "editor-field",
+                            native_id(id),
                             &focus,
                             set_value,
                             Textarea::new(state),
@@ -380,7 +382,9 @@ impl ViewTree {
                         .when(fills, |field| field.h_full()),
                         accessible,
                     ));
-                let mut element = div().relative().id(native_id(id));
+                // the view's box, under a host name: the view's id is the
+                // field's node inside it
+                let mut element = div().relative().id(host_id("field"));
                 *element.style() = (*style).clone();
                 let element =
                     crate::a11y::around_field(element, focused, crate::a11y::ink(cx)).child(words);
