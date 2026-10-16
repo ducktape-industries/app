@@ -41,7 +41,7 @@ struct Drag {
 /// sheet reads the same in a centred modal as docked on a phone.
 const WIDEST: f32 = design::width::COMPACT_BELOW as f32;
 /// The handle's band, and the handle in it (the Expo app's `Sheet` handle).
-const HANDLE_BAND: f32 = 20.;
+pub(super) const HANDLE_BAND: f32 = 20.;
 const HANDLE: (f32, f32) = (32., 4.);
 
 impl ViewTree {
@@ -196,7 +196,13 @@ impl ViewTree {
                 .w_full()
                 .max_w(px(WIDEST))
                 .max_h(body.height * *detents.last().unwrap_or(&1.))
-                .rounded(px(8.));
+                .rounded(px(8.))
+                // under touch the view leaves the panel's top to the
+                // handle's band; a centred modal does not drag, so the band
+                // stays, empty, and the view's head is never flush
+                .when(crate::contract::os().facts().touch_first, |panel| {
+                    panel.child(div().flex_none().h(px(HANDLE_BAND)))
+                });
         }
         let panel = panel.child(div().flex_1().min_h_0().child(content));
         let named = label.as_deref().is_some_and(|label| !label.is_empty());
