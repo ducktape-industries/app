@@ -150,7 +150,12 @@ impl OsServices for PhoneOs {
         &self.dirs
     }
 
-    fn device_key(&self, keyring: &str) -> Result<Arc<dyn noded_client::Signer>, KeyRefusal> {
+    /// Always an OS-kept key (made on first ask): a phone never had the
+    /// desktop's password-locked key files.
+    fn device_key(
+        &self,
+        keyring: &str,
+    ) -> Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal> {
         #[cfg(any(target_os = "ios", target_os = "android"))]
         {
             let key = crate::key::DeviceKey::open(keyring).map_err(KeyRefusal::Denied)?;
@@ -159,7 +164,7 @@ impl OsServices for PhoneOs {
             let public = noded_client::Signer::public_key(&key);
             let public: String = public.iter().map(|byte| format!("{byte:02x}")).collect();
             tracing::info!(target: "ducktape::phone", keyring, %public, "this device's key opened");
-            Ok(Arc::new(key))
+            Ok(Some(Arc::new(key)))
         }
         #[cfg(not(any(target_os = "ios", target_os = "android")))]
         {
@@ -229,8 +234,17 @@ impl OsServices for PhoneOs {
             // killer is the owner of this bound (SPEC §4.5)
             loaders: 1,
             preload: Preload::Seat,
+            // wasmtime runs in this process: an instance dies only with the
+            // app (the JSC runner's page can die alone, and keeps 1 s)
+            snapshot_every: None,
             snapshot_to_disk: true,
         }
+    }
+
+    /// No view ships in the app yet (`views.lock`, SPEC §4.7): every view
+    /// the roster names is fetched.
+    fn bundled_view(&self, _: &abi::BlobId) -> Option<Vec<u8>> {
+        None
     }
 
     fn mint_invite(&self, _: MintInvite) -> Option<Answered> {

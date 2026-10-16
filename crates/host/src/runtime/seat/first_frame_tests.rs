@@ -208,8 +208,9 @@ fn under_touch_a_view_is_laid_out_at_its_body_under_its_minimum(cx: &mut TestApp
     const PROGRAM: &str = "first-frame-touch-minimum-test";
     crate::contract::testing::touch_first_for_test(true);
     frames_in_order(PROGRAM, 640, &[full(boxed("card"))]);
-    let (_seat, _drawn, mounted, mut opened) = open(cx, PROGRAM);
-    opened.native.run_until_parked();
+    let (_seat, _drawn, mounted, opened) = open(cx, PROGRAM);
+    let Opened { mut native, .. } = opened;
+    native.run_until_parked();
     crate::contract::testing::touch_first_for_test(false);
     let (_, viewport, _, touch) = facts(&ticked_with(&mounted)[0]);
     assert_eq!(touch, Some(true));
@@ -222,8 +223,9 @@ fn under_touch_a_view_is_laid_out_at_its_body_under_its_minimum(cx: &mut TestApp
 fn under_a_pointer_a_view_is_laid_out_at_least_at_its_minimum(cx: &mut TestAppContext) {
     const PROGRAM: &str = "first-frame-pointer-minimum-test";
     frames_in_order(PROGRAM, 640, &[full(boxed("card"))]);
-    let (_seat, _drawn, mounted, mut opened) = open(cx, PROGRAM);
-    opened.native.run_until_parked();
+    let (_seat, _drawn, mounted, opened) = open(cx, PROGRAM);
+    let Opened { mut native, .. } = opened;
+    native.run_until_parked();
     let (_, viewport, _, touch) = facts(&ticked_with(&mounted)[0]);
     assert_eq!(touch, Some(false));
     assert_eq!(viewport, Some((640., WINDOW.1)));
@@ -265,7 +267,8 @@ fn a_views_viewport_is_never_narrower_than_its_minimum(cx: &mut TestAppContext) 
     const PROGRAM: &str = "first-frame-min-width-test";
     frames_in_order(PROGRAM, 640, &[full(boxed("card"))]);
     let (_seat, _drawn, mounted, opened) = open(cx, PROGRAM);
-    opened.native.run_until_parked();
+    let Opened { mut native, .. } = opened;
+    native.run_until_parked();
     let ticks = ticked_with(&mounted);
     assert_eq!(facts(&ticks[0]).1, Some((640., WINDOW.1)), "{:?}", ticks[0]);
 }

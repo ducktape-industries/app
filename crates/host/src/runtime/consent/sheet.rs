@@ -11,8 +11,8 @@ use crate::fonts::{FAMILY_MONO, FAMILY_UI};
 use crate::theme::hsla as color;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, Div, FontWeight, InteractiveElement as _, IntoElement as _, ParentElement as _, Role,
-    Stateful, StatefulInteractiveElement as _, Styled as _, Text, div, px,
+    App, Div, FontWeight, InteractiveElement as _, ParentElement as _, Role, Stateful,
+    StatefulInteractiveElement as _, Styled as _, Text, div, px,
 };
 
 /// The phone's spacing ladder (the design crate's, which the Expo kit's

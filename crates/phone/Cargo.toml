@@ -44,6 +44,8 @@ async-channel = "2"
 futures.workspace = true
 # a program's own link, for the capsule's Copy link
 ducklink.workspace = true
+# the roster's blob ids (`OsServices::bundled_view`)
+abi.workspace = true
 
 [target.'cfg(target_os = "ios")'.dependencies]
 gpui-pre-ios.workspace = true
