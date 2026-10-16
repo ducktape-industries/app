@@ -20,6 +20,11 @@ pub struct Notice {
     pub title: String,
     pub body: String,
     pub tag: String,
+    /// The program whose notice it is (or whose notices it counts).
+    pub program: String,
+    /// The `duck://` link the notice opens, as the program gave it; empty
+    /// for none.
+    pub link: String,
 }
 
 /// One row of the centre.
@@ -111,7 +116,7 @@ impl Center {
         now: Instant,
         wall: i64,
     ) -> (Delivery, Option<Notice>) {
-        let permission = settings.views.get(program).copied();
+        let permission = settings.views.get(program).copied().or(settings.unasked);
         if permission == Some(Permission::Block) {
             return (Delivery::Blocked, None);
         }
@@ -123,6 +128,8 @@ impl Center {
                 true => String::new(),
                 false => format!("{program}/{}", post.tag),
             },
+            program: program.to_owned(),
+            link: post.link.clone(),
         };
         self.log(program, view, post, wall);
         match permission {
@@ -158,6 +165,8 @@ impl Center {
             title: format!("{more} more from {view}"),
             body: "They're waiting in Notifications.".into(),
             tag: format!("more/{program}"),
+            program: program.to_owned(),
+            link: String::new(),
         };
         (Delivery::Logged, Some(more))
     }

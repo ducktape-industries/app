@@ -276,7 +276,7 @@ impl Roster {
 /// is read so the rail lists what the network runs.
 pub fn connected(client: &crate::backend::RpcClient, network: &str, chain: &str) {
     // the last connection's notifiers end; the read below starts each again
-    super::notifier::notifiers().stop_all();
+    super::notifier::stop_every();
     let snapshot = {
         let mut connection = connection().lock().expect("views rpc");
         connection.rev += 1;
@@ -316,7 +316,7 @@ fn spawn_roster_read(asked_of: Connection, then: impl FnOnce() + Send + 'static)
         .spawn(move || {
             let read = std::panic::AssertUnwindSafe(|| {
                 if let Some(programs) = read_roster(asked_of.clone(), roster(), registry()) {
-                    super::notifier::notifiers().reconcile(&asked_of, &programs);
+                    super::notifier::reconcile_all(&asked_of, &programs);
                 }
             });
             let _ = std::panic::catch_unwind(read);
@@ -388,6 +388,11 @@ pub(super) fn read_roster(
                 asked_of: Some(asked_of.rev),
                 roles: Some(roles),
             };
+        }
+        // a host with no screen seats nothing: its notifiers are all it runs
+        if crate::contract::os().limits().preload == crate::contract::Preload::Headless {
+            relist(roster, programs.clone());
+            return Some(programs);
         }
         let mut registry = lock(registry);
         let names: Vec<&'static str> = programs.iter().map(|p| intern(&p.name)).collect();

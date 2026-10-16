@@ -558,6 +558,8 @@ fn notify_ready(display: &str) {
         title: format!("Ducktape {display} is ready."),
         body: "Restart to update.".into(),
         tag: NOTICE_TAG.into(),
+        // the host's own: no program's, and a click opens Settings › Updates
+        ..Default::default()
     };
     let raised = crate::os::post_host(&notice);
     debug!(target: TARGET, event = "app_update_notice", raised);

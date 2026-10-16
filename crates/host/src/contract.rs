@@ -190,6 +190,10 @@ pub enum Preload {
     Compile,
     /// Seat every roster program at connect, `in_front = false`.
     Seat,
+    /// No screen, and no one at the device (`crates/pushd`): no view is
+    /// seated or compiled, and no notifier runs for the device; only those
+    /// of the recipients the host registers do (`runtime::notify_for`).
+    Headless,
 }
 
 /// `invite.create`'s ask: the node it is about (the mint reads its status

@@ -513,6 +513,8 @@ impl View {
             staged: _,
             notifier,
             showing: _,
+            recipient,
+            code: _,
         } = self;
         let mut sibling = Self::instantiated(program, code, shown, *notifier)?;
         sibling.instance = *instance;
@@ -522,6 +524,7 @@ impl View {
         sibling.targets = targets.clone();
         sibling.min_width = *min_width;
         sibling.hash = *hash;
+        sibling.recipient = recipient.clone();
         Ok(sibling)
     }
 
@@ -785,6 +788,8 @@ impl View {
             staged: false,
             notifier,
             showing: None,
+            recipient: None,
+            code: None,
         })
     }
 

@@ -238,6 +238,7 @@ fn a_menu_keeps_the_keys_that_move_inside_it(cx: &mut TestAppContext) {
         in_front: false,
         burst: 6,
         views: [("chat".to_owned(), Permission::Silent)].into(),
+        unasked: None,
     };
     center.lock().post(
         &silent,

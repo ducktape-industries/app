@@ -159,6 +159,7 @@ mod tests {
             in_front: false,
             burst: 3,
             views: Default::default(),
+            unasked: None,
         };
         let post = view_wire::methods::Notification {
             title: "a".into(),

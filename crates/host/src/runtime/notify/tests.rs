@@ -26,6 +26,7 @@ fn settings(permission: Option<Permission>) -> Settings {
             .map(|permission| ("chat".to_owned(), permission))
             .into_iter()
             .collect(),
+        unasked: None,
     }
 }
 
@@ -106,6 +107,40 @@ fn the_focused_view_is_not_bannered_unless_show_is_set() {
             .0,
         Delivery::Banner
     );
+}
+
+/// A catch-up on a host with no one to ask (pushd's recipients: `unasked`
+/// Allow): twenty missed mentions in two rooms, posted in one instant,
+/// raise the burst limit's banners and then only the one standing "N more"
+/// banner, replaced under one tag, so a device holds two banners, not
+/// twenty; the centre folds them into one row per room, and asks no one.
+#[test]
+fn a_catch_up_burst_folds_by_room_and_stops_at_the_burst() {
+    let now = Instant::now();
+    let mut center = Center::default();
+    let unasked = Settings {
+        unasked: Some(Permission::Allow),
+        ..settings(None)
+    };
+    let raised: Vec<_> = (0..20)
+        .filter_map(|nth| {
+            let room = ["#general", "@ada"][nth as usize % 2];
+            let post = post(&format!("mention {nth}"), room);
+            center.post(&unasked, "chat", "Chat", post, now, nth).1
+        })
+        .collect();
+    let tags: std::collections::BTreeSet<_> = raised.iter().map(|it| it.tag.as_str()).collect();
+    assert_eq!(
+        tags,
+        ["chat/#general", "chat/@ada", "more/chat"].into(),
+        "the rooms' own and one more"
+    );
+    let rooms = raised.iter().filter(|it| it.tag != "more/chat").count();
+    assert_eq!(rooms, 3, "the burst limit's worth");
+    assert_eq!(raised.last().unwrap().title, "17 more from Chat");
+    assert_eq!(center.entries().count(), 2, "one row per room");
+    assert_eq!(center.entries().map(|row| row.count).sum::<u32>(), 20);
+    assert!(center.asking.is_empty(), "no one to ask");
 }
 
 /// A burst of three a minute: the fourth is logged and raises one "more"

@@ -149,6 +149,15 @@ pub(super) struct View {
     /// The route this view last named as the one it shows (`host.showing`),
     /// which `host.screen` lists while the view is on screen.
     pub(crate) showing: Option<String>,
+    /// Whom a notifier runs for when not the person at this device
+    /// (`notifier::Recipient`): its centre, store and banners are the
+    /// recipient's. `None` for every pane's view.
+    pub(crate) recipient: Option<Arc<notifier::Recipient>>,
+    /// A notifier's compiled code, held while it runs: the compiled-code
+    /// cache keeps code only while someone holds it (`compiled_view`), so
+    /// the program's other notifiers (one per recipient) share this one
+    /// copy instead of each loading its own.
+    pub(crate) code: Option<Arc<Module>>,
 }
 
 impl View {

@@ -34,6 +34,8 @@ mod view;
 pub mod web;
 
 pub use kernel::{Answered, day, local_offset};
+// a host with no screen runs each program's notifier per account (`crates/pushd`)
+pub use notifier::{Recipient, Said, notify_for};
 // the web view cleans a page's title as a window's (render/web.rs)
 #[cfg(feature = "web")]
 pub use kernel::shown_title;
