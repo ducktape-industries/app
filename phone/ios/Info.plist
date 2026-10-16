@@ -20,6 +20,20 @@
 	<string>0.1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<!-- links: the chain's own scheme, and the Expo build's (wasm-mobile SPEC §7.6); gpui_ios hands a scene's
+	     URL contexts to the app's open-URL callback (crates/phone os/ios/ffi.rs) -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>industries.ducktape.mobile</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>duck</string>
+				<string>ducktape</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>MinimumOSVersion</key>

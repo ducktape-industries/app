@@ -18,6 +18,10 @@
 //!   in index order, physical pixels; copied out for the call.
 //! - `key(code, action, meta)`, `insets(top, right, bottom, left, ime)` (pixels),
 //!   `back()`.
+//! - `ime(session, kind, text, start, end)`: the Activity's `InputConnection`
+//!   (gm's `GpuiInputActivity` contract, gm `android/host.rs` `ime_event`).
+//! - `memoryWarning()`: `onTrimMemory` at a level that is memory pressure.
+//! - `link(url)`: a `duck://` or `ducktape://` intent's data.
 //!
 //! - `android_main(app)`: the entry gm's NativeActivity glue (android-activity,
 //!   which gm links whatever path a host takes) names; never called, since
@@ -214,6 +218,56 @@ pub extern "system" fn Java_industries_ducktape_mobile_Native_back(
     _: JClass<'_>,
 ) {
     crate::os::send(ducktape_host::contract::Signal::Back);
+}
+
+/// `Native.ime`: one update from the Activity's `InputConnection`, for gm's
+/// text input. `kind`: 0 composing, 1 commit, 2 delete around, 3 delete
+/// around in code points, 4 done, 5 dismissed by BACK. Java clamps the
+/// selection to 0 and up; a negative one reads as 0 here too.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_ime<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _: JClass<'caller>,
+    session: jlong,
+    kind: jint,
+    text: JString<'caller>,
+    start: jint,
+    end: jint,
+) {
+    env.with_env(|_: &mut Env| -> jni::errors::Result<()> {
+        host::ime_event(
+            session as u64,
+            kind,
+            text.to_string(),
+            start.max(0) as usize,
+            end.max(0) as usize,
+        );
+        Ok(())
+    })
+    .resolve::<Policy>();
+}
+
+/// `Native.memoryWarning`: the OS asked the app to give memory back.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_memoryWarning(
+    _: EnvUnowned<'_>,
+    _: JClass<'_>,
+) {
+    crate::os::send(ducktape_host::contract::Signal::MemoryWarning);
+}
+
+/// `Native.link`: a link the OS handed the app (an intent's data).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_link<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _: JClass<'caller>,
+    url: JString<'caller>,
+) {
+    env.with_env(|_: &mut Env| -> jni::errors::Result<()> {
+        crate::os::link(url.to_string());
+        Ok(())
+    })
+    .resolve::<Policy>();
 }
 
 /// The entry android-activity's NativeActivity glue calls. gm links that

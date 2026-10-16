@@ -36,4 +36,16 @@ object Native {
     @JvmStatic external fun insets(top: Int, right: Int, bottom: Int, left: Int, ime: Int)
 
     @JvmStatic external fun back()
+
+    /**
+     * One update from the [MainActivity] `InputConnection` for gm's text input: [kind] 0 composing, 1 commit,
+     * 2 delete around, 3 delete around in code points, 4 done, 5 dismissed by BACK.
+     */
+    @JvmStatic external fun ime(session: Long, kind: Int, text: String, start: Int, end: Int)
+
+    /** The OS asked the app to give memory back (`onTrimMemory`). */
+    @JvmStatic external fun memoryWarning()
+
+    /** A `duck://` or `ducktape://` link an intent carried. */
+    @JvmStatic external fun link(url: String)
 }
