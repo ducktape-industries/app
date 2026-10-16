@@ -29,7 +29,9 @@ pub struct Host {
 /// fill), makes the entities, and spawns the drain: `Lifecycle` to the
 /// session (the status poll stops in the background and resumes in
 /// front), `BannerClick` to the centre (`notify::clicked`, which opens
-/// through `Boot::open`), the rest to `Host::signals`.
+/// through `Boot::open`), the rest to `Host::signals`; and the task that
+/// starts every view a load prepares on this thread
+/// (`runtime::serve_starts`), where every view is seated.
 pub fn start(boot: Boot, cx: &mut App) -> (Host, Inbound) {
     let consent = crate::runtime::consent::changes_channel();
     let changes = crate::runtime::changes_channel();
@@ -54,6 +56,8 @@ fn started(
     let (inbound, signals) = Inbound::channel();
     let (to_shell, from_host) = async_channel::unbounded();
     drain(signals, shared.session.downgrade(), to_shell, cx);
+    // every view a load parks is started on this thread, the seats'
+    crate::runtime::serve_starts(cx);
     (
         Host {
             shared,

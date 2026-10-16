@@ -17,6 +17,9 @@ name = "ducktape-phone"
 edition.workspace = true
 version.workspace = true
 publish = false
+# the desktop's own: `DUCKTAPE_APP_BUILD`, which names the build the iOS
+# runner's code cache is kept for (`os::code_cache`)
+build = "../../build.rs"
 
 [lib]
 name = "ducktape_phone"
@@ -26,7 +29,9 @@ name = "ducktape_phone"
 ax-door = ["ducktape-host/ax-door"]
 
 [dependencies]
-ducktape-host = { path = "../host" }
+# the host's runner is the phone's own pick (`os::runner`): wasmtime below,
+# JavaScriptCore on iOS, where no wasmtime is linked
+ducktape-host = { path = "../host", default-features = false }
 noded-client = { path = "../noded-client" }
 # `abi::BlobId`, which `OsServices::bundled_view` names
 abi.workspace = true
@@ -50,10 +55,14 @@ ducklink.workspace = true
 view-wire.workspace = true
 
 [target.'cfg(target_os = "ios")'.dependencies]
+ducktape-host-jsc = { path = "../host-jsc" }
 gpui-pre-ios.workspace = true
 # the log on the simulator's console (Android's goes to logcat through gm's
 # `android_logger`, which tracing's `log` records reach)
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+ducktape-host = { path = "../host", features = ["wasmtime"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 gpui-pre-mobile.workspace = true
