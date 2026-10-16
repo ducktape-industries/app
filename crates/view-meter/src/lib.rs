@@ -33,10 +33,12 @@
 //!   in and stores the result back, and a fuel or memory trap writes it.
 //!   The host sets [`GAS`] to its budget before a call and reads it after:
 //!   used = budget - left, equal to wasmtime's fuel count per call, and fuel
-//!   runs out at the same check. (Measured in JavaScriptCore on the chat
-//!   view, unmetered = 1: the count in an exported global at every charge
-//!   3.3x; in a local, stored to that global around calls 1.32x; to an
-//!   internal global 1.19x; passed as a parameter 1.09x.)
+//!   runs out at the same check. (Measured on the chat view's recorded
+//!   session, median per rendered tick, unmetered = 1, JavaScriptCore shell /
+//!   iOS simulator: the count in an exported global at every charge
+//!   3.30x / 2.69x; in a local, stored to that global around calls
+//!   1.33x / 1.27x; to an internal global 1.19x / 1.17x; passed as a
+//!   parameter 1.10x / 1.08x.)
 //! - **Memory.** Every `memory.grow` and `table.grow` first checks the whole
 //!   budget the way `ViewLimits` does (the grown size, plus the memory or
 //!   tables it does not grow, against `view_bytes`); past it the call traps
