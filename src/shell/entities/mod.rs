@@ -16,13 +16,13 @@ mod windows;
 
 pub(crate) use desk::Desk;
 pub(crate) use dot::DotSlot;
-#[cfg(test)]
-pub(crate) use ducktape_host::session::STATUS_EVERY;
 pub(crate) use ducktape_host::session::{
-    Account, AccountEvent, AccountState, AccountStep, Chain, Notifications, Observed, Prefs, Rail,
-    Screen, Seats, Secret, Session, SessionEvent, SessionState, Shared, Slice, Toast, permission,
+    Account, AccountEvent, AccountState, Chain, Notifications, Observed, Prefs, Rail, Screen,
+    Seats, Secret, Session, SessionEvent, SessionState, Shared, Slice, Toast, permission,
     spawn_on_runtime,
 };
+#[cfg(test)]
+pub(crate) use ducktape_host::session::{AccountStep, STATUS_EVERY};
 pub(crate) use front::{Front, Listed, Popped};
 pub(crate) use overlays::{Overlay, Overlays, Popover, SettingsPage, Spot, SpotRow};
 pub(crate) use seats::DeskSeats;
