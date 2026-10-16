@@ -166,6 +166,18 @@ fn escape_asks_to_close_the_sheet(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(dismissals(&events), 1);
 }
 
+/// Under touch focus rests on the dialog's trap, not on a stop inside it,
+/// and Escape (an iPad's keyboard) still closes the sheet.
+#[gpui_kit::test]
+fn escape_closes_the_sheet_under_touch_too(cx: &mut gpui_kit::TestAppContext) {
+    crate::contract::testing::touch_first_for_test(true);
+    let (_tree, mut native, events, _subscription) = open(cx, 390., 844.);
+    native.run_until_parked();
+    native.simulate_keystrokes("escape");
+    crate::contract::testing::touch_first_for_test(false);
+    assert_eq!(dismissals(&events), 1);
+}
+
 /// A centred modal does not drag, so it has no handle; under touch the
 /// view leaves the panel's top to the host's band, which stays, empty, so
 /// the view's first row is never flush with the panel's top. On a desktop
@@ -220,6 +232,23 @@ fn fitted(rows: f32) -> wire::Node {
         Some(fill()),
         Some(fill()),
     )
+}
+
+/// A tap on a fitted sheet's handle in the first frame that draws it, before
+/// any frame has measured the child, leaves the sheet open.
+#[gpui_kit::test]
+fn a_tap_on_a_fitted_handle_never_dismisses(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(390.), px(844.)), |_, _| {
+        ViewTree::new(fitted(300.)).with_keys_grant(true)
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    native.update(|window, cx| window.render_frame(cx));
+    let band = crate::render::sheet::HANDLE_BAND;
+    press(&mut native, 195., 844. - 300. - band / 2.);
+    assert_eq!(dismissals(&events), 0);
 }
 
 /// A sheet that names no detents is as tall as what it holds (the Expo
