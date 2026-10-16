@@ -79,6 +79,8 @@ pub const ICON_EMPTY: f32 = 28.;
 pub const AVATAR: f32 = 32.;
 /// A field's box (`size.control`).
 pub const CONTROL: f32 = 44.;
+/// A primary button (`size.primary`).
+pub const PRIMARY: f32 = 48.;
 /// A sheet row (`size.sheetRow`).
 pub const SHEET_ROW: f32 = 52.;
 /// The icon in a sheet row (`size.icon.sheet`).
@@ -172,5 +174,7 @@ colours!(
     foreground,
     muted,
     faint,
-    accent
+    accent,
+    primary,
+    primary_foreground
 );

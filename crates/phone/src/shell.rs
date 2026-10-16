@@ -6,11 +6,13 @@
 //!
 //! The window draws the [`stack`]: a tab root (Home, Open) under the tab
 //! bar, or the program on top, its view seated full screen under the
-//! capsule; a sheet over either (the account menu, the capsule's menu, the
-//! consent sheet). Each program opened keeps one seat, placed with the
+//! capsule; a program's page (its capabilities, from the capsule's About)
+//! over either; a sheet over all (the account menu, the capsule's menu,
+//! the consent sheet). Each program opened keeps one seat, placed with the
 //! safe body and in front only while it is on top and the window is: a
 //! program left stays warm where it was (wasm-mobile SPEC §7.1).
 
+mod about;
 mod home;
 mod look;
 mod running;
@@ -264,6 +266,8 @@ pub struct Root {
     shared: Shared,
     stack: Entity<Stack>,
     sheet: Option<Sheet>,
+    /// The program whose page is over the stack.
+    about: Option<&'static str>,
     /// The title each seat's view gave its window, by its instance.
     titles: BTreeMap<u64, String>,
     /// What `Seats` was last told: each open program's place, and the seat
@@ -333,6 +337,7 @@ impl Root {
             shared,
             stack,
             sheet: None,
+            about: None,
             titles: BTreeMap::new(),
             placed: Default::default(),
             waiting: None,
@@ -359,11 +364,37 @@ impl Root {
         if !matches!(self.sheet, Some(Sheet::Consent(..))) {
             self.sheet = None;
         }
+        self.about = None;
         self.stack.update(cx, |stack, cx| {
             let instance = stack.push(program);
             cx.notify();
             instance
         })
+    }
+
+    /// `program`'s page over the stack.
+    fn show_about(&mut self, program: &'static str, cx: &mut Context<Self>) {
+        self.sheet = None;
+        self.about = Some(program);
+        cx.notify();
+    }
+
+    fn close_about(&mut self, cx: &mut Context<Self>) {
+        self.about = None;
+        cx.notify();
+    }
+
+    /// `program`'s own link (`duck://<chain>/<program>`) on the clipboard.
+    fn copy_link(&mut self, program: &'static str, cx: &mut Context<Self>) {
+        let chain = self.shared.session.read(cx).get().chain.clone();
+        if let Some(link) = ducklink::mint(&chain, program, &[]) {
+            cx.write_to_clipboard(ClipboardItem::new_string(link));
+            self.notice("Copied".into(), cx);
+        }
+        if !matches!(self.sheet, Some(Sheet::Consent(..))) {
+            self.sheet = None;
+        }
+        cx.notify();
     }
 
     /// The capsule's ×: Home, the program left where it is.
@@ -431,12 +462,15 @@ impl Root {
         cx.notify();
     }
 
-    /// Back (Android's button, iOS's edge): a sheet closes first; else the
-    /// view on top goes back inside itself when its last frame's root asks
+    /// Back (Android's button, iOS's edge): a sheet closes first, then a
+    /// program's page; else the view on top goes back inside itself when its last frame's root asks
     /// to hear it; else the stack pops; at Home, the OS's own (SPEC §7.6).
     fn back(&mut self, cx: &mut Context<Self>) {
         if self.sheet.is_some() {
             return self.close_sheet(cx);
+        }
+        if self.about.is_some() {
+            return self.close_about(cx);
         }
         if let Some(seat) = self.top_seat(cx)
             && seat.update(cx, |seat, cx| seat.back(cx)) == Back::Heard
@@ -472,6 +506,7 @@ impl Root {
             self.sheet = None;
         }
         self.titles.clear();
+        self.about = None;
         self.waiting = None;
         cx.notify();
     }
@@ -582,7 +617,11 @@ impl Root {
         let handle = window.window_handle();
         let active = window.is_window_active();
         let stack = self.stack.read(cx);
-        let top = stack.top().and_then(|program| stack.instance(program));
+        // a program's page covers the program on top
+        let top = stack
+            .top()
+            .and_then(|program| stack.instance(program))
+            .filter(|_| self.about.is_none());
         let wanted: BTreeMap<u64, Place> = stack
             .open()
             .iter()
@@ -746,7 +785,15 @@ impl Root {
             .views
             .get(program)
             .map(|permission| SharedString::from(permission.word()));
-        let mut menu = div().flex().flex_col().child(head).child(
+        let about = sheet::row(
+            "sheet/about",
+            Some("icons/info.svg"),
+            "About",
+            Some("capabilities".into()),
+            palette,
+        )
+        .on_click(cx.listener(move |root, _, _, cx| root.show_about(program, cx)));
+        let mut menu = div().flex().flex_col().child(head).child(about).child(
             sheet::row(
                 "sheet/notifications",
                 Some("icons/bell.svg"),
@@ -759,7 +806,7 @@ impl Root {
                 cx.notify();
             })),
         );
-        if let Some(link) = ducklink::mint(&chain, program, &[]) {
+        if ducklink::mint(&chain, program, &[]).is_some() {
             menu = menu.child(
                 sheet::row(
                     "sheet/copy-link",
@@ -768,12 +815,7 @@ impl Root {
                     None,
                     palette,
                 )
-                .on_click(cx.listener(move |root, _, _, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
-                    root.sheet = None;
-                    root.notice("Copied".into(), cx);
-                    cx.notify();
-                })),
+                .on_click(cx.listener(move |root, _, _, cx| root.copy_link(program, cx))),
             );
         }
         Some(menu.into_any_element())
@@ -885,57 +927,79 @@ impl Render for Root {
             .bg(palette.background())
             .text_color(palette.foreground());
         let toast_bottom;
-        match top {
-            Some(program) => {
-                let instance = self.stack.read(cx).instance(program);
-                let seat = instance.and_then(|instance| self.shared.seats.read(cx).seat(instance));
-                let row = home::row_of(&self.shared, program, cx);
-                let body = running::body(seat.as_ref(), row.as_ref(), palette, cx);
-                root = root
-                    .child(
+        let about = self
+            .about
+            .and_then(|program| home::row_of(&self.shared, program, cx));
+        if let Some(row) = about {
+            let listing = ducktape_host::runtime::listing(row.program);
+            root = root.child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .pt(edges.top)
+                    .pl(edges.left)
+                    .pr(edges.right)
+                    .pb(edges.bottom)
+                    .child(about::page(&row, listing, palette, cx)),
+            );
+            toast_bottom = edges.bottom + px(look::gap::LG);
+        } else {
+            match top {
+                Some(program) => {
+                    let instance = self.stack.read(cx).instance(program);
+                    let seat =
+                        instance.and_then(|instance| self.shared.seats.read(cx).seat(instance));
+                    let row = home::row_of(&self.shared, program, cx);
+                    let body = running::body(seat.as_ref(), row.as_ref(), palette, cx);
+                    root = root
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_h_0()
+                                .pt(edges.top)
+                                .pl(edges.left)
+                                .pr(edges.right)
+                                .pb(edges.bottom)
+                                .child(body),
+                        )
+                        .child(running::capsule(
+                            program,
+                            edges.top,
+                            edges.right,
+                            palette,
+                            cx,
+                        ));
+                    toast_bottom = edges.bottom + px(look::gap::LG);
+                }
+                None => {
+                    let tab = self.stack.read(cx).tab();
+                    let screen = match tab {
+                        Tab::Home => {
+                            let searching =
+                                self.search.read(cx).focus_handle(cx).is_focused(window);
+                            home::home(&self.shared, &self.search, searching, palette, cx)
+                        }
+                        Tab::Open => {
+                            let opened = self.stack.read(cx).open().to_vec();
+                            home::open(&self.shared, &opened, &self.titles, palette, cx)
+                        }
+                    };
+                    root = root.child(
                         div()
                             .flex_1()
                             .min_h_0()
+                            .flex()
+                            .flex_col()
                             .pt(edges.top)
                             .pl(edges.left)
                             .pr(edges.right)
-                            .pb(edges.bottom)
-                            .child(body),
-                    )
-                    .child(running::capsule(
-                        program,
-                        edges.top,
-                        edges.right,
-                        palette,
-                        cx,
-                    ));
-                toast_bottom = edges.bottom + px(look::gap::LG);
-            }
-            None => {
-                let tab = self.stack.read(cx).tab();
-                let screen = match tab {
-                    Tab::Home => {
-                        let searching = self.search.read(cx).focus_handle(cx).is_focused(window);
-                        home::home(&self.shared, &self.search, searching, palette, cx)
-                    }
-                    Tab::Open => {
-                        let opened = self.stack.read(cx).open().to_vec();
-                        home::open(&self.shared, &opened, &self.titles, palette, cx)
-                    }
-                };
-                root = root.child(
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .flex()
-                        .flex_col()
-                        .pt(edges.top)
-                        .pl(edges.left)
-                        .pr(edges.right)
-                        .child(screen)
-                        .child(home::tab_bar(tab, edges.bottom, palette, cx)),
-                );
-                toast_bottom = edges.bottom + px(look::TAB_BAR + look::gap::LG);
+                            .child(screen)
+                            .child(home::tab_bar(tab, edges.bottom, palette, cx)),
+                    );
+                    toast_bottom = edges.bottom + px(look::TAB_BAR + look::gap::LG);
+                }
             }
         }
         if let Some(toast) = self.toast(toast_bottom, palette, cx) {
