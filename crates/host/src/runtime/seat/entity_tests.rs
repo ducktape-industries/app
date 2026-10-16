@@ -1383,9 +1383,10 @@ fn a_turn_queued_while_a_tick_is_in_flight_runs_once_after_the_landing(cx: &mut 
     assert_eq!(pump.held(), 0, "nothing was left to deliver");
 }
 
-/// The desktop's order: with every answer landing at once, a seat on the
-/// deferred runner draws the same frames, in the same order, with the same
-/// turns and ticks, as one on the wasmtime runner itself.
+/// The desktop's order: a seat on the wasmtime runner, and one on the
+/// deferred runner with every answer landing at once, draw the frames dev
+/// drew before the runner seam (recorded off dev 309ea554's seat by this
+/// same script: `DEV`), in that order, with its turns, ticks and renders.
 #[gpui_kit::test]
 fn the_desktop_order_is_unchanged_when_every_answer_lands_at_once(cx: &mut TestAppContext) {
     fn script(
@@ -1412,6 +1413,27 @@ fn the_desktop_order_is_unchanged_when_every_answer_lands_at_once(cx: &mut TestA
             renders_of(program),
         )
     }
+    // (drawn (ticks, frame_rev) per draw, turns, ticks, renders) on dev
+    const DEV: ([(u64, u64); 12], u64, u64, u64) = (
+        [
+            (1, 1),
+            (1, 1),
+            (2, 2),
+            (2, 2),
+            (3, 3),
+            (3, 3),
+            (4, 4),
+            (4, 4),
+            (5, 5),
+            (6, 6),
+            (6, 6),
+            (6, 6),
+        ],
+        6,
+        6,
+        6,
+    );
+    let dev = (DEV.0.to_vec(), DEV.1, DEV.2, DEV.3);
     let _on = crate::perf::on_for_test();
     let (seat, root, mut native, pump) = deferred(cx, "order-on-deferred", &five_trees());
     let at_once = script("order-on-deferred", &seat, &root, &mut native);
@@ -1420,58 +1442,134 @@ fn the_desktop_order_is_unchanged_when_every_answer_lands_at_once(cx: &mut TestA
         let (seat, root, mut native) = on_wasmtime(cx, "order-on-wasmtime", &five_trees());
         script("order-on-wasmtime", &seat, &root, &mut native)
     };
-    assert_eq!(
-        at_once, wasmtime,
-        "(drawn frames, turns, ticks, renders) moved"
-    );
-    assert!(
-        wasmtime.2 >= 5,
-        "the script ticked every frame: {wasmtime:?}"
-    );
+    assert_eq!(wasmtime, dev, "the desktop's order moved from dev's");
+    assert_eq!(at_once, dev, "answers landing at once moved the order");
 }
 
-/// The AX door's reads park while a seat's tick is in flight (its settle
-/// says not every tick landed: `Seats::settle`) and go on once the frame
-/// lands, on the polls `/wait` parks on.
+/// On the desktop a tick lands inside the turn that began it
+/// (`landed_now`): the turn takes its frame in before it returns, and
+/// nothing is left in flight for a later poll.
+#[gpui_kit::test]
+fn a_desktop_tick_lands_inside_its_turn(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "desktop-inside-turn";
+    crate::runtime::seat_ticking_for_test(PROGRAM, 320, &five_trees());
+    let (seat, _, mut native) = open(cx, PROGRAM, false);
+    draw_now(&mut native);
+    let mounted = mounted_of(&seat, &native);
+    let ticks = ticks_of(&seat, &native);
+    native.update(|_, cx| {
+        match &mut mounted.lock().unwrap().slot {
+            Slot::Ready(view) => view.pending.push(wire::Event::Theme { dark: true }),
+            _ => panic!("not seated"),
+        }
+        seat.update(cx, |seat, cx| seat.turn(cx));
+        assert!(
+            !seat.read(cx).in_flight(),
+            "the frame did not land inside its turn"
+        );
+    });
+    assert_eq!(ticks_of(&seat, &native), ticks + 1);
+}
+
+/// A seat of `program` placed by the session's `Seats` in a window of its
+/// own, its view answering `frames` in order on a [`DeferredRunner`]: the
+/// door's `settle` is then `Seats::settle`, as the shell's door has it.
+fn placed_by_seats(
+    cx: &mut TestAppContext,
+    program: &'static str,
+    frames: &[wire::Frame],
+) -> (
+    Entity<crate::session::Seats>,
+    Entity<Seat>,
+    VisualTestContext,
+    Pump,
+) {
+    let runner = DeferredRunner::default();
+    let pump = runner.pump.clone();
+    let runner: Arc<dyn ViewRunner> = Arc::new(runner);
+    crate::runtime::seat_ticking_on_for_test(&runner, program, 320, frames);
+    let seats = cx.update(|cx| {
+        gpui_kit::init(cx);
+        crate::session::Shared::for_test(Default::default(), Default::default(), cx).seats
+    });
+    let pane = instance();
+    let placing = seats.clone();
+    let window = cx.open_window(size(px(400.), px(300.)), |window, cx| {
+        let place = (
+            program,
+            Some((window.window_handle(), Some((400., 300.)), true)),
+        );
+        placing.update(cx, |seats, cx| {
+            seats.place(std::collections::BTreeMap::from([(pane, place)]), cx)
+        });
+        let seat = placing.read(cx).seat(pane).expect("placed");
+        Root {
+            seat: seat.clone(),
+            selection_layer: false,
+            drawn: Vec::new(),
+            _watch: cx.observe(&seat, |_, _, cx| cx.notify()),
+        }
+    });
+    let seat = window
+        .root(cx)
+        .unwrap()
+        .read_with(cx, |root, _| root.seat.clone());
+    let native = VisualTestContext::from_window(window.into(), cx);
+    native.run_until_parked();
+    (seats, seat, native, pump)
+}
+
+/// The AX door's reads park while a seat's tick is in flight (the session's
+/// `Seats::settle` says not every tick landed) and go on once the frame
+/// lands, on the polls `/wait` parks on; a read whose client's deadline
+/// passed goes on with the tick still out.
 #[gpui_kit::test]
 fn the_doors_settle_parks_a_read_until_the_frame_lands(cx: &mut TestAppContext) {
     const PROGRAM: &str = "deferred-door-settle";
-    let (seat, _, mut native, pump) = deferred(cx, PROGRAM, &five_trees());
+    let (seats, seat, mut native, pump) = placed_by_seats(cx, PROGRAM, &five_trees());
     draw_now(&mut native);
     subscribe_props(&seat, &native);
     pump.hold();
     nudge(&seat, b"moved", &mut native);
     assert!(in_flight(&seat, &native));
-    let read = std::rc::Rc::new(std::cell::Cell::new(false));
-    let done = read.clone();
-    let settling = seat.clone();
-    native
-        .spawn(async move |mut cx| {
-            let settle = move |cx: &mut gpui_kit::App| {
-                settling.update(cx, |seat, cx| seat.turn(cx));
-                !settling.read(cx).in_flight()
-            };
-            let door = crate::ax::Door {
-                windows: &|_| Vec::new(),
-                settle: &settle,
-                keep: &|_, _| None,
-                chords: &Vec::new,
-            };
-            crate::ax::settled(&door, &mut cx).await;
-            done.set(true);
-        })
-        .detach();
+    let read = std::rc::Rc::new(std::cell::Cell::new(0));
+    for until in [Some(std::time::Instant::now()), None] {
+        let done = read.clone();
+        let seats = seats.clone();
+        native
+            .spawn(async move |mut cx| {
+                let settle =
+                    move |cx: &mut gpui_kit::App| seats.update(cx, |seats, cx| seats.settle(cx));
+                let door = crate::ax::Door {
+                    windows: &|_| Vec::new(),
+                    settle: &settle,
+                    keep: &|_, _| None,
+                    chords: &Vec::new,
+                };
+                crate::ax::settled(&door, until, &mut cx).await;
+                done.set(done.get() + 1);
+            })
+            .detach();
+    }
     for _ in 0..3 {
         native.executor().advance_clock(Duration::from_millis(100));
         native.run_until_parked();
     }
-    assert!(!read.get(), "the read went on with a tick in flight");
+    assert_eq!(
+        read.get(),
+        1,
+        "the read past its client's deadline went on; the other waits"
+    );
     assert!(in_flight(&seat, &native));
     assert_eq!(pump.release_all(), 1);
     native.run_until_parked();
     native.executor().advance_clock(Duration::from_millis(100));
     native.run_until_parked();
-    assert!(read.get(), "the read stayed parked after the frame landed");
+    assert_eq!(
+        read.get(),
+        2,
+        "the read stayed parked after the frame landed"
+    );
     assert_eq!(ticks_of(&seat, &native), 2);
 }
 
@@ -1549,25 +1647,7 @@ fn the_hot_swap_sequence_lands_in_order(cx: &mut TestAppContext) {
     // a load parks it
     let new = crate::runtime::view::prepared_on_for_test(&runner, frames_wat(&[keyed("new")]));
     pump.hold();
-    let generation = mounted.lock().unwrap().start();
-    // read before the load: its install reads the connection too
-    let asked_of = connection().lock().unwrap().clone();
-    Load {
-        program: PROGRAM,
-        seat: mounted.clone(),
-        generation,
-        asked_of,
-        code: Some((::abi::BlobId::Sha256([9; 32]), false)),
-    }
-    .land(|load, _| {
-        let mut code = ViewCode::for_test("", "", 320);
-        code.runner = runner.clone();
-        code.hash = new;
-        Ok(Loaded::Swap {
-            code,
-            shown: load.program.into(),
-        })
-    });
+    park_swap(&mounted, PROGRAM, &runner, new);
     native.run_until_parked();
     let started = turns_of(&seat, &native);
     assert_eq!(
@@ -1631,12 +1711,162 @@ fn the_hot_swap_sequence_lands_in_order(cx: &mut TestAppContext) {
     assert_eq!(pump.held(), 0);
 }
 
+/// Parks a swap of `program`'s drawn view to the code `new`, prepared on
+/// `runner`, on its seat as a load parks it (`Loaded::Swap`).
+fn park_swap(
+    mounted: &Arc<Mutex<Mounted>>,
+    program: &'static str,
+    runner: &Arc<dyn ViewRunner>,
+    new: [u8; 32],
+) {
+    let generation = mounted.lock().unwrap().start();
+    // read before the load: its install reads the connection too
+    let asked_of = connection().lock().unwrap().clone();
+    Load {
+        program,
+        seat: mounted.clone(),
+        generation,
+        asked_of,
+        code: Some((::abi::BlobId::Sha256([9; 32]), false)),
+    }
+    .land(|load, _| {
+        let mut code = ViewCode::for_test("", "", 320);
+        code.runner = runner.clone();
+        code.hash = new;
+        Ok(Loaded::Swap {
+            code,
+            shown: load.program.into(),
+        })
+    });
+}
+
+/// The drawn view of a seated swap, on [`DeferredRunner`] answering at
+/// once: the seat, its window, its registry entry, the pump, the runner,
+/// and the drawn instance's `alive`.
+#[allow(clippy::type_complexity)]
+fn swappable(
+    cx: &mut TestAppContext,
+    program: &'static str,
+) -> (
+    Entity<Seat>,
+    VisualTestContext,
+    Arc<Mutex<Mounted>>,
+    Pump,
+    Arc<dyn ViewRunner>,
+    Arc<()>,
+) {
+    use super::first_frame_tests::frames_wat;
+    let runner = DeferredRunner::default();
+    let pump = runner.pump.clone();
+    let runner: Arc<dyn ViewRunner> = Arc::new(runner);
+    let old = crate::runtime::view::prepared_on_for_test(&runner, frames_wat(&[keyed("old")]));
+    crate::runtime::seat_code_on_for_test(&runner, program, 320, old);
+    let (seat, _, mut native) = open(cx, program, false);
+    draw_now(&mut native);
+    let mounted = mounted_of(&seat, &native);
+    let alive = match &mounted.lock().unwrap().slot {
+        Slot::Ready(view) => view.alive.clone(),
+        _ => panic!("not seated"),
+    };
+    (seat, native, mounted, pump, runner, alive)
+}
+
+/// One call in flight per instance: a swap whose task first runs after a
+/// tree event already began a tick on the drawn view waits for that tick's
+/// frame, and the turn the frame finishes runs it then. Without the wait
+/// the swap asked the same instance for its snapshot with the tick out,
+/// the tick took the snapshot's answer, and the view stopped.
+#[gpui_kit::test]
+fn a_swap_waits_for_a_tick_in_flight_on_the_drawn_view(cx: &mut TestAppContext) {
+    use super::first_frame_tests::frames_wat;
+    const PROGRAM: &str = "deferred-swap-after-tick";
+    let (seat, mut native, mounted, pump, runner, alive) = swappable(cx, PROGRAM);
+    let new = crate::runtime::view::prepared_on_for_test(&runner, frames_wat(&[keyed("new")]));
+    native.update(|_, cx| {
+        pump.hold();
+        park_swap(&mounted, PROGRAM, &runner, new);
+        // a turn finds the swap parked and the view settled: `swap_in` is
+        // spawned, and has not run yet
+        seat.update(cx, |seat, cx| seat.turn(cx));
+        // a tree event, as the tree's subscription delivers it, and the turn
+        // it asks for, before `swap_in` first runs: a tick begins
+        match &mut mounted.lock().unwrap().slot {
+            Slot::Ready(view) => view.pending.push(wire::Event::Theme { dark: true }),
+            _ => panic!("not seated"),
+        }
+        seat.update(cx, |seat, cx| seat.turn(cx));
+    });
+    native.run_until_parked();
+    assert_eq!(
+        pump.held_kinds(),
+        ["Frame"],
+        "one call in flight on the drawn instance"
+    );
+    {
+        let locked = mounted.lock().unwrap();
+        assert!(
+            locked.swap.is_some() && !locked.owned,
+            "the swap waits, parked"
+        );
+    }
+    pump.at_once();
+    assert_eq!(pump.release_all(), 1);
+    native.run_until_parked();
+    draw_now(&mut native);
+    let locked = mounted.lock().unwrap();
+    let Slot::Ready(fresh) = &locked.slot else {
+        panic!("not seated");
+    };
+    assert!(
+        !Arc::ptr_eq(&fresh.alive, &alive),
+        "the new code took the seat once the tick landed"
+    );
+    assert_eq!(fresh.fault, None);
+    assert!(locked.swap.is_none() && !locked.owned && locked.retry.is_none());
+}
+
+/// The page dies while the swap's snapshot is out (SPEC §6.5): only the
+/// swap fails (asked again at the next roster read); the drawn view keeps
+/// its seat with no fault of its own, for its next tick to find the death
+/// and take it up again on its kept replay.
+#[gpui_kit::test]
+fn a_death_under_the_swaps_snapshot_fails_only_the_swap(cx: &mut TestAppContext) {
+    use super::first_frame_tests::frames_wat;
+    const PROGRAM: &str = "deferred-swap-death";
+    crate::contract::testing::snapshot_every_for_test(Some(Duration::from_secs(3600)));
+    let (seat, mut native, mounted, pump, runner, alive) = swappable(cx, PROGRAM);
+    let new = crate::runtime::view::prepared_on_for_test(&runner, frames_wat(&[keyed("new")]));
+    pump.hold();
+    park_swap(&mounted, PROGRAM, &runner, new);
+    native.run_until_parked();
+    assert_eq!(pump.held_kinds(), ["Snapshot"]);
+    assert_eq!(pump.die(), 1);
+    native.run_until_parked();
+    draw_now(&mut native);
+    crate::contract::testing::snapshot_every_for_test(None);
+    let locked = mounted.lock().unwrap();
+    let Slot::Ready(view) = &locked.slot else {
+        panic!("not seated");
+    };
+    assert!(
+        Arc::ptr_eq(&view.alive, &alive),
+        "the drawn view kept its seat"
+    );
+    assert_eq!(view.fault, None, "the death is no fault of the view's");
+    assert!(locked.retry.is_some(), "the swap is asked again");
+    assert!(locked.swap.is_none() && !locked.owned);
+    drop(locked);
+    assert!(!in_flight(&seat, &native));
+}
+
 /// A death replay (SPEC §6.5): the instance dies with a tick in flight,
 /// and where the host keeps a replay the seat takes the view up again on a
 /// new instance, from its kept start (here `init`), replays every tick's
 /// events since with their frames discarded, and begins the tick that died
 /// again. The frame that tick lands is the one an uninterrupted run lands
-/// at the same tick, byte for byte, and nothing else draws or turns twice.
+/// at the same tick, byte for byte, and nothing else draws or turns twice:
+/// the replayed frames are thrown away, never taken in again (the tree's
+/// revision moves once, for the tick that died).
 #[gpui_kit::test]
 fn a_death_replay_reproduces_the_frame_of_tick_n(cx: &mut TestAppContext) {
     use sha2::Digest as _;
@@ -1671,6 +1901,7 @@ fn a_death_replay_reproduces_the_frame_of_tick_n(cx: &mut TestAppContext) {
         (
             ticks_of(seat, native),
             turns_of(seat, native),
+            frame_rev_of(seat, native),
             frame_hash(seat, native),
         )
     };
@@ -1686,13 +1917,186 @@ fn a_death_replay_reproduces_the_frame_of_tick_n(cx: &mut TestAppContext) {
     assert_eq!(steady.0, 4, "four ticks: the first frame, a, b, c");
     assert_eq!(
         revived, steady,
-        "(ticks, turns, frame hash at tick 4) after the death"
+        "(ticks, turns, tree revision, frame hash at tick 4) after the death"
     );
     assert!(
         matches!(&mounted_of(&seat, &native).lock().unwrap().slot, Slot::Ready(view) if view.fault.is_none()),
         "the death is no fault of the view's"
     );
     assert_eq!(dying.held(), 0);
+}
+
+/// A kept replay starts again from each new snapshot (SPEC §6.5): the
+/// batches before it go, so a death replays nothing from that snapshot but
+/// the tick that died, whose frame is the one an uninterrupted run lands.
+/// A batch kept past its snapshot would be replayed on top of the state
+/// that snapshot restores. A turn takes the snapshot once one is due
+/// (`keep_in`), and only after a tick: a replay of none has nothing to
+/// shorten.
+#[gpui_kit::test]
+fn a_kept_snapshot_starts_the_replay_again(cx: &mut TestAppContext) {
+    use super::first_frame_tests::frames_wat;
+    use sha2::Digest as _;
+    const NOT_DUE: Duration = Duration::from_secs(3600);
+    fn kept_of(mounted: &Arc<Mutex<Mounted>>) -> (Option<Vec<u8>>, usize) {
+        match &mounted.lock().unwrap().slot {
+            Slot::Ready(view) => {
+                let kept = view.kept.as_ref().expect("a replay is kept");
+                (kept.snapshot.clone(), kept.batches.len())
+            }
+            _ => panic!("not seated"),
+        }
+    }
+    fn run(
+        cx: &mut TestAppContext,
+        program: &'static str,
+        die: bool,
+    ) -> (
+        (u64, u64, u64, [u8; 32]),
+        Arc<Mutex<Mounted>>,
+        Entity<Seat>,
+        VisualTestContext,
+    ) {
+        let runner = DeferredRunner::default();
+        let pump = runner.pump.clone();
+        let runner: Arc<dyn ViewRunner> = Arc::new(runner);
+        let code = crate::runtime::view::prepared_on_for_test(&runner, frames_wat(&five_trees()));
+        crate::runtime::seat_code_on_for_test(&runner, program, 320, code);
+        let (seat, _, mut native) = open(cx, program, false);
+        draw_now(&mut native);
+        subscribe_props(&seat, &native);
+        for props in [b"a".as_slice(), b"b".as_slice()] {
+            nudge(&seat, props, &mut native);
+            draw_now(&mut native);
+        }
+        let mounted = mounted_of(&seat, &native);
+        // a snapshot due after tick 3, as a turn finds one due
+        crate::contract::testing::snapshot_every_for_test(Some(Duration::ZERO));
+        futures::executor::block_on(keep_in(mounted.clone()));
+        crate::contract::testing::snapshot_every_for_test(Some(NOT_DUE));
+        native.run_until_parked();
+        assert_eq!(
+            kept_of(&mounted),
+            (Some(vec![3]), 0),
+            "kept at tick 3, its batches gone"
+        );
+        // tick 4: in flight when the page dies, the only batch kept
+        pump.hold();
+        nudge(&seat, b"c", &mut native);
+        assert!(in_flight(&seat, &native));
+        assert_eq!(kept_of(&mounted).1, 1);
+        match die {
+            true => assert_eq!(pump.die(), 1),
+            false => {
+                pump.at_once();
+                assert_eq!(pump.release_all(), 1);
+            }
+        }
+        native.run_until_parked();
+        draw_now(&mut native);
+        let at_four = match &mounted.lock().unwrap().slot {
+            Slot::Ready(view) => {
+                assert_eq!(view.fault, None);
+                (
+                    view.ticks,
+                    turns_of(&seat, &native),
+                    view.frame_rev,
+                    sha2::Sha256::digest(wire::encode(&view.frame.root)).into(),
+                )
+            }
+            _ => panic!("not seated"),
+        };
+        (at_four, mounted, seat, native)
+    }
+    crate::contract::testing::snapshot_every_for_test(Some(NOT_DUE));
+    let (steady, ..) = run(cx, "kept-steady", false);
+    let (revived, mounted, seat, mut native) = run(cx, "kept-dying", true);
+    assert_eq!(steady.0, 4, "four ticks: the first frame, a, b, c");
+    assert_eq!(
+        revived, steady,
+        "(ticks, turns, tree revision, frame hash at tick 4) after the death"
+    );
+    // due after every turn: the turn after tick 5 takes it, and the one
+    // after that, with no tick between, takes none
+    crate::contract::testing::snapshot_every_for_test(Some(Duration::ZERO));
+    nudge(&seat, b"d", &mut native);
+    draw_now(&mut native);
+    crate::contract::testing::snapshot_every_for_test(None);
+    assert_eq!(
+        kept_of(&mounted),
+        (Some(vec![5]), 0),
+        "kept by the turn at tick 5"
+    );
+}
+
+/// A death in the background is not taken up there (SPEC §4.3: no call
+/// into a view is begun): it waits on the view, and the turn in front again
+/// takes it up, seating the new instance then.
+#[gpui_kit::test]
+fn a_death_in_the_background_is_taken_up_in_front(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "background-death";
+    crate::contract::testing::snapshot_every_for_test(Some(Duration::from_secs(3600)));
+    let (seat, _, mut native, pump) = deferred(cx, PROGRAM, &five_trees());
+    draw_now(&mut native);
+    subscribe_props(&seat, &native);
+    pump.hold();
+    nudge(&seat, b"moved", &mut native);
+    assert!(in_flight(&seat, &native));
+    native.update(|_, cx| cx.set_global(Backgrounded(true)));
+    assert_eq!(pump.die(), 1);
+    // anything begun from here on is held, and seen
+    pump.hold();
+    native.run_until_parked();
+    assert_eq!(pump.held(), 0, "a call was begun in the background");
+    assert!(!in_flight(&seat, &native));
+    {
+        let mounted = mounted_of(&seat, &native);
+        let locked = mounted.lock().unwrap();
+        let Slot::Ready(view) = &locked.slot else {
+            panic!("not seated");
+        };
+        assert!(view.fault.is_none() && view.ticking() && view.parked.is_some());
+    }
+    pump.at_once();
+    native.update(|_, cx| cx.set_global(Backgrounded(false)));
+    native.run_until_parked();
+    draw_now(&mut native);
+    crate::contract::testing::snapshot_every_for_test(None);
+    assert!(!in_flight(&seat, &native));
+    assert_eq!(ticks_of(&seat, &native), 2, "the tick that died, landed");
+    assert!(
+        matches!(&mounted_of(&seat, &native).lock().unwrap().slot, Slot::Ready(view) if view.fault.is_none() && view.parked.is_none()),
+        "taken up again in front"
+    );
+}
+
+/// A death `hide`'s last update lands at once, where a replay is kept, is
+/// no fault of the view's (SPEC §6.5): the update begins no call to take it
+/// up again, and it stays on the view, which goes with the seat.
+#[gpui_kit::test]
+fn a_death_under_hide_is_no_fault_of_the_views(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "hide-death";
+    crate::contract::testing::snapshot_every_for_test(Some(Duration::from_secs(3600)));
+    let (seat, _, mut native, pump) = deferred(cx, PROGRAM, &five_trees());
+    draw_now(&mut native);
+    subscribe_props(&seat, &native);
+    let mounted = mounted_of(&seat, &native);
+    // the props the hidden pane's last update delivers
+    mounted.lock().unwrap().props = Some(b"last".to_vec());
+    pump.dying(true);
+    let intents = native.update(|_, cx| seat.update(cx, |seat, _| seat.hide()));
+    pump.dying(false);
+    crate::contract::testing::snapshot_every_for_test(None);
+    assert!(intents.is_empty());
+    let locked = mounted.lock().unwrap();
+    let Slot::Ready(view) = &locked.slot else {
+        panic!("not seated");
+    };
+    assert_eq!(
+        view.fault, None,
+        "the page's death taken as the view's fault"
+    );
+    assert!(view.ticking() && view.parked.is_some());
 }
 
 /// In the background no seat turns, so no call into a view is begun: the

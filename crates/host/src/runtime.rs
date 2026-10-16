@@ -77,7 +77,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::contract::{FUEL_PER_TICK, Fault, Landed, Landing, SeatId, ViewInstance, ViewRunner};
+use crate::contract::{
+    CodeSource, FUEL_PER_TICK, Fault, Landed, Landing, Prepared, SeatId, ViewInstance, ViewRunner,
+};
 use gpui_kit::AppContext as _;
 use pictures::Pictures;
 use view_wire as wire;

@@ -342,23 +342,24 @@ pub fn runner() -> &'static Arc<dyn ViewRunner> {
 /// may be called from the kernel's blocking pool and may block it, NEVER
 /// from the window thread (a JSC impl posts to main and blocks the pool
 /// thread on a oneshot; main never waits on the pool). `instantiate` is
-/// called on the thread that seats the view; every `begin_*` on the
-/// seat's thread (the window thread), and each answers through the seat's
-/// [`Landing`], at once or later.
+/// called today on two threads: the loader thread seats a first load, a
+/// pane claiming a compiled seat (`View::start`), the developer override
+/// and `Preload::Seat`'s instance, and takes the answer only if it landed
+/// before the call returned (a runner that answers later fails those
+/// loads); the seat's thread (the window thread) seats a swap's
+/// replacement, a sibling after a restore trap, and a revive, and waits
+/// for the answer. Lane J part 2 moves the loader thread's seating to the
+/// seat's thread. Every `begin_*` is called on the seat's thread, and each
+/// answers through the seat's [`Landing`], at once or later.
 pub trait ViewRunner: Send + Sync + 'static {
     /// Compile (wasmtime) or validate + meter + cache (JSC) `code`, whose
     /// sha256 is `hash`, for a view whose linear memory may reach
     /// `view_bytes` (the `memory.view_bytes` setting). Nothing runs. The
-    /// answer is where the code came from, for the load's log (`memory`,
-    /// `disk`, `cold`, ...).
-    fn prepare(
-        &self,
-        hash: [u8; 32],
-        code: &[u8],
-        view_bytes: usize,
-    ) -> Result<&'static str, Failure>;
-    /// Seat prepared code: lands [`Landed::Seated`] (or a `Fault`) on
-    /// `land`, which the instance keeps for every later answer.
+    /// code stays prepared while the answer's hold is held.
+    fn prepare(&self, hash: [u8; 32], code: &[u8], view_bytes: usize) -> Result<Prepared, Failure>;
+    /// Seat the prepared code `hash` names: lands [`Landed::Seated`] (or a
+    /// `Fault`) on `land`, which the instance keeps for every later answer.
+    /// Code nothing holds any more lands a `Fault::Runner`.
     fn instantiate(&self, hash: [u8; 32], seat: SeatId, land: Landing);
     /// `program.describe`: run the import-free describe module `module`
     /// (sha256 `hash`) on `op`, bounded by the same fuel; `None` on any
@@ -371,12 +372,55 @@ pub trait ViewRunner: Send + Sync + 'static {
     ) -> Option<view_wire::methods::Description>;
 }
 
+/// Where prepared code came from, for the load's log and counters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodeSource {
+    /// Prepared before, and still held: nothing compiled.
+    Memory,
+    /// The runner's disk cache.
+    Disk,
+    /// Compiled (wasmtime) or validated and metered (JSC) now.
+    Cold,
+}
+
+impl CodeSource {
+    /// How the load's log (`code=`) and its counter (`compile.*`) name it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Memory => "memory",
+            Self::Disk => "disk",
+            Self::Cold => "cold",
+        }
+    }
+}
+
+/// [`ViewRunner::prepare`]'s answer: where the code came from, and the
+/// runner's hold on it. Whatever may still seat the code holds the hold (a
+/// seat's compiled view, a parked swap, a load about to seat it); a running
+/// instance holds its own code. A runner may free code nothing holds.
+#[derive(Clone)]
+pub struct Prepared {
+    /// Where the code came from.
+    pub source: CodeSource,
+    /// The runner's hold on the code: opaque to the host.
+    pub hold: Arc<dyn std::any::Any + Send + Sync>,
+}
+
 /// One running view: the five exports (`alloc` and `memory` internal to the
 /// impl). `Send` so the seat registry may hold it; every entry is called
 /// on the seat's thread and is completion-shaped: it returns at once and
-/// the answer lands on the seat's [`Landing`]. `Any` so a test can reach
-/// the impl behind the box.
-pub trait ViewInstance: Send + std::any::Any {
+/// the answer lands on the seat's [`Landing`].
+///
+/// One call in flight per instance: the host begins a call only once the
+/// answer to the one before it landed (a tick in flight is `View::ticking`;
+/// a swap's or a kept snapshot's sequence owns the instance meanwhile,
+/// `Mounted::owned`), so each answer is the answer to the last call begun.
+///
+/// Ending: the host calls [`Self::stop`] on an instance it replaces while
+/// it lives (a revive's dead one). Every other instance is dropped, on the
+/// thread that drops it (the seat's, or a loader's when a load's install
+/// replaces the view): dropping an instance stops it, as `stop` does.
+pub trait ViewInstance: Send {
     /// The sha256 of the code this is an instance of.
     fn code_hash(&self) -> [u8; 32];
     /// The `init` export: lands `Inited` or a `Fault`.
@@ -394,12 +438,26 @@ pub trait ViewInstance: Send + std::any::Any {
     fn fuel_used(&self) -> u64;
     /// The view's linear memory, in bytes.
     fn memory_bytes(&self) -> usize;
-    /// Ends the instance.
+    /// Ends the instance. Dropping it ends it too.
     fn stop(self: Box<Self>);
+    /// The instance's linear memory, for the host's own tests that read
+    /// it; only the wasmtime instance lends one.
+    #[cfg(test)]
+    fn memory_for_test(&self) -> &[u8] {
+        unimplemented!("only the wasmtime instance lends its memory to a test")
+    }
+    /// [`Self::memory_for_test`], for the tests that script it.
+    #[cfg(test)]
+    fn memory_mut_for_test(&mut self) -> &mut [u8] {
+        unimplemented!("only the wasmtime instance lends its memory to a test")
+    }
 }
 
-/// Which seat an instance is for: (program, instance), the seat registry's
-/// key.
+/// Which seat an instance is for: (program, instance). Today the host names
+/// every instance `(program, 0)`, whichever pane it is for (lane J part 2
+/// carries the pane's), and during a swap or a revive two live instances
+/// share one id: it names a program's seat for a runner's own logs and
+/// bookkeeping, and is no key two instances may not share.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SeatId(pub &'static str, pub u64);
 
@@ -407,7 +465,7 @@ pub struct SeatId(pub &'static str, pub u64);
 /// for an instance and kept by the instance; a runner `send`s each answer
 /// into it from wherever the answer appears.
 #[derive(Clone, Debug)]
-pub struct Landing(pub async_channel::Sender<Landed>);
+pub struct Landing(async_channel::Sender<Landed>);
 
 impl Landing {
     /// A landing and the seat's end of it.

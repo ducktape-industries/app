@@ -299,9 +299,11 @@ at all, else the fresh one is `init`ed), the fresh instance, its `restore`,
 its `first_frame`, each begun once the one before landed (at once on the
 wasmtime runner, so the whole sequence runs in one poll there; later on a
 runner that answers across a process boundary). The seat does not turn the
-drawn view meanwhile (`Mounted::swapping`), so nothing can tick it between
+drawn view meanwhile (`Mounted::owned`), so nothing can tick it between
 the snapshot and the install. A view whose snapshot refuses ("its
-replacement waits") keeps its seat and the next block asks again. The swap
+replacement waits") keeps its seat and the next block asks again; so does
+one whose instance dies under the snapshot (its next tick takes the death
+up, SPEC §6.5). The swap
 installs only if the seat's `generation` is still the one it was asked for
 and the app is still on the node it was asked of (`Connection.rev`). The
 new view is `staged`: its first tree is already in `frame`, so the next

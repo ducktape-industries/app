@@ -26,7 +26,10 @@ pub(super) struct Mounted {
     pub(super) swap: Option<Box<PendingSwap>>,
     /// A sequence of calls the seat's thread runs owns the drawn view (a
     /// swap, `swap_in`; a kept snapshot, `keep_in`): the seat does not turn
-    /// it until the sequence is done, which wakes the seat.
+    /// it until the sequence is done, which wakes the seat. One owner at a
+    /// time: a sequence starts only on a view nothing owns and no tick is in
+    /// flight on (one call in flight per instance, `ViewInstance`), sets
+    /// this under the same lock, and is the only one to clear it.
     pub(super) owned: bool,
 }
 
@@ -173,9 +176,9 @@ pub(super) enum Slot {
 }
 
 /// A view compiled and not started: its code, prepared on `runner` under
-/// the hash of its bytes, out of the `blob` the roster lists (none for the
-/// developer's override, which a pane reads again), and what its manifest
-/// says: the name
+/// the hash of its bytes and kept prepared by `hold`, out of the `blob` the
+/// roster lists (none for the developer's override, which a pane reads
+/// again), and what its manifest says: the name
 /// the rail lists it by, the icon its tab draws folded (empty: it declares
 /// none), the narrowest it is laid out, its capabilities and its targets.
 /// All a pane needs to start it, with nothing fetched or compiled again.
@@ -184,6 +187,7 @@ pub(super) struct ViewCode {
     pub(super) runner: Arc<dyn ViewRunner>,
     pub(super) blob: Option<abi::BlobId>,
     pub(super) hash: [u8; 32],
+    pub(super) hold: Arc<dyn std::any::Any + Send + Sync>,
     pub(super) name: String,
     pub(super) icon: String,
     pub(super) description: String,
@@ -202,6 +206,7 @@ impl ViewCode {
             runner: crate::contract::runner().clone(),
             blob: None,
             hash: [0; 32],
+            hold: Arc::new(()),
             name: name.into(),
             icon: icon.into(),
             description: String::new(),
@@ -672,6 +677,13 @@ pub(super) async fn swap_in(mounted: Arc<Mutex<Mounted>>, program: &'static str)
         let Slot::Ready(old) = &locked.slot else {
             return;
         };
+        // a tick in flight, or a kept snapshot (`keep_in`), has the
+        // instance: the swap waits for it, and the turn after asks again
+        // (`Seat::after_turn`)
+        if old.ticking() || locked.owned {
+            locked.swap = Some(pending);
+            return;
+        }
         let alive = old.alive.clone();
         let instance = locked.instance;
         locked.owned = true;
@@ -764,11 +776,7 @@ pub(super) async fn keep_in(mounted: Arc<Mutex<Mounted>>) {
         locked.owned = true;
         asked
     };
-    let landed = landing.recv().await.unwrap_or_else(|_| {
-        Landed::Fault(Fault::Runner(
-            "the instance stopped before it answered".into(),
-        ))
-    });
+    let landed = super::view::next(&landing).await;
     let mut locked = lock(&mounted);
     locked.owned = false;
     if let Slot::Ready(view) = &mut locked.slot

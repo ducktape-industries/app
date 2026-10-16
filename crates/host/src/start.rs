@@ -31,14 +31,25 @@ pub struct Host {
 /// front), `BannerClick` to the centre (`notify::clicked`, which opens
 /// through `Boot::open`), the rest to `Host::signals`.
 pub fn start(boot: Boot, cx: &mut App) -> (Host, Inbound) {
+    let consent = crate::runtime::consent::changes_channel();
+    let changes = crate::runtime::changes_channel();
+    started(boot, consent, changes, cx)
+}
+
+/// [`start`] on the process's consent and roster wakes (`consent`,
+/// `changes`), which a test owns one each of.
+fn started(
+    boot: Boot,
+    consent: futures::channel::mpsc::UnboundedReceiver<()>,
+    changes: futures::channel::mpsc::UnboundedReceiver<()>,
+    cx: &mut App,
+) -> (Host, Inbound) {
     contract::install(boot.os);
     contract::install_runner(boot.runner);
     crate::runtime::notify::on_open(boot.open);
-    let consent = crate::runtime::consent::changes_channel();
     let center = crate::runtime::notify::center().clone();
     let roster = crate::runtime::roster().clone();
     crate::perf::mark("boot");
-    let changes = crate::runtime::changes_channel();
     let shared = Shared::new(roster, center, changes, cx);
     let (inbound, signals) = Inbound::channel();
     let (to_shell, from_host) = async_channel::unbounded();
@@ -101,27 +112,44 @@ mod tests {
         });
     }
 
-    /// The drain opens a banner click through the shell's opener and hands
-    /// the signals the host does not consume on to the shell, in order.
-    /// (`start` itself is not called here: it installs the process's
-    /// consent and roster wakes, which two other tests own.)
+    /// What `start` installs and spawns: a banner click opens through the
+    /// boot's opener, the lifecycle reaches the seats (`Backgrounded`), and
+    /// the signals the host does not consume go on to the shell, in order.
+    /// (On wakes of the test's own: the process's consent and roster wakes
+    /// are two other tests'.)
     #[gpui_kit::test]
-    fn the_drain_opens_a_banner_click_and_hands_on_the_rest(cx: &mut gpui_kit::TestAppContext) {
-        crate::runtime::notify::on_open(opened);
-        let session = cx.update(crate::session::tests::session);
-        let (inbound, signals) = Inbound::channel();
-        let (to_shell, from_host) = async_channel::unbounded();
-        cx.update(|cx| drain(signals, session.downgrade(), to_shell, cx));
+    fn start_opens_a_banner_click_and_hands_on_the_rest(cx: &mut gpui_kit::TestAppContext) {
+        let boot = Boot {
+            os: contract::os().clone(),
+            runner: contract::runner().clone(),
+            open: opened,
+        };
+        let (host, inbound) = cx.update(|cx| {
+            gpui_kit::init(cx);
+            let wakes = || futures::channel::mpsc::unbounded().1;
+            started(boot, wakes(), wakes(), cx)
+        });
+        let backgrounded = |cx: &mut gpui_kit::TestAppContext| {
+            cx.update(|cx| {
+                cx.try_global::<crate::runtime::Backgrounded>()
+                    .map(|phase| phase.0)
+            })
+        };
         inbound.send(Signal::Back);
         inbound.send(Signal::BannerClick(Click::Updates));
+        inbound.send(Signal::Lifecycle(gpui_kit::AppLifecyclePhase::Background));
         inbound.send(Signal::MemoryWarning);
         cx.run_until_parked();
         assert_eq!(*OPENED.lock().unwrap(), vec!["updates"]);
-        assert!(matches!(from_host.try_recv(), Ok(Signal::Back)));
-        assert!(matches!(from_host.try_recv(), Ok(Signal::MemoryWarning)));
+        assert_eq!(backgrounded(cx), Some(true));
+        assert!(matches!(host.signals.try_recv(), Ok(Signal::Back)));
+        assert!(matches!(host.signals.try_recv(), Ok(Signal::MemoryWarning)));
         assert!(
-            from_host.try_recv().is_err(),
-            "the click went to the shell too"
+            host.signals.try_recv().is_err(),
+            "the click or the phase went to the shell too"
         );
+        inbound.send(Signal::Lifecycle(gpui_kit::AppLifecyclePhase::Foreground));
+        cx.run_until_parked();
+        assert_eq!(backgrounded(cx), Some(false));
     }
 }

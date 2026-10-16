@@ -130,6 +130,12 @@ pub(super) struct View {
     /// What a death replay starts from, where the host keeps one
     /// (`Limits::snapshot_every`; none on the desktop).
     pub(super) kept: Option<Kept>,
+    /// The tick in flight's death, taken off its landing where it could
+    /// not be taken up again (`View::revive` begins calls): in the
+    /// background, or in `Seat::hide`'s last update. The tick stays in
+    /// flight; the turn that next takes the view up (in front again)
+    /// starts its wait from this.
+    pub(super) parked: Option<Landed>,
     /// The view's events for its next tick.
     pub pending: Vec<wire::Event>,
     /// The host's facts as the view last heard them: the theme, the
@@ -218,13 +224,9 @@ impl View {
 
     /// The answer to the call just begun, when it lands: before the call
     /// returned on the wasmtime runner, later on one that answers across a
-    /// process boundary. A stopped instance answers nothing more.
+    /// process boundary.
     async fn landed(&mut self) -> Landed {
-        self.landing.recv().await.unwrap_or_else(|_| {
-            Landed::Fault(Fault::Runner(
-                "the instance stopped before it answered".into(),
-            ))
-        })
+        next(&self.landing).await
     }
 
     /// The answer to the call just begun, taken at once, as a test takes it
@@ -239,21 +241,13 @@ impl View {
     /// The wasmtime instance's linear memory, for the tests that read it.
     #[cfg(test)]
     pub fn memory_for_test(&self) -> &[u8] {
-        let instance: &dyn std::any::Any = &*self.running;
-        instance
-            .downcast_ref::<crate::runner::WasmtimeInstance>()
-            .expect("the view runs on the wasmtime runner")
-            .memory_for_test()
+        self.running.memory_for_test()
     }
 
     /// [`Self::memory_for_test`], for the tests that script it.
     #[cfg(test)]
     pub fn memory_mut_for_test(&mut self) -> &mut [u8] {
-        let instance: &mut dyn std::any::Any = &mut *self.running;
-        instance
-            .downcast_mut::<crate::runner::WasmtimeInstance>()
-            .expect("the view runs on the wasmtime runner")
-            .memory_mut_for_test()
+        self.running.memory_mut_for_test()
     }
 
     /// What the seat hands its tree to draw: the held tree with its style
@@ -266,6 +260,17 @@ impl View {
         };
         (tree, self.pictures.held())
     }
+}
+
+/// The next answer on `landing`. An instance that stopped (its landing
+/// closed) answers nothing more: the call it had out failed as the
+/// runner's, as a page's death does.
+pub(super) async fn next(landing: &async_channel::Receiver<Landed>) -> Landed {
+    landing.recv().await.unwrap_or_else(|_| {
+        Landed::Fault(Fault::Runner(
+            "the instance stopped before it answered".into(),
+        ))
+    })
 }
 
 /// One `view_perf` line as an installed instance leaves: a swap drops the
@@ -292,13 +297,16 @@ pub fn prepared_on_for_test(
     code: impl AsRef<[u8]>,
 ) -> [u8; 32] {
     use sha2::Digest as _;
+    // a test seats its code by hash, later: held for the test process's life
+    static HELD: Mutex<Vec<Arc<dyn std::any::Any + Send + Sync>>> = Mutex::new(Vec::new());
     let code = code.as_ref();
     let hash = sha2::Sha256::digest(code).into();
     let view_bytes =
         usize::try_from(crate::backend::memory_bounds().view_bytes).unwrap_or(usize::MAX);
-    runner
+    let prepared = runner
         .prepare(hash, code, view_bytes)
         .expect("the test's code compiles");
+    HELD.lock().unwrap().push(prepared.hold);
     hash
 }
 

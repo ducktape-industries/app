@@ -135,8 +135,8 @@ fn facts(events: &[wire::Event]) -> (Option<bool>, Option<(f32, f32)>, Option<i3
 }
 
 /// A view answering `frames` in order, one per tick, the last on every
-/// tick after. `snapshot` hands over one empty state and `restore` takes
-/// any, so the same code serves as a swap's old and new instance.
+/// tick after. `snapshot` hands over its tick count and `restore` takes
+/// one up, so the same code serves as a swap's old and new instance.
 fn frames_in_order(program: &'static str, min_width: u32, frames: &[wire::Frame]) {
     let code = crate::runtime::view::prepared_for_test(frames_wat(frames));
     crate::runtime::seat_code_for_test(program, min_width, code);
@@ -325,7 +325,8 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
 }
 
 /// The WAT of [`frames_in_order`]: byte 0 is a result's Ok tag, so
-/// `snapshot` answers Ok(empty) and `restore` Ok; frame `n` sits in slot
+/// `restore` answers Ok, and `snapshot` Ok(the tick count, one byte at 33
+/// behind the tag at 32), which `restore` takes up; frame `n` sits in slot
 /// `n` above the first page.
 pub(super) fn frames_wat(frames: &[wire::Frame]) -> String {
     assert!(!frames.is_empty());
@@ -349,6 +350,7 @@ pub(super) fn frames_wat(frames: &[wire::Frame]) -> String {
     }
     let pages = 1 + (SLOT * frames.len()).div_ceil(65536);
     let ok = wire::abi::pack(0, 1);
+    let state = wire::abi::pack(32, 2);
     format!(
         r#"(module
         (memory (export "memory") {pages})
@@ -359,7 +361,11 @@ pub(super) fn frames_wat(frames: &[wire::Frame]) -> String {
         (func (export "tick") (param i32 i32) (result i64)
             global.get $n i32.const 1 i32.add global.set $n
             {arms})
-        (func (export "snapshot") (result i64) i64.const {ok})
-        (func (export "restore") (param i32 i32) (result i64) i64.const {ok}))"#
+        (func (export "snapshot") (result i64)
+            (i32.store8 (i32.const 33) (global.get $n))
+            i64.const {state})
+        (func (export "restore") (param i32 i32) (result i64)
+            (global.set $n (i32.load8_u (local.get 0)))
+            i64.const {ok}))"#
     )
 }

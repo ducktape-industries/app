@@ -17,6 +17,9 @@ pub struct Pump(Arc<Mutex<Held>>);
 #[derive(Default)]
 struct Held {
     holding: bool,
+    /// The page is dead while this is set: every answer lands as the
+    /// runner's fault, at once.
+    dying: bool,
     answers: VecDeque<(Landing, Landed)>,
 }
 
@@ -86,6 +89,13 @@ impl Pump {
         died
     }
 
+    /// While `dying`, the page is dead: every answer from then on lands at
+    /// once as the runner's fault, as a call into a page that already died
+    /// does; then a new page answers again.
+    pub fn dying(&self, dying: bool) {
+        self.lock().dying = dying;
+    }
+
     /// Drops every held answer: they never land.
     pub fn drop_all(&self) -> usize {
         std::mem::take(&mut self.lock().answers).len()
@@ -93,6 +103,13 @@ impl Pump {
 
     fn land(&self, land: &Landing, landed: Landed) {
         let mut held = self.lock();
+        if held.dying {
+            drop(held);
+            land.send(Landed::Fault(crate::contract::Fault::Runner(
+                "the page died".into(),
+            )));
+            return;
+        }
         match held.holding {
             true => held.answers.push_back((land.clone(), landed)),
             false => {
@@ -129,7 +146,7 @@ impl ViewRunner for DeferredRunner {
         hash: [u8; 32],
         code: &[u8],
         view_bytes: usize,
-    ) -> Result<&'static str, crate::contract::Failure> {
+    ) -> Result<crate::contract::Prepared, crate::contract::Failure> {
         self.inner.prepare(hash, code, view_bytes)
     }
 
@@ -210,5 +227,15 @@ impl ViewInstance for DeferredInstance {
 
     fn stop(self: Box<Self>) {
         self.inner.stop();
+    }
+
+    #[cfg(test)]
+    fn memory_for_test(&self) -> &[u8] {
+        self.inner.memory_for_test()
+    }
+
+    #[cfg(test)]
+    fn memory_mut_for_test(&mut self) -> &mut [u8] {
+        self.inner.memory_mut_for_test()
     }
 }

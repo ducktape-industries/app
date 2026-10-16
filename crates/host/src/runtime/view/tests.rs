@@ -295,12 +295,12 @@ fn a_ticked_view_survives_a_swap_with_its_state() {
     let alive = old.alive.clone();
     let mounted = Mounted::seat();
     mounted.lock().unwrap().slot = Slot::Ready(Box::new(old));
-    let code = View::prepare(&**crate::contract::runner(), &bytes, "probe")
-        .map(|(code, _)| code)
+    let (code, prepared) = View::prepare(&**crate::contract::runner(), &bytes, "probe")
         .map_err(|f| f.to_string())
         .expect("compiles");
     let mut deployment = ViewCode::for_test("", "", 0);
     deployment.hash = code;
+    deployment.hold = prepared.hold;
     let mut timing = LoadTiming::default();
     let fresh = futures::executor::block_on(View::replacement(
         "probe",
