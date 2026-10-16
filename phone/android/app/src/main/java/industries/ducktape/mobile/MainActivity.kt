@@ -40,6 +40,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private val host = next++
 
     override fun onCreate(state: Bundle?) {
+        // a walk's `am start -e DUCKTAPE_PERF 1`: an app is launched with no environment, so the extra becomes one,
+        // before the library loads and Rust reads it (`perf::start`)
+        intent?.getStringExtra("DUCKTAPE_PERF")?.let { android.system.Os.setenv("DUCKTAPE_PERF", it, true) }
         super.onCreate(state)
         // the key store first: loading its class loads the library and hands Rust the class
         DeviceKeyStore.sealedDir = File(noBackupFilesDir, "device-keys")

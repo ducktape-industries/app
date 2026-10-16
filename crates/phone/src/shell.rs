@@ -95,6 +95,12 @@ pub fn launch(os: Arc<dyn OsServices>, cx: &mut App) {
         open: banner_opened,
     };
     let (host, inbound) = ducktape_host::start::start(boot, cx);
+    // `DUCKTAPE_PERF=1` in the launch's environment turns the counters on
+    // (iOS: `SIMCTL_CHILD_DUCKTAPE_PERF=1 xcrun simctl launch`; Android has
+    // no launch environment, so `MainActivity` makes one of the
+    // `-e DUCKTAPE_PERF 1` extra); the sampler reads the OS facts, which
+    // `start` installed
+    ducktape_host::perf::start();
     crate::os::install_inbound(inbound);
     if let Some(target) = Session::boot_target() {
         host.shared
