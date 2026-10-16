@@ -235,6 +235,16 @@ opt-level = 1
 [profile.dev.package.sha2]
 opt-level = 3
 
+# A call's pictures (ducktape-av's `call`) keep real time in a dev build:
+# unoptimized, OpenH264 (C++ built by `cc`, which reads this) and its
+# picture conversions take several times a frame's time. (Its libopus sets
+# its own, in crates/av/build.rs.)
+[profile.dev.package.openh264-sys2]
+opt-level = 3
+
+[profile.dev.package.openh264]
+opt-level = 3
+
 # Optimize the native render and text stack without slowing unrelated workspace crates.
 [profile.dev.package.gpui-pre]
 opt-level = 2
