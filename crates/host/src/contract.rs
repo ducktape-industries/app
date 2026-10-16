@@ -342,15 +342,18 @@ pub fn runner() -> &'static Arc<dyn ViewRunner> {
 /// may be called from the kernel's blocking pool and may block it, NEVER
 /// from the window thread (a JSC impl posts to main and blocks the pool
 /// thread on a oneshot; main never waits on the pool). `instantiate` is
-/// called today on two threads: the loader thread seats a first load, a
-/// pane claiming a compiled seat (`View::start`), the developer override
-/// and `Preload::Seat`'s instance, and takes the answer only if it landed
-/// before the call returned (a runner that answers later fails those
-/// loads); the seat's thread (the window thread) seats a swap's
-/// replacement, a sibling after a restore trap, and a revive, and waits
-/// for the answer. Lane J part 2 moves the loader thread's seating to the
-/// seat's thread. Every `begin_*` is called on the seat's thread, and each
-/// answers through the seat's [`Landing`], at once or later.
+/// called today on two threads, and on both a seating outside a swap or a
+/// revive takes the answer only if it landed before the call returned (a
+/// runner that answers later fails those loads, without waiting): a loader
+/// thread seats a first load, the developer override and
+/// `Preload::Seat`'s instance; a pane claiming a compiled seat
+/// (`View::start`) is seated on the window thread, from `Seat::new`
+/// (`mounted`), or on a loader thread when the claim lands with a load.
+/// The seat's thread (the window thread) seats a swap's replacement, a
+/// sibling after a restore trap, and a revive, and waits for the answer.
+/// Lane J part 2 moves every seating to the seat's thread. Every `begin_*`
+/// is called on the seat's thread, and each answers through the seat's
+/// [`Landing`], at once or later.
 pub trait ViewRunner: Send + Sync + 'static {
     /// Compile (wasmtime) or validate + meter + cache (JSC) `code`, whose
     /// sha256 is `hash`, for a view whose linear memory may reach
@@ -359,7 +362,9 @@ pub trait ViewRunner: Send + Sync + 'static {
     fn prepare(&self, hash: [u8; 32], code: &[u8], view_bytes: usize) -> Result<Prepared, Failure>;
     /// Seat the prepared code `hash` names: lands [`Landed::Seated`] (or a
     /// `Fault`) on `land`, which the instance keeps for every later answer.
-    /// Code nothing holds any more lands a `Fault::Runner`.
+    /// Code nothing holds any more lands a `Fault::Runner`. Right after a
+    /// page died it seats the view on a new page (see [`ViewInstance`]'s
+    /// dead-page rules).
     fn instantiate(&self, hash: [u8; 32], seat: SeatId, land: Landing);
     /// `program.describe`: run the import-free describe module `module`
     /// (sha256 `hash`) on `op`, bounded by the same fuel; `None` on any
@@ -415,11 +420,37 @@ pub struct Prepared {
 /// answer to the one before it landed (a tick in flight is `View::ticking`;
 /// a swap's or a kept snapshot's sequence owns the instance meanwhile,
 /// `Mounted::owned`), so each answer is the answer to the last call begun.
+/// Each call lands exactly one [`Landed`], once.
+///
+/// Dead pages (SPEC §6.5; the host relies on every rule here):
+/// - Every call into a dead page lands `Fault::Runner`, never nothing: the
+///   call in flight when the page died, and every call begun on the
+///   instance after, until it is dropped. A call that lands nothing leaves
+///   its seat waiting for good.
+/// - [`ViewRunner::instantiate`] right after a death seats the view on a
+///   new page: the host's revive asks at once, and a refusal there (a page
+///   still reloading) stops the view. A runner that needs time takes it
+///   before it lands `Seated`.
+/// - The host revives each seat itself (`View::revive`: a new instance,
+///   restored from the kept snapshot, the kept batches replayed): a runner
+///   never restores or replays a seat on its own. This replaces SPEC §6.5's
+///   runner-side restore.
+/// - A dead instance keeps holding its code until it is dropped: a revive
+///   seats the same code by hash while the dead instance is still the
+///   view's.
 ///
 /// Ending: the host calls [`Self::stop`] on an instance it replaces while
-/// it lives (a revive's dead one). Every other instance is dropped, on the
-/// thread that drops it (the seat's, or a loader's when a load's install
-/// replaces the view): dropping an instance stops it, as `stop` does.
+/// it lives (a revive's dead one). Every other instance is dropped, and
+/// dropping one stops it, as `stop` does. Drop runs on whichever thread
+/// drops it and must not wait on the seat's thread, which may be waiting
+/// on a lock the dropping thread holds: the seat's thread (a swap's
+/// install), a loader's (an install replacing the view, a `Loaded::Empty`
+/// install, both under the seat's lock), or the roster thread's (a
+/// program's `retire`, under the registry's and the seat's locks).
+/// dispatch2's `MainThreadBound` drops its value through `run_on_main`,
+/// which off the main thread is `exec_sync` on the main queue and waits on
+/// it: a page handle is posted to the main thread (`exec_async`) to be
+/// dropped there, not dropped through it.
 pub trait ViewInstance: Send {
     /// The sha256 of the code this is an instance of.
     fn code_hash(&self) -> [u8; 32];

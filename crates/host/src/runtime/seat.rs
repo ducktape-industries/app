@@ -760,7 +760,9 @@ pub(super) async fn swap_in(mounted: Arc<Mutex<Mounted>>, program: &'static str)
 
 /// The drawn view's kept replay started again from a new snapshot (SPEC
 /// §6.5), on the seat's thread, the view owned meanwhile so no tick
-/// crosses it; the seat is woken when it lands.
+/// crosses it; the seat is woken when it lands. A page that died under the
+/// snapshot is taken up right here (`View::died`): an idle view begins no
+/// tick that would find it.
 pub(super) async fn keep_in(mounted: Arc<Mutex<Mounted>>) {
     let (landing, alive) = {
         let mut locked = lock(&mounted);
@@ -777,14 +779,18 @@ pub(super) async fn keep_in(mounted: Arc<Mutex<Mounted>>) {
         locked.owned = true;
         asked
     };
-    let landed = super::view::next(&landing).await;
+    match super::view::next(&landing).await {
+        Landed::Fault(Fault::Runner(death)) => View::died(&mounted, &alive, &death).await,
+        landed => {
+            if let Slot::Ready(view) = &mut lock(&mounted).slot
+                && Arc::ptr_eq(&view.alive, &alive)
+            {
+                view.kept_landed(landed);
+            }
+        }
+    }
     let mut locked = lock(&mounted);
     locked.owned = false;
-    if let Slot::Ready(view) = &mut locked.slot
-        && Arc::ptr_eq(&view.alive, &alive)
-    {
-        view.kept_landed(landed);
-    }
     locked.wake.send_replace(());
 }
 

@@ -345,6 +345,15 @@ impl View {
             Some(landing) => {
                 let taken = Instant::now();
                 let landed = next(&landing).await;
+                // the drawn view's page died under the snapshot: no fault of
+                // the view's, taken up where it lands (nothing else would:
+                // an idle view begins no tick), and the replacement waits
+                if let Landed::Fault(Fault::Runner(death)) = landed {
+                    Self::died(mounted, alive, &death).await;
+                    return Err(Failure::Refused(format!(
+                        "the view's instance died before it handed its state over ({death}); its replacement waits"
+                    )));
+                }
                 let mut locked = lock(mounted);
                 let old = drawn(&mut locked, alive)?;
                 old.handed_over(landed, instance, &code.hash, taken, timing)?
@@ -354,17 +363,21 @@ impl View {
         Self::prepared(fresh, (state, ambient), shown, timing).await
     }
 
-    /// A tick whose instance died before it answered (`Fault::Runner`: the
-    /// page it ran in is gone, SPEC §6.5), taken up again where the host
-    /// keeps a replay (`View::kept`): a new instance of the same code is
-    /// seated and restored from the kept snapshot (or inited), every kept
-    /// batch but the last replayed with its frame discarded (those frames'
-    /// requests, intents and trees were taken in the first time), and the
-    /// last, the tick that died, begun again on it. The channel that tick's
-    /// frame lands on, or why there is none: the fault then stands.
+    /// The drawn view's instance died (`Fault::Runner`: the page it ran in
+    /// is gone, SPEC §6.5), taken up again where the host keeps a replay
+    /// (`View::kept`): a new instance of the same code is seated and
+    /// restored from the kept snapshot (or inited), and the kept batches
+    /// replayed on it with their frames discarded (those frames' requests,
+    /// intents and trees were taken in the first time). `in_flight`: the
+    /// death landed on a tick, the last kept batch, which is begun again on
+    /// the new instance rather than replayed; else nothing is left in
+    /// flight. A death on the new page is no fault of the view's either: it
+    /// starts over on another. The channel the new instance answers on, or
+    /// why there is none: the death then stands.
     pub async fn revive(
         mounted: &Arc<Mutex<Mounted>>,
         alive: &Arc<()>,
+        in_flight: bool,
     ) -> Result<async_channel::Receiver<Landed>, String> {
         let (program, runner, hash, kept) = {
             let mut locked = lock(mounted);
@@ -377,40 +390,56 @@ impl View {
                 kept,
             )
         };
-        let (last, replayed) = kept.batches.split_last().ok_or("no tick to replay")?;
-        let (land, landing) = Landing::channel();
-        runner.instantiate(hash, SeatId(program, 0), land);
-        let mut running = match next(&landing).await {
-            Landed::Seated(running) => running,
-            other => return Err(unexpected(other)),
-        };
-        match &kept.snapshot {
-            Some(state) => running.begin_restore(state.clone()),
-            None => running.begin_init(),
-        }
-        match next(&landing).await {
-            Landed::Restored | Landed::Inited => {}
-            other => return Err(unexpected(other)),
-        }
-        for batch in replayed {
-            running.begin_tick(batch.clone());
-            match next(&landing).await {
-                Landed::Frame(_) => {}
-                other => return Err(unexpected(other)),
+        let (replayed, last) = match in_flight {
+            true => {
+                let (last, replayed) = kept.batches.split_last().ok_or("no tick to replay")?;
+                (replayed, Some(last))
             }
-        }
+            false => (&kept.batches[..], None),
+        };
+        let (running, landing) = loop {
+            let (land, landing) = Landing::channel();
+            runner.instantiate(hash, SeatId(program, 0), land);
+            // a runner that cannot seat the code at all is no page's death
+            let running = match next(&landing).await {
+                Landed::Seated(running) => running,
+                other => return Err(unexpected(other)),
+            };
+            match replayed_on(running, &landing, &kept, replayed).await {
+                Ok(running) => break (running, landing),
+                // the new page died too
+                Err(Landed::Fault(Fault::Runner(_))) => continue,
+                Err(other) => return Err(unexpected(other)),
+            }
+        };
         let mut locked = lock(mounted);
         let view = drawn(&mut locked, alive).map_err(|failure| failure.to_string())?;
         std::mem::replace(&mut view.running, running).stop();
         view.landing = landing.clone();
-        view.running.begin_tick(last.clone());
+        if let Some(last) = last {
+            view.running.begin_tick(last.clone());
+        }
         Ok(landing)
+    }
+
+    /// A death that landed outside a tick (on a snapshot the host asked the
+    /// drawn view `alive` names for), taken up where it lands: the view
+    /// revived with nothing left in flight ([`Self::revive`]), or, where it
+    /// cannot be (no replay kept), stopped on it.
+    pub async fn died(mounted: &Arc<Mutex<Mounted>>, alive: &Arc<()>, death: &str) {
+        if let Err(why) = Self::revive(mounted, alive, false).await {
+            let mut locked = lock(mounted);
+            if let Ok(view) = drawn(&mut locked, alive) {
+                view.fault = Some(format!("{death} (not taken up again: {why})"));
+            }
+        }
     }
 
     /// Whether the replay this view keeps is due a new snapshot: settled,
     /// nothing in flight, a tick kept since the last one (a replay of none
-    /// has nothing to shorten), and that one older than the host's
-    /// `Limits::snapshot_every` (SPEC §6.5).
+    /// has nothing to shorten), none asked since the last tick (a refusal or
+    /// a death is asked again after the next), and the last one older than
+    /// the host's `Limits::snapshot_every` (SPEC §6.5).
     pub fn keep_due(&self) -> bool {
         // no replay kept (the desktop): nothing read, every turn
         let Some(kept) = &self.kept else {
@@ -419,6 +448,7 @@ impl View {
         self.ticks > 0
             && !self.ticking
             && !kept.batches.is_empty()
+            && kept.asked != Some(self.ticks)
             && self.settled()
             && crate::contract::os()
                 .limits()
@@ -429,26 +459,25 @@ impl View {
     /// Asks for the snapshot a kept replay starts from from now on: the
     /// channel it lands on.
     pub fn begin_keep(&mut self) -> async_channel::Receiver<Landed> {
+        if let Some(kept) = &mut self.kept {
+            kept.asked = Some(self.ticks);
+        }
         self.running.begin_snapshot();
         self.landing()
     }
 
     /// The snapshot [`Self::begin_keep`] asked for, landed: taken, it is
     /// the replay's start and the batches before it go; refused, the one
-    /// kept stays (the view has work in hand). A dead instance is the next
-    /// tick's to find (`revive`); a trap ends the view, as in a tick.
+    /// kept stays (the view has work in hand); a trap ends the view, as in
+    /// a tick. A death is not one of these: `seat::keep_in` takes it up
+    /// where it lands ([`Self::died`]).
     pub fn kept_landed(&mut self, landed: Landed) {
-        if matches!(landed, Landed::Fault(Fault::Runner(_))) {
-            return;
-        }
         if let Ok(Snapshot::Taken(state)) = self.snapshot_landed(landed)
             && let Some(kept) = &mut self.kept
         {
-            *kept = Kept {
-                snapshot: Some(state),
-                at: Instant::now(),
-                batches: Vec::new(),
-            };
+            kept.snapshot = Some(state);
+            kept.at = Instant::now();
+            kept.batches.clear();
         }
     }
 
@@ -505,10 +534,7 @@ impl View {
     /// The handover [`Self::handover`] asked for, landed (`taken` when it
     /// was asked): the snapshot, or none when it traps (`to` starts clean).
     /// A view that does not hand its state over yet refuses the replacement.
-    /// An instance that died under the snapshot (`Fault::Runner`) fails
-    /// only the replacement: the drawn view is left as it is, for its next
-    /// tick to find the death and take it up again (`Self::revive`), as
-    /// [`Self::kept_landed`] leaves it.
+    /// A death is not one of these: [`Self::replacement`] takes it up.
     fn handed_over(
         &mut self,
         landed: Landed,
@@ -524,11 +550,6 @@ impl View {
         };
         crate::perf::record(key, "snapshot", timing.snapshot.as_micros() as u64);
         crate::perf::record(key, "fuel.snapshot", self.fuel_used());
-        if let Landed::Fault(Fault::Runner(death)) = &landed {
-            return Err(Failure::Refused(format!(
-                "the view's instance died before it handed its state over ({death}); its replacement waits"
-            )));
-        }
         match self.snapshot_landed(landed) {
             Ok(Snapshot::Taken(snapshot)) => {
                 timing.snapshot_bytes = snapshot.len();
@@ -548,7 +569,9 @@ impl View {
     /// `fresh` started from `state`, a drawn view's handover: restored, or
     /// `init`ed in its place when there is none, when the view refuses it
     /// as not its own, or when the restore traps (on a new instance of its
-    /// code then: a trapped one is not entered again). Its first tree is
+    /// code then: a trapped one is not entered again). A page that dies
+    /// under the restore fails the replacement: the state is in hand, and
+    /// the drawn view keeps it until the next try. Its first tree is
     /// verified. Every answer is awaited as it lands.
     async fn prepared(
         mut fresh: Self,
@@ -580,6 +603,11 @@ impl View {
                             &refusal,
                         );
                         false
+                    }
+                    Ok(Restored::Died(death)) => {
+                        return Err(Failure::Refused(format!(
+                            "{shown}: the replacement's instance died before it took the state up ({death}); its replacement waits"
+                        )));
                     }
                     Err(trap) => {
                         state_dropped(fresh.program, fresh.hash.as_ref(), "restore_trapped", &trap);
@@ -759,6 +787,7 @@ impl View {
         match self.landed().await {
             Landed::Restored => Ok(Restored::Carried),
             Landed::RestoreRefused(refusal) => Ok(Restored::Refused(refusal)),
+            Landed::Fault(Fault::Runner(death)) => Ok(Restored::Died(death)),
             other => Err(format!("{shown}: restore trapped: {}", unexpected(other))),
         }
     }
@@ -1076,6 +1105,34 @@ fn now<T>(call: impl std::future::Future<Output = Result<T, String>>) -> Result<
 /// desktop's `Preload::Compile`) rather than being seated and inited.
 fn preload_compiles() -> bool {
     crate::contract::os().limits().preload == crate::contract::Preload::Compile
+}
+
+/// `running`, a new instance, started from `kept`'s snapshot (or inited)
+/// and `batches` replayed on it, their frames discarded, each call begun
+/// once the one before landed on `landing`: the instance, or the first
+/// answer that was not the one asked for.
+async fn replayed_on(
+    mut running: Box<dyn ViewInstance>,
+    landing: &async_channel::Receiver<Landed>,
+    kept: &Kept,
+    batches: &[Vec<u8>],
+) -> Result<Box<dyn ViewInstance>, Landed> {
+    match &kept.snapshot {
+        Some(state) => running.begin_restore(state.clone()),
+        None => running.begin_init(),
+    }
+    match next(landing).await {
+        Landed::Restored | Landed::Inited => {}
+        other => return Err(other),
+    }
+    for batch in batches {
+        running.begin_tick(batch.clone());
+        match next(landing).await {
+            Landed::Frame(_) => {}
+            other => return Err(other),
+        }
+    }
+    Ok(running)
 }
 
 /// What a call answered that is not its answer, as the sentence it fails

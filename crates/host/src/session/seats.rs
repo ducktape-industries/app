@@ -149,7 +149,7 @@ impl Seats {
                 continue;
             };
             let program = placed.seat.read(cx).program();
-            let intents = placed.seat.update(cx, |seat, _| seat.hide());
+            let intents = placed.seat.update(cx, |seat, cx| seat.hide(cx));
             // the seat drops with this entry: its images leave the atlas
             if let Some(tree) = placed.seat.read(cx).tree() {
                 tree.update(cx, |tree, cx| tree.release(cx));
