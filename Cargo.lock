@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "abi"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d2494837b133fc2b84eae5fbf6f15c35a547e2c9#d2494837b133fc2b84eae5fbf6f15c35a547e2c9"
+source = "git+https://github.com/ducktape-industries/programs?rev=f73547a99ddd0fb1b993bc70d9911bd0dceef201#f73547a99ddd0fb1b993bc70d9911bd0dceef201"
 dependencies = [
  "borsh",
  "design",
@@ -921,23 +921,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "blob"
-version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape?rev=f4b52ca941b42a82c3fda3e1a1be70e36a4b301b#f4b52ca941b42a82c3fda3e1a1be70e36a4b301b"
-dependencies = [
- "abi",
- "borsh",
- "sha1-checked",
- "sha2 0.10.9",
-]
-
-[[package]]
 name = "blobs"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d2494837b133fc2b84eae5fbf6f15c35a547e2c9#d2494837b133fc2b84eae5fbf6f15c35a547e2c9"
+source = "git+https://github.com/ducktape-industries/programs?rev=f73547a99ddd0fb1b993bc70d9911bd0dceef201#f73547a99ddd0fb1b993bc70d9911bd0dceef201"
 dependencies = [
  "abi",
- "blob 0.1.0 (git+https://github.com/ducktape-industries/ducktape?rev=f4b52ca941b42a82c3fda3e1a1be70e36a4b301b)",
+ "blob",
  "borsh",
  "describe",
  "program",
@@ -2361,7 +2350,7 @@ dependencies = [
 [[package]]
 name = "describe"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d2494837b133fc2b84eae5fbf6f15c35a547e2c9#d2494837b133fc2b84eae5fbf6f15c35a547e2c9"
+source = "git+https://github.com/ducktape-industries/programs?rev=f73547a99ddd0fb1b993bc70d9911bd0dceef201#f73547a99ddd0fb1b993bc70d9911bd0dceef201"
 dependencies = [
  "borsh",
  "serde",
@@ -2371,7 +2360,7 @@ dependencies = [
 [[package]]
 name = "design"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d2494837b133fc2b84eae5fbf6f15c35a547e2c9#d2494837b133fc2b84eae5fbf6f15c35a547e2c9"
+source = "git+https://github.com/ducktape-industries/programs?rev=f73547a99ddd0fb1b993bc70d9911bd0dceef201#f73547a99ddd0fb1b993bc70d9911bd0dceef201"
 
 [[package]]
 name = "digest"
@@ -2446,7 +2435,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.3",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2541,7 +2530,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 [[package]]
 name = "ducklink"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d2494837b133fc2b84eae5fbf6f15c35a547e2c9#d2494837b133fc2b84eae5fbf6f15c35a547e2c9"
+source = "git+https://github.com/ducktape-industries/programs?rev=f73547a99ddd0fb1b993bc70d9911bd0dceef201#f73547a99ddd0fb1b993bc70d9911bd0dceef201"
 dependencies = [
  "abi",
  "program",
@@ -2608,8 +2597,9 @@ version = "0.1.0"
 dependencies = [
  "abi",
  "async-channel",
- "blob 0.1.0 (git+https://github.com/ducktape-industries/ducktape?rev=18477333b668df1bd36699eef05ecc131522aa1a)",
+ "blob",
  "blobs",
+ "borsh",
  "commonware-codec",
  "commonware-cryptography",
  "describe",
@@ -2622,6 +2612,7 @@ dependencies = [
  "gpui-pre-wgpu",
  "identity",
  "image",
+ "keyscheme",
  "libc",
  "live-wire",
  "noded-client",
@@ -2643,6 +2634,7 @@ dependencies = [
  "unicode-segmentation",
  "url",
  "usvg 0.46.0",
+ "valset",
  "view-wire",
  "wasmparser 0.251.0",
  "wasmtime",
@@ -2947,13 +2939,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
 name = "error"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d2494837b133fc2b84eae5fbf6f15c35a547e2c9#d2494837b133fc2b84eae5fbf6f15c35a547e2c9"
+source = "git+https://github.com/ducktape-industries/programs?rev=f73547a99ddd0fb1b993bc70d9911bd0dceef201#f73547a99ddd0fb1b993bc70d9911bd0dceef201"
 dependencies = [
  "borsh",
  "serde",
@@ -3597,7 +3589,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.20",
- "windows 0.62.2",
+ "windows 0.58.0",
 ]
 
 [[package]]
@@ -3634,7 +3626,7 @@ dependencies = [
  "data-url",
  "futures",
  "gpui-fast",
- "gpui-pre 0.3.9 (git+https://github.com/ducktape-industries/gpui-pre?rev=8fc712852ad6eaac4b5a120f8dbcac4243b7826d)",
+ "gpui-pre",
  "gpui-pre-macros",
  "gpui-pre-sum-tree",
  "html5ever",
@@ -3676,7 +3668,7 @@ dependencies = [
  "gpui-component-macros",
  "gpui-fast",
  "gpui-kit-assets",
- "gpui-pre 0.3.9 (git+https://github.com/ducktape-industries/gpui-pre?rev=8fc712852ad6eaac4b5a120f8dbcac4243b7826d)",
+ "gpui-pre",
  "gpui-pre-macros",
  "gpui-pre-sum-tree",
  "instant",
@@ -4046,7 +4038,7 @@ dependencies = [
  "gpui-fast",
  "gpui-fast-platform",
  "gpui-kit-assets",
- "gpui-pre 0.3.9 (git+https://github.com/ducktape-industries/gpui-pre?rev=8fc712852ad6eaac4b5a120f8dbcac4243b7826d)",
+ "gpui-pre",
  "gpui-pre-macros",
  "gpui-pre-platform",
  "gpui-pre-web",
@@ -4059,7 +4051,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7abc281dcbfe51c16a7e73189521a3a771168c31e3ab0db99e21e481d1b1b9a"
 dependencies = [
  "anyhow",
- "gpui-pre 0.3.9 (git+https://github.com/ducktape-industries/gpui-pre?rev=8fc712852ad6eaac4b5a120f8dbcac4243b7826d)",
+ "gpui-pre",
  "gpui-pre-reqwest",
  "log",
  "rust-embed",
@@ -4070,70 +4062,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre"
 version = "0.3.9"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=02724886f436f4f5b01ebfc1fb5cd37c09809a79#02724886f436f4f5b01ebfc1fb5cd37c09809a79"
-dependencies = [
- "accesskit 0.25.1",
- "anyhow",
- "async-channel",
- "async-task",
- "backtrace",
- "bitflags 2.13.2",
- "chrono",
- "ctor",
- "derive_more",
- "etagere",
- "flate2",
- "futures",
- "gif 0.14.2",
- "gpui-pre-collections",
- "gpui-pre-http-client",
- "gpui-pre-macros",
- "gpui-pre-refineable",
- "gpui-pre-scheduler",
- "gpui-pre-shared-string",
- "gpui-pre-sum-tree",
- "gpui-pre-util",
- "heapless",
- "image",
- "inventory",
- "itertools 0.14.0",
- "libc",
- "log",
- "lyon",
- "num_cpus",
- "objc2-core-foundation",
- "objc2-core-video",
- "parking",
- "parking_lot",
- "pin-project",
- "pollster 0.4.0",
- "profiling",
- "rand 0.9.5",
- "raw-window-handle",
- "regex",
- "resvg 0.46.0",
- "schemars",
- "seahash",
- "serde",
- "serde_json",
- "slotmap",
- "smallvec",
- "spin 0.10.1",
- "strum",
- "taffy",
- "thiserror 2.0.20",
- "ttf-parser",
- "url",
- "usvg 0.46.0",
- "uuid",
- "waker-fn",
- "windows 0.62.2",
-]
-
-[[package]]
-name = "gpui-pre"
-version = "0.3.9"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=8fc712852ad6eaac4b5a120f8dbcac4243b7826d#8fc712852ad6eaac4b5a120f8dbcac4243b7826d"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=0bf28c84fce24fcb40c8f324af8a71fb25452c39#0bf28c84fce24fcb40c8f324af8a71fb25452c39"
 dependencies = [
  "accesskit 0.25.1",
  "anyhow",
@@ -4220,7 +4149,7 @@ dependencies = [
  "etagere",
  "foreign-types",
  "futures",
- "gpui-pre 0.3.9 (git+https://github.com/ducktape-industries/gpui-pre?rev=8fc712852ad6eaac4b5a120f8dbcac4243b7826d)",
+ "gpui-pre",
  "gpui-pre-collections",
  "gpui-pre-util",
  "image",
@@ -4287,7 +4216,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-linux"
 version = "0.3.9"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=8fc712852ad6eaac4b5a120f8dbcac4243b7826d#8fc712852ad6eaac4b5a120f8dbcac4243b7826d"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=0bf28c84fce24fcb40c8f324af8a71fb25452c39#0bf28c84fce24fcb40c8f324af8a71fb25452c39"
 dependencies = [
  "accesskit 0.25.1",
  "accesskit_unix 0.24.0",
@@ -4299,7 +4228,7 @@ dependencies = [
  "calloop-wayland-source",
  "filedescriptor",
  "futures",
- "gpui-pre 0.3.9 (git+https://github.com/ducktape-industries/gpui-pre?rev=8fc712852ad6eaac4b5a120f8dbcac4243b7826d)",
+ "gpui-pre",
  "gpui-pre-collections",
  "gpui-pre-http-client",
  "gpui-pre-util",
@@ -4331,7 +4260,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-macos"
 version = "0.3.9"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=8fc712852ad6eaac4b5a120f8dbcac4243b7826d#8fc712852ad6eaac4b5a120f8dbcac4243b7826d"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=0bf28c84fce24fcb40c8f324af8a71fb25452c39#0bf28c84fce24fcb40c8f324af8a71fb25452c39"
 dependencies = [
  "accesskit 0.25.1",
  "accesskit_macos 0.27.1",
@@ -4345,7 +4274,7 @@ dependencies = [
  "dispatch2",
  "foreign-types",
  "futures",
- "gpui-pre 0.3.9 (git+https://github.com/ducktape-industries/gpui-pre?rev=8fc712852ad6eaac4b5a120f8dbcac4243b7826d)",
+ "gpui-pre",
  "gpui-pre-apple",
  "gpui-pre-collections",
  "gpui-pre-scheduler",
@@ -4388,7 +4317,7 @@ checksum = "bbdbdac421178313fed8929fe95b42634a266a735079fcf03ff231bc2ccb2c5e"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
- "gpui-pre 0.3.9 (git+https://github.com/ducktape-industries/gpui-pre?rev=8fc712852ad6eaac4b5a120f8dbcac4243b7826d)",
+ "gpui-pre",
  "gpui-pre-linux",
  "gpui-pre-macos",
  "gpui-pre-web",
@@ -4458,7 +4387,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-scheduler"
 version = "0.3.9"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=8fc712852ad6eaac4b5a120f8dbcac4243b7826d#8fc712852ad6eaac4b5a120f8dbcac4243b7826d"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=0bf28c84fce24fcb40c8f324af8a71fb25452c39#0bf28c84fce24fcb40c8f324af8a71fb25452c39"
 dependencies = [
  "async-task",
  "backtrace",
@@ -4515,7 +4444,7 @@ dependencies = [
  "async-channel",
  "console_error_panic_hook",
  "futures",
- "gpui-pre 0.3.9 (git+https://github.com/ducktape-industries/gpui-pre?rev=8fc712852ad6eaac4b5a120f8dbcac4243b7826d)",
+ "gpui-pre",
  "gpui-pre-http-client",
  "gpui-pre-scheduler",
  "gpui-pre-wgpu",
@@ -4538,13 +4467,13 @@ dependencies = [
 [[package]]
 name = "gpui-pre-wgpu"
 version = "0.3.9"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=8fc712852ad6eaac4b5a120f8dbcac4243b7826d#8fc712852ad6eaac4b5a120f8dbcac4243b7826d"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=0bf28c84fce24fcb40c8f324af8a71fb25452c39#0bf28c84fce24fcb40c8f324af8a71fb25452c39"
 dependencies = [
  "anyhow",
  "bytemuck",
  "cosmic-text",
  "etagere",
- "gpui-pre 0.3.9 (git+https://github.com/ducktape-industries/gpui-pre?rev=8fc712852ad6eaac4b5a120f8dbcac4243b7826d)",
+ "gpui-pre",
  "gpui-pre-collections",
  "gpui-pre-util",
  "image",
@@ -4574,7 +4503,7 @@ dependencies = [
  "dunce",
  "etagere",
  "futures",
- "gpui-pre 0.3.9 (git+https://github.com/ducktape-industries/gpui-pre?rev=8fc712852ad6eaac4b5a120f8dbcac4243b7826d)",
+ "gpui-pre",
  "gpui-pre-collections",
  "gpui-pre-scheduler",
  "gpui-pre-util",
@@ -4674,7 +4603,7 @@ dependencies = [
 [[package]]
 name = "halo"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d2494837b133fc2b84eae5fbf6f15c35a547e2c9#d2494837b133fc2b84eae5fbf6f15c35a547e2c9"
+source = "git+https://github.com/ducktape-industries/programs?rev=f73547a99ddd0fb1b993bc70d9911bd0dceef201#f73547a99ddd0fb1b993bc70d9911bd0dceef201"
 dependencies = [
  "abi",
  "borsh",
@@ -4965,7 +4894,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.58.0",
 ]
 
 [[package]]
@@ -5069,7 +4998,7 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 [[package]]
 name = "identity"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d2494837b133fc2b84eae5fbf6f15c35a547e2c9#d2494837b133fc2b84eae5fbf6f15c35a547e2c9"
+source = "git+https://github.com/ducktape-industries/programs?rev=f73547a99ddd0fb1b993bc70d9911bd0dceef201#f73547a99ddd0fb1b993bc70d9911bd0dceef201"
 dependencies = [
  "abi",
  "borsh",
@@ -6207,7 +6136,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -7368,10 +7297,10 @@ dependencies = [
 [[package]]
 name = "program"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d2494837b133fc2b84eae5fbf6f15c35a547e2c9#d2494837b133fc2b84eae5fbf6f15c35a547e2c9"
+source = "git+https://github.com/ducktape-industries/programs?rev=f73547a99ddd0fb1b993bc70d9911bd0dceef201#f73547a99ddd0fb1b993bc70d9911bd0dceef201"
 dependencies = [
  "abi",
- "blob 0.1.0 (git+https://github.com/ducktape-industries/ducktape?rev=f4b52ca941b42a82c3fda3e1a1be70e36a4b301b)",
+ "blob",
  "borsh",
  "error",
  "program-derive",
@@ -7381,7 +7310,7 @@ dependencies = [
 [[package]]
 name = "program-derive"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d2494837b133fc2b84eae5fbf6f15c35a547e2c9#d2494837b133fc2b84eae5fbf6f15c35a547e2c9"
+source = "git+https://github.com/ducktape-industries/programs?rev=f73547a99ddd0fb1b993bc70d9911bd0dceef201#f73547a99ddd0fb1b993bc70d9911bd0dceef201"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7391,10 +7320,10 @@ dependencies = [
 [[package]]
 name = "programs"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d2494837b133fc2b84eae5fbf6f15c35a547e2c9#d2494837b133fc2b84eae5fbf6f15c35a547e2c9"
+source = "git+https://github.com/ducktape-industries/programs?rev=f73547a99ddd0fb1b993bc70d9911bd0dceef201#f73547a99ddd0fb1b993bc70d9911bd0dceef201"
 dependencies = [
  "abi",
- "blob 0.1.0 (git+https://github.com/ducktape-industries/ducktape?rev=f4b52ca941b42a82c3fda3e1a1be70e36a4b301b)",
+ "blob",
  "borsh",
  "describe",
  "program",
@@ -7568,7 +7497,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -8073,7 +8002,7 @@ dependencies = [
 [[package]]
 name = "rmp-serde"
 version = "1.3.1"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=8fc712852ad6eaac4b5a120f8dbcac4243b7826d#8fc712852ad6eaac4b5a120f8dbcac4243b7826d"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=0bf28c84fce24fcb40c8f324af8a71fb25452c39#0bf28c84fce24fcb40c8f324af8a71fb25452c39"
 dependencies = [
  "rmp",
  "serde",
@@ -8233,7 +8162,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -8964,7 +8893,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "store"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d2494837b133fc2b84eae5fbf6f15c35a547e2c9#d2494837b133fc2b84eae5fbf6f15c35a547e2c9"
+source = "git+https://github.com/ducktape-industries/programs?rev=f73547a99ddd0fb1b993bc70d9911bd0dceef201#f73547a99ddd0fb1b993bc70d9911bd0dceef201"
 dependencies = [
  "abi",
  "borsh",
@@ -9241,7 +9170,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -10082,7 +10011,7 @@ dependencies = [
 [[package]]
 name = "valset"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d2494837b133fc2b84eae5fbf6f15c35a547e2c9#d2494837b133fc2b84eae5fbf6f15c35a547e2c9"
+source = "git+https://github.com/ducktape-industries/programs?rev=f73547a99ddd0fb1b993bc70d9911bd0dceef201#f73547a99ddd0fb1b993bc70d9911bd0dceef201"
 dependencies = [
  "abi",
  "borsh",
@@ -10108,18 +10037,19 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "view-wire"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d2494837b133fc2b84eae5fbf6f15c35a547e2c9#d2494837b133fc2b84eae5fbf6f15c35a547e2c9"
+source = "git+https://github.com/ducktape-industries/programs?rev=f73547a99ddd0fb1b993bc70d9911bd0dceef201#f73547a99ddd0fb1b993bc70d9911bd0dceef201"
 dependencies = [
  "accesskit 0.25.1",
  "borsh",
  "describe",
  "error",
- "gpui-pre 0.3.9 (git+https://github.com/ducktape-industries/gpui-pre?rev=02724886f436f4f5b01ebfc1fb5cd37c09809a79)",
+ "gpui-pre",
  "memchr",
  "program",
  "rmp-serde",
  "serde",
  "slotmap",
+ "strum",
  "unicode-segmentation",
  "uuid",
  "wasmparser 0.251.0",
@@ -12055,7 +11985,7 @@ dependencies = [
 [[package]]
 name = "zed-xim"
 version = "0.4.0-zed"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=8fc712852ad6eaac4b5a120f8dbcac4243b7826d#8fc712852ad6eaac4b5a120f8dbcac4243b7826d"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=0bf28c84fce24fcb40c8f324af8a71fb25452c39#0bf28c84fce24fcb40c8f324af8a71fb25452c39"
 dependencies = [
  "ahash",
  "hashbrown 0.14.5",

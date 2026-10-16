@@ -329,7 +329,7 @@ fn track(name: &str) -> Track {
 /// The seat held for the test, a key seated in it.
 async fn seated() -> impl Sized {
     let serial = crate::backend::seat_serial();
-    crate::backend::seat_key(ed25519::PrivateKey::from_seed(11)).await;
+    crate::backend::seat_key(Arc::new(ed25519::PrivateKey::from_seed(11))).await;
     serial
 }
 

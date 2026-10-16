@@ -90,7 +90,7 @@ impl Notifications {
 
     /// The views whose window says they share live data (the consent
     /// line).
-    pub(crate) fn sharing(&self, program: &str) -> bool {
+    pub fn sharing(&self, program: &str) -> bool {
         self.sharing.contains(program)
     }
 
@@ -141,7 +141,7 @@ impl Notifications {
     }
 
     /// "OK" on a view's live line: it goes for this run.
-    pub(crate) fn put_away_live(&mut self, program: &str, cx: &mut Context<Self>) {
+    pub fn put_away_live(&mut self, program: &str, cx: &mut Context<Self>) {
         let _timed = timed();
         self.center.lock().put_away_live(program);
         self.refresh(cx);

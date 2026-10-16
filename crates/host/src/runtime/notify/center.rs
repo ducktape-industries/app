@@ -286,7 +286,7 @@ impl Center {
     }
 
     /// The person read `program`'s live line: it goes for this run.
-    pub(crate) fn put_away_live(&mut self, program: &str) {
+    pub fn put_away_live(&mut self, program: &str) {
         self.sharing.remove(program);
         self.told.insert(program.to_owned());
     }

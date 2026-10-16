@@ -29,16 +29,16 @@ version = "0.1.0"
 [workspace.dependencies]
 
 # --- sdk-line: crates/sdk of ducktape-industries/programs (abi, view-wire, program, ducklink, design, describe). Every crate of that repo here and below sits on ONE rev, and the views this app seats are built at that rev. One whose manifest's wire_id is not `view_wire::WIRE_ID` runs all the same, and a failure of it names both wires and the node (`View::failure`). Which rev and why is in `git log -- Cargo.toml`. ---
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "d2494837b133fc2b84eae5fbf6f15c35a547e2c9", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "d2494837b133fc2b84eae5fbf6f15c35a547e2c9", package = "view-wire" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "f73547a99ddd0fb1b993bc70d9911bd0dceef201", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "f73547a99ddd0fb1b993bc70d9911bd0dceef201", package = "view-wire" }
 # `program::is_name`: the one spelling of a program id
-program = { git = "https://github.com/ducktape-industries/programs", rev = "d2494837b133fc2b84eae5fbf6f15c35a547e2c9", package = "program" }
-ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "d2494837b133fc2b84eae5fbf6f15c35a547e2c9", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/programs", rev = "d2494837b133fc2b84eae5fbf6f15c35a547e2c9", package = "design" }
+program = { git = "https://github.com/ducktape-industries/programs", rev = "f73547a99ddd0fb1b993bc70d9911bd0dceef201", package = "program" }
+ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "f73547a99ddd0fb1b993bc70d9911bd0dceef201", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/programs", rev = "f73547a99ddd0fb1b993bc70d9911bd0dceef201", package = "design" }
 # `program.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/programs", rev = "d2494837b133fc2b84eae5fbf6f15c35a547e2c9", package = "describe" }
+describe = { git = "https://github.com/ducktape-industries/programs", rev = "f73547a99ddd0fb1b993bc70d9911bd0dceef201", package = "describe" }
 # the identity program's own types: the app's passkey lane and `crates/noded-client`'s flows
-identity = { git = "https://github.com/ducktape-industries/programs", rev = "d2494837b133fc2b84eae5fbf6f15c35a547e2c9", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/programs", rev = "f73547a99ddd0fb1b993bc70d9911bd0dceef201", package = "identity" }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -101,7 +101,7 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "18477333b668df1bd36699eef05ecc131522aa1a", package = "keyscheme" }
 identity.workspace = true
-valset = { git = "https://github.com/ducktape-industries/programs", rev = "d2494837b133fc2b84eae5fbf6f15c35a547e2c9", package = "valset" }
+valset = { git = "https://github.com/ducktape-industries/programs", rev = "f73547a99ddd0fb1b993bc70d9911bd0dceef201", package = "valset" }
 base64.workspace = true
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -159,20 +159,20 @@ keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "18
 p256 = "0.13"
 
 [patch."https://github.com/ducktape-industries/ducktape"]
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "d2494837b133fc2b84eae5fbf6f15c35a547e2c9", package = "abi" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "f73547a99ddd0fb1b993bc70d9911bd0dceef201", package = "abi" }
 
 [patch.crates-io]
-gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8fc712852ad6eaac4b5a120f8dbcac4243b7826d" }
-rmp-serde = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8fc712852ad6eaac4b5a120f8dbcac4243b7826d" }
-gpui-pre-scheduler = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8fc712852ad6eaac4b5a120f8dbcac4243b7826d" }
-gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8fc712852ad6eaac4b5a120f8dbcac4243b7826d" }
+gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "0bf28c84fce24fcb40c8f324af8a71fb25452c39" }
+rmp-serde = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "0bf28c84fce24fcb40c8f324af8a71fb25452c39" }
+gpui-pre-scheduler = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "0bf28c84fce24fcb40c8f324af8a71fb25452c39" }
+gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "0bf28c84fce24fcb40c8f324af8a71fb25452c39" }
 # Window::set_bounds (X11, macOS) and the Linux clipboard reads' wait hook
 # (`crates/web`): the backends, vendored in the fork
-gpui-pre-linux = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8fc712852ad6eaac4b5a120f8dbcac4243b7826d" }
-gpui-pre-macos = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8fc712852ad6eaac4b5a120f8dbcac4243b7826d" }
+gpui-pre-linux = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "0bf28c84fce24fcb40c8f324af8a71fb25452c39" }
+gpui-pre-macos = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "0bf28c84fce24fcb40c8f324af8a71fb25452c39" }
 # the X11 input-method client gpui-pre-linux uses, vendored in the fork: it decodes
 # Hangul and Chinese from ibus and drops (does not panic on) text it cannot decode
-zed-xim = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8fc712852ad6eaac4b5a120f8dbcac4243b7826d" }
+zed-xim = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "0bf28c84fce24fcb40c8f324af8a71fb25452c39" }
 
 # Symbols are a fifth of the binary and nothing at run time reads them.
 [profile.release]

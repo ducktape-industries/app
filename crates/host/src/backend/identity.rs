@@ -35,21 +35,21 @@ pub async fn create_seated(client: &RpcClient, network: &str, name: &str) -> Res
     abi::decode::<u64>(&output).map_err(|refusal| refusal.sentence)
 }
 
-/// A passkey or recovery-key flow is a person's: their own keys join their
-/// own account. An agent's keys are its manager's to add, and a program's
-/// account holds none, so a key that holds either is told so instead of
-/// sending an `AddKey` identity would refuse.
+/// A passkey or recovery-key flow is a user's: their own keys join their
+/// own account. A program account's keys are its manager's to add, and a
+/// system account holds none, so a key that holds either is told so
+/// instead of sending an `AddKey` identity would refuse.
 pub fn person(account: &identity::Account) -> Result<(), String> {
     let name = &account.card.name;
     match &account.control {
-        Control::Person { .. } => Ok(()),
-        Control::Managed { manager, .. } => Err(format!(
-            "This key belongs to {name} (account {}), an agent managed by account {manager}. \
-             Passkeys and recovery keys are for a person's own account: sign in with a \
-             person's key.",
+        Control::User { .. } => Ok(()),
+        Control::Program { manager, .. } => Err(format!(
+            "This key belongs to {name} (account {}), a program account managed by account \
+             {manager}. Passkeys and recovery keys are for a person's own account: sign in \
+             with a person's key.",
             account.number
         )),
-        Control::Program { program } => Err(format!(
+        Control::System { program } => Err(format!(
             "This key belongs to the account of the program {program}, which takes no passkey or \
              recovery key."
         )),
