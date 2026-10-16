@@ -48,7 +48,9 @@ fn engine(fuel: bool) -> &'static Engine {
 
 /// The desktop's `ViewLimits` (`crates/host/src/runtime/view/abi.rs`): linear
 /// memory plus a pointer per table element, against one budget; past it the
-/// grow is an error, so the call traps.
+/// grow is an error, so the call traps. Asked before the module's own
+/// maximum, in wasmtime's order; a grow that maximum then refuses holds
+/// nothing, so it records nothing (the desktop's records it: the host's fix).
 struct ViewLimits {
     budget: usize,
     memory: usize,
@@ -80,26 +82,32 @@ impl ResourceLimiter for ViewLimits {
         &mut self,
         _current: usize,
         desired: usize,
-        _maximum: Option<usize>,
+        maximum: Option<usize>,
     ) -> wasmtime::Result<bool> {
         self.fits(desired, self.tables)?;
-        self.memory = desired;
-        Ok(true)
+        let lands = maximum.is_none_or(|maximum| desired <= maximum);
+        if lands {
+            self.memory = desired;
+        }
+        Ok(lands)
     }
 
     fn table_growing(
         &mut self,
         current: usize,
         desired: usize,
-        _maximum: Option<usize>,
+        maximum: Option<usize>,
     ) -> wasmtime::Result<bool> {
         let added = desired.saturating_sub(current);
         let tables = self
             .tables
             .saturating_add(added.saturating_mul(std::mem::size_of::<usize>()));
         self.fits(self.memory, tables)?;
-        self.tables = tables;
-        Ok(true)
+        let lands = maximum.is_none_or(|maximum| desired <= maximum);
+        if lands {
+            self.tables = tables;
+        }
+        Ok(lands)
     }
 }
 
@@ -579,6 +587,32 @@ fn a_grow_past_the_modules_own_maximum_answers_minus_one_under_both() {
         both.call("grow_table", &[2], FUEL_PER_TICK).0,
         End::Returned(vec![-1])
     );
+}
+
+#[test]
+fn a_grow_the_modules_maximum_refuses_holds_nothing_of_the_budget() {
+    // room for 3 pages and 1 table element: the refused grows below each
+    // fit the budget, so only what they would hold could fill it
+    let mut both = Both::new(
+        r#"(module
+            (memory 1 2)
+            (table 1 2 funcref)
+            (func (export "grow") (param i32) (result i32)
+                local.get 0 memory.grow)
+            (func (export "grow_table") (param i32) (result i32)
+                ref.null func local.get 0 table.grow 0))"#,
+        3 * PAGE + 8,
+    );
+    let call = |both: &mut Both, name, delta| both.call(name, &[delta], FUEL_PER_TICK).0;
+    // 3 pages asked, 2 allowed: memory stays at 1, so a second element fits
+    assert_eq!(call(&mut both, "grow", 2), End::Returned(vec![-1]));
+    assert_eq!(call(&mut both, "grow_table", 1), End::Returned(vec![1]));
+    // 4 more elements asked, again and again, past the table's 2: the
+    // memory's second page still fits after all of them
+    for _ in 0..5_000 {
+        assert_eq!(call(&mut both, "grow_table", 4), End::Returned(vec![-1]));
+    }
+    assert_eq!(call(&mut both, "grow", 1), End::Returned(vec![1]));
 }
 
 #[test]
@@ -1097,7 +1131,7 @@ fn statements(rng: &mut Rng, depth: usize, labels: &mut Vec<bool>, out: &mut Str
 
 #[test]
 fn random_bodies_stop_where_wasmtime_stops() {
-    for seed in 1..=4u64 {
+    for seed in 1..=16u64 {
         let mut rng = Rng(0x9e37_79b9_7f4a_7c15 ^ seed);
         let mut functions = String::new();
         let count = 24;
@@ -1117,6 +1151,7 @@ fn random_bodies_stop_where_wasmtime_stops() {
                 (global $g200 i32 (i32.const 200))
                 {functions})"#
         );
+        eprintln!("SEED {seed}");
         let mut both = Both::new(&wat, VIEW_BYTES);
         for index in 0..count {
             for arg in [0, 1, 300] {

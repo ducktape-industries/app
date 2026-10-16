@@ -44,7 +44,10 @@
 //!   caps the use it reports at the budget).
 //! - **Memory.** Every `memory.grow` and `table.grow` first asks one helper
 //!   the pass adds: the memory and every table as they are plus what the
-//!   grow adds, against `view_bytes`, the sum `ViewLimits` keeps. Past it
+//!   grow adds, against `view_bytes`. A grow the module's own maximum
+//!   refuses holds nothing and counts nothing (the desktop's `ViewLimits`
+//!   still records one today, so a run of them can refuse a later grow
+//!   there that fits here: the host's to fix). Past the budget
 //!   the call traps with [`GAS`] set to [`GROW_REFUSED`] (a value no fuel
 //!   trap leaves, so the one export carries both answers). A grow within the
 //!   budget that wasmtime answers with `-1` (past the module's own maximum,
