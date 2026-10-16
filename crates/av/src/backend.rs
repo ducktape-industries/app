@@ -94,10 +94,29 @@ pub enum Playback {
 /// One camera picture: BGRA rows, top to bottom, mirrored if asked.
 /// ponytail: a copy per frame; a platform buffer (macOS `CVPixelBuffer`
 /// into gpui's `surface`) is the zero-copy upgrade.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Picture {
     pub width: u32,
     pub height: u32,
     pub bgra: Vec<u8>,
+}
+
+impl Picture {
+    /// The picture flipped left to right: a mirrored preview's picture as
+    /// the camera saw it, for sending.
+    #[cfg(feature = "call")]
+    pub fn flip_horizontal(&mut self) {
+        let row = self.width as usize * 4;
+        for line in self.bgra.chunks_mut(row) {
+            let pixels = line.len() / 4;
+            for x in 0..pixels / 2 {
+                let (a, b) = (x * 4, (pixels - 1 - x) * 4);
+                for byte in 0..4 {
+                    line.swap(a + byte, b + byte);
+                }
+            }
+        }
+    }
 }
 
 /// What a camera's thread leaves for its piece.
@@ -114,6 +133,12 @@ pub struct CameraFeed {
     pub wanted: AtomicBool,
     /// Set when the piece is gone: the thread releases the camera.
     pub stop: AtomicBool,
+    /// A second reader of the pictures (a call's encoder): the newest
+    /// picture, as it was shown (mirrored if asked), not yet taken; set
+    /// only while `tapped`, which keeps the thread converting when the
+    /// piece is not drawn.
+    pub tap: Mutex<Option<Picture>>,
+    pub tapped: AtomicBool,
 }
 
 /// What a microphone's thread leaves for its piece, and what it asks.
@@ -195,6 +220,12 @@ impl MicFeed {
     pub(crate) fn ended(&self) -> Option<Status> {
         self.ended.lock().unwrap().clone()
     }
+
+    /// How the microphone was ended, taken: told once.
+    #[cfg(feature = "call")]
+    pub(crate) fn take_ended(&self) -> Option<Status> {
+        self.ended.lock().expect("feed ended").take()
+    }
 }
 
 /// Where a microphone's route moved under it, as the system tells it
@@ -262,6 +293,13 @@ impl Held for MicFeed {
     }
 }
 
+/// A microphone piece's hold on its device, ordered after every piece
+/// that let its go ([`Holders::hold`]), for the voice I/O of a call.
+#[cfg(feature = "call")]
+pub(crate) fn hold_microphone(held: Arc<dyn Held>) -> Holding {
+    MICROPHONES.hold(held)
+}
+
 /// A piece's device, let go the moment this drops: its thread closes the
 /// device, and a piece made in its place opens only after ([`Holders`]).
 /// A piece's own drop comes later: gpui drops a released entity once its
@@ -326,7 +364,7 @@ impl Holders {
 
 /// A thread's hold on its device: dropped once the device is closed, it
 /// lets the next opener go.
-struct Holding {
+pub(crate) struct Holding {
     holders: &'static Holders,
     feed: Arc<dyn Held>,
 }
@@ -382,6 +420,11 @@ fn run_camera(device: Option<String>, feed: Arc<CameraFeed>) {
         return;
     }
     let feed = &*feed;
+    #[cfg(feature = "call")]
+    if crate::fake::on() {
+        feed.status.lock().expect("feed status").1 = "Fake camera".into();
+        return stream(crate::fake::Bars::new(), feed);
+    }
     // listed once: the one listed is the one opened, by the system's own
     // handle, never by the view's string
     let mut listed = cameras().unwrap_or_default().into_iter();
@@ -445,7 +488,7 @@ pub(crate) fn stream(mut camera: impl Source, feed: &CameraFeed) {
         if feed.stop.load(Ordering::Relaxed) {
             break None;
         }
-        let wanted = feed.wanted.load(Ordering::Relaxed);
+        let wanted = feed.wanted.load(Ordering::Relaxed) || feed.tapped.load(Ordering::Relaxed);
         let got = camera.next(SLICE, wanted, feed.mirror.load(Ordering::Relaxed));
         match got {
             Err(status) => break Some(status),
@@ -462,6 +505,9 @@ pub(crate) fn stream(mut camera: impl Source, feed: &CameraFeed) {
                 }
                 last = Some(Instant::now());
                 if let Got::Picture(picture) = got {
+                    if feed.tapped.load(Ordering::Relaxed) {
+                        *feed.tap.lock().expect("feed tap") = Some(picture.clone());
+                    }
                     *feed.picture.lock().expect("feed picture") = Some(picture);
                 }
             }
@@ -504,7 +550,7 @@ fn recorded(rate: u32, seconds: u8) -> usize {
 /// Mono samples on their way to a speaker.
 type Queue = Arc<Mutex<VecDeque<f32>>>;
 
-fn audio_fault(error: &cpal::Error, open: bool) -> Status {
+pub(crate) fn audio_fault(error: &cpal::Error, open: bool) -> Status {
     match error.kind() {
         cpal::ErrorKind::DeviceBusy => Status::Busy,
         cpal::ErrorKind::PermissionDenied => Status::Denied,
@@ -682,7 +728,7 @@ fn serve<S>(
 
 /// `config` with a 20 ms buffer where the device takes one: a live loop
 /// through the defaults (ALSA's run to a second) queues and drops.
-fn short(config: &cpal::SupportedStreamConfig) -> cpal::StreamConfig {
+pub(crate) fn short(config: &cpal::SupportedStreamConfig) -> cpal::StreamConfig {
     let mut short = config.config();
     if let cpal::SupportedBufferSize::Range { min, max } = config.buffer_size() {
         let frames = config.sample_rate() / 50;

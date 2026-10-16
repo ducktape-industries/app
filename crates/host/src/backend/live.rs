@@ -2116,5 +2116,7 @@ impl ServerCertVerifier for Pinned {
     }
 }
 
+pub(crate) mod media;
+
 #[cfg(test)]
 mod tests;

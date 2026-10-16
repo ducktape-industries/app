@@ -177,7 +177,14 @@ struct Piece {
     revision: u64,
     /// A microphone's monitor as the host let it on (at a press).
     monitor: bool,
+    /// Whether its device is the call's voice I/O's (a publishing
+    /// microphone piece, `call.rs`): one made for it is made again for
+    /// a plain piece, and the other way round.
+    publishing: bool,
     on_state: std::rc::Rc<std::cell::Cell<Option<u32>>>,
+    /// The device's state as last told, for `call.rs` to tell again with
+    /// the track's.
+    told: std::rc::Rc<std::cell::RefCell<wire::MediaState>>,
     _state: Option<Subscription>,
     /// Lets the device go the moment the piece drops, before gpui
     /// releases its entity: the piece made in its place then waits for
@@ -231,6 +238,13 @@ impl Media {
         self.pieces.clear();
     }
 
+    /// The state the piece at `path` was last told, with its route.
+    #[cfg(feature = "call")]
+    pub(super) fn last_told(&self, path: &AuthoredPath) -> Option<(u32, wire::MediaState)> {
+        let piece = self.pieces.get(path)?;
+        Some((piece.on_state.get()?, piece.told.borrow().clone()))
+    }
+
     /// Why a view may not open another `kind` piece on `device` at `path`,
     /// past the ones it has open elsewhere; `None` when it may.
     #[cfg(feature = "av")]
@@ -272,9 +286,10 @@ impl ViewTree {
     }
 
     /// The view stopped while its tree stays (a stand-in over it): every
-    /// camera and microphone it opened closes.
+    /// camera and microphone it opened closes, and every track ends.
     pub fn release_media(&mut self) {
         self.media.release();
+        self.calls.release();
     }
 
     /// A camera piece: its pictures in the node's box, or the line that
@@ -334,6 +349,7 @@ impl ViewTree {
         &mut self,
         kind: ducktape_av::Kind,
         device: Option<String>,
+        publishing: bool,
         on_state: Option<u32>,
         make: impl FnOnce(&mut Context<Self>) -> Opened,
         cx: &mut Context<Self>,
@@ -343,6 +359,7 @@ impl ViewTree {
         let again = self.media.pieces.get(&path).is_none_or(|piece| {
             piece.opened.kind() != kind
                 || piece.device != device
+                || piece.publishing != publishing
                 || matches!(piece.opened, Opened::Refused(_)) && refusal.is_none()
         });
         if again {
@@ -351,12 +368,18 @@ impl ViewTree {
             self.media.pieces.remove(&path);
             let route = std::rc::Rc::new(std::cell::Cell::new(on_state));
             let heard = route.clone();
-            let tell = move |_: &mut Self, state: &ducktape_av::State, cx: &mut Context<Self>| {
-                if let Some(handler) = heard.get() {
-                    let state = told(state, kind);
-                    cx.emit(wire::Event::Media { handler, state });
-                }
-            };
+            let told_state = std::rc::Rc::new(std::cell::RefCell::new(wire::MediaState::default()));
+            let last = told_state.clone();
+            let at = path.clone();
+            let tell =
+                move |this: &mut Self, state: &ducktape_av::State, cx: &mut Context<Self>| {
+                    let mut state = told(state, kind);
+                    *last.borrow_mut() = state.clone();
+                    if let Some(handler) = heard.get() {
+                        this.calls.adorn(&at, &mut state);
+                        cx.emit(wire::Event::Media { handler, state });
+                    }
+                };
             let opened = match refusal {
                 Some(why) => {
                     if let Some(handler) = on_state {
@@ -387,7 +410,9 @@ impl ViewTree {
                 device,
                 revision: 0,
                 monitor: false,
+                publishing,
                 on_state: route,
+                told: told_state,
                 _state,
                 _release,
             };
@@ -409,6 +434,7 @@ impl ViewTree {
             mirror,
             object_fit,
             on_state,
+            publish,
             ..
         } = node
         else {
@@ -420,6 +446,7 @@ impl ViewTree {
         let piece = self.piece(
             ducktape_av::Kind::Camera,
             device.clone(),
+            false,
             *on_state,
             |cx| Opened::Camera(cx.new(|cx| ducktape_av::Camera::new(opens, mirror, fit(), cx))),
             cx,
@@ -432,6 +459,13 @@ impl ViewTree {
             camera.set_mirror(mirror);
             camera.set_fit(fit(), cx);
         });
+        #[cfg(feature = "call")]
+        {
+            let (path, live) = (self.authored_path.clone(), self.live.clone());
+            self.calls
+                .camera(&path, publish.as_ref(), &camera, live.as_ref(), cx);
+        }
+        let _ = publish;
         Some(camera)
     }
 
@@ -449,6 +483,8 @@ impl ViewTree {
             revision,
             commands,
             on_state,
+            publish,
+            muted,
             ..
         } = node
         else {
@@ -456,11 +492,26 @@ impl ViewTree {
         };
         let pressed = self.media.pressed;
         let (opens, plays) = (device.clone(), output.clone());
+        // a publishing piece's microphone is the call's voice I/O: its
+        // meter is fed from there (`call.rs`), opening nothing itself
+        #[cfg(feature = "call")]
+        let publishing = publish.is_some();
+        #[cfg(not(feature = "call"))]
+        let publishing = false;
         let piece = self.piece(
             ducktape_av::Kind::Microphone,
             device.clone(),
+            publishing,
             *on_state,
-            |cx| Opened::Meter(cx.new(|cx| ducktape_av::Meter::new(opens, plays, color, cx))),
+            |cx| {
+                Opened::Meter(cx.new(|cx| {
+                    #[cfg(feature = "call")]
+                    if publishing {
+                        return ducktape_av::Meter::fed(color, cx).0;
+                    }
+                    ducktape_av::Meter::new(opens, plays, color, cx)
+                }))
+            },
             cx,
         );
         let Opened::Meter(meter) = &piece.opened else {
@@ -473,6 +524,21 @@ impl ViewTree {
         // recording starting (it plays back). Off and Stop need none
         piece.monitor = *monitor && (piece.monitor || pressed);
         let monitor = piece.monitor;
+        #[cfg(feature = "call")]
+        {
+            let (path, live) = (self.authored_path.clone(), self.live.clone());
+            self.calls.microphone(
+                &path,
+                publish.as_ref(),
+                *muted,
+                device.clone(),
+                output.clone(),
+                &meter,
+                live.as_ref(),
+                cx,
+            );
+        }
+        let _ = (publish, muted);
         meter.update(cx, |meter, cx| {
             meter.set_color(color, cx);
             meter.set_output(output.clone());
@@ -515,7 +581,7 @@ impl ViewTree {
 /// the device here, and whether its settings page opens (`link.open` of
 /// the wire's settings links).
 #[cfg(feature = "av")]
-fn told(state: &ducktape_av::State, kind: ducktape_av::Kind) -> wire::MediaState {
+pub(super) fn told(state: &ducktape_av::State, kind: ducktape_av::Kind) -> wire::MediaState {
     use ducktape_av::{Playback, Status};
     let mut opens_settings = false;
     let (status, detail) = match &state.status {
@@ -552,6 +618,7 @@ fn told(state: &ducktape_av::State, kind: ducktape_av::Kind) -> wire::MediaState
         speaking: state.speaking,
         opens_settings,
         monitor_stopped: state.monitor_stopped,
+        track: Default::default(),
     }
 }
 
@@ -573,6 +640,7 @@ mod tests {
             mirror: true,
             object_fit: wire::ImageObjectFit::Cover,
             on_state,
+            publish: None,
         }
     }
 
@@ -595,6 +663,8 @@ mod tests {
             revision,
             commands,
             on_state: None,
+            publish: None,
+            muted: false,
         }
     }
 

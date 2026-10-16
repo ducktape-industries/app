@@ -51,10 +51,14 @@
 //! watch and the seat turns at once (`seat/entity.rs`), one tick per draw,
 //! so an object that arrives wakes its view at once.
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::node::{Follow, Items, connected, spawn_subscription};
 use super::*;
-use crate::backend::live::{Ask, Data, Heard, Mode, Object, Outbox, Pushed, Session, Start, Track};
+use crate::backend::live::{
+    Ask, Data, Heard, Mode, Object, Outbox, Priority, Pushed, Session, Start, Track,
+};
+use tokio::sync::mpsc;
 use wire::methods::{
     LiveAnnounce, LiveItem, LiveMode, LivePublish, LiveSend, LiveStart, LiveSubscribe, LiveTrack,
     Publishing, Watching,
@@ -157,44 +161,59 @@ pub(in crate::runtime) fn quit() -> impl Future<Output = ()> {
     }
 }
 
-/// `room` as the node names it, `<chain>/<program>/<room>`; `None` with
-/// the request refused `malformed_request`.
-fn stamped_room(view: &mut View, id: u64, room: &str) -> Option<String> {
-    let namespace = format!("{}/{}/{room}", view.connection.chain, view.program);
+/// `room` as the node names it, `<chain>/<program>/<room>`, held to the
+/// node's rule; `Err` says what a room is.
+fn stamp_room(chain: &str, program: &str, room: &str) -> Result<String, String> {
+    let namespace = format!("{chain}/{program}/{room}");
     let room_holds = !room.is_empty() && room.chars().all(|c| plain(&c));
     if !room_holds || namespace.len() > live_wire::MAX_NAMESPACE {
-        view.refuse(
-            id,
-            refusal::MALFORMED_REQUEST,
-            format!(
-                "a room is 1 to {} bytes of plain text",
-                live_wire::MAX_NAMESPACE
-            ),
-        );
-        return None;
+        return Err(format!(
+            "a room is 1 to {} bytes of plain text",
+            live_wire::MAX_NAMESPACE
+        ));
     }
-    Some(namespace)
+    Ok(namespace)
 }
 
-/// `name` on the track's stamped room, held to the node's rule; `None`
-/// with the request refused `malformed_request`.
-fn stamped(view: &mut View, id: u64, room: &str, name: &str) -> Option<Track> {
-    let namespace = stamped_room(view, id, room)?;
+/// `name` on the track's stamped room, held to the node's rule: the one
+/// stamping of a view's own requests and of the tracks the host runs for
+/// its pieces ([`HostLive`]).
+fn stamp(chain: &str, program: &str, room: &str, name: &str) -> Result<Track, String> {
+    let namespace = stamp_room(chain, program, room)?;
     if !live_wire::well_named(name) {
-        view.refuse(
-            id,
-            refusal::MALFORMED_REQUEST,
-            format!(
-                "a track name is 1 to {} bytes of `/`-separated segments, none empty or `..`",
-                live_wire::MAX_TRACK_NAME
-            ),
-        );
-        return None;
+        return Err(format!(
+            "a track name is 1 to {} bytes of `/`-separated segments, none empty or `..`",
+            live_wire::MAX_TRACK_NAME
+        ));
     }
-    Some(Track {
+    Ok(Track {
         namespace,
         name: name.to_owned(),
     })
+}
+
+/// [`stamp_room`] for the view's request `id`; `None` with the request
+/// refused `malformed_request`.
+fn stamped_room(view: &mut View, id: u64, room: &str) -> Option<String> {
+    match stamp_room(&view.connection.chain, view.program, room) {
+        Ok(namespace) => Some(namespace),
+        Err(why) => {
+            view.refuse(id, refusal::MALFORMED_REQUEST, why);
+            None
+        }
+    }
+}
+
+/// [`stamp`] for the view's request `id`; `None` with the request refused
+/// `malformed_request`.
+fn stamped(view: &mut View, id: u64, room: &str, name: &str) -> Option<Track> {
+    match stamp(&view.connection.chain, view.program, room, name) {
+        Ok(track) => Some(track),
+        Err(why) => {
+            view.refuse(id, refusal::MALFORMED_REQUEST, why);
+            None
+        }
+    }
 }
 
 /// A view's first live request: its window says it shares live data.
@@ -581,6 +600,311 @@ pub(super) fn reopen(view: &mut View, id: u64, follows: LiveFollow) {
             open_watch(view, id, session, room, up);
         }
     }
+}
+
+// ---------- the tracks the host runs for a view's pieces ----------
+
+/// How long a host-run track waits before it asks again after a refusal
+/// that is not a wait for the node's announce (no session, the node's
+/// refusal of the ask).
+const HOLD: Duration = Duration::from_secs(2);
+/// Objects a host-consumed subscription holds for the thread that decodes
+/// them: the session's own backlog, once more.
+const CONSUMED_BACKLOG: usize = 64;
+
+/// The live session a piece the host runs for a view reaches
+/// (`render/call.rs`: a publishing camera or microphone piece, a remote
+/// piece), stamped `<chain>/<program>/<room>` and granted by the room's
+/// program exactly as the view's own `live.*` requests are, on the app's
+/// connection as it is now: a reconnect moves the connection, and each
+/// track opens again on the new session as a view's request does
+/// (`reopen`). Nothing of it reaches [`Replies`]: a piece hears its
+/// track through its own channel and reads its objects on its own
+/// thread.
+#[derive(Clone)]
+pub struct HostLive {
+    program: &'static str,
+    /// A test's own session and chain, in place of the app's connection.
+    fixed: Option<(Arc<dyn Session>, String)>,
+}
+
+/// What a host-run track hears, as the piece's `MediaState.track` says
+/// it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TrackHeard {
+    /// The room's program has not granted it yet.
+    Waiting,
+    /// The node took it; `subscribers` of a published track, 0 on a
+    /// subscription.
+    Up { subscribers: u32 },
+    /// The node's refusal, or the ending; the track opens again by itself
+    /// (on the node's announce of it, or after [`HOLD`]).
+    Ended { code: String },
+}
+
+/// A track the host publishes for a piece: objects go in, what the node
+/// says of it comes out, until dropped.
+pub struct HostPublication {
+    outbox: Arc<Outbox>,
+    heard: mpsc::UnboundedReceiver<TrackHeard>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl HostPublication {
+    /// One object onto the track: the publication's queue, with its mode's
+    /// rule at the cap ([`Outbox::push`]).
+    pub(crate) fn push(&self, object: Object) -> Pushed {
+        self.outbox.push(object)
+    }
+
+    /// The next thing heard of the track, if any came.
+    pub fn heard(&mut self) -> Option<TrackHeard> {
+        self.heard.try_recv().ok()
+    }
+}
+
+impl Drop for HostPublication {
+    fn drop(&mut self) {
+        self.task.abort();
+        self.outbox.close();
+    }
+}
+
+/// A track the host plays for a piece: its objects and what the node says
+/// of it, in one stream, until dropped.
+pub struct HostSubscription {
+    items: mpsc::Receiver<Subscribed>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+/// One item of a host-consumed subscription.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Subscribed {
+    Heard(TrackHeard),
+    Data(Data),
+}
+
+impl HostSubscription {
+    /// The next item, waited for on the calling thread (the decoder's);
+    /// `None` once the piece let the track go.
+    pub(crate) fn recv(&mut self) -> Option<Subscribed> {
+        self.items.blocking_recv()
+    }
+
+    /// What ends the subscription from another thread than the one that
+    /// reads it: aborted, the reader's `recv` answers `None`.
+    pub fn stopper(&self) -> tokio::task::AbortHandle {
+        self.task.abort_handle()
+    }
+}
+
+impl Drop for HostSubscription {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+impl HostLive {
+    /// The tracks of `program`'s pieces, on the app's connection.
+    pub fn new(program: &'static str) -> Self {
+        Self {
+            program,
+            fixed: None,
+        }
+    }
+
+    /// The tracks of `program`'s pieces on `session`, chain `chain`: a
+    /// test's.
+    #[cfg(test)]
+    pub(crate) fn on(session: Arc<dyn Session>, chain: &str, program: &'static str) -> Self {
+        Self {
+            program,
+            fixed: Some((session, chain.to_owned())),
+        }
+    }
+
+    /// The session and chain to open on now.
+    fn current(&self) -> Option<(Arc<dyn Session>, String)> {
+        if let Some(fixed) = &self.fixed {
+            return Some(fixed.clone());
+        }
+        let connection = super::super::connection().lock().expect("views rpc");
+        let session = connection.live.clone()?;
+        Some((session, connection.chain.clone()))
+    }
+
+    /// Publishes `track` in `mode` at `priority` for as long as the
+    /// publication is held.
+    pub fn publish(&self, track: &LiveTrack, mode: Mode, priority: Priority) -> HostPublication {
+        let outbox = Outbox::new(mode);
+        let (tell, heard) = mpsc::unbounded_channel();
+        let live = self.clone();
+        let track = track.clone();
+        let objects = outbox.clone();
+        let task = super::handle().spawn(async move {
+            live.publishing(track, mode, priority, objects, tell).await;
+        });
+        HostPublication {
+            outbox,
+            heard,
+            task,
+        }
+    }
+
+    async fn publishing(
+        self,
+        track: LiveTrack,
+        mode: Mode,
+        priority: Priority,
+        objects: Arc<Outbox>,
+        tell: mpsc::UnboundedSender<TrackHeard>,
+    ) {
+        let ended = |code: &str| TrackHeard::Ended {
+            code: code.to_owned(),
+        };
+        loop {
+            let Some((session, chain)) = self.current() else {
+                let _ = tell.send(ended(refusal::NOT_CONNECTED));
+                tokio::time::sleep(HOLD).await;
+                continue;
+            };
+            let stamped = match stamp(&chain, self.program, &track.room, &track.name) {
+                Ok(stamped) => stamped,
+                // a name that is no name never becomes one
+                Err(_) => return drop(tell.send(ended(refusal::MALFORMED_REQUEST))),
+            };
+            let open = Ask::Publish {
+                track: stamped,
+                mode,
+                priority,
+                objects: objects.clone(),
+            };
+            let mut request = match session.open(open).await {
+                Ok(request) => request,
+                Err(refusal) => {
+                    let _ = tell.send(ended(&refusal.code));
+                    tokio::time::sleep(HOLD).await;
+                    continue;
+                }
+            };
+            while let Some(heard) = request.heard.recv().await {
+                let item = match heard {
+                    Heard::Published => TrackHeard::Up { subscribers: 0 },
+                    Heard::Subscribers(count) => TrackHeard::Up { subscribers: count },
+                    Heard::Waiting => TrackHeard::Waiting,
+                    Heard::Closed(refusal) => {
+                        let _ = tell.send(ended(&refusal.code));
+                        tokio::time::sleep(HOLD).await;
+                        break;
+                    }
+                    Heard::Dropped(_) | Heard::Subscribed { .. } | Heard::Announce { .. } => {
+                        continue;
+                    }
+                };
+                if tell.send(item).is_err() {
+                    return;
+                }
+            }
+            // the session went: opened again on the one the app has now
+        }
+    }
+
+    /// Subscribes to `track` from the group the node holds for as long as
+    /// the subscription is held: ended by the node (the publisher gone,
+    /// the track unknown), it waits for the node to announce the track
+    /// again and subscribes once more.
+    pub fn subscribe(&self, track: &LiveTrack) -> HostSubscription {
+        let (give, items) = mpsc::channel(CONSUMED_BACKLOG);
+        let live = self.clone();
+        let track = track.clone();
+        let task = super::handle().spawn(async move {
+            live.subscribing(track, give).await;
+        });
+        HostSubscription { items, task }
+    }
+
+    async fn subscribing(self, track: LiveTrack, give: mpsc::Sender<Subscribed>) {
+        let ended = |code: &str| {
+            Subscribed::Heard(TrackHeard::Ended {
+                code: code.to_owned(),
+            })
+        };
+        let tell = |heard: TrackHeard| Subscribed::Heard(heard);
+        loop {
+            let Some((session, chain)) = self.current() else {
+                if give.send(ended(refusal::NOT_CONNECTED)).await.is_err() {
+                    return;
+                }
+                tokio::time::sleep(HOLD).await;
+                continue;
+            };
+            let stamped = match stamp(&chain, self.program, &track.room, &track.name) {
+                Ok(stamped) => stamped,
+                Err(_) => return drop(give.send(ended(refusal::MALFORMED_REQUEST)).await),
+            };
+            let open = Ask::Subscribe {
+                track: stamped.clone(),
+                from: Start::Latest,
+            };
+            let refused = match session.open(open).await {
+                Ok(mut request) => loop {
+                    let item = tokio::select! {
+                        biased;
+                        heard = request.heard.recv() => match heard {
+                            Some(Heard::Subscribed { .. }) => tell(TrackHeard::Up { subscribers: 0 }),
+                            Some(Heard::Waiting) => tell(TrackHeard::Waiting),
+                            Some(Heard::Closed(refusal)) => break Some(refusal),
+                            Some(_) => continue,
+                            // the session went
+                            None => break None,
+                        },
+                        Some(data) = request.data.recv() => Subscribed::Data(data),
+                        data = request.latest.take() => Subscribed::Data(data),
+                    };
+                    if give.send(item).await.is_err() {
+                        return;
+                    }
+                },
+                Err(refusal) => Some(refusal),
+            };
+            let Some(refusal) = refused else {
+                continue;
+            };
+            if give.send(ended(&refusal.code)).await.is_err() {
+                return;
+            }
+            // the track is gone until the node announces it again
+            match refusal.code.as_str() {
+                refusal::PUBLISHER_GONE | refusal::TRACK_ENDED | refusal::UNKNOWN_TRACK => {
+                    announced(&session, &stamped).await;
+                }
+                _ => tokio::time::sleep(HOLD).await,
+            }
+        }
+    }
+}
+
+/// Waits for the node to announce `track` up in its room: the room
+/// watched until it does, or until the watch ends (then [`HOLD`]).
+async fn announced(session: &Arc<dyn Session>, track: &Track) {
+    let open = Ask::Watch {
+        namespace: track.namespace.clone(),
+    };
+    let Ok(mut request) = session.open(open).await else {
+        return tokio::time::sleep(HOLD).await;
+    };
+    while let Some(heard) = request.heard.recv().await {
+        match heard {
+            Heard::Announce {
+                track: announced,
+                up: true,
+                ..
+            } if announced.name == track.name => return,
+            Heard::Closed(_) => break,
+            _ => {}
+        }
+    }
+    tokio::time::sleep(HOLD).await;
 }
 
 #[cfg(test)]

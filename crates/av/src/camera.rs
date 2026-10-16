@@ -40,6 +40,11 @@ impl Camera {
         feed.mirror.store(mirror, Ordering::Relaxed);
         feed.wanted.store(true, Ordering::Relaxed);
         backend::start_camera(device, feed.clone());
+        Self::on(feed, fit, cx)
+    }
+
+    /// A camera over `feed`, whoever fills it.
+    fn on(feed: Arc<CameraFeed>, fit: ObjectFit, cx: &mut Context<Self>) -> Self {
         // the last picture shown leaves the atlas with the piece
         cx.on_release(|this: &mut Self, cx| {
             if let Some(shown) = this.shown.take() {
@@ -63,6 +68,23 @@ impl Camera {
             told: crate::State::default(),
             _poll,
         }
+    }
+
+    /// A picture someone else's camera sent, drawn as a camera's is: the
+    /// feed is the caller's to fill (its status, its pictures); no device
+    /// opens, and nothing is released.
+    #[cfg(feature = "call")]
+    pub fn remote(fit: ObjectFit, cx: &mut Context<Self>) -> (Self, Arc<CameraFeed>) {
+        let feed = Arc::new(CameraFeed::default());
+        feed.wanted.store(true, Ordering::Relaxed);
+        let camera = Self::on(feed.clone(), fit, cx);
+        (camera, feed)
+    }
+
+    /// The pictures the call's encoder reads beside the ones drawn.
+    #[cfg(feature = "call")]
+    pub fn feed(&self) -> &Arc<CameraFeed> {
+        &self.feed
     }
 
     /// Flips the pictures from the next one on.

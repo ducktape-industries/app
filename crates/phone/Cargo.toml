@@ -27,6 +27,9 @@ name = "ducktape_phone"
 [features]
 # the AX test door on the phone: the gate build (wasm-mobile SPEC §11.1)
 ax-door = ["ducktape-host/ax-door"]
+# calls on the phone (the host's `call`: codecs, the echo-cancelled voice
+# I/O); on, as the desktop's default is
+call = ["ducktape-host/call"]
 
 [dependencies]
 # the host's runner is the phone's own pick (`os::runner`): wasmtime below,
