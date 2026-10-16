@@ -1827,8 +1827,8 @@ fn a_swap_waits_for_a_tick_in_flight_on_the_drawn_view(cx: &mut TestAppContext) 
 
 /// The page dies while the swap's snapshot is out (SPEC §6.5): only the
 /// swap fails (asked again at the next roster read); the drawn view keeps
-/// its seat with no fault of its own, and the death is taken up where it
-/// lands: the next tick goes to a new page, not the dead one.
+/// its seat with no fault of its own, and the seat's next turn takes the
+/// death up: the next tick goes to a new page, not the dead one.
 #[gpui_kit::test]
 fn a_death_under_the_swaps_snapshot_fails_only_the_swap(cx: &mut TestAppContext) {
     use super::first_frame_tests::frames_wat;
@@ -1933,8 +1933,8 @@ fn a_death_under_the_swaps_restore_fails_only_the_swap(cx: &mut TestAppContext) 
     );
 }
 
-/// An idle view whose page died under a swap's snapshot is taken up where
-/// the death lands: the next roster read's swap asks a live page for the
+/// An idle view whose page died under a swap's snapshot is taken up by the
+/// turn the swap's end wakes: the next roster read's swap asks a live page for the
 /// snapshot, and goes through. Before, nothing ticked the idle view, and
 /// every block's swap asked the dead page again.
 #[gpui_kit::test]
@@ -2088,6 +2088,87 @@ fn a_death_under_a_kept_snapshot_is_taken_up_where_it_lands(cx: &mut TestAppCont
     };
     crate::contract::testing::snapshot_every_for_test(None);
     assert_eq!(view.fault, None);
+    assert_eq!(view.ticks, ticks + 1);
+    assert_eq!(
+        wire::encode(&view.frame.root),
+        wire::encode(&keyed("four").root),
+        "the replay left the view where it was: tick 4 draws the fourth tree"
+    );
+}
+
+/// The page dies under a kept snapshot after the app went to the
+/// background (SPEC §4.3, §6.5): no call is begun there; the death waits
+/// on the view, no fault of its own, and the turn in front again takes it
+/// up on a new page before the view's next tick.
+#[gpui_kit::test]
+fn a_death_in_the_background_under_a_kept_snapshot_is_taken_up_in_front(cx: &mut TestAppContext) {
+    use super::first_frame_tests::frames_wat;
+    const PROGRAM: &str = "deferred-keep-death-background";
+    crate::contract::testing::snapshot_every_for_test(Some(Duration::from_secs(3600)));
+    let runner = DeferredRunner::default();
+    let pump = runner.pump.clone();
+    let runner: Arc<dyn ViewRunner> = Arc::new(runner);
+    let code = crate::runtime::view::prepared_on_for_test(&runner, frames_wat(&five_trees()));
+    crate::runtime::seat_code_on_for_test(&runner, PROGRAM, 320, code);
+    let (seat, _, mut native) = open(cx, PROGRAM, false);
+    draw_now(&mut native);
+    subscribe_props(&seat, &native);
+    for props in [b"a".as_slice(), b"b".as_slice()] {
+        nudge(&seat, props, &mut native);
+        draw_now(&mut native);
+    }
+    let mounted = mounted_of(&seat, &native);
+    let ticks = ticks_of(&seat, &native);
+    pump.hold();
+    crate::contract::testing::snapshot_every_for_test(Some(Duration::ZERO));
+    native.update(|_, cx| seat.update(cx, |seat, cx| seat.turn(cx)));
+    native.run_until_parked();
+    assert_eq!(pump.held_kinds(), ["Snapshot"]);
+    crate::contract::testing::snapshot_every_for_test(Some(Duration::from_secs(3600)));
+    native.update(|_, cx| cx.set_global(crate::runtime::Backgrounded(true)));
+    native.run_until_parked();
+    assert_eq!(pump.die(), 1);
+    // anything begun from now on is held, and seen
+    pump.hold();
+    native.run_until_parked();
+    assert_eq!(pump.held(), 0, "a revive began calls in the background");
+    {
+        let locked = mounted.lock().unwrap();
+        let Slot::Ready(view) = &locked.slot else {
+            panic!("not seated");
+        };
+        assert!(view.fault.is_none() && !view.ticking() && !locked.owned);
+        assert!(view.parked.is_some(), "the death waits on the view");
+    }
+    native.update(|_, cx| cx.set_global(crate::runtime::Backgrounded(false)));
+    native.run_until_parked();
+    assert_eq!(
+        pump.held_kinds(),
+        ["Seated"],
+        "the turn in front takes the death up on a new page"
+    );
+    pump.at_once();
+    pump.release_all();
+    native.run_until_parked();
+    draw_now(&mut native);
+    {
+        let locked = mounted.lock().unwrap();
+        let Slot::Ready(view) = &locked.slot else {
+            panic!("not seated");
+        };
+        assert!(view.fault.is_none() && view.parked.is_none() && !locked.owned);
+        assert_eq!(view.ticks, ticks);
+    }
+    assert_eq!(
+        next_tick_kinds(&seat, &mounted, &pump, &mut native),
+        ["Frame"],
+        "the next tick went into the dead page"
+    );
+    crate::contract::testing::snapshot_every_for_test(None);
+    let locked = mounted.lock().unwrap();
+    let Slot::Ready(view) = &locked.slot else {
+        panic!("not seated");
+    };
     assert_eq!(view.ticks, ticks + 1);
     assert_eq!(
         wire::encode(&view.frame.root),
