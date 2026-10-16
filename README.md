@@ -44,10 +44,11 @@ browser download is quarantined: after dragging it to `/Applications`, run
 `xattr -dr com.apple.quarantine /Applications/Ducktape.app` once.
 
 **Linux (x86_64).** Needs `jq`, and at runtime `libxcb1`,
-`libxkbcommon-x11-0` and a Vulkan driver (`libvulkan1` and
-`mesa-vulkan-drivers` on Ubuntu). `ducktape-app install` puts the binary
-under `~/.local/share/ducktape/` and registers a desktop entry; the
-extracted copy can be deleted after.
+`libxkbcommon-x11-0`, ALSA's library for the microphone and speakers
+(`libasound2`; `libasound2t64` from Ubuntu 24.04 on) and a Vulkan driver
+(`libvulkan1` and `mesa-vulkan-drivers` on Ubuntu). `ducktape-app install`
+puts the binary under `~/.local/share/ducktape/` and registers a desktop
+entry; the extracted copy can be deleted after.
 
 ```bash
 sha=$(curl -fsS https://dl.ducktape.industries/app/stable.json \
