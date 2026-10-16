@@ -777,7 +777,7 @@ fn interruption_began(notification: &NSNotification) -> Option<&'static str> {
     // SAFETY: an AVFAudio constant
     let kind = unsafe { AVAudioSessionInterruptionTypeKey }?;
     let began = number(notification, kind)? as usize == AVAudioSessionInterruptionType::Began.0;
-    began.then_some("A call, another app or the background took the microphone.")
+    began.then_some(crate::MICROPHONE_TAKEN)
 }
 
 /// A session error, as a status: a call that has the audio is Busy.

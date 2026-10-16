@@ -248,9 +248,6 @@ impl Drop for Active {
 /// How often an open microphone's watcher looks.
 const LOOK: Duration = Duration::from_millis(500);
 
-/// What a microphone Android silenced is told ([`silenced`]).
-const SILENCED: &str = "A call or the system took the microphone.";
-
 /// Looks every [`LOOK`] at what Android tells only when asked: a
 /// recording it silenced ends the microphone (its streams closed before
 /// it is told so: [`MicFeed::end`]), and a monitor whose sound fell onto
@@ -265,7 +262,7 @@ fn watch(feed: Arc<MicFeed>) -> (mpsc::Sender<()>, std::thread::JoinHandle<()>) 
         let mut loud = None;
         while stopped.recv_timeout(LOOK) == Err(mpsc::RecvTimeoutError::Timeout) {
             if silenced() {
-                return feed.end(Status::Gone(SILENCED.into()));
+                return feed.end(Status::Gone(crate::MICROPHONE_TAKEN.into()));
             }
             if !feed.monitoring() {
                 loud = None;
@@ -364,10 +361,10 @@ fn camera_error(status: ffi::camera_status_t) -> Status {
         ffi::camera_status_t::ACAMERA_ERROR_CAMERA_DISABLED => {
             Status::Failed("A device policy turned the camera off.".into())
         }
-        other => Status::Failed(format!(
-            "The camera refused to start (Camera2 {}).",
-            other.0
-        )),
+        other => {
+            tracing::warn!(target: "ducktape::av", status = other.0, "the camera refused to start");
+            Status::Failed("The camera refused to start.".into())
+        }
     }
 }
 
@@ -530,7 +527,10 @@ unsafe extern "C" fn failed(context: *mut c_void, _: *mut ffi::ACameraDevice, er
         // open already: the system turned it off under the piece (a policy
         // refuses it only at open, `camera_error`)
         ffi::ERROR_CAMERA_DISABLED => Status::Gone("The system took the camera.".into()),
-        _ => Status::Gone(format!("The camera stopped (Camera2 error {error}).")),
+        _ => {
+            tracing::warn!(target: "ducktape::av", error, "the camera stopped");
+            Status::Gone("The camera stopped.".into())
+        }
     };
     let _ = tell.send(Err(status));
 }
