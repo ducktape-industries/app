@@ -51,7 +51,8 @@ pub(super) fn stage_words(slot: &Slot) -> String {
             size(*total)
         ),
         Slot::Fetching { received, .. } => format!("Fetching the view — {}", size(*received)),
-        Slot::Compiling => "Compiling the view…".into(),
+        Slot::Listed(_) => "Opening the view…".into(),
+        Slot::Compiling(_) => "Compiling the view…".into(),
         _ => "Loading the view…".into(),
     }
 }

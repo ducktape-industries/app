@@ -26,7 +26,7 @@ pub use node::{STATUS_EVERY, StatusSource};
 pub use node::{Session, SessionEvent, SessionState};
 pub use notifications::{Notifications, permission};
 pub use prefs::Prefs;
-pub use rail::Rail;
+pub use rail::{Opening, Rail};
 pub use screen::{AccountStep, Screen};
 pub use seats::{Place, Seats, SeatsEvent};
 pub use slice::{Observed, Slice, on_runtime, spawn_on_runtime};
@@ -70,7 +70,8 @@ impl Shared {
         let account = cx.new(|_| Account::new(screen.clone(), prefs.clone()));
         let session = {
             let (chain, account, screen) = (chain.clone(), account.clone(), screen.clone());
-            cx.new(|_| Session::new(chain, account, screen, center.clone()))
+            let roster = roster.clone();
+            cx.new(|_| Session::new(chain, account, screen, center.clone(), roster))
         };
         let rail = cx.new(|cx| Rail::new(roster, changes, &session, cx));
         let notifications = cx.new(|_| Notifications::new(center));
@@ -110,7 +111,15 @@ pub mod tests {
         let screen = cx.new(|_| Slice::new(Screen::Connect));
         let prefs = cx.new(|_| Slice::new(Prefs::load()));
         let account = cx.new(|_| Account::new(screen.clone(), prefs));
-        cx.new(|_| Session::new(chain, account, screen, Default::default()))
+        cx.new(|_| {
+            Session::new(
+                chain,
+                account,
+                screen,
+                Default::default(),
+                Roster::default(),
+            )
+        })
     }
 
     /// Counts `entity`'s notifies while the subscription lives.

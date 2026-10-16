@@ -3,17 +3,37 @@
 //! this file and knows what a new OS must provide; nothing else in this
 //! crate names an OS, a window manager or a key store.
 //!
+//! The seam has two directions. Shell to host: [`OsServices`] (installed
+//! once, read anywhere) and [`Inbound`] (OS events after start). Host to
+//! shell: what [`start`](crate::start::start) returns in
+//! [`Host`](crate::start::Host): the entities to draw, `signals` (the
+//! [`Signal`]s the host hands on: `Back`, `InsetsChanged`,
+//! `MemoryWarning`), and `consent`, one wake each time the consent queue
+//! moves (`runtime::consent`: the shell shows the front ask and answers
+//! it); and [`Boot::open`], the shell's opener for what a banner click
+//! names, which `start` installs. Both are in what a shell must pass or
+//! take, so none can be forgotten.
+//!
 //! Two impls: the desktop's (`src/os.rs` in the app binary: directories
 //! by the platform's rule, the OS keyring, freedesktop / macOS banners,
 //! invites minted with the node this machine runs) and the phone's
 //! (`crates/phone/src/os/`). A test build with none installed runs on
 //! [`testing::TestOs`].
 //!
-//! The view runner (`ViewRunner`, its own trait handed to [`Boot`] beside
-//! `OsServices`) is the next cut on this file.
+//! The view runner ([`ViewRunner`], its own trait handed to [`Boot`]
+//! beside `OsServices`) runs view code: wasmtime on the desktop and
+//! Android, JavaScriptCore on iOS. Every call into a view is
+//! completion-shaped: it returns at once, and its answer lands on the
+//! seat's [`Landing`], before the call returns (wasmtime) or later (JSC).
+//! A tick completes when its frame lands, never by a timer.
+
+#![deny(missing_docs)]
 
 use crate::backend::RpcClient;
+use crate::motion;
 use crate::runtime::Answered;
+#[cfg(feature = "ui")]
+use crate::runtime::notify::Opened;
 use crate::runtime::notify::{Click, Notice};
 #[cfg(feature = "ui")]
 use gpui_kit::{AppLifecyclePhase, TextInputConfiguration, Window, WindowInsets};
@@ -26,8 +46,14 @@ pub trait OsServices: Send + Sync + 'static {
     fn dirs(&self) -> &Dirs;
     /// This device's key for `keyring`, made on first ask; it signs and
     /// never hands the key out. Called off the window thread (a store may
-    /// prompt).
-    fn device_key(&self, keyring: &str) -> Result<Arc<dyn noded_client::Signer>, KeyRefusal>;
+    /// prompt). `Ok(None)`: no OS-kept key, but a key from before keys
+    /// moved into the OS is here under a password; the shell asks for it
+    /// and seats it itself (the desktop's `shell::sign_in`). A phone never
+    /// answers `None`.
+    fn device_key(
+        &self,
+        keyring: &str,
+    ) -> Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal>;
     /// Where that key is kept, in the store's own words (the Settings row
     /// "Key storage").
     fn key_storage(&self, keyring: &str) -> Result<KeyStorage, KeyRefusal>;
@@ -58,10 +84,19 @@ pub trait OsServices: Send + Sync + 'static {
     fn facts(&self) -> OsFacts;
     /// Values that differ by device and have a measured owner (SPEC §4.5).
     fn limits(&self) -> Limits;
+    /// The view section the app ships for the roster's blob `blob` (the
+    /// phone's `views.lock`, SPEC §4.7), read on a loader thread in place
+    /// of a fetch. `None` on the desktop, which ships no view. The roster
+    /// decides what runs: a miss is a fetch, never a refusal.
+    fn bundled_view(&self, blob: &::abi::BlobId) -> Option<Vec<u8>>;
     /// `invite.create`: mint with the node key of a node THIS device runs
     /// (the desktop reads it out of the node's workspace). `None` on a host
     /// that runs no node: the kernel refuses `invite_unsupported` with
     /// "Only the machine running this node can mint its invites."
+    /// Called on the kernel's thread (`views-kernel`, one tokio
+    /// current-thread runtime) inside the request's task, and the answer
+    /// is awaited there: neither may block it (blocking work goes to
+    /// `tokio::task::spawn_blocking`).
     fn mint_invite(&self, ask: MintInvite) -> Option<Answered>;
 }
 
@@ -79,11 +114,18 @@ pub trait OsServices: Send + Sync + 'static {
 /// desktop reads `DUCKTAPE_VIEWS_DIR`; a phone has none).
 #[derive(Clone, Debug)]
 pub struct Dirs {
+    /// What the OS may purge: fetched blobs, compiled view code.
     pub cache: PathBuf,
+    /// What the person set: `prefs.json`.
     pub config: PathBuf,
+    /// What the app keeps: the notification centre's log, view stores.
     pub data: PathBuf,
+    /// The keyring directories, one per network name. The ONE source: the
+    /// desktop's key files resolve under it too.
     pub remotes: PathBuf,
+    /// The private directory the AX door's file goes in (see above).
     pub runtime: PathBuf,
+    /// A view developer's directory of view files, if any.
     pub views_override: Option<PathBuf>,
 }
 
@@ -92,17 +134,27 @@ pub struct Dirs {
 pub struct KeyStorage {
     /// The seed never leaves hardware (Secure Enclave, StrongBox).
     pub sealed: bool,
+    /// Which store holds it.
     pub level: KeyLevel,
 }
 
+/// The store a device key is kept in (the mobile `DeviceKeyStore`'s
+/// `storage` levels, plus the desktop's two).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyLevel {
+    /// iOS: a seed sealed by the Secure Enclave.
     SecureEnclave,
+    /// iOS: a this-device-only Keychain item.
     Keychain,
+    /// Android Keystore backed by StrongBox.
     KeystoreStrongBox,
+    /// Android Keystore backed by the TEE.
     KeystoreTee,
+    /// Android Keystore in software.
     KeystoreSoftware,
+    /// The desktop OS keyring (Secret Service, macOS Keychain).
     OsKeyring,
+    /// A file, where no keyring is reachable.
     File,
 }
 
@@ -116,10 +168,6 @@ pub enum KeyRefusal {
     Denied(String),
     /// The store answered with something that is not a key.
     Broken(String),
-    /// No OS-kept key, but a key from before keys moved into the OS is
-    /// here under a password: the shell asks for it and seats it itself
-    /// (the desktop's `shell::sign_in`). A phone never answers this.
-    Legacy,
 }
 
 impl KeyRefusal {
@@ -127,7 +175,6 @@ impl KeyRefusal {
     pub fn sentence(&self) -> String {
         match self {
             Self::NoStore(s) | Self::Denied(s) | Self::Broken(s) => s.clone(),
-            Self::Legacy => "Type this key's password first.".into(),
         }
     }
 }
@@ -143,12 +190,15 @@ pub trait Banners: Send + Sync {
     fn withdraw(&self, tag: &str);
 }
 
-/// The software keyboard a focused field wants. (`InputMode`, the one
-/// field gpui lacks, joins `Show` with the fork pin that adds it.)
+/// The software keyboard a focused field wants. (The fork's
+/// `VirtualKeyboard`, the one field gpui lacks, joins `Show` with the fork
+/// pin that adds it.)
 #[cfg(feature = "ui")]
 #[derive(Clone, Debug)]
 pub enum SoftKeyboard {
+    /// Up, for a field configured so.
     Show(TextInputConfiguration),
+    /// Down.
     Hide,
 }
 
@@ -166,6 +216,21 @@ pub struct OsFacts {
     /// What this device's key is labelled on the account it joins
     /// (`identity::DeviceKey.label`): "Desktop", "iPhone", ...
     pub device_label: &'static str,
+    /// What the person calls this device in a sentence ("this phone's
+    /// network"): "phone", "computer".
+    pub device_noun: &'static str,
+    /// The device has one layout: the desk comes without the layout
+    /// question (`Account::show`). A phone.
+    pub one_layout: bool,
+    /// A view's pane can leave for a window of its own (`host.float`):
+    /// the desktop's. A phone shows one full-screen window, and its views
+    /// are refused `host.float`, `host.unfloat` and `host.placement` as
+    /// unknown requests.
+    pub floats: bool,
+    /// How this OS moves a stack's screens and a sheet: [`motion::IOS`],
+    /// [`motion::ANDROID`]. A pointer window never moves, so the desktop's
+    /// is never read.
+    pub motion: motion::Idiom,
 }
 
 /// Values that differ by device and have a measured owner (SPEC §4.5).
@@ -176,14 +241,22 @@ pub struct Limits {
     /// memory killer is the owner.
     pub loaders: usize,
     /// What a roster read does for a program nobody opened (SPEC §4.7).
-    /// Read by the seating policy (the runner cut).
+    /// Read by `View::load`.
     pub preload: Preload,
+    /// How often a seated view's state is kept for a death replay (SPEC
+    /// §6.5): a snapshot after a settled tick once the last kept one is
+    /// older than this, and every tick's events since, so an instance that
+    /// dies is restored and replayed to where it was. `None` where an
+    /// instance cannot die without the app (the desktop: wasmtime runs in
+    /// this process); the phone's JSC page: 1 s.
+    pub snapshot_every: Option<std::time::Duration>,
     /// Whether settled snapshots are written under `Dirs::data` so a cold
     /// start reopens where the person was. Phone true; desktop false.
-    /// Read by the runner cut.
+    /// Not read yet: the phone's persistence (SPEC §7.5) reads it.
     pub snapshot_to_disk: bool,
 }
 
+/// What a roster read does for a program nobody opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Preload {
     /// Compile every roster program, instantiate none (the desktop).
@@ -202,14 +275,19 @@ pub enum Preload {
 /// and the clock.
 #[derive(Clone)]
 pub struct MintInvite {
+    /// The node the invite is for.
     pub client: RpcClient,
+    /// How many days the invite lives.
     pub ttl_days: u64,
+    /// Now, in milliseconds since the epoch.
     pub now_ms: u64,
 }
 
 /// Everything the shell feeds the host after [`start`](crate::start::start):
 /// one sender, any thread; one foreground task drains it on the GPUI
-/// thread into the entities. The only way an OS event reaches host state.
+/// thread into the entities. An OS event from another thread reaches host
+/// state through it (a shell's own GPUI-thread channels, such as the
+/// desktop tray's appearance pick, call the entities directly).
 #[cfg(feature = "ui")]
 #[derive(Clone)]
 pub struct Inbound(async_channel::Sender<Signal>);
@@ -227,6 +305,7 @@ impl Inbound {
     }
 }
 
+/// One OS event for the host.
 #[cfg(feature = "ui")]
 #[derive(Clone, Debug)]
 pub enum Signal {
@@ -238,19 +317,346 @@ pub enum Signal {
     /// Android BACK from the Activity's dispatcher; iOS from the capsule
     /// or the edge pan.
     Back,
+    /// iOS's left-edge pan under way, its finger this many points in from
+    /// where it started: the shell lets the screen on top follow it. A
+    /// release that goes back is `Back`; one that does not,
+    /// `BackDragCancelled`.
+    BackDrag(f32),
+    /// The edge pan let go without going back.
+    BackDragCancelled,
     /// The insets changed: re-read `OsServices::insets`, re-place.
     InsetsChanged,
+    /// A banner the host raised was clicked: the centre opens what it
+    /// names, through [`Boot::open`].
     BannerClick(Click),
 }
 
-/// What a shell hands [`start`](crate::start::start). The view runner joins
-/// it with the runner cut.
+/// What a shell hands [`start`](crate::start::start).
 #[cfg(feature = "ui")]
 pub struct Boot {
+    /// The shell's services; `start` installs them.
     pub os: Arc<dyn OsServices>,
+    /// What runs view code; `start` installs it.
+    pub runner: Arc<dyn ViewRunner>,
+    /// What opens what a banner click names (a `duck://` link, Settings ›
+    /// Updates) in the shell's windows. Called on the GPUI thread.
+    pub open: fn(Opened),
 }
 
 static OS: OnceLock<Arc<dyn OsServices>> = OnceLock::new();
+static RUNNER: OnceLock<Arc<dyn ViewRunner>> = OnceLock::new();
+
+/// The shell's view runner, installed once, before the first load (`start`
+/// installs its `Boot`'s). A second, different instance is a bug.
+pub fn install_runner(runner: Arc<dyn ViewRunner>) {
+    let installed = RUNNER.get_or_init(|| runner.clone());
+    assert!(
+        Arc::ptr_eq(installed, &runner),
+        "the shell's ViewRunner is installed once"
+    );
+}
+
+/// The installed view runner. A test build with none installed runs on
+/// wasmtime, as the desktop does.
+pub fn runner() -> &'static Arc<dyn ViewRunner> {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        RUNNER.get_or_init(|| {
+            Arc::new(crate::runner::WasmtimeRunner::new(RunnerConfig {
+                signals_based_traps: true,
+                cache_dir: Some(os().dirs().cache.join("view-code")),
+            }))
+        })
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        RUNNER
+            .get()
+            .expect("the shell installs its ViewRunner before the first load")
+    }
+}
+
+/// Runs view code. One per process; the shell picks it ([`Boot::runner`]).
+///
+/// Threads: `prepare` runs on a loader thread and may block it (wasmtime
+/// compiles; JSC runs the meter pass; neither touches a page). `describe`
+/// may be called from the kernel's blocking pool and may block it, NEVER
+/// from the window thread (a JSC impl posts to main and blocks the pool
+/// thread on a oneshot; main never waits on the pool). `instantiate` and
+/// every `begin_*` are called only on the seat's thread (the window
+/// thread), which awaits each answer as it lands on the seat's
+/// [`Landing`], at once or later: a first load, a pane claiming a compiled
+/// seat, the developer's override and `Preload::Seat`'s instance (a loader
+/// prepares the code and parks it; the window thread seats and inits it),
+/// a swap's replacement, a sibling after a restore trap, and a revive.
+pub trait ViewRunner: Send + Sync + 'static {
+    /// Compile (wasmtime) or validate + meter + cache (JSC) `code`, whose
+    /// sha256 is `hash`, for a view whose linear memory may reach
+    /// `view_bytes` (the `memory.view_bytes` setting). Nothing runs. The
+    /// code stays prepared while the answer's hold is held.
+    fn prepare(&self, hash: [u8; 32], code: &[u8], view_bytes: usize) -> Result<Prepared, Failure>;
+    /// Seat the prepared code `hash` names: lands [`Landed::Seated`] (or a
+    /// `Fault`) on `land`, which the instance keeps for every later answer.
+    /// Code nothing holds any more lands a `Fault::Runner`. Right after a
+    /// page died it seats the view on a new page (see [`ViewInstance`]'s
+    /// dead-page rules).
+    fn instantiate(&self, hash: [u8; 32], seat: SeatId, land: Landing);
+    /// `program.describe`: run the import-free describe module `module`
+    /// (sha256 `hash`) on `op`, bounded by the same fuel, once
+    /// `view_meter::accepts` takes it as it would a view; `None` on any
+    /// failure.
+    fn describe(
+        &self,
+        hash: [u8; 32],
+        module: &[u8],
+        op: &[u8],
+    ) -> Option<view_wire::methods::Description>;
+}
+
+/// Where prepared code came from, for the load's log and counters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodeSource {
+    /// Prepared before, and still held: nothing compiled.
+    Memory,
+    /// The runner's disk cache.
+    Disk,
+    /// Compiled (wasmtime) or validated and metered (JSC) now.
+    Cold,
+}
+
+impl CodeSource {
+    /// How the load's log (`code=`) and its counter (`compile.*`) name it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Memory => "memory",
+            Self::Disk => "disk",
+            Self::Cold => "cold",
+        }
+    }
+}
+
+/// [`ViewRunner::prepare`]'s answer: where the code came from, and the
+/// runner's hold on it. Whatever may still seat the code holds the hold (a
+/// seat's compiled view, a parked swap, a load about to seat it); a running
+/// instance holds its own code. A runner may free code nothing holds.
+#[derive(Clone)]
+pub struct Prepared {
+    /// Where the code came from.
+    pub source: CodeSource,
+    /// The runner's hold on the code: opaque to the host.
+    pub hold: Arc<dyn std::any::Any + Send + Sync>,
+}
+
+/// One running view: the five exports (`alloc` and `memory` internal to the
+/// impl). `Send` so the seat registry may hold it; every entry is called
+/// on the seat's thread and is completion-shaped: it returns at once and
+/// the answer lands on the seat's [`Landing`].
+///
+/// A program's NOTIFIER (`runtime::notifier`) is seated the same way, on
+/// the same code path, budget and fuel: a module that exports `alloc`,
+/// `init` and `tick` only (no state to hand over). Every runner seats a
+/// module without `snapshot` and `restore`, and a `begin_snapshot` or
+/// `begin_restore` on it lands `Fault::Trap("the view exports no …")`. Its
+/// seat's thread is the notifier's own thread, never the window thread;
+/// its tick's answer is a [`Landed::Frame`] whose bytes the host reads as
+/// a notifier's turn. Nothing else about a runner tells the two apart.
+///
+/// One call in flight per instance: the host begins a call only once the
+/// answer to the one before it landed (a tick in flight is `View::ticking`;
+/// a swap's or a kept snapshot's sequence owns the instance meanwhile,
+/// `Mounted::owned`), so each answer is the answer to the last call begun.
+/// Each call lands exactly one [`Landed`], once.
+///
+/// Dead pages (SPEC §6.5; the host relies on every rule here):
+/// - Every call into a dead page lands `Fault::Runner`, never nothing: the
+///   call in flight when the page died, and every call begun on the
+///   instance after, until it is dropped. A call that lands nothing leaves
+///   its seat waiting for good.
+/// - [`ViewRunner::instantiate`] right after a death seats the view on a
+///   new page: the host's revive asks at once, and a refusal there (a page
+///   still reloading) stops the view. A runner that needs time takes it
+///   before it lands `Seated`.
+/// - The host revives each seat itself (`View::revive`: a new instance,
+///   restored from the kept snapshot, the kept batches replayed): a runner
+///   never restores or replays a seat on its own. This replaces SPEC §6.5's
+///   runner-side restore.
+/// - A dead instance keeps holding its code until it is dropped: a revive
+///   seats the same code by hash while the dead instance is still the
+///   view's.
+///
+/// Ending: the host calls [`Self::stop`] on an instance it replaces while
+/// it lives (a revive's dead one). Every other instance is dropped, and
+/// dropping one stops it, as `stop` does. Drop runs on whichever thread
+/// drops it and must not wait on the seat's thread, which may be waiting
+/// on a lock the dropping thread holds: the seat's thread (a swap's
+/// install), a loader's (an install replacing the view, a `Loaded::Empty`
+/// install, both under the seat's lock), or the roster thread's (a
+/// program's `retire`, under the registry's and the seat's locks).
+/// dispatch2's `MainThreadBound` drops its value through `run_on_main`,
+/// which off the main thread is `exec_sync` on the main queue and waits on
+/// it: a page handle is posted to the main thread (`exec_async`) to be
+/// dropped there, not dropped through it.
+pub trait ViewInstance: Send {
+    /// The sha256 of the code this is an instance of.
+    fn code_hash(&self) -> [u8; 32];
+    /// The `init` export: lands `Inited` or a `Fault`.
+    fn begin_init(&mut self);
+    /// The `tick` export on `events` (an encoded event batch): lands
+    /// `Frame` or a `Fault`.
+    fn begin_tick(&mut self, events: Vec<u8>);
+    /// The `snapshot` export: lands `Snapshot`, `SnapshotRefused` or a
+    /// `Fault`.
+    fn begin_snapshot(&mut self);
+    /// The `restore` export: lands `Restored`, `RestoreRefused` or a
+    /// `Fault`.
+    fn begin_restore(&mut self, snapshot: Vec<u8>);
+    /// The fuel the last landed call used, of [`FUEL_PER_TICK`].
+    fn fuel_used(&self) -> u64;
+    /// The view's linear memory, in bytes.
+    fn memory_bytes(&self) -> usize;
+    /// Ends the instance. Dropping it ends it too.
+    fn stop(self: Box<Self>);
+    /// The instance's linear memory, for the host's own tests that read
+    /// it; only the wasmtime instance lends one.
+    #[cfg(test)]
+    fn memory_for_test(&self) -> &[u8] {
+        unimplemented!("only the wasmtime instance lends its memory to a test")
+    }
+    /// [`Self::memory_for_test`], for the tests that script it.
+    #[cfg(test)]
+    fn memory_mut_for_test(&mut self) -> &mut [u8] {
+        unimplemented!("only the wasmtime instance lends its memory to a test")
+    }
+}
+
+/// Which seat an instance is for: (program, the pane's layout instance; 0
+/// for a seat no pane held when it was seated).
+/// During a swap or a revive two live instances share one id: it names a
+/// program's seat for a runner's own logs and bookkeeping, and is no key
+/// two instances may not share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SeatId(pub &'static str, pub u64);
+
+/// A seat's answer channel: `Send + Clone`, made by the seat when it asks
+/// for an instance and kept by the instance; a runner `send`s each answer
+/// into it from wherever the answer appears.
+#[derive(Clone, Debug)]
+pub struct Landing(async_channel::Sender<Landed>);
+
+impl Landing {
+    /// A landing and the seat's end of it.
+    pub fn channel() -> (Self, async_channel::Receiver<Landed>) {
+        let (sender, receiver) = async_channel::unbounded();
+        (Self(sender), receiver)
+    }
+
+    /// Lands `landed`; one after the seat is gone is dropped.
+    pub fn send(&self, landed: Landed) {
+        let _ = self.0.try_send(landed);
+    }
+}
+
+/// One answer from a view.
+pub enum Landed {
+    /// `instantiate`'s: the running instance.
+    Seated(Box<dyn ViewInstance>),
+    /// `init` ran.
+    Inited,
+    /// A tick's answer, its bytes as the module wrote them: a view's
+    /// frame, or a notifier's turn (`view_wire::notifier::Turn`); the host
+    /// reads which, never the runner.
+    Frame(Vec<u8>),
+    /// The view's state.
+    Snapshot(Vec<u8>),
+    /// The view's own word that it cannot hand its state over now.
+    SnapshotRefused(String),
+    /// The state was taken up.
+    Restored,
+    /// The view's own word that the state is not its own.
+    RestoreRefused(String),
+    /// The call failed; the instance is not entered again.
+    Fault(Fault),
+}
+
+impl std::fmt::Debug for Landed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Seated(instance) => write!(f, "Seated({:02x?})", &instance.code_hash()[..4]),
+            Self::Inited => f.write_str("Inited"),
+            Self::Frame(bytes) => write!(f, "Frame({} bytes)", bytes.len()),
+            Self::Snapshot(bytes) => write!(f, "Snapshot({} bytes)", bytes.len()),
+            Self::SnapshotRefused(why) => write!(f, "SnapshotRefused({why})"),
+            Self::Restored => f.write_str("Restored"),
+            Self::RestoreRefused(why) => write!(f, "RestoreRefused({why})"),
+            Self::Fault(fault) => write!(f, "Fault({fault})"),
+        }
+    }
+}
+
+/// Why a call into a view failed. Every runner produces every variant but
+/// `Runner`, which is a runner's own failure (a refused script, a dead
+/// page before the answer).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Fault {
+    /// The view trapped: the trap's words.
+    Trap(String),
+    /// The view panicked: the words its panic hook
+    /// (`ducktape_view.panicked`) handed over before the trap.
+    Panicked(String),
+    /// The call used all of [`FUEL_PER_TICK`].
+    OutOfFuel,
+    /// A `memory.grow` or `table.grow` past the `memory.view_bytes`
+    /// setting.
+    Memory,
+    /// The runner failed, not the view.
+    Runner(String),
+}
+
+impl std::fmt::Display for Fault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Trap(words) | Self::Panicked(words) | Self::Runner(words) => f.write_str(words),
+            Self::OutOfFuel => f.write_str("all fuel consumed by WebAssembly"),
+            Self::Memory => f.write_str("the view is past the device's view memory setting"),
+        }
+    }
+}
+
+/// `prepare`'s refusals: `Unsupported` names the operator or feature this
+/// runner does not run (the same answer on every runner); `Runner` the
+/// runner's own. A view built against another wire is not refused: it runs,
+/// and what fails names both wires.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Failure {
+    /// Code this runner does not run.
+    Unsupported(String),
+    /// The runner's own failure.
+    Runner(String),
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsupported(words) | Self::Runner(words) => f.write_str(words),
+        }
+    }
+}
+
+/// How a shell configures its runner.
+#[derive(Clone, Debug)]
+pub struct RunnerConfig {
+    /// wasmtime's signal-based traps: the desktop's default; off on Android
+    /// (an arm64 guest trap otherwise kills the process).
+    pub signals_based_traps: bool,
+    /// Where compiled code is kept across launches; `None` keeps none.
+    pub cache_dir: Option<PathBuf>,
+}
+
+/// Instruction budget for one call into a view, on every runner: a ceiling
+/// that ends a runaway, not a cost. `RUST_LOG=ducktape::perf=debug` logs
+/// each tick's fuel; docs/perf.md §4.2 has the heaviest ticks measured and
+/// each view's budget, at most half of this ceiling.
+pub const FUEL_PER_TICK: u64 = 250_000_000;
 
 /// The shell's services, installed before the host reads anything
 /// (`start` installs its `Boot`'s; a shell that needs them earlier, or
@@ -333,6 +739,7 @@ pub mod testing {
     }
 
     impl TestOs {
+        /// The test services, made active (see [`active`]).
         pub fn new() -> Self {
             remove_stale_roots();
             ACTIVE.store(true, Ordering::Relaxed);
@@ -388,6 +795,30 @@ pub mod testing {
         fn withdraw(&self, _: &str) {}
     }
 
+    thread_local! {
+        /// This test thread's `Limits::snapshot_every`: the desktop's
+        /// `None` unless a test keeps a death replay
+        /// ([`snapshot_every_for_test`]).
+        static SNAPSHOT_EVERY: std::cell::Cell<Option<std::time::Duration>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    /// `Limits::snapshot_every` on this test thread from now on.
+    pub fn snapshot_every_for_test(every: Option<std::time::Duration>) {
+        SNAPSHOT_EVERY.set(every);
+    }
+
+    thread_local! {
+        /// This test thread's `OsFacts::touch_first`: the desktop's `false`
+        /// unless a test draws for a finger ([`touch_first_for_test`]).
+        static TOUCH_FIRST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// `OsFacts::touch_first` on this test thread from now on.
+    pub fn touch_first_for_test(touch: bool) {
+        TOUCH_FIRST.set(touch);
+    }
+
     impl OsServices for TestOs {
         fn dirs(&self) -> &Dirs {
             thread_local! {
@@ -425,14 +856,17 @@ pub mod testing {
             DIRS.with(|dirs| *dirs)
         }
 
-        fn device_key(&self, keyring: &str) -> Result<Arc<dyn noded_client::Signer>, KeyRefusal> {
+        fn device_key(
+            &self,
+            keyring: &str,
+        ) -> Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal> {
             // a key of the keyring's name: the same device key every time a
             // test meets the same network, none kept anywhere
             let mut seed = [0u8; 32];
             let name = keyring.as_bytes();
             let n = name.len().min(32);
             seed[..n].copy_from_slice(&name[..n]);
-            Ok(Arc::new(FakeKey(seed)))
+            Ok(Some(Arc::new(FakeKey(seed))))
         }
 
         fn key_storage(&self, _: &str) -> Result<KeyStorage, KeyRefusal> {
@@ -462,8 +896,12 @@ pub mod testing {
             OsFacts {
                 mac_modifiers: false,
                 rss_unit: 1024,
-                touch_first: false,
+                touch_first: TOUCH_FIRST.get(),
                 device_label: "Test",
+                device_noun: "computer",
+                one_layout: false,
+                floats: true,
+                motion: crate::motion::IOS,
             }
         }
 
@@ -472,8 +910,13 @@ pub mod testing {
                 loaders: std::thread::available_parallelism()
                     .map_or(1, std::num::NonZeroUsize::get),
                 preload: Preload::Compile,
+                snapshot_every: SNAPSHOT_EVERY.get(),
                 snapshot_to_disk: false,
             }
+        }
+
+        fn bundled_view(&self, _: &::abi::BlobId) -> Option<Vec<u8>> {
+            None
         }
 
         fn mint_invite(&self, _: MintInvite) -> Option<Answered> {

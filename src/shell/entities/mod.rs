@@ -17,17 +17,19 @@ mod windows;
 pub(crate) use desk::Desk;
 pub(crate) use dot::DotSlot;
 #[cfg(test)]
+pub(crate) use ducktape_host::session::AccountStep;
+#[cfg(test)]
 pub(crate) use ducktape_host::session::STATUS_EVERY;
 pub(crate) use ducktape_host::session::{
-    Account, AccountEvent, AccountState, AccountStep, Chain, Notifications, Observed, Prefs, Rail,
-    Screen, Seats, Secret, Session, SessionEvent, SessionState, Shared, Slice, Toast, permission,
+    Account, AccountEvent, AccountState, Chain, Notifications, Observed, Prefs, Rail, Screen,
+    Seats, Secret, Session, SessionEvent, SessionState, Shared, Slice, Toast, permission,
     spawn_on_runtime,
 };
 pub(crate) use front::{Front, Listed, Popped};
 pub(crate) use overlays::{Overlay, Overlays, Popover, SettingsPage, Spot, SpotRow};
 pub(crate) use seats::DeskSeats;
 pub(crate) use spotlight::Spotlight;
-pub(crate) use windows::{Windows, posted};
+pub(crate) use windows::{Windows, open_banner, posted};
 #[cfg(test)]
 mod account_tests;
 #[cfg(test)]

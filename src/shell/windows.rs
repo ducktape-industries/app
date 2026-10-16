@@ -1,6 +1,9 @@
 //! Where an OS window goes: a pop-out off its source window (`cascade`,
-//! `unseated`), the launcher centred (`centered`); and how one leaves the
-//! screen (`remove`). Opening one is `entities::Windows`'.
+//! `unseated`), a view's float in its display's corner (`corner`), the
+//! launcher centred (`centered`), above other apps' windows or back among
+//! them (`keep_above`), on every Space (`join_all_spaces`); and how one
+//! leaves the screen (`remove`). Opening one, and which are kept above, is
+//! `entities::Windows`'.
 
 use super::layout;
 use gpui_kit::{Bounds, Pixels, Point, Size, point, px, size};
@@ -31,6 +34,20 @@ pub(in crate::shell) fn cascade(
     let extent = size(px(WINDOW_SIZE.0), px(WINDOW_SIZE.1));
     let origin = point(source.origin.x + px(CASCADE), source.origin.y + px(CASCADE));
     inside(origin, extent, display)
+}
+
+/// How far a view's float sits in from its display's work area.
+const FLOAT_INSET: f32 = 24.;
+
+/// Where a view's first float opens: `extent` in the bottom-right corner
+/// of `display`'s work area, [`FLOAT_INSET`] in from both edges, and
+/// never past its top-left corner when it doesn't fit.
+pub(in crate::shell) fn corner(extent: Size<Pixels>, display: Bounds<Pixels>) -> Bounds<Pixels> {
+    let origin = point(
+        display.origin.x + display.size.width - extent.width - px(FLOAT_INSET),
+        display.origin.y + display.size.height - extent.height - px(FLOAT_INSET),
+    );
+    inside(origin, extent, Some(display))
 }
 
 /// Where the launcher sits when the desk shrinks to it: centred in
@@ -101,6 +118,178 @@ pub(in crate::shell) fn remove(window: gpui_kit::AnyWindowHandle, cx: &mut gpui_
             window.remove_window();
         });
     });
+}
+
+/// Whether this platform keeps a window above other apps' windows: macOS
+/// does (a window level) and X11 does (EWMH's `_NET_WM_STATE_ABOVE`, which
+/// the window manager carries out). Wayland's xdg-shell has no such
+/// request, so there Keep on Top is not offered at all.
+pub(in crate::shell) fn can_keep_above(cx: &gpui_kit::App) -> bool {
+    cx.compositor_name() != "Wayland"
+}
+
+/// Tells the platform to keep `window` above other apps' windows, or to let
+/// it back among them. gpui sets a window's level only as it opens it
+/// (`WindowKind`), and nothing it does later (raising, activation, full
+/// screen) sets it again, so this holds until it is told otherwise.
+pub(in crate::shell) fn keep_above(window: &gpui_kit::Window, above: bool) -> Result<(), String> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let raw = match HasWindowHandle::window_handle(window) {
+        Ok(handle) => handle.as_raw(),
+        // the test platform's windows have no native handle: what it was
+        // told is kept for the test to read
+        #[cfg(test)]
+        Err(raw_window_handle::HandleError::NotSupported) => {
+            KEPT_ABOVE
+                .with_borrow_mut(|told| told.push((window.window_handle().window_id(), above)));
+            return Ok(());
+        }
+        Err(error) => return Err(format!("no native window: {error}")),
+    };
+    match raw {
+        #[cfg(target_os = "macos")]
+        RawWindowHandle::AppKit(handle) => mac_keep_above(handle.ns_view, above),
+        #[cfg(target_os = "linux")]
+        RawWindowHandle::Xcb(handle) => x11_keep_above(window, handle.window.get(), above),
+        other => Err(format!("{other:?} windows can't be kept on top")),
+    }
+}
+
+/// macOS: `window` on every Space and over another app's full screen, as
+/// a floating call window is (a view's float). Elsewhere a window manager
+/// keeps a window above on every workspace already, or not at all.
+pub(in crate::shell) fn join_all_spaces(window: &gpui_kit::Window) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::msg_send;
+        use objc2::runtime::AnyObject;
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        /// `NSWindowCollectionBehaviorCanJoinAllSpaces`,
+        /// `NSWindowCollectionBehaviorFullScreenAuxiliary`.
+        const ALL_SPACES: usize = 1 << 0;
+        const OVER_FULL_SCREEN: usize = 1 << 8;
+        let Ok(handle) = HasWindowHandle::window_handle(window) else {
+            return;
+        };
+        let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+            return;
+        };
+        let view = handle.ns_view.as_ptr().cast::<AnyObject>();
+        // SAFETY: gpui's own NSView, alive while its `Window` is borrowed;
+        // this runs on the main thread, as all of gpui's window calls do.
+        unsafe {
+            let ns_window: *mut AnyObject = msg_send![view, window];
+            if ns_window.is_null() {
+                return;
+            }
+            let behavior: usize = msg_send![ns_window, collectionBehavior];
+            let _: () = msg_send![
+                ns_window,
+                setCollectionBehavior: behavior | ALL_SPACES | OVER_FULL_SCREEN
+            ];
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What the test platform was told to keep above, in order.
+    pub(in crate::shell) static KEPT_ABOVE: std::cell::RefCell<Vec<(gpui_kit::WindowId, bool)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// macOS: the window's level. Floating is a palette's level, above every
+/// app's normal windows, where Zoom's and Slack's floating call windows sit.
+#[cfg(target_os = "macos")]
+fn mac_keep_above(ns_view: std::ptr::NonNull<std::ffi::c_void>, above: bool) -> Result<(), String> {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    /// `NSFloatingWindowLevel` and `NSNormalWindowLevel`.
+    const FLOATING: isize = 3;
+    const NORMAL: isize = 0;
+    let view = ns_view.as_ptr().cast::<AnyObject>();
+    // SAFETY: gpui's own NSView, alive while its `Window` is borrowed; this
+    // runs on the main thread, as all of gpui's window calls do.
+    unsafe {
+        let ns_window: *mut AnyObject = msg_send![view, window];
+        if ns_window.is_null() {
+            return Err("the view is in no window".to_owned());
+        }
+        let _: () = msg_send![ns_window, setLevel: if above { FLOATING } else { NORMAL }];
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+x11rb::atom_manager! {
+    /// The two atoms Keep on Top asks with.
+    AboveAtoms: AboveAtomsCookie {
+        _NET_WM_STATE,
+        _NET_WM_STATE_ABOVE,
+    }
+}
+
+/// X11: EWMH's `_NET_WM_STATE` request to the root window, on gpui's own
+/// connection (so it follows whatever gpui sent before it, the window's
+/// map included). The window manager carries it out.
+#[cfg(target_os = "linux")]
+fn x11_keep_above(window: &gpui_kit::Window, id: u32, above: bool) -> Result<(), String> {
+    use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{ConnectionExt as _, EventMask};
+    let said = |error: &dyn std::fmt::Display| error.to_string();
+    let display = HasDisplayHandle::display_handle(window).map_err(|error| said(&error))?;
+    let RawDisplayHandle::Xcb(display) = display.as_raw() else {
+        return Err("not an XCB display".to_owned());
+    };
+    let connection = display.connection.ok_or("no XCB connection")?;
+    // SAFETY: gpui's live connection, which outlives this call (the window
+    // is borrowed); `false`: it is gpui's to disconnect, not this wrapper's.
+    let xcb = unsafe {
+        x11rb::xcb_ffi::XCBConnection::from_raw_xcb_connection(connection.as_ptr(), false)
+    }
+    .map_err(|error| said(&error))?;
+    let root = usize::try_from(display.screen)
+        .ok()
+        .and_then(|screen| xcb.setup().roots.get(screen))
+        .ok_or("no such screen")?
+        .root;
+    let atoms = AboveAtoms::new(&xcb)
+        .map_err(|error| said(&error))?
+        .reply()
+        .map_err(|error| said(&error))?;
+    let request = above_request(id, atoms._NET_WM_STATE, atoms._NET_WM_STATE_ABOVE, above);
+    let mask = EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY;
+    // checked: a round trip, which also sends it
+    xcb.send_event(false, root, mask, request)
+        .map_err(|error| said(&error))?
+        .check()
+        .map_err(|error| said(&error))
+}
+
+/// EWMH's request that window `id` gain (`above`) or lose
+/// `_NET_WM_STATE_ABOVE`, from an application.
+#[cfg(target_os = "linux")]
+fn above_request(
+    id: u32,
+    net_wm_state: u32,
+    net_wm_state_above: u32,
+    above: bool,
+) -> x11rb::protocol::xproto::ClientMessageEvent {
+    /// `_NET_WM_STATE_REMOVE`, `_NET_WM_STATE_ADD`.
+    const REMOVE: u32 = 0;
+    const ADD: u32 = 1;
+    /// The source: a normal application (not a pager).
+    const APPLICATION: u32 = 1;
+    let action = if above { ADD } else { REMOVE };
+    x11rb::protocol::xproto::ClientMessageEvent::new(
+        32,
+        id,
+        net_wm_state,
+        [action, net_wm_state_above, 0, APPLICATION, 0],
+    )
 }
 
 #[cfg(test)]
@@ -187,6 +376,40 @@ mod tests {
                 "{source:?} on {on:?}"
             );
         }
+    }
+
+    /// Keep on Top on X11 is EWMH's state request to the window manager:
+    /// add, then remove, `_NET_WM_STATE_ABOVE` on the window asked about,
+    /// as an application.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn keep_on_top_asks_the_x11_window_manager_for_above() {
+        let (window, state, above) = (0x0420_0007, 301, 302);
+        let on = above_request(window, state, above, true);
+        assert_eq!((on.format, on.window, on.type_), (32, window, state));
+        assert_eq!(on.data.as_data32(), [1, above, 0, 1, 0]);
+        let off = above_request(window, state, above, false);
+        assert_eq!(off.data.as_data32(), [0, above, 0, 1, 0]);
+    }
+
+    /// A view's first float sits in its display's bottom-right corner, 24
+    /// in from the work area's edges (a second display, under a menu bar),
+    /// and on a display too small for it at the work area's corner.
+    #[test]
+    fn a_float_opens_in_the_corner_of_its_display() {
+        let float = size(px(320.), px(232.));
+        let display = frame(1920., 25., 2560., 1415.);
+        assert_eq!(
+            corner(float, display),
+            frame(
+                1920. + 2560. - 320. - 24.,
+                25. + 1415. - 232. - 24.,
+                320.,
+                232.
+            )
+        );
+        let small = frame(0., 0., 300., 200.);
+        assert_eq!(corner(float, small).origin, point(px(0.), px(0.)));
     }
 
     #[test]

@@ -1,10 +1,10 @@
 //! `program.describe`: an op as its program says a person reads it. The
 //! program's CURRENT code blob (the roster the app already holds) carries a
-//! wasm module in its `ducktape.describe` section; it is compiled once per
-//! code id and called in a fresh, import-free, fuel- and memory-bounded
-//! instance (the `describe` crate's `host`, written `::describe::host` here
-//! since this module shadows the crate's name), its answers kept per (code
-//! id, op hash).
+//! wasm module in its `ducktape.describe` section; it is read out once per
+//! code id (`::describe::section`, written so since this module
+//! shadows the crate's name) and run by the view runner
+//! (`ViewRunner::describe`: a fresh, import-free, fuel- and memory-bounded
+//! instance), its answers kept per (code id, op hash).
 //! The section is anyone's bytes: every failure is `None`, and the view
 //! shows the op's bytes instead.
 use std::collections::HashMap;
@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 use sha2::Digest as _;
 use tokio::sync::OnceCell;
-use wasmtime::Module;
 
 use super::node::{Answered, Node};
 use super::*;
@@ -20,12 +19,13 @@ use crate::backend::views::{self, Fetch};
 
 type Description = Option<methods::Description>;
 
-/// One code id's compiled module, `None` where the code carries none: set
-/// once, by the first ask that fetched and compiled it, while every ask
-/// that came meanwhile waits for it.
-type Compiled = Arc<OnceCell<Option<Arc<Module>>>>;
+/// One code id's describe module, its sha256 and its bytes; `None` where
+/// the code carries none: set once, by the first ask that fetched it,
+/// while every ask that came meanwhile waits for it.
+type Module = Option<([u8; 32], Arc<[u8]>)>;
+type Compiled = Arc<OnceCell<Module>>;
 
-/// Compiled modules by code id.
+/// Describe modules by code id.
 fn modules() -> &'static Mutex<HashMap<abi::BlobId, Compiled>> {
     static MODULES: OnceLock<Mutex<HashMap<abi::BlobId, Compiled>>> = OnceLock::new();
     MODULES.get_or_init(Mutex::default)
@@ -59,15 +59,14 @@ pub(super) async fn described(
     if let Some(kept) = answers().lock().expect("describe answers").get(&key) {
         return Ok(kept.clone());
     }
-    let Some(module) = module(node, code).await? else {
+    let Some((hash, module)) = module(node, code).await? else {
         return Ok(None);
     };
-    let described = tokio::task::spawn_blocking(move || {
-        ::describe::host::run(super::super::view::engine(), &module, &op)
-    })
-    .await
-    .ok()
-    .flatten();
+    let described =
+        tokio::task::spawn_blocking(move || crate::contract::runner().describe(hash, &module, &op))
+            .await
+            .ok()
+            .flatten();
     answers()
         .lock()
         .expect("describe answers")
@@ -75,11 +74,11 @@ pub(super) async fn described(
     Ok(described)
 }
 
-/// The module in `code`'s describe section, compiled: fetched and compiled
-/// once per id, however many ask at once (a page of ops by one program
+/// The module in `code`'s describe section: fetched and read out once per
+/// id, however many ask at once (a page of ops by one program
 /// asks together). An ask that ends with nothing to keep (the node not
 /// reached, the blob not held yet) sets nothing, and the next one tries.
-async fn module(node: &Node, code: abi::BlobId) -> Result<Option<Arc<Module>>, wire::Error> {
+async fn module(node: &Node, code: abi::BlobId) -> Result<Module, wire::Error> {
     let compiled = modules()
         .lock()
         .expect("describe modules")
@@ -98,11 +97,10 @@ async fn module(node: &Node, code: abi::BlobId) -> Result<Option<Arc<Module>>, w
                 Err(_) => return Err(None),
             };
             Ok(tokio::task::spawn_blocking(move || {
-                ::describe::host::section(&bytes)
-                    .and_then(|section| {
-                        ::describe::host::compile(super::super::view::engine(), section)
-                    })
-                    .map(Arc::new)
+                ::describe::section(&bytes).map(|section| {
+                    let hash: [u8; 32] = sha2::Sha256::digest(section).into();
+                    (hash, Arc::from(section))
+                })
             })
             .await
             .ok()
@@ -138,20 +136,16 @@ pub(super) mod tests {
                 code,
                 bare,
             });
-        let module = wat.and_then(|wat| {
-            ::describe::host::compile(
-                super::super::super::view::engine(),
-                &wat::parse_str(wat).unwrap(),
-            )
+        let module = wat.map(|wat| {
+            let bytes = wat::parse_str(wat).unwrap();
+            let hash: [u8; 32] = sha2::Sha256::digest(&bytes).into();
+            (hash, Arc::from(bytes))
         });
-        modules()
-            .lock()
-            .unwrap()
-            .insert(code, kept(module.map(Arc::new)));
+        modules().lock().unwrap().insert(code, kept(module));
     }
 
-    /// A code id's entry, its module already compiled (or known absent).
-    fn kept(module: Option<Arc<Module>>) -> Compiled {
+    /// A code id's entry, its module already read out (or known absent).
+    fn kept(module: Module) -> Compiled {
         Arc::new(OnceCell::new_with(Some(module)))
     }
 
@@ -231,11 +225,11 @@ pub(super) mod tests {
         )]);
         let asks = futures::future::join_all((0..8).map(|_| module(&node.node, code))).await;
         let _ = std::fs::remove_file(&cached);
-        let first = asks[0].clone().unwrap().expect("the section compiles");
+        let (_, first) = asks[0].clone().unwrap().expect("the section is read");
         assert!(
             asks.iter()
-                .all(|ask| matches!(ask, Ok(Some(module)) if Arc::ptr_eq(module, &first))),
-            "each ask compiled a module of its own"
+                .all(|ask| matches!(ask, Ok(Some((_, module))) if Arc::ptr_eq(module, &first))),
+            "each ask read a section of its own"
         );
         assert_eq!(
             node.accepted.load(std::sync::atomic::Ordering::SeqCst),

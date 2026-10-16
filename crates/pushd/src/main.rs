@@ -185,6 +185,13 @@ fn supervise(config: &Path, data: &Path, networks: &[Network]) -> Result<(), Str
 fn run(network: &Network, data: &Path) -> Result<(), String> {
     let home = data.join(&network.name);
     contract::install(Arc::new(Headless::new(&home)?));
+    // the notifiers run on wasmtime, their compiled code kept across runs
+    contract::install_runner(Arc::new(ducktape_host::runner::WasmtimeRunner::new(
+        contract::RunnerConfig {
+            signals_based_traps: true,
+            cache_dir: Some(home.join("cache").join("view-code")),
+        },
+    )));
     let client = backend::rpc_client(network.node_url.clone());
     let status = loop {
         match runtime::handle().block_on(client.status()) {
@@ -376,7 +383,7 @@ impl OsServices for Headless {
         &self.dirs
     }
 
-    fn device_key(&self, _: &str) -> Result<Arc<dyn noded_client::Signer>, KeyRefusal> {
+    fn device_key(&self, _: &str) -> Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal> {
         Err(KeyRefusal::NoStore("pushd holds no keys".into()))
     }
 
@@ -398,6 +405,10 @@ impl OsServices for Headless {
             rss_unit: if cfg!(target_os = "macos") { 1 } else { 1024 },
             touch_first: false,
             device_label: "pushd",
+            device_noun: "server",
+            one_layout: true,
+            floats: false,
+            motion: ducktape_host::motion::IOS,
         }
     }
 
@@ -405,8 +416,15 @@ impl OsServices for Headless {
         Limits {
             loaders: 1,
             preload: Preload::Headless,
+            // the notifiers run in this process: none dies apart from pushd
+            snapshot_every: None,
             snapshot_to_disk: false,
         }
+    }
+
+    /// pushd ships no view: every notifier is the network's.
+    fn bundled_view(&self, _: &abi::BlobId) -> Option<Vec<u8>> {
+        None
     }
 
     fn mint_invite(&self, _: MintInvite) -> Option<Answered> {

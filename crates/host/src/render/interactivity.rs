@@ -50,7 +50,11 @@ pub(super) fn apply<E: StatefulInteractiveElement>(
     if let Some(group) = &interactivity.group {
         element = element.group(group.clone());
     }
-    if let Some(style) = interactivity.hover {
+    // a finger leaves no hover: on a touch device gpui would keep the
+    // hover where the last tap landed, so a view's hover look is not drawn
+    // there (its pressed look, `active`, is)
+    let hovers = !crate::contract::os().facts().touch_first;
+    if let Some(style) = interactivity.hover.filter(|_| hovers) {
         let style = Arc::unwrap_or_clone(super::drawn_style(styles, style));
         element = element.hover(move |_| style);
     }
@@ -58,7 +62,7 @@ pub(super) fn apply<E: StatefulInteractiveElement>(
         let style = Arc::unwrap_or_clone(super::drawn_style(styles, style));
         element = element.active(move |_| style);
     }
-    if let Some(group) = &interactivity.group_hover {
+    if let Some(group) = interactivity.group_hover.as_ref().filter(|_| hovers) {
         let style = Arc::unwrap_or_clone(super::drawn_style(styles, group.style));
         element = element.group_hover(group.group.clone(), move |_| style);
     }

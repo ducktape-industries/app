@@ -56,7 +56,9 @@ impl WindowRoot {
                         }),
                     ))
                 });
-                windows.update(cx, |windows, cx| windows.pop_out(key, index, at, cx))
+                windows.update(cx, |windows, cx| {
+                    _ = windows.pop_out(key, index, at, None, cx)
+                })
             }
             PaneMessage::PopIn => windows.update(cx, |windows, cx| windows.pop_in(key, cx)),
             PaneMessage::Open(program) => {

@@ -5,8 +5,7 @@ mod node_methods;
 
 /// A view holding every capability, its code doing nothing.
 pub(in crate::runtime) fn view() -> View {
-    let code = wasmtime::Module::new(
-        super::super::view::engine(),
+    let code = crate::runtime::view::prepared_for_test(
         r#"(module
             (memory (export "memory") 1)
             (func (export "alloc") (param i32) (result i32) i32.const 0)
@@ -14,9 +13,14 @@ pub(in crate::runtime) fn view() -> View {
             (func (export "tick") (param i32 i32) (result i64) i64.const 0)
             (func (export "snapshot") (result i64) i64.const 0)
             (func (export "restore") (param i32 i32) (result i64) i64.const 0))"#,
+    );
+    let mut view = View::instantiate(
+        "request-test",
+        crate::contract::runner(),
+        code,
+        "request test",
     )
     .unwrap();
-    let mut view = View::instantiate("request-test", &code, "request test").unwrap();
     view.capabilities = Capability::ALL.to_vec();
     view.targets = vec!["programs".into()];
     view
@@ -89,6 +93,8 @@ pub(super) enum Mode {
     Close,
     /// `307 Temporary Redirect` to the URL: a node sending the request on.
     Redirect(String),
+    /// `400 Bad Request` with the body: the node's refusal.
+    Refuse(Vec<u8>),
 }
 
 /// A node on a local socket whose routes each answer one [`Mode`], one
@@ -137,6 +143,7 @@ fn serve(mut stream: std::net::TcpStream, routes: &[(&'static str, Mode)]) {
         }
         Mode::Stall => hung_up(&mut stream),
         Mode::Close => drop(stream),
+        Mode::Refuse(body) => respond(&mut stream, "400 Bad Request", body),
         Mode::Redirect(to) => write!(
             stream,
             "HTTP/1.1 307 Temporary Redirect\r\nLocation: {to}\r\nContent-Length: 0\r\n\r\n"
@@ -205,6 +212,17 @@ fn a_method_is_reached_only_through_its_declared_capability() {
             Some(refusal::UNDECLARED_CAPABILITY),
             "{kind} undeclared"
         );
+        // a build without av captures nothing: the camera's and the
+        // microphone's methods are unknown requests there
+        let media = matches!(family, Capability::Camera | Capability::Microphone);
+        if media && !cfg!(feature = "av") {
+            assert_eq!(
+                refused_with(&[family], kind).as_deref(),
+                Some(refusal::UNKNOWN_REQUEST),
+                "{kind} without av"
+            );
+            continue;
+        }
         assert!(
             !matches!(
                 refused_with(&[family], kind).as_deref(),
@@ -388,6 +406,8 @@ fn open_link_refuses_any_scheme_but_duck_and_https() {
         "mailto:a@b.c",
         "duck://",
         "",
+        // a system settings page is `host.show`'s, never a link
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera",
     ] {
         assert_eq!(
             open(link),
@@ -506,6 +526,332 @@ fn link_open_needs_an_activation_and_takes_it() {
         "a second link on the same press"
     );
     assert_eq!(view.intents.len(), 1);
+}
+
+/// `host.show` brings up the reader's account on the view's activation,
+/// as `link.open` opens a link: none refuses it `needs_gesture`, and one
+/// press brings up one place. A reader with no account (the props name
+/// none) is refused `unknown_request`; a place this host does not know
+/// does not decode.
+#[test]
+fn host_show_brings_up_the_readers_account_on_a_press() {
+    let show = |id, payload: Vec<u8>| wire::Request {
+        id,
+        kind: "host.show".into(),
+        payload,
+    };
+    let account = methods::encode(&methods::Place::Account);
+    let reader = |account| {
+        Some(methods::encode(&methods::Session {
+            account,
+            ..Default::default()
+        }))
+    };
+    let mut view = view();
+    view.answer(show(1, account.clone()), &reader(Some(5)));
+    assert_eq!(refusal_code(&mut view).as_deref(), Some("needs_gesture"));
+    view.activation = Some(Instant::now());
+    view.answer(show(2, account.clone()), &reader(None));
+    assert_eq!(refusal_code(&mut view).as_deref(), Some("unknown_request"));
+    // past the places this wire knows (the account, the two settings pages)
+    view.answer(show(3, vec![u8::MAX]), &reader(Some(5)));
+    assert_eq!(
+        refusal_code(&mut view).as_deref(),
+        Some("malformed_request")
+    );
+    assert!(view.intents.is_empty(), "nothing shown yet");
+    view.answer(show(4, account.clone()), &reader(Some(5)));
+    assert_eq!(refusal_code(&mut view), None);
+    assert_eq!(view.intents, [Intent::Show(methods::Place::Account)]);
+    view.answer(show(5, account), &reader(Some(5)));
+    assert_eq!(
+        refusal_code(&mut view).as_deref(),
+        Some("needs_gesture"),
+        "a second place on the same press"
+    );
+}
+
+/// `host.show` brings up a refused camera's or microphone's system
+/// settings only where this host has that page (macOS's, with av), and
+/// only at a press or key, taken by the ask; where it has none the place
+/// is an unknown request.
+#[test]
+fn a_settings_place_is_shown_at_a_press_where_the_host_has_it() {
+    let show = |place: methods::Place, pressed: bool| {
+        let mut view = view();
+        if pressed {
+            view.activation = Some(Instant::now());
+        }
+        view.answer(
+            wire::Request {
+                id: 1,
+                kind: "host.show".into(),
+                payload: methods::encode(&place),
+            },
+            &None,
+        );
+        (refusal_code(&mut view), std::mem::take(&mut view.intents))
+    };
+    for place in [
+        methods::Place::CameraSettings,
+        methods::Place::MicrophoneSettings,
+    ] {
+        if crate::render::av::settings_page(place).is_none() {
+            let unknown = (Some(refusal::UNKNOWN_REQUEST.into()), Vec::new());
+            assert_eq!(show(place, true), unknown, "{place:?}");
+            continue;
+        }
+        let (refused, intents) = show(place, false);
+        assert_eq!(
+            refused.as_deref(),
+            Some(refusal::NEEDS_GESTURE),
+            "{place:?}"
+        );
+        assert!(intents.is_empty());
+        let shown = (None, vec![Intent::Show(place)]);
+        assert_eq!(show(place, true), shown, "{place:?}");
+    }
+}
+
+/// `microphone.chime` makes a sound: only at the person's press or key, so
+/// a view on a clock never chimes. (A press is taken as `link.open` takes
+/// it, above; here it would sound the test machine's speaker.)
+#[cfg(feature = "av")]
+#[test]
+fn the_chime_needs_a_press() {
+    let mut view = view();
+    view.answer(
+        wire::Request {
+            id: 1,
+            kind: "microphone.chime".into(),
+            payload: methods::encode(&None::<String>),
+        },
+        &None,
+    );
+    assert_eq!(
+        refusal_code(&mut view).as_deref(),
+        Some(refusal::NEEDS_GESTURE)
+    );
+}
+
+/// The device lists are taken on a blocking thread (each camera's node
+/// opened to ask what it is), never on the window's: the request is a
+/// task of the view's, answered when the listing is done.
+#[cfg(feature = "av")]
+#[test]
+fn the_device_lists_are_answered_off_the_window_thread() {
+    for (id, kind) in [(1, "camera.devices"), (2, "microphone.devices")] {
+        let mut view = view();
+        view.answer(
+            wire::Request {
+                id,
+                kind: kind.into(),
+                payload: Vec::new(),
+            },
+            &None,
+        );
+        assert!(view.pending.is_empty(), "{kind} answered on this thread");
+        assert!(view.tasks.iter().any(|(task, _)| *task == id), "{kind}");
+    }
+}
+
+fn float_request(id: u64, float: methods::Float) -> wire::Request {
+    wire::Request {
+        id,
+        kind: "host.float".into(),
+        payload: methods::encode(&float),
+    }
+}
+
+/// The huddle's float: 320 by 200, never under 240 by 150, kept on top.
+const FLOAT: methods::Float = methods::Float {
+    width: 320,
+    height: 200,
+    min_width: 240,
+    min_height: 150,
+    on_top: true,
+};
+
+/// The answer `view` was last handed, as a `T`; it panics on a refusal.
+fn answered<T: borsh::BorshDeserialize>(view: &mut View) -> T {
+    match view.pending.pop() {
+        Some(wire::Event::Response {
+            result: Ok(bytes), ..
+        }) => methods::decode(&bytes).unwrap(),
+        other => panic!("no answer: {other:?}"),
+    }
+}
+
+/// `host.float` raises a window above every other app's: only at the
+/// person's press or key, taken by the ask, so a view on a clock never
+/// floats and one press floats once. Its reply says what this platform
+/// can do: kept on top where it keeps windows above, not on Wayland.
+#[test]
+fn a_float_needs_a_press_and_says_what_the_platform_can() {
+    let mut view = view();
+    view.keeps_above = true;
+    view.answer(float_request(1, FLOAT), &None);
+    assert_eq!(refusal_code(&mut view).as_deref(), Some("needs_gesture"));
+    assert!(view.intents.is_empty(), "floated with no press");
+    view.activation = Some(Instant::now());
+    view.answer(float_request(2, FLOAT), &None);
+    let placement: methods::Placement = answered(&mut view);
+    assert_eq!(
+        placement,
+        methods::Placement {
+            floating: true,
+            on_top: true
+        }
+    );
+    assert_eq!(view.intents, [Intent::Float(FLOAT)]);
+    view.answer(float_request(3, FLOAT), &None);
+    assert_eq!(
+        refusal_code(&mut view).as_deref(),
+        Some("needs_gesture"),
+        "a second float on the same press"
+    );
+    // the pin off is a float too, and asks nothing of the platform
+    view.activation = Some(Instant::now());
+    let off = methods::Float {
+        on_top: false,
+        ..FLOAT
+    };
+    view.answer(float_request(4, off), &None);
+    assert!(!answered::<methods::Placement>(&mut view).on_top);
+    // Wayland: the window floats, nothing keeps it on top
+    view.keeps_above = false;
+    view.activation = Some(Instant::now());
+    view.answer(float_request(5, FLOAT), &None);
+    assert_eq!(
+        answered::<methods::Placement>(&mut view),
+        methods::Placement {
+            floating: true,
+            on_top: false
+        }
+    );
+}
+
+/// A float names a size a window can have: each side at least its
+/// minimum, the minimum at least 1. Anything else is refused before it
+/// spends the press (a size past the display is the shell's to fit).
+#[test]
+fn a_float_of_no_size_is_refused() {
+    let mut view = view();
+    for float in [
+        methods::Float {
+            min_width: 0,
+            ..FLOAT
+        },
+        methods::Float {
+            min_height: 201,
+            ..FLOAT
+        },
+        methods::Float {
+            width: 239,
+            ..FLOAT
+        },
+    ] {
+        view.activation = Some(Instant::now());
+        view.answer(float_request(1, float), &None);
+        assert_eq!(
+            refusal_code(&mut view).as_deref(),
+            Some("malformed_request"),
+            "{float:?}"
+        );
+        assert!(view.activation.is_some(), "the press is kept: {float:?}");
+    }
+    assert!(view.intents.is_empty());
+}
+
+/// `host.unfloat` only takes a window away: no press needed.
+#[test]
+fn an_unfloat_needs_no_press() {
+    let mut view = view();
+    view.answer(
+        wire::Request {
+            id: 1,
+            kind: "host.unfloat".into(),
+            payload: Vec::new(),
+        },
+        &None,
+    );
+    assert_eq!(refusal_code(&mut view), None);
+    assert_eq!(view.intents, [Intent::Unfloat]);
+}
+
+/// A host that floats no pane (a phone's) knows none of the float
+/// methods, a press or not: each is an unknown request, and nothing moves.
+#[test]
+fn a_host_that_floats_nothing_knows_no_float_method() {
+    let mut view = view();
+    view.floats = false;
+    for (id, kind, payload) in [
+        (1, "host.float", methods::encode(&FLOAT)),
+        (2, "host.unfloat", Vec::new()),
+        (3, "host.placement", Vec::new()),
+    ] {
+        view.activation = Some(Instant::now());
+        view.answer(
+            wire::Request {
+                id,
+                kind: kind.into(),
+                payload,
+            },
+            &None,
+        );
+        assert_eq!(
+            refusal_code(&mut view).as_deref(),
+            Some(refusal::UNKNOWN_REQUEST),
+            "{kind}"
+        );
+    }
+    assert!(view.intents.is_empty() && view.placement_subscriptions.is_empty());
+}
+
+/// `host.placement` tells where the pane is at subscribe, then once per
+/// change the seat places, on the redraw after it; the same placement
+/// again tells nothing, and a cancelled subscription hears no more.
+#[test]
+fn the_placement_is_told_at_subscribe_and_on_each_change() {
+    let mut view = view();
+    let floating = methods::Placement {
+        floating: true,
+        on_top: true,
+    };
+    view.answer(
+        wire::Request {
+            id: 7,
+            kind: "host.placement".into(),
+            payload: Vec::new(),
+        },
+        &None,
+    );
+    assert_eq!(
+        answered::<methods::Placement>(&mut view),
+        methods::Placement::default()
+    );
+    let told = |view: &mut View| {
+        view.sync_placement();
+        let items: Vec<methods::Placement> = std::mem::take(&mut view.pending)
+            .into_iter()
+            .map(|event| match event {
+                wire::Event::Response {
+                    id: 7,
+                    result: Ok(bytes),
+                    done: false,
+                } => methods::decode(&bytes).unwrap(),
+                other => panic!("not a placement item: {other:?}"),
+            })
+            .collect();
+        items
+    };
+    view.set_placement(floating);
+    assert_eq!(told(&mut view), [floating]);
+    view.set_placement(floating);
+    assert_eq!(told(&mut view), [], "the same placement again");
+    view.placement_subscriptions.clear();
+    view.set_placement(methods::Placement::default());
+    assert_eq!(told(&mut view), [], "no subscription");
 }
 
 /// A screen reader's press on a view's link is one gesture: AccessKit's
@@ -695,8 +1041,9 @@ fn host_session_is_program_independent_and_tracks_updates() {
 }
 
 /// The host's facts reach the view as events, each once until it moves:
-/// the reader's UTC offset (a DST change moves it) and the body the view
-/// is laid out in. The latest of each wins the tick.
+/// the reader's UTC offset (a DST change moves it), the body the view is
+/// laid out in, and whether the device's pointer is a finger. The latest
+/// of each wins the tick.
 #[test]
 fn the_hosts_facts_cross_once_and_again_when_they_move() {
     let mut view = view();
@@ -705,19 +1052,23 @@ fn the_hosts_facts_cross_once_and_again_when_they_move() {
     assert!((-14 * 60..=14 * 60).contains(&minutes));
     view.sync_offset(minutes);
     view.sync_viewport(766., 501.);
+    view.sync_pointer(false);
     let told = vec![
         wire::Event::Offset { minutes },
         wire::Event::Viewport {
             width: 766.,
             height: 501.,
         },
+        wire::Event::Pointer { touch: false },
     ];
     assert_eq!(view.pending, told);
     view.sync_offset(minutes);
     view.sync_viewport(766., 501.);
+    view.sync_pointer(false);
     assert_eq!(view.pending, told, "the same facts are not sent twice");
     view.sync_offset(minutes + 60);
     view.sync_viewport(800., 501.);
+    view.sync_pointer(true);
     assert_eq!(
         view.pending,
         [
@@ -728,6 +1079,7 @@ fn the_hosts_facts_cross_once_and_again_when_they_move() {
                 width: 800.,
                 height: 501.,
             },
+            wire::Event::Pointer { touch: true },
         ],
         "a moved fact replaces the one waiting"
     );
@@ -926,6 +1278,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
         network: node.node.network.clone(),
         chain: "test-network#1".into(),
         rev: view.connection.rev,
+        live: None,
     };
     // the props say the seated key holds account 7, the one the op names
     let props = Some(super::super::props(true, "test-network#1", "", Some(7), ""));
@@ -1043,6 +1396,7 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
         network: node.node.network.clone(),
         chain: "test-network#1".into(),
         rev: view.connection.rev,
+        live: None,
     };
     let submit = |view: &mut View, id: u64, target: &str| {
         view.activation = Some(Instant::now());

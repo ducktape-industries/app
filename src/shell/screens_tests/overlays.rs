@@ -524,6 +524,7 @@ fn ask(
         id: None,
         shown: None,
         described: false,
+        card: Default::default(),
     };
     let told = consent::queue(program, 0, words).expect("queued");
     sync(view, native);
@@ -630,6 +631,7 @@ fn approve_takes_no_press_in_the_cards_first_moment(cx: &mut TestAppContext) {
             id: None,
             shown: None,
             described: true,
+            card: Default::default(),
         },
     )
     .expect("queued");
@@ -668,6 +670,7 @@ fn approve_stays_on_screen_under_a_long_description(cx: &mut TestAppContext) {
             id: None,
             shown: Some(format!("Add key\n{}", fields.join(" · "))),
             described: true,
+            card: Default::default(),
         },
     )
     .expect("queued");
@@ -694,6 +697,7 @@ fn a_card_for_the_network_says_so_and_shows_the_description(cx: &mut TestAppCont
             id: Some(8..16),
             shown: Some(shown.into()),
             described: true,
+            card: Default::default(),
         },
     )
     .expect("queued");
@@ -783,4 +787,61 @@ fn a_withdrawn_asks_card_gives_way_to_a_new_card(cx: &mut TestAppContext) {
 
     native.simulate_click(at, none);
     assert!(approved(&mut third_told), "a click on the card approves it");
+}
+
+/// Under touch the card is the phone's confirm sheet (mobile
+/// `src/kit/Confirm.tsx`): docked to the window's bottom, the ask's title
+/// as its eyebrow, "Suspend: agent #12", the program, the agent and who
+/// signs, what it takes away, Cancel and Suspend. Its first moment takes no
+/// press, as the desktop card's does; Cancel refuses it.
+#[gpui_kit::test]
+fn under_touch_the_card_is_the_phones_confirm_sheet(cx: &mut TestAppContext) {
+    ducktape_host::contract::testing::touch_first_for_test(true);
+    let (view, mut native) = open(gate::desk(), cx);
+    super::activate(&mut native);
+    let suspend = abi::encode(&identity::Op::Suspend { account: 12 });
+    let words = consent::needed("chat", None, identity::PROGRAM, &suspend, Some(7)).unwrap();
+    let mut told = consent::queue("chat", 0, words).expect("queued");
+    up(&view, &mut native);
+    for said in [
+        "Suspend: agent #12",
+        "Program",
+        "identity",
+        "Agent",
+        "#12",
+        "Signs",
+        "account 7",
+        "Agent #12 stops acting until it is resumed.",
+        "Suspend",
+        "Cancel",
+    ] {
+        assert!(shows(&mut native, said), "{said}");
+    }
+    let nodes = native.update(|window, cx| {
+        draw(window, cx);
+        serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap()
+    });
+    // the eyebrow is drawn in capitals and read as written
+    find(&nodes, "Label", consent::ACCOUNT);
+    assert!(!shows(&mut native, &consent::ACCOUNT.to_uppercase()));
+    let card = find(&nodes, "Dialog", consent::ACCOUNT);
+    let high = native.update(|window, _| f32::from(window.viewport_size().height));
+    assert_eq!(
+        card["bounds"][3].as_f64().unwrap() as f32,
+        high,
+        "docked to the bottom: {}",
+        card["bounds"]
+    );
+    let none = gpui_kit::Modifiers::none();
+    let at = bar_button(&mut native, "consent-approve");
+    native.simulate_click(at, none);
+    assert!(
+        consent::front().is_some(),
+        "a press in the first moment approved it"
+    );
+    native.executor().advance_clock(SETTLE);
+    let at = bar_button(&mut native, "consent-cancel");
+    native.simulate_click(at, none);
+    assert!(consent::front().is_none(), "Cancel answered it");
+    assert!(!approved(&mut told), "and refused it");
 }

@@ -21,6 +21,33 @@ pub(super) struct Mounted {
     /// retry, so the `Seat` turns once for each instead of asking for a
     /// frame per frame while a load is on its way.
     pub(super) wake: tokio::sync::watch::Sender<()>,
+    /// A replacement for the drawn view, its code prepared on a loader
+    /// thread, waiting for the seat's thread to run it (`swap_in`).
+    pub(super) swap: Option<Box<Parked>>,
+    /// A view to start where none is drawn, its code prepared on a loader
+    /// thread (or compiled before, for a pane claiming the seat), waiting
+    /// for the seat's thread to seat and init it (`start_in`): no instance
+    /// is seated and no call begun anywhere else.
+    pub(super) to_start: Option<Box<Parked>>,
+    /// A sequence of calls the seat's thread runs owns the drawn view (a
+    /// swap, `swap_in`; a kept snapshot, `keep_in`): the seat does not turn
+    /// it until the sequence is done, which wakes the seat. One owner at a
+    /// time: a sequence starts only on a view nothing owns and no tick is in
+    /// flight on (one call in flight per instance, `ViewInstance`), sets
+    /// this under the same lock, and is the only one to clear it.
+    pub(super) owned: bool,
+}
+
+/// Code a load prepared and parked on the seat for the seat's thread to
+/// run (a replacement, `Mounted::swap`; a start, `Mounted::to_start`): its
+/// code, the name it is shown by, the load that prepared it (installed on
+/// the same conditions as any load, `install`) and the load's timing so far.
+pub(super) struct Parked {
+    pub(super) code: Box<ViewCode>,
+    pub(super) shown: String,
+    pub(super) generation: u64,
+    pub(super) asked_of: Connection,
+    pub(super) timing: LoadTiming,
 }
 
 /// A failed load's hold-off: the code (the roster's blob id, as
@@ -43,6 +70,9 @@ impl Mounted {
             generation: 0,
             retry: None,
             wake: tokio::sync::watch::Sender::new(()),
+            swap: None,
+            to_start: None,
+            owned: false,
         }))
     }
 
@@ -116,6 +146,31 @@ impl Mounted {
         self.generation
     }
 
+    /// The pane that claimed the seat let it go: a drawn view steps back to
+    /// the code it was seated from (its instance and memory go, the code
+    /// stays), a compiled one stays as it is, and a load on its way for the
+    /// pane lands nowhere. False when there is nothing compiled to keep, or
+    /// a sequence owns the drawn view: the seat goes.
+    fn step_back(&mut self) -> bool {
+        if self.owned {
+            return false;
+        }
+        match &mut self.slot {
+            Slot::Ready(view) => match view.code.take() {
+                Some(code) => self.slot = Slot::Compiled(code),
+                None => return false,
+            },
+            Slot::Compiled(_) => {}
+            _ => return false,
+        }
+        self.instance = 0;
+        self.generation += 1;
+        self.swap = None;
+        self.to_start = None;
+        self.wake.send_replace(());
+        true
+    }
+
     /// The program left the roster: the seat is emptied, and the `Seat`
     /// woken to draw that, since nothing else about it moves.
     pub(super) fn retire(&mut self) {
@@ -137,8 +192,11 @@ pub(super) enum Slot {
         received: u64,
         total: Option<u64>,
     },
-    /// Verified; its code compiles.
-    Compiling,
+    /// The bytes here and their manifest read, no code compiled: the rail
+    /// and Home list the program by it (SPEC §4.7).
+    Listed(Box<Listing>),
+    /// Verified; its code compiles. The listing stays what the rail reads.
+    Compiling(Box<Listing>),
     /// Compiled, and not started: a seat no pane has claimed keeps its
     /// view's code and what its manifest says, which the rail and the
     /// layout read. The pane that claims it starts that code.
@@ -149,22 +207,27 @@ pub(super) enum Slot {
     Failed(Failure),
 }
 
-/// A view compiled and not started: its code, out of the `blob` the
+/// A view compiled and not started: its code, prepared on `runner` under
+/// the hash of its bytes and kept prepared by `_hold`, out of the `blob` the
 /// roster lists (none for the developer's override, which a pane reads
-/// again), the hash of its bytes, and what its manifest says: the name
+/// again), and what its manifest says: the name
 /// the rail lists it by, the icon its tab draws folded (empty: it declares
 /// none), the narrowest it is laid out, its capabilities and its targets.
 /// All a pane needs to start it, with nothing fetched or compiled again.
 #[derive(Clone)]
 pub(super) struct ViewCode {
+    pub(super) runner: Arc<dyn ViewRunner>,
     pub(super) blob: Option<abi::BlobId>,
     pub(super) hash: [u8; 32],
-    pub(super) code: Arc<Module>,
+    /// Held only to keep the code prepared (`contract::Prepared`).
+    pub(super) _hold: Arc<dyn std::any::Any + Send + Sync>,
     pub(super) name: String,
     pub(super) icon: String,
+    pub(super) description: String,
     pub(super) min_width: u32,
     pub(super) capabilities: Vec<Capability>,
     pub(super) targets: Vec<String>,
+    pub(super) wire: String,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -173,14 +236,17 @@ impl ViewCode {
     /// and `min_width`: a seat's compiled view no pane starts as it is.
     pub(super) fn for_test(name: &str, icon: &str, min_width: u32) -> Box<Self> {
         Box::new(ViewCode {
+            runner: crate::contract::runner().clone(),
             blob: None,
             hash: [0; 32],
-            code: Arc::new(Module::new(view::engine(), "(module)").unwrap()),
+            _hold: Arc::new(()),
             name: name.into(),
             icon: icon.into(),
+            description: String::new(),
             min_width,
             capabilities: Vec::new(),
             targets: Vec::new(),
+            wire: view_wire::WIRE_ID.into(),
         })
     }
 }
@@ -195,7 +261,7 @@ impl Slot {
     pub(super) fn loading(&self) -> bool {
         matches!(
             self,
-            Slot::Loading | Slot::Fetching { .. } | Slot::Compiling
+            Slot::Loading | Slot::Fetching { .. } | Slot::Listed(_) | Slot::Compiling(_)
         )
     }
 }
@@ -215,7 +281,8 @@ pub enum Failure {
     /// Bytes this build does not run as a view, a load overtaken, or a
     /// loader that stopped.
     Refused(String),
-    /// The view was built against another wire than this app's.
+    /// A view built against another wire than this app's stopped: the
+    /// reason says what failed, where, and both wires.
     Wire(String),
 }
 
@@ -232,7 +299,7 @@ impl Failure {
             Failure::NotListed(_) => "This network does not list this view",
             Failure::Trapped(_) => "This view stopped",
             Failure::Refused(_) => "This view could not be loaded",
-            Failure::Wire(_) => "This view speaks a wire this app does not",
+            Failure::Wire(_) => "This view, built against another wire, stopped",
         }
     }
 }
@@ -268,6 +335,22 @@ pub(super) fn registry() -> &'static Registry {
     MOUNTED.get_or_init(Mutex::default)
 }
 
+/// The pane `instance` let go of `program`'s seat: it is put back as the
+/// program's preloaded seat, `(program, 0)`, which the next pane's
+/// [`mounted`] claims, stepped back to its compiled code
+/// (`Mounted::step_back`), so neither the next open nor the roster's next
+/// read loads it again and the rail keeps listing it. A seat with nothing
+/// compiled to keep, or a program that has a preloaded seat already, goes.
+pub(super) fn let_go(program: &'static str, instance: u64) {
+    let mut registry = lock(registry());
+    let Some(seat) = registry.remove(&(program, instance)) else {
+        return;
+    };
+    if !registry.contains_key(&(program, 0)) && lock(&seat).step_back() {
+        registry.insert((program, 0), seat);
+    }
+}
+
 /// Claim a preloaded seat or create a distinct view for this view instance.
 pub(super) fn mounted(program: &'static str, instance: u64) -> Arc<Mutex<Mounted>> {
     let code = roster().code(program);
@@ -300,9 +383,9 @@ pub(super) fn mounted(program: &'static str, instance: u64) -> Arc<Mutex<Mounted
     drop(locked);
     drop(registry);
     match load {
-        Some(load) if here => load.land(|load, timing| {
-            View::start(load.program, load.code, load.generation, &load.seat, timing)
-        }),
+        Some(load) if here => {
+            load.land(|load, timing| View::start(load.program, load.code, &load.seat, timing))
+        }
         Some(load) => queue(load),
         None => {}
     }
@@ -513,6 +596,8 @@ impl Load {
         // left-node load lands nothing, and hands off nothing
         let claimed = matches!(landed, Ok(true)) && locked.instance != 0;
         let start = claimed.then(|| locked.start());
+        let parked =
+            (locked.to_start.as_ref()).is_some_and(|parked| parked.generation == generation);
         rail_moved();
         locked.wake.send_replace(());
         timing.install = installed.elapsed();
@@ -526,6 +611,12 @@ impl Load {
             timing.log(program);
         }
         drop(locked);
+        #[cfg(feature = "ui")]
+        if parked {
+            entity::begin_start(self.seat.clone(), program);
+        }
+        #[cfg(not(feature = "ui"))]
+        let _ = (parked, &self.seat);
         if let Some(generation) = start {
             queue(Load { generation, ..self });
         }
@@ -583,7 +674,8 @@ fn install(
     let Mounted {
         slot,
         instance,
-        retry,
+        swap,
+        to_start,
         ..
     } = &mut *locked;
     match loaded {
@@ -605,61 +697,295 @@ fn install(
             *slot = Slot::Compiled(view);
             return true;
         }
-        // the same tab, the same surface handle, the same host-side
-        // input text and pictures: only the instance behind them moves. A
-        // swap refused here is asked again at the next roster read
-        Loaded::Swap {
-            fresh,
-            alive,
-            ticks,
-            code,
-            shown,
-        } => {
-            let hash = fresh.hash;
-            match swapped(slot, fresh, &alive, ticks, &code, &shown, timing) {
-                Ok(mut fresh) => {
-                    fresh.instance = *instance;
-                    fresh.installed_generation = Some(generation);
-                    fresh.report_display_truncation();
-                    log_source(program, fresh.hash.as_ref(), "Swapped", generation, "");
-                    *slot = Slot::Ready(fresh);
-                }
-                Err(reason) => {
-                    log_source(program, hash.as_ref(), "Failed", generation, &reason);
-                    *retry = Some(Retry { code: None });
-                }
+        // the seat's thread seats and inits it (`start_in`), which `land`
+        // asks for once the lock is let go; the rail reads the manifest
+        // meanwhile, and a view drawn (the developer's file read again)
+        // stays up until the new one is
+        Loaded::Seat { code, shown } => {
+            if !matches!(slot, Slot::Ready(_)) {
+                *slot = Slot::Compiled(code.clone());
             }
+            *to_start = Some(Box::new(Parked {
+                code,
+                shown,
+                generation,
+                asked_of: asked_of.clone(),
+                timing: std::mem::take(timing),
+            }));
+        }
+        // the same tab, the same surface handle, the same host-side
+        // input text and pictures: only the instance behind them moves, on
+        // the seat's own thread (`swap_in`), which this wakes
+        Loaded::Swap { code, shown } => {
+            *swap = Some(Box::new(Parked {
+                code,
+                shown,
+                generation,
+                asked_of: asked_of.clone(),
+                timing: std::mem::take(timing),
+            }));
         }
     }
     false
 }
 
-/// `fresh`, prepared as the replacement of the drawn view `alive` names
-/// at `ticks`, made ready to take its seat: the view's editor projections
-/// and pictures carried over. A view that ticked, or took work, since the
-/// handover `fresh` was prepared from hands over again, here, into a new
-/// instance of `code`: the seat's lock is held, nothing ticks the view
-/// meanwhile, so that second handover is the view as it is and no tick can
-/// race it. Why there is no replacement, if there is none.
-fn swapped(
-    slot: &mut Slot,
-    mut fresh: Box<View>,
-    alive: &Arc<()>,
-    ticks: u64,
-    code: &Module,
-    shown: &str,
-    timing: &mut LoadTiming,
-) -> Result<Box<View>, String> {
+/// A replacement the loader parked (`Mounted::swap`), run on the seat's
+/// thread (SPEC §4.6): the drawn view asked for its snapshot, a fresh
+/// instance seated, restored from it and its first frame taken, each
+/// answer awaited as it lands (at once on the wasmtime runner, so the
+/// whole sequence runs in one poll there), then installed on the
+/// conditions a load installs on. The seat does not turn the drawn view
+/// meanwhile (`Mounted::owned`); the seat is woken when it is done. A
+/// swap refused or failed keeps the drawn view and is asked again at the
+/// next roster read.
+pub(super) async fn swap_in(mounted: Arc<Mutex<Mounted>>, program: &'static str) {
+    let started = {
+        let mut locked = lock(&mounted);
+        let Some(pending) = locked.swap.take() else {
+            return;
+        };
+        // a later load moved the seat on: this swap would install nowhere
+        if pending.generation != locked.generation {
+            return;
+        }
+        let Slot::Ready(old) = &locked.slot else {
+            return;
+        };
+        // a tick in flight, or a kept snapshot (`keep_in`), has the
+        // instance: the swap waits for it, and the turn after asks again
+        // (`Seat::after_turn`); so does a death the turn has to take up
+        // first (`take_up`), which wakes the seat when done
+        if old.ticking() || locked.owned || old.parked.is_some() {
+            locked.swap = Some(pending);
+            return;
+        }
+        let alive = old.alive.clone();
+        let instance = locked.instance;
+        locked.owned = true;
+        (pending, alive, instance)
+    };
+    let (pending, alive, instance) = started;
+    let Parked {
+        code,
+        shown,
+        generation,
+        asked_of,
+        mut timing,
+    } = *pending;
+    let prepared = View::replacement(
+        program,
+        instance,
+        &code,
+        &alive,
+        &mounted,
+        &shown,
+        &mut timing,
+    )
+    .await;
+    let waited = Instant::now();
+    let mut locked = lock(&mounted);
+    timing.lock_wait = waited.elapsed();
+    let installed = Instant::now();
+    locked.owned = false;
+    let current = connection().lock().expect("views rpc").clone();
+    let stale = locked.generation != generation
+        || (view_override(program).is_none() && current.rev != asked_of.rev);
+    if !stale {
+        let Mounted {
+            slot,
+            instance,
+            retry,
+            ..
+        } = &mut *locked;
+        match prepared
+            .map_err(|failure| failure.to_string())
+            .and_then(|fresh| swapped(slot, Box::new(fresh), &alive))
+        {
+            Ok(mut fresh) => {
+                fresh.instance = *instance;
+                fresh.installed_generation = Some(generation);
+                fresh.report_display_truncation();
+                log_source(program, fresh.hash.as_ref(), "Swapped", generation, "");
+                *slot = Slot::Ready(fresh);
+            }
+            Err(reason) => {
+                log_source(program, Some(&code.hash), "Failed", generation, &reason);
+                *retry = Some(Retry { code: None });
+            }
+        }
+    }
+    rail_moved();
+    locked.wake.send_replace(());
+    timing.install = installed.elapsed();
+    if timing.started.is_some() {
+        let key = crate::perf::Key::View {
+            program,
+            instance: locked.instance,
+        };
+        crate::perf::record(
+            key,
+            "install.lock_wait",
+            timing.lock_wait.as_micros() as u64,
+        );
+        crate::perf::record(key, "install", timing.install.as_micros() as u64);
+        timing.log(program);
+    }
+}
+
+/// A view a load parked to start where none is drawn (`Mounted::to_start`),
+/// run on the seat's thread (SPEC §4.4: `instantiate` and every `begin_*`
+/// are that thread's): an instance seated, then its `init`, each answer
+/// awaited as it lands (at once on the wasmtime runner, so the whole
+/// sequence runs in one poll there, later on JSC), then installed on the
+/// conditions a load installs on (`install`). It logs the `view_source`
+/// line and the `view_load` line the load left to it.
+pub(super) async fn start_in(mounted: Arc<Mutex<Mounted>>, program: &'static str) {
+    let (pending, instance) = {
+        let mut locked = lock(&mounted);
+        let Some(pending) = locked.to_start.take() else {
+            return;
+        };
+        // a later load moved the seat on: this start would install nowhere
+        if pending.generation != locked.generation {
+            return;
+        }
+        (pending, locked.instance)
+    };
+    let Parked {
+        code,
+        shown,
+        generation,
+        asked_of,
+        mut timing,
+    } = *pending;
+    let started = async {
+        let mut fresh = View::seated_from(program, instance, &code, &shown, &mut timing).await?;
+        fresh.timed_inited(&shown, &mut timing).await?;
+        Ok::<View, Failure>(fresh)
+    }
+    .await;
+    let (state, reason) = match &started {
+        Ok(_) => ("Ready", String::new()),
+        Err(failure) => ("Failed", failure.to_string()),
+    };
+    log_source(program, Some(&code.hash), state, generation, &reason);
+    timing.outcome = state;
+    let loaded = started
+        .map(|fresh| Loaded::Fresh(Box::new(fresh)))
+        .map_err(|failure| Unloaded {
+            hash: Some(code.hash),
+            failure,
+        });
+    let asked_for = code.blob.map(|blob| code_digest(&blob));
+    let waited = Instant::now();
+    let mut locked = lock(&mounted);
+    timing.lock_wait = waited.elapsed();
+    let installed = Instant::now();
+    install(
+        program,
+        &mut locked,
+        generation,
+        &asked_of,
+        asked_for,
+        loaded,
+        &mut timing,
+    );
+    rail_moved();
+    locked.wake.send_replace(());
+    timing.install = installed.elapsed();
+    if timing.started.is_some() {
+        let key = crate::perf::Key::View {
+            program,
+            instance: locked.instance,
+        };
+        crate::perf::record(
+            key,
+            "install.lock_wait",
+            timing.lock_wait.as_micros() as u64,
+        );
+        crate::perf::record(key, "install", timing.install.as_micros() as u64);
+        timing.log(program);
+    }
+}
+
+/// The drawn view's kept replay started again from a new snapshot (SPEC
+/// §6.5), on the seat's thread, the view owned meanwhile so no tick
+/// crosses it; the seat is woken when it lands. A page that died under the
+/// snapshot is parked on the view (`View::parked`) for the turn that wake
+/// runs to take up ([`take_up`]): an idle view begins no tick that would
+/// find it, and in the background no call is begun.
+pub(super) async fn keep_in(mounted: Arc<Mutex<Mounted>>) {
+    let (landing, alive) = {
+        let mut locked = lock(&mounted);
+        if locked.owned {
+            return;
+        }
+        let Slot::Ready(view) = &mut locked.slot else {
+            return;
+        };
+        if !view.keep_due() {
+            return;
+        }
+        let asked = (view.begin_keep(), view.alive.clone());
+        locked.owned = true;
+        asked
+    };
+    let landed = super::view::next(&landing).await;
+    let mut locked = lock(&mounted);
+    if let Slot::Ready(view) = &mut locked.slot
+        && Arc::ptr_eq(&view.alive, &alive)
+    {
+        match landed {
+            death @ Landed::Fault(Fault::Runner(_)) => view.parked = Some(death),
+            landed => view.kept_landed(landed),
+        }
+    }
+    locked.owned = false;
+    locked.wake.send_replace(());
+}
+
+/// A death parked on the drawn view outside a tick (`View::parked`: under a
+/// kept snapshot or a swap's handover), taken up on the seat's thread in
+/// front (the turn spawns this only there): the view revived with nothing
+/// in flight, or stopped on it (`View::died`), owned meanwhile so no tick
+/// or swap crosses it; the seat is woken when it is done.
+pub(super) async fn take_up(mounted: Arc<Mutex<Mounted>>) {
+    let (alive, death) = {
+        let mut locked = lock(&mounted);
+        if locked.owned {
+            return;
+        }
+        let Slot::Ready(view) = &mut locked.slot else {
+            return;
+        };
+        if view.ticking() {
+            return;
+        }
+        let Some(Landed::Fault(Fault::Runner(death))) = view.parked.take() else {
+            return;
+        };
+        let alive = view.alive.clone();
+        locked.owned = true;
+        (alive, death)
+    };
+    View::died(&mounted, &alive, &death).await;
+    let mut locked = lock(&mounted);
+    locked.owned = false;
+    locked.wake.send_replace(());
+}
+
+/// `fresh`, prepared as the replacement of the drawn view `alive` names,
+/// made ready to take its seat: the view's editor projections and pictures
+/// carried over. Why there is no replacement, if there is none.
+fn swapped(slot: &mut Slot, mut fresh: Box<View>, alive: &Arc<()>) -> Result<Box<View>, String> {
     let Slot::Ready(old) = slot else {
         return Err("the view left while its replacement was prepared".into());
     };
     if !Arc::ptr_eq(&old.alive, alive) {
         return Err("the view changed while its replacement was prepared".into());
     }
-    if old.ticks != ticks || !old.settled() {
-        fresh = View::prepared_again(old, &fresh, code, shown, timing)
-            .map(Box::new)
-            .map_err(|failure| failure.to_string())?;
+    if !old.settled() {
+        return Err("the view took work while its replacement was prepared".into());
     }
     fresh.frame_rev = old.frame_rev + 1;
     let mut pictures = std::mem::take(&mut old.pictures);
@@ -679,21 +1005,16 @@ pub(super) enum Loaded {
     Fresh(Box<View>),
     /// The view already drawn is the active deployment's.
     Unchanged,
-    /// A prepared replacement for the view drawn: restored from its
-    /// snapshot, its first tree verified; `alive` and `ticks` name the
-    /// instance it was prepared against, and `code`, named `shown`, is what
-    /// it is an instance of.
-    Swap {
-        fresh: Box<View>,
-        alive: Arc<()>,
-        ticks: u64,
-        code: Arc<Module>,
-        shown: String,
-    },
+    /// Code prepared to replace the view drawn, `shown` naming it: the
+    /// seat's thread runs the swap (`swap_in`).
+    Swap { code: Box<ViewCode>, shown: String },
     /// The deployment ships no view.
     Empty,
     /// The view compiles, and was not started: no pane holds the seat.
     Compiled(Box<ViewCode>),
+    /// Code prepared to start where no view is drawn, `shown` naming it:
+    /// the seat's thread seats and inits it (`start_in`).
+    Seat { code: Box<ViewCode>, shown: String },
 }
 
 /// A load that came back with no view, and the view bytes it failed on —
@@ -811,7 +1132,17 @@ mod entity;
 mod standin;
 
 #[cfg(feature = "ui")]
-pub use entity::Seat;
+pub use entity::{Backgrounded, Placed, Seat, serve_starts};
+
+/// What a Back the shell took came to at the seat in front
+/// ([`Seat::back`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Back {
+    /// The view heard it: it goes back inside itself.
+    Heard,
+    /// The view has nowhere to go back to: the shell leaves the program.
+    Leave,
+}
 
 #[cfg(test)]
 mod entity_tests;

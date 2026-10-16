@@ -1,0 +1,384 @@
+//! The JNI entries of `phone/android`'s Activity (`industries.ducktape.mobile.Native`,
+//! a Kotlin object whose `@JvmStatic external` functions these are), and the one
+//! call back into it ([`move_task_to_back`]).
+//!
+//! Every entry runs on the Java UI thread and only hands on: to gm's host path
+//! (its threading contract, gm `android/host.rs`: commands and atomics, never
+//! gpui state) or to the host's `Inbound` ([`crate::os::send`]). None blocks
+//! but `surfaceGone`, which gm makes wait until its render thread lets the
+//! surface go.
+//!
+//! Foreign functions defined here (`Native.<name>`):
+//! - `create(activity, host, files, cache)`: the Activity, gm's id for it, and
+//!   its `filesDir` / `cacheDir` paths; references borrowed for the call.
+//! - `surface(host, surface, scale)`, `surfaceGone(host)`: a `Surface` borrowed
+//!   for the call (gm takes its own `ANativeWindow` reference).
+//! - `resumed(host)`, `paused(host)`, `destroyed(host)`, `configuration(uiMode)`.
+//! - `touch(action, index, pointers)`: `pointers` is `[id, x, y]` per pointer,
+//!   in index order, physical pixels; copied out for the call.
+//! - `key(code, action, meta)`, `insets(top, right, bottom, left, ime)` (pixels),
+//!   `back()`.
+//! - `ime(session, kind, text, start, end)`: the Activity's `InputConnection`
+//!   (gm's `GpuiInputActivity` contract, gm `android/host.rs` `ime_event`).
+//! - `memoryWarning()`: `onTrimMemory` at a level that is memory pressure.
+//! - `link(url)`: a `duck://` or `ducktape://` intent's data.
+//!
+//! - `android_main(app)`: the entry gm's NativeActivity glue (android-activity,
+//!   which gm links whatever path a host takes) names; never called, since
+//!   no NativeActivity is declared (see its own doc).
+//!
+//! Called from here, through gm's own attached `Env` and the Activity reference
+//! gm keeps: `Activity.moveTaskToBack(boolean)` on gm's render thread, and
+//! `MainActivity.ask(permission)` (blocking until the person answers) and
+//! `MainActivity.openSettings(page)` on a camera's or a microphone's thread.
+#![allow(unsafe_code, reason = "the JNI entries the Android Activity calls")]
+
+use gpui_mobile::android::host::{self, Pointer};
+use jni::objects::{JClass, JFloatArray, JObject, JString, JValue};
+use jni::sys::{jboolean, jfloat, jint, jlong};
+use jni::{Env, EnvUnowned};
+use std::path::PathBuf;
+
+/// What an entry's failure becomes for Java: a `RuntimeException` (there is
+/// none of ours; a JNI call that failed is the only way in).
+type Policy = jni::errors::ThrowRuntimeExAndDefault;
+
+/// gm's id for one Activity instance.
+fn id(host: jlong) -> host::HostId {
+    host as host::HostId
+}
+
+/// `Native.create`: gm learns the Activity, then starts its render thread
+/// (once per process), where the host starts at the first surface and each
+/// new Activity gets the phone's window.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_create<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _: JClass<'caller>,
+    activity: JObject<'caller>,
+    host: jlong,
+    files: JString<'caller>,
+    cache: JString<'caller>,
+) {
+    env.with_env(|env: &mut Env| -> jni::errors::Result<()> {
+        gpui_mobile::android::init_logger();
+        let (files, cache) = (
+            PathBuf::from(files.to_string()),
+            PathBuf::from(cache.to_string()),
+        );
+        if let Err(error) = host::set_activity(env, id(host), &activity) {
+            tracing::error!(target: "ducktape::phone", %error, "gm did not take the Activity");
+        }
+        if let Err(error) = hand_context(env, &activity) {
+            tracing::error!(target: "ducktape::phone", %error, "no Context for the camera and the microphone");
+        }
+        ducktape_av::asks_through(ask);
+        host::on_open_window(|_, cx| crate::shell::open_window(cx));
+        host::start_with_assets(crate::assets::PhoneAssets, move |cx| {
+            crate::os::start(files, cache, cx);
+        });
+        Ok(())
+    })
+    .resolve::<Policy>();
+}
+
+/// `Native.surface`: from `surfaceCreated` and `surfaceChanged` both.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_surface<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _: JClass<'caller>,
+    host: jlong,
+    surface: JObject<'caller>,
+    scale: jfloat,
+) {
+    env.with_env(|env: &mut Env| -> jni::errors::Result<()> {
+        // SAFETY: `env` is this thread's attached JNIEnv and `surface` a live
+        // `android.view.Surface` reference for the call (NDK
+        // `ANativeWindow_fromSurface`); the window it answers holds its own
+        // reference.
+        let window = unsafe {
+            ndk::native_window::NativeWindow::from_surface(
+                env.get_raw().cast(),
+                surface.as_raw().cast(),
+            )
+        };
+        match window {
+            Some(window) => host::surface_created(id(host), window, scale),
+            None => tracing::error!(target: "ducktape::phone", "the Surface gave no native window"),
+        }
+        Ok(())
+    })
+    .resolve::<Policy>();
+}
+
+/// `Native.surfaceGone`: blocks until gm's render thread has let go.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_surfaceGone(
+    _: EnvUnowned<'_>,
+    _: JClass<'_>,
+    host: jlong,
+) {
+    host::surface_destroyed(id(host));
+}
+
+/// `Native.resumed`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_resumed(
+    _: EnvUnowned<'_>,
+    _: JClass<'_>,
+    host: jlong,
+) {
+    host::resumed(id(host));
+}
+
+/// `Native.paused`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_paused(
+    _: EnvUnowned<'_>,
+    _: JClass<'_>,
+    host: jlong,
+) {
+    host::paused(id(host));
+}
+
+/// `Native.destroyed`: the Activity is finishing for good.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_destroyed(
+    _: EnvUnowned<'_>,
+    _: JClass<'_>,
+    host: jlong,
+) {
+    host::host_destroyed(id(host));
+}
+
+/// `Native.configuration`: the night mode the Activity was told of.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_configuration(
+    _: EnvUnowned<'_>,
+    _: JClass<'_>,
+    ui_mode: jint,
+) {
+    host::configuration_changed(ui_mode);
+}
+
+/// `Native.touch`: a whole `MotionEvent`; `false` when it lands on a
+/// platform view (none yet), for Java to hand on.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_touch<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _: JClass<'caller>,
+    action: jint,
+    index: jint,
+    pointers: JFloatArray<'caller>,
+) -> jboolean {
+    env.with_env(|env: &mut Env| -> jni::errors::Result<jboolean> {
+        let mut flat = vec![0.; pointers.len(env)?];
+        pointers.get_region(env, 0, &mut flat)?;
+        let pointers: Vec<Pointer> = flat
+            .chunks_exact(3)
+            .map(|pointer| Pointer {
+                id: pointer[0] as i32,
+                x: pointer[1],
+                y: pointer[2],
+            })
+            .collect();
+        Ok(host::motion_event(
+            action as u32,
+            index.max(0) as usize,
+            &pointers,
+        ))
+    })
+    .resolve::<Policy>()
+}
+
+/// `Native.key`: `action` 0 down, 1 up.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_key(
+    _: EnvUnowned<'_>,
+    _: JClass<'_>,
+    code: jint,
+    action: jint,
+    meta: jint,
+) {
+    host::key(code, action, meta);
+}
+
+/// `Native.insets`: the system bars, the cutout and the keyboard, in pixels.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_insets(
+    _: EnvUnowned<'_>,
+    _: JClass<'_>,
+    top: jint,
+    right: jint,
+    bottom: jint,
+    left: jint,
+    ime: jint,
+) {
+    super::set_insets([top, right, bottom, left], ime);
+}
+
+/// `Native.back`: the Activity's BACK, for the stack to walk.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_back(
+    _: EnvUnowned<'_>,
+    _: JClass<'_>,
+) {
+    crate::os::send(ducktape_host::contract::Signal::Back);
+}
+
+/// `Native.ime`: one update from the Activity's `InputConnection`, for gm's
+/// text input. `kind`: 0 composing, 1 commit, 2 delete around, 3 delete
+/// around in code points, 4 done, 5 dismissed by BACK. Java clamps the
+/// selection to 0 and up; a negative one reads as 0 here too.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_ime<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _: JClass<'caller>,
+    session: jlong,
+    kind: jint,
+    text: JString<'caller>,
+    start: jint,
+    end: jint,
+) {
+    env.with_env(|_: &mut Env| -> jni::errors::Result<()> {
+        host::ime_event(
+            session as u64,
+            kind,
+            text.to_string(),
+            start.max(0) as usize,
+            end.max(0) as usize,
+        );
+        Ok(())
+    })
+    .resolve::<Policy>();
+}
+
+/// `Native.memoryWarning`: the OS asked the app to give memory back.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_memoryWarning(
+    _: EnvUnowned<'_>,
+    _: JClass<'_>,
+) {
+    crate::os::send(ducktape_host::contract::Signal::MemoryWarning);
+}
+
+/// `Native.link`: a link the OS handed the app (an intent's data).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_link<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _: JClass<'caller>,
+    url: JString<'caller>,
+) {
+    env.with_env(|_: &mut Env| -> jni::errors::Result<()> {
+        crate::os::link(url.to_string());
+        Ok(())
+    })
+    .resolve::<Policy>();
+}
+
+/// The entry android-activity's NativeActivity glue calls. gm links that
+/// glue on every path (its `android-activity` dependency has no feature to
+/// leave it out), so the library must define the symbol to load at all;
+/// this app declares no NativeActivity, so nothing calls it. The root fix
+/// is gm's: make `android-activity` optional for the host-driven path.
+#[unsafe(no_mangle)]
+pub fn android_main(_: android_activity::AndroidApp) {
+    tracing::error!(target: "ducktape::phone", "a NativeActivity started; this app has none");
+}
+
+/// Puts the app behind the others: BACK at Home's root.
+pub fn move_task_to_back() {
+    let moved = gpui_mobile::android::jni::with_env(|env| {
+        let activity = gpui_mobile::android::jni::activity(env)?;
+        env.call_method(
+            &activity,
+            jni::jni_str!("moveTaskToBack"),
+            jni::jni_sig!("(Z)Z"),
+            &[jni::objects::JValue::Bool(true)],
+        )
+        .map(drop)
+        .map_err(|error| error.to_string())
+    });
+    if let Err(error) = moved {
+        tracing::error!(target: "ducktape::phone", %error, "the app did not go behind the others");
+    }
+}
+
+/// Hands `ndk-context` the Java VM and the application's Context, once per
+/// process (an Activity made again finds them set): what av's JNI calls and
+/// cpal's AAudio host read. android-activity's glue does this on the
+/// NativeActivity path; the host-driven path's is this app's.
+fn hand_context(env: &mut Env, activity: &JObject) -> jni::errors::Result<()> {
+    static HANDED: std::sync::Once = std::sync::Once::new();
+    if HANDED.is_completed() {
+        return Ok(());
+    }
+    let vm = env.get_java_vm()?;
+    let app = env
+        .call_method(
+            activity,
+            jni::jni_str!("getApplicationContext"),
+            jni::jni_sig!("()Landroid/content/Context;"),
+            &[],
+        )?
+        .l()?;
+    let app = env.new_global_ref(&app)?;
+    HANDED.call_once(|| {
+        // SAFETY: the live VM, and a global reference to the application
+        // Context kept for the process (never deleted: forgotten below),
+        // handed before any camera or microphone thread or cpal call reads
+        // them (the host starts after this entry returns)
+        unsafe {
+            ndk_context::initialize_android_context(vm.get_raw().cast(), app.as_raw().cast());
+        }
+        std::mem::forget(app);
+    });
+    Ok(())
+}
+
+/// Asks the person for `permission` (`android.permission.CAMERA`) through the
+/// Activity: whether it is granted, the system's prompt raised first when it
+/// is not and may be. Blocks the calling camera or microphone thread until
+/// the person answers (`ducktape_av::asks_through`); refused when the
+/// Activity cannot be reached.
+fn ask(permission: &str) -> bool {
+    let asked = gpui_mobile::android::jni::with_env(|env| {
+        let activity = gpui_mobile::android::jni::activity(env)?;
+        let permission = env
+            .new_string(permission)
+            .map_err(|error| error.to_string())?;
+        env.call_method(
+            &activity,
+            jni::jni_str!("ask"),
+            jni::jni_sig!("(Ljava/lang/String;)Z"),
+            &[JValue::Object(&permission)],
+        )
+        .and_then(|granted| granted.z())
+        .map_err(|error| error.to_string())
+    });
+    asked.unwrap_or_else(|error| {
+        tracing::error!(target: "ducktape::phone", %error, "the permission was not asked");
+        false
+    })
+}
+
+/// Brings up the app's own page in Settings, `page` being its `package:`
+/// URI (`ducktape_av::settings_page`), where a refused camera or microphone
+/// is allowed.
+pub fn open_settings(page: &str) {
+    let opened = gpui_mobile::android::jni::with_env(|env| {
+        let activity = gpui_mobile::android::jni::activity(env)?;
+        let page = env.new_string(page).map_err(|error| error.to_string())?;
+        env.call_method(
+            &activity,
+            jni::jni_str!("openSettings"),
+            jni::jni_sig!("(Ljava/lang/String;)V"),
+            &[JValue::Object(&page)],
+        )
+        .map(drop)
+        .map_err(|error| error.to_string())
+    });
+    if let Err(error) = opened {
+        tracing::error!(target: "ducktape::phone", %error, "the app's settings did not open");
+    }
+}

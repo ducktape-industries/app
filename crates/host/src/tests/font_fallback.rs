@@ -72,18 +72,24 @@ fn emoji_runs_resolve_to_bundled_color_face() {
 #[test]
 fn every_bundled_static_face_is_selected_and_shapes() {
     let system = text_system();
-    for (family, sample, italic) in [
-        (super::FAMILY_UI, "Am", true),
-        (super::FAMILY_MONO, "Am", true),
-        (design::fonts::FAMILY_UI_HANGUL, "한글", false),
-        (design::fonts::FAMILY_MONO_HANGUL, "한글", false),
+    // `italic`: ships italics; `between`: ships Medium and SemiBold, upright.
+    for (family, sample, italic, between) in [
+        (super::FAMILY_UI, "Am", true, true),
+        (super::FAMILY_MONO, "Am", true, true),
+        (design::fonts::FAMILY_UI_HANGUL, "한글", false, true),
+        (design::fonts::FAMILY_MONO_HANGUL, "한글", false, false),
     ] {
         let mut ids = Vec::new();
-        for weight in [FontWeight::NORMAL, FontWeight::BOLD] {
-            for style in [FontStyle::Normal, FontStyle::Italic]
-                .into_iter()
-                .take(if italic { 2 } else { 1 })
-            {
+        let upright = [FontStyle::Normal].as_slice();
+        let both = [FontStyle::Normal, FontStyle::Italic].as_slice();
+        let ribbi = if italic { both } else { upright };
+        let mut faces = vec![(FontWeight::NORMAL, ribbi), (FontWeight::BOLD, ribbi)];
+        if between {
+            faces.push((FontWeight::MEDIUM, upright));
+            faces.push((FontWeight::SEMIBOLD, upright));
+        }
+        for (weight, styles) in faces {
+            for &style in styles {
                 let mut descriptor = font(family);
                 descriptor.weight = weight;
                 descriptor.style = style;
@@ -106,4 +112,35 @@ fn every_bundled_static_face_is_selected_and_shapes() {
             }
         }
     }
+}
+
+/// A 600 run's Hangul falls back to Pretendard's own SemiBold: the fallback
+/// is asked at the matched face's weight, so Hangul and Latin match.
+#[test]
+fn semibold_hangul_falls_back_to_its_own_weight() {
+    let system = text_system();
+    let mut descriptor = font(super::FAMILY_UI);
+    descriptor.weight = FontWeight::SEMIBOLD;
+    descriptor.fallbacks = Some(fallback_chain());
+    let primary = system.font_id(&descriptor).unwrap();
+    let mut hangul = font(design::fonts::FAMILY_UI_HANGUL);
+    hangul.weight = FontWeight::SEMIBOLD;
+    let hangul = system.font_id(&hangul).unwrap();
+    let text = "A한";
+    let line = system.layout_line(
+        text,
+        px(24.),
+        &[FontRun {
+            len: text.len(),
+            font_id: primary,
+        }],
+    );
+    let face_of = |index| {
+        line.runs
+            .iter()
+            .find(|run| run.glyphs.iter().any(|glyph| glyph.index == index))
+            .map(|run| run.font_id)
+    };
+    assert_eq!(face_of(0), Some(primary));
+    assert_eq!(face_of(1), Some(hangul));
 }

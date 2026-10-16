@@ -309,6 +309,7 @@ fn anonymous(lit: bool) -> wire::Node {
         id: None,
         style: crate::render::test_style(gpui_kit::StyleRefinement::default()),
         content: "words".into(),
+        transform: None,
     });
     container_with_style(
         "card",
@@ -397,6 +398,7 @@ fn a_text_keeps_its_number_when_a_box_before_it_grows(cx: &mut gpui_kit::TestApp
             id: None,
             style: crate::render::test_style(gpui_kit::StyleRefinement::default()),
             content: content.into(),
+            transform: None,
         })
     };
     let card = |first: usize| {

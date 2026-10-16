@@ -344,9 +344,11 @@ impl ViewTree {
     }
 
     /// The seat is dropping this tree: its rasters leave every window's
-    /// atlas. Never on a hot swap, whose next tree carries them.
+    /// atlas (never on a hot swap, whose next tree carries them), and its
+    /// cameras and microphones close now, not when gpui gets round to it.
     pub fn release(&mut self, cx: &mut App) {
         self.images.borrow_mut().release(cx);
+        self.release_media();
     }
 
     pub(super) fn picture(
@@ -447,7 +449,8 @@ impl ViewTree {
     }
 }
 
-fn primitive_object_fit(fit: wire::ImageObjectFit) -> ObjectFit {
+/// gpui's fit for a picture's: an image's, a camera's (`render/av.rs`).
+pub(super) fn primitive_object_fit(fit: wire::ImageObjectFit) -> ObjectFit {
     match fit {
         wire::ImageObjectFit::Fill => ObjectFit::Fill,
         wire::ImageObjectFit::Contain => ObjectFit::Contain,

@@ -8,8 +8,9 @@
 //! - `main`: [`subprocess`] first, [`shutdown`] after the app returns;
 //! - the tree: [`ViewTree::web`] draws a piece, [`Pages::retain`] keeps a
 //!   frame's pages;
-//! - a view's frame: [`declared`] refuses a web piece from a view whose
-//!   manifest does not declare `web`; [`seen`] records whose does;
+//! - a view's manifest: [`seen`] records whose declares `web` (a frame
+//!   with a web piece from any other is refused where every piece's
+//!   capability is checked, `runtime/view/requests.rs`);
 //! - a link: [`view_for`] names the view an https link opens in.
 
 use super::*;
@@ -31,7 +32,7 @@ pub fn shutdown() {
 
 // which view may draw a page is the runtime's rule (a frame is judged as
 // it lands, a manifest as it is read); the links follow it here
-pub use crate::runtime::web::{declared, seen, view_for};
+pub use crate::runtime::web::{seen, view_for};
 
 /// The pages of a tree's web pieces, by authored path.
 #[derive(Default)]
@@ -194,7 +195,6 @@ fn profile(key: Option<crate::perf::Key>) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use view_wire::methods::Capability;
 
     fn web() -> wire::Node {
         wire::Node::Web {
@@ -214,44 +214,6 @@ mod tests {
             interactivity: Default::default(),
             children,
         })
-    }
-
-    /// A web piece anywhere in a frame (its tree, a patch, a tooltip) is
-    /// refused from a view that does not declare `web`, and taken from one
-    /// that does; a frame with none is everyone's.
-    #[test]
-    fn a_web_piece_needs_the_web_capability() {
-        let undeclared = [Capability::Host];
-        let declaring = [Capability::Host, Capability::Web];
-        let tree = wire::Frame {
-            root: Some(holder(vec![holder(vec![web()])])),
-            ..Default::default()
-        };
-        let patch = wire::Frame {
-            patches: vec![wire::Patch::Insert {
-                path: Vec::new(),
-                index: 0,
-                node: web(),
-            }],
-            ..Default::default()
-        };
-        let tooltip = wire::Frame {
-            tooltip_responses: vec![wire::TooltipResponse {
-                request: 1,
-                character_index: None,
-                content: Some(Box::new(web())),
-            }],
-            ..Default::default()
-        };
-        for frame in [&tree, &patch, &tooltip] {
-            assert!(declared(frame, &undeclared).is_err(), "{frame:?}");
-            assert!(declared(frame, &declaring).is_ok());
-        }
-        let plain = wire::Frame {
-            root: Some(holder(Vec::new())),
-            ..Default::default()
-        };
-        assert!(declared(&plain, &undeclared).is_ok());
     }
 
     /// What a page says of itself reaches its view bounded: a long or

@@ -72,6 +72,13 @@ fn a_failed_view_is_held_off_under_the_code_the_roster_names() {
     assert!(locked.reload_due(true, true, code));
 }
 
+/// The start a load parked on `seat`, once it is there, run as the
+/// window thread runs it (`start_in`): at once, on the wasmtime runner.
+fn start_parked(seat: &Arc<Mutex<Mounted>>, program: &'static str) {
+    eventually("a start was parked", || lock(seat).to_start.is_some());
+    futures::executor::block_on(start_in(seat.clone(), program));
+}
+
 /// Waits, up to ten seconds, for `done`; panics naming `what` if it never
 /// is.
 pub(in crate::runtime) fn eventually(what: &str, done: impl Fn() -> bool) {
@@ -156,6 +163,7 @@ impl FakeNode {
                 network: "fake-network".into(),
                 chain: "fake-network#0".into(),
                 rev: connection().lock().unwrap().rev,
+                live: None,
             },
             held,
         }
@@ -279,6 +287,7 @@ impl ProgramsNode {
                 network: "fake-network".into(),
                 chain: "fake-network#0".into(),
                 rev: connection().lock().unwrap().rev,
+                live: None,
             },
             tip,
             running,
@@ -650,6 +659,7 @@ fn an_unopened_program_runs_no_init() {
         asked_of: node.asked_of.clone(),
         code: Some((code, true)),
     });
+    start_parked(&seat, "lazy-view");
     eventually(
         "the claiming pane's load ran init",
         || matches!(&lock(&seat).slot, Slot::Failed(failure) if failure.to_string().contains("init trapped")),
@@ -710,6 +720,7 @@ fn a_rail_row_carries_the_icon_its_views_manifest_declares() {
         asked_of: node.asked_of.clone(),
         code: Some((blob_id(&views[0].1), true)),
     });
+    start_parked(&seat, "iconed-view");
     eventually("the claiming pane's load started the view", || {
         matches!(lock(&seat).slot, Slot::Ready(_))
     });
@@ -792,17 +803,17 @@ fn a_claimed_seat_starts_the_code_it_compiled() {
             code: Some((code, true)),
         }
     };
-    // as `mounted` starts it, on the claiming thread
-    claim(7).land(|load, timing| {
-        View::start(load.program, load.code, load.generation, &load.seat, timing)
-    });
+    // as `mounted` claims it, on the claiming thread, which then starts it
+    claim(7).land(|load, timing| View::start(load.program, load.code, &load.seat, timing));
+    start_parked(&seat, "quick-view");
     assert!(
         matches!(&lock(&seat).slot, Slot::Ready(view) if view.name == "Quick" && view.instance == 7),
         "the claim did not start the compiled view"
     );
-    // as a loader starts a seat claimed while its preload was on the way
+    // as a loader hands on a seat claimed while its preload was on the way
     lock(&seat).slot = Slot::Compiled(preloaded);
     queue(claim(8));
+    start_parked(&seat, "quick-view");
     eventually(
         "the loader started the compiled view",
         || matches!(&lock(&seat).slot, Slot::Ready(view) if view.instance == 8),
@@ -810,9 +821,10 @@ fn a_claimed_seat_starts_the_code_it_compiled() {
 }
 
 /// A pane that opens a program whose seat compiled out of the blob the
-/// roster lists has its view up when `mounted` returns: started on the
-/// thread that claimed it, with no loader and no stand-in between. The
-/// node is gone and the blob off the disk by then, so a load would fail.
+/// roster lists has its view up in one poll of the start `mounted` parks
+/// (`Seat::new` polls it on the claiming thread, `start_here`): no loader
+/// and no stand-in between on the wasmtime runner. The node is gone and
+/// the blob off the disk by then, so a load would fail.
 #[test]
 fn a_pane_opens_its_compiled_view_at_once() {
     const PROGRAM: &str = "opened-at-once";
@@ -844,7 +856,9 @@ fn a_pane_opens_its_compiled_view_at_once() {
         });
     lock(registry()).insert((PROGRAM, 0), seat);
     let opened = mounted(PROGRAM, 7101);
-    let started = matches!(&lock(&opened).slot, Slot::Ready(view) if view.name == "At once");
+    let polled = futures::FutureExt::now_or_never(start_in(opened.clone(), PROGRAM));
+    let started = polled.is_some()
+        && matches!(&lock(&opened).slot, Slot::Ready(view) if view.name == "At once");
     lock(registry()).remove(&(PROGRAM, 7101));
     super::super::roster::roster()
         .lock()
@@ -853,6 +867,64 @@ fn a_pane_opens_its_compiled_view_at_once() {
         started,
         "the view was not up when the pane's claim returned"
     );
+}
+
+/// A pane that lets its program go (a phone's Open closing it, a memory
+/// warning): the seat is put back as the program's preloaded one, its view
+/// stepped back to its compiled code, so the rail still lists the program
+/// (not pending) and the next pane starts it with nothing loaded.
+#[test]
+fn a_seat_let_go_steps_back_to_its_code_and_stays_listed() {
+    const PROGRAM: &str = "let-go";
+    let view = view_declaring("Let go", "", "");
+    let code = blob_id(&view);
+    let listed = ::programs::View {
+        name: PROGRAM.into(),
+        view: code,
+    };
+    let node = FakeNode::new(Vec::new(), vec![listed], vec![view]);
+    let (roster, seats) = (Roster::default(), Registry::default());
+    read_roster(node.asked_of.clone(), &roster, &seats);
+    let seat = lock(&seats)[&(PROGRAM, 0)].clone();
+    eventually("the preload landed", || !lock(&seat).slot.loading());
+    drop(node);
+    super::super::roster::roster()
+        .lock()
+        .push(crate::backend::views::Program {
+            name: PROGRAM.into(),
+            code,
+            bare: true,
+        });
+    lock(registry()).insert((PROGRAM, 0), seat);
+    let opened = mounted(PROGRAM, 7201);
+    let started = futures::FutureExt::now_or_never(start_in(opened.clone(), PROGRAM)).is_some()
+        && matches!(&lock(&opened).slot, Slot::Ready(_));
+
+    let_go(PROGRAM, 7201);
+    let back = lock(registry()).get(&(PROGRAM, 0)).cloned();
+    let stepped = back.as_ref().map(|seat| {
+        let locked = lock(seat);
+        (
+            matches!(&locked.slot, Slot::Compiled(code) if code.name == "Let go"),
+            locked.instance,
+        )
+    });
+    let row = super::super::roster::roster()
+        .rail()
+        .into_iter()
+        .find(|row| row.program == PROGRAM);
+    lock(registry()).remove(&(PROGRAM, 0));
+    super::super::roster::roster()
+        .lock()
+        .retain(|program| program.name != PROGRAM);
+    assert!(started, "the pane's view was not up");
+    assert!(
+        back.is_some_and(|seat| Arc::ptr_eq(&seat, &opened)),
+        "the seat was not put back as the preloaded one"
+    );
+    assert_eq!(stepped, Some((true, 0)), "not stepped back to its code");
+    let row = row.expect("the program left the rail");
+    assert!(!row.pending, "the program let go reads pending");
 }
 
 /// Only a compiled seat out of the very blob a pane asks for is started as

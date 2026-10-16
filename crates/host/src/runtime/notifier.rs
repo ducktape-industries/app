@@ -7,7 +7,9 @@
 //!
 //! One runs per program the network in hand lists, whatever panes are
 //! open, on a thread of its own: never on the window thread, never on the
-//! kernel's runtime. It is a [`View`] with no tree (`View::notifier`): a
+//! kernel's runtime. It is a [`View`] with no tree (`View::notifier`),
+//! seated by the shell's runner as a view is (`contract::ViewInstance`: a
+//! module with no `snapshot`/`restore`, its tick answering a turn): a
 //! view's manifest, memory budget and fuel per tick, its requests routed as
 //! a view's (`View::answer`, the kernel contract), its props the session
 //! every view gets. Its manifest may not declare what needs the person in
@@ -282,7 +284,7 @@ fn load(program: &'static str, code: &abi::BlobId, asked_of: &Connection) -> Opt
             return None;
         }
     };
-    let notifier = View::notifier(program, &bytes, asked_of);
+    let notifier = handle().block_on(View::notifier(program, &bytes, asked_of));
     if let Err(reason) = &notifier {
         refused(reason.clone());
     }
@@ -304,18 +306,19 @@ fn loading(code: &abi::BlobId) -> Arc<Mutex<()>> {
 }
 
 impl View {
-    /// A notifier's module checked as a view's is (its manifest, its wire),
-    /// refused when it declares what needs a person in front of it
-    /// ([`UNATTENDED`]), compiled, instantiated on `connection` and `init`ed.
-    pub(super) fn notifier(
+    /// A notifier's module refused when it declares what needs a person in
+    /// front of it ([`UNATTENDED`]), else checked and prepared as a view's
+    /// is (its manifest, its wire), seated by the shell's runner on
+    /// `connection` and `init`ed.
+    pub(super) async fn notifier(
         program: &'static str,
         bytes: &[u8],
         connection: &Connection,
     ) -> Result<Self, String> {
         let shown = format!("{program} notifier");
-        let code = Self::compile(bytes, &shown).map_err(|failure| failure.to_string())?;
-        let (name, capabilities, _, targets, _) = manifest_of(bytes);
-        if let Some(capability) = capabilities
+        let listing = manifest_of(bytes);
+        if let Some(capability) = listing
+            .capabilities
             .iter()
             .find(|capability| UNATTENDED.contains(capability))
         {
@@ -324,14 +327,20 @@ impl View {
                 capability.as_str()
             ));
         }
-        let mut notifier = Self::instantiated(program, &code, &shown, true)?;
+        let runner = crate::contract::runner();
+        // held until the instance holds the code itself
+        let (code, _held) =
+            Self::prepare(&**runner, bytes, &shown).map_err(|failure| failure.to_string())?;
+        let mut notifier = Self::seated(program, INSTANCE, runner, code, &shown).await?;
+        notifier.notifier = true;
+        // nothing snapshots a notifier: no replay is kept for it
+        notifier.kept = None;
         notifier.connection = connection.clone();
-        notifier.instance = INSTANCE;
-        notifier.name = name;
-        notifier.capabilities = capabilities;
-        notifier.targets = targets;
-        notifier.code = Some(code);
-        notifier.init(&shown)?;
+        notifier.name = listing.name;
+        notifier.capabilities = listing.capabilities;
+        notifier.targets = listing.targets;
+        notifier.wire = listing.wire;
+        notifier.inited(&shown).await?;
         Ok(notifier)
     }
 }
@@ -351,7 +360,7 @@ fn drive(
         }
         answered.borrow_and_update();
         let current = session.borrow_and_update().clone();
-        let again = notifier.redraw(&current);
+        let again = redrawn(&mut notifier, &current);
         for intent in std::mem::take(&mut notifier.intents) {
             match &notifier.recipient {
                 Some(recipient) => {
@@ -382,6 +391,21 @@ fn drive(
             }
         });
     }
+}
+
+/// One redraw of `notifier`, its tick's answer awaited on this thread (it
+/// lands at once on wasmtime, later on JSC): whether it is due again at
+/// once.
+fn redrawn(notifier: &mut View, props: &Option<Vec<u8>>) -> bool {
+    match notifier.begin_redraw(props) {
+        Redraw::Quiet => return false,
+        Redraw::Ready => {}
+        Redraw::Ticking => {
+            let landed = handle().block_on(view::next(&notifier.landing()));
+            notifier.redraw_landed(landed);
+        }
+    }
+    notifier.finish_redraw(props)
 }
 
 /// Until `due`, or never.

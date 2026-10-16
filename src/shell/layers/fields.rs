@@ -25,7 +25,8 @@ pub(in crate::shell) struct TextField {
     /// Its accessible name.
     pub(in crate::shell) label: gpui_kit::SharedString,
     /// Sensitive without being masked (the recovery phrase): its value is
-    /// read aloud, and the test door masks it (`a11y::AX_PRIVATE`).
+    /// read aloud, and the test door masks it (`a11y::AX_PRIVATE`); its
+    /// field is made [`NativeInput::secret`].
     pub(in crate::shell) private: bool,
     /// The error the screen draws with it: the field reports it invalid,
     /// and says the error as its description (AX-108).
@@ -66,6 +67,21 @@ impl NativeInput {
             masked,
             _events: events,
         }
+    }
+
+    /// The field is a secret shown in the clear (the recovery key and its
+    /// words, `TextField::private`): the platform keeps what is typed from
+    /// third-party keyboards and suggestion services, as for a masked one
+    /// (`TextInputConfiguration::secure`, iOS `secureTextEntry`), and the
+    /// words stay on screen.
+    pub(in crate::shell) fn secret(self, cx: &mut gpui_kit::App) -> Self {
+        let secure = gpui_kit::TextInputConfiguration {
+            secure: true,
+            ..Default::default()
+        };
+        self.state
+            .update(cx, |state, cx| state.set_text_input(secure, cx));
+        self
     }
 
     /// Empties the field, when it holds anything; no change goes out.
