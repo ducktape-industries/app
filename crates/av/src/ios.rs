@@ -708,9 +708,10 @@ impl Drop for Active {
     }
 }
 
-/// Tells `feed` Gone, with the reason, when the session is interrupted
-/// (a call, an alarm, another app's audio, the app suspended) or its
-/// media services are lost or reset, and where its route moved (a
+/// Ends `feed`'s microphone, told Gone with the reason once its streams
+/// closed ([`MicFeed::end`]), when the session is interrupted (a call, an
+/// alarm, another app's audio, the app suspended) or its media services
+/// are lost or reset, and where its route moved (a
 /// headset in or out, the loudspeaker picked: the microphone its piece
 /// `named` no longer heard, the monitor on the loudspeaker): the
 /// observers, until removed.
@@ -725,7 +726,7 @@ fn watch(
         let gone = RcBlock::new(move |notification: NonNull<NSNotification>| {
             // SAFETY: the notification the center lends for this call
             if let Some(why) = why(unsafe { notification.as_ref() }) {
-                feed.status.lock().expect("feed status").0 = Status::Gone(why.into());
+                feed.end(Status::Gone(why.into()));
             }
         });
         // SAFETY: an observer block on the posting thread; removed when
@@ -1007,7 +1008,7 @@ mod tests {
         assert!(audio_devices().unwrap().1[0].device.default);
         NSNotificationCenter::defaultCenter().postNotification(&told);
         assert!(!feed.monitoring());
-        assert!(matches!(&feed.status.lock().unwrap().0, Status::Gone(_)));
+        assert!(matches!(feed.ended(), Some(Status::Gone(_))));
         let center = NSNotificationCenter::defaultCenter();
         for observer in &observers {
             // SAFETY: an observer this test added

@@ -177,9 +177,17 @@ impl MicFeed {
 
     /// Ends the microphone under its piece (a call took it): its thread
     /// closes every stream, then tells `why`, as a camera's does, so a
-    /// piece told so has its device let go already.
+    /// piece told so has its device let go already. The first reason
+    /// wins: what follows it (the stream failing once the system took
+    /// the microphone) is its consequence.
     pub(crate) fn end(&self, why: Status) {
-        *self.ended.lock().expect("feed ended") = Some(why);
+        self.ended.lock().expect("feed ended").get_or_insert(why);
+    }
+
+    /// How the microphone was ended, not yet told.
+    #[cfg(test)]
+    pub(crate) fn ended(&self) -> Option<Status> {
+        self.ended.lock().unwrap().clone()
     }
 }
 
@@ -195,9 +203,10 @@ pub(crate) struct Moved {
 
 /// A microphone's route moved under it: a piece that named its
 /// microphone (`named`) and hears another now ends Gone, saying so (the
-/// system never swaps it silently); one on the default takes the new
-/// one's name. A monitor playing when the sound fell to the loudspeaker
-/// stops, until its piece turns it off and on.
+/// system never swaps it silently), told once its streams closed
+/// ([`MicFeed::end`]); one on the default takes the new one's name. A
+/// monitor playing when the sound fell to the loudspeaker stops, until
+/// its piece turns it off and on.
 pub(crate) fn moved(feed: &MicFeed, named: Option<&str>, moved: Moved) {
     if moved.to_loudspeaker && feed.monitoring() {
         feed.silence();
@@ -206,7 +215,9 @@ pub(crate) fn moved(feed: &MicFeed, named: Option<&str>, moved: Moved) {
     match (named, moved.heard) {
         (Some(named), heard) if heard.as_ref().is_none_or(|heard| heard.id != named) => {
             if matches!(status.0, Status::Starting | Status::Live) {
-                status.0 = Status::Gone("The microphone you picked is no longer in use.".into());
+                feed.end(Status::Gone(
+                    "The microphone you picked is no longer in use.".into(),
+                ));
             }
         }
         (None, Some(heard)) => status.1 = heard.name,
@@ -655,7 +666,10 @@ fn serve<S>(
         }
     }
     drop((input, playing, monitoring));
-    if let Some(why) = feed.ended.lock().expect("feed ended").take() {
+    // taken before the status is locked: `moved` locks the two the other
+    // way round
+    let why = feed.ended.lock().expect("feed ended").take();
+    if let Some(why) = why {
         set(&feed.status, why);
     }
 }
@@ -907,14 +921,14 @@ mod tests {
         moved(&feed, Some("headset"), to("headset", "Headset", false));
         assert_eq!(feed.status.lock().unwrap().0, Status::Live);
         moved(&feed, Some("headset"), to("built-in", "Built-in", false));
-        assert!(matches!(&feed.status.lock().unwrap().0, Status::Gone(why) if !why.is_empty()));
+        assert!(matches!(feed.ended(), Some(Status::Gone(why)) if !why.is_empty()));
         let feed = live();
         let none = Moved {
             heard: None,
             to_loudspeaker: false,
         };
         moved(&feed, Some("headset"), none);
-        assert!(matches!(feed.status.lock().unwrap().0, Status::Gone(_)));
+        assert!(matches!(feed.ended(), Some(Status::Gone(_))));
         let feed = live();
         moved(&feed, None, to("headset", "Headset", false));
         assert_eq!(
@@ -1173,9 +1187,10 @@ mod tests {
         assert_eq!(status(&ended), took);
     }
 
-    /// A microphone ended under its piece (Android: a call silenced it) is
-    /// told so only once its streams closed, as a camera is: no Gone card
-    /// over a device still recording.
+    /// A microphone ended under its piece (a call took it, the microphone
+    /// its piece picked is no longer heard) is told so only once its
+    /// streams closed, as a camera is: no Gone card over a device still
+    /// recording. The first reason is the one told.
     #[test]
     fn a_microphone_ended_under_its_piece_is_told_once_let_go() {
         struct Stream(Arc<AtomicBool>);
@@ -1187,23 +1202,37 @@ mod tests {
             }
         }
         let status = |feed: &MicFeed| feed.status.lock().unwrap().0.clone();
-        let feed = Arc::new(MicFeed::default());
-        let closed = Arc::new(AtomicBool::new(false));
-        let served = {
-            let (feed, closed) = (feed.clone(), closed.clone());
-            std::thread::spawn(move || {
-                let host = cpal::default_host();
-                let (recording, heard) = (Recording::default(), Queue::default());
-                serve(Stream(closed), &host, 48_000, &recording, &heard, &feed)
-            })
+        let told = |end: &dyn Fn(&MicFeed)| {
+            let feed = Arc::new(MicFeed::default());
+            let closed = Arc::new(AtomicBool::new(false));
+            let served = {
+                let (feed, closed) = (feed.clone(), closed.clone());
+                std::thread::spawn(move || {
+                    let host = cpal::default_host();
+                    let (recording, heard) = (Recording::default(), Queue::default());
+                    serve(Stream(closed), &host, 48_000, &recording, &heard, &feed)
+                })
+            };
+            until("live", || status(&feed) == Status::Live);
+            end(&feed);
+            until("told", || status(&feed) != Status::Live);
+            assert!(closed.load(Ordering::SeqCst), "told before let go");
+            served.join().unwrap();
+            status(&feed)
         };
-        until("live", || status(&feed) == Status::Live);
         let took = Status::Gone("A call took the microphone.".into());
-        feed.end(took.clone());
-        until("told", || status(&feed) != Status::Live);
-        assert!(closed.load(Ordering::SeqCst), "told before let go");
-        assert_eq!(status(&feed), took);
-        served.join().unwrap();
+        let then = Status::Gone("The microphone was disconnected.".into());
+        let ended = told(&|feed| {
+            feed.end(took.clone());
+            feed.end(then.clone());
+        });
+        assert_eq!(ended, took);
+        let unheard = || Moved {
+            heard: None,
+            to_loudspeaker: false,
+        };
+        let picked = told(&|feed| moved(feed, Some("headset"), unheard()));
+        assert!(matches!(picked, Status::Gone(why) if why.contains("picked")));
     }
 
     /// THE HEADLINE: a live camera that stops delivering is told Gone no
