@@ -14,10 +14,10 @@
 //! sends it, as a picture while one is wanted, to the stream loop
 //! ([`crate::backend::stream`]), which waits for it with a time limit.
 //! The device's disconnect and the session's runtime error are sent the
-//! same way, as Gone, and on iOS its interruption, with why
-//! (`ios::interrupted`); a phone's pictures are turned upright
-//! (`ios::upright`). Dropping a [`Camera`] stops the session (the light
-//! off) and takes it apart.
+//! same way, as Gone, and on iOS its interruption (Busy while another
+//! has the camera, else Gone with why: `ios::interrupted`); a phone's
+//! pictures are turned upright (`ios::upright`). Dropping a [`Camera`]
+//! stops the session (the light off) and takes it apart.
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -296,15 +296,14 @@ pub(crate) fn open(id: &str) -> Result<Camera, Status> {
                 crate::ios::upright(&output);
             }
             session.commitConfiguration();
-            // gone: the device unplugged, the session stopped on an error,
+            // ended: the device unplugged, the session stopped on an error,
             // or (iOS) interrupted, `why` saying how
             let center = NSNotificationCenter::defaultCenter();
-            let observe = |name, object: &AnyObject, why: fn(&NSNotification) -> String| {
+            let observe = |name, object: &AnyObject, why: fn(&NSNotification) -> Status| {
                 let tell = tell.clone();
                 let gone = RcBlock::new(move |notification: NonNull<NSNotification>| {
                     // SAFETY: the notification the center lends for this call
-                    let why = why(notification.as_ref());
-                    let _ = tell.send(Err(Status::Gone(why)));
+                    let _ = tell.send(Err(why(notification.as_ref())));
                 });
                 center.addObserverForName_object_queue_usingBlock(
                     Some(name),
@@ -313,7 +312,7 @@ pub(crate) fn open(id: &str) -> Result<Camera, Status> {
                     &gone,
                 )
             };
-            let unsaid = |_: &NSNotification| String::new();
+            let unsaid = |_: &NSNotification| Status::Gone(String::new());
             let observers = vec![
                 observe(AVCaptureDeviceWasDisconnectedNotification, &device, unsaid),
                 observe(AVCaptureSessionRuntimeErrorNotification, &session, unsaid),

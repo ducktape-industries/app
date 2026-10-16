@@ -15,9 +15,13 @@
 //! a microphone is open or the chime plays ([`activate`]); the last one
 //! to end deactivates it, so the person's music plays on.
 //!
-//! A call, an alarm or another app taking the microphone or the camera
-//! ends the piece as Gone, with the reason; so does the app going to the
-//! background (the system stops the camera there; Try again opens it).
+//! A call, an alarm or another app taking the microphone ends the piece
+//! as Gone, with the reason; a camera another has is Busy, at open or
+//! taken from this one. The app going to the background ends either as
+//! Gone (the system stops the camera there; Try again opens it). A route
+//! that moves under an open microphone is told to it: a picked
+//! microphone no longer heard is Gone, the monitor stops on the
+//! loudspeaker ([`crate::backend::moved`]).
 use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
 
@@ -162,19 +166,21 @@ pub(crate) fn upright(output: &AVCaptureVideoDataOutput) {
     }
 }
 
-/// Why a camera's session was interrupted, as the line a person reads.
-pub(crate) fn interrupted(notification: &NSNotification) -> String {
+/// What a camera's session interrupted says: Busy while a call or
+/// another app has the camera (at open, or taking it from this one), else
+/// Gone with the line a person reads.
+pub(crate) fn interrupted(notification: &NSNotification) -> Status {
     // SAFETY: an AVFoundation constant, there since iOS 9
     let key = unsafe { AVCaptureSessionInterruptionReasonKey };
     let reason = number(notification, key).map(AVCaptureSessionInterruptionReason);
-    match reason {
-        Some(AVCaptureSessionInterruptionReason::VideoDeviceNotAvailableInBackground) => {
-            "The camera stopped while the app was in the background."
-        }
+    let why = match reason {
         Some(
             AVCaptureSessionInterruptionReason::AudioDeviceInUseByAnotherClient
             | AVCaptureSessionInterruptionReason::VideoDeviceInUseByAnotherClient,
-        ) => "A call or another app took the camera.",
+        ) => return Status::Busy,
+        Some(AVCaptureSessionInterruptionReason::VideoDeviceNotAvailableInBackground) => {
+            "The camera stopped while the app was in the background."
+        }
         Some(
             AVCaptureSessionInterruptionReason::VideoDeviceNotAvailableWithMultipleForegroundApps,
         ) => "The camera works only with the app on the whole screen.",
@@ -182,8 +188,8 @@ pub(crate) fn interrupted(notification: &NSNotification) -> String {
             "The phone stopped the camera to cool down."
         }
         _ => "The phone stopped the camera.",
-    }
-    .into()
+    };
+    Status::Gone(why.into())
 }
 
 /// The integer under `key` in `notification`'s user info.
@@ -857,7 +863,8 @@ mod tests {
     }
 
     /// An interruption that began stops the microphone and says why; one
-    /// that ended says nothing; a camera's says its reason.
+    /// that ended says nothing; a camera another has is Busy, and a
+    /// camera stopped otherwise says its reason.
     #[test]
     fn an_interruption_says_why() {
         // SAFETY: AVFoundation and AVFAudio constants
@@ -874,12 +881,12 @@ mod tests {
         assert!(interruption_began(&told(audio, kind, began)).is_some());
         assert_eq!(interruption_began(&told(audio, kind, ended)), None);
         let taken = AVCaptureSessionInterruptionReason::VideoDeviceInUseByAnotherClient.0;
-        assert_eq!(
-            interrupted(&told(camera, reason, taken)),
-            "A call or another app took the camera."
-        );
+        assert_eq!(interrupted(&told(camera, reason, taken)), Status::Busy);
         let away = AVCaptureSessionInterruptionReason::VideoDeviceNotAvailableInBackground.0;
-        assert!(interrupted(&told(camera, reason, away)).contains("background"));
+        assert!(matches!(
+            interrupted(&told(camera, reason, away)),
+            Status::Gone(why) if why.contains("background")
+        ));
     }
 
     /// One test at a time sets the app's one session.
