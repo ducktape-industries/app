@@ -47,11 +47,6 @@ pub const TINY: Role = Role {
     size: 11.,
     line: 14.,
 };
-/// a header's title, 17 / 21
-pub const TITLE: Role = Role {
-    size: 17.,
-    line: 21.,
-};
 /// a detail head's name, 20 / 24
 pub const HEADING: Role = Role {
     size: 20.,
@@ -85,20 +80,16 @@ pub const PRIMARY: f32 = 48.;
 pub const SHEET_ROW: f32 = 52.;
 /// The icon in a sheet row (`size.icon.sheet`).
 pub const ICON_SHEET: f32 = 20.;
-/// A chip (`size.chip`).
-pub const CHIP: f32 = 32.;
 /// A sheet's side inset (`Sheet.tsx`: 20).
 pub const SHEET_INSET: f32 = 20.;
 
 /// The design crate's spacing ladder (`spacing`).
 pub mod gap {
     pub const XXS: f32 = 4.;
-    pub const XS: f32 = 6.;
     pub const SM: f32 = 8.;
     pub const MD: f32 = 10.;
     pub const LG: f32 = 12.;
     pub const BLOCK: f32 = 16.;
-    pub const XL: f32 = 24.;
 }
 
 /// Text in `role`, `weight`, `color`, in the app's face.

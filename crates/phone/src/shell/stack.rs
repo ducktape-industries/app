@@ -21,12 +21,14 @@ pub enum Tab {
     Open,
 }
 
-/// A program opened: its seat's layout instance (one seat per program) and
-/// when it last left the screen, `None` while it is on the stack.
+/// A program opened, in its one seat.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Opened {
+    /// The program.
     pub program: &'static str,
+    /// Its seat's layout instance.
     pub instance: u64,
+    /// When it last left the screen; `None` while it is on the stack.
     pub left: Option<Instant>,
 }
 

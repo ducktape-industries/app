@@ -672,7 +672,10 @@ impl Root {
                 let this = cx.weak_entity();
                 let answer = move |yes: bool, cx: &mut App| {
                     consent::answer(ask, yes);
-                    let _ = this.update(cx, |root, cx| root.consent_moved(cx));
+                    // the window may have closed: the next one shows the
+                    // queue's front
+                    this.update(cx, |root, cx| root.consent_moved(cx))
+                        .unwrap_or_default();
                 };
                 let approve = answer.clone();
                 // Approve takes no press in the sheet's first moment: a
