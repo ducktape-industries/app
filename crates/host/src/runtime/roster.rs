@@ -451,7 +451,19 @@ pub(super) fn read_roster(asked_of: Connection, roster: &Roster, registry: &Regi
                 registry.remove(&gone);
             }
         }
-        let previous = relist(roster, programs.clone());
+        // the revision asked again under the roster's lock (registry, then
+        // roster, then connection): a leave that moved it since
+        // (`disconnected`, then `Roster::clear`) is never listed over
+        let previous = {
+            let mut listed = roster.lock();
+            if connection().lock().expect("views rpc").rev != asked_of.rev {
+                return;
+            }
+            std::mem::replace(&mut *listed, programs.clone())
+        };
+        if previous != programs {
+            rail_moved();
+        }
         let mut loads = Vec::new();
         for program in &names {
             if !registry.keys().any(|(name, _)| name == program) {
