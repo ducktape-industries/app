@@ -40,7 +40,7 @@ sha2.workspace = true
 identity.workspace = true
 # The roster's full query surface: its programs and its view-only entries.
 blob.workspace = true
-programs = { git = "https://github.com/ducktape-industries/programs", rev = "18f6cd0006315aa6f8e6c511c66d24c0ab8999ff", package = "programs" }
+programs = { git = "https://github.com/ducktape-industries/programs", rev = "742d4f7032ff93134df7998bf0efcadcd3bcd04b", package = "programs" }
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -81,9 +81,9 @@ tokio = { version = "1", features = ["test-util"] }
 # `backend/live.rs`'s test node: a self-signed certificate of an ed25519 key, as halo makes its own
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 # the live tests' node: its key's verifier, as the handshake pins it
-keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "18477333b668df1bd36699eef05ecc131522aa1a", package = "keyscheme", features = ["testkit"] }
+keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a0151a411c3558453c34bb8272b93dfc428cb74", package = "keyscheme", features = ["testkit"] }
 # the consent card's words for a validators' vote
-valset = { git = "https://github.com/ducktape-industries/programs", rev = "18f6cd0006315aa6f8e6c511c66d24c0ab8999ff", package = "valset" }
+valset = { git = "https://github.com/ducktape-industries/programs", rev = "742d4f7032ff93134df7998bf0efcadcd3bcd04b", package = "valset" }
 borsh.workspace = true
 # the tests' keys: commonware's ed25519, through noded-client's impl
 commonware-cryptography.workspace = true
@@ -95,7 +95,7 @@ gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tempfile.workspace = true
 # a fake node's changes socket (`runtime/kernel/node/tests.rs`)
 tokio-tungstenite.workspace = true
-blobs = { git = "https://github.com/ducktape-industries/programs", rev = "18f6cd0006315aa6f8e6c511c66d24c0ab8999ff", package = "blobs" }
+blobs = { git = "https://github.com/ducktape-industries/programs", rev = "742d4f7032ff93134df7998bf0efcadcd3bcd04b", package = "blobs" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # test-support: its headless renderer, which `render/tests/picture_pixels.rs`

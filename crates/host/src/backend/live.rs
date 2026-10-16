@@ -29,7 +29,7 @@ use futures::future::BoxFuture;
 use futures::{SinkExt as _, StreamExt as _};
 use live_wire::{
     Alias, Control, DatagramHeader, End, Ending, GroupHeader, HANDSHAKE_WAIT, Hello, IDLE,
-    KEEP_ALIVE, KeyScheme, Proof, RequestId, WsFrame,
+    KEEP_ALIVE, Proof, RequestId, Scheme, WsFrame,
 };
 pub(crate) use live_wire::{Code, Mode, Priority, Start, Track};
 use tokio::sync::{Notify, mpsc, oneshot, watch};
@@ -1310,7 +1310,7 @@ async fn dial(rpc: &RpcClient, client: Weak<Inner>) -> Result<Arc<Conn>, Error> 
     let endpoint = rpc.endpoint().to_owned();
     let hello = Hello {
         chain: status.genesis,
-        scheme: KeyScheme::Ed25519,
+        scheme: Scheme::Ed25519,
         key,
     };
     let node = &status.identity;
