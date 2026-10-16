@@ -37,7 +37,8 @@ final class EdgeBack: NSObject {
 
   /// A swipe that ends at least a touch target (44) in, or still moving right, is Back; one dragged back is not.
   @objc private func swiped(_ pan: UIScreenEdgePanGestureRecognizer) {
-    guard pan.state == .ended else { return }
+    // a presented controller (a link's Safari view) takes its own edge swipe; the stack behind stays
+    guard pan.state == .ended, pan.view?.window?.rootViewController?.presentedViewController == nil else { return }
     if pan.translation(in: pan.view).x >= 44 || pan.velocity(in: pan.view).x > 0 { ducktape_phone_back() }
   }
 }

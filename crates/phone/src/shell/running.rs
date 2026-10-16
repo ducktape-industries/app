@@ -13,8 +13,8 @@ use ducktape_host::a11y::Control as _;
 use ducktape_host::runtime::{RailRow, Seat};
 use gpui_kit::{
     AnyElement, AnyView, App, Context, Entity, InteractiveElement as _, IntoElement, KeyContext,
-    ParentElement as _, Role, StatefulInteractiveElement as _, StyleRefinement, Styled as _, div,
-    px, svg,
+    ParentElement as _, Role, SharedString, StatefulInteractiveElement as _, StyleRefinement,
+    Styled as _, div, px, svg,
 };
 
 /// The capsule as drawn: two 42 cells, 36 tall with its border; each
@@ -99,16 +99,30 @@ pub fn capsule(
         .border_1()
         .border_color(palette.border_strong())
         .child(drawn("icons/ellipsis.svg"))
-        .child(div().w(px(1.)).h_full().bg(palette.border_strong()))
+        .child(div().w(px(1.)).h_full().bg(palette.border()))
         .child(drawn("icons/x.svg"));
+    // the cell under a press box held dims (`look::PRESSED`): the ground
+    // laid over the capsule's height at the rest of the opacity (the frame
+    // is the press boxes' sibling, so it cannot dim itself)
+    let held = palette.background().opacity(1. - look::PRESSED);
     let press = |id: &'static str, name: &'static str, left: f32| {
         div()
             .id(id)
+            .group(id)
             .control(Role::Button, name)
             .absolute()
             .top_0()
             .left(px(left))
             .size(px(look::HIT))
+            .flex()
+            .items_center()
+            .child(
+                div()
+                    .id(SharedString::from(format!("{id}/held")))
+                    .w_full()
+                    .h(px(CAPSULE))
+                    .group_active(id, move |style| style.bg(held)),
+            )
     };
     div()
         .absolute()

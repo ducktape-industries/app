@@ -21,10 +21,11 @@ mod running;
 mod sheet;
 pub mod stack;
 
+use ducktape_host::a11y::Control as _;
 use ducktape_host::contract::{Boot, OsServices, Signal, SoftKeyboard};
 use ducktape_host::runtime::notify::{Opened as Banner, Permission};
 use ducktape_host::runtime::{Back, consent};
-use ducktape_host::session::{Opening, Place, SeatsEvent, Session, SessionEvent, Shared};
+use ducktape_host::session::{Opening, Place, Seats, SeatsEvent, Session, SessionEvent, Shared};
 use futures::StreamExt as _;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{
@@ -194,11 +195,13 @@ pub fn open_window(cx: &mut App) {
 fn handed_on(signal: Signal, cx: &mut App) {
     match signal {
         Signal::MemoryWarning => {
-            let stack = cx.global::<Phone>().stack.clone();
+            let phone = cx.global::<Phone>();
+            let (stack, seats) = (phone.stack.clone(), phone.shared.seats.clone());
             stack.update(cx, |stack, cx| {
                 stack.trim();
                 cx.notify();
             });
+            let_go_closed(&stack, &seats, cx);
         }
         Signal::Back => {
             if let Some(root) = root(cx) {
@@ -213,6 +216,20 @@ fn handed_on(signal: Signal, cx: &mut App) {
         // the host consumes these
         Signal::Lifecycle(_) | Signal::BannerClick(_) => {}
     }
+}
+
+/// Every seat of a program no longer open let go now, drawn or not: an
+/// Android trim in the background comes with no surface, so no draw would
+/// (SPEC §7.5). The seats that stay are kept where they are; the next draw
+/// places them again.
+fn let_go_closed(stack: &Entity<Stack>, seats: &Entity<Seats>, cx: &mut App) {
+    let kept = stack
+        .read(cx)
+        .open()
+        .iter()
+        .map(|opened| (opened.instance, (opened.program, None)))
+        .collect();
+    seats.update(cx, |seats, cx| seats.place(kept, cx));
 }
 
 /// The AX door over the phone's window, on [`DOOR_PORT`]; the door file in
@@ -269,6 +286,13 @@ pub struct Root {
     join: Entity<join::Join>,
     stack: Entity<Stack>,
     sheet: Option<Sheet>,
+    /// The consent queue's front, shown over any sheet until it is
+    /// answered, and when it came up (Approve keeps no press in its first
+    /// moment, `consent::SETTLE`).
+    consent: Option<(u64, std::time::Instant)>,
+    /// An alert over everything but the consent sheet (Expo `Alert`): its
+    /// title and its sentence, dismissed by OK or Back.
+    alert: Option<(&'static str, String)>,
     /// The program whose page is over the stack.
     about: Option<&'static str>,
     /// The title each seat's view gave its window, by its instance.
@@ -276,12 +300,8 @@ pub struct Root {
     /// What `Seats` was last told: each open program's place, and the seat
     /// whose view may move the keys.
     placed: (BTreeMap<u64, Place>, Option<u64>),
-    /// A link that came before the network listed its programs.
-    waiting: Option<String>,
-    /// Home has listed the network's programs: every one's code was read
-    /// once. Until then Home lists none (a program with no view would show
-    /// for a moment); after, one still on its way is left out alone.
-    known: bool,
+    /// Links that came before the network's program list did, in order.
+    waiting: Vec<String>,
     /// Home's filter.
     search: Entity<InputState>,
     /// Each placed seat, observed: a tree, a standin or a fault that moved
@@ -342,18 +362,17 @@ impl Root {
         subscriptions.extend(crate::os::follow(window, cx));
         gpui_kit::component::Theme::sync_system_appearance(Some(window), cx);
         let join = cx.new(|cx| join::Join::new(shared.clone(), window, cx));
-        // an Activity made again finds the rail already read
-        let known = home::all_read(shared.rail.read(cx).rows());
         Self {
             shared,
             join,
             stack,
             sheet: None,
+            consent: None,
+            alert: None,
             about: None,
             titles: BTreeMap::new(),
             placed: Default::default(),
-            waiting: None,
-            known,
+            waiting: Vec::new(),
             search,
             watched: BTreeMap::new(),
             _subscriptions: subscriptions,
@@ -374,9 +393,7 @@ impl Root {
 
     /// `program` on top, in its seat; the seat's instance.
     fn open(&mut self, program: &'static str, cx: &mut Context<Self>) -> u64 {
-        if !matches!(self.sheet, Some(Sheet::Consent(..))) {
-            self.sheet = None;
-        }
+        self.sheet = None;
         self.about = None;
         self.stack.update(cx, |stack, cx| {
             let instance = stack.push(program);
@@ -404,9 +421,7 @@ impl Root {
             cx.write_to_clipboard(ClipboardItem::new_string(link));
             self.notice("Copied".into(), cx);
         }
-        if !matches!(self.sheet, Some(Sheet::Consent(..))) {
-            self.sheet = None;
-        }
+        self.sheet = None;
         cx.notify();
     }
 
@@ -427,13 +442,10 @@ impl Root {
         });
     }
 
-    /// `sheet` over the screen, unless the consent sheet is up: it stays
-    /// until it is answered.
+    /// `sheet` over the screen (under the consent sheet, when one is up).
     fn show(&mut self, sheet: Sheet, cx: &mut Context<Self>) {
-        if !matches!(self.sheet, Some(Sheet::Consent(..))) {
-            self.sheet = Some(sheet);
-            cx.notify();
-        }
+        self.sheet = Some(sheet);
+        cx.notify();
     }
 
     fn account_sheet(&mut self, cx: &mut Context<Self>) {
@@ -444,47 +456,56 @@ impl Root {
         self.show(Sheet::Capsule(program), cx);
     }
 
-    /// The sheet goes (the scrim, Back): the consent sheet's ask is
-    /// refused, as Cancel refuses it.
+    /// The sheet goes (the scrim, Back).
     fn close_sheet(&mut self, cx: &mut Context<Self>) {
-        match self.sheet.take() {
-            Some(Sheet::Consent(ask, _)) => {
-                consent::answer(ask, false);
-                self.consent_moved(cx);
-            }
-            Some(_) => cx.notify(),
-            None => {}
+        if self.sheet.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// The consent sheet goes (its scrim, Back): its ask is refused, as
+    /// Cancel refuses it, and the queue's next shows.
+    fn refuse_consent(&mut self, cx: &mut Context<Self>) {
+        if let Some((ask, _)) = self.consent.take() {
+            consent::answer(ask, false);
+            self.consent_moved(cx);
         }
     }
 
     /// The consent queue moved: its front shows in the consent sheet, over
     /// any other sheet; none, and the consent sheet goes.
     fn consent_moved(&mut self, cx: &mut Context<Self>) {
-        match consent::front() {
-            Some((ask, _)) => {
-                if !matches!(self.sheet, Some(Sheet::Consent(shown, _)) if shown == ask) {
-                    self.sheet = Some(Sheet::Consent(ask, Self::now(cx)));
-                }
-            }
-            None => {
-                if let Some(Sheet::Consent(..)) = self.sheet {
-                    self.sheet = None;
-                }
-            }
-        }
+        self.consent = match (consent::front(), self.consent) {
+            (Some((ask, _)), Some((shown, opened))) if shown == ask => Some((shown, opened)),
+            (Some((ask, _)), _) => Some((ask, Self::now(cx))),
+            (None, _) => None,
+        };
+        cx.notify();
+    }
+
+    /// An alert up over the window (Expo `Alert.alert` with one OK).
+    fn alert(&mut self, title: &'static str, said: String, cx: &mut Context<Self>) {
+        self.alert = Some((title, said));
         cx.notify();
     }
 
     /// Back (Android's button, iOS's edge): on the join, the code goes back
-    /// to the address and the address is the OS's own; else a sheet closes
-    /// first, then a program's page; else the view on top goes back inside
-    /// itself when its last frame's root asks to hear it; else the stack
-    /// pops; at Home, the OS's own (SPEC §7.6).
+    /// to the address and the address is the OS's own; else the consent
+    /// sheet's ask is refused, an alert dismissed, a sheet closed, a
+    /// program's page closed, each first; else the view on top goes back
+    /// inside itself when its last frame's root asks to hear it; else the
+    /// stack pops; at Home, the OS's own (SPEC §7.6).
     fn back(&mut self, cx: &mut Context<Self>) {
         match join::step(*self.shared.screen.read(cx).get()) {
             Some(join::Step::Code) => return self.join.update(cx, |join, cx| join.leave(cx)),
             Some(join::Step::Node) => return crate::os::back_at_root(),
             None => {}
+        }
+        if self.consent.is_some() {
+            return self.refuse_consent(cx);
+        }
+        if self.alert.take().is_some() {
+            return cx.notify();
         }
         if self.sheet.is_some() {
             return self.close_sheet(cx);
@@ -515,44 +536,43 @@ impl Root {
         self.shared.seats.read(cx).seat(instance)
     }
 
-    /// The network in hand was left: nothing stays open, and a link kept
-    /// for it is dropped.
+    /// The network in hand was left: nothing stays open (each seat let go
+    /// now, drawn or not), and the links kept for it are dropped.
     fn left_network(&mut self, cx: &mut Context<Self>) {
         self.stack.update(cx, |stack, cx| {
             stack.clear();
             cx.notify();
         });
-        if !matches!(self.sheet, Some(Sheet::Consent(..))) {
-            self.sheet = None;
-        }
+        let_go_closed(&self.stack, &self.shared.seats, cx);
+        self.sheet = None;
+        self.alert = None;
         self.titles.clear();
         self.about = None;
-        self.waiting = None;
-        self.known = false;
+        self.waiting.clear();
         cx.notify();
     }
 
-    /// The rail moved: Home redraws, and a link kept until the network
-    /// listed its programs opens now.
+    /// The network listed its programs: Home redraws, and the links kept
+    /// until then open now, in the order they came.
     fn rail_moved(&mut self, cx: &mut Context<Self>) {
-        self.known = self.known || home::all_read(self.shared.rail.read(cx).rows());
-        if self.known
-            && let Some(link) = self.waiting.take()
-        {
-            self.open_link(&link, cx);
+        if !self.shared.rail.read(cx).rows().is_empty() {
+            for link in std::mem::take(&mut self.waiting) {
+                self.open_link(&link, cx);
+            }
         }
         cx.notify();
     }
 
     /// A link from the OS (`duck://`, or the Expo app's `ducktape://`):
-    /// opened once the network lists its programs.
+    /// opened once the network lists its programs (`Rail::opening` reads
+    /// the list, not any program's code).
     fn take_link(&mut self, link: String, cx: &mut Context<Self>) {
         let link = match link.strip_prefix("ducktape://") {
             Some(rest) => format!("duck://{rest}"),
             None => link,
         };
-        if !self.known {
-            self.waiting = Some(link);
+        if self.shared.rail.read(cx).rows().is_empty() {
+            self.waiting.push(link);
         } else {
             self.open_link(&link, cx);
         }
@@ -578,9 +598,16 @@ impl Root {
                     self.notice(said, cx);
                 }
             }
+            // Expo's `Alert` (mobile `src/kit/navigate.ts`), its words
             Opening::Elsewhere { chain, .. } => {
-                self.notice(
-                    format!("This link is for {chain}, you're on {network}."),
+                let here = if network.is_empty() {
+                    "another network".to_owned()
+                } else {
+                    network
+                };
+                self.alert(
+                    "Another network",
+                    format!("This link is for {chain}, you're on {here}."),
                     cx,
                 );
             }
@@ -635,8 +662,10 @@ impl Root {
 
     /// Every open program's seat placed in this window with the safe body,
     /// in front only on top of the stack in an active window, the keys its
-    /// view's while no sheet is up: told to `Seats` after this draw when
-    /// it moved.
+    /// view's while nothing (a sheet, the consent sheet, an alert) is over
+    /// it: told to `Seats` after this draw when it moved, and each placed
+    /// seat observed (a Root made again re-places the seats there were, so
+    /// `Seats` does not notify).
     fn place(&mut self, window: &Window, body: (f32, f32), cx: &mut Context<Self>) {
         let handle = window.window_handle();
         let active = window.is_window_active();
@@ -655,7 +684,8 @@ impl Root {
                 (opened.instance, (opened.program, Some(place)))
             })
             .collect();
-        let keys = top.filter(|_| self.sheet.is_none());
+        let covered = self.sheet.is_some() || self.consent.is_some() || self.alert.is_some();
+        let keys = top.filter(|_| !covered);
         if (&wanted, keys) == (&self.placed.0, self.placed.1) {
             return;
         }
@@ -663,6 +693,7 @@ impl Root {
         self.titles
             .retain(|instance, _| wanted.contains_key(instance));
         let seats = self.shared.seats.clone();
+        let this = cx.weak_entity();
         cx.defer(move |cx| {
             seats.update(cx, |seats, cx| seats.place(wanted.clone(), cx));
             for instance in wanted.keys() {
@@ -671,6 +702,8 @@ impl Root {
                     seat.update(cx, |seat, cx| seat.set_keys_free(free, cx));
                 }
             }
+            this.update(cx, |root, cx| root.watch_seats(cx))
+                .unwrap_or_default();
         });
     }
 
@@ -690,46 +723,141 @@ impl Root {
                 "Notifications",
                 self.notifications_sheet(program, palette, cx),
             ),
-            Sheet::Consent(ask, opened) => {
-                let (_, words) = consent::front().filter(|(front, _)| *front == ask)?;
-                let title = words.title;
-                let this = cx.weak_entity();
-                let answer = move |yes: bool, cx: &mut App| {
-                    consent::answer(ask, yes);
-                    // the window may have closed: the next one shows the
-                    // queue's front
-                    this.update(cx, |root, cx| root.consent_moved(cx))
-                        .unwrap_or_default();
-                };
-                let approve = answer.clone();
-                // Approve takes no press in the sheet's first moment: a
-                // second press the view asked for lands before anyone read it
-                let approved = move |cx: &mut App| {
-                    if Self::now(cx).saturating_duration_since(opened) >= consent::SETTLE {
-                        approve(true, cx);
-                    }
-                };
-                let body = consent::sheet(words, palette.dark(), approved, answer);
-                (title, body.into_any_element())
+        };
+        let close = Self::close_sheet;
+        Some(sheet::frame(
+            "sheet",
+            name,
+            content,
+            (bottom, room),
+            close,
+            palette,
+            cx,
+        ))
+    }
+
+    /// The consent sheet for `ask`, opened at `opened`: the host's confirm
+    /// sheet content in the phone's sheet. `None` once `ask` is no longer
+    /// the queue's front (answered elsewhere).
+    fn consent_sheet(
+        &mut self,
+        (ask, opened): (u64, std::time::Instant),
+        (bottom, room): (gpui_kit::Pixels, gpui_kit::Pixels),
+        palette: look::Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let (_, words) = consent::front().filter(|(front, _)| *front == ask)?;
+        let title = words.title;
+        let this = cx.weak_entity();
+        let answer = move |yes: bool, cx: &mut App| {
+            consent::answer(ask, yes);
+            // the window may have closed: the next one shows the queue's
+            // front
+            this.update(cx, |root, cx| root.consent_moved(cx))
+                .unwrap_or_default();
+        };
+        let approve = answer.clone();
+        // Approve takes no press in the sheet's first moment: a second
+        // press the view asked for lands before anyone read it
+        let approved = move |cx: &mut App| {
+            if Self::now(cx).saturating_duration_since(opened) >= consent::SETTLE {
+                approve(true, cx);
             }
         };
-        Some(sheet::frame(name, content, bottom, room, palette, cx))
+        let body = consent::sheet(words, palette.dark(), approved, answer);
+        let refuse = Self::refuse_consent;
+        Some(sheet::frame(
+            "consent",
+            title,
+            body,
+            (bottom, room),
+            refuse,
+            palette,
+            cx,
+        ))
+    }
+
+    /// The alert up (the shell boards' dialog, Expo `Alert` with one OK): a
+    /// centred card over the scrim, its title, its sentence, OK at the
+    /// right.
+    fn alert_card(
+        &self,
+        (title, said): (&'static str, String),
+        palette: look::Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let ok = div()
+            .id("alert/ok")
+            .control(gpui_kit::Role::Button, "OK")
+            .h(px(look::HIT))
+            .px(px(look::gap::LG))
+            .flex()
+            .items_center()
+            .active(|style| style.opacity(look::PRESSED))
+            .child(look::text(look::BODY, FontWeight::MEDIUM, palette.foreground()).child("OK"))
+            .on_click(cx.listener(|root, _, _, cx| {
+                root.alert = None;
+                cx.notify();
+            }));
+        let card = div()
+            .id("alert")
+            .control(gpui_kit::Role::AlertDialog, title)
+            .occlude()
+            .mx(px(24.))
+            .flex()
+            .flex_col()
+            .pt(px(20.))
+            .px(px(20.))
+            .pb(px(look::gap::LG))
+            .bg(palette.background())
+            .border_1()
+            .border_color(palette.border_strong())
+            .child(
+                look::text(look::TITLE, FontWeight::MEDIUM, palette.foreground())
+                    .mb(px(look::gap::SM))
+                    .child(title),
+            )
+            .child(look::text(look::SMALL, FontWeight::NORMAL, palette.muted()).child(said))
+            .child(
+                div()
+                    .mt(px(look::gap::BLOCK))
+                    .flex()
+                    .justify_end()
+                    .gap(px(look::gap::XXS))
+                    .child(ok),
+            );
+        div()
+            .id("alert/scrim")
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .occlude()
+            .bg(palette.scrim())
+            .flex()
+            .flex_col()
+            .justify_center()
+            .child(ducktape_host::a11y::modal(card))
+            .into_any_element()
     }
 
     /// The account menu (the shell boards' 40): who is reading, and the
     /// account's own program (the `programs` view), opened by name.
     fn account_menu(&mut self, palette: look::Palette, cx: &mut Context<Self>) -> AnyElement {
         let network = self.shared.session.read(cx).get().network.clone();
-        let (name, caption) = match home::me(&self.shared, cx) {
-            Some((number, name)) => (name, format!("account {number} · {network}")),
-            None => (String::new(), network),
+        // Expo `you.tsx`: the account's name, else "No account yet"; the
+        // avatar draws the name's initial, or none
+        let (avatar, name, caption) = match home::me(&self.shared, cx) {
+            Some((number, name)) => (name.clone(), name, format!("account {number} · {network}")),
+            None => (String::new(), "No account yet".to_owned(), network),
         };
         let head = sheet::head(palette).child(
             div()
                 .flex()
                 .items_center()
                 .gap(px(look::gap::LG))
-                .child(home::avatar(&name, 40., palette))
+                .child(home::avatar(&avatar, 40., palette))
                 .child(
                     div()
                         .flex_1()
@@ -1020,14 +1148,7 @@ impl Render for Root {
                         Tab::Home => {
                             let searching =
                                 self.search.read(cx).focus_handle(cx).is_focused(window);
-                            home::home(
-                                &self.shared,
-                                &self.search,
-                                searching,
-                                self.known,
-                                palette,
-                                cx,
-                            )
+                            home::home(&self.shared, &self.search, searching, palette, cx)
                         }
                         Tab::Open => {
                             let opened = self.stack.read(cx).open().to_vec();
@@ -1053,15 +1174,161 @@ impl Render for Root {
         if let Some(toast) = self.toast(toast_bottom, palette, cx) {
             root = root.child(toast);
         }
+        let room = viewport.height - edges.top;
+        // what a sheet was over is gone (a program no longer listed, an ask
+        // answered elsewhere): `place` withheld the keys for it this draw,
+        // so the window draws again
         if let Some(sheet) = self.sheet {
-            let room = viewport.height - edges.top;
             match self.sheet(sheet, edges.bottom, room, palette, cx) {
                 Some(sheet) => root = root.child(sheet),
-                // what it was over is gone (an ask answered elsewhere, a
-                // program no longer listed)
-                None => self.sheet = None,
+                None => {
+                    self.sheet = None;
+                    cx.notify();
+                }
+            }
+        }
+        if let Some(alert) = self.alert.clone() {
+            root = root.child(self.alert_card(alert, palette, cx));
+        }
+        if let Some(asked) = self.consent {
+            match self.consent_sheet(asked, (edges.bottom, room), palette, cx) {
+                Some(sheet) => root = root.child(sheet),
+                None => {
+                    self.consent = None;
+                    cx.notify();
+                }
             }
         }
         root
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ducktape_host::runtime::Roster;
+    use ducktape_host::session::Screen;
+    use gpui_kit::{TestAppContext, VisualTestContext};
+
+    const PROGRAM: &str = "phone-root-test";
+
+    /// The program on top of the stack.
+    fn top(stack: &Entity<Stack>, cx: &mut VisualTestContext) -> Option<&'static str> {
+        stack.read_with(cx, |stack, _| stack.top())
+    }
+
+    /// The window over a phone on a network with an account (the stack, not
+    /// the join), its root, through the host's own entities: a link held
+    /// until the program list comes, then opened; the program on top placed
+    /// in front with the keys; the capsule's menu withholding them; Back
+    /// closing the sheet, then popping (the seat kept, out of front); a
+    /// consent ask refused by Back; a memory warning letting the seat of a
+    /// program left go with no draw.
+    #[gpui_kit::test]
+    fn the_root_holds_links_places_seats_and_walks_back(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        cx.update(gpui_kit::init);
+        let shared = cx.update(|cx| Shared::for_test(Default::default(), Default::default(), cx));
+        let stack = cx.new(|_| Stack::default());
+        cx.update(|cx| {
+            cx.set_global(Phone {
+                shared: shared.clone(),
+                stack: stack.clone(),
+                window: None,
+                waiting: Vec::new(),
+            })
+        });
+        let (root, cx) =
+            cx.add_window_view(|window, cx| Root::new(shared.clone(), stack.clone(), window, cx));
+        cx.update(|window, _| window.activate_window());
+        shared.screen.update(cx, |screen, cx| {
+            screen.set(Screen::Desk, cx);
+        });
+        cx.run_until_parked();
+
+        root.update(cx, |root, cx| {
+            root.take_link(format!("duck://{PROGRAM}"), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            top(&stack, cx),
+            None,
+            "a link opened before the program list"
+        );
+        ducktape_host::runtime::seat_for_test(PROGRAM, 320);
+        shared.rail.update(cx, |rail, cx| {
+            rail.read_off(Roster::listing(&[PROGRAM]), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(top(&stack, cx), Some(PROGRAM), "the held link did not open");
+
+        let instance = stack
+            .read_with(cx, |stack, _| stack.instance(PROGRAM))
+            .expect("opened");
+        let seat = |cx: &mut VisualTestContext| {
+            shared.seats.read_with(cx, |seats, _| seats.seat(instance))
+        };
+        let placed = |cx: &mut VisualTestContext| {
+            seat(cx)
+                .expect("a seat")
+                .read_with(cx, |seat, _| (seat.in_front(), seat.keys_free()))
+        };
+        assert_eq!(placed(cx), (true, true), "on top: in front, the keys its");
+
+        root.update(cx, |root, cx| root.capsule_menu(PROGRAM, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            placed(cx),
+            (true, false),
+            "the keys under the capsule's menu"
+        );
+
+        root.update(cx, |root, cx| root.back(cx));
+        cx.run_until_parked();
+        assert!(
+            root.read_with(cx, |root, _| root.sheet.is_none()),
+            "Back kept the sheet"
+        );
+        assert_eq!(
+            placed(cx),
+            (true, true),
+            "the keys back with the sheet gone"
+        );
+        root.update(cx, |root, cx| root.back(cx));
+        cx.run_until_parked();
+        assert_eq!(top(&stack, cx), None, "Back did not pop");
+        assert_eq!(
+            placed(cx),
+            (false, false),
+            "a program left stays seated, out of front"
+        );
+
+        let words = consent::Words {
+            title: consent::ACCOUNT,
+            said: "Root test".into(),
+            id: None,
+            shown: None,
+            described: false,
+            card: Default::default(),
+        };
+        let mut told = consent::queue(PROGRAM, 0, words).expect("queued");
+        root.update(cx, |root, cx| root.consent_moved(cx));
+        cx.run_until_parked();
+        assert!(
+            root.read_with(cx, |root, _| root.consent.is_some()),
+            "the ask did not show"
+        );
+        root.update(cx, |root, cx| root.back(cx));
+        assert_eq!(
+            futures::FutureExt::now_or_never(told.answer()),
+            Some(Some(false)),
+            "Back did not refuse the ask"
+        );
+
+        cx.update(|_, cx| handed_on(Signal::MemoryWarning, cx));
+        assert!(
+            seat(cx).is_none(),
+            "the seat of a program left outlived the warning"
+        );
     }
 }

@@ -58,12 +58,16 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 Native.back()
             }
         }
-        handOn(intent)
+        // the launching link once: not again when the Activity is made again (a font or locale change) or the app is
+        // relaunched from Recents, which hands the old intent back
+        if (state == null && (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0) handOn(intent)
     }
 
     /** `singleTask`: a link while the app runs comes here, not to a new instance. */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        // what `intent` reads from now on, so a re-creation finds this one, not the launch's
+        setIntent(intent)
         handOn(intent)
     }
 

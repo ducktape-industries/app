@@ -50,12 +50,6 @@ pub fn listed(shared: &Shared, cx: &App) -> Vec<RailRow> {
         .collect()
 }
 
-/// Every program the network lists has had its code read: whether each
-/// ships a view is known.
-pub fn all_read(rows: &[RailRow]) -> bool {
-    !rows.is_empty() && rows.iter().all(|row| !row.pending)
-}
-
 /// `program`'s row, while the network lists it.
 pub fn row_of(shared: &Shared, program: &str, cx: &App) -> Option<RailRow> {
     listed(shared, cx)
@@ -117,8 +111,12 @@ fn root_header(
         .flex()
         .items_center()
         .justify_center()
+        .active(|style| style.opacity(look::PRESSED))
         .child(avatar(name, look::AVATAR, palette))
-        .on_click(cx.listener(|root, _, _, cx| root.account_sheet(cx)));
+        .on_click(cx.listener(|root, _, window, cx| {
+            window.blur(cx);
+            root.account_sheet(cx);
+        }));
     let words = div()
         .flex_1()
         .min_w_0()
@@ -236,7 +234,7 @@ fn search(field: &Entity<InputState>, focused: bool, palette: Palette) -> Div {
             .child(
                 svg()
                     .path("icons/search.svg")
-                    .size(px(look::ICON_SHEET))
+                    .size(px(look::ICON_ROW))
                     .flex_none()
                     .text_color(palette.muted()),
             )
@@ -252,21 +250,24 @@ fn search(field: &Entity<InputState>, focused: bool, palette: Palette) -> Div {
     )
 }
 
-/// Home: the network's programs that answer the filter, three across; a
-/// tile opens its program; one a view asked about shows a dot (never a
-/// count, Expo `Dot`). Until every program's code is `known` once, a
-/// `Loading` line stands where the tiles go.
+/// Home: the network's programs that answer the filter, three across, each
+/// tile coming as its program's code is read; a tile opens its program;
+/// one a view asked about shows a dot (never a count, Expo `Dot`). While
+/// no tile is there and programs are still on their way, a `Loading` line
+/// stands where the tiles go.
 pub fn home(
     shared: &Shared,
     field: &Entity<InputState>,
     searching: bool,
-    known: bool,
     palette: Palette,
     cx: &mut Context<Root>,
 ) -> Div {
     let query = field.read(cx).value().trim().to_lowercase();
-    // a program still on its way may ship no view: not a tile until known
-    let rows: Vec<RailRow> = listed(shared, cx)
+    let all = listed(shared, cx);
+    let loading = all.is_empty() || all.iter().any(|row| row.pending);
+    // a program still on its way may ship no view: not a tile until its
+    // code is read
+    let rows: Vec<RailRow> = all
         .into_iter()
         .filter(|row| !row.pending && answers(row, &query))
         .collect();
@@ -275,12 +276,16 @@ pub fn home(
         let program = row.program;
         let name = name_of(row);
         let mut face = glyph(row, 56., 28., palette).relative();
+        // the board's tile dot: 8 in a 2 ring of the ground, at -2 / -6
         if badges.get(program).is_some_and(|count| *count > 0) {
             face = face.child(
                 dot(palette)
+                    .size(px(12.))
+                    .border_2()
+                    .border_color(palette.background())
                     .absolute()
-                    .top(px(-look::gap::XXS))
-                    .right(px(-look::gap::XXS)),
+                    .top(px(-2.))
+                    .right(px(-6.)),
             );
         }
         let mut tile = div()
@@ -295,6 +300,7 @@ pub fn home(
             .pt(px(look::gap::MD))
             .pb(px(look::gap::LG))
             .px(px(look::gap::XXS))
+            .active(|style| style.opacity(look::PRESSED))
             .child(face)
             .child(
                 look::text(look::SECONDARY, FontWeight::NORMAL, palette.foreground())
@@ -302,7 +308,8 @@ pub fn home(
                     .truncate()
                     .child(name),
             )
-            .on_click(cx.listener(move |root, _, _, cx| {
+            .on_click(cx.listener(move |root, _, window, cx| {
+                window.blur(cx);
                 root.open(program, cx);
             }));
         if let Some(stage) = row.note {
@@ -320,7 +327,7 @@ pub fn home(
         .min_h_0()
         .overflow_y_scroll()
         .child(search(field, searching, palette));
-    let body = if known {
+    let body = if !rows.is_empty() || !loading {
         body.child(section_head("Programs", rows.len(), palette))
             .child(
                 div()
@@ -428,6 +435,7 @@ pub fn open(
             .pl(px(look::GUTTER))
             .border_b_1()
             .border_color(palette.border())
+            .active(|style| style.opacity(look::PRESSED))
             .child(match icon {
                 Some(icon) => svg()
                     .path(SharedString::from(icon))
@@ -458,7 +466,8 @@ pub fn open(
                             .child(caption),
                     ),
             )
-            .on_click(cx.listener(move |root, _, _, cx| {
+            .on_click(cx.listener(move |root, _, window, cx| {
+                window.blur(cx);
                 root.open(program, cx);
             }));
         if badges.get(program).is_some_and(|count| *count > 0) {
@@ -613,16 +622,28 @@ pub fn tab_bar(on: Tab, inset: Pixels, palette: Palette, cx: &mut Context<Root>)
         .border_color(palette.border())
         .bg(palette.background())
         .child(
-            item("tab/home", "Home", "icons/square.svg", on == Tab::Home)
-                .on_click(cx.listener(|root, _, _, cx| root.pick(Tab::Home, cx))),
+            item("tab/home", "Home", "icons/square.svg", on == Tab::Home).on_click(cx.listener(
+                |root, _, window, cx| {
+                    window.blur(cx);
+                    root.pick(Tab::Home, cx);
+                },
+            )),
         )
         .child(
-            item("tab/open", "Open", "icons/archive.svg", on == Tab::Open)
-                .on_click(cx.listener(|root, _, _, cx| root.pick(Tab::Open, cx))),
+            item("tab/open", "Open", "icons/archive.svg", on == Tab::Open).on_click(cx.listener(
+                |root, _, window, cx| {
+                    window.blur(cx);
+                    root.pick(Tab::Open, cx);
+                },
+            )),
         )
         .child(
-            item("tab/account", "Account", "icons/circle-user.svg", false)
-                .on_click(cx.listener(|root, _, _, cx| root.account_sheet(cx))),
+            item("tab/account", "Account", "icons/circle-user.svg", false).on_click(cx.listener(
+                |root, _, window, cx| {
+                    window.blur(cx);
+                    root.account_sheet(cx);
+                },
+            )),
         )
 }
 

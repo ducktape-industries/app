@@ -221,29 +221,28 @@ fn manifest_of(bytes: &[u8]) -> Listing {
 /// phone's product page (wasm-mobile SPEC §7.2). `None` while its bytes
 /// are coming, when it failed, or ships no view.
 pub fn listing(program: &str) -> Option<Listing> {
+    // a drawn view and its compiled code carry the manifest's facts under
+    // the same names
+    macro_rules! listing_of {
+        ($held:expr) => {
+            Listing {
+                name: $held.name.clone(),
+                icon: $held.icon.clone(),
+                description: $held.description.clone(),
+                min_width: $held.min_width,
+                capabilities: $held.capabilities.clone(),
+                targets: $held.targets.clone(),
+                wire: $held.wire.clone(),
+            }
+        };
+    }
     let registry = lock(registry());
     registry
         .iter()
         .filter(|((name, _), _)| *name == program)
         .find_map(|(_, seat)| match &lock(seat).slot {
-            Slot::Ready(view) => Some(Listing {
-                name: view.name.clone(),
-                icon: view.icon.clone(),
-                description: view.description.clone(),
-                min_width: view.min_width,
-                capabilities: view.capabilities.clone(),
-                targets: view.targets.clone(),
-                wire: view.wire.clone(),
-            }),
-            Slot::Compiled(code) => Some(Listing {
-                name: code.name.clone(),
-                icon: code.icon.clone(),
-                description: code.description.clone(),
-                min_width: code.min_width,
-                capabilities: code.capabilities.clone(),
-                targets: code.targets.clone(),
-                wire: code.wire.clone(),
-            }),
+            Slot::Ready(view) => Some(listing_of!(view)),
+            Slot::Compiled(code) => Some(listing_of!(code)),
             Slot::Listed(listing) | Slot::Compiling(listing) => Some((**listing).clone()),
             _ => None,
         })

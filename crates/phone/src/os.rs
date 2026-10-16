@@ -345,9 +345,11 @@ pub fn follow<T: 'static>(window: &mut Window, cx: &mut Context<T>) -> Vec<Subsc
     }
     #[cfg(target_os = "android")]
     {
+        // the window active is the app in the foreground (SPEC §7.5): the
+        // session's status poll starts again on it
         vec![cx.observe_window_activation(window, |_, window, _| {
             send(Signal::Lifecycle(if window.is_window_active() {
-                gpui_kit::AppLifecyclePhase::Active
+                gpui_kit::AppLifecyclePhase::Foreground
             } else {
                 gpui_kit::AppLifecyclePhase::Background
             }))

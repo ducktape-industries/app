@@ -22,19 +22,17 @@ pub enum Sheet {
     Capsule(&'static str),
     /// The three words for `program`'s notices.
     Notifications(&'static str),
-    /// The front of the consent queue (`runtime::consent`), opened at
-    /// `opened` for the first moment Approve keeps (`consent::SETTLE`).
-    Consent(u64, std::time::Instant),
 }
 
-/// The sheet over the window: the scrim over everything, `content` docked
-/// to its bottom under the handle, at most `room` tall, padded by the
-/// bottom inset `bottom`.
+/// A sheet over the window, `id` its element's: the scrim over everything,
+/// `content` docked to its bottom under the handle, at most `room` tall,
+/// padded by the bottom inset `bottom`; a press on the scrim is `close`.
 pub fn frame(
+    id: &'static str,
     name: &'static str,
     content: impl IntoElement,
-    bottom: Pixels,
-    room: Pixels,
+    (bottom, room): (Pixels, Pixels),
+    close: fn(&mut Root, &mut Context<Root>),
     palette: Palette,
     cx: &mut Context<Root>,
 ) -> AnyElement {
@@ -52,7 +50,7 @@ pub fn frame(
                 .bg(palette.border_strong()),
         );
     let panel = div()
-        .id("sheet")
+        .id(id)
         .control(Role::Dialog, name)
         .occlude()
         .flex()
@@ -68,7 +66,7 @@ pub fn frame(
         .child(handle)
         .child(content);
     div()
-        .id("sheet/scrim")
+        .id(SharedString::from(format!("{id}/scrim")))
         .absolute()
         .top_0()
         .left_0()
@@ -79,7 +77,7 @@ pub fn frame(
         .flex()
         .flex_col()
         .justify_end()
-        .on_click(cx.listener(|root, _, _, cx| root.close_sheet(cx)))
+        .on_click(cx.listener(move |root, _, _, cx| close(root, cx)))
         .child(ducktape_host::a11y::modal(panel))
         .into_any_element()
 }
@@ -126,6 +124,7 @@ pub fn row(
         .items_center()
         .gap(px(14.))
         .px(px(look::SHEET_INSET))
+        .active(|style| style.opacity(look::PRESSED))
         .child(icon)
         .child(
             look::text(look::BODY, FontWeight::NORMAL, palette.foreground())

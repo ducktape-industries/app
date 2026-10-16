@@ -78,10 +78,11 @@ pub fn page(
             look::text(look::SECONDARY, FontWeight::NORMAL, palette.muted()).child(description),
         );
     }
+    // the board's `.phead`: gap 12, the words centred on the glyph
     let hero = div()
         .flex()
-        .items_start()
-        .gap(px(look::gap::BLOCK))
+        .items_center()
+        .gap(px(look::gap::LG))
         .p(px(look::GUTTER))
         .child(home::glyph(row, 56., 28., palette))
         .child(words);

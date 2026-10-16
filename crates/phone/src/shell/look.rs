@@ -103,6 +103,9 @@ pub const SHEET_ROW: f32 = 52.;
 pub const ICON_SHEET: f32 = 20.;
 /// A sheet's side inset (`Sheet.tsx`: 20).
 pub const SHEET_INSET: f32 = 20.;
+/// A pressable while it is held (Expo `platform.pressed`, the boards'
+/// `.press`): dimmed to this opacity.
+pub const PRESSED: f32 = 0.6;
 
 /// The design crate's spacing ladder (`spacing`).
 pub mod gap {

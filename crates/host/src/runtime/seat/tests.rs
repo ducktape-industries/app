@@ -869,6 +869,64 @@ fn a_pane_opens_its_compiled_view_at_once() {
     );
 }
 
+/// A pane that lets its program go (a phone's Open closing it, a memory
+/// warning): the seat is put back as the program's preloaded one, its view
+/// stepped back to its compiled code, so the rail still lists the program
+/// (not pending) and the next pane starts it with nothing loaded.
+#[test]
+fn a_seat_let_go_steps_back_to_its_code_and_stays_listed() {
+    const PROGRAM: &str = "let-go";
+    let view = view_declaring("Let go", "", "");
+    let code = blob_id(&view);
+    let listed = ::programs::View {
+        name: PROGRAM.into(),
+        view: code,
+    };
+    let node = FakeNode::new(Vec::new(), vec![listed], vec![view]);
+    let (roster, seats) = (Roster::default(), Registry::default());
+    read_roster(node.asked_of.clone(), &roster, &seats);
+    let seat = lock(&seats)[&(PROGRAM, 0)].clone();
+    eventually("the preload landed", || !lock(&seat).slot.loading());
+    drop(node);
+    super::super::roster::roster()
+        .lock()
+        .push(crate::backend::views::Program {
+            name: PROGRAM.into(),
+            code,
+            bare: true,
+        });
+    lock(registry()).insert((PROGRAM, 0), seat);
+    let opened = mounted(PROGRAM, 7201);
+    let started = futures::FutureExt::now_or_never(start_in(opened.clone(), PROGRAM)).is_some()
+        && matches!(&lock(&opened).slot, Slot::Ready(_));
+
+    let_go(PROGRAM, 7201);
+    let back = lock(registry()).get(&(PROGRAM, 0)).cloned();
+    let stepped = back.as_ref().map(|seat| {
+        let locked = lock(seat);
+        (
+            matches!(&locked.slot, Slot::Compiled(code) if code.name == "Let go"),
+            locked.instance,
+        )
+    });
+    let row = super::super::roster::roster()
+        .rail()
+        .into_iter()
+        .find(|row| row.program == PROGRAM);
+    lock(registry()).remove(&(PROGRAM, 0));
+    super::super::roster::roster()
+        .lock()
+        .retain(|program| program.name != PROGRAM);
+    assert!(started, "the pane's view was not up");
+    assert!(
+        back.is_some_and(|seat| Arc::ptr_eq(&seat, &opened)),
+        "the seat was not put back as the preloaded one"
+    );
+    assert_eq!(stepped, Some((true, 0)), "not stepped back to its code");
+    let row = row.expect("the program left the rail");
+    assert!(!row.pending, "the program let go reads pending");
+}
+
 /// Only a compiled seat out of the very blob a pane asks for is started as
 /// it is; anything else is loaded.
 #[test]

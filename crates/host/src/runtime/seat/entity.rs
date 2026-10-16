@@ -308,6 +308,12 @@ impl Seat {
         self.keys_free
     }
 
+    /// Whether it was placed in front (`place`).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn in_front(&self) -> bool {
+        self.in_front
+    }
+
     /// The body its view is laid out in (`place`).
     #[cfg(any(test, feature = "test-support"))]
     pub fn body(&self) -> Option<(f32, f32)> {
@@ -976,10 +982,11 @@ impl Seat {
 
 impl Drop for Seat {
     fn drop(&mut self) {
-        lock(registry()).remove(&(self.program, self.instance));
+        // back as the program's preloaded seat, its code kept (`let_go`)
+        let_go(self.program, self.instance);
         // a route its view never read goes with it: no seat takes its key again
         _ = take_route(self.program, self.instance);
-        // the program's row may now be read off another seat, or say Loading
+        // the program's row is read off the seat put back, or another
         rail_moved();
     }
 }
