@@ -126,9 +126,13 @@ impl OsServices for PhoneOs {
     fn device_key(&self, keyring: &str) -> Result<Arc<dyn noded_client::Signer>, KeyRefusal> {
         #[cfg(any(target_os = "ios", target_os = "android"))]
         {
-            crate::key::DeviceKey::open(keyring)
-                .map(|key| Arc::new(key) as Arc<dyn noded_client::Signer>)
-                .map_err(KeyRefusal::Denied)
+            let key = crate::key::DeviceKey::open(keyring).map_err(KeyRefusal::Denied)?;
+            // the public half only: which key a keyring opened, in the log
+            // the update from the Expo build is checked against (SPEC §4.8)
+            let public = noded_client::Signer::public_key(&key);
+            let public: String = public.iter().map(|byte| format!("{byte:02x}")).collect();
+            tracing::info!(target: "ducktape::phone", keyring, %public, "this device's key opened");
+            Ok(Arc::new(key))
         }
         #[cfg(not(any(target_os = "ios", target_os = "android")))]
         {

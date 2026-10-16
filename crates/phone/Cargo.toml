@@ -48,6 +48,11 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 gpui-pre-mobile.workspace = true
 # gpui-mobile's own JNI and NDK versions: one of each in the graph
 jni = "0.22"
+# gm's NativeActivity glue, which names `android_main` (os/android/jni.rs)
+android-activity = "0.6"
+# the host's events as `log` records, which gm's `android_logger` puts in
+# logcat (no tracing subscriber is set on Android)
+tracing = { workspace = true, features = ["log"] }
 ndk = { version = "0.9", features = ["nativewindow"] }
 
 [dev-dependencies]

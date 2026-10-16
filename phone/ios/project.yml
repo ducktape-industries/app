@@ -29,3 +29,5 @@ targets:
         LIBRARY_SEARCH_PATHS: $(PROJECT_DIR)/build/rust/$(PLATFORM_NAME)
         OTHER_LDFLAGS: $(inherited) -lducktape_phone $(RUST_NATIVE_LIBS)
         ENABLE_BITCODE: NO
+        # the Rust library is built for the Apple-silicon simulator only
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64

@@ -49,5 +49,5 @@ ios-sim:
 	cp $(CARGO_TARGET_DIR)/aarch64-apple-ios-sim/phone/libducktape_phone.a $(IOS_OUT)/iphonesimulator/
 	cd $(ROOT)/phone/ios && xcodegen generate --quiet
 	cd $(ROOT)/phone/ios && xcodebuild -project Ducktape.xcodeproj -scheme Ducktape -sdk iphonesimulator \
-		-configuration Debug -derivedDataPath build/derived -jobs 4 -quiet build
+		-configuration Debug -destination 'generic/platform=iOS Simulator' -derivedDataPath build/derived -jobs 4 -quiet build
 	@echo $(IOS_APP)

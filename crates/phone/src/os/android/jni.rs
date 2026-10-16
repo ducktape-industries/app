@@ -19,6 +19,10 @@
 //! - `key(code, action, meta)`, `insets(top, right, bottom, left, ime)` (pixels),
 //!   `back()`.
 //!
+//! - `android_main(app)`: the entry gm's NativeActivity glue (android-activity,
+//!   which gm links whatever path a host takes) names; never called, since
+//!   no NativeActivity is declared (see its own doc).
+//!
 //! Called from here: `Activity.moveTaskToBack(boolean)` on gm's render thread,
 //! through gm's own attached `Env` and the Activity reference gm keeps.
 #![allow(unsafe_code, reason = "the JNI entries the Android Activity calls")]
@@ -210,6 +214,16 @@ pub extern "system" fn Java_industries_ducktape_mobile_Native_back(
     _: JClass<'_>,
 ) {
     crate::os::send(ducktape_host::contract::Signal::Back);
+}
+
+/// The entry android-activity's NativeActivity glue calls. gm links that
+/// glue on every path (its `android-activity` dependency has no feature to
+/// leave it out), so the library must define the symbol to load at all;
+/// this app declares no NativeActivity, so nothing calls it. The root fix
+/// is gm's: make `android-activity` optional for the host-driven path.
+#[unsafe(no_mangle)]
+pub fn android_main(_: android_activity::AndroidApp) {
+    tracing::error!(target: "ducktape::phone", "a NativeActivity started; this app has none");
 }
 
 /// Puts the app behind the others: BACK at Home's root.
