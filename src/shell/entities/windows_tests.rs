@@ -674,6 +674,7 @@ fn a_views_ask_never_replaces_an_open_dialog(cx: &mut TestAppContext) {
         id: None,
         shown: Some("#3".into()),
         described: false,
+        card: Default::default(),
     };
     overlays.update(cx, |it, cx| it.open(Overlay::Approve, cx));
     let _told = consent::queue("chat", 0, words.clone()).expect("queued");
@@ -725,6 +726,7 @@ fn a_card_follows_its_request_off(cx: &mut TestAppContext) {
             id: None,
             shown: Some("#3".into()),
             described: false,
+            card: Default::default(),
         },
     )
     .expect("queued");
