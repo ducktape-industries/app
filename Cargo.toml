@@ -175,6 +175,9 @@ gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev =
 rmp-serde = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }
 gpui-pre-scheduler = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }
 gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }
+# gpui-base 0.7.3 with the UIKit text contract (its README.ducktape.md):
+# `InputState::text_input` carries a field's keyboard hints to the platform
+gpui-base = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }
 # Window::set_bounds (X11, macOS) and the Linux clipboard reads' wait hook
 # (`crates/web`): the backends, vendored in the fork
 gpui-pre-linux = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }

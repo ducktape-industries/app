@@ -76,15 +76,21 @@ fn applied() -> noded::Receipt {
     }
 }
 
-fn applying_node_with_a_lost_answer(
-    lost: &'static str,
-) -> (Node, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+/// What `op.submit` answered, read as a view reads it.
+fn decoded(answer: Answer) -> methods::Submitted {
+    methods::decode(&answer.expect("a pooled frame is an answer")).unwrap()
+}
+
+/// The ids of the frames a node was sent, in order.
+type Sent = std::sync::Arc<std::sync::Mutex<Vec<[u8; 32]>>>;
+
+fn applying_node_with_a_lost_answer(lost: &'static str) -> (Node, Sent) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let node = Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
     };
-    let submits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let submits = Sent::default();
     let counted = submits.clone();
     std::thread::spawn(move || {
         let mut lose = true;
@@ -103,7 +109,7 @@ fn applying_node_with_a_lost_answer(
                     let frame: noded::Frame = abi::decode(&submit.frame).unwrap();
                     assert_eq!(frame.body.anchor, TIP, "anchored at the tip the node named");
                     assert!(frame.body.salt.is_some(), "a write carries a salt");
-                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    counted.lock().unwrap().push(frame.body.id());
                     abi::encode(&noded::Submitted::Preconfirmed(applied()))
                 }
                 other => panic!("{other}"),
@@ -128,15 +134,15 @@ async fn a_submit_whose_answer_was_lost_is_not_submitted_again() {
     .await;
     let (node, submits) = applying_node_with_a_lost_answer(noded::route::SUBMIT);
     let answer = submit(node.clone(), call_registry()).await;
+    let sent = submits.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1, "one submit: the op was not applied twice");
     assert_eq!(
-        answer.unwrap_err().code,
-        refusal::NODE_FAILED,
-        "the loss is the answer, named as the node's"
-    );
-    assert_eq!(
-        submits.load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "one submit: the op was not applied twice"
+        decoded(answer),
+        methods::Submitted::InDoubt {
+            frame: sent[0],
+            until: TIP.height + 256,
+        },
+        "the loss is the answer: the frame the node may hold, and how long a block may carry it"
     );
 }
 
@@ -162,7 +168,77 @@ async fn a_submit_whose_anchor_read_was_lost_is_refused_unsent() {
         refusal::RPC_CLIENT,
         "nothing was sent: the view may ask again"
     );
-    assert_eq!(submits.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(submits.lock().unwrap().is_empty());
+}
+
+/// A node that answers the frame with its own refusal (a bad signature, a
+/// stale anchor: HTTP 400) pooled nothing: the refusal is the answer.
+#[tokio::test]
+async fn a_frame_the_node_refuses_outright_is_refused_not_submitted() {
+    use commonware_cryptography::Signer as _;
+    let _seat = backend::seat_serial();
+    backend::seat_key(std::sync::Arc::new(
+        commonware_cryptography::ed25519::PrivateKey::from_seed(41),
+    ))
+    .await;
+    let node = fake_node(vec![
+        (
+            noded::route::STATUS,
+            Mode::Answer(abi::encode(&status_at(TIP))),
+        ),
+        (
+            noded::route::SUBMIT,
+            Mode::Refuse(abi::encode(&abi::Refusal::new(
+                abi::reason::ANCHOR,
+                "the frame's anchor is not one of the 256 blocks before block 900",
+            ))),
+        ),
+    ]);
+    let refusal = submit(node.node.clone(), call_registry())
+        .await
+        .unwrap_err();
+    assert_eq!(refusal.code, abi::reason::ANCHOR);
+}
+
+/// The node pooled the frame and predicts the program refuses it: the
+/// answer is the refusal AND the frame, which a block may still carry, so
+/// the view does not take it for a write that never went out.
+#[tokio::test]
+async fn a_predicted_refusal_is_still_a_pooled_frame() {
+    use commonware_cryptography::Signer as _;
+    let _seat = backend::seat_serial();
+    backend::seat_key(std::sync::Arc::new(
+        commonware_cryptography::ed25519::PrivateKey::from_seed(41),
+    ))
+    .await;
+    let node = fake_node(vec![
+        (
+            noded::route::STATUS,
+            Mode::Answer(abi::encode(&status_at(TIP))),
+        ),
+        (
+            noded::route::SUBMIT,
+            Mode::Answer(abi::encode(&noded::Submitted::Preconfirmed(
+                noded::Receipt {
+                    outcome: abi::Outcome::Rejected(abi::Refusal::new(
+                        abi::reason::ALREADY_EXISTS,
+                        "that name is taken",
+                    )),
+                    ..applied()
+                },
+            ))),
+        ),
+    ]);
+    match decoded(submit(node.node.clone(), call_registry()).await) {
+        methods::Submitted::Refused { until, refusal, .. } => {
+            assert_eq!(until, TIP.height + 256);
+            assert_eq!(
+                (refusal.code.as_str(), refusal.message.as_str()),
+                (abi::reason::ALREADY_EXISTS, "that name is taken")
+            );
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 /// A view's `program.query` to a node that takes the request and never
@@ -245,7 +321,10 @@ async fn a_redirected_submit_goes_nowhere_else() {
         0,
         "the signed frame went on to the host the redirect named"
     );
-    assert_eq!(answer.unwrap_err().code, refusal::NODE_FAILED);
+    assert!(
+        matches!(decoded(answer), methods::Submitted::InDoubt { until, .. } if until == TIP.height + 256),
+        "the node took the frame and answered what this client does not read: it may hold it"
+    );
 }
 
 /// A node that hangs up on a read is asked once: the transport failure is
@@ -338,8 +417,12 @@ async fn two_identical_submits_in_flight_are_two_frames() {
         submit(node.clone(), call_registry()),
         submit(node.clone(), call_registry())
     );
-    assert_eq!(first, Ok(Vec::new()));
-    assert_eq!(second, Ok(Vec::new()), "each write carries its own salt");
+    let applied_once = |answer| match decoded(answer) {
+        methods::Submitted::Applied { frame, output, .. } if output.is_empty() => frame,
+        other => panic!("{other:?}"),
+    };
+    let (first, second) = (applied_once(first), applied_once(second));
+    assert_ne!(first, second, "each write carries its own salt");
     assert_eq!(applied.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
