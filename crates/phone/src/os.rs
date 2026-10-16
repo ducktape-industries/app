@@ -385,6 +385,48 @@ pub fn follow<T: 'static>(window: &mut Window, cx: &mut Context<T>) -> Vec<Subsc
     }
 }
 
+/// The system, as a sentence names it ("Light and dark come from iOS's
+/// setting."): Expo `platform.system`.
+pub const SYSTEM: &str = if cfg!(target_os = "android") {
+    "Android"
+} else {
+    "iOS"
+};
+
+/// The key store, named where it does not say how it keeps the key: Expo
+/// `platform.keyStore`.
+pub const KEY_STORE: &str = if cfg!(target_os = "android") {
+    "Android Keystore"
+} else {
+    "iOS Keychain"
+};
+
+/// This phone, as App settings names it (Expo `platform.phone`): the model
+/// and the system's version on Android; on iOS, where the Expo build read
+/// no model name, "iPhone" and the system's version (UIKit's
+/// `systemVersion`: major.minor, and the patch when there is one).
+pub fn phone() -> String {
+    #[cfg(target_os = "android")]
+    {
+        android::phone()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        #[cfg(target_os = "ios")]
+        let version = {
+            let version = objc2_foundation::NSProcessInfo::processInfo().operatingSystemVersion();
+            match version.patchVersion {
+                0 => format!("{}.{}", version.majorVersion, version.minorVersion),
+                patch => format!("{}.{}.{patch}", version.majorVersion, version.minorVersion),
+            }
+        };
+        // a build for no phone (the workspace's checks) has no version
+        #[cfg(not(target_os = "ios"))]
+        let version = "";
+        format!("iPhone · iOS {version}")
+    }
+}
+
 /// Brings up a refused camera's or microphone's settings page
 /// (`render::av::settings_page`): a link the system opens on iOS; on
 /// Android the Activity starts it, gm's platform opening no link (its

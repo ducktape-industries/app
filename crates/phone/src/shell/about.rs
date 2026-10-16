@@ -24,39 +24,26 @@ pub fn page(
     cx: &mut Context<Root>,
 ) -> Div {
     let program = row.program;
-    let hit = |id: &'static str, name: &'static str, icon: &'static str| {
-        div()
-            .id(id)
-            .control(Role::Button, name)
-            .size(px(look::HIT))
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                svg()
-                    .path(icon)
-                    .size(px(look::ICON_HIT))
-                    .text_color(palette.foreground()),
-            )
-    };
     // the Expo `Header` of a page that is not a root: back, nothing in the
-    // middle, the right hits; a hairline under it
-    let header = div()
-        .h(px(look::HEADER))
-        .flex_none()
-        .flex()
-        .items_center()
+    // middle, the right hit
+    let back = cx.listener(|root, _, _, cx| root.pop_page(cx));
+    let header = look::header("about/back", back, palette)
         .justify_between()
-        .px(px(look::gap::SM))
-        .border_b_1()
-        .border_color(palette.border())
         .child(
-            hit("about/back", "Back", "icons/arrow-left.svg")
-                .on_click(cx.listener(|root, _, _, cx| root.close_about(cx))),
-        )
-        .child(
-            hit("about/copy-link", "Copy link", "icons/link.svg")
+            div()
+                .id("about/copy-link")
+                .control(Role::Button, "Copy link")
+                .size(px(look::HIT))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    svg()
+                        .path("icons/link.svg")
+                        .size(px(look::ICON_HIT))
+                        .text_color(palette.foreground()),
+                )
                 .on_click(cx.listener(move |root, _, _, cx| root.copy_link(program, cx))),
         );
     let description = listing
@@ -101,7 +88,7 @@ pub fn page(
             look::text(look::BODY, FontWeight::MEDIUM, palette.primary_foreground()).child("Open"),
         )
         .on_click(cx.listener(move |root, _, _, cx| {
-            root.close_about(cx);
+            root.pop_page(cx);
             root.open(program, cx);
         }));
     let mut body = div()
@@ -149,7 +136,7 @@ pub fn page(
 
 /// A section's head (Expo `SectionHead`): 12 medium muted label, a count
 /// at the right.
-fn section(label: &'static str, count: Option<String>, palette: Palette) -> Div {
+pub(super) fn section(label: &'static str, count: Option<String>, palette: Palette) -> Div {
     div()
         .min_h(px(40.))
         .flex()

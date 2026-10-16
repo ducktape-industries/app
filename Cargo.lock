@@ -2860,6 +2860,7 @@ dependencies = [
  "ndk",
  "ndk-context",
  "noded-client",
+ "objc2-foundation 0.3.2",
  "ring",
  "tempfile",
  "tracing",
