@@ -34,6 +34,11 @@ pub struct Session {
     /// FNV-1a 64 over the frames after that restore (S0-webkit's
     /// `replay.js restore`).
     pub restored: &'static str,
+    /// [`revive`]'s frame hash and fuel over the ticks after the death, on
+    /// wasmtime: a restored view draws its own frames (a whole tree where
+    /// the recording has patches), so a revive is held to the reference
+    /// runner's revive, not to the recording.
+    pub revived: (&'static str, u64),
 }
 
 fn gunzip(bytes: &[u8]) -> Vec<u8> {
@@ -81,6 +86,7 @@ pub fn sessions() -> [Session; 2] {
             fuel: 1_906_273_787,
             snapshot_at: 119,
             restored: "bf0bc34cfbd3be03",
+            revived: ("ee26e3927ddf8ecb", 5_037_654),
         },
         Session {
             view: "forge",
@@ -93,6 +99,7 @@ pub fn sessions() -> [Session; 2] {
             fuel: 1_325_536_710,
             snapshot_at: 92,
             restored: "13577549968c5b26",
+            revived: ("46d54b411e1d258d", 22_744_996),
         },
     ]
 }
@@ -229,12 +236,12 @@ pub fn run(runner: &dyn ViewRunner, session: &Session) -> Result<Ran, String> {
 /// What a death and the host's revive gave.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Revived {
-    /// What the tick begun on the dead instance landed.
+    /// What the tick begun on the dead instance landed: `Runner: <words>`
+    /// for the runner's fault, `Frame` for a frame.
     pub dead_tick: String,
-    /// Ticks after the death that answered the recorded frame, of how many.
-    pub frames: (usize, usize),
-    /// The fuel over those ticks, and the reference run's over the same.
-    pub fuel: (u64, u64),
+    /// FNV-1a 64 over the frames after the death, and their fuel: what
+    /// [`Session::revived`] pins.
+    pub after: (String, u64),
 }
 
 /// A death and the host's revive (contract `ViewInstance`, SPEC §6.5): to
@@ -243,14 +250,12 @@ pub struct Revived {
 /// wasmtime, where the same revive runs on a living view); a tick begun on
 /// the old instance (on a dead page it lands `Fault::Runner` at once); a new
 /// instance seated at once (right after a death it waits for the new page),
-/// by the code only the dead instance still holds,
-/// restored from the kept snapshot, the kept batches replayed, and the rest
-/// of the session ticked on it, every frame against the recorded one and
-/// the fuel against `reference`'s, the per-tick fuel of an uninterrupted run.
+/// by the code only the dead instance still holds, restored from the kept
+/// snapshot, the kept batches replayed, and the rest of the session ticked
+/// on it: their frames hashed and their fuel summed.
 pub fn revive(
     runner: &dyn ViewRunner,
     session: &Session,
-    reference: &[u64],
     kill: Option<&dyn Fn() -> Result<(), String>>,
 ) -> Result<Revived, String> {
     let hash = hash_of(&session.code);
@@ -276,6 +281,7 @@ pub fn revive(
     let died = &session.ticks[last_kept + 1];
     let dead_tick = match old.tick(&died.0) {
         Landed::Frame(_) => "Frame".to_owned(),
+        Landed::Fault(Fault::Runner(words)) => format!("Runner: {words}"),
         other => format!("{other:?}"),
     };
     // the host's revive: a new instance at once, its code still held by
@@ -286,41 +292,17 @@ pub fn revive(
     for (events, _) in &session.ticks[k + 1..=last_kept] {
         new.frame(events)?;
     }
-    let (mut equal, mut fuel, mut expected) = (0, 0, 0);
-    let rest = &session.ticks[last_kept + 1..];
-    for (at, (events, recorded)) in rest.iter().enumerate() {
-        let frame = new.frame(events)?;
-        equal += usize::from(frame == *recorded);
+    let (mut frames, mut fuel) = (Vec::new(), 0);
+    for (events, _) in &session.ticks[last_kept + 1..] {
+        frames.push(new.frame(events)?);
         fuel += new.instance.fuel_used();
-        expected += reference.get(last_kept + 1 + at).copied().unwrap_or(0);
     }
     Ok(Revived {
         dead_tick,
-        frames: (equal, rest.len()),
-        fuel: (fuel, expected),
+        after: (fnv(frames.iter().map(Vec::as_slice)), fuel),
     })
 }
 
-/// Each tick's fuel over the whole session on one instance: the reference
-/// a revive's fuel is held to.
-pub fn fuel_per_tick(runner: &dyn ViewRunner, session: &Session) -> Result<Vec<u64>, String> {
-    let hash = hash_of(&session.code);
-    let _held = runner
-        .prepare(hash, &session.code, VIEW_BYTES)
-        .map_err(|failure| format!("prepare: {failure}"))?;
-    let mut whole = seat(runner, hash, 6)?;
-    whole.init()?;
-    session
-        .ticks
-        .iter()
-        .map(|(events, _)| {
-            whole.frame(events)?;
-            Ok(whole.instance.fuel_used())
-        })
-        .collect()
-}
-
-// wasmtime is the reference, and no wasmtime is linked on iOS
 #[cfg(all(test, not(target_os = "ios")))]
 mod tests {
     use super::*;
@@ -336,8 +318,7 @@ mod tests {
 
     /// The numbers the simulator gate must give, on the desktop's runner:
     /// the fuel the meter pass was proven against, every recorded frame,
-    /// the S0 restore hashes, and a revive that reproduces every frame and
-    /// tick's fuel after it.
+    /// the S0 restore hashes, and the revive's frames and fuel.
     #[test]
     fn the_sessions_give_the_reference_numbers_on_wasmtime() {
         let runner = wasmtime();
@@ -347,18 +328,12 @@ mod tests {
             assert_eq!(ran.fuel, session.fuel, "{}: fuel", session.view);
             assert_eq!(ran.frames, (all, all), "{}: frames", session.view);
             assert_eq!(ran.restored, session.restored, "{}: restore", session.view);
-            let reference = fuel_per_tick(&runner, &session).unwrap();
-            assert_eq!(reference.iter().sum::<u64>(), session.fuel);
-            let revived = revive(&runner, &session, &reference, None).unwrap();
+            let revived = revive(&runner, &session, None).unwrap();
             assert_eq!(revived.dead_tick, "Frame", "no death on wasmtime");
             assert_eq!(
-                revived.frames.0, revived.frames.1,
+                (revived.after.0.as_str(), revived.after.1),
+                session.revived,
                 "{}: revive",
-                session.view
-            );
-            assert_eq!(
-                revived.fuel.0, revived.fuel.1,
-                "{}: revive fuel",
                 session.view
             );
         }

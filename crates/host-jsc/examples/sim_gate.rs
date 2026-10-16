@@ -5,8 +5,8 @@
 //! over the session, every recorded frame, the frame hash after a restore.
 //! Then a death: it prints `KILL_ME pid <n>` for the outside (`kill -9` of
 //! the WebContent process, `crates/host-jsc/sim-gate.sh`), and once the
-//! page is dead revives the view as the host does, every frame and tick's
-//! fuel after it held to the uninterrupted run. Every result is a `GATE`
+//! page is dead revives the view as the host does, the frames and fuel
+//! after it held to wasmtime's revive. Every result is a `GATE`
 //! line on the console; the last is `GATE PASS` or `GATE FAIL`.
 //!
 //! Built for the simulator only (`--features gate --target
@@ -124,13 +124,6 @@ mod app {
             }
         }
         let chat = &sessions[0];
-        let reference = match gate::fuel_per_tick(runner, chat) {
-            Ok(reference) => reference,
-            Err(why) => {
-                failures.push(format!("reference: {why}"));
-                return failures;
-            }
-        };
         let seen = runner.deaths();
         let kill = || {
             let pid = runner.content_process().ok_or("no content process")?;
@@ -139,21 +132,20 @@ mod app {
             line(format!("DIED deaths {deaths}"));
             Ok(())
         };
-        match gate::revive(runner, chat, &reference, Some(&kill)) {
+        match gate::revive(runner, chat, Some(&kill)) {
             Ok(revived) => {
                 line(format!(
-                    "death: the tick begun on the dead page landed {}; after the revive frames {}/{} fuel {} (uninterrupted {})",
+                    "death: the tick begun on the dead page landed {}; after the revive frames {} fuel {} (wasmtime's revive {} {})",
                     revived.dead_tick,
-                    revived.frames.0,
-                    revived.frames.1,
-                    revived.fuel.0,
-                    revived.fuel.1,
+                    revived.after.0,
+                    revived.after.1,
+                    chat.revived.0,
+                    chat.revived.1,
                 ));
-                if !revived.dead_tick.starts_with("Fault(")
-                    || revived.frames.0 != revived.frames.1
-                    || revived.fuel.0 != revived.fuel.1
+                if !revived.dead_tick.starts_with("Runner: ")
+                    || (revived.after.0.as_str(), revived.after.1) != chat.revived
                 {
-                    failures.push("the revive differs".into());
+                    failures.push("the revive differs from wasmtime's".into());
                 }
             }
             Err(why) => failures.push(format!("death: {why}")),

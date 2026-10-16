@@ -32,7 +32,15 @@
 //! objc2, the crate's only `unsafe`, iOS), `gate.rs` (the session driver
 //! the simulator gate and its wasmtime reference share, feature `gate`).
 
+#[cfg_attr(
+    not(target_os = "ios"),
+    allow(dead_code, reason = "the iOS runner reads it; it is tested everywhere")
+)]
 mod answer;
+#[cfg_attr(
+    not(target_os = "ios"),
+    allow(dead_code, reason = "the iOS runner keeps it; it is tested everywhere")
+)]
 mod calls;
 #[cfg(target_os = "ios")]
 mod ffi;
@@ -50,9 +58,17 @@ use std::path::Path;
 /// The memory a describe module may reach: `program.describe`'s own bound
 /// (`describe::host::MEMORY`, which wasmtime's describe runs under; a test
 /// pins the two equal), baked in as a view's `view_bytes` is.
+#[cfg_attr(
+    not(target_os = "ios"),
+    allow(dead_code, reason = "the iOS runner's; tested everywhere")
+)]
 const DESCRIBE_MEMORY: u64 = 64 << 20;
 
 /// The name the page loads metered code by, and the file it is kept in.
+#[cfg_attr(
+    not(target_os = "ios"),
+    allow(dead_code, reason = "the iOS runner's; tested everywhere")
+)]
 fn file_name(hash: &[u8; 32], view_bytes: u64) -> String {
     let hex: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
     format!("{hex}-{view_bytes}.metered.wasm")
@@ -69,6 +85,10 @@ fn file_name(hash: &[u8; 32], view_bytes: u64) -> String {
 /// an app update that changes the pass reads the old pass's output until
 /// the OS purges the cache. Upgrade path: the shell scopes `cache_dir` per
 /// app build.
+#[cfg_attr(
+    not(target_os = "ios"),
+    allow(dead_code, reason = "the iOS runner's; tested everywhere")
+)]
 fn metered(
     cache: Option<&Path>,
     hash: &[u8; 32],
@@ -110,7 +130,7 @@ mod tests {
     #[test]
     fn metered_code_is_kept_and_read_back_by_input_and_budget() {
         let dir = std::env::temp_dir().join(format!("host-jsc-cache-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _gone = std::fs::remove_dir_all(&dir);
         let code = wat::parse_str(VIEW).unwrap();
         let hash = [3; 32];
         let (cold, source) = metered(Some(&dir), &hash, &code, 4 << 16).unwrap();
@@ -130,7 +150,7 @@ mod tests {
                 .ends_with(".partial")),
             "a file kept half-written"
         );
-        let _ = std::fs::remove_dir_all(&dir);
+        let _gone = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
