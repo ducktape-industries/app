@@ -125,9 +125,7 @@ pub fn accessible(node: &wire::Node) -> Accessible {
         Node::Overlay {
             label, children, ..
         } if named_overlay(label, children) => labelled(Role::Dialog, label),
-        Node::Sheet { label, .. } if label.as_deref().is_some_and(|label| !label.is_empty()) => {
-            labelled(Role::Dialog, label)
-        }
+        Node::Sheet { label, .. } if named_sheet(label) => labelled(Role::Dialog, label),
         // an unlabelled picture is decoration: it stays out of the tree
         Node::Image {
             label,

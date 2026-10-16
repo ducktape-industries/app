@@ -56,6 +56,20 @@ fn hsla_of(color: design::Color) -> gpui_kit::Hsla {
     gpui_kit::Rgba { r, g, b, a }.into()
 }
 
+/// The design palette of the kit theme's current mode: what host chrome
+/// drawn in a view's place (a sheet's handle and hairline) is coloured by.
+pub fn palette(cx: &gpui_kit::App) -> &'static design::Palette {
+    match gpui_kit::component::Theme::global(cx).is_dark() {
+        true => &design::DARK,
+        false => &design::LIGHT,
+    }
+}
+
+/// A design colour as gpui's.
+pub fn hsla(color: design::Color) -> gpui_kit::Hsla {
+    hsla_of(color)
+}
+
 pub use crate::fonts::{FAMILY_MONO, FAMILY_UI};
 
 /// The scrollbars stay shown through a light/dark switch: the mode lives on

@@ -83,6 +83,7 @@ impl ViewTree {
         let mut variable_lists = std::collections::HashSet::new();
         let mut drags = std::collections::HashSet::new();
         let mut dialogs = std::collections::HashSet::new();
+        let mut sheets = std::collections::HashSet::new();
         let mut sensors = std::collections::HashSet::new();
         let mut tooltip_routes = std::collections::HashSet::new();
         walk_authored_paths(&root, None, &mut Vec::new(), &mut |node, path| {
@@ -144,10 +145,11 @@ impl ViewTree {
                 } if named_overlay(label, children) => {
                     dialogs.insert(path.clone());
                 }
-                wire::Node::Sheet {
-                    label: Some(label), ..
-                } if !label.is_empty() => {
-                    dialogs.insert(path.clone());
+                wire::Node::Sheet { label, .. } => {
+                    sheets.insert(path.clone());
+                    if named_sheet(label) {
+                        dialogs.insert(path.clone());
+                    }
                 }
                 wire::Node::Sensor { .. } => {
                     sensors.insert(path.clone());
@@ -189,6 +191,8 @@ impl ViewTree {
         self.variable_lists
             .retain(|id, _| variable_lists.contains(id));
         self.drags.retain(|key, _| drags.contains(key));
+        // a sheet the view stopped drawing opens at its first detent again
+        self.sheets.retain(|key, _| sheets.contains(key));
         let opener = &mut self.opener;
         self.dialogs.retain(|key, (entry, was)| {
             let open = dialogs.contains(key);

@@ -162,6 +162,7 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
             id: Some(named_id(key)),
             style: crate::render::test_style(element.style().clone()),
             content,
+            transform: None,
         })
     };
     let paragraph = text(

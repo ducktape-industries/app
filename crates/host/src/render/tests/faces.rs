@@ -36,6 +36,7 @@ fn sensed(key: &str, family: &'static str) -> wire::Node {
             id: Some(named_id(key)),
             style: crate::render::plain_style(),
             content: WORDS.into(),
+            transform: None,
         })),
         style: crate::render::test_style(div().flex().font_family(family).style().clone()),
     }
@@ -94,6 +95,7 @@ fn spaced(key: &str, spacing: Option<f32>) -> wire::Node {
         id: Some(named_id(key)),
         style: crate::render::test_style(style.style().clone()),
         content: "abcdef".into(),
+        transform: None,
     })
 }
 
@@ -157,6 +159,7 @@ fn a_letter_spacing_at_the_end_of_f32_lays_out_and_paints() {
             id: Some(named_id(key)),
             style: crate::render::test_style(style.style().clone()),
             content: "a line long enough to wrap in its narrow box".into(),
+            transform: None,
         })
     };
     let mut children = Vec::new();

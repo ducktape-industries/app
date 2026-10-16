@@ -105,6 +105,7 @@ fn text(key: &str, content: impl Into<String>) -> wire::Node {
         id: Some(named_id(key)),
         style: crate::render::test_style(gpui_kit::StyleRefinement::default()),
         content: content.into(),
+        transform: None,
     })
 }
 
@@ -309,6 +310,7 @@ mod picture_presentation;
 mod primitives;
 mod rich_tooltip;
 mod selection;
+mod sheet;
 mod svg_real;
 mod uniform_list;
 mod variable_list;

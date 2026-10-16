@@ -225,6 +225,7 @@ fn a_blank_text_is_no_node_and_a_heading_is_named_by_its_rich_text(
                 id: None,
                 style: crate::render::plain_style(),
                 content: " ".into(),
+                transform: None,
             }),
             text("kept", "kept"),
         ],
