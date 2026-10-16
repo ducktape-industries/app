@@ -165,3 +165,32 @@ fn escape_asks_to_close_the_sheet(cx: &mut gpui_kit::TestAppContext) {
     native.simulate_keystrokes("escape");
     assert_eq!(dismissals(&events), 1);
 }
+
+/// A centred modal does not drag, so it has no handle; under touch the
+/// view leaves the panel's top to the host's band, which stays, empty, so
+/// the view's first row is never flush with the panel's top. On a desktop
+/// the view pads its own sheet and the host adds nothing.
+#[gpui_kit::test]
+fn a_centred_sheet_under_touch_keeps_the_handle_band(cx: &mut gpui_kit::TestAppContext) {
+    crate::contract::testing::touch_first_for_test(true);
+    let (tree, mut native, _events, _subscription) = open(cx, 1000., 700.);
+    // the panel is centred in the 700-tall body and ends where the rows
+    // end: a band over the rows puts them half the band below centre
+    let below_centre = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, _| {
+            let rows = window.find("rows").bounds();
+            f32::from(rows.top() - (px(700.) - rows.size.height) / 2.)
+        })
+    };
+    let band = crate::render::sheet::HANDLE_BAND;
+    assert!(
+        (below_centre(&mut native) - band / 2.).abs() < 1.,
+        "the band is over the rows"
+    );
+    crate::contract::testing::touch_first_for_test(false);
+    show(&tree, &mut native, true);
+    assert!(
+        below_centre(&mut native).abs() < 1.,
+        "a desktop sheet is the view's own"
+    );
+}

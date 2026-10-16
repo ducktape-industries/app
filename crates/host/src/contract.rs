@@ -746,6 +746,17 @@ pub mod testing {
         SNAPSHOT_EVERY.set(every);
     }
 
+    thread_local! {
+        /// This test thread's `OsFacts::touch_first`: the desktop's `false`
+        /// unless a test draws for a finger ([`touch_first_for_test`]).
+        static TOUCH_FIRST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// `OsFacts::touch_first` on this test thread from now on.
+    pub fn touch_first_for_test(touch: bool) {
+        TOUCH_FIRST.set(touch);
+    }
+
     impl OsServices for TestOs {
         fn dirs(&self) -> &Dirs {
             thread_local! {
@@ -821,7 +832,7 @@ pub mod testing {
             OsFacts {
                 mac_modifiers: false,
                 rss_unit: 1024,
-                touch_first: false,
+                touch_first: TOUCH_FIRST.get(),
                 device_label: "Test",
             }
         }
