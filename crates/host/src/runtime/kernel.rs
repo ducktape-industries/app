@@ -117,10 +117,10 @@ mod replies;
 pub(super) use node::{NodeTask, reconnected, spawn_reply};
 use node::{
     blob_get, blob_manifest, block, blocks, changes, heads, invite, network, query, spawn_asked,
-    status, submit, tx,
+    spawn_submit, status, tx,
 };
-use replies::InFlight;
 pub(super) use replies::Replies;
+use replies::{Claim, InFlight};
 
 /// The one current-thread tokio runtime every async I/O in the app runs
 /// on — node HTTP and websockets here, the shell's task stream, the loader
@@ -303,7 +303,7 @@ pub(super) fn answer(
                 &call.body,
                 own,
             ) {
-                None => spawn_asked(view, id, payload, submit, "host_call.op.submit"),
+                None => spawn_submit(view, id, payload),
                 Some(words) => node::spawn_consented(view, id, payload, call, words),
             }
         }
