@@ -93,6 +93,8 @@ pub(super) enum Mode {
     Close,
     /// `307 Temporary Redirect` to the URL: a node sending the request on.
     Redirect(String),
+    /// `400 Bad Request` with the body: the node's refusal.
+    Refuse(Vec<u8>),
 }
 
 /// A node on a local socket whose routes each answer one [`Mode`], one
@@ -141,6 +143,7 @@ fn serve(mut stream: std::net::TcpStream, routes: &[(&'static str, Mode)]) {
         }
         Mode::Stall => hung_up(&mut stream),
         Mode::Close => drop(stream),
+        Mode::Refuse(body) => respond(&mut stream, "400 Bad Request", body),
         Mode::Redirect(to) => write!(
             stream,
             "HTTP/1.1 307 Temporary Redirect\r\nLocation: {to}\r\nContent-Length: 0\r\n\r\n"

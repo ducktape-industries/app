@@ -37,19 +37,23 @@ pub async fn create_seated(client: &RpcClient, network: &str, name: &str) -> Res
 
 /// A passkey or recovery-key flow is a person's: their own keys join their
 /// own account. An agent's keys are its manager's to add, and a program's
-/// account holds none, so a key that holds either is told so instead of
-/// sending an `AddKey` identity would refuse.
+/// own account holds none, so a key that holds either is told so instead
+/// of sending an `AddKey` identity would refuse.
 pub fn person(account: &identity::Account) -> Result<(), String> {
     let name = &account.card.name;
     match &account.control {
-        Control::Person { .. } => Ok(()),
-        Control::Managed { manager, .. } => Err(format!(
+        Control::User { .. } => Ok(()),
+        Control::Program {
+            manager,
+            category: identity::Category::Agent,
+            ..
+        } => Err(format!(
             "This key belongs to {name} (account {}), an agent managed by account {manager}. \
              Passkeys and recovery keys are for a person's own account: sign in with a \
              person's key.",
             account.number
         )),
-        Control::Program { program } => Err(format!(
+        Control::System { program } => Err(format!(
             "This key belongs to the account of the program {program}, which takes no passkey or \
              recovery key."
         )),
@@ -70,5 +74,5 @@ pub async fn submit_seated(client: &RpcClient, network: &str, op: &Op) -> Result
     let frame = seated_frame(client, network, identity::PROGRAM, abi::encode(op))
         .await
         .map_err(|refusal| refusal.message)?;
-    submit(client, frame).await
+    submit(client, frame.encode()).await
 }

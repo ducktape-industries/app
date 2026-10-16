@@ -1,6 +1,6 @@
 //! Not styles, despite the name: the wire-to-gpui cursor mapping
 //! (`native_cursor`, used by ResizeHandle) and the rule for when an Overlay
-//! is a dialog (`named_overlay`, `has_named_overlay`), shared by the overlay
+//! or a Sheet is a dialog (`named_overlay`, `named_sheet`, `has_named_overlay`), shared by the overlay
 //! renderer, the AX mapping and focus commands.
 use super::*;
 
@@ -42,12 +42,18 @@ pub(super) fn named_overlay(label: &Option<String>, children: &[wire::Node]) -> 
     label.as_deref().is_some_and(|label| !label.is_empty()) && children.len() > 1
 }
 
+/// A Sheet is a dialog when it has a non-empty label: drawn, it is open.
+pub(super) fn named_sheet(label: &Option<String>) -> bool {
+    label.as_deref().is_some_and(|label| !label.is_empty())
+}
+
 /// Whether `node` or any descendant is an open dialog.
 pub(super) fn has_named_overlay(node: &wire::Node) -> bool {
     match node {
         wire::Node::Overlay {
             label, children, ..
         } if named_overlay(label, children) => true,
+        wire::Node::Sheet { label, .. } if named_sheet(label) => true,
         _ => node.children().iter().any(has_named_overlay),
     }
 }

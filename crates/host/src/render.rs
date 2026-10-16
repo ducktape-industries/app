@@ -36,6 +36,7 @@ mod layout;
 mod picture_resources;
 mod pictures;
 mod sensors;
+mod sheet;
 mod style;
 mod surfaces;
 mod svg_limits;
@@ -60,7 +61,7 @@ use inputs::Field;
 pub use pictures::PictureBytes;
 use pictures::SharedRasters;
 use sensors::SensorState;
-use style::{has_named_overlay, named_overlay, native_cursor};
+use style::{has_named_overlay, named_overlay, named_sheet, native_cursor};
 use svg_limits::{SvgPaintSource, guarded_svg_paint, svg_data_allowed};
 use uniform::UniformListHostState;
 use variable_list::VariableList;
@@ -241,6 +242,14 @@ pub struct ViewTree {
     webs: web::Pages,
     /// A resize handle's press position while its drag lasts.
     drags: HashMap<AuthoredPath, Point<Pixels>>,
+    /// A drawn sheet's detent and drag.
+    sheets: HashMap<AuthoredPath, sheet::SheetState>,
+    /// The sheet this render built, laid over the root (`sheet.rs`).
+    sheet_layer: Option<AnyElement>,
+    /// The body the view is laid out in, as its seat last told the view
+    /// (`Event::Viewport`): its width class docks a sheet or centres it.
+    /// `None` before a seat tells it (a tree drawn alone): the window's.
+    body: Option<Size<Pixels>>,
 
     // Scrolling.
     /// Identified containers with `overflow.y: scroll`; the scroll widget commands' targets.
@@ -334,6 +343,9 @@ impl ViewTree {
             uniform_lists: HashMap::new(),
             variable_lists: HashMap::new(),
             drags: HashMap::new(),
+            sheets: HashMap::new(),
+            sheet_layer: None,
+            body: None,
             dialogs: HashMap::new(),
             opener: None,
             held_keys: Vec::new(),
@@ -351,6 +363,16 @@ impl ViewTree {
             perf_key: None,
             #[cfg(test)]
             renders: 0,
+        }
+    }
+
+    /// The body the view is laid out in, as its seat told the view: a
+    /// sheet docks or centres by its width class.
+    pub fn set_body(&mut self, body: Option<(f32, f32)>, cx: &mut Context<Self>) {
+        let body = body.map(|(width, height)| size(px(width), px(height)));
+        if self.body != body {
+            self.body = body;
+            cx.notify();
         }
     }
 
@@ -426,6 +448,7 @@ impl ViewTree {
             Node::Overlay { .. } => self.overlay(node, window, cx),
             Node::Anchored { .. } => self.anchored(node, window, cx),
             Node::Web { .. } => self.web(node, window, cx),
+            Node::Sheet { .. } => self.sheet(node, window, cx),
         };
         if entered_scope {
             self.authored_path.pop();
@@ -540,6 +563,7 @@ impl Render for ViewTree {
         // drawn in place: nothing in the walk reads `self.root`
         let root = std::mem::replace(&mut self.root, wire::Node::empty());
         let node = self.node(&root, window, cx);
+        let sheet = self.sheet_layer.take();
         self.root = root;
         // Carried-over state is for the first frame of a new tree only:
         // whatever that frame did not claim is dropped. The rows of a list
@@ -562,5 +586,7 @@ impl Render for ViewTree {
             .min_h_0()
             .overflow_hidden()
             .child(deferred::Layer(node, self.perf_key))
+            // over the whole body, in the view's layer like the rest
+            .children(sheet.map(|sheet| deferred::Layer(sheet, None)))
     }
 }

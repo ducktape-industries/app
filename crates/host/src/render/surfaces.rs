@@ -29,11 +29,6 @@ impl ViewTree {
         if let Some(modal) = children.get(1) {
             let named = named_overlay(label, children);
             let nested = has_named_overlay(modal);
-            if named && nested {
-                // The focus-trap registry keeps weak handles until another
-                // trap registers; drop an obscured ancestor before that pass.
-                self.dialogs.remove(&path);
-            }
             // a popover anchored to the view covers nothing, in place or
             // deferred over what follows it
             let shown = match modal {
@@ -48,17 +43,6 @@ impl ViewTree {
                     .inset_0()
                     .bg(rgb(0x000000))
                     .opacity(0.5)
-            });
-            let opened = named && !self.dialogs.contains_key(&path);
-            let entry = (named && !nested).then(|| {
-                self.dialogs
-                    .entry(path.clone())
-                    .or_insert_with(|| {
-                        let opener = window.focused(cx).map(|focus| focus.downgrade());
-                        (cx.focus_handle(), opener)
-                    })
-                    .0
-                    .clone()
             });
             let mut layer = div()
                 .id(host_id("layer"))
@@ -85,12 +69,6 @@ impl ViewTree {
                         }
                     }));
             }
-            // a dialog takes the keyboard when it opens, if its view may
-            // move the keys (`Seat::keys_free`); a popup's view moves
-            // focus itself (widget commands)
-            if let Some(entry) = entry.as_ref().filter(|_| opened && self.keys_grant) {
-                dialog_entry(entry, window, cx);
-            }
             let content = div()
                 .bg(gpui_kit::component::Theme::global(cx)
                     .color_tokens()
@@ -102,24 +80,68 @@ impl ViewTree {
                 )
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(self.node(modal, window, cx));
-            layer = layer.child(content);
-            let layer = if named {
-                let layer = crate::a11y::modal(announce(layer, accessible(node)));
-                match (nested, entry.as_ref()) {
-                    (false, Some(entry)) => div()
-                        .absolute()
-                        .inset_0()
-                        .focus_trap(host_id("focus-trap-container"), entry)
-                        .child(layer)
-                        .into_any_element(),
-                    _ => layer.into_any_element(),
-                }
-            } else {
-                layer.into_any_element()
-            };
+            let layer = self.dialog(path, named, nested, layer.child(content), node, window, cx);
             element = element.children(shade).child(layer);
         }
         element.into_any_element()
+    }
+
+    /// A dialog's layer (an overlay's, a sheet's) made one: the dialogs
+    /// map's entry at `path` (focus enters it as it opens, if the view may
+    /// move the keys, `Seat::keys_free`; the opener gets it back as it
+    /// closes, `replace`), its accessible node, a modal dialog named by
+    /// `node`, and the focus trap around it. Unnamed, the layer is plain
+    /// layout; with a dialog open inside it (`nested`), that one holds the
+    /// keys.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one dialog for the overlay and the sheet: each passes its own layer and node"
+    )]
+    pub(super) fn dialog(
+        &mut self,
+        path: AuthoredPath,
+        named: bool,
+        nested: bool,
+        layer: Stateful<Div>,
+        node: &wire::Node,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if named && nested {
+            // The focus-trap registry keeps weak handles until another
+            // trap registers; drop an obscured ancestor before that pass.
+            self.dialogs.remove(&path);
+        }
+        let opened = named && !self.dialogs.contains_key(&path);
+        let entry = (named && !nested).then(|| {
+            self.dialogs
+                .entry(path)
+                .or_insert_with(|| {
+                    let opener = window.focused(cx).map(|focus| focus.downgrade());
+                    (cx.focus_handle(), opener)
+                })
+                .0
+                .clone()
+        });
+        // a dialog takes the keyboard when it opens, if its view may
+        // move the keys (`Seat::keys_free`); a popup's view moves
+        // focus itself (widget commands)
+        if let Some(entry) = entry.as_ref().filter(|_| opened && self.keys_grant) {
+            dialog_entry(entry, window, cx);
+        }
+        if !named {
+            return layer.into_any_element();
+        }
+        let layer = crate::a11y::modal(announce(layer, accessible(node)));
+        match (nested, entry.as_ref()) {
+            (false, Some(entry)) => div()
+                .absolute()
+                .inset_0()
+                .focus_trap(host_id("focus-trap-container"), entry)
+                .child(layer)
+                .into_any_element(),
+            _ => layer.into_any_element(),
+        }
     }
 }
 

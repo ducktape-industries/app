@@ -575,7 +575,14 @@ pub(super) fn submit(node: Node, ask: Vec<u8>) -> Answered {
     })
 }
 
-/// The receipt's output on success, the program's refusal otherwise.
+/// What the node made of the frame, as `methods::Submitted`: every arm
+/// carries the frame's id (`Body::id`) and the last height that may carry
+/// it (`Body::until`). The node's preconfirm receipt is `Applied` or
+/// `Refused` (pooled, the refusal a prediction). An answer that went
+/// missing after the bytes went out (the transport, a status this client
+/// does not read, a reply it cannot decode) is `InDoubt`: the node may hold
+/// the frame. `Err` is only for a frame nothing pooled: unsigned, unsent
+/// (`rpc_client`), or refused outright by the node.
 async fn submitted(node: Node, target: String, payload: Vec<u8>) -> Answer {
     let frame = backend::seated_frame(&node.client, &node.network, &target, payload)
         .await
@@ -583,11 +590,30 @@ async fn submitted(node: Node, target: String, payload: Vec<u8>) -> Answer {
             true => wire::Error::new(refusal::RPC_CLIENT, refusal.message),
             false => refusal,
         })?;
-    let receipt = node.client.preconfirm(frame).await.map_err(refused)?;
-    match receipt.outcome {
-        abi::Outcome::Applied { output } => Ok(output),
-        abi::Outcome::Rejected(refusal) => Err(wire::Error::new(refusal.reason, refusal.sentence)),
-    }
+    let (id, until) = (frame.body.id(), frame.body.until());
+    let submitted = match node.client.preconfirm(frame.encode()).await {
+        Ok(receipt) => match receipt.outcome {
+            abi::Outcome::Applied { output } => methods::Submitted::Applied {
+                frame: id,
+                until,
+                output,
+            },
+            abi::Outcome::Rejected(refusal) => methods::Submitted::Refused {
+                frame: id,
+                until,
+                refusal: wire::Error::new(refusal.reason, refusal.sentence),
+            },
+        },
+        Err(error @ (noded_client::Error::Refused(_) | noded_client::Error::Unreachable(_))) => {
+            return Err(refused(error));
+        }
+        Err(
+            noded_client::Error::Transport(_)
+            | noded_client::Error::Failed { .. }
+            | noded_client::Error::Decode(_),
+        ) => methods::Submitted::InDoubt { frame: id, until },
+    };
+    Ok(methods::encode(&submitted))
 }
 
 /// The blob id a `blob.*` ask spells, `sha256:<hex>` or `sha1:<hex>`.

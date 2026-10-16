@@ -575,6 +575,7 @@ impl Seat {
         let intents = std::mem::take(&mut view.intents);
         let tooltips = std::mem::take(&mut view.tooltip_responses);
         let min_width = view.min_width as f32;
+        let body = view.viewport_sent;
         let first_tree = ticks == 0 && view.ticks == 1;
         drop(locked);
 
@@ -608,6 +609,10 @@ impl Seat {
                 // first to find it seated, to its tree mounted
                 crate::perf::record(key, "first_tree", shown.elapsed().as_micros() as u64);
             }
+        }
+        if let Some(tree) = &self.tree {
+            // the body the view was told: a sheet docks by its class
+            tree.update(cx, |tree, cx| tree.set_body(body, cx));
         }
         if !tooltips.is_empty()
             && let Some(tree) = &self.tree
