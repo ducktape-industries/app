@@ -30,12 +30,17 @@ mod store;
 mod view;
 
 pub use kernel::{Answered, day, local_offset};
-// the web view cleans a page's title as a window's (render/web.rs)
-#[cfg(feature = "web")]
+// the web view cleans a page's title as a window's (render/web.rs), the
+// av pieces a device's name (render/av.rs)
+#[cfg(any(feature = "web", feature = "av"))]
 pub use kernel::shown_title;
+// a device's state line, kept whole up to the wire's 200 bytes
+// (render/av.rs)
+#[cfg(feature = "av")]
+pub use kernel::plain;
 pub use roster::{Link, RailRow, connected, deployments_checked, disconnected, props, valid_route};
 pub use roster::{Roster, changes_channel, roster};
-pub use seat::{Back, Backgrounded, Failure, Seat, serve_starts};
+pub use seat::{Back, Backgrounded, Failure, Placed, Seat, serve_starts};
 
 use roster::{Connection, code_digest, connection, rail_moved};
 use seat::{
@@ -103,7 +108,8 @@ impl WindowKey {
 }
 
 /// What a view asked the app itself to do: `host.badge`, `host.title`,
-/// `link.open`, or a `notify.post` that changed the centre. An `op.submit`
+/// `link.open`, `host.float`, `host.unfloat`, or a `notify.post` that
+/// changed the centre. An `op.submit`
 /// waiting on the person's yes wakes the shell itself (`consent`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
@@ -123,6 +129,10 @@ pub enum Intent {
     /// A view was seated in its tab, first or after a new deployment: its
     /// minimum width is known, and the desk widens a window under it.
     Seated,
+    /// `host.float`: its pane in a window of its own, at a press or key.
+    Float(wire::methods::Float),
+    /// `host.unfloat`: its pane back on the desk it left.
+    Unfloat,
 }
 
 /// How many view loads run at once, each on a loader thread of its own
@@ -268,6 +278,12 @@ pub fn allows(capability: Capability) -> &'static str {
         Capability::Web => "shows web pages, and takes the web links the app opens",
         Capability::Live => {
             "sends and hears live streams in its program's rooms, as the program grants"
+        }
+        Capability::Camera => {
+            "shows your camera's picture: the app draws it, the view never sees it"
+        }
+        Capability::Microphone => {
+            "uses your microphone and speakers: the app records and plays, the view never hears it"
         }
     }
 }
@@ -515,6 +531,19 @@ pub fn name_for_test(program: &str, name: &str) {
     }
 }
 
+/// Every seated view of `program` declares `capabilities`, as its
+/// manifest would.
+#[cfg(any(test, feature = "test-support"))]
+pub fn declare_for_test(program: &str, capabilities: &[Capability]) {
+    for ((name, _), seat) in registry().lock().unwrap().iter() {
+        if *name == program
+            && let Slot::Ready(view) = &mut lock(seat).slot
+        {
+            view.capabilities = capabilities.to_vec();
+        }
+    }
+}
+
 /// `program`'s seat `instance` traps: its view keeps its tree but shows a
 /// fault from now on, and the seat is woken as a trapping tick would.
 #[cfg(any(test, feature = "test-support"))]
@@ -540,6 +569,19 @@ pub fn ticks_for_test(program: &str) -> Vec<Vec<wire::Event>> {
 #[cfg(any(test, feature = "test-support"))]
 pub fn visible_for_test(program: &str) -> bool {
     seated_for_test(program, |view| view.visible)
+}
+
+/// Where `program`'s seated view was last told its pane is
+/// (`host.placement`).
+#[cfg(any(test, feature = "test-support"))]
+pub fn placement_for_test(program: &str) -> wire::methods::Placement {
+    seated_for_test(program, |view| view.placement)
+}
+
+/// The body `program`'s seated view was last laid out in.
+#[cfg(any(test, feature = "test-support"))]
+pub fn viewport_for_test(program: &str) -> Option<(f32, f32)> {
+    seated_for_test(program, |view| view.viewport_sent)
 }
 
 /// `read` off the view of `program`'s first seat; it panics unless seated.

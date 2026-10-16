@@ -16,5 +16,7 @@
 <key>CFBundleURLName</key><string>dev.ducktape.app</string>
 <key>CFBundleURLSchemes</key><array><string>duck</string></array>
 </dict></array>
+<key>NSCameraUsageDescription</key><string>Ducktape shows your camera in the views you open that use it.</string>
+<key>NSMicrophoneUsageDescription</key><string>Ducktape listens to your microphone in the views you open that use it.</string>
 <key>NSLocalNetworkUsageDescription</key><string>Ducktape connects to networks hosted on other devices on your local network.</string>
 </dict></plist>
