@@ -302,7 +302,7 @@ impl Join {
             .child(
                 div()
                     .id("join/node")
-                    .control(Role::TextInput, "Node address")
+                    .control(Role::Group, "Node address")
                     .min_h(px(look::CONTROL))
                     .flex()
                     .items_center()
@@ -618,7 +618,7 @@ impl Render for Join {
 
 /// A button's kind (Expo `Button`).
 enum Kind {
-    /// 48, the primary's ground, body medium.
+    /// 48, the primary's ground, body medium, the row's width.
     Primary,
     /// 36, a hairline, secondary medium.
     Small,
@@ -634,6 +634,7 @@ fn button(
     kind: Kind,
     palette: Palette,
 ) -> gpui_kit::Stateful<Div> {
+    let wide = matches!(kind, Kind::Primary);
     let (height, role, weight, tone, ground, edge) = match kind {
         Kind::Primary => (
             look::PRIMARY,
@@ -672,6 +673,10 @@ fn button(
         .justify_center()
         .gap(px(look::gap::SM))
         .child(look::text(role, weight, tone).child(label.clone()));
+    // a primary button stretches to the row (Expo `wide`)
+    if wide {
+        drawn = drawn.flex_1();
+    }
     if let Some(ground) = ground {
         drawn = drawn.bg(ground);
     }
