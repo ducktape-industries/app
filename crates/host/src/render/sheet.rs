@@ -43,6 +43,9 @@ const WIDEST: f32 = design::width::COMPACT_BELOW as f32;
 /// The handle's band, and the handle in it (the Expo app's `Sheet` handle).
 pub(super) const HANDLE_BAND: f32 = 20.;
 const HANDLE: (f32, f32) = (32., 4.);
+/// The scrim's black, by appearance: the Expo palette's `scrim`
+/// (mobile `src/design/theme.ts`, 0.4 light, 0.55 dark).
+const SCRIM: (f32, f32) = (0.4, 0.55);
 
 impl ViewTree {
     pub(super) fn sheet(
@@ -212,7 +215,10 @@ impl ViewTree {
             .absolute()
             .inset_0()
             .bg(rgb(0x000000))
-            .opacity(0.5)
+            .opacity(match gpui_kit::component::Theme::global(cx).is_dark() {
+                true => SCRIM.1,
+                false => SCRIM.0,
+            })
             .role(gpui_kit::Role::Button)
             .aria_label("Close")
             // a tap on the scrim, or assistive technology's press on Close:
