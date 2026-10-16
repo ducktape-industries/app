@@ -7,10 +7,7 @@ use crate::runtime::consent;
 use crate::shell::entities::Overlay;
 use gpui_kit::*;
 
-/// How long Approve takes no press after the card opens: a second press
-/// the view asked for ("press twice") lands on the card before anyone
-/// read it.
-pub(in crate::shell) const SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
+pub(in crate::shell) use crate::runtime::consent::SETTLE;
 
 /// The card's usual height, a few lines of description in it: where it
 /// hangs in a short window (`dialog_fit`).
