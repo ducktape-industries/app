@@ -803,7 +803,6 @@ fn under_touch_the_card_is_the_phones_confirm_sheet(cx: &mut TestAppContext) {
     let mut told = consent::queue("chat", 0, words).expect("queued");
     up(&view, &mut native);
     for said in [
-        "CONFIRM A CHANGE TO YOUR ACCOUNT",
         "Suspend: agent #12",
         "Program",
         "identity",
@@ -821,6 +820,9 @@ fn under_touch_the_card_is_the_phones_confirm_sheet(cx: &mut TestAppContext) {
         draw(window, cx);
         serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap()
     });
+    // the eyebrow is drawn in capitals and read as written
+    find(&nodes, "Label", consent::ACCOUNT);
+    assert!(!shows(&mut native, &consent::ACCOUNT.to_uppercase()));
     let card = find(&nodes, "Dialog", consent::ACCOUNT);
     let high = native.update(|window, _| f32::from(window.viewport_size().height));
     assert_eq!(
