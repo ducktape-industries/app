@@ -76,11 +76,19 @@ pub(super) struct Field {
     tab_released: bool,
     placeholder: String,
     secure: bool,
+    /// What a software keyboard is told about the field (`InputOptions::
+    /// text_input`); with `secure`, the engine's `TextInputConfiguration`.
+    text_input: wire::TextInput,
+    /// The placeholder's colour, set on a touch device (`placeholder_tone`).
+    tone: Option<Hsla>,
     /// Whether a growing field fills its box or grows to `cap` rows.
     fills: bool,
     cap: Option<usize>,
     _observation: Subscription,
     _events: Subscription,
+    /// On a touch device, the software keyboard up when the field takes
+    /// the keys and down when it lets them go (`OsServices::soft_keyboard`).
+    _keyboard: Option<[Subscription; 2]>,
 }
 
 /// What a key pressed in a focused field came to.
@@ -137,11 +145,13 @@ impl ViewTree {
                 .inputs
                 .remove(&path)
                 .filter(|saved| saved.value == *value && saved.secure == *secure);
+            let configuration = options.text_input.configuration(*secure);
             let engine = match multiline {
                 false => Engine::Line(cx.new(|cx| {
                     InputState::new(window, cx)
                         .placeholder(placeholder.clone())
                         .masked(*secure)
+                        .text_input(configuration)
                 })),
                 true => Engine::Area(cx.new(|cx| {
                     let mut state = TextareaState::new(window, cx)
@@ -149,7 +159,8 @@ impl ViewTree {
                         .auto_grow(1, usize::MAX)
                         .soft_wrap(true)
                         .searchable(false)
-                        .context_menu(false);
+                        .context_menu(false)
+                        .text_input(configuration);
                     state.set_editor_paddings(Edges::all(px(0.)));
                     state
                 })),
@@ -173,6 +184,10 @@ impl ViewTree {
                     }
                 }
             ));
+            let keyboard = crate::contract::os()
+                .facts()
+                .touch_first
+                .then(|| keyboard::follow(&engine, path.clone(), window, cx));
             let mut field = Field {
                 engine,
                 on_change: *on_change,
@@ -189,10 +204,13 @@ impl ViewTree {
                 tab_released: false,
                 placeholder: placeholder.clone(),
                 secure: *secure,
+                text_input: options.text_input,
+                tone: None,
                 fills: true,
                 cap: None,
                 _observation: observation,
                 _events: events,
+                _keyboard: keyboard,
             };
             // the view's text, with the selection its user left in it if
             // this is the same text a new generation of the view shows
@@ -238,12 +256,21 @@ impl ViewTree {
                 state.set_placeholder(placeholder.clone(), window, cx)
             }));
         }
+        let reconfigured = field.text_input != options.text_input || field.secure != *secure;
         if field.secure != *secure {
             field.secure = *secure;
             if let Engine::Line(state) = &field.engine {
                 state.update(cx, |state, cx| state.set_masked(*secure, window, cx));
             }
         }
+        if reconfigured {
+            field.text_input = options.text_input;
+            let configuration = field.configuration();
+            engine!(&field.engine, |state| state.update(cx, |state, cx| {
+                state.set_text_input(configuration, cx)
+            }));
+        }
+        field.placeholder_tone(cx);
         if let Engine::Area(state) = field.engine.clone() {
             // A height the view gave is a box to fill; none (a composer's
             // `min_h`..`max_h`) is a field as tall as its lines, which the
@@ -471,6 +498,34 @@ impl ViewTree {
 }
 
 impl Field {
+    /// What a software keyboard is told about the field: the view's hints,
+    /// and `secure` when the field is masked.
+    fn configuration(&self) -> gpui_kit::TextInputConfiguration {
+        self.text_input.configuration(self.secure)
+    }
+
+    /// On a touch device a placeholder is the design's faint text, as the
+    /// phone's fields have always drawn it, not the kit theme's muted text
+    /// every desktop field shares. Set again when the theme's mode moves it.
+    fn placeholder_tone(&mut self, cx: &mut App) {
+        if !crate::contract::os().facts().touch_first {
+            return;
+        }
+        let faint = crate::theme::hsla(crate::theme::palette(cx).faint);
+        if self.tone == Some(faint) {
+            return;
+        }
+        self.tone = Some(faint);
+        let style = gpui_base::input::InputEditorStyle {
+            muted_foreground: faint,
+            ..Default::default()
+        };
+        engine!(&self.engine, |state| state.update(cx, |state, cx| {
+            state.set_editor_style(style);
+            cx.notify();
+        }));
+    }
+
     pub(super) fn is_focused(&self, window: &Window, cx: &App) -> bool {
         engine!(&self.engine, |state| state
             .read(cx)
@@ -1055,6 +1110,85 @@ fn placed(
         }
     }
     (placed, drawn)
+}
+
+/// The software keyboard on a touch device (`OsServices::soft_keyboard`):
+/// up for the field that takes the keys, with its configuration; down when
+/// a field lets them go and no field took them since. The keys moving from
+/// one field to another run one field's blur and the other's focus in
+/// either order, so the blur's hide waits for the end of the effect cycle
+/// and stands only if the keyboard is still that field's.
+mod keyboard {
+    use super::*;
+    use crate::contract::SoftKeyboard;
+    use gpui_kit::EntityId;
+    use std::cell::Cell;
+
+    thread_local! {
+        /// The field (its engine's entity) the keyboard is up for.
+        static UP_FOR: Cell<Option<EntityId>> = const { Cell::new(None) };
+    }
+
+    /// The keyboard up for `field`, which took the keys.
+    fn shown(field: EntityId) {
+        UP_FOR.set(Some(field));
+    }
+
+    /// Whether the keyboard is still `field`'s: then it is no one's.
+    fn taken_from(field: EntityId) -> bool {
+        let still = UP_FOR.get() == Some(field);
+        if still {
+            UP_FOR.set(None);
+        }
+        still
+    }
+
+    /// The field at `path` asks for the keyboard as it takes the keys, and
+    /// lets it go as it loses them.
+    pub(super) fn follow(
+        engine: &Engine,
+        path: AuthoredPath,
+        window: &mut Window,
+        cx: &mut Context<ViewTree>,
+    ) -> [Subscription; 2] {
+        let focus = engine!(engine, |state| state.read(cx).focus_handle(cx));
+        let field = engine!(engine, |state| state.entity_id());
+        let up = cx.on_focus(&focus, window, move |tree, window, _| {
+            let Some(configuration) = tree.fields.get(&path).map(Field::configuration) else {
+                return;
+            };
+            shown(field);
+            crate::contract::os().soft_keyboard(window, SoftKeyboard::Show(configuration));
+        });
+        let down = cx.on_blur(&focus, window, move |_, window, cx| {
+            window.defer(cx, move |window, _| {
+                if taken_from(field) {
+                    crate::contract::os().soft_keyboard(window, SoftKeyboard::Hide);
+                }
+            });
+        });
+        [up, down]
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// A blur's hide stands only while the keyboard is still that
+        /// field's: the keys moving to another field keep it up, in either
+        /// order of the two fields' blur and focus.
+        #[test]
+        fn the_keyboard_goes_down_only_for_the_field_it_is_up_for() {
+            let (a, b) = (EntityId::from(1u64), EntityId::from(2u64));
+            shown(a);
+            assert!(taken_from(a), "a field let the keys go");
+            assert!(!taken_from(a), "and the keyboard is no one's");
+            shown(a);
+            shown(b);
+            assert!(!taken_from(a), "the keys moved to b: a's blur leaves it up");
+            assert!(taken_from(b));
+        }
+    }
 }
 
 #[cfg(test)]
