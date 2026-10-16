@@ -199,7 +199,7 @@ mod app {
             if !there {
                 return true;
             }
-            std::thread::sleep(Duration::from_millis(5));
+            std::hint::spin_loop();
         }
         false
     }
