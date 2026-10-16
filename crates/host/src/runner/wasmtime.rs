@@ -200,7 +200,11 @@ impl ViewRunner for WasmtimeRunner {
         let compiled = match compiled {
             Some(compiled) => compiled,
             None => {
-                let compiled = ::describe::host::compile(&self.engine, module).map(Arc::new);
+                // the rule a view is taken by, as on iOS (`accepts`)
+                let compiled = view_meter::accepts(module)
+                    .ok()
+                    .and_then(|()| ::describe::host::compile(&self.engine, module))
+                    .map(Arc::new);
                 lock(&self.described)
                     .entry(hash)
                     .or_insert(compiled)
@@ -610,6 +614,35 @@ mod tests {
                     .map(|refusal| Failure::Unsupported(refusal.to_string())),
                 "the runner on {what}"
             );
+        }
+    }
+
+    /// A describe module is taken by the same rule (`view_meter::accepts`),
+    /// so a program's ops read the same on every platform: the tail call is
+    /// one wasmtime alone would compile.
+    #[test]
+    fn a_describe_module_is_taken_by_the_meters_rule() {
+        let runner = WasmtimeRunner::new(RunnerConfig {
+            signals_based_traps: true,
+            cache_dir: None,
+        });
+        let module = |more: &str| {
+            wat::parse_str(format!(
+                r#"(module
+                (memory (export "memory") 1)
+                (func (export "alloc") (param i32) (result i32) i32.const 64)
+                (func (export "describe") (param i32 i32) (result i64) i64.const 0)
+                {more})"#
+            ))
+            .expect("parses")
+        };
+        for (hash, more, compiled) in [
+            ([1; 32], "", true),
+            ([2; 32], "(func $again return_call $again)", false),
+        ] {
+            // an empty answer decodes to no description either way
+            assert!(runner.describe(hash, &module(more), b"op").is_none());
+            assert_eq!(lock(&runner.described)[&hash].is_some(), compiled, "{more}");
         }
     }
 

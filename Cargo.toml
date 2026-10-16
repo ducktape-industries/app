@@ -21,10 +21,10 @@ authors = ["Ducktape contributors"]
 
 [workspace]
 resolver = "2"
-# the phone shell (`crates/phone`), and crates no other member depends on yet
-# (path dependencies are members already): the meter pass (`crates/view-meter`),
-# which the iOS view runner will call.
-members = ["crates/phone", "crates/view-meter"]
+# the phone shell (`crates/phone`) and the iOS view runner (`crates/host-jsc`,
+# a dependency of the phone's iOS build only); the path dependencies under
+# them (the host, the meter pass) are members already.
+members = ["crates/phone", "crates/host-jsc"]
 
 [workspace.package]
 edition = "2024"
