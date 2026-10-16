@@ -82,12 +82,20 @@ impl ViewTree {
         // the old tree is rooted at the page: its paths start at the page's
         // own id
         let under = from.len().saturating_sub(1);
+        let theirs = |path: &AuthoredPath| path.starts_with(&from);
         let scrolls = self
             .scrolls
             .iter()
-            .filter(|(path, _)| path.starts_with(&from))
+            .filter(|(path, _)| theirs(path))
             .map(|(path, handle)| (path[under..].to_vec(), handle.clone()))
             .collect();
+        // a list is kept at the path its node carries, which the old tree
+        // keeps: its state moves as it is (the new frame drops it anyway),
+        // and a page pushed over itself starts its own list fresh
+        let uniform_lists: HashMap<_, _> =
+            self.uniform_lists.extract_if(|p, _| theirs(p)).collect();
+        let variable_lists: HashMap<_, _> =
+            self.variable_lists.extract_if(|p, _| theirs(p)).collect();
         let tree = Tree {
             root,
             styles: self.styles.clone(),
@@ -98,6 +106,8 @@ impl ViewTree {
             tree.pictures = pictures;
             tree.images = images;
             tree.scrolls = scrolls;
+            tree.uniform_lists = uniform_lists;
+            tree.variable_lists = variable_lists;
             tree.body = body;
             tree
         });
@@ -135,9 +145,18 @@ impl ViewTree {
             self.page_motion = None;
             return page;
         }
-        let progress = tween.frame(window, cx);
+        // it is still moving at `now`: one clock read for the frame asked
+        // for and the place drawn
+        window.request_animation_frame();
+        let progress = tween.at(now);
         let placed = moving.slide.at(progress, tween.time(now), moving.pop);
-        let leaving = moving.leaving.clone().into_any_element();
+        // a press on the page going is no one's: over a pop it would
+        // otherwise reach the page under it, unseen
+        let leaving = div()
+            .size_full()
+            .occlude()
+            .child(moving.leaving.clone())
+            .into_any_element();
         let (top, under) = match moving.pop {
             true => (leaving, page),
             false => (page, leaving),
@@ -172,5 +191,13 @@ impl ViewTree {
     #[cfg(test)]
     pub(super) fn page_moving(&self) -> bool {
         self.page_motion.is_some()
+    }
+
+    /// The tree the page going is drawn in, while it moves.
+    #[cfg(test)]
+    pub(super) fn leaving_page(&self) -> Option<Entity<ViewTree>> {
+        self.page_motion
+            .as_ref()
+            .map(|moving| moving.leaving.clone())
     }
 }
