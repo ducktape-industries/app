@@ -3,19 +3,21 @@
 //! once per Activity on Android), what the host hands on (Back, a changed
 //! inset) acted on, and in the gate build the AX door.
 //!
-//! The window draws the [`stack`]: a tab root (Home, Open, Account) under the
-//! tab bar, or a program pushed over it under its capsule. The safe area
-//! pads every edge but the bottom, which the tab bar (or, over a program,
-//! the body) takes.
+//! The window draws the join ([`join`]) until the phone is on a network
+//! with an account, then the [`stack`]: a tab root (Home, Open, Account)
+//! under the tab bar, or a program pushed over it under its capsule. The
+//! safe area pads every edge but the bottom, which the tab bar (or, over a
+//! program or the join, the body) takes.
 
 mod home;
+mod join;
 mod look;
 pub mod stack;
 
 use ducktape_host::contract::{Boot, OsServices, Signal};
 use ducktape_host::session::{Session, Shared};
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, AsyncApp, Context, Global, IntoElement,
+    AnyWindowHandle, App, AppContext as _, AsyncApp, Context, Entity, Global, IntoElement,
     ParentElement as _, Render, Styled as _, Subscription, WeakEntity, Window, WindowOptions, div,
     px,
 };
@@ -104,8 +106,9 @@ pub fn open_window(cx: &mut App) {
     }
 }
 
-/// What the host hands on rather than consumes: Back walks the stack (and
-/// past its last screen, the OS's own); a changed inset redraws.
+/// What the host hands on rather than consumes: Back leaves the join's code
+/// (back to the address), else walks the stack (and past its last screen,
+/// the OS's own); a changed inset redraws.
 fn handed_on(signal: Signal, cx: &mut App) {
     let Some(root) = cx
         .try_global::<Phone>()
@@ -116,6 +119,13 @@ fn handed_on(signal: Signal, cx: &mut App) {
     };
     match signal {
         Signal::Back => root.update(cx, |root, cx| {
+            match join::step(*root.shared.screen.read(cx).get()) {
+                Some(join::Step::Code) => {
+                    return root.join.update(cx, |join, cx| join.leave(cx));
+                }
+                Some(join::Step::Node) => return crate::os::back_at_root(),
+                None => {}
+            }
             if root.stack.back() {
                 cx.notify();
             } else {
@@ -175,9 +185,10 @@ fn open_door(cx: &mut App) {
     .detach();
 }
 
-/// The window's root: the stack over the host's entities.
+/// The window's root: the join, or the stack, over the host's entities.
 pub struct Root {
     shared: Shared,
+    join: Entity<join::Join>,
     stack: Stack,
     _subscriptions: Vec<Subscription>,
 }
@@ -187,6 +198,7 @@ impl Root {
         let mut subscriptions = vec![
             cx.observe(&shared.rail, |_, _, cx| cx.notify()),
             cx.observe(&shared.session, |_, _, cx| cx.notify()),
+            cx.observe(&shared.screen, |_, _, cx| cx.notify()),
             cx.observe_window_appearance(window, |_, window, cx| {
                 gpui_kit::component::Theme::sync_system_appearance(Some(window), cx);
                 cx.notify();
@@ -194,8 +206,10 @@ impl Root {
         ];
         subscriptions.extend(crate::os::follow(window, cx));
         gpui_kit::component::Theme::sync_system_appearance(Some(window), cx);
+        let join = cx.new(|cx| join::Join::new(shared.clone(), window, cx));
         Self {
             shared,
+            join,
             stack: Stack::default(),
             _subscriptions: subscriptions,
         }
@@ -229,6 +243,11 @@ impl Render for Root {
             .pt(edges.top)
             .pl(edges.left)
             .pr(edges.right);
+        if join::step(*self.shared.screen.read(cx).get()).is_some() {
+            return root
+                .child(self.join.clone())
+                .child(div().h(edges.bottom).flex_none());
+        }
         match self.stack.top() {
             Some(Pushed::Program(program)) => root
                 .child(home::program(program, &self.shared, palette, cx))

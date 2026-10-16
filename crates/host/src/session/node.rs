@@ -309,15 +309,21 @@ impl Session {
     /// The node at `origin` was not reached. A switch that did not land:
     /// the network in hand stays as it was, and the failure is said over it.
     fn connect_failed(&mut self, origin: String, error: String, cx: &mut Context<Self>) {
-        // a node this device reached before is named by its network, the
-        // way the Recent list names it
+        // named by its host; a node this device reached before by its
+        // network too, the way the Recent list names it
+        let host = origin
+            .strip_prefix("https://")
+            .or_else(|| origin.strip_prefix("http://"))
+            .unwrap_or(&origin);
         let who = self
             .state
             .recent_endpoints
             .iter()
             .find(|entry| entry.url == origin && !entry.network.is_empty())
-            .map(|entry| format!("{} ({})", entry.network, entry.url))
-            .unwrap_or(origin);
+            .map_or_else(
+                || host.to_owned(),
+                |entry| format!("{} ({host})", entry.network),
+            );
         let error = backend::connect_error(&who, error);
         if self.state.connected {
             self.edit(|state| state.endpoint = state.connected_rpc.clone(), cx);
