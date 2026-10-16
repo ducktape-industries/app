@@ -17,11 +17,14 @@
 //!   what a person is told of a refused device (`allow`, `settings_page`),
 //!   and the microphones and speakers: `audio_devices()` (each saying
 //!   what it is), `find()` (the cpal device a piece's id opens),
-//!   `input_name()`, `activate()` (what is held while a microphone or the
-//!   chime plays) and `ROUTED_IN_PLACE`. Linux and macOS share theirs
-//!   (`devices`: cpal's own devices, nothing held); iOS lists its audio
-//!   session's routes instead of cpal's one device, routes the session
-//!   to the one picked and holds it active. Another OS (Android) is
+//!   `input_name()`, `heard()` (the microphone heard now), `activate()`
+//!   (what is held while a microphone or the chime plays) and
+//!   `ROUTED_IN_PLACE` (whether the system moves a stream in place, then
+//!   telling an open microphone's moves to `backend::moved` itself).
+//!   Linux and macOS share theirs (`devices`: cpal's own devices,
+//!   nothing held); iOS lists its audio session's routes instead of
+//!   cpal's one device, routes the session to the one picked, holds it
+//!   active and observes its route changes. Another OS (Android) is
 //!   another module and one more line below; nothing that calls this
 //!   crate moves.
 //!   Each piece runs its device on a thread of its own that leaves
