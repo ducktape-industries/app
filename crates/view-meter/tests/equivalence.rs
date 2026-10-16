@@ -21,7 +21,7 @@ use std::io::Read;
 use std::sync::OnceLock;
 
 use sha2::{Digest, Sha256};
-use view_meter::{FEATURES, GAS, GROW_REFUSED, Refusal, Stop, meter, stop};
+use view_meter::{FEATURES, GAS, GROW_REFUSED, Refusal, Stop, accepts, meter, stop};
 use wasmtime::{
     Config, Engine, Global, Instance, Linker, Module, OptLevel, ResourceLimiter, Store, Trap, Val,
     WasmFeatures,
@@ -50,7 +50,8 @@ fn engine(fuel: bool) -> &'static Engine {
 /// memory plus a pointer per table element, against one budget; past it the
 /// grow is an error, so the call traps. Asked before the module's own
 /// maximum, in wasmtime's order; a grow that maximum then refuses holds
-/// nothing, so it records nothing (the desktop's records it: the host's fix).
+/// nothing, so it records nothing. The desktop's still records it until
+/// app#545 (lane H) lands that fix; from then the two agree.
 struct ViewLimits {
     budget: usize,
     memory: usize,
@@ -776,20 +777,65 @@ fn tail_calls_threads_and_simd_are_refused_under_both() {
 }
 
 #[test]
+fn the_shapes_no_runner_takes_are_refused_wherever_asked() {
+    let params = format!("(module (func (param {})))", "i32 ".repeat(1_000));
+    let results = format!(
+        "(module (func (result {}) {}))",
+        "i32 ".repeat(1_000),
+        "i32.const 0 ".repeat(1_000)
+    );
+    for (what, wat) in [
+        (
+            "an imported memory",
+            r#"(module (import "x" "m" (memory 1)))"#,
+        ),
+        (
+            "an imported table",
+            r#"(module (import "x" "t" (table 1 funcref)))"#,
+        ),
+        (
+            "an imported externref global",
+            r#"(module (import "x" "g" (global externref)))"#,
+        ),
+        ("an externref table", r#"(module (table 1 externref))"#),
+        (
+            "an externref global",
+            r#"(module (global (mut externref) (ref.null extern)))"#,
+        ),
+        ("a start function", r#"(module (func $s) (start $s))"#),
+        (
+            "an export named gas_left",
+            r#"(module (global (export "gas_left") i32 (i32.const 0)))"#,
+        ),
+        ("1000 parameters", &params),
+        ("1000 results", &results),
+    ] {
+        let code = wat::parse_str(wat).unwrap();
+        // valid wasm within FEATURES: refused by the rule, not by wasmtime
+        assert!(Module::new(engine(true), &code).is_ok(), "{what}");
+        assert!(
+            matches!(accepts(&code), Err(Refusal::Unsupported(_))),
+            "{what}: not accepted"
+        );
+        assert!(
+            matches!(meter(&code, VIEW_BYTES), Err(Refusal::Unsupported(_))),
+            "{what}: not metered"
+        );
+    }
+    for view in ["chat", "forge"] {
+        assert_eq!(accepts(&fixture(&format!("{view}_view.wasm"))), Ok(()));
+    }
+}
+
+#[test]
 fn hostile_or_oversized_input_is_a_typed_refusal() {
-    let unsupported = |code: &[u8]| matches!(meter(code, VIEW_BYTES), Err(Refusal::Unsupported(_)));
+    let unsupported = |code: &[u8]| {
+        matches!(accepts(code), Err(Refusal::Unsupported(_)))
+            && matches!(meter(code, VIEW_BYTES), Err(Refusal::Unsupported(_)))
+    };
     assert!(unsupported(b"\0asm\x01\0\0\0\x01\xff"));
     assert!(unsupported(b"not wasm at all"));
     assert!(unsupported(&[]));
-    assert!(unsupported(
-        &wat::parse_str(r#"(module (import "x" "m" (memory 1)))"#).unwrap()
-    ));
-    assert!(unsupported(
-        &wat::parse_str(r#"(module (global (export "gas_left") i32 (i32.const 0)))"#).unwrap()
-    ));
-    assert!(unsupported(
-        &wat::parse_str(r#"(module (func $s) (start $s))"#).unwrap()
-    ));
     let big = wat::parse_str(r#"(module (memory 2) (table 8 funcref))"#).unwrap();
     assert_eq!(
         meter(&big, PAGE),
@@ -1209,31 +1255,14 @@ fn a_grow_costs_the_same_however_many_tables() {
 }
 
 #[test]
-fn a_module_the_rewrite_cannot_express_is_refused() {
-    let params = format!(
-        "(module (func (export \"f\") (param {})))",
-        "i32 ".repeat(1_000)
+fn a_ref_func_of_an_import_only_its_export_declares_is_metered() {
+    // the adapter the ref.func now names is declared in its place
+    let mut both = Both::new(
+        r#"(module
+            (import "ducktape_view" "panicked" (func $p (param i32 i32)))
+            (export "p" (func $p))
+            (func (export "f") (result i32) ref.func $p ref.is_null))"#,
+        VIEW_BYTES,
     );
-    let results = format!(
-        "(module (func (export \"f\") (result {}) {}))",
-        "i32 ".repeat(1_000),
-        "i32.const 0 ".repeat(1_000)
-    );
-    let export_declared = r#"(module
-        (import "ducktape_view" "panicked" (func $p (param i32 i32)))
-        (export "p" (func $p))
-        (func (export "f") (result funcref) ref.func $p))"#;
-    for (what, wat) in [
-        ("1000 parameters", params.as_str()),
-        ("1000 results", results.as_str()),
-        ("a ref.func its export declares", export_declared),
-    ] {
-        let code = wat::parse_str(wat).unwrap();
-        // wasmtime runs it; the count would take it past what wasm allows
-        assert!(Module::new(engine(true), &code).is_ok(), "{what}");
-        assert!(
-            matches!(meter(&code, VIEW_BYTES), Err(Refusal::Unsupported(_))),
-            "{what}: refused"
-        );
-    }
+    assert_eq!(both.call("f", &[], FUEL_PER_TICK).0, End::Returned(vec![0]));
 }

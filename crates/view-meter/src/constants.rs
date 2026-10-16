@@ -1,4 +1,5 @@
-//! Validation, and where wasmtime folds a size-charged operator's cost.
+//! Validation (the shapes every view runner refuses, [`crate::accepts`]),
+//! and where wasmtime folds a size-charged operator's cost.
 //!
 //! wasmtime 46 charges `memory.copy`, `memory.fill`, `memory.init`,
 //! `table.copy`, `table.fill`, `table.init` and `table.grow` by their length
@@ -28,12 +29,9 @@
 //! with values reduced to "this `iconst`" or "something else". The operand
 //! stack keeps each value's identity, as the translator's does.
 //!
-//! One shape is cut instead of replayed: an operator on an `externref`
-//! table or global, whose garbage collector barriers add their own control
-//! flow. The code after it starts from a block where every variable is
-//! "something else", so a constant carried in a local across it is never
-//! folded: there the metered module may check where wasmtime does not and
-//! stop earlier, never later. No view uses either.
+//! An `externref` table or global, whose garbage collector barriers would
+//! add control flow of their own, is refused before any body is read, so
+//! every table here holds `funcref`s.
 //!
 //! The result maps each size-charged operator wasmtime sees a constant
 //! length for (by its byte offset in the module, which walrus keeps as the
@@ -46,14 +44,15 @@ use wasmparser::{
     TypeRef, ValType, ValidPayload, Validator, ValidatorResources, WasmModuleResources,
 };
 
-use crate::{FEATURES, MEMORY_PAGES, PAGE, Refusal, SMALL_BULK};
+use crate::{FEATURES, GAS, MEMORY_PAGES, PAGE, Refusal, SMALL_BULK};
 
 /// Each size-charged operator whose length wasmtime sees as a constant, by
 /// its byte offset in the module, and the cost wasmtime folds for it.
 pub(crate) type Constants = HashMap<u32, i64>;
 
-/// Validates `code` against [`FEATURES`] and finds its [`Constants`].
-pub(crate) fn validate(code: &[u8]) -> Result<Constants, Refusal> {
+/// Validates `code` against [`FEATURES`], refuses the shapes no view runner
+/// takes, and, when `replay`, finds its [`Constants`].
+pub(crate) fn validate(code: &[u8], replay: bool) -> Result<Constants, Refusal> {
     let mut validator = Validator::new_with_features(FEATURES);
     let mut module = Module::default();
     let mut constants = Constants::new();
@@ -61,8 +60,10 @@ pub(crate) fn validate(code: &[u8]) -> Result<Constants, Refusal> {
     for payload in Parser::new(0).parse_all(code) {
         let payload = payload.map_err(refuse)?;
         let valid = validator.payload(&payload).map_err(refuse)?;
-        module.read(&payload).map_err(refuse)?;
-        if let ValidPayload::Func(func, body) = valid {
+        module.read(&payload)?;
+        if let ValidPayload::Func(func, body) = valid
+            && replay
+        {
             let mut func = func.into_validator(std::mem::take(&mut allocations));
             Translation::new(&module, &func)?.run(&mut func, &body, &mut constants)?;
             allocations = func.into_allocations();
@@ -75,16 +76,19 @@ fn refuse(error: BinaryReaderError) -> Refusal {
     Refusal::Unsupported(error.to_string())
 }
 
+/// The most parameters, and the most results, a function type may have
+/// (wasmparser's `MAX_WASM_FUNCTION_PARAMS` and `MAX_WASM_FUNCTION_RETURNS`,
+/// which wasmtime validates with): the count is one more of each.
+const ARITY: usize = 1000;
+
 /// What a body's translation reads from the rest of the module.
 #[derive(Default)]
 struct Module {
     /// Per global: the immediate of the `iconst` wasmtime compiles a
     /// `global.get` of it to (an immutable global defined by a lone
     /// `i32.const`, sign-extended as `translate_global_get` does, or a lone
-    /// `i64.const`), and whether it holds an `externref`.
-    globals: Vec<(Option<i64>, bool)>,
-    /// Per table: whether it holds `externref`s.
-    extern_tables: Vec<bool>,
+    /// `i64.const`).
+    globals: Vec<Option<i64>>,
     /// Memory 0's largest size in bytes (`Memory::maximum_byte_size`): a load
     /// or store past it traps unconditionally, and wasmtime stops
     /// translating there.
@@ -92,53 +96,79 @@ struct Module {
 }
 
 impl Module {
-    fn read(&mut self, payload: &Payload<'_>) -> wasmparser::Result<()> {
+    /// Reads what the translation needs and refuses the shapes no runner
+    /// takes ([`crate::accepts`]).
+    fn read(&mut self, payload: &Payload<'_>) -> Result<(), Refusal> {
+        let refused = |what: &str| Err(Refusal::Unsupported(what.to_owned()));
+        let externref = "an externref table or global";
         match payload {
+            Payload::TypeSection(types) => {
+                for ty in types.clone().into_iter_err_on_gc_types() {
+                    let ty = ty.map_err(refuse)?;
+                    if ty.params().len() >= ARITY || ty.results().len() >= ARITY {
+                        return refused(&format!(
+                            "a function type at the {ARITY}-parameter or {ARITY}-result \
+                             limit (the count would take it past)"
+                        ));
+                    }
+                }
+            }
             Payload::ImportSection(imports) => {
                 for import in imports.clone().into_imports() {
-                    match import?.ty {
-                        TypeRef::Global(global) => {
-                            self.globals.push((None, externref(global.content_type)));
+                    match import.map_err(refuse)?.ty {
+                        TypeRef::Memory(_) | TypeRef::Table(_) => {
+                            return refused("an imported memory or table");
                         }
-                        TypeRef::Table(table) => self.table(table.element_type),
-                        TypeRef::Memory(memory) => self.memory(memory),
+                        TypeRef::Global(global) if is_externref(global.content_type) => {
+                            return refused(externref);
+                        }
+                        TypeRef::Global(_) => self.globals.push(None),
                         _ => {}
                     }
                 }
             }
             Payload::TableSection(tables) => {
                 for table in tables.clone() {
-                    self.table(table?.ty.element_type);
+                    if table.map_err(refuse)?.ty.element_type != RefType::FUNCREF {
+                        return refused(externref);
+                    }
                 }
             }
             Payload::MemorySection(memories) => {
                 for memory in memories.clone() {
-                    self.memory(memory?);
+                    self.memory(memory.map_err(refuse)?);
                 }
             }
             Payload::GlobalSection(globals) => {
                 for global in globals.clone() {
-                    let global = global?;
+                    let global = global.map_err(refuse)?;
+                    if is_externref(global.ty.content_type) {
+                        return refused(externref);
+                    }
                     let mut init = global.init_expr.get_operators_reader();
-                    let value = match init.read()? {
+                    let value = match init.read().map_err(refuse)? {
                         Operator::I32Const { value } => Some(i64::from(value)),
                         Operator::I64Const { value } => Some(value),
                         _ => None,
                     };
-                    let lone = matches!(init.read()?, Operator::End);
-                    self.globals.push((
-                        value.filter(|_| lone && !global.ty.mutable),
-                        externref(global.ty.content_type),
-                    ));
+                    let lone = matches!(init.read().map_err(refuse)?, Operator::End);
+                    self.globals
+                        .push(value.filter(|_| lone && !global.ty.mutable));
+                }
+            }
+            Payload::StartSection { .. } => {
+                return refused("a start function (it would run before the fuel is set)");
+            }
+            Payload::ExportSection(exports) => {
+                for export in exports.clone() {
+                    if export.map_err(refuse)?.name == GAS {
+                        return refused(&format!("the module already exports {GAS}"));
+                    }
                 }
             }
             _ => {}
         }
         Ok(())
-    }
-
-    fn table(&mut self, element: RefType) {
-        self.extern_tables.push(element != RefType::FUNCREF);
     }
 
     fn memory(&mut self, memory: MemoryType) {
@@ -149,20 +179,10 @@ impl Module {
             self.memory_bytes = Some(pages.saturating_mul(PAGE));
         }
     }
-
-    fn extern_table(&self, table: u32) -> bool {
-        self.extern_tables.get(table as usize) == Some(&true)
-    }
-
-    fn extern_global(&self, global: u32) -> bool {
-        self.globals
-            .get(global as usize)
-            .is_some_and(|&(_, externref)| externref)
-    }
 }
 
 /// A reference type other than `funcref`: under reference types, `externref`.
-fn externref(ty: ValType) -> bool {
+fn is_externref(ty: ValType) -> bool {
     matches!(ty, ValType::Ref(element) if element != RefType::FUNCREF)
 }
 
@@ -196,9 +216,6 @@ struct Block {
     single_pred: Option<u32>,
     /// variables looked up before the block was sealed, with their parameter
     undef: Vec<(u32, Value)>,
-    /// cut: every variable is [`OPAQUE`] here (the code after an operator
-    /// whose control flow is not replayed)
-    cut: bool,
 }
 
 enum Call {
@@ -260,8 +277,6 @@ impl Ssa {
             Some(value)
         } else if block == ENTRY {
             Some(self.entry[var as usize])
-        } else if self.blocks[block as usize].cut {
-            Some(OPAQUE)
         } else {
             None
         }
@@ -643,15 +658,6 @@ impl<'m> Translation<'m> {
         self.ssa.seal(done);
     }
 
-    /// The code after an operator whose control flow is not replayed (see
-    /// the module doc).
-    fn cut(&mut self) {
-        let block = self.ssa.block();
-        self.ssa.blocks[block as usize].cut = true;
-        self.ssa.seal(block);
-        self.current = block;
-    }
-
     /// The edge of a branch to label `depth` (`br_destination`).
     fn branch(&mut self, depth: u32) -> u32 {
         let at = self.frames.len().saturating_sub(1 + depth as usize);
@@ -822,13 +828,10 @@ impl<'m> Translation<'m> {
             }
             Operator::GlobalGet { global_index } => {
                 let value = match self.module.globals.get(global_index as usize) {
-                    Some(&(Some(imm), _)) => self.ssa.value(Val::Const(imm)),
+                    Some(&Some(imm)) => self.ssa.value(Val::Const(imm)),
                     _ => OPAQUE,
                 };
                 self.stack.push(value);
-                if self.module.extern_global(global_index) {
-                    self.cut();
-                }
             }
             _ => self.step_other(op, offset, arity, constants)?,
         }
@@ -869,53 +872,24 @@ impl<'m> Translation<'m> {
             | Operator::MemoryInit { .. } => {
                 size_charged();
             }
-            Operator::TableFill { table } => {
+            Operator::TableFill { .. } => {
                 size_charged();
-                match self.module.extern_table(table) {
-                    true => self.cut(),
-                    false => self.fill_loop(),
-                }
+                self.fill_loop();
             }
-            Operator::TableGrow { table } => {
+            Operator::TableGrow { .. } => {
                 size_charged();
-                match self.module.extern_table(table) {
-                    true => self.cut(),
-                    false => self.table_grow(),
-                }
+                self.table_grow();
             }
-            Operator::TableInit { table, .. } => {
+            Operator::TableInit { .. } => {
                 size_charged();
-                match self.module.extern_table(table) {
-                    true => self.cut(),
-                    false => self.per_element_copy(false),
-                }
+                self.per_element_copy(false);
             }
-            Operator::TableCopy {
-                dst_table,
-                src_table,
-            } => {
+            Operator::TableCopy { .. } => {
                 size_charged();
-                match self.module.extern_table(dst_table) || self.module.extern_table(src_table) {
-                    true => self.cut(),
-                    false => self.per_element_copy(true),
-                }
+                self.per_element_copy(true);
             }
-            Operator::TableGet { table } => match self.module.extern_table(table) {
-                true => self.cut(),
-                false => self.rejoin(),
-            },
-            Operator::TableSet { table } => {
-                if self.module.extern_table(table) {
-                    self.cut();
-                }
-            }
-            Operator::GlobalSet { global_index } => {
-                if self.module.extern_global(global_index) {
-                    self.cut();
-                }
-            }
-            // `table_get_funcref` (call_indirect reads a funcref table)
-            Operator::CallIndirect { .. } => self.rejoin(),
+            // `table_get_funcref`, here and where call_indirect reads a table
+            Operator::TableGet { .. } | Operator::CallIndirect { .. } => self.rejoin(),
             _ => {
                 if let Some((at, size)) = access(op) {
                     // `bounds_check_field_access`: past the largest memory,

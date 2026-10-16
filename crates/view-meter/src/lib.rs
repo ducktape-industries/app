@@ -8,15 +8,18 @@
 //! [`meter`] compiles both bounds into the module, with the same numbers and
 //! the same answers:
 //!
-//! - **Features.** The module is validated against [`FEATURES`] first, and
-//!   anything outside it is refused as [`Refusal::Unsupported`]: untrusted
-//!   network bytes never reach the rewrite unchecked. The wasmtime runner
-//!   sets the same set on its `Config`, so every runner accepts and refuses
-//!   the same modules. The metered module is validated again before it is
-//!   returned; a module the rewrite cannot express in valid wasm (a function
-//!   at the 1000-parameter or 1000-result limit, which the count would push
-//!   past it; a `ref.func` of an import that only its export declares) is
-//!   refused the same way.
+//! - **What a runner takes.** [`accepts`] is the one rule every view runner
+//!   applies before it compiles a view: the module validates against
+//!   [`FEATURES`], and none of the shapes below is in it. Anything else is
+//!   refused as [`Refusal::Unsupported`], so untrusted network bytes never
+//!   reach the rewrite unchecked, and wasmtime and JavaScriptCore take and
+//!   refuse the same views. The shapes: an imported memory or table; an
+//!   `externref` table or global (its barriers are control flow the pass
+//!   does not replay); a start function (it would run before the fuel is
+//!   set); an export named [`GAS`]; a function type at the 1000-parameter
+//!   or 1000-result limit (the count would take it past). [`meter`] applies
+//!   the same rule, and validates the metered module again before it
+//!   returns it.
 //! - **Fuel.** The count wasmtime 46 keeps (`wasmtime-environ`
 //!   `default_operator_cost`, `wasmtime-cranelift` `fuel_before_op` /
 //!   `pre_translate_bulk_op`): 1 per operator except `nop`, `drop`, `block`,
@@ -76,7 +79,8 @@
 //! finds where wasmtime folds a length; `main.rs` is the command
 //! (`view-meter <in.wasm> <out.wasm> <view_bytes>`); `tests/` is the runner
 //! equivalence gate against wasmtime (SPEC §13.3 (a)).
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap};
 
 use walrus::ir::{
     BinaryOp, Binop, Block, Br, BrIf, BrTable, Call, CallIndirect, Const, IfElse, Instr,
@@ -84,8 +88,8 @@ use walrus::ir::{
     ReturnCallIndirect, TableGrow, UnaryOp, Unop, Unreachable, Value,
 };
 use walrus::{
-    ConstExpr, ElementItems, FunctionBuilder, FunctionId, FunctionKind, GlobalId, GlobalKind,
-    LocalId, ModuleConfig, ModuleTypes, TypeId, ValType,
+    ConstExpr, ElementItems, ElementKind, FunctionBuilder, FunctionId, FunctionKind, GlobalId,
+    GlobalKind, LocalId, ModuleConfig, ModuleTypes, TypeId, ValType,
 };
 use wasmparser::{Validator, WasmFeatures};
 
@@ -190,16 +194,23 @@ pub fn stop(gas_left: i64) -> Stop {
     }
 }
 
+/// Whether a view runner takes `code` (see the crate doc): the one rule both
+/// the wasmtime and the JavaScriptCore runner apply, so a view runs on every
+/// platform or on none.
+pub fn accepts(code: &[u8]) -> Result<(), Refusal> {
+    constants::validate(code, false).map(drop)
+}
+
 /// The metered module for `code`: fuel counted into [`GAS`], every grow
 /// checked against `view_bytes` (linear memory plus [`ELEMENT_BYTES`] per
-/// table element), the maxima lowered to it. Deterministic.
+/// table element), the maxima lowered to it. Refuses what [`accepts`]
+/// refuses. Deterministic.
 pub fn meter(code: &[u8], view_bytes: u64) -> Result<Vec<u8>, Refusal> {
-    let constants = constants::validate(code)?;
+    let constants = constants::validate(code, true)?;
     let mut module = ModuleConfig::new()
         .generate_producers_section(false)
         .parse(code)
         .map_err(|error| Refusal::Unsupported(format!("{error:#}")))?;
-    refuse_shapes(&module)?;
     let budget = lower_maxima(&mut module, view_bytes)?;
     instrument(&mut module, constants, budget);
     let metered = module.emit_wasm();
@@ -207,23 +218,6 @@ pub fn meter(code: &[u8], view_bytes: u64) -> Result<Vec<u8>, Refusal> {
         .validate_all(&metered)
         .map_err(|error| Refusal::Unsupported(format!("the metered module would be: {error}")))?;
     Ok(metered)
-}
-
-/// The shapes the pass does not take.
-fn refuse_shapes(module: &walrus::Module) -> Result<(), Refusal> {
-    let refuse = |what: &str| Err(Refusal::Unsupported(what.to_owned()));
-    if module.memories.iter().any(|memory| memory.import.is_some())
-        || module.tables.iter().any(|table| table.import.is_some())
-    {
-        return refuse("an imported memory or table");
-    }
-    if module.start.is_some() {
-        return refuse("a start function (it would run before the fuel is set)");
-    }
-    if module.exports.iter().any(|export| export.name == GAS) {
-        return refuse(&format!("the module already exports {GAS}"));
-    }
-    Ok(())
 }
 
 /// Refuses a module that starts past the budget and lowers the memory and
@@ -281,6 +275,7 @@ fn instrument(module: &mut walrus::Module, constants: Constants, budget: i64) {
         grow,
         adapters,
         constants,
+        referenced: RefCell::default(),
     };
     for &id in &original {
         if let FunctionKind::Local(function) = &mut module.funcs.get_mut(id).kind {
@@ -292,6 +287,13 @@ fn instrument(module: &mut walrus::Module, constants: Constants, budget: i64) {
         widen(module, id, fuel);
     }
     redirect_import_values(module, &cx.adapters);
+    // a `ref.func` names only a declared function: the import it named may
+    // be declared by its export alone, so its adapter is declared here
+    let referenced = cx.referenced.into_inner();
+    if !referenced.is_empty() {
+        let referenced = ElementItems::Functions(referenced.into_iter().collect());
+        module.elements.add(ElementKind::Declared, referenced);
+    }
     hand_over(module, gas);
     module.exports.add(GAS, gas);
 }
@@ -315,6 +317,8 @@ struct Cx {
     adapters: HashMap<FunctionId, FunctionId>,
     /// where wasmtime folds a size-charged operator's length
     constants: Constants,
+    /// the adapters a `ref.func` in a body now names
+    referenced: RefCell<BTreeSet<FunctionId>>,
 }
 
 impl Cx {
@@ -793,10 +797,14 @@ fn meter_seq(
             }
             Instr::RefFunc(RefFunc { func }) => {
                 pending += 1;
-                RefFunc {
-                    func: cx.adapters.get(&func).copied().unwrap_or(func),
-                }
-                .into()
+                let func = match cx.adapters.get(&func) {
+                    Some(&adapter) => {
+                        cx.referenced.borrow_mut().insert(adapter);
+                        adapter
+                    }
+                    None => func,
+                };
+                RefFunc { func }.into()
             }
             Instr::Drop(_) => instr,
             _ => {
