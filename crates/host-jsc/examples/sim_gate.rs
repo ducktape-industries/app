@@ -22,7 +22,7 @@ mod app {
     use ducktape_host_jsc::{JscRunner, gate};
     use objc2::rc::Retained;
     use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
-    use objc2::{MainThreadMarker, MainThreadOnly, define_class};
+    use objc2::{ClassType, MainThreadMarker, MainThreadOnly, define_class};
     use objc2_core_foundation::{CGPoint, CGRect, CGSize};
     use objc2_foundation::NSString;
     use objc2_ui_kit::{UIApplication, UIApplicationDelegate, UIViewController, UIWindow};

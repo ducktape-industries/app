@@ -31,7 +31,8 @@ use block2::RcBlock;
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{
-    MainThreadMarker, MainThreadOnly, define_class, extern_class, extern_methods, msg_send,
+    AllocAnyThread, MainThreadMarker, MainThreadOnly, define_class, extern_class, extern_methods,
+    msg_send,
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{
@@ -56,7 +57,7 @@ impl WebView {
     extern_methods!(
         #[unsafe(method(initWithFrame:configuration:))]
         #[unsafe(method_family = init)]
-        fn initWithFrame_configuration(
+        fn init_with_frame_configuration(
             this: Allocated<Self>,
             frame: CGRect,
             configuration: &WKWebViewConfiguration,
@@ -64,18 +65,18 @@ impl WebView {
 
         #[unsafe(method(loadRequest:))]
         #[unsafe(method_family = none)]
-        fn loadRequest(&self, request: &NSURLRequest) -> Option<Retained<AnyObject>>;
+        fn load_request(&self, request: &NSURLRequest) -> Option<Retained<AnyObject>>;
 
         #[unsafe(method(setNavigationDelegate:))]
         #[unsafe(method_family = none)]
-        fn setNavigationDelegate(
+        fn set_navigation_delegate(
             &self,
             delegate: Option<&ProtocolObject<dyn WKNavigationDelegate>>,
         );
 
         #[unsafe(method(callAsyncJavaScript:arguments:inFrame:inContentWorld:completionHandler:))]
         #[unsafe(method_family = none)]
-        fn callAsyncJavaScript(
+        fn call_async_javascript(
             &self,
             body: &NSString,
             arguments: Option<&NSDictionary<NSString, AnyObject>>,
@@ -161,8 +162,9 @@ impl Web {
             );
         }
         let frame = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1., 1.));
-        let view = WebView::initWithFrame_configuration(WebView::alloc(mtm), frame, &configuration);
-        view.setNavigationDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+        let view =
+            WebView::init_with_frame_configuration(WebView::alloc(mtm), frame, &configuration);
+        view.set_navigation_delegate(Some(ProtocolObject::from_ref(&*delegate)));
         let web = Self {
             view,
             _delegate: delegate,
@@ -175,7 +177,7 @@ impl Web {
     /// the last one died.
     pub(crate) fn load(&self) {
         if let Some(url) = NSURL::URLWithString(&NSString::from_str(PAGE)) {
-            let _navigation = self.view.loadRequest(&NSURLRequest::requestWithURL(&url));
+            let _navigation = self.view.load_request(&NSURLRequest::requestWithURL(&url));
         }
     }
 
@@ -222,7 +224,7 @@ impl Web {
             NSDictionary::<NSString, AnyObject>::from_slices(&[&*key], &[value.as_ref()]);
         // SAFETY: the page world, on the main thread
         let world = unsafe { WKContentWorld::pageWorld(self.view.mtm()) };
-        self.view.callAsyncJavaScript(
+        self.view.call_async_javascript(
             &NSString::from_str("return await dt.call(a)"),
             Some(&arguments),
             None,
