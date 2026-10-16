@@ -649,6 +649,7 @@ pub struct HostPublication {
 impl HostPublication {
     /// One object onto the track: the publication's queue, with its mode's
     /// rule at the cap ([`Outbox::push`]).
+    #[cfg_attr(not(feature = "call"), allow(dead_code))]
     pub(crate) fn push(&self, object: Object) -> Pushed {
         self.outbox.push(object)
     }

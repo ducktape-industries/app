@@ -81,6 +81,7 @@ impl Calls {
     }
 
     /// `state` of the piece at `path`, as its track stands.
+    #[cfg_attr(not(feature = "call"), allow(dead_code))]
     pub(super) fn adorn(&self, path: &AuthoredPath, state: &mut wire::MediaState) {
         #[cfg(feature = "call")]
         if let Some(publisher) = self.publishers.get(path) {
