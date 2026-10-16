@@ -903,6 +903,43 @@ fn a_load_that_panics_shows_the_failure_with_retry(cx: &mut TestAppContext) {
     );
 }
 
+/// A view that stops keeps no camera open under its standin: the trap's
+/// standin closes every device the view opened, which stayed on (its light
+/// with it) until Retry or the pane's close.
+#[cfg(feature = "av")]
+#[gpui_kit::test]
+fn a_view_that_traps_lets_its_camera_go(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "trapping-camera";
+    let camera = wire::Node::Camera {
+        id: wire::ElementIdWire::Name("camera".into()),
+        style: crate::render::test_style(div().size_full().style().clone()),
+        // no system lists it: nothing opens, no prompt
+        device: Some("no-such-camera".into()),
+        mirror: true,
+        object_fit: wire::ImageObjectFit::Cover,
+        on_state: None,
+    };
+    crate::runtime::seat_drawing_for_test(PROGRAM, 320, camera);
+    crate::runtime::declare_for_test(PROGRAM, &[wire::methods::Capability::Camera]);
+    let (seat, _, mut native) = open(cx, PROGRAM, false);
+    draw_now(&mut native);
+    let tree = seat
+        .read_with(&native, |seat, _| seat.tree())
+        .expect("drawn");
+    let mut cameras = tree.read_with(&native, |tree, _| tree.media_for_test().0);
+    let camera = cameras.pop().expect("its camera piece");
+    assert!(!camera.read_with(&native, |camera, _| camera.let_go()));
+    let instance = seat.read_with(&native, |seat, _| seat.instance());
+    crate::runtime::fault_for_test(PROGRAM, instance);
+    native.run_until_parked();
+    assert!(seat.read_with(&native, |seat, _| seat.standin().is_some()));
+    assert!(
+        camera.read_with(&native, |camera, _| camera.let_go()),
+        "the camera stayed open under the standin"
+    );
+    assert!(tree.read_with(&native, |tree, _| tree.media_for_test().0.is_empty()));
+}
+
 /// A loader that panics holding a seat's lock poisons it. The window
 /// thread's next turn still takes the lock and draws what the seat holds,
 /// where an `expect` on it panicked, and took every window with it.
@@ -1498,6 +1535,7 @@ fn placed_by_seats(
         let place = (
             program,
             Some((window.window_handle(), Some((400., 300.)), true)),
+            crate::runtime::Placed::default(),
         );
         placing.update(cx, |seats, cx| {
             seats.place(std::collections::BTreeMap::from([(pane, place)]), cx)

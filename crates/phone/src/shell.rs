@@ -33,7 +33,7 @@ use ducktape_host::a11y::Control as _;
 use ducktape_host::contract::{Boot, OsServices, Signal, SoftKeyboard};
 use ducktape_host::motion::{self, Shown, Slide, Tween};
 use ducktape_host::runtime::notify::{Opened as Banner, Permission};
-use ducktape_host::runtime::{Back, consent};
+use ducktape_host::runtime::{Back, Placed, consent};
 use ducktape_host::session::{Opening, Place, Seats, SeatsEvent, Session, SessionEvent, Shared};
 use futures::StreamExt as _;
 use gpui_kit::component::input::{InputEvent, InputState};
@@ -249,7 +249,7 @@ fn let_go_closed(stack: &Entity<Stack>, seats: &Entity<Seats>, cx: &mut App) {
         .read(cx)
         .open()
         .iter()
-        .map(|opened| (opened.instance, (opened.program, None)))
+        .map(|opened| (opened.instance, (opened.program, None, Placed::default())))
         .collect();
     seats.update(cx, |seats, cx| seats.place(kept, cx));
 }
@@ -844,9 +844,20 @@ impl Root {
             SeatsEvent::OpenLink(_, _, link) => self.open_link(link, cx),
             // the reader's account: the account menu, as from a header's avatar
             SeatsEvent::Show(_, _, view_wire::methods::Place::Account) => self.account_sheet(cx),
+            // a refused camera's or microphone's system settings, where this
+            // host has that page (`render/av.rs`: none without `av`); the
+            // kernel shows no other
+            SeatsEvent::Show(_, _, place) => {
+                if let Some(page) = ducktape_host::render::av::settings_page(*place) {
+                    cx.open_url(page);
+                }
+            }
             // the desktop widens a window to a view that came; a phone
             // never does
             SeatsEvent::Seated(_) => {}
+            // a phone floats no pane (`OsFacts::floats`): its views' kernel
+            // knows no float method, so neither comes
+            SeatsEvent::Float(..) | SeatsEvent::Unfloat(_) => {}
         }
     }
 
@@ -898,7 +909,11 @@ impl Root {
                 let shown = top == Some(opened.instance) || left == Some(opened.instance);
                 let in_front = active && shown;
                 let place = (handle, Some(body), in_front);
-                (opened.instance, (opened.program, Some(place)))
+                // a phone floats no pane (`OsFacts::floats`)
+                (
+                    opened.instance,
+                    (opened.program, Some(place), Placed::default()),
+                )
             })
             .collect();
         let covered = self.sheet.is_some() || self.consent.is_some() || self.alert.is_some();
@@ -1733,9 +1748,13 @@ mod tests {
     /// in front with the keys; the capsule's menu withholding them; Back
     /// closing the sheet, then popping (the seat kept, out of front); a
     /// consent ask refused by Back; a memory warning letting the seat of a
-    /// program left go with no draw.
+    /// program left go with no draw; leaving the network taking its program
+    /// list with it, so a link is held again until the next network's list,
+    /// never opened against the old one.
     #[gpui_kit::test]
     fn the_root_holds_links_places_seats_and_walks_back(cx: &mut TestAppContext) {
+        // leaving the network locks the key: the seat is one for the process
+        let _seat = ducktape_host::backend::seat_serial();
         cx.executor().allow_parking();
         cx.update(gpui_kit::init);
         let shared = cx.update(|cx| Shared::for_test(Default::default(), Default::default(), cx));
@@ -1845,6 +1864,33 @@ mod tests {
         assert!(
             seat(cx).is_none(),
             "the seat of a program left outlived the warning"
+        );
+
+        shared
+            .session
+            .update(cx, |session, cx| session.disconnect(cx));
+        cx.run_until_parked();
+        assert!(
+            shared.rail.read_with(cx, |rail, _| rail.rows().is_empty()),
+            "the left network's programs are still listed"
+        );
+        root.update(cx, |root, cx| {
+            root.take_link(format!("duck://{PROGRAM}"), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            top(&stack, cx),
+            None,
+            "a link opened against the left network's list"
+        );
+        shared.rail.update(cx, |rail, cx| {
+            rail.read_off(Roster::listing(&[PROGRAM]), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            top(&stack, cx),
+            Some(PROGRAM),
+            "the link held over the leave did not open on the next list"
         );
     }
 }

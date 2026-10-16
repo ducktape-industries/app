@@ -27,7 +27,8 @@
 //!   `Failure::Unsupported("WebAssembly")` (SPEC §6.6).
 //!
 //! Map: `answer.rs` (the page's answers, read), `calls.rs` (the page's
-//! bookkeeping), `glue.js` + `index.html` (the page), `runner.rs` (the
+//! bookkeeping), `code.rs` (the prepared code, kept while anything holds
+//! it), `glue.js` + `index.html` (the page), `runner.rs` (the
 //! runner and its instances, iOS), `ffi.rs` (WebKit and UIKit through
 //! objc2, the crate's only `unsafe`, iOS), `gate.rs` (the session driver
 //! the simulator gate and its wasmtime reference share, feature `gate`).
@@ -42,6 +43,11 @@ mod answer;
     allow(dead_code, reason = "the iOS runner keeps it; it is tested everywhere")
 )]
 mod calls;
+#[cfg_attr(
+    not(target_os = "ios"),
+    allow(dead_code, reason = "the iOS runner keeps it; it is tested everywhere")
+)]
+mod code;
 #[cfg(target_os = "ios")]
 mod ffi;
 #[cfg(any(test, feature = "gate"))]
@@ -54,6 +60,18 @@ pub use runner::JscRunner;
 
 use ducktape_host::contract::{CodeSource, Failure};
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
+
+/// `mutex`, locked; one poisoned by a panic is taken as it was left.
+#[cfg_attr(
+    not(target_os = "ios"),
+    allow(dead_code, reason = "the iOS runner's; tested everywhere")
+)]
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// The memory a describe module may reach: `program.describe`'s own bound
 /// (`describe::host::MEMORY`, which wasmtime's describe runs under; a test

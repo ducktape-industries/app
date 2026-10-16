@@ -14,18 +14,20 @@
 
 use crate::answer::{self, Export};
 use crate::calls::{Answered, Begun, Calls, DEAD, Seating};
+use crate::code::{Code, Codes};
 use crate::ffi::Web;
+use crate::lock;
 use base64::Engine as _;
 use ducktape_host::contract::{
-    CodeSource, FUEL_PER_TICK, Failure, Fault, Landed, Landing, Prepared, RunnerConfig, SeatId,
-    ViewInstance, ViewRunner,
+    FUEL_PER_TICK, Failure, Fault, Landed, Landing, Prepared, RunnerConfig, SeatId, ViewInstance,
+    ViewRunner,
 };
 use objc2::MainThreadMarker;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 /// A call's answer callback, and a seating's: on the main thread.
 type Done = Box<dyn FnOnce(Answered)>;
@@ -49,9 +51,8 @@ thread_local! {
 /// What the loader thread and the kernel's pool share with the page.
 struct Shared {
     cache: Option<PathBuf>,
-    /// Prepared code by the sha256 of its unmetered bytes, the last one
-    /// prepared for it, while anything holds it.
-    code: Mutex<HashMap<[u8; 32], Weak<Code>>>,
+    /// Prepared code, while anything holds it.
+    code: Codes,
     /// Describe modules by sha256, held for the process; `None` for bytes
     /// the runners do not take.
     described: Mutex<HashMap<[u8; 32], Option<Arc<Code>>>>,
@@ -65,12 +66,6 @@ struct Shared {
 }
 
 static SHARED: OnceLock<Shared> = OnceLock::new();
-
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
 
 /// Runs `work` on the main thread: here, when this is it; else posted,
 /// never waited for.
@@ -103,29 +98,6 @@ fn load_page() {
 /// The glue's words for code it could not fetch or compile (`glue.js`,
 /// `seatView`).
 const NOT_LOADED: &str = "the view's code did not load";
-
-/// Code the page could not load, let go: no longer found by `hash`, and its
-/// cached file removed, so the next `prepare` meters it again (a corrupt
-/// file would otherwise fail the view on every launch).
-fn forget_code(hash: &[u8; 32], name: &str) {
-    let Some(shared) = SHARED.get() else {
-        return;
-    };
-    lock(&shared.code).remove(hash);
-    if let Some(cache) = &shared.cache {
-        // one that cannot be removed is metered again only once it is
-        // purged; nothing else depends on it
-        let _gone = std::fs::remove_file(cache.join(name));
-    }
-}
-
-/// Metered code the page loads by `name`, kept by whatever may still seat
-/// it (contract `Prepared::hold`) and by every instance of it.
-pub(crate) struct Code {
-    name: String,
-    view_bytes: u64,
-    bytes: Arc<[u8]>,
-}
 
 impl Drop for Code {
     /// The page forgets its compiled module; posted to the main thread,
@@ -317,18 +289,14 @@ pub(crate) fn served(name: &str) -> Option<(Arc<[u8]>, &'static str)> {
         _ => {}
     }
     let shared = SHARED.get()?;
-    let found = lock(&shared.code)
-        .values()
-        .filter_map(Weak::upgrade)
-        .find(|code| code.name == name)
-        .or_else(|| {
-            lock(&shared.described)
-                .values()
-                .flatten()
-                .find(|code| code.name == name)
-                .cloned()
-        })?;
-    Some((found.bytes.clone(), "application/wasm"))
+    let found = shared.code.named(name).or_else(|| {
+        lock(&shared.described)
+            .values()
+            .flatten()
+            .find(|code| code.name == name)
+            .cloned()
+    })?;
+    Some((found.bytes(), "application/wasm"))
 }
 
 /// The iOS view runner (crate doc). One per process.
@@ -349,7 +317,7 @@ impl JscRunner {
         };
         let fresh = Shared {
             cache: config.cache_dir,
-            code: Mutex::default(),
+            code: Codes::default(),
             described: Mutex::default(),
             wasm: Mutex::new(None),
             probed: Condvar::new(),
@@ -442,37 +410,21 @@ impl ViewRunner for JscRunner {
     fn prepare(&self, hash: [u8; 32], code: &[u8], view_bytes: usize) -> Result<Prepared, Failure> {
         self.wasm()?;
         let view_bytes = u64::try_from(view_bytes).unwrap_or(u64::MAX);
-        if let Some(held) = lock(&self.shared.code).get(&hash).and_then(Weak::upgrade)
-            && held.view_bytes == view_bytes
-        {
-            return Ok(Prepared {
-                source: CodeSource::Memory,
-                hold: held,
-            });
-        }
-        let (bytes, source) =
-            crate::metered(self.shared.cache.as_deref(), &hash, code, view_bytes)?;
-        let prepared = Arc::new(Code {
-            name: crate::file_name(&hash, view_bytes),
-            view_bytes,
-            bytes: Arc::from(bytes),
-        });
-        let mut kept = lock(&self.shared.code);
-        kept.retain(|_, code| code.strong_count() > 0);
-        kept.insert(hash, Arc::downgrade(&prepared));
-        Ok(Prepared {
-            source,
-            hold: prepared,
-        })
+        let (hold, source) =
+            self.shared
+                .code
+                .prepare(self.shared.cache.as_deref(), &hash, code, view_bytes)?;
+        Ok(Prepared { source, hold })
     }
 
     fn instantiate(&self, hash: [u8; 32], seat: SeatId, land: Landing) {
-        let Some(code) = lock(&self.shared.code).get(&hash).and_then(Weak::upgrade) else {
+        let Some(code) = self.shared.code.held(&hash) else {
             land.send(Landed::Fault(Fault::Runner(
                 "the view's code is not prepared, or nothing holds it any more".into(),
             )));
             return;
         };
+        let cache = self.shared.cache.clone();
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         on_main(move |mtm| {
@@ -510,7 +462,7 @@ impl ViewRunner for JscRunner {
                             Err(fault) => {
                                 if matches!(&fault, Fault::Runner(words) if words.starts_with(NOT_LOADED))
                                 {
-                                    forget_code(&hash, &code.name);
+                                    code.not_loaded(cache.as_deref());
                                 }
                                 Landed::Fault(fault)
                             }
@@ -538,14 +490,8 @@ impl ViewRunner for JscRunner {
             None => {
                 let metered = crate::metered(None, &hash, module, crate::DESCRIBE_MEMORY).ok();
                 let code = metered.map(|(bytes, _)| {
-                    Arc::new(Code {
-                        name: format!(
-                            "describe-{}",
-                            crate::file_name(&hash, crate::DESCRIBE_MEMORY)
-                        ),
-                        view_bytes: crate::DESCRIBE_MEMORY,
-                        bytes: Arc::from(bytes),
-                    })
+                    let name = crate::file_name(&hash, crate::DESCRIBE_MEMORY);
+                    Code::new(format!("describe-{name}"), crate::DESCRIBE_MEMORY, bytes)
                 });
                 lock(&self.shared.described)
                     .entry(hash)

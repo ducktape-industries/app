@@ -3,4 +3,8 @@
 <plist version="1.0"><dict>
 <!-- Wasmtime publishes compiled WASM using writable-to-executable mappings. -->
 <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+<!-- The hardened runtime asks for these before the camera's or the microphone's
+     permission prompt can appear (feature av). -->
+<key>com.apple.security.device.camera</key><true/>
+<key>com.apple.security.device.audio-input</key><true/>
 </dict></plist>

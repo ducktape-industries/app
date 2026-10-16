@@ -1,7 +1,8 @@
 //! Where an OS window goes: a pop-out off its source window (`cascade`,
-//! `unseated`), the launcher centred (`centered`), above other apps'
-//! windows or back among them (`keep_above`); and how one leaves the
-//! screen (`remove`). Opening one, and which are kept above, is
+//! `unseated`), a view's float in its display's corner (`corner`), the
+//! launcher centred (`centered`), above other apps' windows or back among
+//! them (`keep_above`), on every Space (`join_all_spaces`); and how one
+//! leaves the screen (`remove`). Opening one, and which are kept above, is
 //! `entities::Windows`'.
 
 use super::layout;
@@ -33,6 +34,20 @@ pub(in crate::shell) fn cascade(
     let extent = size(px(WINDOW_SIZE.0), px(WINDOW_SIZE.1));
     let origin = point(source.origin.x + px(CASCADE), source.origin.y + px(CASCADE));
     inside(origin, extent, display)
+}
+
+/// How far a view's float sits in from its display's work area.
+const FLOAT_INSET: f32 = 24.;
+
+/// Where a view's first float opens: `extent` in the bottom-right corner
+/// of `display`'s work area, [`FLOAT_INSET`] in from both edges, and
+/// never past its top-left corner when it doesn't fit.
+pub(in crate::shell) fn corner(extent: Size<Pixels>, display: Bounds<Pixels>) -> Bounds<Pixels> {
+    let origin = point(
+        display.origin.x + display.size.width - extent.width - px(FLOAT_INSET),
+        display.origin.y + display.size.height - extent.height - px(FLOAT_INSET),
+    );
+    inside(origin, extent, Some(display))
 }
 
 /// Where the launcher sits when the desk shrinks to it: centred in
@@ -138,6 +153,44 @@ pub(in crate::shell) fn keep_above(window: &gpui_kit::Window, above: bool) -> Re
         RawWindowHandle::Xcb(handle) => x11_keep_above(window, handle.window.get(), above),
         other => Err(format!("{other:?} windows can't be kept on top")),
     }
+}
+
+/// macOS: `window` on every Space and over another app's full screen, as
+/// a floating call window is (a view's float). Elsewhere a window manager
+/// keeps a window above on every workspace already, or not at all.
+pub(in crate::shell) fn join_all_spaces(window: &gpui_kit::Window) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::msg_send;
+        use objc2::runtime::AnyObject;
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        /// `NSWindowCollectionBehaviorCanJoinAllSpaces`,
+        /// `NSWindowCollectionBehaviorFullScreenAuxiliary`.
+        const ALL_SPACES: usize = 1 << 0;
+        const OVER_FULL_SCREEN: usize = 1 << 8;
+        let Ok(handle) = HasWindowHandle::window_handle(window) else {
+            return;
+        };
+        let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+            return;
+        };
+        let view = handle.ns_view.as_ptr().cast::<AnyObject>();
+        // SAFETY: gpui's own NSView, alive while its `Window` is borrowed;
+        // this runs on the main thread, as all of gpui's window calls do.
+        unsafe {
+            let ns_window: *mut AnyObject = msg_send![view, window];
+            if ns_window.is_null() {
+                return;
+            }
+            let behavior: usize = msg_send![ns_window, collectionBehavior];
+            let _: () = msg_send![
+                ns_window,
+                setCollectionBehavior: behavior | ALL_SPACES | OVER_FULL_SCREEN
+            ];
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
 }
 
 #[cfg(test)]
@@ -337,6 +390,26 @@ mod tests {
         assert_eq!(on.data.as_data32(), [1, above, 0, 1, 0]);
         let off = above_request(window, state, above, false);
         assert_eq!(off.data.as_data32(), [0, above, 0, 1, 0]);
+    }
+
+    /// A view's first float sits in its display's bottom-right corner, 24
+    /// in from the work area's edges (a second display, under a menu bar),
+    /// and on a display too small for it at the work area's corner.
+    #[test]
+    fn a_float_opens_in_the_corner_of_its_display() {
+        let float = size(px(320.), px(232.));
+        let display = frame(1920., 25., 2560., 1415.);
+        assert_eq!(
+            corner(float, display),
+            frame(
+                1920. + 2560. - 320. - 24.,
+                25. + 1415. - 232. - 24.,
+                320.,
+                232.
+            )
+        );
+        let small = frame(0., 0., 300., 200.);
+        assert_eq!(corner(float, small).origin, point(px(0.), px(0.)));
     }
 
     #[test]

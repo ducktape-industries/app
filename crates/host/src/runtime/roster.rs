@@ -108,6 +108,20 @@ impl Roster {
         roster
     }
 
+    /// Lists what `listed` lists, as a node's read would: a test's.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn relist_from(&self, listed: &Roster) {
+        let programs = listed.lock().clone();
+        relist(self, programs);
+    }
+
+    /// Lists nothing until the next network's programs are read: the
+    /// network these were read off was left, and nothing (the rail, a link)
+    /// may be read against its programs any more.
+    pub(crate) fn clear(&self) {
+        relist(self, Vec::new());
+    }
+
     /// The blob a listed program's view comes from, and whether that blob is
     /// the view itself (a view-only entry) rather than a program carrying it.
     pub(super) fn code(&self, program: &str) -> Option<(abi::BlobId, bool)> {
@@ -313,6 +327,20 @@ pub fn connected(client: &crate::backend::RpcClient, network: &str, chain: &str)
     spawn_roster_read(snapshot, || {});
 }
 
+/// The node in hand was let go (its network left): a read, a load or a
+/// request still out to it is refused from now on (`rev` moves), so none
+/// lands its answers after it, and the views are asked of no node until
+/// the next connect. Nothing to let go when no node was connected.
+pub fn disconnected() {
+    let mut connection = connection().lock().expect("views rpc");
+    if connection.client.is_some() {
+        *connection = Connection {
+            rev: connection.rev + 1,
+            ..Connection::default()
+        };
+    }
+}
+
 /// The node moved (a block landed): the roster is read again, and a
 /// program whose code changed is loaded again, under a new generation, and
 /// swapped in place when ready. One read in flight at a time; a block that
@@ -423,7 +451,19 @@ pub(super) fn read_roster(asked_of: Connection, roster: &Roster, registry: &Regi
                 registry.remove(&gone);
             }
         }
-        let previous = relist(roster, programs.clone());
+        // the revision asked again under the roster's lock (registry, then
+        // roster, then connection): a leave that moved it since
+        // (`disconnected`, then `Roster::clear`) is never listed over
+        let previous = {
+            let mut listed = roster.lock();
+            if connection().lock().expect("views rpc").rev != asked_of.rev {
+                return;
+            }
+            std::mem::replace(&mut *listed, programs.clone())
+        };
+        if previous != programs {
+            rail_moved();
+        }
         let mut loads = Vec::new();
         for program in &names {
             if !registry.keys().any(|(name, _)| name == program) {
