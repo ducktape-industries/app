@@ -25,7 +25,9 @@ use objc2_core_audio::{
 use crate::backend::{AudioKind, CameraDevice, Device, Facing};
 
 pub(crate) use crate::apple::{camera_allowed, microphone_allowed, open};
-pub(crate) use crate::devices::{ROUTED_IN_PLACE, activate, audio_devices, find, input_name};
+pub(crate) use crate::devices::{
+    ROUTED_IN_PLACE, activate, audio_devices, find, heard, input_name,
+};
 
 // ---------- what a microphone or speaker is ----------
 

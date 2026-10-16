@@ -16,7 +16,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::backend::{AudioKind, CameraDevice, Device, Facing, Got, Picture, Source, Status};
-pub(crate) use crate::devices::{ROUTED_IN_PLACE, activate, audio_devices, find, input_name};
+pub(crate) use crate::devices::{
+    ROUTED_IN_PLACE, activate, audio_devices, find, heard, input_name,
+};
 
 const YUYV: u32 = u32::from_le_bytes(*b"YUYV");
 const MJPG: u32 = u32::from_le_bytes(*b"MJPG");

@@ -122,7 +122,10 @@ pub struct MicFeed {
     /// The level, 0 to 1 (-60 to 0 dBFS), as `f32` bits.
     pub level: AtomicU32,
     pub playback: Mutex<Playback>,
-    pub monitor: AtomicBool,
+    /// The monitor as its piece asks it ([`MicFeed::ask_monitor`]).
+    monitor: AtomicBool,
+    /// The monitor turned off under its piece ([`MicFeed::silence`]).
+    silenced: AtomicBool,
     /// The speaker a recording and the monitor play on (an id this crate
     /// listed; `None`: the default), read each time one starts: another
     /// moves them without the microphone closing.
@@ -144,6 +147,59 @@ pub enum Ask {
 impl MicFeed {
     pub fn level(&self) -> f32 {
         f32::from_bits(self.level.load(Ordering::Relaxed))
+    }
+
+    /// The piece's monitor, on or off, asked as often as it likes: on
+    /// plays what the microphone hears straight back, unless it was
+    /// turned off under the piece ([`MicFeed::silence`]), which holds
+    /// until the piece asks it off.
+    pub fn ask_monitor(&self, on: bool) {
+        if !on {
+            self.silenced.store(false, Ordering::Relaxed);
+        }
+        self.monitor.store(on, Ordering::Relaxed);
+    }
+
+    /// Whether the monitor plays: asked on, and not turned off since.
+    pub fn monitoring(&self) -> bool {
+        self.monitor.load(Ordering::Relaxed) && !self.silenced.load(Ordering::Relaxed)
+    }
+
+    /// Turns the monitor off under its piece: its sound fell to the
+    /// loudspeaker, where it would howl, or its speaker failed.
+    fn silence(&self) {
+        self.silenced.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Where a microphone's route moved under it, as the system tells it
+/// ([`moved`]).
+pub(crate) struct Moved {
+    /// The microphone heard now, as listed.
+    pub(crate) heard: Option<Device>,
+    /// Whether its sound fell to the device's own loudspeaker from
+    /// elsewhere (the headphones gone, the loudspeaker picked).
+    pub(crate) to_loudspeaker: bool,
+}
+
+/// A microphone's route moved under it: a piece that named its
+/// microphone (`named`) and hears another now ends Gone, saying so (the
+/// system never swaps it silently); one on the default takes the new
+/// one's name. A monitor playing when the sound fell to the loudspeaker
+/// stops, until its piece turns it off and on.
+pub(crate) fn moved(feed: &MicFeed, named: Option<&str>, moved: Moved) {
+    if moved.to_loudspeaker && feed.monitoring() {
+        feed.silence();
+    }
+    let mut status = feed.status.lock().expect("feed status");
+    match (named, moved.heard) {
+        (Some(named), heard) if heard.as_ref().is_none_or(|heard| heard.id != named) => {
+            if matches!(status.0, Status::Starting | Status::Live) {
+                status.0 = Status::Gone("The microphone you picked is no longer in use.".into());
+            }
+        }
+        (None, Some(heard)) => status.1 = heard.name,
+        _ => {}
     }
 }
 
@@ -424,8 +480,11 @@ fn audio_fault(error: &cpal::Error, open: bool) -> Status {
     match error.kind() {
         cpal::ErrorKind::DeviceBusy => Status::Busy,
         cpal::ErrorKind::PermissionDenied => Status::Denied,
-        cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::StreamInvalidated if open => {
-            Status::Gone(String::new())
+        cpal::ErrorKind::DeviceNotAvailable if open => {
+            Status::Gone("The microphone was disconnected.".into())
+        }
+        cpal::ErrorKind::StreamInvalidated if open => {
+            Status::Gone("The system stopped the microphone.".into())
         }
         cpal::ErrorKind::DeviceNotAvailable => Status::NoDevice,
         _ => Status::Failed(error.to_string().chars().take(200).collect()),
@@ -453,7 +512,7 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
     }
     // the system's audio session (a phone's) held while the microphone is
     // open, its ends told to the feed
-    let _session = match platform::activate(Some(feed)) {
+    let _session = match platform::activate(Some((feed, device.as_deref()))) {
         Ok(session) => session,
         Err(status) => return set(&feed.status, status),
     };
@@ -468,6 +527,7 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
     let heard = Queue::default();
     let stream = match capture(
         &input,
+        device.as_deref(),
         &config,
         feed.clone(),
         recording.clone(),
@@ -559,7 +619,7 @@ fn serve<S>(
             playback(Playback::Idle);
         }
         // the monitor follows the output: another speaker picked moves it
-        let monitor = feed.monitor.load(Ordering::Relaxed).then(output);
+        let monitor = feed.monitoring().then(output);
         if monitoring.as_ref().map(|(_, on)| on) != monitor.as_ref() {
             monitoring = None;
         }
@@ -571,7 +631,7 @@ fn serve<S>(
                 Ok(stream) => monitoring = Some((stream, on)),
                 Err(status) => {
                     set(&feed.status, status);
-                    feed.monitor.store(false, Ordering::Relaxed);
+                    feed.silence();
                 }
             }
         }
@@ -590,10 +650,12 @@ fn short(config: &cpal::SupportedStreamConfig) -> cpal::StreamConfig {
     short
 }
 
-/// The microphone's stream: its level into `feed`, its samples (mono)
-/// into the recording being made and, while the monitor runs, `heard`.
+/// The microphone's stream (`input`, the one its piece `named`, or the
+/// default): its level into `feed`, its samples (mono) into the
+/// recording being made and, while the monitor runs, `heard`.
 fn capture(
     input: &cpal::Device,
+    named: Option<&str>,
     config: &cpal::SupportedStreamConfig,
     feed: Arc<MicFeed>,
     recording: Recording,
@@ -614,7 +676,7 @@ fn capture(
             let room = wanted.saturating_sub(samples.len());
             samples.extend(mono.iter().take(room));
         }
-        if feed.monitor.load(Ordering::Relaxed) {
+        if feed.monitoring() {
             // ponytail: at most a fifth of a second behind; drift between
             // the two clocks is dropped here, not resampled
             let mut heard = heard.lock().expect("heard");
@@ -623,20 +685,26 @@ fn capture(
             heard.drain(..over);
         }
     };
-    // a phone's session routes the stream in place and tells a route
-    // change (another speaker picked, a headset in or out) as an
-    // invalidated stream, though it plays on: its own ends come from
-    // `platform::activate`
-    let invalidated_ends = !platform::ROUTED_IN_PLACE;
-    let on_error = move |error: cpal::Error| {
-        let ends = match error.kind() {
-            cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::BackendError => true,
-            cpal::ErrorKind::StreamInvalidated => invalidated_ends,
-            _ => false,
-        };
-        if ends {
-            set(&errors.status, audio_fault(&error, true));
+    let named = named.map(str::to_owned);
+    let on_error = move |error: cpal::Error| match error.kind() {
+        // a phone's session routes the stream in place and tells a route
+        // change (another speaker picked, a headset in or out) as a
+        // changed or invalidated stream, though it plays on: it tells
+        // its moves and ends itself (`platform::activate`)
+        cpal::ErrorKind::DeviceChanged | cpal::ErrorKind::StreamInvalidated
+            if platform::ROUTED_IN_PLACE => {}
+        // the stream followed the system's default to another microphone
+        cpal::ErrorKind::DeviceChanged => {
+            let to = Moved {
+                heard: platform::heard(),
+                to_loudspeaker: false,
+            };
+            moved(&errors, named.as_deref(), to);
         }
+        cpal::ErrorKind::DeviceNotAvailable
+        | cpal::ErrorKind::BackendError
+        | cpal::ErrorKind::StreamInvalidated => set(&errors.status, audio_fault(&error, true)),
+        _ => {}
     };
     macro_rules! typed {
         ($t:ty) => {
@@ -795,6 +863,59 @@ fn tracing_error(what: &str, error: &dyn std::fmt::Display) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A microphone's route moved under it: a piece that named its
+    /// microphone and hears another ends Gone, saying so; one on the
+    /// default takes the new one's name. A monitor playing when the sound
+    /// fell to the loudspeaker stops, and asked on again stays off until
+    /// its piece asks it off; one off is not held off.
+    #[test]
+    fn a_moved_microphone_is_told_and_its_monitor_stops_on_the_loudspeaker() {
+        let live = || {
+            let feed = MicFeed::default();
+            feed.status.lock().unwrap().0 = Status::Live;
+            feed
+        };
+        let to = |id: &str, name: &str, to_loudspeaker| Moved {
+            heard: Some(Device {
+                id: id.into(),
+                name: name.into(),
+                default: true,
+            }),
+            to_loudspeaker,
+        };
+        let feed = live();
+        moved(&feed, Some("headset"), to("headset", "Headset", false));
+        assert_eq!(feed.status.lock().unwrap().0, Status::Live);
+        moved(&feed, Some("headset"), to("built-in", "Built-in", false));
+        assert!(matches!(&feed.status.lock().unwrap().0, Status::Gone(why) if !why.is_empty()));
+        let feed = live();
+        let none = Moved {
+            heard: None,
+            to_loudspeaker: false,
+        };
+        moved(&feed, Some("headset"), none);
+        assert!(matches!(feed.status.lock().unwrap().0, Status::Gone(_)));
+        let feed = live();
+        moved(&feed, None, to("headset", "Headset", false));
+        assert_eq!(
+            *feed.status.lock().unwrap(),
+            (Status::Live, "Headset".into())
+        );
+        feed.ask_monitor(true);
+        moved(&feed, None, to("built-in", "Built-in", true));
+        assert!(!feed.monitoring());
+        assert_eq!(feed.status.lock().unwrap().1, "Built-in");
+        feed.ask_monitor(true);
+        assert!(!feed.monitoring(), "asked on again, it stays off");
+        feed.ask_monitor(false);
+        feed.ask_monitor(true);
+        assert!(feed.monitoring());
+        let feed = live();
+        moved(&feed, None, to("built-in", "Built-in", true));
+        feed.ask_monitor(true);
+        assert!(feed.monitoring(), "a monitor off is not held off");
+    }
 
     /// A recording holds one to ten seconds, whatever its piece asks.
     #[test]

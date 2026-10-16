@@ -63,14 +63,17 @@ impl Meter {
     }
 
     /// Plays what the microphone hears straight back while on.
+    /// Asked on again and again (each frame), it stays off once the
+    /// system turned it off under the piece (its sound fell to the
+    /// loudspeaker), until asked off ([`MicFeed::ask_monitor`]).
     pub fn set_monitor(&self, monitor: bool) {
-        self.feed.monitor.store(monitor, Ordering::Relaxed);
+        self.feed.ask_monitor(monitor);
     }
 
-    /// Whether the monitor is on, as last set.
+    /// Whether the monitor plays: set on, and not turned off since.
     #[cfg(feature = "test-support")]
     pub fn monitor(&self) -> bool {
-        self.feed.monitor.load(Ordering::Relaxed)
+        self.feed.monitoring()
     }
 
     /// The speaker recordings and the monitor play on from now (an output

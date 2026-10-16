@@ -128,12 +128,24 @@ pub(crate) fn input_name(input: &cpal::Device) -> String {
         .unwrap_or_default()
 }
 
+/// The microphone the system hears by default now, as listed.
+pub(crate) fn heard() -> Option<Device> {
+    let listed = listed(&cpal::default_host(), true).ok()?;
+    listed
+        .into_iter()
+        .map(|(device, _)| device)
+        .find(|device| device.default)
+}
+
 /// Nothing to hold here while a microphone or the chime plays
 /// ([`activate`]).
 pub(crate) struct Active;
 
-/// Nothing to activate: each device opens by itself.
-pub(crate) fn activate(_microphone: Option<&std::sync::Arc<MicFeed>>) -> Result<Active, Status> {
+/// Nothing to activate: each device opens by itself, and its stream
+/// tells its own moves and ends.
+pub(crate) fn activate(
+    _microphone: Option<(&std::sync::Arc<MicFeed>, Option<&str>)>,
+) -> Result<Active, Status> {
     Ok(Active)
 }
 

@@ -41,7 +41,8 @@ use objc2_avf_audio::{
     AVAudioSessionPortBuiltInSpeaker, AVAudioSessionPortCarAudio, AVAudioSessionPortDescription,
     AVAudioSessionPortHDMI, AVAudioSessionPortHeadphones, AVAudioSessionPortHeadsetMic,
     AVAudioSessionPortOverride, AVAudioSessionRouteChangeNotification,
-    AVAudioSessionRouteChangeReason, AVAudioSessionRouteChangeReasonKey,
+    AVAudioSessionRouteChangePreviousRouteKey, AVAudioSessionRouteChangeReason,
+    AVAudioSessionRouteChangeReasonKey, AVAudioSessionRouteDescription,
     AVAudioSessionSetActiveOptions,
 };
 use objc2_foundation::{
@@ -594,7 +595,7 @@ pub(crate) const ROUTED_IN_PLACE: bool = true;
 /// session hears ([`heard`]), cpal's unit naming none.
 pub(crate) fn input_name(input: &cpal::Device) -> String {
     use cpal::traits::DeviceTrait as _;
-    heard().unwrap_or_else(|| {
+    heard().map(|heard| heard.name).unwrap_or_else(|| {
         input
             .description()
             .map(|d| d.name().to_owned())
@@ -602,21 +603,46 @@ pub(crate) fn input_name(input: &cpal::Device) -> String {
     })
 }
 
-/// The microphone the session hears now, by its port's name.
-pub(crate) fn heard() -> Option<String> {
+/// The microphone the session hears now, as listed.
+pub(crate) fn heard() -> Option<Device> {
     autoreleasepool(|_| {
         // SAFETY: the session's documented reads
         let inputs = unsafe { AVAudioSession::sharedInstance().currentRoute().inputs() };
-        // SAFETY: a plain property of a port the session listed
         inputs
             .firstObject()
-            .map(|port| unsafe { port.portName() }.to_string())
+            .map(|port| row(&port, true, true).device)
     })
+}
+
+/// Whether a route change moved the sound onto the loudspeaker from
+/// elsewhere (the headphones gone, the loudspeaker picked over them).
+/// Where the change does not say what played before, the loudspeaker
+/// playing now is enough.
+fn fell(notification: &NSNotification) -> bool {
+    // SAFETY: AVFAudio constants, and the session's and its routes'
+    // documented reads
+    unsafe {
+        let loudspeaker = |route: &AVAudioSessionRouteDescription| {
+            let outputs = route.outputs();
+            outputs
+                .iter()
+                .any(|port| is(&port.portType(), &[AVAudioSessionPortBuiltInSpeaker]))
+        };
+        let before = AVAudioSessionRouteChangePreviousRouteKey.and_then(|key| {
+            let info = notification.userInfo()?;
+            info.objectForKey(key)?
+                .downcast::<AVAudioSessionRouteDescription>()
+                .ok()
+        });
+        let now = AVAudioSession::sharedInstance().currentRoute();
+        loudspeaker(&now) && before.is_none_or(|before| !loudspeaker(&before))
+    }
 }
 
 /// The session held active, for a microphone or the chime; with a
 /// microphone's feed, its ends (an interruption, the media services
-/// lost) are told to it as Gone. The last one dropped deactivates the
+/// lost) are told to it as Gone, and its route's moves
+/// ([`crate::backend::moved`]). The last one dropped deactivates the
 /// session, telling the other apps they may play again.
 pub(crate) struct Active {
     microphone: bool,
@@ -625,9 +651,12 @@ pub(crate) struct Active {
 
 /// The session active from now until the returned hold drops, recording
 /// only for a microphone ([`records`]); `microphone` the open
-/// microphone's feed, which hears how it ends. A call that has the audio
-/// refuses it (Busy).
-pub(crate) fn activate(microphone: Option<&Arc<MicFeed>>) -> Result<Active, Status> {
+/// microphone's feed, which hears how it ends and where its route moves,
+/// and the microphone its piece named (`None`: the default). A call that
+/// has the audio refuses it (Busy).
+pub(crate) fn activate(
+    microphone: Option<(&Arc<MicFeed>, Option<&str>)>,
+) -> Result<Active, Status> {
     {
         let mut holds = ACTIVE.lock().expect("audio session");
         let session = configured(records(&holds, microphone.is_some())).map_err(Status::Failed)?;
@@ -641,7 +670,9 @@ pub(crate) fn activate(microphone: Option<&Arc<MicFeed>>) -> Result<Active, Stat
     }
     Ok(Active {
         microphone: microphone.is_some(),
-        observers: microphone.map(watch).unwrap_or_default(),
+        observers: microphone
+            .map(|(feed, named)| watch(feed, named))
+            .unwrap_or_default(),
     })
 }
 
@@ -673,8 +704,14 @@ impl Drop for Active {
 
 /// Tells `feed` Gone, with the reason, when the session is interrupted
 /// (a call, an alarm, another app's audio, the app suspended) or its
-/// media services are lost or reset: the observers, until removed.
-fn watch(feed: &Arc<MicFeed>) -> Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>> {
+/// media services are lost or reset, and where its route moved (a
+/// headset in or out, the loudspeaker picked: the microphone its piece
+/// `named` no longer heard, the monitor on the loudspeaker): the
+/// observers, until removed.
+fn watch(
+    feed: &Arc<MicFeed>,
+    named: Option<&str>,
+) -> Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>> {
     let center = NSNotificationCenter::defaultCenter();
     let observe = |name: Option<&'static NSNotificationName>,
                    why: fn(&NSNotification) -> Option<&'static str>| {
@@ -699,10 +736,27 @@ fn watch(feed: &Arc<MicFeed>) -> Vec<Retained<ProtocolObject<dyn NSObjectProtoco
             AVAudioSessionMediaServicesWereResetNotification,
         )
     };
+    let routed = {
+        let (feed, named) = (feed.clone(), named.map(str::to_owned));
+        RcBlock::new(move |notification: NonNull<NSNotification>| {
+            let moved = crate::backend::Moved {
+                heard: heard(),
+                // SAFETY: the notification the center lends for this call
+                to_loudspeaker: fell(unsafe { notification.as_ref() }),
+            };
+            crate::backend::moved(&feed, named.as_deref(), moved);
+        })
+    };
+    // SAFETY: an AVFAudio constant; an observer block on the posting
+    // thread, removed when the hold drops
+    let route = unsafe { AVAudioSessionRouteChangeNotification }.map(|name| unsafe {
+        center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &routed)
+    });
     [
         observe(interruption, interruption_began),
         observe(lost, |_| Some("The phone's audio stopped.")),
         observe(reset, |_| Some("The phone's audio stopped.")),
+        route,
     ]
     .into_iter()
     .flatten()
@@ -909,6 +963,49 @@ mod tests {
         ));
         assert!(changed(AVAudioSessionRouteChangeReason::Override));
         *REPLACED.lock().unwrap() = None;
+    }
+
+    /// A route change under an open microphone is told to its feed: from
+    /// a route that played elsewhere to the loudspeaker, the monitor
+    /// stops; the microphone its piece named, no longer heard, is gone.
+    /// Nothing is activated.
+    #[test]
+    fn a_route_change_is_told_to_the_microphone() {
+        let _one = ONE_SESSION.lock().unwrap();
+        let feed = Arc::new(MicFeed::default());
+        feed.status.lock().unwrap().0 = Status::Live;
+        feed.ask_monitor(true);
+        let observers = watch(&feed, Some("no-such-microphone"));
+        // SAFETY: AVFAudio constants; an empty route, played on nothing
+        let (name, key, before) = unsafe {
+            (
+                AVAudioSessionRouteChangeNotification.unwrap(),
+                AVAudioSessionRouteChangePreviousRouteKey.unwrap(),
+                AVAudioSessionRouteDescription::new(),
+            )
+        };
+        let info = NSDictionary::<NSString, AVAudioSessionRouteDescription>::from_slices(
+            &[key],
+            &[&*before],
+        );
+        // SAFETY: the same dictionary, its key and object types erased
+        let info = unsafe {
+            &*(&*info as *const NSDictionary<NSString, AVAudioSessionRouteDescription>)
+                .cast::<NSDictionary>()
+        };
+        // SAFETY: a notification made here, posted to this process alone
+        let told =
+            unsafe { NSNotification::notificationWithName_object_userInfo(name, None, Some(info)) };
+        // the simulator plays on its loudspeaker
+        assert!(audio_devices().unwrap().1[0].device.default);
+        NSNotificationCenter::defaultCenter().postNotification(&told);
+        assert!(!feed.monitoring());
+        assert!(matches!(&feed.status.lock().unwrap().0, Status::Gone(_)));
+        let center = NSNotificationCenter::defaultCenter();
+        for observer in &observers {
+            // SAFETY: an observer this test added
+            unsafe { center.removeObserver(observer.as_ref()) };
+        }
     }
 
     /// A piece left to the default leaves the route another picked: the
