@@ -17,7 +17,9 @@ use gpui_kit::{
     px, svg,
 };
 
-/// The capsule: two 42 cells, 36 tall with its border.
+/// The capsule as drawn: two 42 cells, 36 tall with its border; each
+/// cell's press box is 44 square, reaching past the drawing unseen and
+/// never over the other's.
 const CAPSULE_CELL: f32 = 42.;
 const CAPSULE: f32 = 36.;
 /// Where the capsule sits in the 56 header band, and its gap to the edge.
@@ -62,7 +64,10 @@ fn opening(row: Option<&RailRow>, palette: Palette) -> AnyElement {
 }
 
 /// The capsule over `program`, at the top right of the safe area whose
-/// top and right insets are `top` and `right`.
+/// top and right insets are `top` and `right`: the frame drawn as the
+/// board has it, and over it two 44 press boxes, `···` over the left cell
+/// and the divider, `×` over the right cell, the border and one point
+/// past it.
 pub fn capsule(
     program: &'static str,
     top: gpui_kit::Pixels,
@@ -70,10 +75,8 @@ pub fn capsule(
     palette: Palette,
     cx: &mut Context<Root>,
 ) -> AnyElement {
-    let cell = |id: &'static str, name: &'static str, icon: &'static str| {
+    let drawn = |icon: &'static str| {
         div()
-            .id(id)
-            .control(Role::Button, name)
             .w(px(CAPSULE_CELL))
             .h_full()
             .flex()
@@ -86,23 +89,41 @@ pub fn capsule(
                     .text_color(palette.foreground()),
             )
     };
-    div()
+    let frame = div()
         .absolute()
-        .top(top + px(CAPSULE_TOP))
-        .right(right + px(CAPSULE_RIGHT))
+        .top(px((look::HIT - CAPSULE) / 2.))
+        .left_0()
         .h(px(CAPSULE))
         .flex()
-        .occlude()
         .bg(palette.background())
         .border_1()
         .border_color(palette.border_strong())
+        .child(drawn("icons/ellipsis.svg"))
+        .child(div().w(px(1.)).h_full().bg(palette.border_strong()))
+        .child(drawn("icons/x.svg"));
+    let press = |id: &'static str, name: &'static str, left: f32| {
+        div()
+            .id(id)
+            .control(Role::Button, name)
+            .absolute()
+            .top_0()
+            .left(px(left))
+            .size(px(look::HIT))
+    };
+    div()
+        .absolute()
+        .top(top + px(CAPSULE_TOP - (look::HIT - CAPSULE) / 2.))
+        .right(right + px(CAPSULE_RIGHT - 1.))
+        .w(px(2. * look::HIT))
+        .h(px(look::HIT))
+        .occlude()
+        .child(frame)
         .child(
-            cell("capsule/menu", "More", "icons/ellipsis.svg")
+            press("capsule/menu", "More", 0.)
                 .on_click(cx.listener(move |root, _, _, cx| root.capsule_menu(program, cx))),
         )
-        .child(div().w(px(1.)).h_full().bg(palette.border_strong()))
         .child(
-            cell("capsule/close", "Close", "icons/x.svg")
+            press("capsule/close", "Close", look::HIT)
                 .on_click(cx.listener(|root, _, _, cx| root.go_home(cx))),
         )
         .into_any_element()
