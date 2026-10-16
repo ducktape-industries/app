@@ -69,11 +69,13 @@ tar xzf /tmp/ducktape.tar.gz -C /tmp
   `program.query`/`op.submit` `Call{target, body}`, `program.changes <program>`,
   `program.describe`, `chain.status`/`block`/`blocks`/`heads`, `invite.create`,
   `blob.get`, `blob.manifest`, `link.open`, `host.widget` (the one MessagePack method: a tree
-  command), and the app's own (`host.*`, `clock.ticks`, `clipboard.*`,
-  `notify.*`, `store.*`). A view reaches only the capabilities its manifest
-  declares. The app forwards the bytes to the
-  program the view names and signs writes with the seated key; it never
-  reads a payload.
+  command), `live.*` (`publish`/`send`/`subscribe`/`tracks`: a view's live
+  tracks through the node's relay, off consensus, on one QUIC or websocket
+  session per connection, `src/backend/live.rs`), and the app's own
+  (`host.*`, `clock.ticks`, `clipboard.*`, `notify.*`, `store.*`). A view
+  reaches only the capabilities its manifest declares. The app forwards the
+  bytes to the program the view names and signs writes with the seated key;
+  it never reads a payload.
 - **Sign in.** The key file under `$DUCKTAPE_USER_KEY`, else the network's
   active wallet under `<ducktape home>/remotes/<network>/`. A write is a frame
   anchored at the tip `/v1/status` reports and salted with a random number,
@@ -93,6 +95,7 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 | `crates/host` | the blind host core the desktop shell and the phone shell share; `src/contract.rs` is the one interface a shell implements (directories, the reader key, banners, OS facts, invite minting) |
 | `crates/host/src/backend/views.rs` | roster → blob → `ducktape.view` section |
 | `crates/host/src/backend/session.rs` | the seated key (any `noded_client::Signer`), its frames, preferences |
+| `crates/host/src/backend/live.rs`, `crates/host/src/runtime/kernel/live.rs` | the live session with the node's relay (core's `live-wire`: QUIC, or the websocket) and the `live.*` methods over it |
 | `crates/host/src/runtime.rs`, `runtime/` | the wasm view runtime: seats, loads, swaps, the kernel relay |
 | `crates/host/src/render.rs`, `render/` | the wire tree presenter, its text fields the kit's engine holds (IME, caret, clipboard, undo) |
 | `src/os.rs`, `src/backend/` | the desktop's `OsServices` impl (its directories, the freedesktop / macOS banners, invites with the node this machine runs) and what only the desktop runs: the device key, passkeys, recovery keys |

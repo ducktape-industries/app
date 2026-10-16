@@ -314,7 +314,7 @@ mod tests {
                 bio: None,
                 updated_at: 0,
             },
-            control: Control::Person {
+            control: Control::User {
                 keys: vec![key(&testkit::passkey(6)), key(&sk)],
             },
         };

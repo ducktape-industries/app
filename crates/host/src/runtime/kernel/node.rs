@@ -211,7 +211,7 @@ fn run(
 /// One SUBSCRIPTION's writing end, handed to the loop that feeds it: every
 /// item goes through the same park as a node socket's, so a source that
 /// outruns the redraw waits for the redraw that takes its item.
-struct Items {
+pub(super) struct Items {
     replies: std::sync::Arc<Replies>,
     drained: tokio::sync::watch::Receiver<()>,
     id: u64,
@@ -220,10 +220,15 @@ struct Items {
 impl Items {
     /// One more item. `false` when the view is gone and the subscription
     /// should end — the caller returns, and everything it holds is dropped.
-    async fn send(&mut self, result: Answer) -> bool {
+    pub(super) async fn send(&mut self, result: Answer) -> bool {
         self.replies
             .subscription_item(&mut self.drained, self.id, result)
             .await
+    }
+
+    /// The refusal that ends the subscription.
+    pub(super) fn last(&self, refusal: wire::Error) {
+        self.replies.item(self.id, Err(refusal), true);
     }
 }
 
@@ -231,7 +236,7 @@ impl Items {
 /// the node for them). The body owns whatever it holds open, so dropping
 /// the task releases it: a cancel drops the [`NodeTask`], and so do a
 /// view's teardown, swap and trap, which drop the whole `tasks` list.
-fn spawn_subscription<Body, Fut>(view: &mut View, id: u64, follows: Follow, body: Body)
+pub(super) fn spawn_subscription<Body, Fut>(view: &mut View, id: u64, follows: Follow, body: Body)
 where
     Body: FnOnce(Items) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -263,7 +268,7 @@ pub(in crate::runtime) fn spawn_reply(
 /// The node to ask, the one the view's own connection names, or `None`
 /// with the request REFUSED: `stale_connection` for a view from before the
 /// app's last (re)connect, `not_connected` without a node.
-fn connected(view: &mut View, id: u64) -> Option<Node> {
+pub(super) fn connected(view: &mut View, id: u64) -> Option<Node> {
     let rev = super::super::connection().lock().expect("views rpc").rev;
     if rev != view.connection.rev {
         view.refuse(
@@ -312,6 +317,7 @@ pub(in crate::runtime) fn reconnected(view: &mut View, connection: &super::super
                 follow_changes(view, id, node, program);
             }
             (Some(Follow::Heads), Some(node)) => follow_heads(view, id, node),
+            (Some(Follow::Live(follows)), Some(_)) => super::live::reopen(view, id, follows),
             _ => view.refuse(id, refusal::STALE_CONNECTION, "network connection changed"),
         }
     }
@@ -496,11 +502,13 @@ pub(in crate::runtime) struct NodeTask {
 }
 
 /// A node subscription, as a reconnect opens it again.
-enum Follow {
+pub(super) enum Follow {
     /// `program.changes` of this program.
     Changes(String),
     /// `chain.heads`.
     Heads,
+    /// A `live.*` request (`live.rs`).
+    Live(super::live::LiveFollow),
 }
 
 impl Drop for NodeTask {

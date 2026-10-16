@@ -402,6 +402,7 @@ fn a_reconnect_opens_a_views_subscriptions_again_on_the_new_node() {
         network: new.network,
         chain: String::new(),
         rev,
+        live: None,
     });
     assert_eq!(refused(&mut view, 2).0, refusal::STALE_CONNECTION);
     assert_eq!(view.pending, [], "a subscription was refused");
