@@ -669,6 +669,7 @@ impl Drop for HostPublication {
 
 /// A track the host plays for a piece: its objects and what the node says
 /// of it, in one stream, until dropped.
+#[cfg_attr(not(feature = "call"), allow(dead_code))]
 pub struct HostSubscription {
     items: mpsc::Receiver<Subscribed>,
     task: tokio::task::JoinHandle<()>,
@@ -684,6 +685,7 @@ pub(crate) enum Subscribed {
 impl HostSubscription {
     /// The next item, waited for on the calling thread (the decoder's);
     /// `None` once the piece let the track go.
+    #[cfg_attr(not(feature = "call"), allow(dead_code))]
     pub(crate) fn recv(&mut self) -> Option<Subscribed> {
         self.items.blocking_recv()
     }
