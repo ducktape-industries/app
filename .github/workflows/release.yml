@@ -8,19 +8,19 @@
 # Two channels, one signing key, one order: a release's sequence is its
 # commit's committer time, on either channel.
 # - stable: each time `main` moves;
-# - nightly: `dev` once a day (and on demand), skipped when dev's head is
-#   already the published nightly.
+# - nightly: each time `dev` moves, and once a day (a retry for a run that
+#   failed) and on demand from dev's head, skipped when the published
+#   nightly is not older.
 # The signing key and the bucket's credentials live in the `release`
-# environment, which admits runs on `main` only (a scheduled run is one: it
-# runs main's workflow; dispatch it from main too). Only the publish job
-# enters it, and it runs nothing of the built commit: it builds the signer
-# from `main`, and the archives reach it as artifacts of the build jobs,
-# which see no secret.
+# environment, which admits runs on `dev` and `main` only. Only the publish
+# job enters it, and it runs nothing of the built commit: it builds the
+# signer from `main`, and the archives reach it as artifacts of the build
+# jobs, which see no secret.
 name: release
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
@@ -29,7 +29,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'push' && 'stable' || 'nightly' }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.ref_name == 'main' && 'stable' || 'nightly' }}
   cancel-in-progress: false
 
 env:
@@ -46,14 +46,14 @@ jobs:
       version: ${{ steps.plan.outputs.version }}
       skip: ${{ steps.plan.outputs.skip }}
     steps:
-      # a schedule runs on the default branch: the nightly checks out dev
+      # a schedule or a dispatch builds dev's head
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'push' && github.sha || 'dev' }}
       - id: plan
         run: |
           channel=nightly
-          if [ "$GITHUB_EVENT_NAME" = push ]; then channel=stable; fi
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_NAME" = main ]; then channel=stable; fi
           sha=$(git rev-parse HEAD)
           sequence=$(git show -s --format=%ct HEAD)
           # a committer time is whatever the committer's clock said: one from
@@ -186,7 +186,7 @@ jobs:
       VERSION: ${{ needs.plan.outputs.version }}
       TAG: bin-${{ needs.plan.outputs.sha }}
     steps:
-      # main, on a push and on the schedule alike: never the built commit
+      # main, whichever branch ran this: never the built commit
       - uses: actions/checkout@v4
         with:
           ref: main
