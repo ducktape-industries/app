@@ -105,8 +105,6 @@ use v4l2 as platform;
 pub use android::{Asker, asks_through};
 #[cfg(feature = "test-support")]
 pub use backend::Ask;
-#[cfg(feature = "call")]
-pub use backend::Picture;
 pub use backend::{
     AudioDevice, AudioKind, CameraDevice, Device, Facing, Playback, Release, Status,
 };

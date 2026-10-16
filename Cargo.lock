@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "abi"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=38d79ea219b7230679a53578e8b285d62010a6be#38d79ea219b7230679a53578e8b285d62010a6be"
+source = "git+https://github.com/ducktape-industries/programs?rev=abc45b7ee45d4ab80e822145af9571840336e91e#abc45b7ee45d4ab80e822145af9571840336e91e"
 dependencies = [
  "borsh",
  "design",
@@ -999,7 +999,7 @@ dependencies = [
 [[package]]
 name = "blobs"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=38d79ea219b7230679a53578e8b285d62010a6be#38d79ea219b7230679a53578e8b285d62010a6be"
+source = "git+https://github.com/ducktape-industries/programs?rev=abc45b7ee45d4ab80e822145af9571840336e91e#abc45b7ee45d4ab80e822145af9571840336e91e"
 dependencies = [
  "abi",
  "blob",
@@ -2487,12 +2487,13 @@ dependencies = [
  "quote",
  "rustc_version",
  "syn 2.0.119",
+ "unicode-xid",
 ]
 
 [[package]]
 name = "describe"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=38d79ea219b7230679a53578e8b285d62010a6be#38d79ea219b7230679a53578e8b285d62010a6be"
+source = "git+https://github.com/ducktape-industries/programs?rev=abc45b7ee45d4ab80e822145af9571840336e91e#abc45b7ee45d4ab80e822145af9571840336e91e"
 dependencies = [
  "borsh",
  "serde",
@@ -2502,7 +2503,7 @@ dependencies = [
 [[package]]
 name = "design"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=38d79ea219b7230679a53578e8b285d62010a6be#38d79ea219b7230679a53578e8b285d62010a6be"
+source = "git+https://github.com/ducktape-industries/programs?rev=abc45b7ee45d4ab80e822145af9571840336e91e#abc45b7ee45d4ab80e822145af9571840336e91e"
 dependencies = [
  "sha2 0.10.9",
 ]
@@ -2676,7 +2677,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 [[package]]
 name = "ducklink"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=38d79ea219b7230679a53578e8b285d62010a6be#38d79ea219b7230679a53578e8b285d62010a6be"
+source = "git+https://github.com/ducktape-industries/programs?rev=abc45b7ee45d4ab80e822145af9571840336e91e#abc45b7ee45d4ab80e822145af9571840336e91e"
 dependencies = [
  "abi",
  "program",
@@ -2757,6 +2758,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "openh264",
  "openh264-sys2",
+ "sonora",
  "tracing",
 ]
 
@@ -3194,7 +3196,7 @@ dependencies = [
 [[package]]
 name = "error"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=38d79ea219b7230679a53578e8b285d62010a6be#38d79ea219b7230679a53578e8b285d62010a6be"
+source = "git+https://github.com/ducktape-industries/programs?rev=abc45b7ee45d4ab80e822145af9571840336e91e#abc45b7ee45d4ab80e822145af9571840336e91e"
 dependencies = [
  "borsh",
  "serde",
@@ -4923,7 +4925,7 @@ dependencies = [
 [[package]]
 name = "halo"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=38d79ea219b7230679a53578e8b285d62010a6be#38d79ea219b7230679a53578e8b285d62010a6be"
+source = "git+https://github.com/ducktape-industries/programs?rev=abc45b7ee45d4ab80e822145af9571840336e91e#abc45b7ee45d4ab80e822145af9571840336e91e"
 dependencies = [
  "abi",
  "borsh",
@@ -5328,7 +5330,7 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 [[package]]
 name = "identity"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=38d79ea219b7230679a53578e8b285d62010a6be#38d79ea219b7230679a53578e8b285d62010a6be"
+source = "git+https://github.com/ducktape-industries/programs?rev=abc45b7ee45d4ab80e822145af9571840336e91e#abc45b7ee45d4ab80e822145af9571840336e91e"
 dependencies = [
  "abi",
  "borsh",
@@ -7869,7 +7871,7 @@ dependencies = [
 [[package]]
 name = "program"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=38d79ea219b7230679a53578e8b285d62010a6be#38d79ea219b7230679a53578e8b285d62010a6be"
+source = "git+https://github.com/ducktape-industries/programs?rev=abc45b7ee45d4ab80e822145af9571840336e91e#abc45b7ee45d4ab80e822145af9571840336e91e"
 dependencies = [
  "abi",
  "blob",
@@ -7882,7 +7884,7 @@ dependencies = [
 [[package]]
 name = "program-derive"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=38d79ea219b7230679a53578e8b285d62010a6be#38d79ea219b7230679a53578e8b285d62010a6be"
+source = "git+https://github.com/ducktape-industries/programs?rev=abc45b7ee45d4ab80e822145af9571840336e91e#abc45b7ee45d4ab80e822145af9571840336e91e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7892,7 +7894,7 @@ dependencies = [
 [[package]]
 name = "programs"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=38d79ea219b7230679a53578e8b285d62010a6be#38d79ea219b7230679a53578e8b285d62010a6be"
+source = "git+https://github.com/ducktape-industries/programs?rev=abc45b7ee45d4ab80e822145af9571840336e91e#abc45b7ee45d4ab80e822145af9571840336e91e"
 dependencies = [
  "abi",
  "blob",
@@ -9432,6 +9434,79 @@ dependencies = [
 ]
 
 [[package]]
+name = "sonora"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e1ce442ab5cb392c4067b8f2cced20be4cf12e479f6dfbf44acbe9b14ac9250"
+dependencies = [
+ "sonora-aec3",
+ "sonora-agc2",
+ "sonora-common-audio",
+ "sonora-ns",
+ "sonora-simd",
+ "tracing",
+]
+
+[[package]]
+name = "sonora-aec3"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "50280e31256d09f7838aff6715ed4b7640e514dc1092a1e14013c01e552380db"
+dependencies = [
+ "sonora-common-audio",
+ "sonora-fft",
+ "sonora-simd",
+]
+
+[[package]]
+name = "sonora-agc2"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a93a9fa8373a33e61a7fb441d8a9e725ac6024079d2c77a845cf6abe1790b9f"
+dependencies = [
+ "bytemuck",
+ "derive_more",
+ "sonora-common-audio",
+ "sonora-fft",
+ "sonora-simd",
+ "tracing",
+]
+
+[[package]]
+name = "sonora-common-audio"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6635bc61b24807ceac93ad0807b1292b6b0620caa6cd360d3be89fc616b833cc"
+dependencies = [
+ "derive_more",
+ "sonora-simd",
+]
+
+[[package]]
+name = "sonora-fft"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27e272c70f34363afb5382dd1818c05f8f63ef6785635736a14e9ccbbb5ba012"
+
+[[package]]
+name = "sonora-ns"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d511feef19302c716d245c4555087d161ba91c178735ea11107dcce0d0b7a86f"
+dependencies = [
+ "sonora-fft",
+]
+
+[[package]]
+name = "sonora-simd"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7cf0804e4752a5562262e143014f53043080ead4cd5a98f9278d3ceaf32d868"
+dependencies = [
+ "cpufeatures 0.3.1",
+]
+
+[[package]]
 name = "spin"
 version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9493,7 +9568,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "store"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=38d79ea219b7230679a53578e8b285d62010a6be#38d79ea219b7230679a53578e8b285d62010a6be"
+source = "git+https://github.com/ducktape-industries/programs?rev=abc45b7ee45d4ab80e822145af9571840336e91e#abc45b7ee45d4ab80e822145af9571840336e91e"
 dependencies = [
  "abi",
  "borsh",
@@ -10696,7 +10771,7 @@ dependencies = [
 [[package]]
 name = "valset"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=38d79ea219b7230679a53578e8b285d62010a6be#38d79ea219b7230679a53578e8b285d62010a6be"
+source = "git+https://github.com/ducktape-industries/programs?rev=abc45b7ee45d4ab80e822145af9571840336e91e#abc45b7ee45d4ab80e822145af9571840336e91e"
 dependencies = [
  "abi",
  "borsh",
@@ -10770,7 +10845,7 @@ dependencies = [
 [[package]]
 name = "view-wire"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=38d79ea219b7230679a53578e8b285d62010a6be#38d79ea219b7230679a53578e8b285d62010a6be"
+source = "git+https://github.com/ducktape-industries/programs?rev=abc45b7ee45d4ab80e822145af9571840336e91e#abc45b7ee45d4ab80e822145af9571840336e91e"
 dependencies = [
  "accesskit 0.25.1",
  "borsh",
