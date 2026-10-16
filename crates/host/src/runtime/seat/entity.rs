@@ -434,10 +434,20 @@ impl Seat {
         let ticks = view.ticks;
         view.set_visible(self.in_front);
         view.sync_theme(gpui_kit::component::Theme::global(cx).is_dark());
-        view.sync_pointer(crate::contract::os().facts().touch_first);
-        // the view is never laid out narrower than its own minimum
-        // (`layers/panes.rs` gives its body `min_w`)
-        view.sync_viewport(width.max(view.min_width as f32), height);
+        let touch = crate::contract::os().facts().touch_first;
+        view.sync_pointer(touch);
+        // A manifest's minimum is the narrowest pointer window the view
+        // takes: under a pointer the view is never laid out narrower
+        // (`layers/panes.rs` gives its body `min_w` and scrolls it); a
+        // phone lays every view out at its screen's width, whatever
+        // minimum it declares: it never refuses, scrolls or zooms a view
+        // for it
+        let width = if touch {
+            width
+        } else {
+            width.max(view.min_width as f32)
+        };
+        view.sync_viewport(width, height);
         let again = match view.begin_redraw(props) {
             Redraw::Quiet => false,
             Redraw::Ready => view.finish_redraw(props),
