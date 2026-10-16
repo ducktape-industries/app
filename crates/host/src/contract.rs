@@ -30,6 +30,7 @@
 #![deny(missing_docs)]
 
 use crate::backend::RpcClient;
+use crate::motion;
 use crate::runtime::Answered;
 use crate::runtime::notify::{Click, Notice, Opened};
 use gpui_kit::{AppLifecyclePhase, TextInputConfiguration, Window, WindowInsets};
@@ -216,6 +217,10 @@ pub struct OsFacts {
     /// are refused `host.float`, `host.unfloat` and `host.placement` as
     /// unknown requests.
     pub floats: bool,
+    /// How this OS moves a stack's screens and a sheet: [`motion::IOS`],
+    /// [`motion::ANDROID`]. A pointer window never moves, so the desktop's
+    /// is never read.
+    pub motion: motion::Idiom,
 }
 
 /// Values that differ by device and have a measured owner (SPEC §4.5).
@@ -850,6 +855,7 @@ pub mod testing {
                 device_noun: "computer",
                 one_layout: false,
                 floats: true,
+                motion: crate::motion::IOS,
             }
         }
 

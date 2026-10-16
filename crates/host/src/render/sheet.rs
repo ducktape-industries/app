@@ -13,7 +13,7 @@
 //! view keeps (or opens again) is never left half-closed.
 //!
 //! Under touch a docked sheet moves as the Expo build's (gorhom's
-//! `BottomSheetModal`, `motion::SHEET_IN`): it slides up by its own height
+//! `BottomSheetModal`, `motion::Idiom::sheet`): it slides up by its own height
 //! as it first draws, a release settles at its detent, and one the view
 //! drops goes down as it was last drawn ([`Leaving`]), the scrim fading
 //! with it. A pointer window's sheet does not move.
@@ -76,7 +76,7 @@ impl SheetState {
             styles: styles.clone(),
             path: path.clone(),
             height,
-            tween: Tween::between(from, 0., motion::SHEET_OUT, cx),
+            tween: Tween::between(from, 0., motion::idiom().sheet, cx),
         })
     }
 }
@@ -148,7 +148,7 @@ impl ViewTree {
             None => self.sheets.entry(path.clone()).or_default(),
         };
         if moves && leaving.is_none() && state.drawn.is_none() && state.came.is_none() {
-            state.came = Some(Tween::between(from, 1., motion::SHEET_IN, cx));
+            state.came = Some(Tween::between(from, 1., motion::idiom().sheet, cx));
         }
         // sanitize keeps at most eight ascending fractions in (0, 1]; with
         // none the panel is laid out as tall as its child, and only a drag
@@ -299,7 +299,7 @@ impl ViewTree {
                                     // it was let go; under Reduce Motion it
                                     // is there at once
                                     if moves && !motion::reduced(cx) {
-                                        let settle = Tween::start(motion::SHEET_IN, cx);
+                                        let settle = Tween::start(motion::idiom().sheet, cx);
                                         state.settle = Some((drag.now, settle));
                                     }
                                 }

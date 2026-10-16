@@ -317,7 +317,7 @@ fn under_touch_a_sheet_slides_up_and_down_and_then_stays_still(cx: &mut gpui_kit
     assert!(frames(&mut native) > 0, "a sheet coming asked for no frame");
     native
         .executor()
-        .advance_clock(crate::motion::SHEET_IN.duration);
+        .advance_clock(crate::motion::idiom().sheet.duration);
     native.update(|window, cx| window.render_frame(cx));
     let up = rows(&mut native).expect("drawn");
     assert!(coming > up + 100., "it did not come up: {coming} -> {up}");
@@ -333,7 +333,7 @@ fn under_touch_a_sheet_slides_up_and_down_and_then_stays_still(cx: &mut gpui_kit
     assert_eq!(dismissals(&events), 0, "a sheet going took a press");
     native
         .executor()
-        .advance_clock(crate::motion::SHEET_OUT.duration);
+        .advance_clock(crate::motion::idiom().sheet.duration);
     native.update(|window, cx| window.render_frame(cx));
     assert_eq!(rows(&mut native), None, "a sheet gone is still drawn");
     assert!(going >= up, "it went up as it went");
@@ -359,7 +359,7 @@ fn under_touch_a_release_settles_at_its_detent(cx: &mut gpui_kit::TestAppContext
     let (tree, mut native, _events, _subscription) = open(cx, 390., 844.);
     native
         .executor()
-        .advance_clock(crate::motion::SHEET_IN.duration);
+        .advance_clock(crate::motion::idiom().sheet.duration);
     native.update(|window, cx| window.render_frame(cx));
     let top = |native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, _| f32::from(window.find("rows").bounds().top()))
@@ -371,7 +371,7 @@ fn under_touch_a_release_settles_at_its_detent(cx: &mut gpui_kit::TestAppContext
     let let_go = top(&mut native);
     native
         .executor()
-        .advance_clock(crate::motion::SHEET_IN.duration);
+        .advance_clock(crate::motion::idiom().sheet.duration);
     native.update(|window, cx| window.render_frame(cx));
     let settled = top(&mut native);
     crate::contract::testing::touch_first_for_test(false);
@@ -399,7 +399,7 @@ fn under_touch_a_sheet_turns_back_from_where_it_is(cx: &mut gpui_kit::TestAppCon
     let bottom = rows(&mut native);
     native
         .executor()
-        .advance_clock(crate::motion::SHEET_IN.duration / 8);
+        .advance_clock(crate::motion::idiom().sheet.duration / 8);
     let coming = rows(&mut native);
     assert!(coming < bottom, "it did not start up: {bottom} -> {coming}");
 
@@ -411,7 +411,7 @@ fn under_touch_a_sheet_turns_back_from_where_it_is(cx: &mut gpui_kit::TestAppCon
     );
     native
         .executor()
-        .advance_clock(crate::motion::SHEET_OUT.duration / 8);
+        .advance_clock(crate::motion::idiom().sheet.duration / 8);
     let lower = rows(&mut native);
     assert!(lower > going, "it did not go down: {going} -> {lower}");
 

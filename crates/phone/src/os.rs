@@ -22,6 +22,7 @@ use ducktape_host::contract::{
     Banners, Dirs, Inbound, KeyRefusal, KeyStorage, Limits, MintInvite, OsFacts, OsServices,
     Preload, RunnerConfig, Signal, SoftKeyboard, ViewRunner,
 };
+use ducktape_host::motion;
 use ducktape_host::runtime::Answered;
 use ducktape_host::runtime::notify::{Click, Notice};
 use gpui_kit::{App, Context, Subscription, Window, WindowInsets};
@@ -228,6 +229,11 @@ impl OsServices for PhoneOs {
             device_noun: "phone",
             one_layout: true,
             floats: false,
+            motion: if cfg!(target_os = "android") {
+                motion::ANDROID
+            } else {
+                motion::IOS
+            },
         }
     }
 

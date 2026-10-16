@@ -2,7 +2,10 @@
 //! moves, as the Expo build's libraries move it (mobile rev 266633c). A
 //! pointer window never moves: its callers draw the still layout there.
 //!
-//! - A screen pushed or popped ([`PUSH`], [`POP`], the geometry in
+//! What differs by OS is an [`Idiom`], the shell's to name
+//! (`OsFacts::motion`): [`IOS`] or [`ANDROID`].
+//!
+//! - A screen pushed or popped ([`Idiom::push`], the geometry in
 //!   [`stack`]): expo-router's `Stack` is react-native-screens' native
 //!   stack, UIKit's own push on iOS, which is not in any source; matched to
 //!   react-native-screens' own copy of it, `simple_push`
@@ -11,7 +14,7 @@
 //!   the API 33+ default (`res/v33/anim-v33/rns_default_*.xml`): 450 ms on
 //!   `fast_out_extra_slow_in`, both screens 10 %, the top one fading in its
 //!   first 83 ms.
-//! - A sheet ([`SHEET_IN`], [`SHEET_OUT`]): `@gorhom/bottom-sheet`
+//! - A sheet ([`Idiom::sheet`]): `@gorhom/bottom-sheet`
 //!   5.2.14's `ANIMATION_CONFIGS` (`src/constants.ts`): on iOS the spring
 //!   mass 3, stiffness 1000, damping 500 (UIKit's default spring again,
 //!   damping ratio 4.56), on Android 250 ms `Easing.out(Easing.exp)`; its
@@ -168,38 +171,80 @@ pub const FADE: Motion = Motion {
     slides: false,
 };
 
-/// A screen pushed over the one it was on.
-#[cfg(not(target_os = "android"))]
-pub const PUSH: Motion = Motion {
-    duration: ms(500),
-    curve: Curve::Spring,
-    slides: true,
-};
-#[cfg(target_os = "android")]
-pub const PUSH: Motion = Motion {
-    duration: ms(450),
-    curve: Curve::Emphasized,
-    slides: true,
-};
-/// A screen popped off the one under it; the rest of a pop the finger let
-/// go of.
-pub const POP: Motion = PUSH;
+/// How an OS moves a stack's screens and a sheet.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Idiom {
+    /// A screen pushed over the one it was on, popped off the one under
+    /// it, and the rest of a pop the finger let go of.
+    pub push: Motion,
+    /// How the two screens move on a push.
+    pub pushed: Slide,
+    /// How they move on a pop.
+    pub popped: Slide,
+    /// A sheet coming up and going down, and a release settling at a
+    /// detent.
+    pub sheet: Motion,
+}
 
-/// A sheet coming up, and a release settling at a detent.
-#[cfg(not(target_os = "android"))]
-pub const SHEET_IN: Motion = Motion {
-    duration: ms(500),
-    curve: Curve::Spring,
-    slides: true,
+/// iOS's: UIKit's push and pop (react-native-screens `simple_push`) and
+/// gorhom's iOS sheet, all on UIKit's default spring.
+pub const IOS: Idiom = Idiom {
+    push: Motion {
+        duration: ms(500),
+        curve: Curve::Spring,
+        slides: true,
+    },
+    pushed: Slide {
+        over: 1.,
+        under: 0.3,
+        dim: 0.1,
+        fade: None,
+    },
+    popped: Slide {
+        over: 1.,
+        under: 0.3,
+        dim: 0.1,
+        fade: None,
+    },
+    sheet: Motion {
+        duration: ms(500),
+        curve: Curve::Spring,
+        slides: true,
+    },
 };
-#[cfg(target_os = "android")]
-pub const SHEET_IN: Motion = Motion {
-    duration: ms(250),
-    curve: Curve::ExpOut,
-    slides: true,
+
+/// Android's: react-native-screens' v33 defaults over 450 ms (the pushed
+/// screen fades in from 50 ms over 83; a popped one fades out from 35) and
+/// gorhom's Android sheet.
+pub const ANDROID: Idiom = Idiom {
+    push: Motion {
+        duration: ms(450),
+        curve: Curve::Emphasized,
+        slides: true,
+    },
+    pushed: Slide {
+        over: 0.1,
+        under: 0.1,
+        dim: 0.,
+        fade: Some((50. / 450., 83. / 450.)),
+    },
+    popped: Slide {
+        over: 0.1,
+        under: 0.1,
+        dim: 0.,
+        fade: Some((35. / 450., 83. / 450.)),
+    },
+    sheet: Motion {
+        duration: ms(250),
+        curve: Curve::ExpOut,
+        slides: true,
+    },
 };
-/// A sheet going down.
-pub const SHEET_OUT: Motion = SHEET_IN;
+
+/// This device's idiom, as its shell names it.
+pub fn idiom() -> Idiom {
+    crate::contract::os().facts().motion
+}
 
 /// An alert (and its scrim) fading in.
 pub const ALERT_IN: Motion = Motion {
@@ -288,30 +333,6 @@ impl Slide {
     }
 }
 
-/// iOS's push and pop (react-native-screens `simple_push`).
-#[cfg(not(target_os = "android"))]
-const PUSHED: Slide = Slide {
-    over: 1.,
-    under: 0.3,
-    dim: 0.1,
-    fade: None,
-};
-#[cfg(not(target_os = "android"))]
-const POPPED: Slide = PUSHED;
-/// Android's (react-native-screens' v33 defaults over 450 ms): the pushed
-/// screen fades in from 50 ms over 83; a popped one fades out from 35.
-#[cfg(target_os = "android")]
-const PUSHED: Slide = Slide {
-    over: 0.1,
-    under: 0.1,
-    dim: 0.,
-    fade: Some((50. / 450., 83. / 450.)),
-};
-#[cfg(target_os = "android")]
-const POPPED: Slide = Slide {
-    fade: Some((35. / 450., 83. / 450.)),
-    ..PUSHED
-};
 /// Reduce Motion's: nothing moves; the top screen fades.
 const CROSS_FADE: Slide = Slide {
     over: 0.,
@@ -322,15 +343,12 @@ const CROSS_FADE: Slide = Slide {
 
 /// A push (or a pop when `pop`): its motion and how its screens move.
 pub fn stack(pop: bool, cx: &App) -> (Motion, Slide) {
-    let motion = match pop {
-        true => POP,
-        false => PUSH,
-    }
-    .under(cx);
+    let idiom = idiom();
+    let motion = idiom.push.under(cx);
     let slide = match (motion.slides, pop) {
         (false, _) => CROSS_FADE,
-        (true, true) => POPPED,
-        (true, false) => PUSHED,
+        (true, true) => idiom.popped,
+        (true, false) => idiom.pushed,
     };
     (motion, slide)
 }
@@ -527,18 +545,20 @@ mod tests {
     /// left under the dim; a pop is the same move backwards.
     #[test]
     fn a_push_and_a_pop_mirror_each_other() {
-        let push = PUSHED.at(0., 0., false);
-        assert_eq!((push.top, push.under, push.dim), (PUSHED.over, 0., 0.));
-        let pushed = PUSHED.at(1., 1., false);
-        assert_eq!((pushed.top, pushed.opacity), (0., 1.));
-        assert_eq!((pushed.under, pushed.dim), (-PUSHED.under, PUSHED.dim));
-        for progress in [0., 0.25, 0.5, 1.] {
-            let push = PUSHED.at(progress, progress, false);
-            let pop = POPPED.at(1. - progress, 1. - progress, true);
-            assert_eq!(
-                (push.top, push.under, push.dim),
-                (pop.top, pop.under, pop.dim)
-            );
+        for Idiom { pushed, popped, .. } in [IOS, ANDROID] {
+            let push = pushed.at(0., 0., false);
+            assert_eq!((push.top, push.under, push.dim), (pushed.over, 0., 0.));
+            let done = pushed.at(1., 1., false);
+            assert_eq!((done.top, done.opacity), (0., 1.));
+            assert_eq!((done.under, done.dim), (-pushed.under, pushed.dim));
+            for progress in [0., 0.25, 0.5, 1.] {
+                let push = pushed.at(progress, progress, false);
+                let pop = popped.at(1. - progress, 1. - progress, true);
+                assert_eq!(
+                    (push.top, push.under, push.dim),
+                    (pop.top, pop.under, pop.dim)
+                );
+            }
         }
         let gone = CROSS_FADE.at(1., 1., true);
         assert_eq!((gone.top, gone.under, gone.opacity), (0., 0., 0.));
@@ -550,14 +570,14 @@ mod tests {
     fn a_tween_lands_exactly_on_its_end() {
         let started = Instant::now();
         let tween = Tween {
-            motion: PUSH,
+            motion: IOS.push,
             started,
             from: 0.25,
             to: 1.,
         };
         assert_eq!(tween.at(started), 0.25);
         assert!(!tween.done(started));
-        let end = started + PUSH.duration;
+        let end = started + IOS.push.duration;
         assert!(tween.done(end));
         assert_eq!(tween.at(end), 1.);
         assert_eq!(tween.at(end + ms(1)), 1.);

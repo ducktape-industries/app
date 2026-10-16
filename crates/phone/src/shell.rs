@@ -1455,7 +1455,8 @@ impl Render for Root {
             ));
         }
         let room = viewport.height - edges.top;
-        let sheets = (motion::SHEET_IN, motion::SHEET_OUT);
+        let sheet = motion::idiom().sheet;
+        let sheets = (sheet, sheet);
         let at = |(progress, slides, leaving), height: &Rc<Cell<_>>| sheet::At {
             bottom: edges.bottom,
             room,
@@ -1596,7 +1597,8 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(moving(&root, cx), Some((Page::Root(Tab::Home), false)));
         assert!(frames(cx) > 0, "a push asked for no frame");
-        cx.executor().advance_clock(motion::PUSH.duration / 4);
+        cx.executor()
+            .advance_clock(motion::idiom().push.duration / 4);
         assert!(frames(cx) > 0, "a push under way asked for no frame");
         assert!(moving(&root, cx).is_some(), "the push ended early");
         let under = home(cx).expect("Home drawn under the push");
@@ -1604,7 +1606,7 @@ mod tests {
             under.left() < still.left(),
             "Home is not moving left under it"
         );
-        cx.executor().advance_clock(motion::PUSH.duration);
+        cx.executor().advance_clock(motion::idiom().push.duration);
         frames(cx);
         assert_eq!(moving(&root, cx), None, "the push outlived its motion");
         assert_eq!(frames(cx), 0, "a frame asked for after the push ended");
@@ -1614,7 +1616,8 @@ mod tests {
         root.update(cx, |root, cx| root.back(cx));
         cx.run_until_parked();
         assert_eq!(moving(&root, cx), Some((Page::Program(PROGRAM), true)));
-        cx.executor().advance_clock(motion::POP.duration / 4);
+        cx.executor()
+            .advance_clock(motion::idiom().push.duration / 4);
         frames(cx);
         let coming = home(cx).expect("Home drawn under the pop");
         assert!(
@@ -1717,7 +1720,8 @@ mod tests {
         // back from where it is
         root.update(cx, |root, cx| root.open(PROGRAM, cx));
         cx.run_until_parked();
-        cx.executor().advance_clock(motion::PUSH.duration / 8);
+        cx.executor()
+            .advance_clock(motion::idiom().push.duration / 8);
         frames(cx);
         root.update(cx, |root, cx| root.drag(10., cx));
         assert_eq!(
@@ -1778,7 +1782,8 @@ mod tests {
         // Back while a sheet still comes up turns it back from where it is
         root.update(cx, |root, cx| root.account_sheet(cx));
         cx.run_until_parked();
-        cx.executor().advance_clock(motion::SHEET_IN.duration / 8);
+        cx.executor()
+            .advance_clock(motion::idiom().sheet.duration / 8);
         frames(cx);
         let coming = root.read_with(cx, |root, cx| {
             root.drawn_sheet
