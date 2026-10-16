@@ -1,0 +1,171 @@
+# The phone app (phone/, crates/phone) to internal TestFlight: on each push
+# to dev that changes what the phone is built from, and on demand. Archived
+# unsigned on the self-hosted runner mac-byeongsu (a tart VM set up by
+# ops/runner-ios-setup.sh), checked by the privacy gate, then signed and
+# uploaded by Apple's own tools in the `testflight` environment, which admits
+# dev and main only. Signing is cloud-managed through the App Store Connect
+# API key: no certificate or profile is kept anywhere. phone/README.md.
+#
+# The build number (CFBundleVersion) is the commit's committer time, as
+# release.yml's sequence: one commit is always one build number, a later dev
+# commit a higher one (GitHub's merge commits are dated when merged), all far
+# above the Expo builds' 2 and 3. It needs no call to App Store Connect before
+# the build and no counter anywhere. An upload leaves the tag
+# testflight-<build> on its commit; a run whose build has that tag is skipped.
+#
+# Never on pull_request: the runner is self-hosted and the repository public.
+name: testflight
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - "crates/**"
+      - "phone/**"
+      # the fonts the host embeds
+      - "assets/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/testflight.yml"
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: "Upload to TestFlight (off: sign and export only)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The build number, and whether TestFlight already has it.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      upload: ${{ steps.plan.outputs.upload }}
+      skip: ${{ steps.plan.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        env:
+          UPLOAD: ${{ github.event_name == 'push' || inputs.upload }}
+        run: |
+          build=$(git show -s --format=%ct HEAD)
+          # a committer clock in the future would hold every later commit
+          # below this build number until that date comes
+          if [ "$build" -gt $(( $(date +%s) + 600 )) ]; then
+            echo "::error::$GITHUB_SHA is dated $build, in the future: not built"
+            exit 1
+          fi
+          skip=false
+          if [ "$UPLOAD" = true ] && git ls-remote --exit-code origin "refs/tags/testflight-$build" > /dev/null; then
+            skip=true
+            echo "build $build is on TestFlight already (tag testflight-$build): skipped"
+          fi
+          {
+            echo "build=$build"
+            echo "upload=$UPLOAD"
+            echo "skip=$skip"
+          } >> "$GITHUB_OUTPUT"
+
+  # The commit's code runs here and only here, with no secret.
+  archive:
+    needs: plan
+    if: needs.plan.outputs.skip != 'true'
+    runs-on: [self-hosted, mac-byeongsu]
+    timeout-minutes: 120
+    # latest wins: a newer push stops an older archive
+    concurrency:
+      group: testflight-archive-${{ github.ref }}
+      cancel-in-progress: true
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../target
+      BUILD: ${{ needs.plan.outputs.build }}
+      APP: phone/ios/build/Ducktape.xcarchive/Products/Applications/Ducktape.app
+    steps:
+      - uses: actions/checkout@v4
+      - run: make -C phone ios-archive BUILD="$BUILD"
+      - name: privacy gate
+        run: phone/ios/privacy-scan.sh "$APP"
+      # an artifact keeps no file modes: the archive travels as a tarball
+      - name: pack
+        run: |
+          plist=/usr/libexec/PlistBuddy
+          echo "Ducktape $($plist -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")" \
+            "($($plist -c 'Print :CFBundleVersion' "$APP/Info.plist")), $(du -sh "$APP" | cut -f1)"
+          COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -czf Ducktape.xcarchive.tar.gz \
+            -C phone/ios/build Ducktape.xcarchive
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xcarchive
+          path: Ducktape.xcarchive.tar.gz
+          retention-days: 7
+          overwrite: true
+
+  # Sign (and upload): the one job with the key. It runs nothing of the built
+  # commit, not even a checkout: the archive and Apple's tools.
+  upload:
+    needs: [plan, archive]
+    runs-on: [self-hosted, mac-byeongsu]
+    timeout-minutes: 60
+    environment: testflight
+    # an upload in flight is never cancelled; a newer one waits for it
+    concurrency:
+      group: testflight-upload
+      cancel-in-progress: false
+    permissions:
+      # the tag testflight-<build>
+      contents: write
+    env:
+      BUILD: ${{ needs.plan.outputs.build }}
+      DESTINATION: ${{ needs.plan.outputs.upload == 'true' && 'upload' || 'export' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: xcarchive
+          path: ${{ runner.temp }}/testflight
+      - name: sign and ${{ env.DESTINATION }}
+        env:
+          ASC_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
+          ASC_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          ASC_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER }}
+        run: |
+          cd "$RUNNER_TEMP/testflight"
+          tar -xzf Ducktape.xcarchive.tar.gz
+          (umask 077 && printf '%s' "$ASC_KEY" > key.p8)
+          # team 8464KRUNQG owns industries.ducktape.mobile; the build
+          # number is the archive's own
+          cat > options.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>$DESTINATION</string>
+            <key>teamID</key><string>8464KRUNQG</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+            <key>uploadSymbols</key><true/>
+          </dict>
+          </plist>
+          EOF
+          /usr/bin/xcodebuild -exportArchive -archivePath Ducktape.xcarchive \
+            -exportOptionsPlist options.plist -exportPath out -allowProvisioningUpdates \
+            -authenticationKeyPath "$PWD/key.p8" -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER"
+          ls -l out
+      - name: forget the key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/testflight"
+      - name: tag
+        if: env.DESTINATION == 'upload'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/testflight-$BUILD" -f sha="$GITHUB_SHA" > /dev/null
+          echo "build $BUILD of $GITHUB_SHA is uploaded: App Store Connect > TestFlight shows it once processed"
