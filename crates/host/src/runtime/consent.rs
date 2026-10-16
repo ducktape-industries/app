@@ -15,7 +15,8 @@
 //! request's `op.submit` task queues an [`Ask`] once its words are whole
 //! (the target's description read), parks on its answer, and wakes the
 //! shell ([`changes_channel`]), which shows the front of the queue in its
-//! Approve-style dialog (`shell/layers/overlays/consent.rs`), answering
+//! Approve-style dialog (`shell/layers/overlays/consent.rs`; under touch
+//! the confirm sheet, [`sheet`]), answering
 //! [`answer`] with the person's Approve or Cancel. Cancel, the dialog
 //! closed any other way, or a window to ask in missing, refuses the view
 //! `consent_refused`; nothing is signed. One ask waits per view at a time:
@@ -23,6 +24,9 @@
 use std::collections::VecDeque;
 use std::ops::Range;
 use std::sync::{Mutex, OnceLock};
+
+mod sheet;
+pub use sheet::sheet;
 
 /// The card's title for an op to the person's account (identity's).
 pub const ACCOUNT: &str = "Confirm a change to your account";
