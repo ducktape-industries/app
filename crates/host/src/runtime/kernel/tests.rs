@@ -702,8 +702,9 @@ fn host_session_is_program_independent_and_tracks_updates() {
 }
 
 /// The host's facts reach the view as events, each once until it moves:
-/// the reader's UTC offset (a DST change moves it) and the body the view
-/// is laid out in. The latest of each wins the tick.
+/// the reader's UTC offset (a DST change moves it), the body the view is
+/// laid out in, and whether the device's pointer is a finger. The latest
+/// of each wins the tick.
 #[test]
 fn the_hosts_facts_cross_once_and_again_when_they_move() {
     let mut view = view();
@@ -712,19 +713,23 @@ fn the_hosts_facts_cross_once_and_again_when_they_move() {
     assert!((-14 * 60..=14 * 60).contains(&minutes));
     view.sync_offset(minutes);
     view.sync_viewport(766., 501.);
+    view.sync_pointer(false);
     let told = vec![
         wire::Event::Offset { minutes },
         wire::Event::Viewport {
             width: 766.,
             height: 501.,
         },
+        wire::Event::Pointer { touch: false },
     ];
     assert_eq!(view.pending, told);
     view.sync_offset(minutes);
     view.sync_viewport(766., 501.);
+    view.sync_pointer(false);
     assert_eq!(view.pending, told, "the same facts are not sent twice");
     view.sync_offset(minutes + 60);
     view.sync_viewport(800., 501.);
+    view.sync_pointer(true);
     assert_eq!(
         view.pending,
         [
@@ -735,6 +740,7 @@ fn the_hosts_facts_cross_once_and_again_when_they_move() {
                 width: 800.,
                 height: 501.,
             },
+            wire::Event::Pointer { touch: true },
         ],
         "a moved fact replaces the one waiting"
     );
