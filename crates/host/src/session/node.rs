@@ -8,15 +8,18 @@
 //! block N" moved with every block, and the screens that say it build it
 //! from `Chain`'s height.
 //!
+//! Leaving a network (a disconnect, or another chain taken up) empties the
+//! roster at once, before anything of the next network is read, so neither
+//! the rail nor a link is ever read against the left network's programs.
 //! What other entities do for it follows through events: the network left
 //! (`SessionEvent::LeftNetwork`: `Windows` clears the desks and the active
-//! program, `Rail` its badges), a failure said over a network in hand
+//! program, `Rail` its badges and rows), a failure said over a network in hand
 //! (`Toast`), the console brought forward as a node answers (`Connected`,
 //! `Windows`).
 
 use super::{Account, Chain, Screen, Slice, on_runtime, spawn_on_runtime};
 use crate::backend;
-use crate::runtime::notify;
+use crate::runtime::{Roster, notify};
 use futures::FutureExt as _;
 use futures::future::LocalBoxFuture;
 use gpui_kit::{Context, Entity, EventEmitter, Task};
@@ -99,6 +102,9 @@ pub struct Session {
     screen: Entity<Slice<Screen>>,
     /// The notification centre: told the chain, which its links name.
     center: notify::CenterHandle,
+    /// What the network in hand lists, which the rail reads: emptied as
+    /// the network is left.
+    roster: Roster,
     /// The connected node's status, asked by the poll.
     source: Option<StatusSource>,
     /// The connect attempt in flight; dropping it drops the request.
@@ -119,6 +125,7 @@ impl Session {
         account: Entity<Account>,
         screen: Entity<Slice<Screen>>,
         center: notify::CenterHandle,
+        roster: Roster,
     ) -> Self {
         Self {
             state: SessionState::booted(),
@@ -126,6 +133,7 @@ impl Session {
             account,
             screen,
             center,
+            roster,
             source: None,
             connect: None,
             poll: None,
@@ -293,10 +301,11 @@ impl Session {
             cx,
         );
         self.apply_status(&status, cx);
-        crate::runtime::connected(&client, &network, &chain);
+        // left before the next network's programs are read
         if left {
-            cx.emit(SessionEvent::LeftNetwork);
+            self.left_network(cx);
         }
+        crate::runtime::connected(&client, &network, &chain);
         cx.emit(SessionEvent::Connected);
         self.account.update(cx, |account, cx| {
             account.open_device_key(cx);
@@ -466,6 +475,15 @@ impl Session {
         });
         self.screen
             .update(cx, |screen, cx| screen.set(Screen::Connect, cx));
+        self.left_network(cx);
+    }
+
+    /// The network in hand was left: its node is let go (nothing still out
+    /// to it lands), its programs are listed no more, and every entity
+    /// drops what was its (`LeftNetwork`).
+    fn left_network(&mut self, cx: &mut Context<Self>) {
+        crate::runtime::disconnected();
+        self.roster.clear();
         cx.emit(SessionEvent::LeftNetwork);
     }
 

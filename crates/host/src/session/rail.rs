@@ -1,7 +1,8 @@
 //! The programs the bar lists, each by the name its view gives itself, and
 //! each view's unread count. The rows are read off the roster once per
 //! change a loader thread, a seat coming or going, or a retry reports on the
-//! roster's channel, never at a draw; the badges come from each view's
+//! roster's channel, never at a draw, and at once as the network is left
+//! (the session empties the roster then); the badges come from each view's
 //! `Intent::Badge` (`Seats`), and go when the network is left.
 use super::{Session, SessionEvent};
 use crate::runtime::{Link, RailRow, Roster};
@@ -21,8 +22,9 @@ pub struct Rail {
 
 impl Rail {
     /// The rail of `roster`, read now and again on every message `changes`
-    /// brings (a burst read once); its badges cleared as the network in
-    /// hand is left.
+    /// brings (a burst read once); its badges cleared and its rows read
+    /// again (none) as the network in hand is left, so no link waits on the
+    /// channel's next turn to stop naming that network's programs.
     pub fn new(
         roster: Roster,
         mut changes: UnboundedReceiver<()>,
@@ -32,6 +34,7 @@ impl Rail {
         let leaving = cx.subscribe(session, |this, _, event: &SessionEvent, cx| {
             if let SessionEvent::LeftNetwork = event {
                 this.set_badges(BTreeMap::new(), cx);
+                this.refresh(cx);
             }
         });
         let drain = cx.spawn(async move |this, cx| {
@@ -93,10 +96,12 @@ impl Rail {
         true
     }
 
-    /// The rows of `roster` from now on: a test that swaps the model's.
+    /// What `listed` lists, listed in the rail's own roster (the session's,
+    /// which leaving the network empties), and the rows read again: a
+    /// test's stand-in for the node's read.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn read_off(&mut self, roster: Roster, cx: &mut Context<Self>) {
-        self.roster = roster;
+    pub fn read_off(&mut self, listed: Roster, cx: &mut Context<Self>) {
+        self.roster.relist_from(&listed);
         self.refresh(cx);
     }
 

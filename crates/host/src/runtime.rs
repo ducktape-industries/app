@@ -33,7 +33,7 @@ pub use kernel::{Answered, day, local_offset};
 // the web view cleans a page's title as a window's (render/web.rs)
 #[cfg(feature = "web")]
 pub use kernel::shown_title;
-pub use roster::{Link, RailRow, connected, deployments_checked, props, valid_route};
+pub use roster::{Link, RailRow, connected, deployments_checked, disconnected, props, valid_route};
 pub use roster::{Roster, changes_channel, roster};
 pub use seat::{Back, Backgrounded, Failure, Seat, serve_starts};
 
