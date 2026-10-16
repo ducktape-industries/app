@@ -343,13 +343,22 @@ impl ViewLimits {
     }
 }
 
+/// Counts only grows that succeed. wasmtime asks the limiter before it
+/// checks the module's own maximum, so a grow past that maximum would fail
+/// after it was counted, and every later grow would be judged against
+/// memory or tables the view never had: such a grow is refused here (the
+/// view's `grow` answers -1, as wasmtime's own refusal does) and counted
+/// nowhere.
 impl wasmtime::ResourceLimiter for ViewLimits {
     fn memory_growing(
         &mut self,
         _current: usize,
         desired: usize,
-        _maximum: Option<usize>,
+        maximum: Option<usize>,
     ) -> wasmtime::Result<bool> {
+        if maximum.is_some_and(|maximum| desired > maximum) {
+            return Ok(false);
+        }
         self.fits(desired, self.tables)?;
         self.memory = desired;
         Ok(true)
@@ -359,8 +368,11 @@ impl wasmtime::ResourceLimiter for ViewLimits {
         &mut self,
         current: usize,
         desired: usize,
-        _maximum: Option<usize>,
+        maximum: Option<usize>,
     ) -> wasmtime::Result<bool> {
+        if maximum.is_some_and(|maximum| desired > maximum) {
+            return Ok(false);
+        }
         let added = desired.saturating_sub(current);
         let tables =
             (self.tables).saturating_add(added.saturating_mul(std::mem::size_of::<usize>()));
@@ -473,4 +485,59 @@ fn first_line(error: &wasmtime::Error) -> String {
         .next()
         .unwrap_or("trap")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PAGE: usize = 65_536;
+
+    /// A grow past the module's own maximum is refused and counts nothing:
+    /// a table grow that fits beside the memory the view really has, then a
+    /// memory grow within its maximum and the budget, both succeed after
+    /// it. Before, the refused grow's size stayed counted, and the table
+    /// grow trapped past the budget.
+    #[test]
+    fn a_grow_refused_at_the_modules_own_maximum_counts_nothing() {
+        let runner = WasmtimeRunner::new(RunnerConfig {
+            signals_based_traps: true,
+            cache_dir: None,
+        });
+        // budget 4 pages; memory 1 page, its maximum 2; two pages of table
+        // elements at 8 bytes each
+        let elements = 2 * PAGE / std::mem::size_of::<usize>();
+        let code = format!(
+            r#"(module
+            (memory (export "memory") 1 2)
+            (table 0 {elements} funcref)
+            (func (export "alloc") (param i32) (result i32) i32.const 64)
+            (func (export "init")
+                ;; 3 pages: within the budget, past the module's maximum
+                (if (i32.ne (memory.grow (i32.const 2)) (i32.const -1)) (then unreachable))
+                ;; 1 page of memory + 2 of table: fits the budget
+                (if (i32.eq (table.grow (ref.null func) (i32.const {elements})) (i32.const -1))
+                    (then unreachable))
+                ;; 2 pages of memory + 2 of table: fits, at the maximum
+                (if (i32.ne (memory.grow (i32.const 1)) (i32.const 1)) (then unreachable)))
+            (func (export "tick") (param i32 i32) (result i64) i64.const 0)
+            (func (export "snapshot") (result i64) i64.const 0)
+            (func (export "restore") (param i32 i32) (result i64) i64.const 0))"#
+        );
+        let hash = [7; 32];
+        runner
+            .prepare(hash, code.as_bytes(), 4 * PAGE)
+            .expect("compiles");
+        let (land, landing) = Landing::channel();
+        runner.instantiate(hash, SeatId("grow-past-maximum", 0), land);
+        let Ok(Landed::Seated(mut instance)) = landing.try_recv() else {
+            panic!("not seated");
+        };
+        instance.begin_init();
+        let inited = landing.try_recv().expect("lands at once");
+        assert!(
+            matches!(inited, Landed::Inited),
+            "a grow after a refused one: {inited:?}"
+        );
+    }
 }
