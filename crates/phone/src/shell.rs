@@ -160,9 +160,8 @@ fn open_door(cx: &mut App) {
                 })
                 .unwrap_or_default()
         };
-        let settle = move |cx: &mut App| {
-            seats.update(cx, |seats, cx| seats.settle(cx));
-        };
+        // whether every seat's tick has landed: a read parks until then
+        let settle = move |cx: &mut App| seats.update(cx, |seats, cx| seats.settle(cx));
         let keep = |_: &Window, _: &App| None;
         let chords = Vec::new;
         let door = ax::Door {
