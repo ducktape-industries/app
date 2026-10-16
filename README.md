@@ -7,7 +7,7 @@ inside its chrome is a wasm view a program ships; the app's own screens are
 two — reach a node, unlock a key.
 
 ```bash
-# a node (ducktape-industries/ducktape, branch feat/capable-sandbox) is a
+# a node (ducktape-industries/ducktape, rev 8a0151a41) is a
 # separate process this app talks to over /v1; run one, then:
 cargo run -p ducktape-app
 DUCKTAPE_RPC=http://127.0.0.1:8844 cargo run -p ducktape-app   # skip the connect screen
@@ -20,6 +20,9 @@ Releases are published to `https://dl.ducktape.industries/app/`: one
 channel file per channel (`stable.json` is `main`, `nightly.json` is `dev`
 once a day) naming each platform's archive by its sha256. An installed app
 keeps itself up to date from there; Settings › Updates picks the channel.
+Its "Update automatically" switch (on unless turned off) stops that: off,
+the app still checks and says what is newer, but downloads and installs
+nothing until you press Update now there.
 For nightly, read `nightly.json` instead of `stable.json` below.
 
 **macOS (Apple silicon).** Needs `jq`. The archive is `Ducktape.app`, ad-hoc
@@ -104,8 +107,9 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 
 ## Dependency line
 
-`ducktape-industries/programs` (`crates/sdk`; rev `c0eebb0e761669e9442f8d0c203cd37b0b8c9165`): `abi`, `view-wire`, `ducklink`, `design`.
-`ducktape-industries/ducktape`: `blob` (rev `a4360f6d6ac3b807df95e3fda24d8d8a8b130049`), `keyscheme` (rev `9dfffb0662bd8a16293df8c75de8817a79b0810b`), `ducktape-home` and `keystore` (branch `feat/capable-sandbox`).
+`ducktape-industries/programs` (rev `7327a481c1291176de20757956e33562fa2127a0`): `abi`, `view-wire`, `program`, `ducklink`, `design`, `describe`, `identity`, `valset`, `programs`, `blobs`, and the `abi` patch over ducktape's.
+`ducktape-industries/ducktape` (rev `8a0151a411c3558453c34bb8272b93dfc428cb74`, the rev that programs rev pins): `blob`, `keyscheme`, `ducktape-home`, `keystore`, `live-wire`.
+`ducktape-industries/gpui-pre` (rev `1026d7a2bac0a21cc73cd9f31a2a56b23f973cea`, the rev that programs rev pins): `gpui-pre` and the crates it patches.
 
 ## Building
 

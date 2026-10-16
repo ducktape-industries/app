@@ -64,6 +64,7 @@ mod tests {
                     pubkey: PublicKey::of(&key_pair(5)),
                     from_sequence: 20,
                 }),
+                asked: true,
             }),
             Phase::Staged(Staged {
                 current: a,
@@ -74,6 +75,7 @@ mod tests {
                 display: "0.1.0+abc".into(),
                 channel: "nightly".into(),
                 refused: None,
+                asked: true,
             }),
             Phase::Staged(Staged {
                 current: a,
@@ -84,6 +86,7 @@ mod tests {
                 display: "0.1.0+qualify-fail".into(),
                 channel: "stable".into(),
                 refused: Some("qualify_exit_3".into()),
+                asked: false,
             }),
             Phase::Swapping(Swapping {
                 from: a,
