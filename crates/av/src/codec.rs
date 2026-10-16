@@ -12,8 +12,10 @@
 //!   ([`AudioDecoder::lost`]).
 //! - picture: a camera's BGRA picture is scaled to the encoded size and
 //!   turned into I420 once, in [`VideoEncoder::encode`]. A keyframe comes
-//!   first, after a size change and when asked ([`VideoEncoder::keyframe`]),
-//!   never on a timer: a receiver that joins, or lost a packet, asks.
+//!   first, after a size change, when asked ([`VideoEncoder::keyframe`])
+//!   and where OpenH264 sees a scene cut; never on a timer of its own: a
+//!   receiver that joins, or lost a packet, asks, and a periodic one (the
+//!   host's bound on how long a receiver waits) is the host's timer asking.
 //!
 //! ponytail: software codecs on every OS (libopus and OpenH264 built from
 //! source). The hardware H.264 of the phones and macOS (VideoToolbox,
@@ -87,14 +89,12 @@ mod opus {
 pub const SAMPLE_RATE: u32 = 48_000;
 /// Samples in one packet: 20 ms.
 pub const FRAME: usize = 960;
-/// The largest packet one frame codes to (RFC 6716, 3.4).
-const MAX_PACKET: usize = 1275;
+/// The largest packet one frame codes to: its TOC byte and at most 1275
+/// bytes of frame (RFC 6716, 3.2.1).
+const MAX_PACKET: usize = 1276;
 /// The packet loss, in percent, FEC is coded for until
 /// [`AudioEncoder::set_loss`] says otherwise.
 const LOSS: u8 = 10;
-/// The pictures a second a camera gives at most: what the video rate
-/// control spreads the bitrate over.
-const FPS: f32 = 30.0;
 
 /// A person's voice into packets, one per 20 ms.
 pub struct AudioEncoder(*mut opus::OpusEncoder);
@@ -127,7 +127,8 @@ impl AudioEncoder {
         Ok(encoder)
     }
 
-    /// From the next packet on (libopus keeps it within 500 to 512 000).
+    /// From the next packet on. libopus keeps it within 500 to 300 000
+    /// (mono's cap) and refuses 0.
     pub fn set_bitrate(&mut self, bitrate: u32) -> Result<(), String> {
         self.ctl(
             opus::OPUS_SET_BITRATE_REQUEST,
@@ -203,7 +204,8 @@ impl AudioDecoder {
     /// The 20 ms of a packet that never came: rebuilt from the copy `next`
     /// (the packet after it) carries, when that has come; concealed from
     /// what came before when not. Asked once per lost packet, in order,
-    /// before `next` itself is decoded.
+    /// before `next` itself is decoded. When it fails (`next` is not a
+    /// packet libopus reads), `lost(None)` conceals the frame instead.
     pub fn lost(&mut self, next: Option<&[u8]>) -> Result<[f32; FRAME], String> {
         self.run(next, true)
     }
@@ -273,6 +275,9 @@ pub struct VideoEncoder {
     width: u32,
     height: u32,
     bitrate: u32,
+    /// The pictures a second the camera gives: what the rate control
+    /// spreads the bitrate over.
+    fps: u32,
     /// Nothing encoded since `encoder` was made: OpenH264 starts on its
     /// first picture and takes no option before.
     fresh: bool,
@@ -283,14 +288,16 @@ pub struct VideoEncoder {
 
 impl VideoEncoder {
     /// Encodes pictures at `width` by `height` (each rounded down to
-    /// even) and `bitrate` bits a second.
-    pub fn new(width: u32, height: u32, bitrate: u32) -> Result<Self, String> {
+    /// even) and `bitrate` bits a second, from a camera giving `fps`
+    /// pictures a second.
+    pub fn new(width: u32, height: u32, bitrate: u32, fps: u32) -> Result<Self, String> {
         let (width, height) = even(width, height)?;
         Ok(Self {
-            encoder: encoder(bitrate)?,
+            encoder: encoder(bitrate, fps)?,
             width,
             height,
             bitrate,
+            fps,
             fresh: true,
             yuv: YUVBuffer::new(width as usize, height as usize),
             scaled: Vec::new(),
@@ -300,7 +307,7 @@ impl VideoEncoder {
     /// From the next picture on.
     pub fn set_bitrate(&mut self, bitrate: u32) -> Result<(), String> {
         if self.fresh {
-            self.encoder = encoder(bitrate)?;
+            self.encoder = encoder(bitrate, self.fps)?;
             self.bitrate = bitrate;
             return Ok(());
         }
@@ -331,15 +338,16 @@ impl VideoEncoder {
         Ok(())
     }
 
-    /// From the next picture on, a keyframe. The picture is scaled to it,
-    /// its proportions not kept: a size of the camera's proportions keeps
-    /// them.
-    pub fn set_size(&mut self, width: u32, height: u32) -> Result<(), String> {
+    /// The encoded size and the pictures a second the camera now gives;
+    /// a change holds from the next picture on, a keyframe. The picture
+    /// is scaled to the size, its proportions not kept: a size of the
+    /// camera's proportions keeps them.
+    pub fn set_size(&mut self, width: u32, height: u32, fps: u32) -> Result<(), String> {
         let (width, height) = even(width, height)?;
-        if (width, height) != (self.width, self.height) {
+        if (width, height, fps) != (self.width, self.height, self.fps) {
             // a new encoder: OpenH264's own resize would drop a bitrate
             // set since it started
-            *self = Self::new(width, height, self.bitrate)?;
+            *self = Self::new(width, height, self.bitrate, fps)?;
         }
         Ok(())
     }
@@ -397,12 +405,16 @@ impl VideoEncoder {
 }
 
 /// An OpenH264 encoder for a call: the bitrate kept (frames skipped when
-/// over it), at most [`FPS`] pictures a second.
-fn encoder(bitrate: u32) -> Result<Encoder, String> {
+/// over it), spread over `fps` pictures a second (each picture's share is
+/// `bitrate / fps`).
+fn encoder(bitrate: u32, fps: u32) -> Result<Encoder, String> {
+    if fps == 0 {
+        return Err("a camera giving no pictures a second".into());
+    }
     let config = EncoderConfig::new()
         .bitrate(BitRate::from_bps(bitrate))
         .rate_control_mode(RateControlMode::Bitrate)
-        .max_frame_rate(FrameRate::from_hz(FPS));
+        .max_frame_rate(FrameRate::from_hz(fps as f32));
     Encoder::with_api_config(OpenH264API::from_source(), config)
         .map_err(|error| format!("openh264: {error}"))
 }
@@ -723,7 +735,7 @@ mod tests {
 
     #[test]
     fn a_picture_comes_back_through_h264() {
-        let mut encoder = VideoEncoder::new(320, 240, 1_000_000).unwrap();
+        let mut encoder = VideoEncoder::new(320, 240, 1_000_000, 30).unwrap();
         let mut decoder = VideoDecoder::new().unwrap();
         let sent = pattern(320, 240, 0);
         let mut last = None;
@@ -741,7 +753,7 @@ mod tests {
 
     #[test]
     fn a_keyframe_comes_first_and_when_asked() {
-        let mut encoder = VideoEncoder::new(160, 120, 500_000).unwrap();
+        let mut encoder = VideoEncoder::new(160, 120, 500_000, 30).unwrap();
         let mut kinds = Vec::new();
         for n in 0..12 {
             if n == 6 {
@@ -758,7 +770,7 @@ mod tests {
 
     #[test]
     fn a_video_bitrate_change_takes_effect_down_and_up() {
-        let mut encoder = VideoEncoder::new(160, 120, 1_000_000).unwrap();
+        let mut encoder = VideoEncoder::new(160, 120, 1_000_000, 30).unwrap();
         let mut sizes = Vec::new();
         for n in 0..90u64 {
             match n {
@@ -783,9 +795,33 @@ mod tests {
         assert!(low < 16_000, "{low} bytes in 2/3 s at 100 kb/s");
     }
 
+    /// A camera giving 15 pictures a second gets its whole bitrate: each
+    /// picture's share is the bitrate over 15, not over 30.
+    #[test]
+    fn a_slower_camera_lands_near_the_bitrate() {
+        let bitrate = 300_000;
+        for fps in [15u64, 30] {
+            let mut encoder = VideoEncoder::new(160, 120, bitrate, fps as u32).unwrap();
+            let mut bytes = 0;
+            for n in 0..fps * 3 {
+                let at = Duration::from_millis(n * 1000 / fps);
+                let packet = encoder.encode(&grainy(160, 120, n as u32), at).unwrap();
+                // the last two seconds, past the first one's settling
+                if n >= fps {
+                    bytes += packet.map_or(0, |packet| packet.data.len());
+                }
+            }
+            let rate = bytes * 8 / 2;
+            assert!(
+                rate > bitrate as usize * 4 / 5 && rate < bitrate as usize * 6 / 5,
+                "{rate} b/s at {fps} pictures a second, for {bitrate}"
+            );
+        }
+    }
+
     #[test]
     fn a_picture_is_scaled_to_the_size_set_then() {
-        let mut encoder = VideoEncoder::new(161, 121, 500_000).unwrap();
+        let mut encoder = VideoEncoder::new(161, 121, 500_000, 30).unwrap();
         let mut decoder = VideoDecoder::new().unwrap();
         let camera = pattern(320, 240, 0);
         let packet = encoder.encode(&camera, frame(0)).unwrap().unwrap();
@@ -801,12 +837,13 @@ mod tests {
         assert!(psnr(&expected, &small) > 30.);
         // a size change starts on a keyframe
         encoder.encode(&camera, frame(1)).unwrap();
-        encoder.set_size(320, 240).unwrap();
+        encoder.set_size(320, 240, 30).unwrap();
         let packet = encoder.encode(&camera, frame(2)).unwrap().unwrap();
         assert!(packet.keyframe);
         let full = decoder.decode(&packet.data).unwrap().unwrap();
         assert_eq!((full.width, full.height), (320, 240));
-        assert!(VideoEncoder::new(1, 240, 500_000).is_err());
+        assert!(VideoEncoder::new(1, 240, 500_000, 30).is_err());
+        assert!(VideoEncoder::new(320, 240, 500_000, 0).is_err());
     }
 
     #[test]
@@ -837,7 +874,7 @@ mod tests {
             }
             let _ = decoder.decode(&bytes);
         }
-        let mut encoder = VideoEncoder::new(160, 120, 500_000).unwrap();
+        let mut encoder = VideoEncoder::new(160, 120, 500_000, 30).unwrap();
         let packet = encoder
             .encode(&pattern(160, 120, 0), frame(0))
             .unwrap()
