@@ -648,11 +648,12 @@ mod inner {
     }
 
     fn encoder_at(rung: Rung) -> Result<VideoEncoder, String> {
-        VideoEncoder::new(rung.width, rung.height, rung.bitrate)
+        VideoEncoder::new(rung.width, rung.height, rung.bitrate, rung.fps)
     }
 
+    /// The encoder at `rung`; its next packet is a keyframe.
     fn apply(encoder: &mut VideoEncoder, rung: Rung) {
-        let _ = encoder.set_size(rung.width, rung.height);
+        let _ = encoder.set_size(rung.width, rung.height, rung.fps);
         let _ = encoder.set_bitrate(rung.bitrate);
     }
 
