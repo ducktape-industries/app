@@ -38,6 +38,12 @@
 	<true/>
 	<key>MinimumOSVersion</key>
 	<string>15.0</string>
+	<!-- the camera and microphone pieces (crates/av): the system's prompt shows these, and a capture without them
+	     ends the app -->
+	<key>NSCameraUsageDescription</key>
+	<string>Ducktape shows your camera in the views you open that use it.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Ducktape listens to your microphone in the views you open that use it.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
