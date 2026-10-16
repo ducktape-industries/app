@@ -5,6 +5,7 @@
 #   make android            the APK, x86_64 (the emulator); ANDROID_ABI=arm64-v8a for a phone
 #   make android-run        installs it and starts it (adb's one device)
 #   make ios-sim            the simulator app (on a Mac)
+#   make ios-archive        the App Store archive, unsigned (on a Mac); BUILD=<n> is its CFBundleVersion
 #
 # FEATURES=ax-door (the default) is the gate build with the AX test door on
 # 127.0.0.1:7777; FEATURES= builds without it.
@@ -22,8 +23,10 @@ APK := $(ROOT)/phone/android/app/build/outputs/apk/debug/app-debug.apk
 
 IOS_OUT := $(ROOT)/phone/ios/build/rust
 IOS_APP := $(ROOT)/phone/ios/build/derived/Build/Products/Debug-iphonesimulator/Ducktape.app
+IOS_ARCHIVE := $(ROOT)/phone/ios/build/Ducktape.xcarchive
+BUILD ?= 1
 
-.PHONY: android android-run ios-sim
+.PHONY: android android-run ios-sim ios-archive
 
 android:
 	cd $(ROOT) && cargo ndk -t $(ANDROID_ABI) -P 26 rustc -p ducktape-phone --lib --profile phone $(CARGO_FEATURES) --crate-type cdylib
@@ -51,3 +54,19 @@ ios-sim:
 	cd $(ROOT)/phone/ios && xcodebuild -project Ducktape.xcodeproj -scheme Ducktape -sdk iphonesimulator \
 		-configuration Debug -destination 'generic/platform=iOS Simulator' -derivedDataPath build/derived -jobs 4 -quiet build
 	@echo $(IOS_APP)
+
+# What ships to TestFlight (.github/workflows/testflight.yml): the phone's
+# library without the AX door, whatever FEATURES says, archived unsigned; the
+# workflow signs it on export.
+ios-archive:
+	mkdir -p $(IOS_OUT)/iphoneos
+	cd $(ROOT) && IPHONEOS_DEPLOYMENT_TARGET=15.0 cargo rustc -p ducktape-phone --lib --profile phone \
+		--target aarch64-apple-ios --crate-type staticlib -- --print native-static-libs \
+		2> $(IOS_OUT)/rustc.log || { cat $(IOS_OUT)/rustc.log; exit 1; }
+	printf 'RUST_NATIVE_LIBS = %s\n' "$$(sed -n 's/^note: native-static-libs: //p' $(IOS_OUT)/rustc.log | tail -1)" > $(IOS_OUT)/link.xcconfig
+	cp $(CARGO_TARGET_DIR)/aarch64-apple-ios/phone/libducktape_phone.a $(IOS_OUT)/iphoneos/
+	cd $(ROOT)/phone/ios && xcodegen generate --quiet
+	cd $(ROOT)/phone/ios && xcodebuild -project Ducktape.xcodeproj -scheme Ducktape -sdk iphoneos \
+		-configuration Release -destination 'generic/platform=iOS' -derivedDataPath build/derived -jobs 4 -quiet \
+		archive -archivePath $(IOS_ARCHIVE) CODE_SIGNING_ALLOWED=NO CURRENT_PROJECT_VERSION=$(BUILD)
+	@echo $(IOS_ARCHIVE)
