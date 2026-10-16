@@ -62,13 +62,32 @@ impl View {
         }
     }
 
-    /// One redraw: tick if there is anything to deliver — or never was a
-    /// first frame — answer the requests, and say whether the view is due
-    /// again at once. A view with nothing to deliver is left alone: the
-    /// tree the host has is the tree it would send.
+    /// One redraw, its tick landed at once: [`Self::begin_redraw`], the
+    /// frame taken in, [`Self::finish_redraw`], as a seat's turn runs it on
+    /// the wasmtime runner. Whether the view is due again at once.
+    #[cfg(test)]
     pub fn redraw(&mut self, props: &Option<Vec<u8>>) -> bool {
+        match self.begin_redraw(props) {
+            Redraw::Quiet => false,
+            Redraw::Ready => self.finish_redraw(props),
+            Redraw::Ticking => {
+                let landed = self.at_once();
+                self.redraw_landed(landed);
+                self.finish_redraw(props)
+            }
+        }
+    }
+
+    /// A redraw's first half: everything owed to the view gathered, and a
+    /// tick begun if there is anything to deliver — or never was a first
+    /// frame. A view with nothing to deliver is left alone (`Quiet`): the
+    /// tree the host has is the tree it would send. While `Ticking`, the
+    /// frame lands on the seat's `Landing`, at once or later; the seat
+    /// hands it to [`Self::redraw_landed`] and then calls
+    /// [`Self::finish_redraw`].
+    pub fn begin_redraw(&mut self, props: &Option<Vec<u8>>) -> Redraw {
         if self.fault.is_some() {
-            return false;
+            return Redraw::Quiet;
         }
         self.sync_props(props);
         let backlog = self.replies.drain_into(&mut self.pending);
@@ -84,18 +103,46 @@ impl View {
             // a replacement's first tree is already here; only its
             // requests and cancels are still to route
             self.staged = false;
-        } else {
-            let quiet = self.ticks > 0 && !self.frame.busy && self.pending.is_empty();
-            if quiet {
-                return false;
-            }
-            self.tick();
-            self.ticks += 1;
-            crate::perf::count(self.perf_key(), "ticks", 1);
-            if self.frame.busy {
-                crate::perf::count(self.perf_key(), "busy_ticks", 1);
-            }
+            return Redraw::Ready;
         }
+        let quiet = self.ticks > 0 && !self.frame.busy && self.pending.is_empty();
+        if quiet {
+            return Redraw::Quiet;
+        }
+        self.begin_tick();
+        Redraw::Ticking
+    }
+
+    /// A redraw's tick landed: its frame taken in, and counted.
+    pub fn redraw_landed(&mut self, landed: Landed) {
+        self.tick_landed(landed);
+        self.ticks += 1;
+        crate::perf::count(self.perf_key(), "ticks", 1);
+        if self.frame.busy {
+            crate::perf::count(self.perf_key(), "busy_ticks", 1);
+        }
+    }
+
+    /// The answer to the call begun last, if it has landed; the seat takes
+    /// it after `begin_redraw`, and waits on [`Self::landing`] when not.
+    pub fn landed_now(&self) -> Option<Landed> {
+        self.landing.try_recv().ok()
+    }
+
+    /// Whether a tick is in flight: begun, its frame not landed.
+    pub fn ticking(&self) -> bool {
+        self.ticking
+    }
+
+    /// The instance's answers, for the seat to wait on a tick in flight.
+    pub fn landing(&self) -> async_channel::Receiver<Landed> {
+        self.landing.clone()
+    }
+
+    /// A redraw's second half, after its tick landed (or none was due):
+    /// the frame's requests answered and its cancels retired. Whether the
+    /// view is due again at once.
+    pub fn finish_redraw(&mut self, props: &Option<Vec<u8>>) -> bool {
         for request in std::mem::take(&mut self.frame.requests) {
             self.answer(request, props);
         }
@@ -331,21 +378,43 @@ impl View {
     /// A trap ends the view; the widget shows the message in its place.
     /// Each stage is a perf sample under the seat's key: the call, the
     /// decode, the merge, the fuel and bytes each way, the frame's kind.
+    #[cfg(test)]
     pub fn tick(&mut self) {
-        use crate::perf;
+        self.begin_tick();
+        let landed = self.at_once();
+        self.tick_landed(landed);
+    }
+
+    /// A tick's first half: the events owed to the view handed to its
+    /// instance. The frame lands on the seat's `Landing`, at once or later,
+    /// and [`Self::tick_landed`] takes it.
+    pub fn begin_tick(&mut self) {
         let key = self.perf_key();
         let events = std::mem::take(&mut self.pending);
         #[cfg(any(test, feature = "test-support"))]
         self.ticked_with.push(events.clone());
         let bytes = wire::encode(&events);
-        perf::record(key, "events_bytes", bytes.len() as u64);
-        arm(&mut self.store);
-        let called = perf::time(key, "tick.call");
-        let answer = self
-            .exports
-            .tick(&mut self.store, &bytes)
-            .map_err(|error| first_line(&error));
-        drop(called);
+        crate::perf::record(key, "events_bytes", bytes.len() as u64);
+        self.tick_call = crate::perf::time(key, "tick.call");
+        self.ticking = true;
+        if let Some(kept) = &mut self.kept {
+            kept.batches.push(bytes.clone());
+        }
+        self.running.begin_tick(bytes);
+    }
+
+    /// A tick's second half: its frame landed, shaped and merged into the
+    /// tree the host holds, or its fault ending the view.
+    pub fn tick_landed(&mut self, landed: Landed) {
+        use crate::perf;
+        let key = self.perf_key();
+        drop(self.tick_call.take());
+        self.ticking = false;
+        let answer = match landed {
+            Landed::Frame(frame) => Ok(frame),
+            Landed::Fault(fault) => Err(fault.to_string()),
+            other => Err(format!("the view answered a tick with {other:?}")),
+        };
         if perf::on() {
             perf::record(key, "fuel.tick", self.fuel_used());
         }
@@ -435,16 +504,12 @@ impl View {
                 }
                 self.frame = frame;
                 if perf::on() {
-                    perf::gauge(
-                        key,
-                        "memory",
-                        self.exports.memory.data_size(&self.store) as u64,
-                    );
+                    perf::gauge(key, "memory", self.running.memory_bytes() as u64);
                 }
             }
             Err(trap) => {
                 perf::count(key, "faults", 1);
-                let reason = panic_message(&mut self.store).unwrap_or(trap);
+                let reason = trap;
                 tracing::warn!(
                     target: "ducktape::app",
                     program = self.program,

@@ -35,14 +35,14 @@ pub use kernel::{Answered, day, local_offset};
 pub use kernel::shown_title;
 pub use roster::{Link, RailRow, connected, deployments_checked, props, valid_route};
 pub use roster::{Roster, changes_channel, roster};
-pub use seat::{Failure, Seat};
+pub use seat::{Backgrounded, Failure, Seat};
 
 use roster::{Connection, code_digest, connection, rail_moved};
 use seat::{
     Load, LoadTiming, Loaded, Mounted, Registry, Slot, Unloaded, ViewCode, log_source, queue,
     registry, view_override,
 };
-use view::View;
+use view::{Redraw, View};
 
 /// Shared HTTP connections need a continuously driven I/O runtime. Loader
 /// threads compile between requests; their own parked runtimes would strand
@@ -81,12 +81,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use crate::contract::{
+    CodeSource, FUEL_PER_TICK, Fault, Landed, Landing, Prepared, SeatId, ViewInstance, ViewRunner,
+};
 use gpui_kit::AppContext as _;
 use pictures::Pictures;
 use view_wire as wire;
-use wasmtime::{
-    Cache, CacheConfig, Caller, Config, Engine, Linker, Memory, Module, OptLevel, Store, TypedFunc,
-};
 use wire::methods::{Capability, refusal};
 
 /// One desktop window, as the shell and the notification policy (which
@@ -121,11 +121,6 @@ pub enum Intent {
     Seated,
 }
 
-/// Instruction budget for one call into a view: a ceiling that ends a
-/// runaway, not a cost. `RUST_LOG=ducktape::perf=debug` logs each tick's
-/// fuel; docs/perf.md §4.2 has the heaviest ticks measured and each view's
-/// budget, at most half of this ceiling.
-const FUEL_PER_TICK: u64 = 250_000_000;
 /// How many view loads run at once, each on a loader thread of its own
 /// (`Limits::loaders`: the desktop one a core, a phone one), so a long
 /// roster waits its turn rather than forking a thread per program.
@@ -186,21 +181,34 @@ mod display_diagnostics;
 
 pub mod pictures;
 
-/// The name a view's manifest gives it, the capabilities it declares, the
-/// narrowest it is laid out, its targets, its icon and the wire it was
-/// built against; empty and 0 for one whose manifest cannot be read
-/// (`compile` refuses those before a seat).
-fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>, u32, Vec<String>, String, String) {
+/// What a view's manifest says, read before any of its code runs: the
+/// name, icon and description the rail and Home list it by, the narrowest
+/// it is laid out, the capabilities it declares, its targets, and the wire
+/// it was built against (another than this app's runs all the same, and
+/// whatever then fails says so: `View::failure`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Listing {
+    pub name: String,
+    pub icon: String,
+    pub description: String,
+    pub min_width: u32,
+    pub capabilities: Vec<Capability>,
+    pub targets: Vec<String>,
+    pub wire: String,
+}
+
+/// `bytes`' manifest as the host reads it; empty and 0 for one whose
+/// manifest cannot be read (`prepare` refuses those before a seat).
+fn manifest_of(bytes: &[u8]) -> Listing {
     view_wire::manifest::read_manifest(bytes)
-        .map(|manifest| {
-            (
-                manifest.name,
-                manifest.capabilities,
-                manifest.min_width,
-                manifest.targets,
-                manifest.icon,
-                manifest.wire_id,
-            )
+        .map(|manifest| Listing {
+            name: manifest.name,
+            icon: manifest.icon,
+            description: manifest.description,
+            min_width: manifest.min_width,
+            capabilities: manifest.capabilities,
+            targets: manifest.targets,
+            wire: manifest.wire_id,
         })
         .unwrap_or_default()
 }
@@ -262,10 +270,8 @@ pub fn seat_drawing_for_test(program: &'static str, min_width: u32, root: wire::
 pub fn seat_frame_for_test(program: &'static str, min_width: u32, frame: wire::Frame) {
     let (bytes, len) = wat_frame(&frame);
     let tick = wire::abi::pack(65536, len);
-    let code = Module::new(
-        view::engine(),
-        format!(
-            r#"(module
+    let code = view::prepared_for_test(format!(
+        r#"(module
             (memory (export "memory") 2)
             (data (i32.const 65536) "{bytes}")
             (func (export "alloc") (param i32) (result i32) i32.const 64)
@@ -273,9 +279,7 @@ pub fn seat_frame_for_test(program: &'static str, min_width: u32, frame: wire::F
             (func (export "tick") (param i32 i32) (result i64) i64.const {tick})
             (func (export "snapshot") (result i64) unreachable)
             (func (export "restore") (param i32 i32) (result i64) unreachable))"#
-        ),
-    )
-    .unwrap();
+    ));
     seat_code_for_test(program, min_width, code);
 }
 
@@ -314,7 +318,7 @@ pub fn seat_frames_for_test(
 /// A view's code answering its first `first_ticks` ticks with `first` and
 /// every later tick with `then`.
 #[cfg(any(test, feature = "test-support"))]
-pub fn frames_code(first: &wire::Frame, first_ticks: u32, then: &wire::Frame) -> Module {
+pub fn frames_code(first: &wire::Frame, first_ticks: u32, then: &wire::Frame) -> [u8; 32] {
     let (first, first_len) = wat_frame(first);
     let (then, then_len) = wat_frame(then);
     assert!(
@@ -323,10 +327,8 @@ pub fn frames_code(first: &wire::Frame, first_ticks: u32, then: &wire::Frame) ->
     );
     let first_tick = wire::abi::pack(65536, first_len);
     let then_tick = wire::abi::pack(69632, then_len);
-    Module::new(
-        view::engine(),
-        format!(
-            r#"(module
+    view::prepared_for_test(format!(
+        r#"(module
             (memory (export "memory") 2)
             (global $n (mut i32) (i32.const 0))
             (data (i32.const 65536) "{first}")
@@ -339,9 +341,7 @@ pub fn frames_code(first: &wire::Frame, first_ticks: u32, then: &wire::Frame) ->
                 if (result i64) i64.const {first_tick} else i64.const {then_tick} end)
             (func (export "snapshot") (result i64) unreachable)
             (func (export "restore") (param i32 i32) (result i64) unreachable))"#
-        ),
-    )
-    .unwrap()
+    ))
 }
 
 /// [`seat_for_test`], its view answering `frames` in order, one per tick,
@@ -349,6 +349,17 @@ pub fn frames_code(first: &wire::Frame, first_ticks: u32, then: &wire::Frame) ->
 /// one is a view with nothing new to show.
 #[cfg(any(test, feature = "test-support"))]
 pub fn seat_ticking_for_test(program: &'static str, min_width: u32, frames: &[wire::Frame]) {
+    seat_ticking_on_for_test(crate::contract::runner(), program, min_width, frames)
+}
+
+/// [`seat_ticking_for_test`], its code prepared on and seated by `runner`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seat_ticking_on_for_test(
+    runner: &Arc<dyn ViewRunner>,
+    program: &'static str,
+    min_width: u32,
+    frames: &[wire::Frame],
+) {
     assert!(!frames.is_empty(), "a view answers at least one frame");
     let mut data = String::new();
     let mut arms = String::new();
@@ -368,8 +379,8 @@ pub fn seat_ticking_for_test(program: &'static str, min_width: u32, frames: &[wi
             arms += &format!("i64.const {tick}{}", " end".repeat(nth));
         }
     }
-    let code = Module::new(
-        view::engine(),
+    let code = view::prepared_on_for_test(
+        runner,
         format!(
             r#"(module
             (memory (export "memory") 2)
@@ -383,9 +394,8 @@ pub fn seat_ticking_for_test(program: &'static str, min_width: u32, frames: &[wi
             (func (export "snapshot") (result i64) unreachable)
             (func (export "restore") (param i32 i32) (result i64) unreachable))"#
         ),
-    )
-    .unwrap();
-    seat_code_for_test(program, min_width, code);
+    );
+    seat_code_on_for_test(runner, program, min_width, code);
 }
 
 /// An intent `program`'s seat `instance` will hand over on its next update,
@@ -489,9 +499,21 @@ fn seated_for_test<T>(program: &str, read: impl FnOnce(&View) -> T) -> T {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn seat_code_for_test(program: &'static str, min_width: u32, code: Module) {
+pub fn seat_code_for_test(program: &'static str, min_width: u32, code: [u8; 32]) {
+    seat_code_on_for_test(crate::contract::runner(), program, min_width, code)
+}
+
+/// [`seat_code_for_test`], its view seated by `runner`, which instantiates
+/// every view the seat takes from then on.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seat_code_on_for_test(
+    runner: &Arc<dyn ViewRunner>,
+    program: &'static str,
+    min_width: u32,
+    code: [u8; 32],
+) {
     let ready = || {
-        let mut view = View::instantiate(program, &code, program).unwrap();
+        let mut view = View::instantiate(program, runner, code, program).unwrap();
         view.min_width = min_width;
         Slot::Ready(Box::new(view))
     };

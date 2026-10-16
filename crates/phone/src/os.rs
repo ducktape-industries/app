@@ -20,7 +20,7 @@ pub mod ios {
 
 use ducktape_host::contract::{
     Banners, Dirs, Inbound, KeyRefusal, KeyStorage, Limits, MintInvite, OsFacts, OsServices,
-    Preload, Signal, SoftKeyboard,
+    Preload, RunnerConfig, Signal, SoftKeyboard, ViewRunner,
 };
 use ducktape_host::runtime::Answered;
 use ducktape_host::runtime::notify::{Click, Notice};
@@ -107,6 +107,17 @@ impl PhoneOs {
     }
 }
 
+/// What runs view code here: wasmtime on both phones until the iOS JSC
+/// runner lands, its compiled code kept under the cache. On Android without
+/// signal-based traps, which make every arm64 guest trap a clean error on
+/// libc 0.2.189 (wasm-mobile SPEC C3, S0-android §A).
+pub fn runner(dirs: &Dirs) -> Arc<dyn ViewRunner> {
+    Arc::new(ducktape_host::runner::WasmtimeRunner::new(RunnerConfig {
+        signals_based_traps: !cfg!(target_os = "android"),
+        cache_dir: Some(dirs.cache.join("view-code")),
+    }))
+}
+
 /// Banners are not posted yet: `post` answers that nothing went up.
 struct NoBanners;
 
@@ -123,7 +134,10 @@ impl OsServices for PhoneOs {
         &self.dirs
     }
 
-    fn device_key(&self, keyring: &str) -> Result<Arc<dyn noded_client::Signer>, KeyRefusal> {
+    fn device_key(
+        &self,
+        keyring: &str,
+    ) -> Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal> {
         #[cfg(any(target_os = "ios", target_os = "android"))]
         {
             let key = crate::key::DeviceKey::open(keyring).map_err(KeyRefusal::Denied)?;
@@ -132,7 +146,7 @@ impl OsServices for PhoneOs {
             let public = noded_client::Signer::public_key(&key);
             let public: String = public.iter().map(|byte| format!("{byte:02x}")).collect();
             tracing::info!(target: "ducktape::phone", keyring, %public, "this device's key opened");
-            Ok(Arc::new(key))
+            Ok(Some(Arc::new(key)))
         }
         #[cfg(not(any(target_os = "ios", target_os = "android")))]
         {
@@ -202,8 +216,18 @@ impl OsServices for PhoneOs {
             // killer is the owner of this bound (SPEC §4.5)
             loaders: 1,
             preload: Preload::Seat,
+            // views run on wasmtime in this process on both phones until
+            // the iOS JSC runner lands (it keeps 1 s, SPEC §6.5): an
+            // instance cannot die without the app, so no replay is kept
+            snapshot_every: None,
             snapshot_to_disk: true,
         }
+    }
+
+    /// No view ships in the app yet (the phone's `views.lock`, SPEC §4.7):
+    /// every one is the network's.
+    fn bundled_view(&self, _: &abi::BlobId) -> Option<Vec<u8>> {
+        None
     }
 
     fn mint_invite(&self, _: MintInvite) -> Option<Answered> {

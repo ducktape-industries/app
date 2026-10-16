@@ -21,7 +21,7 @@ use std::sync::{Arc, OnceLock};
 // `withdraw(tag)` and `withdraw_host()`. All block on OS calls; a view's run
 // only through `notify::in_order` under the view's program, on the blocking
 // pool, and the host's on the thread that posts it. A click on a banner
-// calls back `notify::clicked(click)`.
+// goes to the host as `Signal::BannerClick(click)` through `Inbound`.
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
@@ -84,7 +84,7 @@ impl DesktopOs {
                 // each one it supplies
                 views_override: std::env::var_os("DUCKTAPE_VIEWS_DIR").map(Into::into),
                 // the keyring directories, `remotes/<name>` under the
-                // ducktape home (`backend::key_dir` reads the same)
+                // ducktape home: the one source `backend::key_dir` reads too
                 remotes: ducktape_home::root()?.join("remotes"),
                 cache,
             },
@@ -138,14 +138,16 @@ impl OsServices for DesktopOs {
 
     /// The OS keyring's entry for `keyring` (`backend::device_key`), or the
     /// file it falls back to; a password-locked key from before keys moved
-    /// into the OS is `Legacy`, which `shell::sign_in` opens with its
+    /// into the OS is `None`, which `shell::sign_in` opens with its
     /// password once. The store's refusal sentences are one string today,
     /// so each reads as `Denied`.
-    fn device_key(&self, keyring: &str) -> Result<Arc<dyn noded_client::Signer>, KeyRefusal> {
+    fn device_key(
+        &self,
+        keyring: &str,
+    ) -> Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal> {
         let legacy = crate::backend::key_exists(keyring);
         match crate::backend::device_key::open(keyring, legacy) {
-            Ok(Some(key)) => Ok(Arc::new(key)),
-            Ok(None) => Err(KeyRefusal::Legacy),
+            Ok(key) => Ok(key.map(|key| Arc::new(key) as Arc<dyn noded_client::Signer>)),
             Err(sentence) => Err(KeyRefusal::Denied(sentence)),
         }
     }
@@ -189,8 +191,15 @@ impl OsServices for DesktopOs {
             // one loader a core: a fetch and a cranelift compile each
             loaders: std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
             preload: Preload::Compile,
+            // wasmtime runs in this process: an instance dies with the app
+            snapshot_every: None,
             snapshot_to_disk: false,
         }
+    }
+
+    /// The desktop ships no view: every one is the network's.
+    fn bundled_view(&self, _: &abi::BlobId) -> Option<Vec<u8>> {
+        None
     }
 
     /// With the key of the validator node this machine runs, read from

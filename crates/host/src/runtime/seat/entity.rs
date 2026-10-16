@@ -13,12 +13,35 @@
 //! frame per draw. A tick that answered `unchanged` and moved no document
 //! draws nothing and holds nothing: the tree the pane shows is the tree the
 //! view would send.
+//!
+//! One tick in flight: a tick completes when its frame lands on the
+//! instance's `Landing` (`contract::ViewInstance`), never by a timer. The
+//! wasmtime runner lands it before `begin_tick` returns, and the turn takes
+//! it right there (`View::landed_now`): the desktop's order. A runner that
+//! answers later leaves the tick in flight; the turn ends, a task of the
+//! seat's waits for the landing and finishes the turn (`landed`), and a
+//! turn asked for meanwhile runs after it, as one asked for during a hold
+//! runs after the draw.
 use super::standin::{Standin, stage_words};
 use super::*;
-use gpui_kit::{AnyWindowHandle, Context, Entity, EventEmitter, Subscription};
+use gpui_kit::{AnyWindowHandle, App, Context, Entity, EventEmitter, Subscription};
 
 /// Frame pacing for a busy view (`frame.busy`): one more turn, a frame later.
 const BUSY_FRAME: Duration = Duration::from_millis(16);
+
+/// The app is in the background (`Signal::Lifecycle`, SPEC §4.3): no seat
+/// turns, so no call into a view is begun; replies and clock items wait in
+/// the views, and every seat turns once the app is in front again. A
+/// global of the app's, set by `start`'s drain; the desktop never sends
+/// the phase.
+pub struct Backgrounded(pub bool);
+
+impl gpui_kit::Global for Backgrounded {}
+
+/// Whether the app is in the background (`Backgrounded`).
+fn backgrounded(cx: &App) -> bool {
+    cx.try_global::<Backgrounded>().is_some_and(|phase| phase.0)
+}
 
 pub struct Seat {
     program: &'static str,
@@ -41,8 +64,17 @@ pub struct Seat {
     _tree_drawn: Option<Subscription>,
     /// A tick the tree has not drawn yet: turns wait for that draw.
     holding: bool,
-    /// A turn asked for while holding; it runs once the tree has drawn.
+    /// A turn asked for while holding or while a tick is in flight; it runs
+    /// once the tree has drawn, or the frame has landed.
     owed: bool,
+    /// A tick begun whose frame has not landed: the view's tick count and
+    /// the instant its turn began, which the turn's second half reads.
+    in_flight: Option<(u64, Instant)>,
+    /// The wait on that landing.
+    _landing: Option<gpui_kit::Task<()>>,
+    /// Gone from every desk (`hide`): no turn after, and a frame landing
+    /// after is kept on the view, never drawn.
+    hidden: bool,
     generation: u64,
     alive: Option<Arc<()>>,
     revision: u64,
@@ -99,6 +131,7 @@ impl Seat {
     /// in the registry: a link's route waits for it by that key.
     pub fn new(program: &'static str, instance: u64, cx: &mut Context<Self>) -> Self {
         let theme = cx.observe_global::<gpui_kit::component::Theme>(|this, cx| this.turn(cx));
+        let phase = cx.observe_global::<Backgrounded>(|this, cx| this.turn(cx));
         let mounted = mounted(program, instance);
         let mut woken = lock(&mounted).wake.subscribe();
         let wake = cx.spawn(async move |this, cx| {
@@ -120,6 +153,9 @@ impl Seat {
             _tree_drawn: None,
             holding: false,
             owed: false,
+            in_flight: None,
+            _landing: None,
+            hidden: false,
             generation: 0,
             alive: None,
             revision: 0,
@@ -131,7 +167,7 @@ impl Seat {
             _wake: wake,
             clock: None,
             busy: None,
-            _observers: vec![theme],
+            _observers: vec![theme, phase],
             #[cfg(any(test, feature = "test-support"))]
             turns: 0,
         }
@@ -234,12 +270,15 @@ impl Seat {
     /// The pane left every desk: one bounded update, then no more turns.
     /// Returns the intents that update produced: the caller (`Seats`) is
     /// about to drop this seat and its subscription in the same update, so
-    /// an emit here would be lost.
+    /// an emit here would be lost. In the background there is no update:
+    /// no call into a view is begun there (SPEC §4.3).
     #[must_use]
-    pub fn hide(&mut self) -> Vec<Intent> {
+    pub fn hide(&mut self, cx: &App) -> Vec<Intent> {
         let mounted = self.mounted.clone();
         let mut locked = lock(&mounted);
-        let Mounted { slot, props, .. } = &mut *locked;
+        let Mounted {
+            slot, props, owned, ..
+        } = &mut *locked;
         let Slot::Ready(view) = slot else {
             return Vec::new();
         };
@@ -248,14 +287,45 @@ impl Seat {
                 .alive
                 .as_ref()
                 .is_some_and(|alive| Arc::ptr_eq(alive, &view.alive));
+        self.hidden = true;
         // a view never stepped here has nothing to hand over; one that was
         // gets its last update whether or not its window was in front
         if !owns || view.ticks == 0 {
             return Vec::new();
         }
         view.set_visible(false);
-        view.redraw(props);
+        // a tick in flight lands on the view as it is, kept, never drawn
+        // (`landed`); this update's own waits behind it as any turn would,
+        // nor runs while a swap owns the view: its replacement hears it
+        // hidden. `Seats` drops this seat after, and the view goes with it
+        if !view.ticking() && !*owned && !backgrounded(cx) {
+            match view.begin_redraw(props) {
+                Redraw::Quiet => {}
+                Redraw::Ready => {
+                    view.finish_redraw(props);
+                }
+                Redraw::Ticking => match view.landed_now() {
+                    // a death where a replay is kept is no fault of the
+                    // view's (SPEC §6.5), and this update begins no call
+                    // to take it up again: it stays on the view
+                    Some(landed @ Landed::Fault(Fault::Runner(_))) if view.kept.is_some() => {
+                        view.parked = Some(landed);
+                    }
+                    Some(landed) => {
+                        view.redraw_landed(landed);
+                        view.finish_redraw(props);
+                    }
+                    None => {}
+                },
+            }
+        }
         std::mem::take(&mut view.intents)
+    }
+
+    /// Whether a tick is in flight (begun, its frame not landed) or a swap
+    /// runs (`seat::swap_in`): the AX door parks a read until neither.
+    pub fn in_flight(&self) -> bool {
+        self.in_flight.is_some() || lock(&self.mounted).owned
     }
 
     /// Every wake ends here: a reply, a clock item, a `ViewTree` event,
@@ -265,7 +335,13 @@ impl Seat {
     /// the tree draws waits for its draw, the turn waits too (`Drawn` runs
     /// it): one tick per draw, as when the view ticked on the draw path.
     pub fn turn(&mut self, cx: &mut Context<Self>) {
-        if self.holding {
+        if self.hidden {
+            return;
+        }
+        // a swap that runs owns the drawn view until it is done; it wakes
+        // the seat then
+        if self.holding || self.in_flight.is_some() || lock(&self.mounted).owned || backgrounded(cx)
+        {
             self.owed = true;
             return;
         }
@@ -278,7 +354,9 @@ impl Seat {
         let mut locked = lock(&mounted);
         let shown = Instant::now();
         let program = self.program;
-        let Mounted { slot, props, .. } = &mut *locked;
+        let Mounted {
+            slot, props, swap, ..
+        } = &mut *locked;
         let view = match slot {
             Slot::Ready(view) => view,
             Slot::Empty => {
@@ -308,6 +386,28 @@ impl Seat {
         // The view lays itself out in its pane's body, and hears it ahead
         // of every tick. A pane with none yet (its desk is not drawn) does
         // not tick: `place` turns the seat when the body comes.
+        // a tick another seat began (one let go of, a `hide`) lands here
+        // first, as this seat's own would
+        if view.ticking() {
+            let ticks = view.ticks;
+            let parked = view.parked.take();
+            return self.wait(view, ticks, shown, parked, cx);
+        }
+        // a replacement the loader prepared runs on this thread once the
+        // view owes nothing (its handover would refuse): a task the seat
+        // does not own, so letting the seat go mid-swap stops nothing
+        if swap.is_some() && view.settled() {
+            drop(locked);
+            cx.spawn(async move |_, cx| {
+                // backgrounded before the task ran: the turn in front again
+                // spawns it again
+                if !cx.update(|cx| backgrounded(cx)) {
+                    swap_in(mounted, program).await;
+                }
+            })
+            .detach();
+            return;
+        }
         let Some((width, height)) = self.body else {
             return;
         };
@@ -326,7 +426,154 @@ impl Seat {
         // the view is never laid out narrower than its own minimum
         // (`layers/panes.rs` gives its body `min_w`)
         view.sync_viewport(width.max(view.min_width as f32), height);
-        let again = view.redraw(props);
+        let again = match view.begin_redraw(props) {
+            Redraw::Quiet => false,
+            Redraw::Ready => view.finish_redraw(props),
+            Redraw::Ticking => match view.landed_now() {
+                // dead already: taken up again as a later death is
+                Some(landed @ Landed::Fault(Fault::Runner(_))) if view.kept.is_some() => {
+                    return self.wait(view, ticks, shown, Some(landed), cx);
+                }
+                Some(landed) => {
+                    view.redraw_landed(landed);
+                    view.finish_redraw(props)
+                }
+                // the frame lands later: the turn's second half waits for it
+                None => return self.wait(view, ticks, shown, None, cx),
+            },
+        };
+        self.finish(locked, ticks, shown, again, cx);
+        self.after_turn(cx);
+    }
+
+    /// After a turn: a swap parked while the view owed work runs once it
+    /// owes none (the turn that settled the view asks for one more, which
+    /// starts it); else a kept replay due a new snapshot takes it
+    /// (`keep_in`), in a task the seat does not own.
+    fn after_turn(&self, cx: &mut Context<Self>) {
+        let (swap, keep) = {
+            let locked = lock(&self.mounted);
+            match &locked.slot {
+                Slot::Ready(view) if !locked.owned => (
+                    locked.swap.is_some() && view.settled() && !view.ticking(),
+                    locked.swap.is_none() && view.keep_due(),
+                ),
+                _ => (false, false),
+            }
+        };
+        if swap {
+            self.wake(cx);
+        } else if keep {
+            let mounted = self.mounted.clone();
+            cx.spawn(async move |_, cx| {
+                // no call is begun in the background (a frame that landed
+                // there finished its turn here): the turn in front again
+                // comes back
+                if !cx.update(|cx| backgrounded(cx)) {
+                    keep_in(mounted).await;
+                }
+            })
+            .detach();
+        }
+    }
+
+    /// The turn's second half waits for `view`'s tick in flight: a task of
+    /// the seat's takes the frame when it lands (`landed`).
+    fn wait(
+        &mut self,
+        view: &View,
+        ticks: u64,
+        shown: Instant,
+        first: Option<Landed>,
+        cx: &mut Context<Self>,
+    ) {
+        let mut landing = view.landing();
+        let alive = view.alive.clone();
+        let mounted = self.mounted.clone();
+        self.in_flight = Some((ticks, shown));
+        self._landing = Some(cx.spawn(async move |this, cx| {
+            let mut first = first;
+            let landed = loop {
+                let landed = match first.take() {
+                    Some(landed) => landed,
+                    None => super::super::view::next(&landing).await,
+                };
+                // the instance died with the tick in flight: where a replay
+                // is kept it is taken up again on a new one, whose frame
+                // this waits for instead (SPEC §6.5). In the background,
+                // where no call is begun, the death waits on the view for
+                // the turn in front again
+                if matches!(landed, Landed::Fault(Fault::Runner(_))) {
+                    if cx.update(|cx| backgrounded(cx)) {
+                        let mut locked = lock(&mounted);
+                        if let Slot::Ready(view) = &mut locked.slot
+                            && Arc::ptr_eq(&view.alive, &alive)
+                            && view.kept.is_some()
+                        {
+                            view.parked = Some(landed);
+                            break None;
+                        }
+                    } else if let Ok(revived) = View::revive(&mounted, &alive, true).await {
+                        landing = revived;
+                        continue;
+                    }
+                }
+                break Some(landed);
+            };
+            let _ = this.update(cx, |this, cx| this.landed(&alive, landed, cx));
+        }));
+    }
+
+    /// A frame that landed after its turn returned: taken in by the view it
+    /// was asked of, and the turn finished. After `hide` it is kept on the
+    /// view, its requests answered, and nothing is drawn. A turn owed
+    /// meanwhile runs now, unless the tree holds for its draw. `None`: a
+    /// death parked on the view in the background, which the turn in front
+    /// again takes up (`View::parked`).
+    fn landed(&mut self, alive: &Arc<()>, landed: Option<Landed>, cx: &mut Context<Self>) {
+        let Some((ticks, shown)) = self.in_flight.take() else {
+            return;
+        };
+        self._landing = None;
+        let Some(landed) = landed else {
+            self.owed = true;
+            return;
+        };
+        let mounted = self.mounted.clone();
+        let mut locked = lock(&mounted);
+        let Mounted { slot, props, .. } = &mut *locked;
+        match slot {
+            // the instance it was asked of is still the seat's
+            Slot::Ready(view) if Arc::ptr_eq(alive, &view.alive) => {
+                view.redraw_landed(landed);
+                let again = view.finish_redraw(props);
+                if self.hidden {
+                    return;
+                }
+                self.finish(locked, ticks, shown, again, cx);
+                self.after_turn(cx);
+            }
+            // replaced or stopped meanwhile: the answer went with it
+            _ => drop(locked),
+        }
+        if self.owed && !self.holding {
+            self.turn(cx);
+        }
+    }
+
+    /// A turn's second half, its tick (if any) landed: what the view asked
+    /// for goes to the tree, the window and the app.
+    fn finish(
+        &mut self,
+        mut locked: std::sync::MutexGuard<'_, Mounted>,
+        ticks: u64,
+        shown: Instant,
+        again: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Slot::Ready(view) = &mut locked.slot else {
+            return;
+        };
         clipboard::mount(view, cx);
         // a clipboard answer lands after `redraw` judged the frame: it is
         // still a reason to turn again

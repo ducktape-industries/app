@@ -47,9 +47,23 @@ fn start(boot: Boot, os: Arc<dyn OsServices>) {
         let mut posted = entities::posted();
         // the host's stores and the shared entities; what the OS feeds in
         // after this goes through `inbound` (the desktop: banner clicks)
-        let (host, inbound) =
-            ducktape_host::start::start(ducktape_host::contract::Boot { os: os.clone() }, cx);
+        let (host, inbound) = ducktape_host::start::start(
+            ducktape_host::contract::Boot {
+                os: os.clone(),
+                // Cranelift, signal-based traps, compiled code kept across
+                // launches under the cache
+                runner: Arc::new(ducktape_host::runner::WasmtimeRunner::new(
+                    ducktape_host::contract::RunnerConfig {
+                        signals_based_traps: true,
+                        cache_dir: Some(os.dirs().cache.join("view-code")),
+                    },
+                )),
+                open: entities::open_banner,
+            },
+            cx,
+        );
         crate::os::install_inbound(inbound);
+        let mut consent = host.consent;
         let entities = entities::Entities::new(host.shared, cx);
         let (tray, mut tray_events) = crate::tray::init(&entities, cx);
         let windows = entities.windows.clone();
@@ -73,7 +87,6 @@ fn start(boot: Boot, os: Arc<dyn OsServices>) {
         })
         .detach();
         // an ask's request gone: the card follows it off the console
-        let mut consent = crate::runtime::consent::changes_channel();
         let consent_windows = windows.downgrade();
         cx.spawn(async move |cx: &mut AsyncApp| {
             while consent.next().await.is_some() {
@@ -160,7 +173,9 @@ fn start(boot: Boot, os: Arc<dyn OsServices>) {
                         .unwrap_or_default()
                 };
                 let settle = move |cx: &mut gpui_kit::App| {
-                    let _ = door_seats.update(cx, |seats, cx| seats.settle(cx));
+                    door_seats
+                        .update(cx, |seats, cx| seats.settle(cx))
+                        .unwrap_or(true)
                 };
                 let keep = super::kept_restore;
                 let door = crate::ax::Door {

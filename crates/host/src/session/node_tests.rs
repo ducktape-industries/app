@@ -320,3 +320,21 @@ fn session_methods_record_under_reducer_connect(cx: &mut TestAppContext) {
         snapshot["shell"]
     );
 }
+
+/// In the background the status poll stops (the node is not asked while
+/// nothing is shown); coming to the front asks at once and polls on
+/// (`Signal::Lifecycle`, through `start`'s drain).
+#[gpui_kit::test]
+fn the_poll_stops_in_the_background_and_asks_at_once_in_front(cx: &mut TestAppContext) {
+    use gpui_kit::AppLifecyclePhase::{Background, Foreground};
+    let (session, asked) = connected(|n| Ok(testnet(n as u64 + 1)), cx);
+    session.update(cx, |session, cx| session.lifecycle(Background, cx));
+    poll(cx);
+    poll(cx);
+    assert_eq!(asked.get(), 1, "the node was asked in the background");
+    session.update(cx, |session, cx| session.lifecycle(Foreground, cx));
+    cx.run_until_parked();
+    assert_eq!(asked.get(), 2, "coming to the front did not ask at once");
+    poll(cx);
+    assert_eq!(asked.get(), 3, "the poll did not go on");
+}

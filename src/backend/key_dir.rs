@@ -12,7 +12,7 @@ pub(crate) fn keystore_root(keyring: &str) -> Result<PathBuf, String> {
     if !named {
         return Err("the node named no network".into());
     }
-    Ok(ducktape_home::root()?.join("remotes").join(keyring))
+    Ok(ducktape_host::contract::os().dirs().remotes.join(keyring))
 }
 
 /// The key file a sign-in opens: `DUCKTAPE_USER_KEY`, else the keyring's

@@ -5,8 +5,7 @@ mod node_methods;
 
 /// A view holding every capability, its code doing nothing.
 pub(in crate::runtime) fn view() -> View {
-    let code = wasmtime::Module::new(
-        super::super::view::engine(),
+    let code = crate::runtime::view::prepared_for_test(
         r#"(module
             (memory (export "memory") 1)
             (func (export "alloc") (param i32) (result i32) i32.const 0)
@@ -14,9 +13,14 @@ pub(in crate::runtime) fn view() -> View {
             (func (export "tick") (param i32 i32) (result i64) i64.const 0)
             (func (export "snapshot") (result i64) i64.const 0)
             (func (export "restore") (param i32 i32) (result i64) i64.const 0))"#,
+    );
+    let mut view = View::instantiate(
+        "request-test",
+        crate::contract::runner(),
+        code,
+        "request test",
     )
     .unwrap();
-    let mut view = View::instantiate("request-test", &code, "request test").unwrap();
     view.capabilities = Capability::ALL.to_vec();
     view.targets = vec!["programs".into()];
     view
