@@ -1021,7 +1021,7 @@ fn view_code(
         runner: runner.clone(),
         blob,
         hash,
-        hold,
+        _hold: hold,
         name: listing.name,
         icon: listing.icon,
         description: listing.description,

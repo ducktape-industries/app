@@ -1947,6 +1947,7 @@ fn a_kept_snapshot_starts_the_replay_again(cx: &mut TestAppContext) {
             _ => panic!("not seated"),
         }
     }
+    #[allow(clippy::type_complexity)]
     fn run(
         cx: &mut TestAppContext,
         program: &'static str,

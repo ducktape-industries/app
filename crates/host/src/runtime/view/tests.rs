@@ -300,7 +300,7 @@ fn a_ticked_view_survives_a_swap_with_its_state() {
         .expect("compiles");
     let mut deployment = ViewCode::for_test("", "", 0);
     deployment.hash = code;
-    deployment.hold = prepared.hold;
+    deployment._hold = prepared.hold;
     let mut timing = LoadTiming::default();
     let fresh = futures::executor::block_on(View::replacement(
         "probe",

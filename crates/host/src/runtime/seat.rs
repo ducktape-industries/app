@@ -176,7 +176,7 @@ pub(super) enum Slot {
 }
 
 /// A view compiled and not started: its code, prepared on `runner` under
-/// the hash of its bytes and kept prepared by `hold`, out of the `blob` the
+/// the hash of its bytes and kept prepared by `_hold`, out of the `blob` the
 /// roster lists (none for the developer's override, which a pane reads
 /// again), and what its manifest says: the name
 /// the rail lists it by, the icon its tab draws folded (empty: it declares
@@ -187,7 +187,8 @@ pub(super) struct ViewCode {
     pub(super) runner: Arc<dyn ViewRunner>,
     pub(super) blob: Option<abi::BlobId>,
     pub(super) hash: [u8; 32],
-    pub(super) hold: Arc<dyn std::any::Any + Send + Sync>,
+    /// Held only to keep the code prepared (`contract::Prepared`).
+    pub(super) _hold: Arc<dyn std::any::Any + Send + Sync>,
     pub(super) name: String,
     pub(super) icon: String,
     pub(super) description: String,
@@ -206,7 +207,7 @@ impl ViewCode {
             runner: crate::contract::runner().clone(),
             blob: None,
             hash: [0; 32],
-            hold: Arc::new(()),
+            _hold: Arc::new(()),
             name: name.into(),
             icon: icon.into(),
             description: String::new(),
