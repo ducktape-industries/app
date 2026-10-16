@@ -929,6 +929,16 @@ mod standin;
 
 pub use entity::{Backgrounded, Seat};
 
+/// What a Back the shell took came to at the seat in front
+/// ([`Seat::back`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Back {
+    /// The view heard it: it goes back inside itself.
+    Heard,
+    /// The view has nowhere to go back to: the shell leaves the program.
+    Leave,
+}
+
 #[cfg(test)]
 mod entity_tests;
 #[cfg(test)]

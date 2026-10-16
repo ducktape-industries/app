@@ -262,6 +262,36 @@ impl Seat {
         self.wake(cx);
     }
 
+    /// The person asked to go back (the phone's gesture or its bar) while
+    /// this seat's view is in front. The view hears it, as `Event::Back`,
+    /// when the root of the last frame that landed has an `on_back` (a page
+    /// under its root, an open sheet); otherwise it has nowhere to go back
+    /// to, and the shell leaves the program. With a tick in flight that
+    /// frame may be one tick old: a view that has just popped to its root
+    /// hears a Back it has no use for and ignores it, and its next frame
+    /// has no `on_back`.
+    pub fn back(&mut self, cx: &mut Context<Self>) -> Back {
+        let mounted = self.mounted.clone();
+        let mut locked = lock(&mounted);
+        let Slot::Ready(view) = &mut locked.slot else {
+            return Back::Leave;
+        };
+        let on_back = view
+            .frame
+            .root
+            .as_ref()
+            .and_then(wire::Node::interactivity)
+            .and_then(|interactivity| interactivity.on_back);
+        let heard = view.fault.is_none() && self.generation == view.seated_generation();
+        let Some(handler) = on_back.filter(|_| heard) else {
+            return Back::Leave;
+        };
+        view.pending.push(wire::Event::Back { handler });
+        drop(locked);
+        self.turn(cx);
+        Back::Heard
+    }
+
     /// The pane left every desk: one bounded update, then no more turns.
     /// Returns the intents that update produced: the caller (`Seats`) is
     /// about to drop this seat and its subscription in the same update, so
@@ -404,6 +434,7 @@ impl Seat {
         let ticks = view.ticks;
         view.set_visible(self.in_front);
         view.sync_theme(gpui_kit::component::Theme::global(cx).is_dark());
+        view.sync_pointer(crate::contract::os().facts().touch_first);
         // the view is never laid out narrower than its own minimum
         // (`layers/panes.rs` gives its body `min_w`)
         view.sync_viewport(width.max(view.min_width as f32), height);

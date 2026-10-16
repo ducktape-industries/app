@@ -128,11 +128,13 @@ pub(super) struct View {
     pub(super) kept: Option<Kept>,
     /// The view's events for its next tick.
     pub pending: Vec<wire::Event>,
-    /// The host's facts as the view last heard them: the theme, the
-    /// body it is laid out in, the reader's UTC offset. Each crosses once
-    /// (`sync_theme`, `sync_viewport`, `sync_offset`), and a replacement
+    /// The host's facts as the view last heard them: the theme, whether
+    /// the device's pointer is a finger, the body it is laid out in, the
+    /// reader's UTC offset. Each crosses once (`sync_theme`,
+    /// `sync_pointer`, `sync_viewport`, `sync_offset`), and a replacement
     /// hears them before its first frame (`seed`).
     pub theme_dark: Option<bool>,
+    pub touch_sent: Option<bool>,
     pub viewport_sent: Option<(f32, f32)>,
     pub offset_sent: Option<i32>,
     /// The events every tick carried, in order, for tests of what a view

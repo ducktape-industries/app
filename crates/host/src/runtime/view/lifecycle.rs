@@ -3,6 +3,7 @@ use super::*;
 /// The host's facts a drawn view holds for its replacement (`View::ambient`).
 pub struct Ambient {
     pub theme_dark: Option<bool>,
+    pub touch: Option<bool>,
     pub viewport: Option<(f32, f32)>,
 }
 
@@ -448,11 +449,12 @@ impl View {
     }
 
     /// The host's facts this drawn view holds, for its replacement to draw
-    /// its first tree by: the theme and the body it is laid out in, as the
-    /// seat last told them. The offset is the host's to read at any time.
+    /// its first tree by: the theme, the pointer and the body it is laid
+    /// out in, as the seat last told them. The offset is the host's to read at any time.
     fn ambient(&self) -> Ambient {
         Ambient {
             theme_dark: self.theme_dark,
+            touch: self.touch_sent,
             viewport: self.viewport_sent,
         }
     }
@@ -463,6 +465,9 @@ impl View {
     fn seed(&mut self, ambient: Ambient) {
         if let Some(dark) = ambient.theme_dark {
             self.sync_theme(dark);
+        }
+        if let Some(touch) = ambient.touch {
+            self.sync_pointer(touch);
         }
         if let Some((width, height)) = ambient.viewport {
             self.sync_viewport(width, height);
@@ -620,6 +625,7 @@ impl View {
             kept: _,
             pending: _,
             theme_dark: _,
+            touch_sent: _,
             viewport_sent: _,
             offset_sent: _,
             #[cfg(any(test, feature = "test-support"))]
@@ -886,6 +892,7 @@ impl View {
             kept: Kept::if_kept(),
             pending: Vec::new(),
             theme_dark: None,
+            touch_sent: None,
             viewport_sent: None,
             offset_sent: None,
             #[cfg(any(test, feature = "test-support"))]

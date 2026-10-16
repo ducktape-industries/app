@@ -38,6 +38,19 @@ impl View {
         }
     }
 
+    /// Whether the device's primary pointer is a finger (`OsFacts::
+    /// touch_first`, a fact of the device, never of the last input): told
+    /// ahead of the first tick, on change, and to a replacement before its
+    /// first tree, so the view's first frame is at the right ladder.
+    pub fn sync_pointer(&mut self, touch: bool) {
+        if self.touch_sent != Some(touch) {
+            self.touch_sent = Some(touch);
+            self.pending
+                .retain(|event| !matches!(event, wire::Event::Pointer { .. }));
+            self.pending.push(wire::Event::Pointer { touch });
+        }
+    }
+
     /// The body the view is laid out in, as the pane has it before the
     /// draw: the view's `Window::viewport_size()`. Sent when it moved;
     /// the latest size wins the tick.
