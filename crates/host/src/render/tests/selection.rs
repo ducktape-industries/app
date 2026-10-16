@@ -230,6 +230,7 @@ fn a_drag_across_a_plain_text_copies_it_too(cx: &mut gpui_kit::TestAppContext) {
         id: Some(named_id("author")),
         style: crate::render::test_style(div().h(px(20.)).style().clone()),
         content: "ada".into(),
+        transform: None,
     });
     let root = container_with_style(
         "pane",
@@ -248,6 +249,31 @@ fn a_drag_across_a_plain_text_copies_it_too(cx: &mut gpui_kit::TestAppContext) {
     );
 }
 
+/// A text drawn in capitals copies the words as written: the case is
+/// drawing only, as CSS `text-transform` is.
+#[gpui_kit::test]
+fn a_text_drawn_in_capitals_copies_the_words_as_written(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let label = wire::Node::Text(view_wire::TextNode {
+        id: Some(named_id("eyebrow")),
+        style: crate::render::test_style(div().h(px(20.)).style().clone()),
+        content: "Ada Lovelace".into(),
+        transform: Some(view_wire::TextTransform::Uppercase),
+    });
+    let root = container_with_style(
+        "pane",
+        div().w(px(300.)).h_full().flex().flex_col().style().clone(),
+        [label],
+    );
+    let copied = drag_over(
+        root,
+        point(px(1.), px(10.)),
+        &[point(px(290.), px(10.))],
+        cx,
+    );
+    assert_eq!(copied, "Ada Lovelace");
+}
+
 /// A control's words are its label, not text to read: a drag down the pane
 /// copies the lines around a button but not its word, and a double-click
 /// on the word selects nothing, as on a browser's button.
@@ -259,6 +285,7 @@ fn a_controls_label_is_no_text_to_select(cx: &mut gpui_kit::TestAppContext) {
             id: Some(named_id(key)),
             style: crate::render::test_style(div().h(px(20.)).style().clone()),
             content: words.into(),
+            transform: None,
         })
     };
     let mut button = container_with_style(
@@ -333,6 +360,7 @@ fn a_drag_down_numbered_lines_copies_the_code_not_the_numbers(cx: &mut gpui_kit:
                 id: Some(named_id(&format!("number-{number}"))),
                 style: crate::render::test_style(div().style().clone()),
                 content: number.into(),
+                transform: None,
             })],
         );
         if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut gutter {

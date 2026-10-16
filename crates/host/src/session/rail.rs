@@ -1,7 +1,8 @@
 //! The programs the bar lists, each by the name its view gives itself, and
 //! each view's unread count. The rows are read off the roster once per
 //! change a loader thread, a seat coming or going, or a retry reports on the
-//! roster's channel, never at a draw; the badges come from each view's
+//! roster's channel, never at a draw, and at once as the network is left
+//! (the session empties the roster then); the badges come from each view's
 //! `Intent::Badge` (`Seats`), and go when the network is left.
 use super::{Session, SessionEvent};
 use crate::runtime::{Link, RailRow, Roster};
@@ -21,8 +22,9 @@ pub struct Rail {
 
 impl Rail {
     /// The rail of `roster`, read now and again on every message `changes`
-    /// brings (a burst read once); its badges cleared as the network in
-    /// hand is left.
+    /// brings (a burst read once); its badges cleared and its rows read
+    /// again (none) as the network in hand is left, so no link waits on the
+    /// channel's next turn to stop naming that network's programs.
     pub fn new(
         roster: Roster,
         mut changes: UnboundedReceiver<()>,
@@ -32,6 +34,7 @@ impl Rail {
         let leaving = cx.subscribe(session, |this, _, event: &SessionEvent, cx| {
             if let SessionEvent::LeftNetwork = event {
                 this.set_badges(BTreeMap::new(), cx);
+                this.refresh(cx);
             }
         });
         let drain = cx.spawn(async move |this, cx| {
@@ -54,6 +57,13 @@ impl Rail {
     /// A link read against the programs the node lists (`Roster::parse_link`).
     pub fn parse_link(&self, link: &str) -> Link {
         self.roster.parse_link(link)
+    }
+
+    /// Where `link` goes, read against the programs the node lists and
+    /// `chain`, the chain in hand. Each shell opens it its own way (the
+    /// desktop's desk, the phone's stack).
+    pub fn opening(&self, link: &str, chain: &str) -> Opening {
+        opening(self.parse_link(link), |program| self.lists(program), chain)
     }
 
     /// Whether the node lists `program`.
@@ -86,10 +96,12 @@ impl Rail {
         true
     }
 
-    /// The rows of `roster` from now on: a test that swaps the model's.
+    /// What `listed` lists, listed in the rail's own roster (the session's,
+    /// which leaving the network empties), and the rows read again: a
+    /// test's stand-in for the node's read.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn read_off(&mut self, roster: Roster, cx: &mut Context<Self>) {
-        self.roster = roster;
+    pub fn read_off(&mut self, listed: Roster, cx: &mut Context<Self>) {
+        self.roster.relist_from(&listed);
         self.refresh(cx);
     }
 
@@ -116,10 +128,121 @@ impl Rail {
     }
 }
 
+/// Where a link goes ([`Rail::opening`]).
+#[derive(Debug, PartialEq)]
+pub enum Opening {
+    /// `program`'s seat comes forward and its view is handed `route`;
+    /// `notice` says what of the link it does not show.
+    Seat {
+        program: &'static str,
+        route: Option<String>,
+        notice: Option<String>,
+    },
+    /// A chain link to `program` on another chain, labelled `chain`: not
+    /// this chain's page to show. The desktop opens `program` and says so;
+    /// the phone, as the Expo app, says whose link it is and opens nothing.
+    Elsewhere {
+        program: &'static str,
+        chain: String,
+    },
+    /// An address for the system browser.
+    Browser(String),
+    /// Nothing opens; the notice says why.
+    Nothing(String),
+}
+
+/// `duck://<chain>/<program>/<tail>` on this chain, or the short
+/// `duck://<view>/<route>`: the seat opens and its view is handed the
+/// route. The seat coming forward is the answer; a notice only says what
+/// there is nothing to see of.
+fn opening(parsed: Link, lists: impl Fn(&str) -> bool, chain: &str) -> Opening {
+    let seat = |program, route, notice| Opening::Seat {
+        program,
+        route,
+        notice,
+    };
+    match parsed {
+        Link::View { program, route } => seat(program, route, None),
+        Link::Chain(parsed) if !lists(&parsed.program) => {
+            Opening::Nothing(format!("No view here opens {} links.", parsed.program))
+        }
+        Link::Chain(parsed) => {
+            let program = crate::runtime::intern(&parsed.program);
+            let route = parsed.tail.join("/");
+            if parsed.chain.to_string() != chain {
+                Opening::Elsewhere {
+                    program,
+                    chain: parsed.chain.label,
+                }
+            } else if route.is_empty() || crate::runtime::valid_route(&route) {
+                seat(program, (!route.is_empty()).then_some(route), None)
+            } else {
+                let said = format!("{program} can't open that part of the link.");
+                seat(program, None, Some(said))
+            }
+        }
+        // to the view that declares `web`, if one is listed and this build
+        // has a web view; else the system browser
+        Link::Web(url) => match crate::render::web::view_for(&url).filter(|view| lists(view)) {
+            Some(program) => seat(program, Some(url), None),
+            None => Opening::Browser(url),
+        },
+        Link::Unknown => Opening::Nothing("This link is not one this app opens.".into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use gpui_kit::{AppContext as _, TestAppContext};
+
+    /// A chain link opens its program on this chain with its route, and is
+    /// told apart on another chain; one no view lists, or no link at all,
+    /// opens nothing and says why.
+    #[test]
+    fn a_link_opens_its_program_on_this_chain_only() {
+        let lists = |program: &str| program == "chat";
+        let link = |chain: &str, program: &str, tail: &[&str]| {
+            let minted = ducklink::mint(chain, program, tail).unwrap();
+            ducklink::Link::parse(&minted).unwrap()
+        };
+        let here = "testkit#0a1b2c3d";
+        assert_eq!(
+            opening(
+                Link::Chain(link(here, "chat", &["room", "42"])),
+                lists,
+                here
+            ),
+            Opening::Seat {
+                program: "chat",
+                route: Some("room/42".into()),
+                notice: None
+            }
+        );
+        assert_eq!(
+            opening(
+                Link::Chain(link("elsewhere#0a1b2c3d", "chat", &["room"])),
+                lists,
+                here
+            ),
+            Opening::Elsewhere {
+                program: "chat",
+                chain: "elsewhere".into()
+            }
+        );
+        assert_eq!(
+            opening(Link::Chain(link(here, "forge", &[])), lists, here),
+            Opening::Nothing("No view here opens forge links.".into())
+        );
+        assert_eq!(
+            opening(Link::Unknown, lists, here),
+            Opening::Nothing("This link is not one this app opens.".into())
+        );
+        assert_eq!(
+            opening(Link::Web("https://ducktape.dev".into()), lists, here),
+            Opening::Browser("https://ducktape.dev".into())
+        );
+    }
 
     #[gpui_kit::test]
     fn a_roster_change_recomputes_the_rail_once_and_notifies_only_on_change(

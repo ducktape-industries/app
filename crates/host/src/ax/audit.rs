@@ -1529,7 +1529,7 @@ pub async fn door_audit(
                 keep,
                 chords: &Vec::new,
                 windows: &served,
-                settle: &|_| {},
+                settle: &|_| true,
             };
             crate::ax::answer(request, &door, &mut Default::default(), &mut cx).await
         })

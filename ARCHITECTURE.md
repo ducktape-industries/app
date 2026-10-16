@@ -54,7 +54,8 @@ What the app deliberately does not know:
   the app signs and forwards `body` and returns the program's bytes as
   they are. `program.describe` renders an op readable by running the
   *program's own* describe module, sandboxed.
-- **No program state.** The shell's entities (`src/shell/entities/`) hold
+- **No program state.** The entities (`crates/host/src/session/`, and the
+  desktop's windows in `src/shell/entities/`) hold
   the node, the key, the account, which screen the console shows and where
   panes sit. What a person does inside a program lives in that program's
   view.
@@ -83,10 +84,11 @@ the core free of every shell, OS and key crate.
 | Module | Owns | Runs on |
 |---|---|---|
 | `main.rs` | CLI flags (`--version`, `ax`, debug `--render-tree`), the desktop's `OsServices` installed (`DUCKTAPE_VIEWS_DIR` is one of its directories), `app.log` + panic hook, fd limit, then `shell::run` | process start |
-| `shell.rs`, `shell/` | the native chrome. `shell.rs` is the module root (`run`, `WindowKind`, `chord_label`); `shell/launch.rs` starts the app and wires what arrives from outside to the entity it moves. The entities (`shell/entities/`: `Session`, `Account`, `Chain`, `Screen`, `Windows` and each window's `Desk`, `Overlays`, `Spotlight`, `Front`, `DotSlot`; `Toast`, `Prefs`, `Notifications`, `Rail`, `Seats`), `layers::WindowRoot` (one per OS window, laying its layers out: `LauncherLayer`, `Chrome`, `PaneLayer`, `OverlayLayer`, `StatusDot`, `ToastView`), launcher, desk, menu bar, panes, overlays, keys, theme, fonts glue | window thread |
+| `shell.rs`, `shell/` | the native chrome. `shell.rs` is the module root (`run`, `WindowKind`, `chord_label`); `shell/launch.rs` starts the app and wires what arrives from outside to the entity it moves. The desktop's entities (`shell/entities/`: `Windows` and each window's `Desk`, `Overlays`, `Spotlight`, `Front`, `DotSlot`; `DeskSeats`) over the host's shared ones (`crates/host/src/session/`: `Session`, `Account`, `Chain`, `Screen`, `Toast`, `Prefs`, `Notifications`, `Rail`, `Seats`), `layers::WindowRoot` (one per OS window, laying its layers out: `LauncherLayer`, `Chrome`, `PaneLayer`, `OverlayLayer`, `StatusDot`, `ToastView`), launcher, desk, menu bar, panes, overlays, keys, theme, fonts glue | window thread |
 | `ui.rs`, `ui/` | the pure pane geometry (`ui/layout.rs`: `Layout`, `Pane`, `PaneMessage`), which each window's `Desk` holds | window thread |
 | `runtime.rs`, `runtime/` | seats, views (wasmtime), the kernel relay, replies, notify, store, clipboard, roster, `Seat` | ticks on the window thread, off the draw path; loads on loader threads; node calls on `views-kernel` |
 | `render.rs`, `render/` | `ViewTree`: one wire tree drawn as GPUI elements, retained native state keyed by `AuthoredPath`, `wire::Event` out, accessibility mapping | window thread |
+| `render/av.rs`, `crates/av` | the camera and microphone pieces. With feature `av` (on by default), a camera's pictures per `Node::Camera` and a microphone's level per `Node::Microphone`, recorded and played back (`crates/av` holds every device call and every OS's words, one module per OS: V4L2 on Linux, AVFoundation on macOS, Camera2 on Android, cpal for sound everywhere; `render/av.rs` maps the pieces onto it and answers `camera.devices`, `microphone.devices` and `microphone.chime`); without it each piece draws a line and the methods are refused `unknown_request` | window thread (each device on its own thread) |
 | `render/web.rs`, `crates/web` | the web piece. With feature `web`, a page per `Node::Web` through CEF off-screen rendering (`crates/web` holds every CEF name; `render/web.rs` maps the piece onto it and picks the view that declares `web` for an https link); without it the piece draws a line and links go to the system browser | window thread (CEF's pump turns there) |
 | `backend/` (core) | what crosses the process boundary on every host: `noded` client and signed `Frame`, `session` (the seated key, any `noded_client::Signer`), `views`, `prefs`, recent nodes, `identity`, `join` (another device), `live` (the live session with the node's relay over core's `live-wire`: QUIC on the node's live port, or the websocket `/v1/live`; one per connection, on `Connection.live`, closed at quit) | async, polled where the caller polls (see below) |
 | `src/os.rs`, `src/backend/` (desktop) | the desktop's `OsServices` (`app_dirs`, the freedesktop / macOS banners, `invite`), `device_key`, `key_dir`, `passkey` through `auth_page` and `loopback`, `recovery` | same |
@@ -138,7 +140,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
  (node)  (cache)   (custom section)  (wasmtime)  (Slot)  (fuel)  (wire)   (ViewTree)  (events)
 ```
 
-1. **Roster.** `Session::connect_answered` (`shell/entities/session.rs`) calls `runtime::connected`,
+1. **Roster.** `Session::connect_answered` (`crates/host/src/session/node.rs`) calls `runtime::connected`,
    which bumps `Connection.rev` and starts `roster::spawn_roster_read`.
    That thread calls `backend::views::programs` (the `programs`
    query; the app takes every entry it lists), stores the
@@ -178,7 +180,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    `Loading → Fetching → Compiling → Compiled | Ready(View) | Empty | Failed(Failure)`,
    and a `wake` (`watch::Sender<()>`) the loader signals when a load
    installs, a stage shows or a retry is asked. A pane's entity is
-   `runtime::Seat` (`seat/entity.rs`), made by `Seats::reconcile`
+   `runtime::Seat` (`seat/entity.rs`), made by `DeskSeats`
    (`shell/entities/seats.rs`, from its observers of `Windows` and every
    window's `Desk`) for every view pane the desks hold and keyed by the
    pane's `instance`; it is `place`d in the window whose desk holds the
@@ -290,18 +292,26 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    (`widget_unmounted`); the turn that carries the answers back is deferred.
 
 **Hot swap.** When a block moves a program's active code, the load thread
-prepares the new view as a replacement: instantiate without `init`, take
-`old.snapshot()` (under the seat lock, fuel armed; only if the old view has
-ticked at all, else the fresh one is `init`ed), `restore` it into the fresh
-instance, verify its `first_frame`. An old view that is not `settled()`
-(pending events, unanswered requests) refuses the replacement
-("its replacement waits") and the next block tries again. `Loaded::Swap`
-carries the old instance's `alive` token and tick count; `Load::land`
-installs it only if the seat's `generation` is still the one it was asked
-for, the app is still on the node it was asked of (`Connection.rev`), and
-the drawn instance is the one the snapshot came from, at the same tick
-count and still settled. The new view is `staged`: its first tree is
-already in `frame`, so the next redraw routes its requests without a tick.
+prepares the new code (`ViewRunner::prepare`) and parks it on the seat
+(`Mounted::swap`, `Loaded::Swap`); the seat's own thread runs the swap
+(`seat::swap_in`, wasm-mobile SPEC §4.6) once no tick is in flight and the
+drawn view is `settled()`: the old view's `snapshot` (only if it has ticked
+at all, else the fresh one is `init`ed), the fresh instance, its `restore`,
+its `first_frame`, each begun once the one before landed (at once on the
+wasmtime runner, so the whole sequence runs in one poll there; later on a
+runner that answers across a process boundary). The seat does not turn the
+drawn view meanwhile (`Mounted::owned`), so nothing can tick it between
+the snapshot and the install. A view whose snapshot refuses ("its
+replacement waits") keeps its seat and the next block asks again; so does
+one whose instance dies under the snapshot (the death waits on the view,
+`View::parked`, and the seat's next turn in front takes it up before
+anything else begins a call: the drawn view revives on a new page, its
+kept batches replayed, SPEC §6.5), and one whose fresh instance dies
+under its restore (the drawn view untouched). The swap
+installs only if the seat's `generation` is still the one it was asked for
+and the app is still on the node it was asked of (`Connection.rev`). The
+new view is `staged`: its first tree is already in `frame`, so the next
+redraw routes its requests without a tick.
 Pictures move over. A new instance means a new `generation` on
 `Seat`: handler ids are fresh, and only `NativePresentation`
 (field text, selection, focus, scroll offsets, decoded pictures) carries
@@ -422,7 +432,8 @@ as the loader reads it. The bytes stay on the host.
 
 ## 5. The app's own state
 
-The shell's state is a set of entities (`shell/entities/`), each written
+The shell's state is a set of entities (the shared ones in
+`crates/host/src/session/`, the desktop's windows in `shell/entities/`), each written
 by its own methods and by nothing else, each compared before it notifies;
 the layers observe them and draw; the controls call their methods. What
 crosses entities goes by observers and events, or by one-way calls
@@ -445,7 +456,7 @@ dismiss, an open menu's 1 s ages in `layers::Chrome`, a `Seat`'s clock
 items and busy frame), so with motion off an app with nothing moving
 draws nothing.
 
-- **Session** (`shell/entities/session.rs`). `SessionState`, compared
+- **Session** (`crates/host/src/session/node.rs`). `SessionState`, compared
   before it notifies: the endpoint being typed and the recent ones, the
   node reached (`connected_rpc`, `network`, `chain`, `other_chain`),
   `connecting` and the node it reaches for (`reaching`: the address the
@@ -459,7 +470,7 @@ draws nothing.
   `Screen`, and pushes the network into `Account::take_up`. Strictly one
   way — Session → Account → Screen — because an entity read under its own
   `update` panics: `Account` never reads `Session`.
-- **Account** (`shell/entities/account.rs`). `AccountState`: `signer_key`,
+- **Account** (`crates/host/src/session/account.rs`). `AccountState`: `signer_key`,
   `account`, `key_exists`, `locked`, `seating`, `busy`, `error`, `approve`,
   `link_code`, the passkey step, `welcome`. Each sign-in call is a `Task`
   it owns (`seating`, `call`, `link`, `passkey`), and a step's secrets (the
@@ -515,7 +526,7 @@ draws nothing.
   Links a banner posts and pages the passkey flow asks for arrive off the
   window thread on the `Posted` channel (`entities::posted`, drained in
   `shell/launch.rs`).
-- **Toast** (`shell/entities/toast.rs`): the notice up; `show` starts its
+- **Toast** (`crates/host/src/session/toast.rs`): the notice up; `show` starts its
   own 3.6 s timer to `dismiss`. **Prefs** (`prefs.rs`): appearance,
   motion, the OS's dark word, the notice settings; each `set_*` writes the
   file, then the slice. **Notifications** (`notifications.rs`): the
@@ -523,7 +534,8 @@ draws nothing.
   `clear_read`, `permission` (the free fn also reloads `Prefs`),
   `not_now`, `refresh`. **Rail** (`rail.rs`): the bar's rows off the
   roster's changes channel, and each view's badge (`set_badge`).
-- **Seats** (`shell/entities/seats.rs`). Observes `Windows` and every
+- **Seats** (`crates/host/src/session/seats.rs`, with the desktop's
+  `DeskSeats` in `shell/entities/seats.rs`). Observes `Windows` and every
   window's `Desk` (`reconcile`): a new view pane gets a `Seat`, placed in
   its window; a gone pane's seat is told `hide`, its last intents routed,
   and dropped. A pane keeps its seat when it pops out to its own OS window
@@ -593,15 +605,16 @@ identity that key signs for; another key already on the account admits a
 new one.
 
 ```
-Connect ─► /v1/status ─► contract check ─► bind_keyring ─► device key ─► account? ─► Desk
+Connect ─► /v1/status ─► contract check ─► keyring::bind ─► device key ─► account? ─► Desk
 ```
 
-1. **Connect** (`shell/entities/session.rs`). `Session::connect(origin)`
+1. **Connect** (`crates/host/src/session/node.rs`). `Session::connect(origin)`
    builds the status source over `backend::RpcClient` and asks `/v1/status`,
    waiting for its answer. `connect_answered` refuses a
    `status.contract` other than `noded::NODE_CONTRACT`, then
-   `backend::bind_keyring(network, founded)` picks the key directory under
-   `<ducktape home>/remotes/`: `<network>`, or `<network>+<founded>` when
+   `noded_client::keyring::bind(remotes, network, founded)` picks the key
+   directory under `Dirs::remotes` (`<ducktape home>/remotes/` on the
+   desktop): `<network>`, or `<network>+<founded>` when
    another chain already took the name (`other_chain`; the
    `network-founded` file remembers). `Account::take_up` makes the network
    current (another chain than the last leaves everything of it:
@@ -658,8 +671,8 @@ Connect ─► /v1/status ─► contract check ─► bind_keyring ─► devic
    the seated key (§4). `Account::lock` empties the seat; the reader key
    signs queries meanwhile.
 
-Files: `shell/entities/session.rs`, `shell/entities/account.rs` (the
-flows; `entities/session_tests.rs`, `account_tests.rs` walk them, the
+Files: `crates/host/src/session/node.rs`, `crates/host/src/session/account.rs` (the
+flows; `crates/host/src/session/node_tests.rs`, `account_tests.rs` walk them, the
 account's as one transition table); `shell/layers/launcher.rs`
 and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
 `backend/session.rs`, `backend/device_key.rs`,
@@ -751,10 +764,10 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
 - **Window-thread work.** Every wasm tick, frame decode (`shape`), `merge`
   and `ViewTree::replace` run on the window thread inside `Seat::turn`,
   while holding the seat mutex, between draws and never inside one; GPUI
-  layout and paint follow in the next frame, lock released. The
-  loader thread takes that mutex for `snapshot` and for the install (not
-  for compile, `restore` or `first_frame`), so a swap stalls the window for
-  those two steps. The entities' `Task`s (`spawn_on_runtime`) are polled
+  layout and paint follow in the next frame, lock released. A swap's
+  snapshot, restore and first frame run on the window thread too
+  (`seat::swap_in`); the loader thread takes the mutex only to park the
+  prepared code and to install a load. The entities' `Task`s (`spawn_on_runtime`) are polled
   on the window thread (HTTP bodies decode there). A call draws only the
   layers observing the entities it moved, and nothing beats for the whole
   app: a status poll that finds the height where it was notifies nobody.
@@ -855,7 +868,7 @@ House words, and where one word means several things.
   with a snake_case code.
 - **intent** — what a view asked the app itself to do: `Intent::Badge`,
   `Title`, `OpenLink`, `Notified`, `Seated`; routed by `Seats::route`
-  (`shell/entities/seats.rs`) to `Rail`, `Windows`, `Notifications` and
+  (`crates/host/src/session/seats.rs`) to `Rail`, `Windows`, `Notifications` and
   the desks.
 - **props / session** — the session facts every view gets on
   `host.session` (`wire::methods::Session`, built by `runtime::props`).
@@ -866,7 +879,7 @@ House words, and where one word means several things.
 - **link** — a `duck://` URL (`Roster::parse_link`, `Link`), or, in
   sign-in, "link from another device" (`join_from_device`). Unrelated.
 - **standin / stage words** — the native placeholder drawn where a view is
-  not (`seat/standin.rs`, `stage_words`). **Screen** (`shell/entities/screen.rs`)
+  not (`seat/standin.rs`, `stage_words`). **Screen** (`crates/host/src/session/screen.rs`)
   is which screen the console shows; `layers::PaneLayer` (`shell/layers/panes.rs`)
   draws the pane area. Unrelated.
 - **override** — `DUCKTAPE_VIEWS_DIR`: a developer's `<program>_view.wasm`
@@ -905,8 +918,8 @@ House words, and where one word means several things.
 - **Command** — the command line: the empty pane's program-finder field
   and its `Mode` (Program | Chat), in `shell/layers/empty_pane.rs`.
 - **entity / Slice / Observed** — the shell's state is gpui entities
-  (`shell/entities/`), each written by its own methods. `Slice<T>`
-  (`entities/slice.rs`) is a shared value whose one write compares first:
+  (`crates/host/src/session/`, `shell/entities/`), each written by its own methods. `Slice<T>`
+  (`crates/host/src/session/slice.rs`) is a shared value whose one write compares first:
   setting an equal value notifies nobody. `Observed<T>` is how a layer
   holds an entity: making one subscribes, so a view cannot read what it
   does not observe. `Entities` bundles the app-wide ones; `Windows` holds
@@ -983,8 +996,8 @@ House words, and where one word means several things.
   `kernel/tests/node_methods.rs`, which stands up a fake node on a local
   socket.
 - **Add a native screen or overlay.** A screen: a `Screen` variant
-  (`shell/entities/screen.rs`), its state and the methods that move it on
-  `Account` or `Session` (`shell/entities/`), a row in the transition table
+  (`crates/host/src/session/screen.rs`), its state and the methods that move it on
+  `Account` or `Session` (`crates/host/src/session/`), a row in the transition table
   (`entities/account_tests.rs`), the drawing as a `LauncherLayer` method in `shell/layers/launcher/` built
   from `ink` pieces, routed from its render (`shell/layers/launcher.rs`).
   An overlay: an `Overlay` variant (`shell/entities/overlays.rs`), opened

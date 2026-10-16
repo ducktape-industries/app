@@ -263,6 +263,16 @@ impl Element for RichParagraph {
     }
 }
 
+/// Whether each character of `drawn` sits at the byte offsets its
+/// character of `written` does.
+fn same_offsets(written: &str, drawn: &str) -> bool {
+    written.len() == drawn.len()
+        && written
+            .char_indices()
+            .map(|(at, _)| at)
+            .eq(drawn.char_indices().map(|(at, _)| at))
+}
+
 /// The box `range` covers on each line it touches.
 fn line_boxes(layout: &TextLayout, range: &std::ops::Range<usize>) -> Vec<Bounds<Pixels>> {
     let mut boxes = Vec::new();
@@ -355,7 +365,10 @@ fn selection_canvas(
 impl ViewTree {
     pub(super) fn text(&mut self, node: &wire::Node) -> AnyElement {
         let wire::Node::Text(view_wire::TextNode {
-            id, style, content, ..
+            id,
+            style,
+            content,
+            transform,
         }) = node
         else {
             unreachable!()
@@ -366,14 +379,26 @@ impl ViewTree {
             host_id(format!("text-{index}"))
         });
         let shared: SharedString = content.clone().into();
-        let styled = StyledText::new(shared.clone());
+        // The words in their case are drawing only: the node is named, and
+        // a selection copies, by the words as written (`accessible`, the
+        // selection run below).
+        let drawn: SharedString = match transform {
+            Some(view_wire::TextTransform::Uppercase) => content.to_uppercase().into(),
+            None => shared.clone(),
+        };
+        // ponytail: a selection's offsets come off the drawn layout and slice
+        // the words as written, so a text whose case change moves them (a
+        // `ß` drawn `SS`) is not selectable; a drawn-to-written offset map in
+        // the selection run would make it so.
+        let unselected = self.unselected || (transform.is_some() && !same_offsets(content, &drawn));
+        let styled = StyledText::new(drawn);
         let layout = styled.layout().clone();
         let selection_range = std::rc::Rc::new(std::cell::RefCell::new(None));
         let mut element = div().relative();
         *element.style() = Arc::unwrap_or_clone(self.style(*style));
         crate::fonts::refine_fallbacks(element.style());
         let mut element = element.id(native_id.clone());
-        if !self.unselected {
+        if !unselected {
             element = element.child(selection_canvas(
                 layout.clone(),
                 selection_range.clone(),
@@ -391,7 +416,7 @@ impl ViewTree {
         };
         // a control's label or a list marker is no paragraph of the selection
         // (`keeps_words_unselected`)
-        if self.unselected {
+        if unselected {
             return element.into_any_element();
         }
         // A plain text is a paragraph of the selection too: a drag across

@@ -21,10 +21,10 @@ authors = ["Ducktape contributors"]
 
 [workspace]
 resolver = "2"
-# the phone shell (`crates/phone`), and crates no other member depends on yet
-# (path dependencies are members already): the meter pass (`crates/view-meter`),
-# which the iOS view runner will call.
-members = ["crates/phone", "crates/view-meter"]
+# the phone shell (`crates/phone`) and the iOS view runner (`crates/host-jsc`,
+# a dependency of the phone's iOS build only); the path dependencies under
+# them (the host, the meter pass) are members already.
+members = ["crates/phone", "crates/host-jsc"]
 
 [workspace.package]
 edition = "2024"
@@ -33,16 +33,16 @@ version = "0.1.0"
 [workspace.dependencies]
 
 # --- sdk-line: crates/sdk of ducktape-industries/programs (abi, view-wire, program, ducklink, design, describe). Every crate of that repo here and below sits on ONE rev, and the views this app seats are built at that rev. One whose manifest's wire_id is not `view_wire::WIRE_ID` runs all the same, and a failure of it names both wires and the node (`View::failure`). Which rev and why is in `git log -- Cargo.toml`. ---
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "2a4f366c19b52205c554fbcc9eadf172a30bd841", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "2a4f366c19b52205c554fbcc9eadf172a30bd841", package = "view-wire" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "59496b49141c4ccb4f14cbdbca32c1635e114715", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "59496b49141c4ccb4f14cbdbca32c1635e114715", package = "view-wire" }
 # `program::is_name`: the one spelling of a program id
-program = { git = "https://github.com/ducktape-industries/programs", rev = "2a4f366c19b52205c554fbcc9eadf172a30bd841", package = "program" }
-ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "2a4f366c19b52205c554fbcc9eadf172a30bd841", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/programs", rev = "2a4f366c19b52205c554fbcc9eadf172a30bd841", package = "design" }
+program = { git = "https://github.com/ducktape-industries/programs", rev = "59496b49141c4ccb4f14cbdbca32c1635e114715", package = "program" }
+ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "59496b49141c4ccb4f14cbdbca32c1635e114715", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/programs", rev = "59496b49141c4ccb4f14cbdbca32c1635e114715", package = "design" }
 # `program.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/programs", rev = "2a4f366c19b52205c554fbcc9eadf172a30bd841", package = "describe" }
+describe = { git = "https://github.com/ducktape-industries/programs", rev = "59496b49141c4ccb4f14cbdbca32c1635e114715", package = "describe" }
 # the identity program's own types: the app's passkey lane and `crates/noded-client`'s flows
-identity = { git = "https://github.com/ducktape-industries/programs", rev = "2a4f366c19b52205c554fbcc9eadf172a30bd841", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/programs", rev = "59496b49141c4ccb4f14cbdbca32c1635e114715", package = "identity" }
 
 # --- node-side: ducktape-industries/ducktape at the rev the programs rev above pins ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a0151a411c3558453c34bb8272b93dfc428cb74", package = "ducktape-home" }
@@ -72,8 +72,8 @@ wasmtime = "=46.0.3"
 # --- the phone platforms, vendored in the gpui-pre fork at the [patch.crates-io]
 # rev below (not on crates.io): zed's gpui_ios, and longbridge gpui-mobile's
 # Android half with its one line changed (crates/phone) ---
-gpui-pre-ios = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }
-gpui-pre-mobile = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea", default-features = false }
+gpui-pre-ios = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "ef025a323b35dae1f64b9de0304f15aff020ad46" }
+gpui-pre-mobile = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "ef025a323b35dae1f64b9de0304f15aff020ad46", default-features = false }
 libc = "0.2"
 
 [features]
@@ -91,6 +91,15 @@ ax-door = ["ducktape-host/ax-door"]
 # libcef: the web piece says the build has no web view, and https links go
 # to the system browser.
 web = ["ducktape-host/web"]
+# The camera and the microphone: a view whose manifest declares `camera`
+# or `microphone` draws its pieces with a real device
+# (`crates/host/src/render/av.rs`, `crates/av`: V4L2 or AVFoundation, and
+# cpal). On by default: the app's own build has them. A build without it
+# (`--no-default-features`, a system `crates/av` does not capture on)
+# compiles none of it: the pieces say the build has no camera or
+# microphone and their methods are refused `unknown_request`.
+av = ["ducktape-host/av"]
+default = ["av"]
 
 [dependencies]
 # the blind host core, shared with the phone
@@ -110,7 +119,7 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a0151a411c3558453c34bb8272b93dfc428cb74", package = "keyscheme" }
 identity.workspace = true
-valset = { git = "https://github.com/ducktape-industries/programs", rev = "2a4f366c19b52205c554fbcc9eadf172a30bd841", package = "valset" }
+valset = { git = "https://github.com/ducktape-industries/programs", rev = "59496b49141c4ccb4f14cbdbca32c1635e114715", package = "valset" }
 base64.workspace = true
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -168,20 +177,23 @@ keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a
 p256 = "0.13"
 
 [patch."https://github.com/ducktape-industries/ducktape"]
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "2a4f366c19b52205c554fbcc9eadf172a30bd841", package = "abi" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "59496b49141c4ccb4f14cbdbca32c1635e114715", package = "abi" }
 
 [patch.crates-io]
-gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }
-rmp-serde = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }
-gpui-pre-scheduler = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }
-gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }
+gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "ef025a323b35dae1f64b9de0304f15aff020ad46" }
+rmp-serde = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "ef025a323b35dae1f64b9de0304f15aff020ad46" }
+gpui-pre-scheduler = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "ef025a323b35dae1f64b9de0304f15aff020ad46" }
+gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "ef025a323b35dae1f64b9de0304f15aff020ad46" }
+# gpui-base 0.7.3 with the UIKit text contract (its README.ducktape.md):
+# `InputState::text_input` carries a field's keyboard hints to the platform
+gpui-base = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "ef025a323b35dae1f64b9de0304f15aff020ad46" }
 # Window::set_bounds (X11, macOS) and the Linux clipboard reads' wait hook
 # (`crates/web`): the backends, vendored in the fork
-gpui-pre-linux = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }
-gpui-pre-macos = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }
+gpui-pre-linux = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "ef025a323b35dae1f64b9de0304f15aff020ad46" }
+gpui-pre-macos = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "ef025a323b35dae1f64b9de0304f15aff020ad46" }
 # the X11 input-method client gpui-pre-linux uses, vendored in the fork: it decodes
 # Hangul and Chinese from ibus and drops (does not panic on) text it cannot decode
-zed-xim = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }
+zed-xim = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "ef025a323b35dae1f64b9de0304f15aff020ad46" }
 
 # Symbols are a fifth of the binary and nothing at run time reads them.
 [profile.release]

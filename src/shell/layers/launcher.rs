@@ -167,6 +167,7 @@ impl LauncherLayer {
                 window,
                 cx,
             )
+            .secret(cx)
         };
         let fields = Fields {
             endpoint: NativeInput::new(
@@ -204,7 +205,8 @@ impl LauncherLayer {
                 ),
                 window,
                 cx,
-            ),
+            )
+            .secret(cx),
             words: [word(window, cx), word(window, cx), word(window, cx)],
             name: NativeInput::new(
                 "",

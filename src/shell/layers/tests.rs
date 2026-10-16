@@ -76,7 +76,7 @@ pub(in crate::shell) fn open_console(
 ) -> (Entities, WindowKey, Entity<WindowRoot>, VisualTestContext) {
     let at = Bounds::new(point(px(0.), px(0.)), size(px(WINDOW.0), px(WINDOW.1)));
     open_with(seed, cx, |windows, cx| {
-        windows.open(WindowKind::Console, Some(at), cx)
+        windows.open(WindowKind::Console, Some(at), None, cx)
     })
 }
 
@@ -292,7 +292,7 @@ pub(in crate::shell) fn pop_out(
 ) -> (WindowKey, AnyWindowHandle, Entity<WindowRoot>) {
     let index = native.update(|_, cx| view.read(cx).layout(cx).focused);
     app.windows.update(native, |windows, cx| {
-        windows.pop_out(console, index, None, cx)
+        windows.pop_out(console, index, None, None, cx)
     });
     native.run_until_parked();
     popped(app, console, native)

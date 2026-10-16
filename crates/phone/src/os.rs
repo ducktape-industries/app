@@ -20,8 +20,9 @@ pub mod ios {
 
 use ducktape_host::contract::{
     Banners, Dirs, Inbound, KeyRefusal, KeyStorage, Limits, MintInvite, OsFacts, OsServices,
-    Preload, Signal, SoftKeyboard,
+    Preload, RunnerConfig, Signal, SoftKeyboard, ViewRunner,
 };
+use ducktape_host::motion;
 use ducktape_host::runtime::Answered;
 use ducktape_host::runtime::notify::{Click, Notice};
 use gpui_kit::{App, Context, Subscription, Window, WindowInsets};
@@ -44,6 +45,33 @@ pub fn send(signal: Signal) {
     if let Some(inbound) = INBOUND.get() {
         inbound.send(signal);
     }
+}
+
+/// Links the OS handed the app (an Android intent's data, an iOS scene's
+/// URL), from any thread, for the shell to open; one that comes before the
+/// shell is up waits here.
+static LINKS: OnceLock<(
+    async_channel::Sender<String>,
+    async_channel::Receiver<String>,
+)> = OnceLock::new();
+
+fn links() -> &'static (
+    async_channel::Sender<String>,
+    async_channel::Receiver<String>,
+) {
+    LINKS.get_or_init(async_channel::unbounded)
+}
+
+/// Hands `url` to the shell ([`links_to_open`]).
+pub fn link(url: String) {
+    if let Err(error) = links().0.try_send(url) {
+        tracing::error!(target: "ducktape::phone", %error, "a link the OS handed over was lost");
+    }
+}
+
+/// The links to open, in the order they came.
+pub(crate) fn links_to_open() -> async_channel::Receiver<String> {
+    links().1.clone()
 }
 
 /// The host's directories inside the app container: `documents` is the
@@ -123,7 +151,12 @@ impl OsServices for PhoneOs {
         &self.dirs
     }
 
-    fn device_key(&self, keyring: &str) -> Result<Arc<dyn noded_client::Signer>, KeyRefusal> {
+    /// Always an OS-kept key (made on first ask): a phone never had the
+    /// desktop's password-locked key files.
+    fn device_key(
+        &self,
+        keyring: &str,
+    ) -> Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal> {
         #[cfg(any(target_os = "ios", target_os = "android"))]
         {
             let key = crate::key::DeviceKey::open(keyring).map_err(KeyRefusal::Denied)?;
@@ -132,7 +165,7 @@ impl OsServices for PhoneOs {
             let public = noded_client::Signer::public_key(&key);
             let public: String = public.iter().map(|byte| format!("{byte:02x}")).collect();
             tracing::info!(target: "ducktape::phone", keyring, %public, "this device's key opened");
-            Ok(Arc::new(key))
+            Ok(Some(Arc::new(key)))
         }
         #[cfg(not(any(target_os = "ios", target_os = "android")))]
         {
@@ -193,6 +226,14 @@ impl OsServices for PhoneOs {
             touch_first: true,
             // the Expo build's label for this key (mobile `node.rs:344`)
             device_label: "Phone",
+            device_noun: "phone",
+            one_layout: true,
+            floats: false,
+            motion: if cfg!(target_os = "android") {
+                motion::ANDROID
+            } else {
+                motion::IOS
+            },
         }
     }
 
@@ -202,13 +243,75 @@ impl OsServices for PhoneOs {
             // killer is the owner of this bound (SPEC §4.5)
             loaders: 1,
             preload: Preload::Seat,
+            // iOS's views run in WebKit's content process, which can die
+            // under them (SPEC §6.5); Android's in this one, with the app
+            snapshot_every: cfg!(target_os = "ios").then_some(std::time::Duration::from_secs(1)),
             snapshot_to_disk: true,
         }
+    }
+
+    /// No view ships in the app yet (the phone's `views.lock`, SPEC §4.7):
+    /// every one is the network's.
+    fn bundled_view(&self, _: &abi::BlobId) -> Option<Vec<u8>> {
+        None
     }
 
     fn mint_invite(&self, _: MintInvite) -> Option<Answered> {
         None
     }
+}
+
+/// What runs the views (`contract::ViewRunner`): JavaScriptCore's page on
+/// iOS, where no process of ours may JIT (`ducktape_host_jsc`); wasmtime
+/// elsewhere, its traps without signals on Android (which make every arm64
+/// guest trap a clean error on libc 0.2.189: SPEC C3, S0-android §A).
+/// Either keeps its code under the cache ([`code_cache`]). A runner iOS
+/// cannot make (not on the main thread, which the launch is) stops the
+/// phone with the reason logged.
+pub fn runner(dirs: &Dirs) -> Arc<dyn ViewRunner> {
+    let config = RunnerConfig {
+        signals_based_traps: !cfg!(target_os = "android"),
+        cache_dir: code_cache(&dirs.cache),
+    };
+    #[cfg(target_os = "ios")]
+    {
+        match ducktape_host_jsc::JscRunner::new(config) {
+            Ok(runner) => Arc::new(runner),
+            Err(failure) => {
+                tracing::error!(target: "ducktape::phone", %failure, "no view runner");
+                std::process::abort();
+            }
+        }
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        Arc::new(ducktape_host::runner::WasmtimeRunner::new(config))
+    }
+}
+
+/// Where the runner keeps its code under `cache`. On iOS, one folder per
+/// app build (`DUCKTAPE_APP_BUILD`, the commit and any uncommitted change),
+/// the other builds' removed: the code kept there is the meter pass's
+/// output, and another build's pass may differ; a build that knows no
+/// commit (no git) keeps none. wasmtime keys its own cache by its version
+/// and settings, so it shares one across builds.
+fn code_cache(cache: &Path) -> Option<PathBuf> {
+    let dir = cache.join("view-code");
+    match cfg!(target_os = "ios") {
+        true => option_env!("DUCKTAPE_APP_BUILD").map(|build| per_build(&dir, build)),
+        false => Some(dir),
+    }
+}
+
+/// `dir`'s folder for `build`, every other one under `dir` removed.
+fn per_build(dir: &Path, build: &str) -> PathBuf {
+    for old in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if old.file_name() != build {
+            // a folder that stays is read by no build: the OS purges it
+            let _gone = std::fs::remove_dir_all(old.path());
+        }
+    }
+    dir.join(build)
 }
 
 /// What a build for neither phone answers for a key: such a build exists
@@ -249,9 +352,11 @@ pub fn follow<T: 'static>(window: &mut Window, cx: &mut Context<T>) -> Vec<Subsc
     }
     #[cfg(target_os = "android")]
     {
+        // the window active is the app in the foreground (SPEC §7.5): the
+        // session's status poll starts again on it
         vec![cx.observe_window_activation(window, |_, window, _| {
             send(Signal::Lifecycle(if window.is_window_active() {
-                gpui_kit::AppLifecyclePhase::Active
+                gpui_kit::AppLifecyclePhase::Foreground
             } else {
                 gpui_kit::AppLifecyclePhase::Background
             }))
@@ -264,6 +369,20 @@ pub fn follow<T: 'static>(window: &mut Window, cx: &mut Context<T>) -> Vec<Subsc
     }
 }
 
+/// Brings up a refused camera's or microphone's settings page
+/// (`render::av::settings_page`): a link the system opens on iOS; on
+/// Android the Activity starts it, gm's platform opening no link (its
+/// `open_url` only logs).
+pub fn open_settings(page: &str, cx: &App) {
+    #[cfg(target_os = "android")]
+    {
+        let _ = cx;
+        android::jni::open_settings(page);
+    }
+    #[cfg(not(target_os = "android"))]
+    cx.open_url(page);
+}
+
 /// What BACK does when the stack has nothing left to pop: Android puts the
 /// app behind the others; iOS has no such gesture.
 pub fn back_at_root() {
@@ -274,6 +393,21 @@ pub fn back_at_root() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An app build keeps its code in a folder of its own, and the other
+    /// builds' folders go: no build reads another build's metered code.
+    #[test]
+    fn each_app_build_keeps_its_code_apart() {
+        let cache = tempfile::tempdir().unwrap();
+        let dir = cache.path().join("view-code");
+        let old = per_build(&dir, "a1");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("code.metered.wasm"), b"old pass").unwrap();
+        assert_eq!(per_build(&dir, "a1"), old, "the same build reads its own");
+        let new = per_build(&dir, "b2");
+        assert_eq!(new, dir.join("b2"));
+        assert!(!old.exists(), "another build's code stays");
+    }
 
     /// The host's files sit under `ducktape/`, beside the Expo build's
     /// `store`; the keyrings stay where the Expo build put them; the runtime

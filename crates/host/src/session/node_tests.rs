@@ -102,7 +102,8 @@ fn a_node_not_reached_is_said_and_a_new_try_clears_it(cx: &mut TestAppContext) {
     assert_eq!(asked.get(), 1);
     assert_eq!(
         failed.error,
-        format!("Can't reach {ORIGIN}. Check the address, or that the node is running.")
+        "Nothing answered at 127.0.0.1:1. Check the address, and that the node is up and \
+         reachable from this computer's network."
     );
     session.update(cx, |session, cx| {
         session.set_endpoint("not a url at all".into(), cx)
@@ -137,10 +138,10 @@ fn a_connect_out_reaches_for_the_address_it_was_started_with(cx: &mut TestAppCon
     cx.run_until_parked();
     let failed = state(&session, cx);
     assert!(failed.reaching.is_empty(), "no attempt is out");
-    // the sentence is backend's (`connect_error`); which address it names is
-    // the claim here
+    // the sentence is backend's (`connect_error`); which address it names
+    // (by its host) is the claim here
     assert!(
-        failed.error.contains(ORIGIN) && !failed.error.contains(&typed),
+        failed.error.contains("127.0.0.1:1.") && !failed.error.contains("127.0.0.1:19"),
         "the failure named an address that was not tried: {}",
         failed.error
     );
@@ -267,7 +268,7 @@ fn a_switch_that_does_not_land_keeps_the_network_in_hand(cx: &mut TestAppContext
         "a failed switch was said under the field"
     );
     assert!(
-        matches!(&heard.borrow()[..], [SessionEvent::Toast(said)] if said.contains(OTHER)),
+        matches!(&heard.borrow()[..], [SessionEvent::Toast(said)] if said.contains("127.0.0.1:2.")),
         "{:?}",
         heard.borrow()
     );
@@ -319,4 +320,22 @@ fn session_methods_record_under_reducer_connect(cx: &mut TestAppContext) {
         "no reducer.connect timer: {}",
         snapshot["shell"]
     );
+}
+
+/// In the background the status poll stops (the node is not asked while
+/// nothing is shown); coming to the front asks at once and polls on
+/// (`Signal::Lifecycle`, through `start`'s drain).
+#[gpui_kit::test]
+fn the_poll_stops_in_the_background_and_asks_at_once_in_front(cx: &mut TestAppContext) {
+    use gpui_kit::AppLifecyclePhase::{Background, Foreground};
+    let (session, asked) = connected(|n| Ok(testnet(n as u64 + 1)), cx);
+    session.update(cx, |session, cx| session.lifecycle(Background, cx));
+    poll(cx);
+    poll(cx);
+    assert_eq!(asked.get(), 1, "the node was asked in the background");
+    session.update(cx, |session, cx| session.lifecycle(Foreground, cx));
+    cx.run_until_parked();
+    assert_eq!(asked.get(), 2, "coming to the front did not ask at once");
+    poll(cx);
+    assert_eq!(asked.get(), 3, "the poll did not go on");
 }

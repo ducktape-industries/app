@@ -33,19 +33,24 @@ mod store;
 mod view;
 
 pub use kernel::{Answered, day, local_offset};
-// the web view cleans a page's title as a window's (render/web.rs)
-#[cfg(feature = "web")]
+// the web view cleans a page's title as a window's (render/web.rs), the
+// av pieces a device's name (render/av.rs)
+#[cfg(any(feature = "web", feature = "av"))]
 pub use kernel::shown_title;
-pub use roster::{Link, RailRow, connected, deployments_checked, props, valid_route};
+// a device's state line, kept whole up to the wire's 200 bytes
+// (render/av.rs)
+#[cfg(feature = "av")]
+pub use kernel::plain;
+pub use roster::{Link, RailRow, connected, deployments_checked, disconnected, props, valid_route};
 pub use roster::{Roster, changes_channel, roster};
-pub use seat::{Failure, Seat};
+pub use seat::{Back, Backgrounded, Failure, Placed, Seat, serve_starts};
 
 use roster::{Connection, code_digest, connection, rail_moved};
 use seat::{
     Load, LoadTiming, Loaded, Mounted, Registry, Slot, Unloaded, ViewCode, log_source, queue,
     registry, view_override,
 };
-use view::View;
+use view::{Redraw, View};
 
 /// Shared HTTP connections need a continuously driven I/O runtime. Loader
 /// threads compile between requests; their own parked runtimes would strand
@@ -84,12 +89,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use crate::contract::{
+    CodeSource, FUEL_PER_TICK, Fault, Landed, Landing, Prepared, SeatId, ViewInstance, ViewRunner,
+};
 use gpui_kit::AppContext as _;
 use pictures::Pictures;
 use view_wire as wire;
-use wasmtime::{
-    Cache, CacheConfig, Caller, Config, Engine, Linker, Memory, Module, OptLevel, Store, TypedFunc,
-};
 use wire::methods::{Capability, refusal};
 
 /// One desktop window, as the shell and the notification policy (which
@@ -106,7 +111,8 @@ impl WindowKey {
 }
 
 /// What a view asked the app itself to do: `host.badge`, `host.title`,
-/// `link.open`, or a `notify.post` that changed the centre. An `op.submit`
+/// `link.open`, `host.float`, `host.unfloat`, or a `notify.post` that
+/// changed the centre. An `op.submit`
 /// waiting on the person's yes wakes the shell itself (`consent`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
@@ -117,18 +123,21 @@ pub enum Intent {
     Title(String),
     /// `link.open`: a link it pressed.
     OpenLink(String),
+    /// `host.show`: one of the host's own places, asked for by a press in
+    /// the view; how it looks is each shell's (the desktop's account menu,
+    /// the phone's account sheet).
+    Show(view_wire::methods::Place),
     /// A notice was posted: the bell and the permission bar redraw.
     Notified,
     /// A view was seated in its tab, first or after a new deployment: its
     /// minimum width is known, and the desk widens a window under it.
     Seated,
+    /// `host.float`: its pane in a window of its own, at a press or key.
+    Float(wire::methods::Float),
+    /// `host.unfloat`: its pane back on the desk it left.
+    Unfloat,
 }
 
-/// Instruction budget for one call into a view: a ceiling that ends a
-/// runaway, not a cost. `RUST_LOG=ducktape::perf=debug` logs each tick's
-/// fuel; docs/perf.md §4.2 has the heaviest ticks measured and each view's
-/// budget, at most half of this ceiling.
-const FUEL_PER_TICK: u64 = 250_000_000;
 /// How many view loads run at once, each on a loader thread of its own
 /// (`Limits::loaders`: the desktop one a core, a phone one), so a long
 /// roster waits its turn rather than forking a thread per program.
@@ -189,23 +198,97 @@ mod display_diagnostics;
 
 pub mod pictures;
 
-/// The name a view's manifest gives it, the capabilities it declares, the
-/// narrowest it is laid out, its targets, its icon and the wire it was
-/// built against; empty and 0 for one whose manifest cannot be read
-/// (`compile` refuses those before a seat).
-fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>, u32, Vec<String>, String, String) {
+/// What a view's manifest says, read before any of its code runs: the
+/// name, icon and description the rail and Home list it by, the narrowest
+/// it is laid out, the capabilities it declares, its targets, and the wire
+/// it was built against (another than this app's runs all the same, and
+/// whatever then fails says so: `View::failure`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Listing {
+    pub name: String,
+    pub icon: String,
+    pub description: String,
+    pub min_width: u32,
+    pub capabilities: Vec<Capability>,
+    pub targets: Vec<String>,
+    pub wire: String,
+}
+
+/// `bytes`' manifest as the host reads it; empty and 0 for one whose
+/// manifest cannot be read (`prepare` refuses those before a seat).
+fn manifest_of(bytes: &[u8]) -> Listing {
     view_wire::manifest::read_manifest(bytes)
-        .map(|manifest| {
-            (
-                manifest.name,
-                manifest.capabilities,
-                manifest.min_width,
-                manifest.targets,
-                manifest.icon,
-                manifest.wire_id,
-            )
+        .map(|manifest| Listing {
+            name: manifest.name,
+            icon: manifest.icon,
+            description: manifest.description,
+            min_width: manifest.min_width,
+            capabilities: manifest.capabilities,
+            targets: manifest.targets,
+            wire: manifest.wire_id,
         })
         .unwrap_or_default()
+}
+
+/// What `program`'s manifest says, once one of its seats has read it: the
+/// phone's product page (wasm-mobile SPEC §7.2). `None` while its bytes
+/// are coming, when it failed, or ships no view.
+pub fn listing(program: &str) -> Option<Listing> {
+    // a drawn view and its compiled code carry the manifest's facts under
+    // the same names
+    macro_rules! listing_of {
+        ($held:expr) => {
+            Listing {
+                name: $held.name.clone(),
+                icon: $held.icon.clone(),
+                description: $held.description.clone(),
+                min_width: $held.min_width,
+                capabilities: $held.capabilities.clone(),
+                targets: $held.targets.clone(),
+                wire: $held.wire.clone(),
+            }
+        };
+    }
+    let registry = lock(registry());
+    registry
+        .iter()
+        .filter(|((name, _), _)| *name == program)
+        .find_map(|(_, seat)| match &lock(seat).slot {
+            Slot::Ready(view) => Some(listing_of!(view)),
+            Slot::Compiled(code) => Some(listing_of!(code)),
+            Slot::Listed(listing) | Slot::Compiling(listing) => Some((**listing).clone()),
+            _ => None,
+        })
+}
+
+/// What `capability` lets a view do, in a line a person reads: the Expo
+/// app's words (mobile `src/network/words.ts` `ALLOWS`, explorer-view's
+/// program page). Every capability is worded here, so a new one is
+/// worded before it ships.
+pub fn allows(capability: Capability) -> &'static str {
+    match capability {
+        Capability::Chain => "reads the chain: blocks, transactions and the node's status",
+        Capability::Program => "asks programs questions and follows what they change",
+        Capability::Op => "sends operations to the chain in your name",
+        Capability::Invite => "mints invites with the node's key",
+        Capability::Link => "opens links: another view, or the browser",
+        Capability::Blob => "reads blobs the node holds",
+        Capability::Host => "knows the session: who you are, which chain, when it is on screen",
+        Capability::Clock => "wakes on a timer",
+        Capability::Clipboard => "reads and writes the clipboard",
+        Capability::Notify => "posts notifications",
+        Capability::Store => "keeps its own data on this device",
+        Capability::Web => "shows web pages, and takes the web links the app opens",
+        Capability::Live => {
+            "sends and hears live streams in its program's rooms, as the program grants"
+        }
+        Capability::Camera => {
+            "shows your camera's picture: the app draws it, the view never sees it"
+        }
+        Capability::Microphone => {
+            "uses your microphone and speakers: the app records and plays, the view never hears it"
+        }
+    }
 }
 
 /// The narrowest `program`'s view is laid out, in px, once one of its seats
@@ -265,10 +348,8 @@ pub fn seat_drawing_for_test(program: &'static str, min_width: u32, root: wire::
 pub fn seat_frame_for_test(program: &'static str, min_width: u32, frame: wire::Frame) {
     let (bytes, len) = wat_frame(&frame);
     let tick = wire::abi::pack(65536, len);
-    let code = Module::new(
-        view::engine(),
-        format!(
-            r#"(module
+    let code = view::prepared_for_test(format!(
+        r#"(module
             (memory (export "memory") 2)
             (data (i32.const 65536) "{bytes}")
             (func (export "alloc") (param i32) (result i32) i32.const 64)
@@ -276,9 +357,7 @@ pub fn seat_frame_for_test(program: &'static str, min_width: u32, frame: wire::F
             (func (export "tick") (param i32 i32) (result i64) i64.const {tick})
             (func (export "snapshot") (result i64) unreachable)
             (func (export "restore") (param i32 i32) (result i64) unreachable))"#
-        ),
-    )
-    .unwrap();
+    ));
     seat_code_for_test(program, min_width, code);
 }
 
@@ -317,7 +396,7 @@ pub fn seat_frames_for_test(
 /// A view's code answering its first `first_ticks` ticks with `first` and
 /// every later tick with `then`.
 #[cfg(any(test, feature = "test-support"))]
-pub fn frames_code(first: &wire::Frame, first_ticks: u32, then: &wire::Frame) -> Module {
+pub fn frames_code(first: &wire::Frame, first_ticks: u32, then: &wire::Frame) -> [u8; 32] {
     let (first, first_len) = wat_frame(first);
     let (then, then_len) = wat_frame(then);
     assert!(
@@ -326,10 +405,8 @@ pub fn frames_code(first: &wire::Frame, first_ticks: u32, then: &wire::Frame) ->
     );
     let first_tick = wire::abi::pack(65536, first_len);
     let then_tick = wire::abi::pack(69632, then_len);
-    Module::new(
-        view::engine(),
-        format!(
-            r#"(module
+    view::prepared_for_test(format!(
+        r#"(module
             (memory (export "memory") 2)
             (global $n (mut i32) (i32.const 0))
             (data (i32.const 65536) "{first}")
@@ -342,9 +419,7 @@ pub fn frames_code(first: &wire::Frame, first_ticks: u32, then: &wire::Frame) ->
                 if (result i64) i64.const {first_tick} else i64.const {then_tick} end)
             (func (export "snapshot") (result i64) unreachable)
             (func (export "restore") (param i32 i32) (result i64) unreachable))"#
-        ),
-    )
-    .unwrap()
+    ))
 }
 
 /// [`seat_for_test`], its view answering `frames` in order, one per tick,
@@ -352,6 +427,17 @@ pub fn frames_code(first: &wire::Frame, first_ticks: u32, then: &wire::Frame) ->
 /// one is a view with nothing new to show.
 #[cfg(any(test, feature = "test-support"))]
 pub fn seat_ticking_for_test(program: &'static str, min_width: u32, frames: &[wire::Frame]) {
+    seat_ticking_on_for_test(crate::contract::runner(), program, min_width, frames)
+}
+
+/// [`seat_ticking_for_test`], its code prepared on and seated by `runner`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seat_ticking_on_for_test(
+    runner: &Arc<dyn ViewRunner>,
+    program: &'static str,
+    min_width: u32,
+    frames: &[wire::Frame],
+) {
     assert!(!frames.is_empty(), "a view answers at least one frame");
     let mut data = String::new();
     let mut arms = String::new();
@@ -371,8 +457,8 @@ pub fn seat_ticking_for_test(program: &'static str, min_width: u32, frames: &[wi
             arms += &format!("i64.const {tick}{}", " end".repeat(nth));
         }
     }
-    let code = Module::new(
-        view::engine(),
+    let code = view::prepared_on_for_test(
+        runner,
         format!(
             r#"(module
             (memory (export "memory") 2)
@@ -386,9 +472,8 @@ pub fn seat_ticking_for_test(program: &'static str, min_width: u32, frames: &[wi
             (func (export "snapshot") (result i64) unreachable)
             (func (export "restore") (param i32 i32) (result i64) unreachable))"#
         ),
-    )
-    .unwrap();
-    seat_code_for_test(program, min_width, code);
+    );
+    seat_code_on_for_test(runner, program, min_width, code);
 }
 
 /// An intent `program`'s seat `instance` will hand over on its next update,
@@ -449,6 +534,19 @@ pub fn name_for_test(program: &str, name: &str) {
     }
 }
 
+/// Every seated view of `program` declares `capabilities`, as its
+/// manifest would.
+#[cfg(any(test, feature = "test-support"))]
+pub fn declare_for_test(program: &str, capabilities: &[Capability]) {
+    for ((name, _), seat) in registry().lock().unwrap().iter() {
+        if *name == program
+            && let Slot::Ready(view) = &mut lock(seat).slot
+        {
+            view.capabilities = capabilities.to_vec();
+        }
+    }
+}
+
 /// `program`'s seat `instance` traps: its view keeps its tree but shows a
 /// fault from now on, and the seat is woken as a trapping tick would.
 #[cfg(any(test, feature = "test-support"))]
@@ -476,6 +574,19 @@ pub fn visible_for_test(program: &str) -> bool {
     seated_for_test(program, |view| view.visible)
 }
 
+/// Where `program`'s seated view was last told its pane is
+/// (`host.placement`).
+#[cfg(any(test, feature = "test-support"))]
+pub fn placement_for_test(program: &str) -> wire::methods::Placement {
+    seated_for_test(program, |view| view.placement)
+}
+
+/// The body `program`'s seated view was last laid out in.
+#[cfg(any(test, feature = "test-support"))]
+pub fn viewport_for_test(program: &str) -> Option<(f32, f32)> {
+    seated_for_test(program, |view| view.viewport_sent)
+}
+
 /// `read` off the view of `program`'s first seat; it panics unless seated.
 #[cfg(any(test, feature = "test-support"))]
 fn seated_for_test<T>(program: &str, read: impl FnOnce(&View) -> T) -> T {
@@ -492,9 +603,21 @@ fn seated_for_test<T>(program: &str, read: impl FnOnce(&View) -> T) -> T {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn seat_code_for_test(program: &'static str, min_width: u32, code: Module) {
+pub fn seat_code_for_test(program: &'static str, min_width: u32, code: [u8; 32]) {
+    seat_code_on_for_test(crate::contract::runner(), program, min_width, code)
+}
+
+/// [`seat_code_for_test`], its view seated by `runner`, which instantiates
+/// every view the seat takes from then on.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seat_code_on_for_test(
+    runner: &Arc<dyn ViewRunner>,
+    program: &'static str,
+    min_width: u32,
+    code: [u8; 32],
+) {
     let ready = || {
-        let mut view = View::instantiate(program, &code, program).unwrap();
+        let mut view = View::instantiate(program, runner, code, program).unwrap();
         view.min_width = min_width;
         Slot::Ready(Box::new(view))
     };
@@ -512,5 +635,18 @@ pub fn seat_code_for_test(program: &'static str, min_width: u32, code: Module) {
         let mut locked = seat.lock().unwrap();
         locked.slot = ready();
         locked.wake.send_replace(());
+    }
+}
+
+#[cfg(test)]
+mod listing_tests {
+    /// A seated view's manifest is what the product page reads; a program
+    /// no seat holds has none.
+    #[test]
+    fn a_seated_views_listing_is_read_off_its_seat() {
+        super::seat_for_test("listing-test", 640);
+        let listing = super::listing("listing-test").map(|listing| listing.min_width);
+        assert_eq!(listing, Some(640));
+        assert_eq!(super::listing("listing-test-unseated"), None);
     }
 }

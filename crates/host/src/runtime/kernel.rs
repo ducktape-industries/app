@@ -12,6 +12,11 @@
 //! Here, in [`answer`], from app state, on the window thread:
 //! - `host.visible` — a subscription to whether the person is looking at
 //!   the view: its pane is on a desk of the window in front.
+//! - `host.float` — the view's pane in a window of its own, kept above
+//!   other windows where the platform can (the shell does it), at a press
+//!   or key ([`View::take_activation`]); `host.unfloat` — back on the desk;
+//!   `host.placement` — a subscription to where the pane is (floating, kept
+//!   on top), as the seat places it.
 //! - `host.route` — a subscription that gets the route a `duck://` link
 //!   asked of this view (`explorer/tx/<hash>` → `tx/<hash>`), once,
 //!   DECODED: the link's `%XX` escapes read back (`chat/forge%3Aweb%3A3`
@@ -28,6 +33,11 @@
 //!   prefix word; `link.open` — the one way out: a `duck://` link, or an
 //!   `https://` one for the system browser; `clock.ticks` — a periodic
 //!   empty item, at most one per redraw ([`ticked`]).
+//! - `camera.devices`, `microphone.devices` — the devices the system lists
+//!   now (`render/av.rs`), listed on a blocking thread; `microphone.chime`
+//!   — the test chime on a speaker, at a press or key, answered once it
+//!   has sounded (on a blocking thread). A build without feature `av`
+//!   knows none of the three (`unknown_request`).
 //!
 //! On the node, as a task on [`handle`] (`node`), each answer waiting in
 //! [`Replies`] for the view's next redraw; each asked once, a transport
@@ -123,10 +133,10 @@ pub(super) mod screen;
 pub(super) use node::{NodeTask, reconnected, spawn_host_subscription, spawn_reply};
 use node::{
     blob_get, blob_manifest, block, blocks, changes, heads, invite, network, query, spawn_asked,
-    status, submit, tx,
+    spawn_submit, status, tx,
 };
-use replies::InFlight;
 pub(super) use replies::Replies;
+use replies::{Claim, InFlight};
 
 /// The one current-thread tokio runtime every async I/O in the app runs
 /// on — node HTTP and websockets here, the shell's task stream, the loader
@@ -244,6 +254,57 @@ pub(super) fn answer(
                 done: false,
             });
         }
+        // a host with no window to float a pane into (a phone's) knows
+        // none of the three
+        (Capability::Host, "float" | "unfloat" | "placement") if !view.floats => return false,
+        (Capability::Host, "placement") => {
+            if !payload.is_empty() {
+                view.refuse(
+                    id,
+                    refusal::MALFORMED_REQUEST,
+                    "placement subscription takes no payload",
+                );
+                return true;
+            }
+            view.placement_subscriptions.push(id);
+            view.stream_item(id, methods::encode(&view.placement));
+        }
+        // a window above every other app's: only at the person's press or
+        // key (a view on a clock never raises one), taken by the ask. The
+        // reply is what the platform allows; `host.placement` follows with
+        // what it did
+        (Capability::Host, "float") => match methods::decode::<methods::Float>(payload) {
+            Ok(float) if floatable(&float) => {
+                if !view.take_activation() {
+                    view.refuse(
+                        id,
+                        refusal::NEEDS_GESTURE,
+                        "`host.float` needs a press or key",
+                    );
+                    return true;
+                }
+                view.intents.push(Intent::Float(float));
+                let placement = methods::Placement {
+                    floating: true,
+                    on_top: float.on_top && view.keeps_above,
+                };
+                view.reply(id, Ok(methods::encode(&placement)));
+            }
+            Ok(_) => view.refuse(
+                id,
+                refusal::MALFORMED_REQUEST,
+                "`host.float` names a size of at least its minimum, at least 1",
+            ),
+            Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
+        },
+        // it only takes a window away: no press needed
+        (Capability::Host, "unfloat") => match methods::decode::<()>(payload) {
+            Ok(()) => {
+                view.intents.push(Intent::Unfloat);
+                view.reply(id, Ok(Vec::new()));
+            }
+            Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
+        },
         // the route the view shows, and the routes its program's views
         // show on screen (`screen`)
         (Capability::Host, "showing") => match methods::decode::<String>(payload) {
@@ -330,7 +391,7 @@ pub(super) fn answer(
                 &call.body,
                 own,
             ) {
-                None => spawn_asked(view, id, payload, submit, "host_call.op.submit"),
+                None => spawn_submit(view, id, payload),
                 Some(words) => node::spawn_consented(view, id, payload, call, words),
             }
         }
@@ -348,7 +409,9 @@ pub(super) fn answer(
         (Capability::Program, "changes") => changes(view, id, payload),
         (Capability::Chain, "heads") => heads(view, id, payload),
         // the one way out: a `duck://` link, or an `https://` one for the
-        // system browser; any other scheme is refused here, at the method.
+        // system browser (and where they open, the two privacy settings
+        // pages a refused camera or microphone points at, `render/av.rs`);
+        // any other scheme is refused here, at the method.
         // Only the person's activation opens one, taken by the ask: a view
         // on a clock never opens a tab or reseats the desk
         (Capability::Link, "open") => match methods::decode::<String>(payload) {
@@ -369,6 +432,77 @@ pub(super) fn answer(
                 refusal::MALFORMED_REQUEST,
                 "`link.open` opens a duck:// or https:// link",
             ),
+            Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
+        },
+        // one of the host's own places, as a link: only the person's press
+        // or key brings one up. The reader's account is shown only where
+        // there is one (`roster::props`), a refused camera's or
+        // microphone's system settings only where this host has that page
+        // (`render/av.rs`); a place this host does not know does not decode
+        (Capability::Host, "show") => {
+            match methods::decode::<methods::Place>(payload) {
+                Ok(methods::Place::Account)
+                    if props
+                        .as_deref()
+                        .and_then(|props| methods::decode::<methods::Session>(props).ok())
+                        .and_then(|session| session.account)
+                        .is_none() =>
+                {
+                    view.refuse(
+                        id,
+                        refusal::UNKNOWN_REQUEST,
+                        "there is no reader's account to show",
+                    )
+                }
+                Ok(
+                    place @ (methods::Place::CameraSettings | methods::Place::MicrophoneSettings),
+                ) if crate::render::av::settings_page(place).is_none() => view.refuse(
+                    id,
+                    refusal::UNKNOWN_REQUEST,
+                    "this host has no settings page for the device",
+                ),
+                Ok(place) => {
+                    if !view.take_activation() {
+                        view.refuse(
+                            id,
+                            refusal::NEEDS_GESTURE,
+                            "`host.show` needs a press or key",
+                        );
+                        return true;
+                    }
+                    view.intents.push(Intent::Show(place));
+                    view.reply(id, Ok(Vec::new()));
+                }
+                Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
+            }
+        }
+        // the cameras, microphones and speakers (`render/av.rs`), listed
+        // on a blocking thread and answered when they are. A build without
+        // av captures nothing: it has none of the three (`_ => return
+        // false`, an unknown request)
+        #[cfg(feature = "av")]
+        (Capability::Camera, "devices") => {
+            node::spawn_reply(view, id, crate::render::av::cameras())
+        }
+        #[cfg(feature = "av")]
+        (Capability::Microphone, "devices") => {
+            node::spawn_reply(view, id, crate::render::av::microphones())
+        }
+        // the speaker test: a sound, so only at the person's press or key
+        // (a view on a clock never chimes), answered once it has sounded
+        #[cfg(feature = "av")]
+        (Capability::Microphone, "chime") => match methods::decode::<Option<String>>(payload) {
+            Ok(output) => {
+                if !view.take_activation() {
+                    view.refuse(
+                        id,
+                        refusal::NEEDS_GESTURE,
+                        "`microphone.chime` needs a press or key",
+                    );
+                    return true;
+                }
+                node::spawn_reply(view, id, crate::render::av::chime(output));
+            }
             Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
         },
         (Capability::Host, "badge") => match methods::decode::<i64>(payload).ok() {
@@ -439,6 +573,13 @@ pub fn plain(c: &char) -> bool {
     !(c.is_control()
         || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
         || matches!(c, '\u{2028}' | '\u{2029}'))
+}
+
+/// Whether a `host.float` names a size a window can have: each side at
+/// least its minimum, the minimum at least 1. The shell fits it to the
+/// display it opens on.
+fn floatable(float: &methods::Float) -> bool {
+    (1..=float.width).contains(&float.min_width) && (1..=float.height).contains(&float.min_height)
 }
 
 /// Whether `link.open` may open `link`: `duck://` or `https://` with

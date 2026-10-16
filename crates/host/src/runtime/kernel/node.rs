@@ -3,7 +3,9 @@
 //! in-flight slot from [`Replies::admit`], its answer put in [`Replies`];
 //! the node is asked once and a transport failure is the answer. A subscription
 //! (`program.changes`, `chain.heads`) is one long task writing items. Every
-//! task is a [`NodeTask`] in `view.tasks`, aborted when dropped.
+//! task is a [`NodeTask`] in `view.tasks`, aborted when dropped, and answers
+//! through its [`Claim`] on the request, so a reconnect that takes the
+//! request from it is the only one to answer it from then on.
 use super::super::consent;
 use super::*;
 use noded_client::wire as noded;
@@ -39,7 +41,21 @@ pub(super) fn spawn_asked(
     method: NodeMethod,
     stage: &'static str,
 ) {
-    spawn_method(view, id, payload, method, stage, None);
+    spawn_method(
+        view,
+        id,
+        payload,
+        move |node, ask, _| method(node, ask),
+        stage,
+        None,
+    );
+}
+
+/// `op.submit` with no person to ask: [`spawn_asked`] with [`submit`],
+/// whose frame, once it goes out, answers in doubt if a reconnect takes
+/// the request from its task ([`reconnected`]).
+pub(super) fn spawn_submit(view: &mut View, id: u64, payload: &[u8]) {
+    spawn_method(view, id, payload, submit, "host_call.op.submit", None);
 }
 
 /// `op.submit` of an op the person confirms first (`consent::needed`):
@@ -125,7 +141,7 @@ impl Asking {
                 .await
                 .ok()
                 .flatten();
-            words.shown = Some(consent::shown(described.as_ref(), len));
+            words.describe(described.as_ref(), len);
         }
         let refused = |message: &str| wire::Error::new(refusal::CONSENT_REFUSED, message);
         let Some(mut told) = consent::queue_in(waiting, program, instance, words) else {
@@ -149,7 +165,7 @@ fn spawn_method(
     view: &mut View,
     id: u64,
     payload: &[u8],
-    method: NodeMethod,
+    method: impl FnOnce(Node, Vec<u8>, Claim) -> Answered + Send + 'static,
     stage: &'static str,
     asking: Option<Asking>,
 ) {
@@ -159,35 +175,39 @@ fn spawn_method(
     };
     let slot = view.replies.admit();
     let replies = view.replies.clone();
+    let claim = Claim::default();
+    let held = claim.clone();
     let key = view.perf_key();
     // not a `perf::Timer`: its drop would record a call cancelled by the
     // view, which never got a reply
     let asked = crate::perf::on().then(std::time::Instant::now);
-    run(view, id, slot, None, async move {
+    run(view, id, slot, None, claim, async move {
         if let Some(asking) = asking
             && let Err(refused) = asking.yes(&node).await
         {
-            replies.item(id, Err(refused), true);
+            replies.answer(&held, id, Err(refused), true);
             return;
         }
-        let result = method(node, ask).await;
+        let result = method(node, ask, held.clone()).await;
         if let Some(asked) = asked {
             crate::perf::record(key, stage, asked.elapsed().as_micros() as u64);
         }
-        replies.item(id, result, true);
+        replies.answer(&held, id, result, true);
     });
 }
 
 /// Every task starts here: an in-flight slot ([`Replies::admit`]), then
-/// [`run`].
+/// [`run`]. The task answers request `id` through `claim`
+/// ([`Replies::answer`]).
 fn start(
     view: &mut View,
     id: u64,
     follows: Option<Follow>,
+    claim: Claim,
     task: impl std::future::Future<Output = ()> + Send + 'static,
 ) {
     let slot = view.replies.admit();
-    run(view, id, slot, follows, task);
+    run(view, id, slot, follows, claim, task);
 }
 
 /// `task` on [`handle`] holding its `slot`, its [`NodeTask`] kept in
@@ -197,6 +217,7 @@ fn run(
     id: u64,
     slot: InFlight,
     follows: Option<Follow>,
+    claim: Claim,
     task: impl std::future::Future<Output = ()> + Send + 'static,
 ) {
     let task = handle().spawn(async move {
@@ -205,7 +226,14 @@ fn run(
     });
     view.tasks
         .retain(|(_, pending)| !pending.task.is_finished());
-    view.tasks.push((id, NodeTask { task, follows }));
+    view.tasks.push((
+        id,
+        NodeTask {
+            task,
+            follows,
+            claim,
+        },
+    ));
 }
 
 /// One SUBSCRIPTION's writing end, handed to the loop that feeds it: every
@@ -214,21 +242,24 @@ fn run(
 pub(in crate::runtime) struct Items {
     replies: std::sync::Arc<Replies>,
     drained: tokio::sync::watch::Receiver<()>,
+    claim: Claim,
     id: u64,
 }
 
 impl Items {
-    /// One more item. `false` when the view is gone and the subscription
-    /// should end — the caller returns, and everything it holds is dropped.
+    /// One more item. `false` when the view is gone or the subscription
+    /// was taken from this task (a reconnect opened it again): it should
+    /// end — the caller returns, and everything it holds is dropped.
     pub(in crate::runtime) async fn send(&mut self, result: Answer) -> bool {
         self.replies
-            .subscription_item(&mut self.drained, self.id, result)
+            .subscription_item(&mut self.drained, &self.claim, self.id, result)
             .await
     }
 
     /// The refusal that ends the subscription.
     pub(super) fn last(&self, refusal: wire::Error) {
-        self.replies.item(self.id, Err(refusal), true);
+        self.replies
+            .answer(&self.claim, self.id, Err(refusal), true);
     }
 }
 
@@ -242,12 +273,14 @@ where
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
     let replies = view.replies.clone();
+    let claim = Claim::default();
     let items = Items {
         drained: replies.drains(),
         replies,
+        claim: claim.clone(),
         id,
     };
-    start(view, id, Some(follows), body(items));
+    start(view, id, Some(follows), claim, body(items));
 }
 
 /// A subscription fed by the app itself, not the node (`store.changes`,
@@ -270,8 +303,10 @@ pub(in crate::runtime) fn spawn_reply(
     future: impl std::future::Future<Output = Answer> + Send + 'static,
 ) {
     let replies = view.replies.clone();
-    start(view, id, None, async move {
-        replies.item(id, future.await, true);
+    let claim = Claim::default();
+    let held = claim.clone();
+    start(view, id, None, claim, async move {
+        replies.answer(&held, id, future.await, true);
     })
 }
 
@@ -310,9 +345,11 @@ fn node_on(connection: &super::super::Connection) -> Option<Node> {
 /// (`View::reconnect`): each node subscription goes on, opened again on
 /// `connection`, and its follower with it — a `program.changes` one is told
 /// first to re-read (`None`, as when the node closes the socket), a
-/// `chain.heads` one starts over at the new node's tip. Every other request
-/// still running on the old connection is refused `stale_connection`, for
-/// the view to ask again.
+/// `chain.heads` one starts over at the new node's tip. A submit whose frame
+/// went out answers in doubt (`Submitted::InDoubt`: the old node may hold
+/// it); every other request still running on the old connection is refused
+/// `stale_connection`, for the view to ask again. A request whose task had
+/// already ended it is left ended: each id ends once.
 pub(in crate::runtime) fn reconnected(view: &mut View, connection: &super::super::Connection) {
     // counted again as each opens
     view.live_subscriptions.clear();
@@ -322,17 +359,26 @@ pub(in crate::runtime) fn reconnected(view: &mut View, connection: &super::super
             view.tasks.push((id, task));
             continue;
         }
+        // taken from the task before anything is answered for it: a
+        // request its task already ended (a subscription the old node
+        // ended, a reply not yet pruned) stays ended, and whatever the
+        // aborting task still sends is dropped
+        let Some(standing) = view.replies.take(&task.claim) else {
+            continue;
+        };
         let follows = task.follows.take();
         // dropped, it aborts: the old connection's socket goes with it
         drop(task);
-        match (follows, node_on(connection)) {
-            (Some(Follow::Changes(program)), Some(node)) => {
+        match (follows, node_on(connection), standing) {
+            (Some(Follow::Changes(program)), Some(node), _) => {
                 view.replies
                     .item(id, Ok(methods::encode(&None::<methods::Change>)), false);
                 follow_changes(view, id, node, program);
             }
-            (Some(Follow::Heads), Some(node)) => follow_heads(view, id, node),
-            (Some(Follow::Live(follows)), Some(_)) => super::live::reopen(view, id, follows),
+            (Some(Follow::Heads), Some(node), _) => follow_heads(view, id, node),
+            (Some(Follow::Live(follows)), Some(_), _) => super::live::reopen(view, id, follows),
+            // a submit whose frame went out: the old node may hold it
+            (None, _, Some(standing)) => view.reply(id, standing),
             _ => view.refuse(id, refusal::STALE_CONNECTION, "network connection changed"),
         }
     }
@@ -372,7 +418,9 @@ fn follow_changes(view: &mut View, id: u64, node: Node, program: String) {
     let replies = view.replies.clone();
     let subscribed = (id, program.clone());
     let follows = Follow::Changes(program.clone());
-    start(view, id, Some(follows), async move {
+    let claim = Claim::default();
+    let held = claim.clone();
+    start(view, id, Some(follows), claim, async move {
         use futures::StreamExt as _;
         let mut drained = replies.drains();
         loop {
@@ -380,7 +428,7 @@ fn follow_changes(view: &mut View, id: u64, node: Node, program: String) {
                 Ok(changes) => changes,
                 Err(error) => {
                     tracing::debug!(target: "ducktape::app", %error, program, "changes stream not opened");
-                    replies.item(id, Err(refused(error)), true);
+                    replies.answer(&held, id, Err(refused(error)), true);
                     return;
                 }
             };
@@ -394,7 +442,10 @@ fn follow_changes(view: &mut View, id: u64, node: Node, program: String) {
                     }))),
                     Err(_) => break,
                 };
-                if !replies.subscription_item(&mut drained, id, item).await {
+                if !replies
+                    .subscription_item(&mut drained, &held, id, item)
+                    .await
+                {
                     return;
                 }
             }
@@ -404,6 +455,7 @@ fn follow_changes(view: &mut View, id: u64, node: Node, program: String) {
             if !replies
                 .subscription_item(
                     &mut drained,
+                    &held,
                     id,
                     Ok(methods::encode(&None::<methods::Change>)),
                 )
@@ -460,7 +512,7 @@ fn follow_heads(view: &mut View, id: u64, node: Node) {
                     known
                 }
                 (Err(error), None) => {
-                    items.replies.item(items.id, Err(refused(error)), true);
+                    items.last(refused(error));
                     return;
                 }
             };
@@ -514,6 +566,8 @@ pub(in crate::runtime) struct NodeTask {
     /// What a node subscription follows, which [`reconnected`] opens again
     /// on a new connection; `None` for a request answered once.
     follows: Option<Follow>,
+    /// The task's hold on its request, which a reconnect takes from it.
+    claim: Claim,
 }
 
 /// A subscription, as a reconnect opens it again.
@@ -593,26 +647,60 @@ pub(super) fn query(node: Node, ask: Vec<u8>) -> Answered {
     })
 }
 
-pub(super) fn submit(node: Node, ask: Vec<u8>) -> Answered {
+/// `op.submit`; `claim` is its request's, which it leaves in doubt once
+/// the frame goes out ([`submitted`]).
+pub(super) fn submit(node: Node, ask: Vec<u8>, claim: Claim) -> Answered {
     Box::pin(async move {
         let call = call_of(&ask)?;
-        submitted(node, call.target, call.body).await
+        submitted(node, call.target, call.body, claim).await
     })
 }
 
-/// The receipt's output on success, the program's refusal otherwise.
-async fn submitted(node: Node, target: String, payload: Vec<u8>) -> Answer {
+/// What the node made of the frame, as `methods::Submitted`: every arm
+/// carries the frame's id (`Body::id`) and the last height that may carry
+/// it (`Body::until`). The node's preconfirm receipt is `Applied` or
+/// `Refused` (pooled, the refusal a prediction). An answer that went
+/// missing after the bytes went out (the transport, a status this client
+/// does not read, a reply it cannot decode) is `InDoubt`: the node may hold
+/// the frame. `Err` is only for a frame nothing pooled: unsigned, unsent
+/// (`rpc_client`), or refused outright by the node.
+async fn submitted(node: Node, target: String, payload: Vec<u8>, claim: Claim) -> Answer {
     let frame = backend::seated_frame(&node.client, &node.network, &target, payload)
         .await
         .map_err(|refusal| match transport_failed(&refusal) {
             true => wire::Error::new(refusal::RPC_CLIENT, refusal.message),
             false => refusal,
         })?;
-    let receipt = node.client.preconfirm(frame).await.map_err(refused)?;
-    match receipt.outcome {
-        abi::Outcome::Applied { output } => Ok(output),
-        abi::Outcome::Rejected(refusal) => Err(wire::Error::new(refusal.reason, refusal.sentence)),
-    }
+    let (id, until) = (frame.body.id(), frame.body.until());
+    // from here the node may hold the frame: a request taken from this
+    // task now (a reconnect) answers in doubt, as a lost answer does
+    claim.stand(Ok(methods::encode(&methods::Submitted::InDoubt {
+        frame: id,
+        until,
+    })));
+    let submitted = match node.client.preconfirm(frame.encode()).await {
+        Ok(receipt) => match receipt.outcome {
+            abi::Outcome::Applied { output } => methods::Submitted::Applied {
+                frame: id,
+                until,
+                output,
+            },
+            abi::Outcome::Rejected(refusal) => methods::Submitted::Refused {
+                frame: id,
+                until,
+                refusal: wire::Error::new(refusal.reason, refusal.sentence),
+            },
+        },
+        Err(error @ (noded_client::Error::Refused(_) | noded_client::Error::Unreachable(_))) => {
+            return Err(refused(error));
+        }
+        Err(
+            noded_client::Error::Transport(_)
+            | noded_client::Error::Failed { .. }
+            | noded_client::Error::Decode(_),
+        ) => methods::Submitted::InDoubt { frame: id, until },
+    };
+    Ok(methods::encode(&submitted))
 }
 
 /// The blob id a `blob.*` ask spells, `sha256:<hex>` or `sha1:<hex>`.

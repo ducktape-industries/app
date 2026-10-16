@@ -4,36 +4,6 @@ use super::*;
 use crate::render::native_id;
 
 impl ViewTree {
-    /// A sheet at a desktop body is a centred modal, as an overlay's second
-    /// child, over nothing of its own (the view's body is behind it in the
-    /// tree); its detents are the phone's.
-    pub(super) fn sheet(
-        &mut self,
-        node: &wire::Node,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let wire::Node::Sheet {
-            id,
-            label,
-            style,
-            on_dismiss,
-            child,
-            detents: _,
-        } = node
-        else {
-            unreachable!()
-        };
-        let modal = wire::Node::Overlay {
-            id: id.clone(),
-            label: label.clone(),
-            style: *style,
-            on_dismiss: *on_dismiss,
-            children: vec![wire::Node::Space, (**child).clone()],
-        };
-        self.overlay(&modal, window, cx)
-    }
-
     pub(super) fn overlay(
         &mut self,
         node: &wire::Node,
@@ -59,11 +29,6 @@ impl ViewTree {
         if let Some(modal) = children.get(1) {
             let named = named_overlay(label, children);
             let nested = has_named_overlay(modal);
-            if named && nested {
-                // The focus-trap registry keeps weak handles until another
-                // trap registers; drop an obscured ancestor before that pass.
-                self.dialogs.remove(&path);
-            }
             // a popover anchored to the view covers nothing, in place or
             // deferred over what follows it
             let shown = match modal {
@@ -79,17 +44,6 @@ impl ViewTree {
                     .bg(rgb(0x000000))
                     .opacity(0.5)
             });
-            let opened = named && !self.dialogs.contains_key(&path);
-            let entry = (named && !nested).then(|| {
-                self.dialogs
-                    .entry(path.clone())
-                    .or_insert_with(|| {
-                        let opener = window.focused(cx).map(|focus| focus.downgrade());
-                        (cx.focus_handle(), opener)
-                    })
-                    .0
-                    .clone()
-            });
             let mut layer = div()
                 .id(host_id("layer"))
                 .absolute()
@@ -98,28 +52,14 @@ impl ViewTree {
                 .flex();
             if let Some(message) = on_dismiss {
                 let message = *message;
-                layer = layer
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
-                            // the press outside is a press: a gesture
-                            this.activate();
-                            cx.emit(wire::Event::Message(message))
-                        }),
-                    )
-                    .on_key_down(cx.listener(move |_, event: &KeyDownEvent, _, cx| {
-                        // a dismissal is no gesture, as Escape is not on the web
-                        if event.keystroke.key == "escape" {
-                            cx.stop_propagation();
-                            cx.emit(wire::Event::Message(message));
-                        }
-                    }));
-            }
-            // a dialog takes the keyboard when it opens, if its view may
-            // move the keys (`Seat::keys_free`); a popup's view moves
-            // focus itself (widget commands)
-            if let Some(entry) = entry.as_ref().filter(|_| opened && self.keys_grant) {
-                dialog_entry(entry, window, cx);
+                layer = layer.on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        // the press outside is a press: a gesture
+                        this.activate();
+                        cx.emit(wire::Event::Message(message))
+                    }),
+                );
             }
             let content = div()
                 .bg(gpui_kit::component::Theme::global(cx)
@@ -132,24 +72,95 @@ impl ViewTree {
                 )
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(self.node(modal, window, cx));
-            layer = layer.child(content);
-            let layer = if named {
-                let layer = crate::a11y::modal(announce(layer, accessible(node)));
-                match (nested, entry.as_ref()) {
-                    (false, Some(entry)) => div()
-                        .absolute()
-                        .inset_0()
-                        .focus_trap(host_id("focus-trap-container"), entry)
-                        .child(layer)
-                        .into_any_element(),
-                    _ => layer.into_any_element(),
-                }
-            } else {
-                layer.into_any_element()
-            };
+            let layer = self.dialog(
+                path,
+                named,
+                nested,
+                layer.child(content),
+                *on_dismiss,
+                node,
+                window,
+                cx,
+            );
             element = element.children(shade).child(layer);
         }
         element.into_any_element()
+    }
+
+    /// A dialog's layer (an overlay's, a sheet's) made one: the dialogs
+    /// map's entry at `path` (focus enters it as it opens, if the view may
+    /// move the keys, `Seat::keys_free`; the opener gets it back as it
+    /// closes, `replace`), its accessible node, a modal dialog named by
+    /// `node`, and the focus trap around it. Unnamed, the layer is plain
+    /// layout; with a dialog open inside it (`nested`), that one holds the
+    /// keys. Escape is `dismiss` on the outermost of them: under touch focus
+    /// rests on the trap's own entry, above the layer.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one dialog for the overlay and the sheet: each passes its own layer and node"
+    )]
+    pub(super) fn dialog(
+        &mut self,
+        path: AuthoredPath,
+        named: bool,
+        nested: bool,
+        layer: Stateful<Div>,
+        dismiss: Option<u32>,
+        node: &wire::Node,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if named && nested {
+            // The focus-trap registry keeps weak handles until another
+            // trap registers; drop an obscured ancestor before that pass.
+            self.dialogs.remove(&path);
+        }
+        let opened = named && !self.dialogs.contains_key(&path);
+        let entry = (named && !nested).then(|| {
+            self.dialogs
+                .entry(path)
+                .or_insert_with(|| {
+                    let opener = window.focused(cx).map(|focus| focus.downgrade());
+                    (cx.focus_handle(), opener)
+                })
+                .0
+                .clone()
+        });
+        // a dialog takes the keyboard when it opens, if its view may
+        // move the keys (`Seat::keys_free`); a popup's view moves
+        // focus itself (widget commands)
+        if let Some(entry) = entry.as_ref().filter(|_| opened && self.keys_grant) {
+            dialog_entry(entry, window, cx);
+        }
+        if !named {
+            return escape(layer, dismiss, cx).into_any_element();
+        }
+        match (nested, entry.as_ref()) {
+            (false, Some(entry)) => escape(div().absolute().inset_0(), dismiss, cx)
+                .focus_trap(host_id("focus-trap-container"), entry)
+                .child(crate::a11y::modal(announce(layer, accessible(node))))
+                .into_any_element(),
+            _ => crate::a11y::modal(announce(escape(layer, dismiss, cx), accessible(node)))
+                .into_any_element(),
+        }
+    }
+}
+
+/// Escape on `element` asks the view to close the dialog: a dismissal is
+/// no gesture, as Escape is not on the web.
+fn escape<E: gpui_kit::InteractiveElement>(
+    element: E,
+    dismiss: Option<u32>,
+    cx: &mut Context<ViewTree>,
+) -> E {
+    match dismiss {
+        Some(message) => element.on_key_down(cx.listener(move |_, event: &KeyDownEvent, _, cx| {
+            if event.keystroke.key == "escape" {
+                cx.stop_propagation();
+                cx.emit(wire::Event::Message(message));
+            }
+        })),
+        None => element,
     }
 }
 

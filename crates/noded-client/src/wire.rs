@@ -74,10 +74,38 @@ pub struct Body {
     pub payload: Vec<u8>,
 }
 
+/// How many blocks after its anchor a frame may still be carried: core's
+/// `host::ANCHOR_WINDOW` (`Tip::anchors`; the node's pool drops a frame
+/// once it ages out). The client links no core crate, so it is said here,
+/// once, beside the frame it bounds.
+pub const ANCHOR_WINDOW: u64 = 256;
+
 impl Body {
     /// What the signer signs under [`FRAME_NAMESPACE`].
     pub fn preimage(&self) -> Vec<u8> {
         abi::encode(self)
+    }
+
+    /// The id a block carries this frame under (a `Tx.hash`, what
+    /// `chain.tx` looks up): core's `host::Submission::id`, the sha256 of
+    /// the borsh of the body's submission, which is the body without its
+    /// scheme and network.
+    pub fn id(&self) -> [u8; 32] {
+        use sha2::Digest as _;
+        let submission = (
+            &self.signer,
+            &self.anchor,
+            &self.salt,
+            &self.target,
+            &self.payload,
+        );
+        sha2::Sha256::digest(abi::encode(&submission)).into()
+    }
+
+    /// The last height a block may carry this frame at: its anchor plus
+    /// [`ANCHOR_WINDOW`]. Past it with the frame in no block, it lapsed.
+    pub fn until(&self) -> u64 {
+        self.anchor.height + ANCHOR_WINDOW
     }
 }
 
@@ -368,6 +396,41 @@ mod tests {
         assert_eq!(decoded.body.network, b"net");
         assert_eq!(decoded.body.anchor, UNANCHORED);
         assert_eq!(decoded.body.salt, None);
+    }
+
+    /// The id is the one a block lists the frame under: this body went to a
+    /// kit stage (core fdd0fa4c6) as an identity `Create`, and the node's
+    /// `/v1/tx` found it by exactly this hash, at block 162 (mobile-core
+    /// `node.rs`, whose `Sent::of` this is). Block 161 + 256 is the last
+    /// that may carry a frame anchored at 161 (`Tip::anchors`).
+    #[test]
+    fn a_frame_is_known_by_its_submission_id_until_its_window_closes() {
+        let body = Body {
+            scheme: abi::Scheme::Ed25519,
+            signer: vec![
+                5, 101, 82, 67, 46, 214, 228, 20, 185, 244, 223, 158, 66, 208, 230, 181, 107, 133,
+                137, 249, 180, 133, 47, 222, 44, 161, 48, 101, 70, 146, 2, 164,
+            ],
+            network: b"testkit".to_vec(),
+            anchor: Tip {
+                height: 161,
+                id: [
+                    216, 37, 10, 50, 122, 232, 42, 32, 159, 193, 78, 79, 104, 137, 11, 176, 48, 94,
+                    226, 70, 190, 186, 228, 253, 201, 7, 238, 32, 164, 99, 227, 222,
+                ],
+            },
+            salt: Some(17800990368157048846),
+            target: "identity".into(),
+            payload: vec![1, 5, 0, 0, 0, 112, 114, 111, 98, 101, 0],
+        };
+        assert_eq!(
+            body.id(),
+            [
+                80, 91, 198, 56, 196, 247, 254, 147, 177, 248, 245, 254, 195, 228, 37, 191, 52, 55,
+                60, 248, 19, 25, 229, 38, 80, 164, 73, 37, 189, 126, 13, 25,
+            ]
+        );
+        assert_eq!(body.until(), 161 + 256);
     }
 
     #[test]

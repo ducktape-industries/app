@@ -110,8 +110,8 @@ use constants::Constants;
 /// SIMD, which Rust emits only when asked and no view asks for (the pass
 /// would charge it as wasmtime does, 1 per operator: adding it is this one
 /// line).
-/// A wasmtime runner applies it with
-/// `config.wasm_features(WasmFeatures::all().difference(FEATURES), false)`.
+/// Both runners apply it through [`accepts`], which validates against it
+/// before anything is compiled.
 pub const FEATURES: WasmFeatures = WasmFeatures::WASM1
     .union(WasmFeatures::SIGN_EXTENSION)
     .union(WasmFeatures::SATURATING_FLOAT_TO_INT)

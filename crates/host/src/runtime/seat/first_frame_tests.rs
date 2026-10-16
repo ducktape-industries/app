@@ -120,14 +120,18 @@ fn ticked_with(mounted: &Mutex<Mounted>) -> Vec<Vec<wire::Event>> {
     }
 }
 
-/// The host's facts among `events`: the theme, the viewport, the offset.
-fn facts(events: &[wire::Event]) -> (Option<bool>, Option<(f32, f32)>, Option<i32>) {
-    let mut facts = (None, None, None);
+/// The host's facts among `events`: the theme, the viewport, the offset,
+/// whether the pointer is a finger.
+type Facts = (Option<bool>, Option<(f32, f32)>, Option<i32>, Option<bool>);
+
+fn facts(events: &[wire::Event]) -> Facts {
+    let mut facts = (None, None, None, None);
     for event in events {
         match event {
             wire::Event::Theme { dark } => facts.0 = Some(*dark),
             wire::Event::Viewport { width, height } => facts.1 = Some((*width, *height)),
             wire::Event::Offset { minutes } => facts.2 = Some(*minutes),
+            wire::Event::Pointer { touch } => facts.3 = Some(*touch),
             _ => {}
         }
     }
@@ -135,10 +139,10 @@ fn facts(events: &[wire::Event]) -> (Option<bool>, Option<(f32, f32)>, Option<i3
 }
 
 /// A view answering `frames` in order, one per tick, the last on every
-/// tick after. `snapshot` hands over one empty state and `restore` takes
-/// any, so the same code serves as a swap's old and new instance.
+/// tick after. `snapshot` hands over its tick count and `restore` takes
+/// one up, so the same code serves as a swap's old and new instance.
 fn frames_in_order(program: &'static str, min_width: u32, frames: &[wire::Frame]) {
-    let code = Module::new(crate::runtime::view::engine(), frames_wat(frames)).unwrap();
+    let code = crate::runtime::view::prepared_for_test(frames_wat(frames));
     crate::runtime::seat_code_for_test(program, min_width, code);
 }
 
@@ -159,7 +163,9 @@ fn boxed(key: &str) -> wire::Node {
 }
 
 /// A view's first tick carries the host's facts: the theme, the body its
-/// pane lays it out in, the reader's offset. A pane resized before the
+/// pane lays it out in, the reader's offset, whether the device's pointer
+/// is a finger (`OsFacts::touch_first`: the desktop's is not, and says
+/// so, so a view picks its ladder before its first frame). A pane resized before the
 /// draw tells the view the new body ahead of the frame that shows it, and
 /// nothing else: a fact that did not move does not cross again.
 #[gpui_kit::test]
@@ -172,10 +178,11 @@ fn a_views_first_tick_carries_the_hosts_facts(cx: &mut TestAppContext) {
     assert_eq!(*drawn.borrow(), vec![(1, 1)]);
     let ticks = ticked_with(&mounted);
     assert_eq!(ticks.len(), 1);
-    let (theme, viewport, offset) = facts(&ticks[0]);
+    let (theme, viewport, offset, touch) = facts(&ticks[0]);
     assert!(theme.is_some(), "the theme: {:?}", ticks[0]);
     assert_eq!(viewport, Some(WINDOW), "the body: {:?}", ticks[0]);
     assert_eq!(offset, Some(crate::runtime::kernel::offset_minutes()));
+    assert_eq!(touch, Some(false), "the pointer: {:?}", ticks[0]);
 
     seat.update(&mut native, |seat, cx| {
         seat.place(handle, Some((420., WINDOW.1)), true, cx)
@@ -191,6 +198,23 @@ fn a_views_first_tick_carries_the_hosts_facts(cx: &mut TestAppContext) {
         }],
         "the new body, and nothing that did not move"
     );
+}
+
+/// A manifest's minimum is the narrowest pointer window. Under a finger
+/// a view is laid out at its body's width even when its minimum is wider
+/// (a phone's screen): never widened, so never cut at the screen's edge.
+/// (Under a pointer it is widened: `a_views_viewport_is_never_narrower_than_its_minimum`.)
+#[gpui_kit::test]
+fn under_touch_a_view_is_laid_out_at_its_body_under_its_minimum(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "first-frame-touch-minimum-test";
+    crate::contract::testing::touch_first_for_test(true);
+    frames_in_order(PROGRAM, 640, &[full(boxed("card"))]);
+    let (_seat, _drawn, mounted, opened) = open(cx, PROGRAM);
+    opened.native.run_until_parked();
+    crate::contract::testing::touch_first_for_test(false);
+    let (_, viewport, _, touch) = facts(&ticked_with(&mounted)[0]);
+    assert_eq!(touch, Some(true));
+    assert_eq!(viewport, Some(WINDOW), "the body, not the 640 minimum");
 }
 
 /// A pane with no body yet (its desk is not drawn: a pane popped out while
@@ -248,23 +272,17 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
     let native = opened.native;
     native.run_until_parked();
     assert_eq!(*drawn.borrow(), vec![(1, 1)], "the old view is up");
-    let (alive, old_ticks, old_theme) = {
+    let (alive, old_theme) = {
         let locked = lock(&mounted);
         let Slot::Ready(old) = &locked.slot else {
             panic!("not seated");
         };
-        (old.alive.clone(), old.ticks, old.theme_dark)
+        (old.alive.clone(), old.theme_dark)
     };
     assert!(old_theme.is_some(), "the drawn view heard the theme");
     // the new deployment's load, as a block starts it: the same code, a
-    // replacement of the same shape
-    let program = Arc::new(
-        Module::new(
-            crate::runtime::view::engine(),
-            frames_wat(&[full(boxed("card"))]),
-        )
-        .unwrap(),
-    );
+    // replacement of the same shape, prepared and parked on the seat
+    let program = crate::runtime::view::prepared_for_test(frames_wat(&[full(boxed("card"))]));
     let generation = lock(&mounted).start();
     let load = Load {
         program: PROGRAM,
@@ -273,47 +291,16 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
         asked_of: connection().lock().unwrap().clone(),
         code: Some((::abi::BlobId::Sha256([7; 32]), false)),
     };
-    let first_tick = Rc::new(RefCell::new(None));
-    let seen = first_tick.clone();
-    load.land(|load, timing| {
-        let mut fresh = View::instantiate(load.program, &program, load.program).unwrap();
-        fresh.min_width = 320;
-        let mut ticks = 0;
-        let fresh = View::replacement(
-            fresh,
-            &alive,
-            &mut ticks,
-            &load.seat,
-            &program,
-            load.program,
-            timing,
-        )
-        .expect("prepared");
-        assert_eq!(ticks, old_ticks);
-        assert!(fresh.staged, "its first tree is made, its requests held");
-        assert_eq!(fresh.ticks, 1, "first_frame ticked it once");
-        assert_eq!(fresh.theme_dark, old_theme);
-        assert_eq!(fresh.viewport_sent, Some(WINDOW));
-        assert!(fresh.pending.is_empty(), "nothing waits for a second tick");
-        *seen.borrow_mut() = Some(facts(&fresh.ticked_with[0]));
+    load.land(|load, _| {
+        let mut code = ViewCode::for_test("", "", 320);
+        code.hash = program;
         Ok(Loaded::Swap {
-            fresh: Box::new(fresh),
-            alive: alive.clone(),
-            ticks,
-            code: program.clone(),
+            code,
             shown: load.program.into(),
         })
     });
-    assert_eq!(
-        *first_tick.borrow(),
-        Some((
-            old_theme,
-            Some(WINDOW),
-            Some(crate::runtime::kernel::offset_minutes())
-        )),
-        "the replacement made its first tree knowing the theme, its body and the offset"
-    );
-    // the install woke the seat: its turn mounts the staged tree without a
+    // the install woke the seat: its turn runs the swap (`swap_in`), whose
+    // install wakes it again; that turn mounts the staged tree without a
     // tick (`staged`), and the harness draws the dirtied window
     native.run_until_parked();
     {
@@ -325,10 +312,26 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
             !Arc::ptr_eq(&fresh.alive, &alive),
             "the new code took the seat"
         );
-        assert_eq!(fresh.ticks, 1, "the install turn ticked nothing");
+        assert_eq!(
+            fresh.ticks, 1,
+            "first_frame ticked it once; the install turn nothing"
+        );
+        assert_eq!(fresh.theme_dark, old_theme);
+        assert_eq!(fresh.touch_sent, Some(false));
+        assert_eq!(fresh.viewport_sent, Some(WINDOW));
         assert!(
             fresh.pending.is_empty(),
             "the turn found nothing to tell it"
+        );
+        assert_eq!(
+            facts(&fresh.ticked_with[0]),
+            (
+                old_theme,
+                Some(WINDOW),
+                Some(crate::runtime::kernel::offset_minutes()),
+                Some(false)
+            ),
+            "the replacement made its first tree knowing the theme, its body, the offset and the pointer"
         );
     }
     assert_eq!(
@@ -348,9 +351,10 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
 }
 
 /// The WAT of [`frames_in_order`]: byte 0 is a result's Ok tag, so
-/// `snapshot` answers Ok(empty) and `restore` Ok; frame `n` sits in slot
+/// `restore` answers Ok, and `snapshot` Ok(the tick count, one byte at 33
+/// behind the tag at 32), which `restore` takes up; frame `n` sits in slot
 /// `n` above the first page.
-fn frames_wat(frames: &[wire::Frame]) -> String {
+pub(super) fn frames_wat(frames: &[wire::Frame]) -> String {
     assert!(!frames.is_empty());
     const SLOT: usize = 16384;
     let mut data = String::new();
@@ -372,6 +376,7 @@ fn frames_wat(frames: &[wire::Frame]) -> String {
     }
     let pages = 1 + (SLOT * frames.len()).div_ceil(65536);
     let ok = wire::abi::pack(0, 1);
+    let state = wire::abi::pack(32, 2);
     format!(
         r#"(module
         (memory (export "memory") {pages})
@@ -382,7 +387,48 @@ fn frames_wat(frames: &[wire::Frame]) -> String {
         (func (export "tick") (param i32 i32) (result i64)
             global.get $n i32.const 1 i32.add global.set $n
             {arms})
-        (func (export "snapshot") (result i64) i64.const {ok})
-        (func (export "restore") (param i32 i32) (result i64) i64.const {ok}))"#
+        (func (export "snapshot") (result i64)
+            (i32.store8 (i32.const 33) (global.get $n))
+            i64.const {state})
+        (func (export "restore") (param i32 i32) (result i64)
+            (global.set $n (i32.load8_u (local.get 0)))
+            i64.const {ok}))"#
     )
+}
+
+/// Back goes to the root's `on_back` in the frame that landed last, as the
+/// view's next tick; a view whose frame has none (it is at its root) has
+/// nowhere to go back to, and the shell leaves the program: nothing is
+/// sent to it.
+#[gpui_kit::test]
+fn back_goes_to_the_roots_on_back_and_otherwise_leaves(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "first-frame-back-test";
+    let paged = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("pages".into())),
+        style: crate::render::test_style(div().size_full().style().clone()),
+        interactivity: Some(Box::new(wire::Interactivity {
+            on_back: Some(3),
+            ..Default::default()
+        })),
+        children: Vec::new(),
+    });
+    frames_in_order(PROGRAM, 320, &[full(paged), full(boxed("root"))]);
+    let (seat, _drawn, mounted, opened) = open(cx, PROGRAM);
+    let Opened { mut native, .. } = opened;
+    native.run_until_parked();
+    let back = seat.update(&mut native, |seat, cx| seat.back(cx));
+    assert_eq!(back, Back::Heard);
+    native.run_until_parked();
+    let ticks = ticked_with(&mounted);
+    assert_eq!(ticks.len(), 2, "the Back ticked the view");
+    assert_eq!(ticks[1], [wire::Event::Back { handler: 3 }]);
+    // the view went back to its root: its frame has no `on_back`
+    let back = seat.update(&mut native, |seat, cx| seat.back(cx));
+    assert_eq!(back, Back::Leave);
+    native.run_until_parked();
+    assert_eq!(
+        ticked_with(&mounted).len(),
+        2,
+        "a Back it cannot take is not sent"
+    );
 }

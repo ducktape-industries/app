@@ -17,6 +17,9 @@ name = "ducktape-phone"
 edition.workspace = true
 version.workspace = true
 publish = false
+# the desktop's own: `DUCKTAPE_APP_BUILD`, which names the build the iOS
+# runner's code cache is kept for (`os::code_cache`)
+build = "../../build.rs"
 
 [lib]
 name = "ducktape_phone"
@@ -26,8 +29,12 @@ name = "ducktape_phone"
 ax-door = ["ducktape-host/ax-door"]
 
 [dependencies]
-ducktape-host = { path = "../host" }
+# the host's runner is the phone's own pick (`os::runner`): wasmtime below,
+# JavaScriptCore on iOS, where no wasmtime is linked
+ducktape-host = { path = "../host", default-features = false }
 noded-client = { path = "../noded-client" }
+# `abi::BlobId`, which `OsServices::bundled_view` names
+abi.workspace = true
 gpui-kit = "=0.7.3"
 design.workspace = true
 tracing.workspace = true
@@ -37,12 +44,29 @@ commonware-utils = "2026.9.0"
 # the throwaway reader key (`OsServices::reader`): Ed25519 from the TLS
 # stack's own crate, already in the graph
 ring = "0.17"
+# the links the OS hands the app, from its own thread (`os::link`); the
+# host's channel crate
+async-channel = "2"
+# the host's consent queue wakes the shell on a futures channel
+futures.workspace = true
+# a program's own link, for the capsule's Copy link
+ducklink.workspace = true
+# the host's places a view asks for (`SeatsEvent::Show`)
+view-wire.workspace = true
 
 [target.'cfg(target_os = "ios")'.dependencies]
+# the camera and microphone pieces open the phone's own (AVFoundation and
+# the app's audio session, `crates/av`); the usage strings are
+# `phone/ios/Info.plist`'s
+ducktape-host = { path = "../host", default-features = false, features = ["av"] }
+ducktape-host-jsc = { path = "../host-jsc" }
 gpui-pre-ios.workspace = true
 # the log on the simulator's console (Android's goes to logcat through gm's
 # `android_logger`, which tracing's `log` records reach)
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+ducktape-host = { path = "../host", features = ["wasmtime"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 gpui-pre-mobile.workspace = true
@@ -54,6 +78,12 @@ android-activity = "0.6"
 # logcat (no tracing subscriber is set on Android)
 tracing = { workspace = true, features = ["log"] }
 ndk = { version = "0.9", features = ["nativewindow"] }
+# the camera and the microphone (the host's `av`); the glue hands av how
+# the Activity asks for a permission, and `ndk-context` the app's Context,
+# which av's JNI calls and cpal's AAudio host read
+ducktape-host = { path = "../host", features = ["av"] }
+ducktape-av = { path = "../av", features = ["capture"] }
+ndk-context = "0.1"
 
 [dev-dependencies]
 ducktape-host = { path = "../host", features = ["test-support"] }

@@ -7,10 +7,7 @@ use crate::runtime::consent;
 use crate::shell::entities::Overlay;
 use gpui_kit::*;
 
-/// How long Approve takes no press after the card opens: a second press
-/// the view asked for ("press twice") lands on the card before anyone
-/// read it.
-pub(in crate::shell) const SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
+pub(in crate::shell) use crate::runtime::consent::SETTLE;
 
 /// The card's usual height, a few lines of description in it: where it
 /// hangs in a short window (`dialog_fit`).
@@ -41,28 +38,33 @@ impl OverlayLayer {
             let front = consent::front().map(|(id, _)| id);
             overlays.update(cx, |overlays, cx| overlays.follow_consent(front, cx));
         };
-        let approve = {
+        // Approve's press, once the card's first moment has passed
+        let approved = {
             let answer = answer.clone();
             let overlays = self.overlays.entity().clone();
-            button(
-                "consent-approve",
-                "Approve",
-                Kind::Primary,
-                move |cx| {
-                    let opened = overlays.read(cx).opened();
-                    if cx
-                        .background_executor()
-                        .now()
-                        .saturating_duration_since(opened)
-                        >= SETTLE
-                    {
-                        answer(true, cx);
-                    }
-                },
-                false,
-                &ink,
-            )
+            move |cx: &mut App| {
+                let opened = overlays.read(cx).opened();
+                if cx
+                    .background_executor()
+                    .now()
+                    .saturating_duration_since(opened)
+                    >= SETTLE
+                {
+                    answer(true, cx);
+                }
+            }
         };
+        if ducktape_host::contract::os().facts().touch_first {
+            return self.consent_sheet(ask, words, approved, answer, window, cx);
+        }
+        let approve = button(
+            "consent-approve",
+            "Approve",
+            Kind::Primary,
+            approved,
+            false,
+            &ink,
+        );
         let cancel = link_running(
             "consent-cancel",
             "Cancel",
@@ -150,5 +152,82 @@ impl OverlayLayer {
                     .into_any_element()
             },
         )
+    }
+
+    /// The card under touch: the phone's confirm sheet (mobile
+    /// `src/kit/Confirm.tsx`, board 96), docked to the bottom over the
+    /// Expo scrim with the Expo sheet's handle: the ask's title as an
+    /// eyebrow, "<verb>: <target>", the op's facts, what it takes away,
+    /// Cancel and the verb (in danger for one that takes something away),
+    /// and the caption on who signs; every size the phone's own. A press on
+    /// the scrim closes it, as Cancel does. Approve keeps the desktop's
+    /// first moment ([`SETTLE`]).
+    fn consent_sheet(
+        &self,
+        ask: u64,
+        asked: consent::Words,
+        approved: impl Fn(&mut App) + 'static,
+        answer: impl Fn(bool, &mut App) + 'static,
+        window: &Window,
+        cx: &App,
+    ) -> AnyElement {
+        use crate::a11y::Control as _;
+        use gpui_kit::component::FocusTrapElement as _;
+        let dark = self.prefs.read(cx).get().dark();
+        let palette = design::palette(dark);
+        let color = ducktape_host::theme::hsla;
+        let title = asked.title;
+        let body = consent::sheet(asked, dark, approved, answer);
+        // the Expo sheet's handle, in its band
+        let handle = div()
+            .flex_none()
+            .h(px(20.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .w(px(32.))
+                    .h(px(4.))
+                    .rounded(px(2.))
+                    .bg(color(palette.border_strong)),
+            );
+        let inset = self.inset(window, cx);
+        let room = f32::from(window.viewport_size().height) - inset.top;
+        let panel = div()
+            .id(SharedString::from(format!("consent-{ask}")))
+            .control(Role::Dialog, title)
+            .occlude()
+            .flex()
+            .flex_col()
+            .w_full()
+            .max_h(px(room))
+            .bg(color(palette.background))
+            .text_color(color(palette.foreground))
+            .border_t_1()
+            .border_color(color(palette.border_strong))
+            .child(handle)
+            .child(body);
+        let backdrop_id = SharedString::from(format!("consent-{ask}-backdrop"));
+        let overlays = self.overlays.entity().clone();
+        div()
+            .id(backdrop_id.clone())
+            .absolute()
+            .top(px(inset.top))
+            .left(px(inset.left))
+            .right_0()
+            .bottom_0()
+            .occlude()
+            // the Expo palette's `scrim`
+            .bg(gpui_kit::black().opacity(if dark { 0.55 } else { 0.4 }))
+            .flex()
+            .flex_col()
+            .justify_end()
+            .on_click(move |_, _, cx| {
+                overlays.update(cx, |overlays, cx| overlays.close(Overlay::Consent(ask), cx));
+            })
+            .child(crate::a11y::modal(panel))
+            .focus_trap(backdrop_id, &self.modal)
+            .into_any_element()
     }
 }

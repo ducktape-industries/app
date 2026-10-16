@@ -1183,8 +1183,10 @@ mod tests {
                 program: "folded-tab",
                 label: "Folded".into(),
                 icon: icon.into(),
+                description: String::new(),
                 note: None,
                 empty: false,
+                pending: false,
             };
             super::folded_icon(&row, &gpui_kit::assets::AllAssets)
         };

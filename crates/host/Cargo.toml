@@ -17,32 +17,41 @@ version.workspace = true
 publish = false
 
 [features]
+default = ["wasmtime"]
+# the wasmtime view runner (`runner::WasmtimeRunner`) and `program.describe`
+# on it: the desktop and Android. Off for iOS, where views run in
+# JavaScriptCore (`crates/host-jsc`) and no process of ours may JIT.
+wasmtime = ["dep:wasmtime", "describe/host"]
 # the AX test door (`src/ax`): kit and qa builds, and every test
 ax-door = []
 # gpui's own frame and input histograms into `GET /perf` (docs/perf.md §3.5)
 perf-deep = ["gpui-kit/profiler"]
 # the web piece draws pages through CEF (`render/web.rs`, `crates/web`)
 web = ["dep:ducktape-web", "ducktape-web/cef"]
+# the camera and microphone pieces open real devices (`render/av.rs`,
+# `crates/av`)
+av = ["dep:ducktape-av", "ducktape-av/capture"]
 # the test helpers the desktop shell's tests reach (`*_for_test`,
-# `test_style`, ...): on for every test build, never for a shipped one
-test-support = ["gpui-kit/test-support"]
+# `test_style`, ...): on for every test build, never for a shipped one;
+# `wat` turns the test views' text into the wasm a runner takes
+test-support = ["gpui-kit/test-support", "wasmtime", "dep:wat"]
 
 [dependencies]
 gpui-kit = "=0.7.3"
 gpui-base = "=0.7.3"
 unicode-segmentation = "1"
 futures.workspace = true
-# a notifier's answers and turn (`view_wire::notifier`); the tests' borsh too
-borsh.workspace = true
 async-channel = "2"
 zeroize.workspace = true
 design.workspace = true
-describe = { workspace = true, features = ["host"] }
+describe.workspace = true
 sha2.workspace = true
 identity.workspace = true
 # The roster's full query surface: its programs and its view-only entries.
 blob.workspace = true
-programs = { git = "https://github.com/ducktape-industries/programs", rev = "2a4f366c19b52205c554fbcc9eadf172a30bd841", package = "programs" }
+# a notifier's answers and turn (`view_wire::notifier`); the tests' borsh too
+borsh.workspace = true
+programs = { git = "https://github.com/ducktape-industries/programs", rev = "59496b49141c4ccb4f14cbdbca32c1635e114715", package = "programs" }
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -67,8 +76,14 @@ view-wire = { workspace = true, features = ["manifest"] }
 program.workspace = true
 abi.workspace = true
 ducklink.workspace = true
-wasmtime.workspace = true
+wasmtime = { workspace = true, optional = true }
 wasmparser = "0.251"
+# `accepts`: the one rule every view runner applies before it compiles a
+# view (wasm-mobile SPEC §6.2), so wasmtime and JavaScriptCore take and
+# refuse the same views
+view-meter = { path = "../view-meter" }
+# feature `test-support` only (wasmtime's own `wat` already in the graph)
+wat = { version = "1", optional = true }
 libc.workspace = true
 sha1 = "0.10"
 # the node's client, shared with the phone; a signer is whatever the shell
@@ -76,8 +91,12 @@ sha1 = "0.10"
 noded-client = { path = "../noded-client" }
 # feature `web` only: CEF and everything that names it
 ducktape-web = { path = "../web", optional = true }
+# feature `av` only: V4L2, AVFoundation, cpal and everything that names them
+ducktape-av = { path = "../av", optional = true }
 
 [dev-dependencies]
+# what the media pieces' tests read off a piece (empty without `av`)
+ducktape-av = { path = "../av", features = ["test-support"] }
 # paused time for the live session's keep-alive and idle tests
 tokio = { version = "1", features = ["test-util"] }
 # `backend/live.rs`'s test node: a self-signed certificate of an ed25519 key, as halo makes its own
@@ -85,7 +104,7 @@ rcgen = { version = "0.14", default-features = false, features = ["crypto", "rin
 # the live tests' node: its key's verifier, as the handshake pins it
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a0151a411c3558453c34bb8272b93dfc428cb74", package = "keyscheme", features = ["testkit"] }
 # the consent card's words for a validators' vote
-valset = { git = "https://github.com/ducktape-industries/programs", rev = "2a4f366c19b52205c554fbcc9eadf172a30bd841", package = "valset" }
+valset = { git = "https://github.com/ducktape-industries/programs", rev = "59496b49141c4ccb4f14cbdbca32c1635e114715", package = "valset" }
 # the tests' keys: commonware's ed25519, through noded-client's impl
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -96,7 +115,7 @@ gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tempfile.workspace = true
 # a fake node's changes socket (`runtime/kernel/node/tests.rs`)
 tokio-tungstenite.workspace = true
-blobs = { git = "https://github.com/ducktape-industries/programs", rev = "2a4f366c19b52205c554fbcc9eadf172a30bd841", package = "blobs" }
+blobs = { git = "https://github.com/ducktape-industries/programs", rev = "59496b49141c4ccb4f14cbdbca32c1635e114715", package = "blobs" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # test-support: its headless renderer, which `render/tests/picture_pixels.rs`

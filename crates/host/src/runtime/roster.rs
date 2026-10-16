@@ -108,6 +108,20 @@ impl Roster {
         roster
     }
 
+    /// Lists what `listed` lists, as a node's read would: a test's.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn relist_from(&self, listed: &Roster) {
+        let programs = listed.lock().clone();
+        relist(self, programs);
+    }
+
+    /// Lists nothing until the next network's programs are read: the
+    /// network these were read off was left, and nothing (the rail, a link)
+    /// may be read against its programs any more.
+    pub(crate) fn clear(&self) {
+        relist(self, Vec::new());
+    }
+
     /// The blob a listed program's view comes from, and whether that blob is
     /// the view itself (a view-only entry) rather than a program carrying it.
     pub(super) fn code(&self, program: &str) -> Option<(abi::BlobId, bool)> {
@@ -194,10 +208,17 @@ pub struct RailRow {
     /// The icon its view's manifest declares (`icons/hammer.svg`); empty
     /// until the manifest is read, and for a view that declares none.
     pub icon: String,
+    /// The manifest's description (Home's tile and product page); empty
+    /// until the manifest is read.
+    pub description: String,
     /// `Some` while the seat is on its way or failed; `None` once drawn.
     pub note: Option<&'static str>,
     /// The program ships no view: the rail leaves it out.
     pub empty: bool,
+    /// Its code not read yet (no seat, or the bytes still coming): whether
+    /// it ships a view is not known, so `empty` is `false` meanwhile and
+    /// the row says `Loading`. Home lists no program before this is known.
+    pub pending: bool,
 }
 
 /// How far a seat's view has come, readiest first: the rail names a
@@ -209,7 +230,7 @@ fn readiness(slot: &Slot) -> u8 {
         Slot::Ready(_) | Slot::Compiled(_) => 2,
         Slot::Empty => 3,
         Slot::Failed(_) => 4,
-        Slot::Loading | Slot::Fetching { .. } | Slot::Compiling => 5,
+        Slot::Loading | Slot::Fetching { .. } | Slot::Listed(_) | Slot::Compiling(_) => 5,
     }
 }
 
@@ -245,6 +266,13 @@ impl Roster {
                         (view.name.clone(), None, false)
                     }
                     Some(Slot::Ready(_) | Slot::Compiled(_)) => (program.to_owned(), None, false),
+                    // the bytes are here, the code not started: listed by
+                    // its manifest, still loading
+                    Some(Slot::Listed(listing) | Slot::Compiling(listing))
+                        if !listing.name.is_empty() =>
+                    {
+                        (listing.name.clone(), Some("Loading"), false)
+                    }
                     Some(Slot::Empty) => (program.to_owned(), None, true),
                     Some(Slot::Failed(_)) => (program.to_owned(), Some("Failed"), false),
                     // No seat yet (a pane just let go of it, the roster hasn't
@@ -252,18 +280,27 @@ impl Roster {
                     // else the raw program id flashes in the rail/pane title.
                     Some(_) | None => (program.to_owned(), Some("Loading"), false),
                 };
+                let pending = matches!(
+                    seat.as_ref().map(|seat| &seat.slot),
+                    None | Some(Slot::Loading | Slot::Fetching { .. })
+                );
                 // the manifest's, as the name is: none before it is read
-                let icon = match seat.as_ref().map(|seat| &seat.slot) {
-                    Some(Slot::Ready(view)) => view.icon.clone(),
-                    Some(Slot::Compiled(view)) => view.icon.clone(),
-                    _ => String::new(),
+                let (icon, description) = match seat.as_ref().map(|seat| &seat.slot) {
+                    Some(Slot::Ready(view)) => (view.icon.clone(), view.description.clone()),
+                    Some(Slot::Compiled(view)) => (view.icon.clone(), view.description.clone()),
+                    Some(Slot::Listed(listing) | Slot::Compiling(listing)) => {
+                        (listing.icon.clone(), listing.description.clone())
+                    }
+                    _ => Default::default(),
                 };
                 RailRow {
                     program,
                     label,
                     icon,
+                    description,
                     note,
                     empty,
+                    pending,
                 }
             })
             .collect()
@@ -290,6 +327,20 @@ pub fn connected(client: &crate::backend::RpcClient, network: &str, chain: &str)
         connection.clone()
     };
     spawn_roster_read(snapshot, || {});
+}
+
+/// The node in hand was let go (its network left): a read, a load or a
+/// request still out to it is refused from now on (`rev` moves), so none
+/// lands its answers after it, and the views are asked of no node until
+/// the next connect. Nothing to let go when no node was connected.
+pub fn disconnected() {
+    let mut connection = connection().lock().expect("views rpc");
+    if connection.client.is_some() {
+        *connection = Connection {
+            rev: connection.rev + 1,
+            ..Connection::default()
+        };
+    }
 }
 
 /// The node moved (a block landed): the roster is read again, and a
@@ -409,7 +460,19 @@ pub(super) fn read_roster(
                 registry.remove(&gone);
             }
         }
-        let previous = relist(roster, programs.clone());
+        // the revision asked again under the roster's lock (registry, then
+        // roster, then connection): a leave that moved it since
+        // (`disconnected`, then `Roster::clear`) is never listed over
+        let previous = {
+            let mut listed = roster.lock();
+            if connection().lock().expect("views rpc").rev != asked_of.rev {
+                return;
+            }
+            std::mem::replace(&mut *listed, programs.clone())
+        };
+        if previous != programs {
+            rail_moved();
+        }
         let mut loads = Vec::new();
         for program in &names {
             if !registry.keys().any(|(name, _)| name == program) {
@@ -539,8 +602,10 @@ mod local_link_tests {
             program: "catalog",
             label: "Preferences".into(),
             icon: String::new(),
+            description: String::new(),
             note: None,
             empty: false,
+            pending: false,
         }];
         assert_eq!(local_seat("duck://catalog", &rows), Some("catalog"));
         assert_eq!(local_seat("duck://preferences", &rows), Some("catalog"));
@@ -576,8 +641,10 @@ mod local_link_tests {
             program: "other",
             label: "Preferences".into(),
             icon: String::new(),
+            description: String::new(),
             note: None,
             empty: false,
+            pending: false,
         });
         assert_eq!(local_seat("duck://preferences", &rows), None);
         rows[1].empty = true;
@@ -592,8 +659,10 @@ mod local_link_tests {
             program: "catalog",
             label: "Preferences".into(),
             icon: String::new(),
+            description: String::new(),
             note: None,
             empty: false,
+            pending: false,
         }];
         let view = |route: Option<&str>| Link::View {
             program: "catalog",
@@ -626,8 +695,10 @@ mod local_link_tests {
             program: "catalog",
             label: "Preferences".into(),
             icon: String::new(),
+            description: String::new(),
             note: None,
             empty: false,
+            pending: false,
         }];
         for name in ["forge:web:3", "보고서 #1", "a b"] {
             let link = ducklink::mint("testkit#0a1b2c3d", "chat", &[name, "42"]).unwrap();
@@ -692,6 +763,7 @@ mod rail_tests {
         assert_eq!(row.label, program);
         assert_eq!(row.note, Some("Loading"));
         assert!(!row.empty);
+        assert!(row.pending, "whether it ships a view is not known yet");
     }
 
     /// A seat preloaded only as far as compiled is a row ready to open,
@@ -710,7 +782,71 @@ mod rail_tests {
             .expect("listed program appears in the rail");
         lock(registry()).remove(&(program, 0));
         assert_eq!((row.label.as_str(), row.note), ("Compiled view", None));
-        assert!(!row.empty);
+        assert!(!row.empty && !row.pending);
+    }
+
+    /// A program whose bytes are still coming is pending; once read and
+    /// found to ship no view it is empty, and no longer pending.
+    #[test]
+    fn a_program_is_pending_until_its_code_is_read() {
+        let program = "rail-tests-pending";
+        let seat = Mounted::seat();
+        let row = |seat: &Arc<Mutex<Mounted>>, slot| {
+            lock(seat).slot = slot;
+            lock(registry()).insert((program, 0), seat.clone());
+            let row = Roster::listing(&[program]).rail().remove(0);
+            lock(registry()).remove(&(program, 0));
+            (row.empty, row.pending)
+        };
+        let fetching = Slot::Fetching {
+            received: 1,
+            total: Some(2),
+        };
+        assert_eq!(row(&seat, fetching), (false, true));
+        assert_eq!(row(&seat, Slot::Empty), (true, false));
+    }
+
+    /// A seat whose bytes are here and whose manifest is read, its code not
+    /// yet compiled or compiling, is listed by its manifest (name, icon,
+    /// description: what Home's tile draws) and still loading; the row
+    /// keeps the name from the listing through the compile.
+    #[test]
+    fn a_listed_seat_is_named_by_its_manifest_and_still_loading() {
+        let program = "rail-tests-listed";
+        let listing = || {
+            Box::new(Listing {
+                name: "Listed view".into(),
+                icon: "icons/hammer.svg".into(),
+                description: "What it does".into(),
+                ..Default::default()
+            })
+        };
+        let seat = Mounted::seat();
+        lock(registry()).insert((program, 0), seat.clone());
+        let row = |slot: Slot| {
+            lock(&seat).slot = slot;
+            Roster::listing(&[program])
+                .rail()
+                .into_iter()
+                .find(|row| row.program == program)
+                .expect("listed program appears in the rail")
+        };
+        let rows = [
+            row(Slot::Listed(listing())),
+            row(Slot::Compiling(listing())),
+        ];
+        lock(registry()).remove(&(program, 0));
+        for row in rows {
+            assert_eq!(
+                (
+                    row.label.as_str(),
+                    row.icon.as_str(),
+                    row.description.as_str()
+                ),
+                ("Listed view", "icons/hammer.svg", "What it does")
+            );
+            assert_eq!(row.note, Some("Loading"));
+        }
     }
 
     /// Two panes of one program hold a seat each; while one is still on

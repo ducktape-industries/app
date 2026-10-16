@@ -50,12 +50,20 @@ pub(super) fn walk_authored_paths(
 /// tracks `entry` as well: gpui's dispatch tree keys a handle to the last
 /// element that tracks it, so the trap would contain no focused node and
 /// Tab would leave the dialog.
+///
+/// On a touch device the keys stop at the trap itself: the first stop is
+/// often a field, and a focused field brings the soft keyboard up over a
+/// sheet nobody has touched yet. The phone's sheets focus nothing as they
+/// open (the Expo app's `Field` takes `autoFocus` only where a screen asks);
+/// a view that wants its field focused asks for it.
 pub fn dialog_entry(entry: &FocusHandle, window: &mut Window, cx: &mut App) {
     let entry = entry.clone();
     window.defer(cx, move |window, cx| {
         if !entry.contains_focused(window, cx) {
             window.focus(&entry, cx);
-            tab(Some(&entry), true, window, cx);
+            if !crate::contract::os().facts().touch_first {
+                tab(Some(&entry), true, window, cx);
+            }
         }
     });
 }

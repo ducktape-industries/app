@@ -44,10 +44,11 @@ browser download is quarantined: after dragging it to `/Applications`, run
 `xattr -dr com.apple.quarantine /Applications/Ducktape.app` once.
 
 **Linux (x86_64).** Needs `jq`, and at runtime `libxcb1`,
-`libxkbcommon-x11-0` and a Vulkan driver (`libvulkan1` and
-`mesa-vulkan-drivers` on Ubuntu). `ducktape-app install` puts the binary
-under `~/.local/share/ducktape/` and registers a desktop entry; the
-extracted copy can be deleted after.
+`libxkbcommon-x11-0`, ALSA's library for the microphone and speakers
+(`libasound2`; `libasound2t64` from Ubuntu 24.04 on) and a Vulkan driver
+(`libvulkan1` and `mesa-vulkan-drivers` on Ubuntu). `ducktape-app install`
+puts the binary under `~/.local/share/ducktape/` and registers a desktop
+entry; the extracted copy can be deleted after.
 
 ```bash
 sha=$(curl -fsS https://dl.ducktape.industries/app/stable.json \
@@ -107,9 +108,9 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 
 ## Dependency line
 
-`ducktape-industries/programs` (rev `7327a481c1291176de20757956e33562fa2127a0`): `abi`, `view-wire`, `program`, `ducklink`, `design`, `describe`, `identity`, `valset`, `programs`, `blobs`, and the `abi` patch over ducktape's.
+`ducktape-industries/programs` (rev `59496b49141c4ccb4f14cbdbca32c1635e114715`): `abi`, `view-wire`, `program`, `ducklink`, `design`, `describe`, `identity`, `valset`, `programs`, `blobs`, and the `abi` patch over ducktape's.
 `ducktape-industries/ducktape` (rev `8a0151a411c3558453c34bb8272b93dfc428cb74`, the rev that programs rev pins): `blob`, `keyscheme`, `ducktape-home`, `keystore`, `live-wire`.
-`ducktape-industries/gpui-pre` (rev `1026d7a2bac0a21cc73cd9f31a2a56b23f973cea`, the rev that programs rev pins): `gpui-pre` and the crates it patches.
+`ducktape-industries/gpui-pre` (rev `ef025a323b35dae1f64b9de0304f15aff020ad46`, the rev that programs rev pins): `gpui-pre` and the crates it patches.
 
 ## Building
 

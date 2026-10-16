@@ -163,19 +163,21 @@ pub enum Opened {
     Updates,
 }
 
-/// What opens what a banner click names: the shell's, handed over at
-/// startup ([`on_open`]) so this layer never calls up into it.
+/// What opens what a banner click names: the shell's `Boot::open`, which
+/// `start` installs ([`on_open`]) so this layer never calls up into it.
 static OPEN: OnceLock<fn(Opened)> = OnceLock::new();
 
-/// The shell says how what a banner click opens reaches `Windows`.
-pub fn on_open(open: fn(Opened)) {
+/// `Boot::open` installed: how what a banner click opens reaches the
+/// shell's windows. The first one stays.
+pub(crate) fn on_open(open: fn(Opened)) {
     let _ = OPEN.set(open);
 }
 
-/// A banner clicked (the shell's `Banners` impl calls this). A row opens as
-/// if picked in the centre — read now, and its `duck://` link opened (the
-/// view's seat, when it carried none).
-pub fn clicked(click: Click) {
+/// A banner clicked: `start`'s drain calls this for each
+/// `Signal::BannerClick` the shell's `Banners` impl sends through
+/// `Inbound`. A row opens as if picked in the centre — read now, and its
+/// `duck://` link opened (the view's seat, when it carried none).
+pub(crate) fn clicked(click: Click) {
     let opened = match click {
         Click::Row(entry) => {
             let Some(entry) = center().lock().open(entry) else {
