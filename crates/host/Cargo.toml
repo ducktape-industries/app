@@ -24,8 +24,9 @@ perf-deep = ["gpui-kit/profiler"]
 # the web piece draws pages through CEF (`render/web.rs`, `crates/web`)
 web = ["dep:ducktape-web", "ducktape-web/cef"]
 # the test helpers the desktop shell's tests reach (`*_for_test`,
-# `test_style`, ...): on for every test build, never for a shipped one
-test-support = ["gpui-kit/test-support"]
+# `test_style`, ...): on for every test build, never for a shipped one;
+# `wat` turns the test views' text into the wasm a runner takes
+test-support = ["gpui-kit/test-support", "dep:wat"]
 
 [dependencies]
 gpui-kit = "=0.7.3"
@@ -67,6 +68,12 @@ abi.workspace = true
 ducklink.workspace = true
 wasmtime.workspace = true
 wasmparser = "0.251"
+# `accepts`: the one rule every view runner applies before it compiles a
+# view (wasm-mobile SPEC §6.2), so wasmtime and JavaScriptCore take and
+# refuse the same views
+view-meter = { path = "../view-meter" }
+# feature `test-support` only (wasmtime's own `wat` already in the graph)
+wat = { version = "1", optional = true }
 libc.workspace = true
 sha1 = "0.10"
 # the node's client, shared with the phone; a signer is whatever the shell

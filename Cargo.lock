@@ -2705,6 +2705,7 @@ dependencies = [
  "url",
  "usvg 0.46.0",
  "valset",
+ "view-meter",
  "view-wire",
  "wasmparser 0.251.0",
  "wasmtime",

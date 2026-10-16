@@ -345,17 +345,18 @@ impl View {
             Some(landing) => {
                 let taken = Instant::now();
                 let landed = next(&landing).await;
-                // the drawn view's page died under the snapshot: no fault of
-                // the view's, taken up where it lands (nothing else would:
-                // an idle view begins no tick), and the replacement waits
-                if let Landed::Fault(Fault::Runner(death)) = landed {
-                    Self::died(mounted, alive, &death).await;
-                    return Err(Failure::Refused(format!(
-                        "the view's instance died before it handed its state over ({death}); its replacement waits"
-                    )));
-                }
                 let mut locked = lock(mounted);
                 let old = drawn(&mut locked, alive)?;
+                // the drawn view's page died under the snapshot: no fault of
+                // the view's; the seat's turn the swap's end wakes takes it
+                // up (`View::parked`), and the replacement waits
+                if let Landed::Fault(Fault::Runner(death)) = &landed {
+                    let refused = Failure::Refused(format!(
+                        "the view's instance died before it handed its state over ({death}); its replacement waits"
+                    ));
+                    old.parked = Some(landed);
+                    return Err(refused);
+                }
                 old.handed_over(landed, instance, &code.hash, taken, timing)?
             }
         };
@@ -423,9 +424,10 @@ impl View {
     }
 
     /// A death that landed outside a tick (on a snapshot the host asked the
-    /// drawn view `alive` names for), taken up where it lands: the view
-    /// revived with nothing left in flight ([`Self::revive`]), or, where it
-    /// cannot be (no replay kept), stopped on it.
+    /// drawn view `alive` names for), taken up again (`seat::take_up`, in
+    /// front): the view revived with nothing left in flight
+    /// ([`Self::revive`]), or, where it cannot be (no replay kept), stopped
+    /// on it.
     pub async fn died(mounted: &Arc<Mutex<Mounted>>, alive: &Arc<()>, death: &str) {
         if let Err(why) = Self::revive(mounted, alive, false).await {
             let mut locked = lock(mounted);
@@ -469,8 +471,8 @@ impl View {
     /// The snapshot [`Self::begin_keep`] asked for, landed: taken, it is
     /// the replay's start and the batches before it go; refused, the one
     /// kept stays (the view has work in hand); a trap ends the view, as in
-    /// a tick. A death is not one of these: `seat::keep_in` takes it up
-    /// where it lands ([`Self::died`]).
+    /// a tick. A death is not one of these: `seat::keep_in` parks it on the
+    /// view for the seat's turn to take up ([`Self::died`]).
     pub fn kept_landed(&mut self, landed: Landed) {
         if let Ok(Snapshot::Taken(state)) = self.snapshot_landed(landed)
             && let Some(kept) = &mut self.kept
@@ -534,7 +536,7 @@ impl View {
     /// The handover [`Self::handover`] asked for, landed (`taken` when it
     /// was asked): the snapshot, or none when it traps (`to` starts clean).
     /// A view that does not hand its state over yet refuses the replacement.
-    /// A death is not one of these: [`Self::replacement`] takes it up.
+    /// A death is not one of these: [`Self::replacement`] parks it.
     fn handed_over(
         &mut self,
         landed: Landed,

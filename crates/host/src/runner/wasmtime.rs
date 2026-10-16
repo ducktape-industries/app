@@ -1,5 +1,7 @@
 //! The wasmtime [`ViewRunner`]: the desktop's and Android's. It compiles a
-//! view's code with Cranelift on the loader thread (`prepare`), finds the
+//! view's code with Cranelift on the loader thread (`prepare`), once
+//! `view_meter::accepts` takes it (the rule the iOS runner applies too, so
+//! a view runs on every platform or on none), finds the
 //! compiled module by the code's sha256 while anything holds it, and runs
 //! each instance on the
 //! calling thread: every `begin_*` lands its answer on the seat's
@@ -159,6 +161,7 @@ impl ViewRunner for WasmtimeRunner {
         // counter around the compile, and loaders compile concurrently on
         // purpose, so a hit landing from another thread can name a cold
         // compile `disk`.
+        view_meter::accepts(code).map_err(|refusal| Failure::Unsupported(refusal.to_string()))?;
         let before = self.disk.as_ref().map(Cache::cache_hits);
         let module =
             Module::new(&self.engine, code).map_err(|error| Failure::Runner(error.to_string()))?;
@@ -536,7 +539,7 @@ mod tests {
         );
         let hash = [7; 32];
         let _held = runner
-            .prepare(hash, code.as_bytes(), 4 * PAGE)
+            .prepare(hash, &wat::parse_str(&code).expect("parses"), 4 * PAGE)
             .expect("compiles");
         let (land, landing) = Landing::channel();
         runner.instantiate(hash, SeatId("grow-past-maximum", 0), land);
@@ -554,6 +557,62 @@ mod tests {
     /// Compiled code is found while anything holds it (the hold `prepare`
     /// answers, a running instance) and freed once nothing does: seating it
     /// then lands the runner's fault, and preparing it again compiles it.
+    /// One rule on both sides (wasm-mobile SPEC §6.2): the runner prepares
+    /// what `view_meter::accepts` takes, the rule the iOS runner applies,
+    /// and refuses the rest as `Unsupported` in the meter's words. Each
+    /// refused shape is one wasmtime alone would compile.
+    #[test]
+    fn the_runner_takes_what_the_meter_accepts_and_nothing_else() {
+        let runner = WasmtimeRunner::new(RunnerConfig {
+            signals_based_traps: true,
+            cache_dir: None,
+        });
+        let view = |more: &str| {
+            format!(
+                r#"(module
+                (memory (export "memory") 1)
+                (func (export "alloc") (param i32) (result i32) i32.const 64)
+                {more})"#
+            )
+        };
+        let cases = [
+            ("a view", view(""), true),
+            ("a start function", view("(func $go) (start $go)"), false),
+            (
+                "an imported memory",
+                r#"(module (import "host" "memory" (memory 1)))"#.to_owned(),
+                false,
+            ),
+            (
+                "an export named as the meter's fuel",
+                view(r#"(global (export "gas_left") (mut i64) (i64.const 0))"#),
+                false,
+            ),
+            (
+                "SIMD",
+                view("(func (result v128) v128.const i64x2 0 0)"),
+                false,
+            ),
+            (
+                "a tail call",
+                view("(func $again return_call $again)"),
+                false,
+            ),
+        ];
+        for (nth, (what, text, takes)) in cases.into_iter().enumerate() {
+            let code = wat::parse_str(&text).expect("parses");
+            let meter = view_meter::accepts(&code);
+            assert_eq!(meter.is_ok(), takes, "the meter on {what}: {meter:?}");
+            assert_eq!(
+                runner.prepare([nth as u8; 32], &code, 4 * PAGE).err(),
+                meter
+                    .err()
+                    .map(|refusal| Failure::Unsupported(refusal.to_string())),
+                "the runner on {what}"
+            );
+        }
+    }
+
     #[test]
     fn code_nothing_holds_is_freed() {
         let runner = WasmtimeRunner::new(RunnerConfig {
@@ -568,11 +627,8 @@ mod tests {
             (func (export "snapshot") (result i64) i64.const 0)
             (func (export "restore") (param i32 i32) (result i64) i64.const 0))"#;
         let hash = [8; 32];
-        let prepare = || {
-            runner
-                .prepare(hash, code.as_bytes(), 4 * PAGE)
-                .expect("compiles")
-        };
+        let code = wat::parse_str(code).expect("parses");
+        let prepare = || runner.prepare(hash, &code, 4 * PAGE).expect("compiles");
         let seat = || {
             let (land, landing) = Landing::channel();
             runner.instantiate(hash, SeatId("code-freed", 0), land);
