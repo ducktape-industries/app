@@ -4,14 +4,15 @@
 //! microphones and speakers through cpal, each piece on a thread of its
 //! own that leaves what it has in a feed ([`CameraFeed`], [`MicFeed`]) for
 //! the gpui side to read. Another backend replaces this file and those
-//! two: the feeds, [`Device`], [`Status`] and the five functions are the
-//! whole surface.
+//! two: the feeds, [`Device`], [`Status`] and the four functions are the
+//! whole surface (each OS lists its own microphones and speakers:
+//! `platform::audio_devices`).
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use cpal::traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _};
+use cpal::traits::{DeviceTrait as _, StreamTrait as _};
 
 use crate::platform;
 
@@ -390,100 +391,6 @@ pub(crate) fn stream(mut camera: impl Source, feed: &CameraFeed) {
 
 // ---------- microphones and speakers ----------
 
-/// The microphones and the speakers the system lists now.
-#[cfg(not(target_os = "ios"))]
-pub fn audio_devices() -> Result<(Vec<AudioDevice>, Vec<AudioDevice>), String> {
-    let host = cpal::default_host();
-    let kinds = |input: bool| {
-        listed(&host, input).map(|listed| {
-            listed
-                .into_iter()
-                .map(|(device, _)| AudioDevice {
-                    kind: platform::audio_kind(&device, input),
-                    device,
-                })
-                .collect()
-        })
-    };
-    Ok((kinds(true)?, kinds(false)?))
-}
-
-/// iOS: cpal opens one audio unit, which the app's audio session routes:
-/// the devices listed are the session's routes.
-#[cfg(target_os = "ios")]
-pub(crate) use platform::audio_devices;
-
-/// The microphones (`input`) or the speakers the system lists now, as this
-/// crate names them, each with the device it is: the one list
-/// [`audio_devices`] answers from and a piece opens from ([`find`]).
-#[cfg(not(target_os = "ios"))]
-fn listed(host: &cpal::Host, input: bool) -> Result<Vec<(Device, cpal::Device)>, String> {
-    let id = |device: &cpal::Device| device.id().map(|id| id.to_string()).ok();
-    let (devices, default): (Vec<cpal::Device>, _) = match input {
-        true => (
-            host.input_devices()
-                .map_err(|error| error.to_string())?
-                .collect(),
-            host.default_input_device(),
-        ),
-        false => (
-            host.output_devices()
-                .map_err(|error| error.to_string())?
-                .collect(),
-            host.default_output_device(),
-        ),
-    };
-    let default = default.as_ref().and_then(id);
-    let rows = devices
-        .into_iter()
-        .filter_map(|device| {
-            let id = id(&device)?;
-            let row = Device {
-                name: device
-                    .description()
-                    .map(|d| d.name().to_owned())
-                    .unwrap_or_else(|_| id.clone()),
-                default: default.as_ref() == Some(&id),
-                id,
-            };
-            nameable(&row).then_some((row, device))
-        })
-        .collect();
-    Ok(recognizable(rows))
-}
-
-/// The devices a person recognizes, one entry per device. cpal's ALSA host
-/// lists every PCM name the configuration defines, each a way to one card
-/// (`hw`, `plughw`, `sysdefault`, `front`, `surround51`, `dmix`, `dsnoop`,
-/// their numbered twins) or a plugin (`null`, `pulse`, `pipewire`): one
-/// loopback card was twenty rows. Kept: ALSA's `default` (the system's own
-/// choice, a desktop's sound server where one runs), shown as "System
-/// default", and one `plughw` per card and device (the device with the
-/// rate and format conversions an app needs), the card's own name first,
-/// so its numbered twin is dropped. Elsewhere the system lists devices.
-#[cfg(target_os = "linux")]
-fn recognizable<T>(devices: Vec<(Device, T)>) -> Vec<(Device, T)> {
-    let mut seen = std::collections::HashSet::new();
-    devices
-        .into_iter()
-        .filter_map(|(mut device, found)| {
-            let pcm = device.id.strip_prefix("alsa:").unwrap_or(&device.id);
-            if pcm == "default" {
-                device.name = "System default".into();
-                return Some((device, found));
-            }
-            let dev = pcm.strip_prefix("plughw:")?.split("DEV=").nth(1)?;
-            seen.insert((device.name.clone(), dev.to_owned()))
-                .then_some((device, found))
-        })
-        .collect()
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "ios")))]
-fn recognizable<T>(devices: Vec<(Device, T)>) -> Vec<(Device, T)> {
-    devices
-}
-
 /// Opens `device` (the default microphone when `None`) on a thread of its
 /// own: its level into `feed`, a recording asked through `feed.ask`
 /// played back on `feed.output`, and the monitor while `feed.monitor`,
@@ -513,41 +420,6 @@ fn recorded(rate: u32, seconds: u8) -> usize {
 /// Mono samples on their way to a speaker.
 type Queue = Arc<Mutex<VecDeque<f32>>>;
 
-/// The microphone (`input`) or speaker a piece names: `None` the system's
-/// default, else only one this crate listed ([`listed`]), its id compared
-/// whole. A view's string never reaches the system: on Linux an id is an
-/// ALSA PCM name, and such a name can name a plugin that writes a file or
-/// runs a program.
-#[cfg(not(target_os = "ios"))]
-fn find(host: &cpal::Host, id: Option<&str>, input: bool) -> Option<cpal::Device> {
-    match id {
-        Some(id) => picked(listed(host, input).ok()?, id),
-        None if input => host.default_input_device(),
-        None => host.default_output_device(),
-    }
-}
-
-/// iOS: cpal's one audio unit, the session routed first to `id`, one of
-/// its routes ([`platform::route`]: an id it does not list opens
-/// nothing).
-#[cfg(target_os = "ios")]
-fn find(host: &cpal::Host, id: Option<&str>, input: bool) -> Option<cpal::Device> {
-    platform::route(id, input)?;
-    match input {
-        true => host.default_input_device(),
-        false => host.default_output_device(),
-    }
-}
-
-/// What `listed` holds for the device with id `id`, if it lists one.
-#[cfg(not(target_os = "ios"))]
-fn picked<T>(listed: Vec<(Device, T)>, id: &str) -> Option<T> {
-    listed
-        .into_iter()
-        .find(|(device, _)| device.id == id)
-        .map(|(_, found)| found)
-}
-
 fn audio_fault(error: &cpal::Error, open: bool) -> Status {
     match error.kind() {
         cpal::ErrorKind::DeviceBusy => Status::Busy,
@@ -568,7 +440,7 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
         return;
     }
     let host = cpal::default_host();
-    let Some(input) = find(&host, device.as_deref(), true) else {
+    let Some(input) = platform::find(&host, device.as_deref(), true) else {
         return set(&feed.status, Status::NoDevice);
     };
     if !platform::microphone_allowed() {
@@ -579,22 +451,13 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
     if feed.let_go() {
         return;
     }
-    // iOS: the app's audio session active while the microphone is open,
-    // its interruptions told as Gone
-    #[cfg(target_os = "ios")]
+    // the system's audio session (a phone's) held while the microphone is
+    // open, its ends told to the feed
     let _session = match platform::activate(Some(feed)) {
         Ok(session) => session,
         Err(status) => return set(&feed.status, status),
     };
-    let name = input
-        .description()
-        .map(|d| d.name().to_owned())
-        .unwrap_or_default();
-    // iOS: cpal's one unit is the default device; the session names what
-    // it hears
-    #[cfg(target_os = "ios")]
-    let name = platform::heard().unwrap_or(name);
-    feed.status.lock().expect("feed status").1 = name;
+    feed.status.lock().expect("feed status").1 = platform::input_name(&input);
     let config = match input.default_input_config() {
         Ok(config) => config,
         Err(error) => return set(&feed.status, audio_fault(&error, false)),
@@ -760,10 +623,11 @@ fn capture(
             heard.drain(..over);
         }
     };
-    // iOS tells a route change (another speaker picked, a headset in or
-    // out) as an invalidated stream, though its audio unit plays on; the
-    // session's own ends come from `platform::activate`
-    let invalidated_ends = !cfg!(target_os = "ios");
+    // a phone's session routes the stream in place and tells a route
+    // change (another speaker picked, a headset in or out) as an
+    // invalidated stream, though it plays on: its own ends come from
+    // `platform::activate`
+    let invalidated_ends = !platform::ROUTED_IN_PLACE;
     let on_error = move |error: cpal::Error| {
         let ends = match error.kind() {
             cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::BackendError => true,
@@ -814,11 +678,10 @@ pub fn play_chime(output: Option<&str>) -> Result<(), String> {
         Status::Busy => "another app is using the speaker".into(),
         _ => "the speaker is gone".into(),
     };
-    // iOS: the app's audio session active while the chime plays
-    #[cfg(target_os = "ios")]
+    // the system's audio session (a phone's) held while the chime plays
     let _session = platform::activate(None).map_err(said)?;
     let host = cpal::default_host();
-    let rate = find(&host, output, false)
+    let rate = platform::find(&host, output, false)
         .ok_or("no such speaker")?
         .default_output_config()
         .map_err(|error| error.to_string())?
@@ -868,7 +731,7 @@ fn speaker(
     rate: u32,
     queue: Queue,
 ) -> Result<cpal::Stream, Status> {
-    let speaker = find(host, output, false).ok_or(Status::Failed("no speaker".into()))?;
+    let speaker = platform::find(host, output, false).ok_or(Status::Failed("no speaker".into()))?;
     let config = speaker
         .default_output_config()
         .map_err(|error| audio_fault(&error, false))?;
@@ -932,95 +795,12 @@ fn tracing_error(what: &str, error: &dyn std::fmt::Display) {
 mod tests {
     use super::*;
 
-    /// One loopback card's ALSA names come down to the default and one
-    /// row per card and device.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn alsa_names_come_down_to_one_row_a_device() {
-        let device = |id: &str, name: &str| Device {
-            id: format!("alsa:{id}"),
-            name: name.into(),
-            default: id == "default",
-        };
-        let card = "Loopback, Loopback PCM";
-        let listed = vec![
-            device(
-                "null",
-                "Discard all samples (playback) or generate zero samples (capture)",
-            ),
-            device("default", "default"),
-            device("pipewire", "PipeWire Sound Server"),
-            device("sysdefault:CARD=Loopback", card),
-            device("front:CARD=Loopback,DEV=0", card),
-            device("surround51:CARD=Loopback,DEV=0", card),
-            device("dmix:CARD=Loopback,DEV=0", card),
-            device("dsnoop:CARD=Loopback,DEV=1", card),
-            device("hw:CARD=Loopback,DEV=0", card),
-            device("plughw:CARD=Loopback,DEV=0", card),
-            device("hw:CARD=Loopback,DEV=1", card),
-            device("plughw:CARD=Loopback,DEV=1", card),
-            device("hw:CARD=0,DEV=0", card),
-            device("plughw:CARD=0,DEV=0", card),
-            device("plughw:CARD=0,DEV=1", card),
-            device("plughw:CARD=1,DEV=0", "USB Audio, USB Audio"),
-        ];
-        let listed = listed.into_iter().map(|device| (device, ())).collect();
-        let kept: Vec<_> = recognizable(listed)
-            .into_iter()
-            .map(|(device, ())| (device.id, device.name, device.default))
-            .collect();
-        assert_eq!(
-            kept,
-            [
-                ("alsa:default".into(), "System default".into(), true),
-                ("alsa:plughw:CARD=Loopback,DEV=0".into(), card.into(), false),
-                ("alsa:plughw:CARD=Loopback,DEV=1".into(), card.into(), false),
-                (
-                    "alsa:plughw:CARD=1,DEV=0".into(),
-                    "USB Audio, USB Audio".into(),
-                    false
-                ),
-            ]
-        );
-    }
-
     /// A recording holds one to ten seconds, whatever its piece asks.
     #[test]
     fn a_recording_is_one_to_ten_seconds() {
         assert_eq!(recorded(48_000, 0), 48_000);
         assert_eq!(recorded(48_000, 4), 4 * 48_000);
         assert_eq!(recorded(48_000, u8::MAX), 10 * 48_000);
-    }
-
-    /// A piece opens only a device this crate listed, by its whole id: a
-    /// name it did not list (an ALSA plugin that writes a file or pipes
-    /// into a program, a card it left out, a listed id with more after it)
-    /// opens nothing.
-    #[test]
-    #[cfg(not(target_os = "ios"))]
-    fn a_device_opens_only_by_an_id_this_crate_listed() {
-        let row = |id: &str| {
-            let device = Device {
-                id: id.into(),
-                name: "Card".into(),
-                default: false,
-            };
-            (device, id.to_owned())
-        };
-        let listed = || vec![row("alsa:default"), row("alsa:plughw:CARD=PCH,DEV=0")];
-        let card = "alsa:plughw:CARD=PCH,DEV=0";
-        assert_eq!(picked(listed(), card).as_deref(), Some(card));
-        for id in [
-            "alsa:file:'/tmp/x',raw",
-            "alsa:file:'|touch /tmp/x',raw",
-            "alsa:plughw:CARD=X,DEV=0",
-            "alsa:hw:CARD=PCH,DEV=0",
-            "alsa:plughw:CARD=PCH,DEV=0 ",
-            "plughw:CARD=PCH,DEV=0",
-            "",
-        ] {
-            assert_eq!(picked(listed(), id), None, "{id:?}");
-        }
     }
 
     /// Against the system's own audio devices: ALSA's `null` plugin, which
@@ -1039,8 +819,8 @@ mod tests {
             format!("alsa:file:'|touch {path}',raw"),
         ];
         for name in &names {
-            assert!(find(&host, Some(name), true).is_none(), "{name}");
-            assert!(find(&host, Some(name), false).is_none(), "{name}");
+            assert!(platform::find(&host, Some(name), true).is_none(), "{name}");
+            assert!(platform::find(&host, Some(name), false).is_none(), "{name}");
             let feed = Arc::new(MicFeed::default());
             *feed.output.lock().unwrap() = Some(name.clone());
             run_microphone(Some(name.clone()), &feed);

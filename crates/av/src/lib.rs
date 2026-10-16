@@ -13,13 +13,15 @@
 //!   `ios` on iOS (the last two over `apple`, the AVFoundation they
 //!   share). A platform module is the whole OS seam: `cameras()` (each
 //!   with the system's own handle to it), `open(handle)` (a
-//!   [`backend::Source`]), `audio_kind()` (what a listed microphone or
-//!   speaker is), `camera_allowed()` and `microphone_allowed()`, and what
-//!   a person is told of a refused device (`allow`, `settings_page`). iOS
-//!   lists its audio session's routes (each saying what it is) instead of
-//!   cpal's one device, routes the session to the one picked, and holds
-//!   the session active while a microphone or the chime plays
-//!   (`audio_devices`, `route`, `activate`). Another OS (Android) is
+//!   [`backend::Source`]), `camera_allowed()` and `microphone_allowed()`,
+//!   what a person is told of a refused device (`allow`, `settings_page`),
+//!   and the microphones and speakers: `audio_devices()` (each saying
+//!   what it is), `find()` (the cpal device a piece's id opens),
+//!   `input_name()`, `activate()` (what is held while a microphone or the
+//!   chime plays) and `ROUTED_IN_PLACE`. Linux and macOS share theirs
+//!   (`devices`: cpal's own devices, nothing held); iOS lists its audio
+//!   session's routes instead of cpal's one device, routes the session
+//!   to the one picked and holds it active. Another OS (Android) is
 //!   another module and one more line below; nothing that calls this
 //!   crate moves.
 //!   Each piece runs its device on a thread of its own that leaves
@@ -44,6 +46,8 @@ compile_error!(
 mod apple;
 mod backend;
 mod camera;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod devices;
 #[cfg(target_os = "ios")]
 mod ios;
 #[cfg(target_os = "macos")]
@@ -85,7 +89,7 @@ pub fn cameras() -> Result<Vec<CameraDevice>, String> {
 
 /// The microphones and the speakers the system lists now.
 pub fn audio_devices() -> Result<(Vec<AudioDevice>, Vec<AudioDevice>), String> {
-    backend::audio_devices()
+    platform::audio_devices()
 }
 
 /// Plays the test chime on `output` (the system's speaker when `None`)

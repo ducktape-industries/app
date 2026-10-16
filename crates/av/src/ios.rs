@@ -385,8 +385,7 @@ fn kind_of(port: &AVAudioSessionPort, input: bool) -> AudioKind {
     }
 }
 
-/// The microphones and speakers the session routes to now
-/// ([`crate::audio_devices`] on iOS).
+/// The microphones and speakers the session routes to now.
 pub(crate) fn audio_devices() -> Result<(Vec<AudioDevice>, Vec<AudioDevice>), String> {
     autoreleasepool(|_| {
         let session = session()?;
@@ -437,6 +436,33 @@ pub(crate) fn route(id: Option<&str>, input: bool) -> Option<()> {
             tracing::warn!(target: "ducktape::av", error = %said(&error), "the audio route stayed");
         }
         Some(())
+    })
+}
+
+/// cpal's one audio unit, the session routed first to `id`, one of its
+/// routes ([`route`]: an id it does not list opens nothing).
+pub(crate) fn find(host: &cpal::Host, id: Option<&str>, input: bool) -> Option<cpal::Device> {
+    use cpal::traits::HostTrait as _;
+    route(id, input)?;
+    match input {
+        true => host.default_input_device(),
+        false => host.default_output_device(),
+    }
+}
+
+/// The session routes cpal's one stream in place: a route change
+/// invalidates it, though it plays on (its ends come from [`activate`]).
+pub(crate) const ROUTED_IN_PLACE: bool = true;
+
+/// The name a person knows the opened microphone by: the port the
+/// session hears ([`heard`]), cpal's unit naming none.
+pub(crate) fn input_name(input: &cpal::Device) -> String {
+    use cpal::traits::DeviceTrait as _;
+    heard().unwrap_or_else(|| {
+        input
+            .description()
+            .map(|d| d.name().to_owned())
+            .unwrap_or_default()
     })
 }
 
