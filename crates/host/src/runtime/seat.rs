@@ -21,6 +21,22 @@ pub(super) struct Mounted {
     /// retry, so the `Seat` turns once for each instead of asking for a
     /// frame per frame while a load is on its way.
     pub(super) wake: tokio::sync::watch::Sender<()>,
+    /// A replacement for the drawn view, its code prepared on a loader
+    /// thread, waiting for the seat's thread to run it (`swap_in`).
+    pub(super) swap: Option<Box<PendingSwap>>,
+    /// `swap_in` runs: the drawn view is not turned until it is done.
+    pub(super) swapping: bool,
+}
+
+/// A replacement prepared by a load and parked on the seat: its code, the
+/// name it is shown by, the load that prepared it (installed on the same
+/// conditions as any load, `install`) and the load's timing so far.
+pub(super) struct PendingSwap {
+    pub(super) code: Box<ViewCode>,
+    pub(super) shown: String,
+    pub(super) generation: u64,
+    pub(super) asked_of: Connection,
+    pub(super) timing: LoadTiming,
 }
 
 /// A failed load's hold-off: the code (the roster's blob id, as
@@ -43,6 +59,8 @@ impl Mounted {
             generation: 0,
             retry: None,
             wake: tokio::sync::watch::Sender::new(()),
+            swap: None,
+            swapping: false,
         }))
     }
 
@@ -589,7 +607,7 @@ fn install(
     let Mounted {
         slot,
         instance,
-        retry,
+        swap,
         ..
     } = &mut *locked;
     match loaded {
@@ -612,58 +630,119 @@ fn install(
             return true;
         }
         // the same tab, the same surface handle, the same host-side
-        // input text and pictures: only the instance behind them moves. A
-        // swap refused here is asked again at the next roster read
-        Loaded::Swap {
-            fresh,
-            alive,
-            ticks,
-            shown,
-        } => {
-            let hash = fresh.hash;
-            match swapped(slot, fresh, &alive, ticks, &shown, timing) {
-                Ok(mut fresh) => {
-                    fresh.instance = *instance;
-                    fresh.installed_generation = Some(generation);
-                    fresh.report_display_truncation();
-                    log_source(program, fresh.hash.as_ref(), "Swapped", generation, "");
-                    *slot = Slot::Ready(fresh);
-                }
-                Err(reason) => {
-                    log_source(program, hash.as_ref(), "Failed", generation, &reason);
-                    *retry = Some(Retry { code: None });
-                }
-            }
+        // input text and pictures: only the instance behind them moves, on
+        // the seat's own thread (`swap_in`), which this wakes
+        Loaded::Swap { code, shown } => {
+            *swap = Some(Box::new(PendingSwap {
+                code,
+                shown,
+                generation,
+                asked_of: asked_of.clone(),
+                timing: std::mem::take(timing),
+            }));
         }
     }
     false
 }
 
-/// `fresh`, prepared as the replacement of the drawn view `alive` names
-/// at `ticks`, made ready to take its seat: the view's editor projections
-/// and pictures carried over. A view that ticked, or took work, since the
-/// handover `fresh` was prepared from hands over again, here, into a new
-/// instance of its code: the seat's lock is held, nothing ticks the view
-/// meanwhile, so that second handover is the view as it is and no tick can
-/// race it. Why there is no replacement, if there is none.
-fn swapped(
-    slot: &mut Slot,
-    mut fresh: Box<View>,
-    alive: &Arc<()>,
-    ticks: u64,
-    shown: &str,
-    timing: &mut LoadTiming,
-) -> Result<Box<View>, String> {
+/// A replacement the loader parked (`Mounted::swap`), run on the seat's
+/// thread (SPEC §4.6): the drawn view asked for its snapshot, a fresh
+/// instance seated, restored from it and its first frame taken, each
+/// answer awaited as it lands (at once on the wasmtime runner, so the
+/// whole sequence runs in one poll there), then installed on the
+/// conditions a load installs on. The seat does not turn the drawn view
+/// meanwhile (`Mounted::swapping`); the seat is woken when it is done. A
+/// swap refused or failed keeps the drawn view and is asked again at the
+/// next roster read.
+pub(super) async fn swap_in(mounted: Arc<Mutex<Mounted>>, program: &'static str) {
+    let started = {
+        let mut locked = lock(&mounted);
+        let Some(pending) = locked.swap.take() else {
+            return;
+        };
+        let Slot::Ready(old) = &locked.slot else {
+            return;
+        };
+        let alive = old.alive.clone();
+        let instance = locked.instance;
+        locked.swapping = true;
+        (pending, alive, instance)
+    };
+    let (pending, alive, instance) = started;
+    let PendingSwap {
+        code,
+        shown,
+        generation,
+        asked_of,
+        mut timing,
+    } = *pending;
+    let prepared = View::replacement(
+        program,
+        instance,
+        &code,
+        &alive,
+        &mounted,
+        &shown,
+        &mut timing,
+    )
+    .await;
+    let waited = Instant::now();
+    let mut locked = lock(&mounted);
+    timing.lock_wait = waited.elapsed();
+    let installed = Instant::now();
+    locked.swapping = false;
+    let current = connection().lock().expect("views rpc").clone();
+    let stale = locked.generation != generation
+        || (view_override(program).is_none() && current.rev != asked_of.rev);
+    if !stale {
+        let Mounted {
+            slot,
+            instance,
+            retry,
+            ..
+        } = &mut *locked;
+        match prepared
+            .map_err(|failure| failure.to_string())
+            .and_then(|fresh| swapped(slot, Box::new(fresh), &alive))
+        {
+            Ok(mut fresh) => {
+                fresh.instance = *instance;
+                fresh.installed_generation = Some(generation);
+                fresh.report_display_truncation();
+                log_source(program, fresh.hash.as_ref(), "Swapped", generation, "");
+                *slot = Slot::Ready(fresh);
+            }
+            Err(reason) => {
+                log_source(program, Some(&code.hash), "Failed", generation, &reason);
+                *retry = Some(Retry { code: None });
+            }
+        }
+    }
+    rail_moved();
+    locked.wake.send_replace(());
+    timing.install = installed.elapsed();
+    if timing.started.is_some() {
+        let key = crate::perf::Key::View {
+            program,
+            instance: locked.instance,
+        };
+        crate::perf::record(key, "install", timing.install.as_micros() as u64);
+        timing.log(program);
+    }
+}
+
+/// `fresh`, prepared as the replacement of the drawn view `alive` names,
+/// made ready to take its seat: the view's editor projections and pictures
+/// carried over. Why there is no replacement, if there is none.
+fn swapped(slot: &mut Slot, mut fresh: Box<View>, alive: &Arc<()>) -> Result<Box<View>, String> {
     let Slot::Ready(old) = slot else {
         return Err("the view left while its replacement was prepared".into());
     };
     if !Arc::ptr_eq(&old.alive, alive) {
         return Err("the view changed while its replacement was prepared".into());
     }
-    if old.ticks != ticks || !old.settled() {
-        fresh = View::prepared_again(old, &fresh, shown, timing)
-            .map(Box::new)
-            .map_err(|failure| failure.to_string())?;
+    if !old.settled() {
+        return Err("the view took work while its replacement was prepared".into());
     }
     fresh.frame_rev = old.frame_rev + 1;
     let mut pictures = std::mem::take(&mut old.pictures);
@@ -683,15 +762,9 @@ pub(super) enum Loaded {
     Fresh(Box<View>),
     /// The view already drawn is the active deployment's.
     Unchanged,
-    /// A prepared replacement for the view drawn: restored from its
-    /// snapshot, its first tree verified; `alive` and `ticks` name the
-    /// instance it was prepared against, `shown` names it.
-    Swap {
-        fresh: Box<View>,
-        alive: Arc<()>,
-        ticks: u64,
-        shown: String,
-    },
+    /// Code prepared to replace the view drawn, `shown` naming it: the
+    /// seat's thread runs the swap (`swap_in`).
+    Swap { code: Box<ViewCode>, shown: String },
     /// The deployment ships no view.
     Empty,
     /// The view compiles, and was not started: no pane holds the seat.

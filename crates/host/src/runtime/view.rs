@@ -179,9 +179,20 @@ impl View {
         self.running.fuel_used()
     }
 
-    /// The answer to the call just begun, which this path takes at once (a
-    /// load, a replacement's first frame, a test): the wasmtime runner
-    /// lands it before the call returns.
+    /// The answer to the call just begun, when it lands: before the call
+    /// returned on the wasmtime runner, later on one that answers across a
+    /// process boundary. A stopped instance answers nothing more.
+    async fn landed(&mut self) -> Landed {
+        self.landing.recv().await.unwrap_or_else(|_| {
+            Landed::Fault(Fault::Runner(
+                "the instance stopped before it answered".into(),
+            ))
+        })
+    }
+
+    /// The answer to the call just begun, taken at once, as a test takes it
+    /// on the wasmtime runner, which lands it before the call returns.
+    #[cfg(test)]
     fn at_once(&mut self) -> Landed {
         self.landing.try_recv().unwrap_or_else(|_| {
             Landed::Fault(Fault::Runner("the runner did not answer at once".into()))

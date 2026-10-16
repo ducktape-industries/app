@@ -377,6 +377,7 @@ impl View {
     /// A trap ends the view; the widget shows the message in its place.
     /// Each stage is a perf sample under the seat's key: the call, the
     /// decode, the merge, the fuel and bytes each way, the frame's kind.
+    #[cfg(test)]
     pub fn tick(&mut self) {
         self.begin_tick();
         let landed = self.at_once();

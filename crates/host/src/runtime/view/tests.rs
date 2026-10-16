@@ -295,13 +295,19 @@ fn a_ticked_view_survives_a_swap_with_its_state() {
         .map(|(code, _)| code)
         .map_err(|f| f.to_string())
         .expect("compiles");
-    let fresh =
-        View::instantiate("probe", crate::contract::runner(), code, "probe").expect("instantiates");
-    let mut ticks = 0;
+    let mut deployment = ViewCode::for_test("", "", 0);
+    deployment.hash = code;
     let mut timing = LoadTiming::default();
-    let fresh = View::replacement(fresh, &alive, &mut ticks, &mounted, "probe", &mut timing)
-        .expect("the replacement carries the state");
-    assert_eq!(ticks, 2, "the count the snapshot was taken at");
+    let fresh = futures::executor::block_on(View::replacement(
+        "probe",
+        0,
+        &deployment,
+        &alive,
+        &mounted,
+        "probe",
+        &mut timing,
+    ))
+    .expect("the replacement carries the state");
     assert!(fresh.staged && fresh.fault.is_none());
     assert_eq!(label(&fresh).0, "1", "drawn from the state it was handed");
 
@@ -309,7 +315,7 @@ fn a_ticked_view_survives_a_swap_with_its_state() {
     let mut next =
         View::instantiate("probe", crate::contract::runner(), code, "probe").expect("instantiates");
     assert!(matches!(
-        next.restore(b"not a snapshot", "probe"),
+        futures::executor::block_on(next.restore(b"not a snapshot", "probe")),
         Ok(Restored::Refused(_))
     ));
 }
@@ -406,10 +412,18 @@ fn swap(mut old: View, code: [u8; 32]) -> (Result<View, Failure>, Arc<Mutex<Moun
     let alive = old.alive.clone();
     let mounted = Mounted::seat();
     mounted.lock().unwrap().slot = Slot::Ready(Box::new(old));
-    let fresh = View::instantiate("wat", crate::contract::runner(), code, "wat").unwrap();
-    let mut ticks = 0;
+    let mut deployment = ViewCode::for_test("", "", 0);
+    deployment.hash = code;
     let mut timing = LoadTiming::default();
-    let swapped = View::replacement(fresh, &alive, &mut ticks, &mounted, "wat", &mut timing);
+    let swapped = futures::executor::block_on(View::replacement(
+        "wat",
+        0,
+        &deployment,
+        &alive,
+        &mounted,
+        "wat",
+        &mut timing,
+    ));
     (swapped, mounted)
 }
 
@@ -620,32 +634,39 @@ fn turn_drawn(seat: &Mutex<Mounted>, after: Duration) -> u64 {
     old.ticks
 }
 
-/// A new deployment lands on a view that ticks on a clock, WITH its state,
-/// though the clock ticked the drawn view while its replacement was being
-/// prepared. Before, the install refused it ("the view moved…") and no
+/// The code a new deployment of a [`counting_code`] view prepares, its
+/// manifest naming `chat` as its target.
+fn counting_deployment(code: [u8; 32]) -> Box<ViewCode> {
+    let mut view = ViewCode::for_test("", "", 320);
+    view.hash = code;
+    view.targets = vec!["chat".into()];
+    view
+}
+
+/// The swap a load parked on `seat`, run as the seat's thread runs it.
+fn swap_now(seat: &Arc<Mutex<Mounted>>, program: &'static str) {
+    futures::executor::block_on(crate::runtime::seat::swap_in(seat.clone(), program));
+}
+
+/// A new deployment lands on a view that ticks on a clock, WITH its state:
+/// the load parks the prepared code, the drawn view goes on ticking, and
+/// the seat's thread swaps it in with the state it holds then. Before, the
+/// install refused a view that ticked meanwhile ("the view moved…") and no
 /// later block asked again: the person kept the old code for good.
 #[test]
 fn a_view_ticking_on_a_clock_swaps_to_new_code_with_its_state() {
     let (code, alive, load) = counting_seat("ticking-swap");
     let seat = load.seat.clone();
-    load.land(|load, timing| {
-        let mut fresh =
-            View::instantiate(load.program, crate::contract::runner(), code, load.program).unwrap();
-        // as `load` seats the manifest's targets on what it prepares
-        fresh.targets = vec!["chat".into()];
-        let mut ticks = 0;
-        let fresh = View::replacement(fresh, &alive, &mut ticks, &load.seat, load.program, timing)
-            .expect("prepared");
-        assert_eq!(count(&fresh), 102, "the state at the handover, ticked once");
-        // the drawn view's clock fires while the replacement is on its way
-        assert_eq!(turn_drawn(&load.seat, Duration::from_millis(20)), ticks + 1);
+    load.land(|load, _| {
         Ok(Loaded::Swap {
-            fresh: Box::new(fresh),
-            alive: alive.clone(),
-            ticks,
+            code: counting_deployment(code),
             shown: load.program.into(),
         })
     });
+    assert!(lock(&seat).swap.is_some(), "the prepared code is parked");
+    // the drawn view's clock fires while the replacement waits
+    assert_eq!(turn_drawn(&seat, Duration::from_millis(20)), 2);
+    swap_now(&seat, "ticking-swap");
     let locked = lock(&seat);
     let Slot::Ready(seated) = &locked.slot else {
         panic!("no view seated");
@@ -664,45 +685,36 @@ fn a_view_ticking_on_a_clock_swaps_to_new_code_with_its_state() {
         ["chat"],
         "the manifest's targets are seated, so its node methods still reach the program"
     );
-    assert!(locked.retry.is_none());
+    assert!(locked.retry.is_none() && locked.swap.is_none() && !locked.swapping);
 }
 
-/// A swap the install refuses (here: an event waits for the drawn view's
-/// next turn, so it is not settled) is asked again by a later block.
-/// Before, the refusal cleared the hold-off and no block asked again.
+/// A swap the drawn view's handover refuses (here: an event waits for the
+/// view's next turn, so it is not settled) keeps the drawn view and is
+/// asked again by a later block, which swaps it with the state the view
+/// holds then.
 #[test]
-fn a_swap_refused_at_install_is_asked_again() {
+fn a_swap_refused_at_the_handover_is_asked_again() {
     let (code, alive, load) = counting_seat("refused-swap");
     let seat = load.seat.clone();
-    // prepared, and then, if `event`, an event comes in for the drawn view
-    let (code, alive) = (&code, &alive);
-    let prepared = |event: bool| {
-        move |load: &Load, timing: &mut LoadTiming| {
-            let fresh =
-                View::instantiate(load.program, crate::contract::runner(), *code, load.program)
-                    .unwrap();
-            let mut ticks = 0;
-            let fresh =
-                View::replacement(fresh, alive, &mut ticks, &load.seat, load.program, timing)
-                    .expect("prepared");
-            let Slot::Ready(old) = &mut lock(&load.seat).slot else {
-                panic!("no view drawn");
-            };
-            if event {
-                old.pending.push(wire::Event::Resync);
-            }
+    let parked = |load: Load| {
+        load.land(|load, _| {
             Ok(Loaded::Swap {
-                fresh: Box::new(fresh),
-                alive: alive.clone(),
-                ticks,
+                code: counting_deployment(code),
                 shown: load.program.into(),
             })
-        }
+        })
     };
-    load.land(prepared(true));
+    parked(load);
+    {
+        let Slot::Ready(old) = &mut lock(&seat).slot else {
+            panic!("no view drawn");
+        };
+        old.pending.push(wire::Event::Resync);
+    }
+    swap_now(&seat, "refused-swap");
     {
         let locked = lock(&seat);
-        assert!(matches!(&locked.slot, Slot::Ready(old) if Arc::ptr_eq(&old.alive, alive)));
+        assert!(matches!(&locked.slot, Slot::Ready(old) if Arc::ptr_eq(&old.alive, &alive)));
         let code = code_digest(&::abi::BlobId::Sha256([7; 32]));
         let retry = locked.retry.as_ref().expect("the refused swap is marked");
         assert_eq!(retry.code, None, "no code is held off");
@@ -716,79 +728,24 @@ fn a_swap_refused_at_install_is_asked_again() {
     turn_drawn(&seat, Duration::ZERO);
     let generation = lock(&seat).start();
     let asked_of = connection().lock().unwrap().clone();
-    Load {
+    parked(Load {
         program: "refused-swap",
         seat: seat.clone(),
         generation,
         asked_of,
         code: Some((::abi::BlobId::Sha256([7; 32]), false)),
-    }
-    .land(prepared(false));
+    });
+    swap_now(&seat, "refused-swap");
     let locked = lock(&seat);
     let Slot::Ready(seated) = &locked.slot else {
         panic!("no view seated");
     };
-    assert!(!Arc::ptr_eq(&seated.alive, alive), "asked again, it landed");
+    assert!(
+        !Arc::ptr_eq(&seated.alive, &alive),
+        "asked again, it landed"
+    );
     assert_eq!(count(seated), 103, "with the state the view held then");
     assert!(locked.retry.is_none());
-}
-
-/// The hold a swap takes of its seat's lock when the drawn view moved while
-/// its replacement was prepared: the handover taken again into a new
-/// instance, restored and its first tree verified, the window thread
-/// waiting meanwhile. The view is the one `DUCKTAPE_VIEW_PROBE` names
-/// (chat_view.wasm, say), inited and drawn once. Run it alone:
-/// `cargo test the_hold -- --ignored --exact --nocapture`.
-#[test]
-#[ignore = "measurement: needs DUCKTAPE_VIEW_PROBE=<a view's wasm>, prints the hold"]
-fn the_hold_of_a_swap_handed_over_again() {
-    let path = std::env::var("DUCKTAPE_VIEW_PROBE").expect("DUCKTAPE_VIEW_PROBE");
-    let bytes = std::fs::read(path).expect("probe bytes");
-    let code = View::prepare(&**crate::contract::runner(), &bytes, "probe")
-        .map(|(code, _)| code)
-        .map_err(|f| f.to_string())
-        .expect("compiles");
-    let mut old = View::from_bytes("probe", &bytes, "probe").expect("loads");
-    // turned as the window thread turns it until it hands its state over:
-    // its first requests answered (refused, with no node) and taken in
-    let settled_by = Instant::now() + Duration::from_secs(5);
-    loop {
-        old.redraw(&None);
-        match old.snapshot() {
-            Ok(Snapshot::Taken(_)) if old.settled() => break,
-            other => assert!(
-                Instant::now() < settled_by,
-                "the view never settled: {:?}",
-                other.map(|answer| match answer {
-                    Snapshot::Refused(refusal) => refusal,
-                    _ => "past the budget".into(),
-                })
-            ),
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let like =
-        View::instantiate("probe", crate::contract::runner(), code, "probe").expect("instantiates");
-    let mut held: Vec<_> = (0..20)
-        .map(|_| {
-            let mut timing = LoadTiming::default();
-            let taken = Instant::now();
-            let fresh = View::prepared_again(&mut old, &like, "probe", &mut timing)
-                .expect("handed over again");
-            let held = taken.elapsed();
-            assert!(fresh.staged && fresh.fault.is_none());
-            (held, timing.snapshot_bytes)
-        })
-        .collect();
-    held.sort();
-    let ms = |at: usize| held[at].0.as_secs_f64() * 1000.;
-    println!(
-        "hold over 20 swaps, {} B of state: min {:.2} ms, median {:.2} ms, max {:.2} ms",
-        held[0].1,
-        ms(0),
-        ms(10),
-        ms(19)
-    );
 }
 
 /// The budget's cost, measured: the process's resident memory around a

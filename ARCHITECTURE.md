@@ -290,18 +290,21 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    (`widget_unmounted`); the turn that carries the answers back is deferred.
 
 **Hot swap.** When a block moves a program's active code, the load thread
-prepares the new view as a replacement: instantiate without `init`, take
-`old.snapshot()` (under the seat lock, fuel armed; only if the old view has
-ticked at all, else the fresh one is `init`ed), `restore` it into the fresh
-instance, verify its `first_frame`. An old view that is not `settled()`
-(pending events, unanswered requests) refuses the replacement
-("its replacement waits") and the next block tries again. `Loaded::Swap`
-carries the old instance's `alive` token and tick count; `Load::land`
-installs it only if the seat's `generation` is still the one it was asked
-for, the app is still on the node it was asked of (`Connection.rev`), and
-the drawn instance is the one the snapshot came from, at the same tick
-count and still settled. The new view is `staged`: its first tree is
-already in `frame`, so the next redraw routes its requests without a tick.
+prepares the new code (`ViewRunner::prepare`) and parks it on the seat
+(`Mounted::swap`, `Loaded::Swap`); the seat's own thread runs the swap
+(`seat::swap_in`, wasm-mobile SPEC §4.6) once no tick is in flight and the
+drawn view is `settled()`: the old view's `snapshot` (only if it has ticked
+at all, else the fresh one is `init`ed), the fresh instance, its `restore`,
+its `first_frame`, each begun once the one before landed (at once on the
+wasmtime runner, so the whole sequence runs in one poll there; later on a
+runner that answers across a process boundary). The seat does not turn the
+drawn view meanwhile (`Mounted::swapping`), so nothing can tick it between
+the snapshot and the install. A view whose snapshot refuses ("its
+replacement waits") keeps its seat and the next block asks again. The swap
+installs only if the seat's `generation` is still the one it was asked for
+and the app is still on the node it was asked of (`Connection.rev`). The
+new view is `staged`: its first tree is already in `frame`, so the next
+redraw routes its requests without a tick.
 Pictures move over. A new instance means a new `generation` on
 `Seat`: handler ids are fresh, and only `NativePresentation`
 (field text, selection, focus, scroll offsets, decoded pictures) carries
@@ -749,10 +752,10 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
 - **Window-thread work.** Every wasm tick, frame decode (`shape`), `merge`
   and `ViewTree::replace` run on the window thread inside `Seat::turn`,
   while holding the seat mutex, between draws and never inside one; GPUI
-  layout and paint follow in the next frame, lock released. The
-  loader thread takes that mutex for `snapshot` and for the install (not
-  for compile, `restore` or `first_frame`), so a swap stalls the window for
-  those two steps. The entities' `Task`s (`spawn_on_runtime`) are polled
+  layout and paint follow in the next frame, lock released. A swap's
+  snapshot, restore and first frame run on the window thread too
+  (`seat::swap_in`); the loader thread takes the mutex only to park the
+  prepared code and to install a load. The entities' `Task`s (`spawn_on_runtime`) are polled
   on the window thread (HTTP bodies decode there). A call draws only the
   layers observing the entities it moved, and nothing beats for the whole
   app: a status poll that finds the height where it was notifies nobody.

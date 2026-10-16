@@ -1517,3 +1517,116 @@ fn a_landing_after_hide_is_kept_not_drawn(cx: &mut TestAppContext) {
     assert_eq!(turns_of(&seat, &native), turns, "a hidden seat turned");
     assert_eq!(pump.held(), 0);
 }
+
+/// A deployment swap on a runner that answers later (SPEC §4.6): the seat's
+/// thread asks the drawn view for its snapshot, seats the new code,
+/// restores it and takes its first frame, each step begun only once the
+/// one before landed. Meanwhile the drawn view is not turned (a turn asked
+/// for waits), its tree stays up, and the AX door parks; the new tree is
+/// drawn once the last answer lands.
+#[gpui_kit::test]
+fn the_hot_swap_sequence_lands_in_order(cx: &mut TestAppContext) {
+    use super::first_frame_tests::frames_wat;
+    const PROGRAM: &str = "deferred-swap";
+    let _on = crate::perf::on_for_test();
+    let runner = DeferredRunner::default();
+    let pump = runner.pump.clone();
+    let runner: Arc<dyn ViewRunner> = Arc::new(runner);
+    let old = crate::runtime::view::prepared_on_for_test(&runner, frames_wat(&[keyed("old")]));
+    crate::runtime::seat_code_on_for_test(&runner, PROGRAM, 320, old);
+    let (seat, root, mut native) = open(cx, PROGRAM, false);
+    draw_now(&mut native);
+    subscribe_props(&seat, &native);
+    let mounted = mounted_of(&seat, &native);
+    let alive = match &mounted.lock().unwrap().slot {
+        Slot::Ready(view) => view.alive.clone(),
+        _ => panic!("not seated"),
+    };
+    let tree = seat.read_with(&native, |seat, _| seat.tree().map(|tree| tree.entity_id()));
+    let renders = renders_of(PROGRAM);
+    let turns = turns_of(&seat, &native);
+    // a new deployment's code, prepared on the same runner and parked as
+    // a load parks it
+    let new = crate::runtime::view::prepared_on_for_test(&runner, frames_wat(&[keyed("new")]));
+    pump.hold();
+    let generation = mounted.lock().unwrap().start();
+    // read before the load: its install reads the connection too
+    let asked_of = connection().lock().unwrap().clone();
+    Load {
+        program: PROGRAM,
+        seat: mounted.clone(),
+        generation,
+        asked_of,
+        code: Some((::abi::BlobId::Sha256([9; 32]), false)),
+    }
+    .land(|load, _| {
+        let mut code = ViewCode::for_test("", "", 320);
+        code.runner = runner.clone();
+        code.hash = new;
+        Ok(Loaded::Swap {
+            code,
+            shown: load.program.into(),
+        })
+    });
+    native.run_until_parked();
+    let started = turns_of(&seat, &native);
+    assert_eq!(
+        started,
+        turns + 1,
+        "the parked swap's wake turned the seat once"
+    );
+    for step in ["Snapshot", "Seated", "Restored", "Frame"] {
+        assert_eq!(
+            pump.held_kinds(),
+            [step],
+            "one call out at a time, in order"
+        );
+        assert!(in_flight(&seat, &native), "{step}: the door parks");
+        assert!(
+            matches!(&mounted.lock().unwrap().slot, Slot::Ready(view) if Arc::ptr_eq(&view.alive, &alive)),
+            "{step}: the drawn view keeps its seat"
+        );
+        assert_eq!(
+            seat.read_with(&native, |seat, _| seat.tree().map(|tree| tree.entity_id())),
+            tree,
+            "{step}: the drawn tree stays up"
+        );
+        assert_eq!(renders_of(PROGRAM), renders, "{step}: nothing drew");
+        // a turn asked for meanwhile waits for the swap
+        nudge(&seat, step.as_bytes(), &mut native);
+        assert_eq!(
+            turns_of(&seat, &native),
+            started,
+            "{step}: the drawn view turned"
+        );
+        assert!(pump.release_next());
+        native.run_until_parked();
+    }
+    // what the new view asks after its first frame lands as it comes
+    pump.at_once();
+    pump.release_all();
+    draw_now(&mut native);
+    assert!(!in_flight(&seat, &native));
+    let locked = mounted.lock().unwrap();
+    let Slot::Ready(fresh) = &locked.slot else {
+        panic!("not seated");
+    };
+    assert!(
+        !Arc::ptr_eq(&fresh.alive, &alive),
+        "the new code took the seat"
+    );
+    assert!(locked.swap.is_none() && !locked.swapping && locked.retry.is_none());
+    drop(locked);
+    assert!(renders_of(PROGRAM) > renders, "the new tree was drawn");
+    let (ticks, rev) = *root
+        .read_with(&native, |root, _| root.drawn.clone())
+        .last()
+        .unwrap();
+    assert_eq!(
+        rev,
+        frame_rev_of(&seat, &native),
+        "the window drew the new view's tree"
+    );
+    assert!(ticks >= 1);
+    assert_eq!(pump.held(), 0);
+}

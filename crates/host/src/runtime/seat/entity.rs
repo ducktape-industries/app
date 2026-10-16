@@ -260,7 +260,12 @@ impl Seat {
     pub fn hide(&mut self) -> Vec<Intent> {
         let mounted = self.mounted.clone();
         let mut locked = lock(&mounted);
-        let Mounted { slot, props, .. } = &mut *locked;
+        let Mounted {
+            slot,
+            props,
+            swapping,
+            ..
+        } = &mut *locked;
         let Slot::Ready(view) = slot else {
             return Vec::new();
         };
@@ -280,7 +285,8 @@ impl Seat {
         // (`landed`); this update's own waits behind it as any turn would.
         // One that lands later than this returns is the view's, taken in
         // by whichever seat turns next (`turn` waits for it)
-        if !view.ticking() {
+        // nor while a swap owns the view: its replacement hears it hidden
+        if !view.ticking() && !*swapping {
             match view.begin_redraw(props) {
                 Redraw::Quiet => {}
                 Redraw::Ready => {
@@ -297,9 +303,10 @@ impl Seat {
         std::mem::take(&mut view.intents)
     }
 
-    /// Whether a tick is in flight: begun, its frame not landed.
+    /// Whether a tick is in flight (begun, its frame not landed) or a swap
+    /// runs (`seat::swap_in`): the AX door parks a read until neither.
     pub fn in_flight(&self) -> bool {
-        self.in_flight.is_some()
+        self.in_flight.is_some() || lock(&self.mounted).swapping
     }
 
     /// Every wake ends here: a reply, a clock item, a `ViewTree` event,
@@ -312,7 +319,9 @@ impl Seat {
         if self.hidden {
             return;
         }
-        if self.holding || self.in_flight.is_some() {
+        // a swap that runs owns the drawn view until it is done; it wakes
+        // the seat then
+        if self.holding || self.in_flight.is_some() || lock(&self.mounted).swapping {
             self.owed = true;
             return;
         }
@@ -325,7 +334,9 @@ impl Seat {
         let mut locked = lock(&mounted);
         let shown = Instant::now();
         let program = self.program;
-        let Mounted { slot, props, .. } = &mut *locked;
+        let Mounted {
+            slot, props, swap, ..
+        } = &mut *locked;
         let view = match slot {
             Slot::Ready(view) => view,
             Slot::Empty => {
@@ -361,6 +372,15 @@ impl Seat {
             let ticks = view.ticks;
             return self.wait(view, ticks, shown, cx);
         }
+        // a replacement the loader prepared runs on this thread once the
+        // view owes nothing (its handover would refuse): a task the seat
+        // does not own, so letting the seat go mid-swap stops nothing
+        if swap.is_some() && view.settled() {
+            drop(locked);
+            cx.spawn(async move |_, _| swap_in(mounted, program).await)
+                .detach();
+            return;
+        }
         let Some((width, height)) = self.body else {
             return;
         };
@@ -392,6 +412,20 @@ impl Seat {
             },
         };
         self.finish(locked, ticks, shown, again, cx);
+        self.swap_when_settled(cx);
+    }
+
+    /// A swap parked while the view owed work runs once it owes none: the
+    /// turn that settled the view asks for one more, which starts it.
+    fn swap_when_settled(&self, cx: &mut Context<Self>) {
+        let due = {
+            let locked = lock(&self.mounted);
+            locked.swap.is_some()
+                && matches!(&locked.slot, Slot::Ready(view) if view.settled() && !view.ticking())
+        };
+        if due {
+            self.wake(cx);
+        }
     }
 
     /// The turn's second half waits for `view`'s tick in flight: a task of
@@ -428,6 +462,7 @@ impl Seat {
                     return;
                 }
                 self.finish(locked, ticks, shown, again, cx);
+                self.swap_when_settled(cx);
             }
             // replaced or stopped meanwhile: the answer went with it
             _ => drop(locked),

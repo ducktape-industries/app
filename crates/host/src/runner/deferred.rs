@@ -37,6 +37,18 @@ impl Pump {
         self.lock().holding = false;
     }
 
+    /// What the held answers are, oldest first: `Landed`'s variant names.
+    pub fn held_kinds(&self) -> Vec<String> {
+        self.lock()
+            .answers
+            .iter()
+            .map(|(_, landed)| {
+                let shown = format!("{landed:?}");
+                shown.split('(').next().unwrap_or_default().to_owned()
+            })
+            .collect()
+    }
+
     /// How many answers wait.
     pub fn held(&self) -> usize {
         self.lock().answers.len()

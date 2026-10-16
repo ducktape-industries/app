@@ -248,16 +248,16 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
     let native = opened.native;
     native.run_until_parked();
     assert_eq!(*drawn.borrow(), vec![(1, 1)], "the old view is up");
-    let (alive, old_ticks, old_theme) = {
+    let (alive, old_theme) = {
         let locked = lock(&mounted);
         let Slot::Ready(old) = &locked.slot else {
             panic!("not seated");
         };
-        (old.alive.clone(), old.ticks, old.theme_dark)
+        (old.alive.clone(), old.theme_dark)
     };
     assert!(old_theme.is_some(), "the drawn view heard the theme");
     // the new deployment's load, as a block starts it: the same code, a
-    // replacement of the same shape
+    // replacement of the same shape, prepared and parked on the seat
     let program = crate::runtime::view::prepared_for_test(frames_wat(&[full(boxed("card"))]));
     let generation = lock(&mounted).start();
     let load = Load {
@@ -267,44 +267,16 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
         asked_of: connection().lock().unwrap().clone(),
         code: Some((::abi::BlobId::Sha256([7; 32]), false)),
     };
-    let first_tick = Rc::new(RefCell::new(None));
-    let seen = first_tick.clone();
-    load.land(|load, timing| {
-        let mut fresh = View::instantiate(
-            load.program,
-            crate::contract::runner(),
-            program,
-            load.program,
-        )
-        .unwrap();
-        fresh.min_width = 320;
-        let mut ticks = 0;
-        let fresh = View::replacement(fresh, &alive, &mut ticks, &load.seat, load.program, timing)
-            .expect("prepared");
-        assert_eq!(ticks, old_ticks);
-        assert!(fresh.staged, "its first tree is made, its requests held");
-        assert_eq!(fresh.ticks, 1, "first_frame ticked it once");
-        assert_eq!(fresh.theme_dark, old_theme);
-        assert_eq!(fresh.viewport_sent, Some(WINDOW));
-        assert!(fresh.pending.is_empty(), "nothing waits for a second tick");
-        *seen.borrow_mut() = Some(facts(&fresh.ticked_with[0]));
+    load.land(|load, _| {
+        let mut code = ViewCode::for_test("", "", 320);
+        code.hash = program;
         Ok(Loaded::Swap {
-            fresh: Box::new(fresh),
-            alive: alive.clone(),
-            ticks,
+            code,
             shown: load.program.into(),
         })
     });
-    assert_eq!(
-        *first_tick.borrow(),
-        Some((
-            old_theme,
-            Some(WINDOW),
-            Some(crate::runtime::kernel::offset_minutes())
-        )),
-        "the replacement made its first tree knowing the theme, its body and the offset"
-    );
-    // the install woke the seat: its turn mounts the staged tree without a
+    // the install woke the seat: its turn runs the swap (`swap_in`), whose
+    // install wakes it again; that turn mounts the staged tree without a
     // tick (`staged`), and the harness draws the dirtied window
     native.run_until_parked();
     {
@@ -316,10 +288,24 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
             !Arc::ptr_eq(&fresh.alive, &alive),
             "the new code took the seat"
         );
-        assert_eq!(fresh.ticks, 1, "the install turn ticked nothing");
+        assert_eq!(
+            fresh.ticks, 1,
+            "first_frame ticked it once; the install turn nothing"
+        );
+        assert_eq!(fresh.theme_dark, old_theme);
+        assert_eq!(fresh.viewport_sent, Some(WINDOW));
         assert!(
             fresh.pending.is_empty(),
             "the turn found nothing to tell it"
+        );
+        assert_eq!(
+            facts(&fresh.ticked_with[0]),
+            (
+                old_theme,
+                Some(WINDOW),
+                Some(crate::runtime::kernel::offset_minutes())
+            ),
+            "the replacement made its first tree knowing the theme, its body and the offset"
         );
     }
     assert_eq!(
@@ -341,7 +327,7 @@ fn a_swaps_first_tree_is_drawn_themed_laid_out_and_in_local_time(cx: &mut TestAp
 /// The WAT of [`frames_in_order`]: byte 0 is a result's Ok tag, so
 /// `snapshot` answers Ok(empty) and `restore` Ok; frame `n` sits in slot
 /// `n` above the first page.
-fn frames_wat(frames: &[wire::Frame]) -> String {
+pub(super) fn frames_wat(frames: &[wire::Frame]) -> String {
     assert!(!frames.is_empty());
     const SLOT: usize = 16384;
     let mut data = String::new();
