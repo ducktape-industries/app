@@ -804,9 +804,13 @@ pub(super) fn view_override(program: &str) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+// the seat's gpui entity and the stand-in it draws while its view comes
+#[cfg(feature = "ui")]
 mod entity;
+#[cfg(feature = "ui")]
 mod standin;
 
+#[cfg(feature = "ui")]
 pub use entity::Seat;
 
 #[cfg(test)]

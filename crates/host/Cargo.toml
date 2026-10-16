@@ -17,19 +17,26 @@ version.workspace = true
 publish = false
 
 [features]
+default = ["ui"]
+# The window half: gpui-kit and everything drawn with it (`render`, the
+# seats' entities, `session`, `a11y`, `fonts`, `theme`, `start`, the
+# clipboard, the AX door). Without it the crate is the runtime a host with
+# no screen runs (`crates/pushd`): the roster, the kernel contract, the
+# notifiers, the store and the notification centre, the backend.
+ui = ["dep:gpui-kit", "dep:gpui-base", "dep:image", "dep:usvg"]
 # the AX test door (`src/ax`): kit and qa builds, and every test
-ax-door = []
+ax-door = ["ui"]
 # gpui's own frame and input histograms into `GET /perf` (docs/perf.md §3.5)
-perf-deep = ["gpui-kit/profiler"]
+perf-deep = ["ui", "gpui-kit/profiler"]
 # the web piece draws pages through CEF (`render/web.rs`, `crates/web`)
-web = ["dep:ducktape-web", "ducktape-web/cef"]
+web = ["ui", "dep:ducktape-web", "ducktape-web/cef"]
 # the test helpers the desktop shell's tests reach (`*_for_test`,
 # `test_style`, ...): on for every test build, never for a shipped one
-test-support = ["gpui-kit/test-support"]
+test-support = ["ui", "gpui-kit/test-support"]
 
 [dependencies]
-gpui-kit = "=0.7.3"
-gpui-base = "=0.7.3"
+gpui-kit = { version = "=0.7.3", optional = true }
+gpui-base = { version = "=0.7.3", optional = true }
 unicode-segmentation = "1"
 futures.workspace = true
 # a notifier's answers and turn (`view_wire::notifier`)
@@ -46,10 +53,10 @@ programs = { git = "https://github.com/ducktape-industries/programs", rev = "3a0
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"], optional = true }
 # A view SVG's own size, which sets the height gpui rasterises it at
 # (`render/svg_limits.rs`): gpui's own parser, already in the graph.
-usvg = { version = "0.46.0", default-features = false }
+usvg = { version = "0.46.0", default-features = false, optional = true }
 tokio = { version = "1", features = ["fs", "macros", "net", "rt", "sync", "time"] }
 tracing.workspace = true
 view-wire = { workspace = true, features = ["manifest"] }

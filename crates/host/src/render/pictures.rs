@@ -8,14 +8,7 @@ use crate::render::native_id;
 use gpui_kit::{Hitbox, Svg};
 use std::{cell::RefCell, rc::Rc};
 
-/// A seat's picture bytes by content hash, each held once: the seat's
-/// store (`runtime::pictures`) owns and evicts them, and hands every tree
-/// it draws this map to resolve the hashes it names.
-#[derive(Clone, Default)]
-pub struct PictureBytes {
-    pub raster: HashMap<u64, Arc<wire::ImageData>>,
-    pub vector: HashMap<u64, Arc<[u8]>>,
-}
+pub use crate::runtime::pictures::PictureBytes;
 
 /// The rasters decoded from a seat's picture bytes, by content hash: one
 /// cache for the seat's tree and the tooltip trees it opens, carried

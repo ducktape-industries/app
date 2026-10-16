@@ -167,6 +167,7 @@ impl View {
     /// What the seat hands its tree to draw: the held tree with its style
     /// table, pictures named by hash alone, and the bytes those hashes
     /// resolve to, shared.
+    #[cfg(feature = "ui")]
     pub fn drawn(&self) -> (crate::render::Tree, Arc<crate::render::PictureBytes>) {
         let tree = crate::render::Tree {
             root: self.frame.root.clone().unwrap_or_else(wire::Node::empty),

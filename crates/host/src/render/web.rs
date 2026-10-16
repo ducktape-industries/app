@@ -13,9 +13,6 @@
 //! - a link: [`view_for`] names the view an https link opens in.
 
 use super::*;
-use std::collections::BTreeSet;
-use std::sync::Mutex;
-use view_wire::methods::Capability;
 
 /// A CEF child process (this binary started with `--type=...`) runs CEF
 /// and exits here; the app's own process returns at once.
@@ -32,51 +29,9 @@ pub fn shutdown() {
     ducktape_web::shutdown();
 }
 
-/// Why `frame` is refused, if it draws a web piece (in its tree, a patch
-/// or a tooltip) and its view's manifest does not declare `web`: a view
-/// draws a page only by saying it does. The refusal ends the view, as a
-/// frame that does not decode does: sent again, it would be refused again.
-pub fn declared(frame: &wire::Frame, capabilities: &[Capability]) -> Result<(), String> {
-    match !capabilities.contains(&Capability::Web) && wire::web::carries_web(frame) {
-        true => Err("the view draws a web page, and its manifest does not declare `web`".into()),
-        false => Ok(()),
-    }
-}
-
-/// The programs whose view's manifest declares `web`, as last read.
-fn web_views() -> &'static Mutex<BTreeSet<&'static str>> {
-    static VIEWS: Mutex<BTreeSet<&'static str>> = Mutex::new(BTreeSet::new());
-    &VIEWS
-}
-
-/// `program`'s view manifest was read: whether it declares `web`.
-pub fn seen(program: &'static str, capabilities: &[Capability]) {
-    let mut views = web_views().lock().expect("web views");
-    match capabilities.contains(&Capability::Web) {
-        true => views.insert(program),
-        false => views.remove(program),
-    };
-}
-
-/// The view an http(s) `link` opens in: the program whose view declares
-/// `web` (the first by name, if more do), when this build has a web view
-/// and the address is one a page loads. `None`: the system browser's.
-pub fn view_for(link: &str) -> Option<&'static str> {
-    if !loadable(link) {
-        return None;
-    }
-    web_views().lock().expect("web views").first().copied()
-}
-
-fn loadable(link: &str) -> bool {
-    #[cfg(feature = "web")]
-    return ducktape_web::loadable(link);
-    #[cfg(not(feature = "web"))]
-    {
-        let _ = link;
-        false
-    }
-}
+// which view may draw a page is the runtime's rule (a frame is judged as
+// it lands, a manifest as it is read); the links follow it here
+pub use crate::runtime::web::{declared, seen, view_for};
 
 /// The pages of a tree's web pieces, by authored path.
 #[derive(Default)]
@@ -239,6 +194,7 @@ fn profile(key: Option<crate::perf::Key>) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use view_wire::methods::Capability;
 
     fn web() -> wire::Node {
         wire::Node::Web {

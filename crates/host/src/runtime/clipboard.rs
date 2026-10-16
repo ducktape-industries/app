@@ -1,6 +1,9 @@
 //! The clipboard, read and written on the window thread for one view.
+#[cfg(feature = "ui")]
+use super::Seat;
+use super::View;
 use super::wire::methods::{self, Capability, refusal};
-use super::{Seat, View};
+#[cfg(feature = "ui")]
 use gpui_kit::{ClipboardEntry, Context};
 
 #[derive(Default)]
@@ -44,6 +47,7 @@ pub(super) fn answer(
     true
 }
 
+#[cfg(feature = "ui")]
 pub(super) fn mount(view: &mut View, cx: &mut Context<Seat>) {
     for (id, request) in std::mem::take(&mut view.clipboard.pending) {
         match request {

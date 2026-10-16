@@ -659,7 +659,7 @@ impl View {
             view.targets,
             view.icon,
         ) = manifest_of(bytes);
-        crate::render::web::seen(program, &view.capabilities);
+        super::web::seen(program, &view.capabilities);
         view.init(shown)?;
         Ok(view)
     }
@@ -860,7 +860,7 @@ fn view_code(
     bytes: &[u8],
 ) -> ViewCode {
     let (name, capabilities, min_width, targets, icon) = manifest_of(bytes);
-    crate::render::web::seen(program, &capabilities);
+    super::web::seen(program, &capabilities);
     ViewCode {
         blob,
         hash,

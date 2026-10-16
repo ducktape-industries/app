@@ -13,9 +13,18 @@
 //! eviction owes the view `Event::Resync`, which makes it forget what it
 //! sent and send every picture it draws again.
 
-use crate::render::PictureBytes;
+use std::collections::HashMap;
 use std::sync::Arc;
 use view_wire as wire;
+
+/// A seat's picture bytes by content hash, each held once: the seat's
+/// store (this module) owns and evicts them, and hands every tree it draws
+/// this map to resolve the hashes it names (`render::pictures`).
+#[derive(Clone, Default)]
+pub struct PictureBytes {
+    pub raster: HashMap<u64, Arc<wire::ImageData>>,
+    pub vector: HashMap<u64, Arc<[u8]>>,
+}
 
 const ENTRY_BYTES: u64 = std::mem::size_of::<(u64, Arc<wire::ImageData>)>() as u64;
 

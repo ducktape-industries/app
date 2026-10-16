@@ -15,6 +15,7 @@
 use crate::backend::RpcClient;
 use crate::runtime::Answered;
 use crate::runtime::notify::{Click, Notice};
+#[cfg(feature = "ui")]
 use gpui_kit::{AppLifecyclePhase, TextInputConfiguration, Window, WindowInsets};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -43,10 +44,16 @@ pub trait OsServices: Send + Sync + 'static {
     /// on the desktop. Exists because gpui-mobile's `AndroidWindow`
     /// implements none of `PlatformWindow::{insets, show_soft_keyboard,
     /// hide_soft_keyboard}`; when it does, this and `soft_keyboard` go.
-    fn insets(&self, window: &Window) -> WindowInsets;
+    /// A host with no screen (no `ui`) has neither; one built beside a
+    /// shell that has them (one workspace build) takes the desktop's.
+    #[cfg(feature = "ui")]
+    fn insets(&self, _window: &Window) -> WindowInsets {
+        WindowInsets::default()
+    }
     /// Show the software keyboard for the focused field, or hide it.
     /// Desktop: nothing.
-    fn soft_keyboard(&self, window: &Window, want: SoftKeyboard);
+    #[cfg(feature = "ui")]
+    fn soft_keyboard(&self, _window: &Window, _want: SoftKeyboard) {}
     /// Facts that are constants per OS, read once.
     fn facts(&self) -> OsFacts;
     /// Values that differ by device and have a measured owner (SPEC §4.5).
@@ -138,6 +145,7 @@ pub trait Banners: Send + Sync {
 
 /// The software keyboard a focused field wants. (`InputMode`, the one
 /// field gpui lacks, joins `Show` with the fork pin that adds it.)
+#[cfg(feature = "ui")]
 #[derive(Clone, Debug)]
 pub enum SoftKeyboard {
     Show(TextInputConfiguration),
@@ -198,9 +206,11 @@ pub struct MintInvite {
 /// Everything the shell feeds the host after [`start`](crate::start::start):
 /// one sender, any thread; one foreground task drains it on the GPUI
 /// thread into the entities. The only way an OS event reaches host state.
+#[cfg(feature = "ui")]
 #[derive(Clone)]
 pub struct Inbound(async_channel::Sender<Signal>);
 
+#[cfg(feature = "ui")]
 impl Inbound {
     pub(crate) fn channel() -> (Self, async_channel::Receiver<Signal>) {
         let (sender, receiver) = async_channel::unbounded();
@@ -213,6 +223,7 @@ impl Inbound {
     }
 }
 
+#[cfg(feature = "ui")]
 #[derive(Clone, Debug)]
 pub enum Signal {
     /// gpui's phase. `Background` stops the status poll (and, with the
@@ -230,6 +241,7 @@ pub enum Signal {
 
 /// What a shell hands [`start`](crate::start::start). The view runner joins
 /// it with the runner cut.
+#[cfg(feature = "ui")]
 pub struct Boot {
     pub os: Arc<dyn OsServices>,
 }
@@ -434,10 +446,12 @@ pub mod testing {
             &NoBanners
         }
 
+        #[cfg(feature = "ui")]
         fn insets(&self, _: &Window) -> WindowInsets {
             WindowInsets::default()
         }
 
+        #[cfg(feature = "ui")]
         fn soft_keyboard(&self, _: &Window, _: SoftKeyboard) {}
 
         fn facts(&self) -> OsFacts {
