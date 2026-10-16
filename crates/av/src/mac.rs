@@ -487,7 +487,7 @@ pub(crate) fn open(id: &str) -> Result<Camera, Status> {
             let observe = |name, object: &AnyObject| {
                 let tell = tell.clone();
                 let gone = RcBlock::new(move |_: NonNull<NSNotification>| {
-                    let _ = tell.send(Err(Status::Gone));
+                    let _ = tell.send(Err(Status::Gone(String::new())));
                 });
                 center.addObserverForName_object_queue_usingBlock(
                     Some(name),
@@ -529,7 +529,7 @@ impl Source for Camera {
         match self.frames.recv_timeout(wait) {
             Ok(got) => got,
             Err(mpsc::RecvTimeoutError::Timeout) => Ok(Got::Nothing),
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(Status::Gone),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(Status::Gone(String::new())),
         }
     }
 }

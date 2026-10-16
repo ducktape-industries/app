@@ -73,7 +73,9 @@ pub enum Status {
     Live,
     Denied,
     Busy,
-    Gone,
+    /// It went away while open: why, in a line, where the system says
+    /// (a call took it), else empty.
+    Gone(String),
     NoDevice,
     Failed(String),
 }
@@ -363,7 +365,7 @@ pub(crate) fn stream(mut camera: impl Source, feed: &CameraFeed) {
         match got {
             Err(status) => break Some(status),
             Ok(Got::Nothing) => match last {
-                Some(at) if at.elapsed() > QUIET => break Some(Status::Gone),
+                Some(at) if at.elapsed() > QUIET => break Some(Status::Gone(String::new())),
                 None if opened.elapsed() > FIRST => {
                     break Some(Status::Failed("the camera sent no picture".into()));
                 }
@@ -530,7 +532,7 @@ fn audio_fault(error: &cpal::Error, open: bool) -> Status {
         cpal::ErrorKind::DeviceBusy => Status::Busy,
         cpal::ErrorKind::PermissionDenied => Status::Denied,
         cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::StreamInvalidated if open => {
-            Status::Gone
+            Status::Gone(String::new())
         }
         cpal::ErrorKind::DeviceNotAvailable => Status::NoDevice,
         _ => Status::Failed(error.to_string().chars().take(200).collect()),
@@ -1149,7 +1151,7 @@ mod tests {
     fn a_camera_that_stops_delivering_is_gone_and_released() {
         let run = streaming(3, true);
         until("live", || status(&run.feed) == Status::Live);
-        let gone = until("gone", || status(&run.feed) == Status::Gone);
+        let gone = until("gone", || status(&run.feed) == Status::Gone(String::new()));
         assert!(
             run.released.load(Ordering::SeqCst),
             "told Gone before release"

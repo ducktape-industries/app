@@ -528,7 +528,7 @@ fn told(state: &ducktape_av::State, kind: ducktape_av::Kind) -> wire::MediaState
             )
         }
         Status::Busy => (wire::MediaStatus::Busy, String::new()),
-        Status::Gone => (wire::MediaStatus::Gone, String::new()),
+        Status::Gone(why) => (wire::MediaStatus::Gone, why.clone()),
         Status::NoDevice => (wire::MediaStatus::NoDevice, String::new()),
         Status::Failed(why) => (wire::MediaStatus::Failed, why.clone()),
     };
@@ -834,7 +834,7 @@ mod tests {
 
     /// A device's state reaches its view in the wire's words, bounded;
     /// a refusal says how to allow the device here, and only macOS offers
-    /// its settings page.
+    /// its settings page; a device gone says why, where the system said.
     #[cfg(feature = "av")]
     #[test]
     fn a_device_state_is_told_in_the_wires_words() {
@@ -866,5 +866,14 @@ mod tests {
         );
         assert_eq!(denied.detail, ducktape_av::allow(ducktape_av::Kind::Camera));
         assert!(denied.detail.len() <= 200 && denied.detail.ends_with("then try again."));
+        let gone = told(
+            &ducktape_av::State {
+                status: ducktape_av::Status::Gone("A call took the microphone.".into()),
+                ..Default::default()
+            },
+            ducktape_av::Kind::Microphone,
+        );
+        assert_eq!(gone.status, wire::MediaStatus::Gone);
+        assert_eq!(gone.detail, "A call took the microphone.");
     }
 }

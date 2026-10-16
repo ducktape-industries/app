@@ -167,7 +167,7 @@ pub(crate) fn status(errno: i32, streaming: bool) -> Status {
     match errno {
         libc::EBUSY => Status::Busy,
         libc::EACCES | libc::EPERM => Status::Denied,
-        libc::ENODEV | libc::ENXIO | libc::EIO if streaming => Status::Gone,
+        libc::ENODEV | libc::ENXIO | libc::EIO if streaming => Status::Gone(String::new()),
         libc::ENODEV | libc::ENXIO | libc::ENOENT => Status::NoDevice,
         _ => Status::Failed(io::Error::from_raw_os_error(errno).to_string()),
     }
@@ -774,8 +774,8 @@ mod tests {
         assert_eq!(status(libc::EACCES, false), Status::Denied);
         assert_eq!(status(libc::ENOENT, false), Status::NoDevice);
         assert_eq!(status(libc::ENODEV, false), Status::NoDevice);
-        assert_eq!(status(libc::ENODEV, true), Status::Gone);
-        assert_eq!(status(libc::EIO, true), Status::Gone);
+        assert_eq!(status(libc::ENODEV, true), Status::Gone(String::new()));
+        assert_eq!(status(libc::EIO, true), Status::Gone(String::new()));
         assert!(matches!(status(libc::EINVAL, false), Status::Failed(_)));
     }
 
