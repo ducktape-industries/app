@@ -35,6 +35,16 @@ pub const TINY: Role = Role {
     size: 11.,
     line: 14.,
 };
+/// a header's title, 17 / 21
+pub const TITLE: Role = Role {
+    size: 17.,
+    line: 21.,
+};
+/// a detail head's name, 20 / 24
+pub const HEADING: Role = Role {
+    size: 20.,
+    line: 24.,
+};
 /// a module root's header, 22 / 27
 pub const BIG_TITLE: Role = Role {
     size: 22.,
@@ -55,6 +65,27 @@ pub const ICON_HIT: f32 = 22.;
 pub const ICON_EMPTY: f32 = 28.;
 /// The avatar in a list or header (`size.avatar.list`).
 pub const AVATAR: f32 = 32.;
+/// A field's box (`size.control`).
+pub const CONTROL: f32 = 44.;
+/// A sheet row (`size.sheetRow`).
+pub const SHEET_ROW: f32 = 52.;
+/// The icon in a sheet row (`size.icon.sheet`).
+pub const ICON_SHEET: f32 = 20.;
+/// A chip (`size.chip`).
+pub const CHIP: f32 = 32.;
+/// A sheet's side inset (`Sheet.tsx`: 20).
+pub const SHEET_INSET: f32 = 20.;
+
+/// The design crate's spacing ladder (`spacing`).
+pub mod gap {
+    pub const XXS: f32 = 4.;
+    pub const XS: f32 = 6.;
+    pub const SM: f32 = 8.;
+    pub const MD: f32 = 10.;
+    pub const LG: f32 = 12.;
+    pub const BLOCK: f32 = 16.;
+    pub const XL: f32 = 24.;
+}
 
 /// Text in `role`, `weight`, `color`, in the app's face.
 pub fn text(role: Role, weight: FontWeight, color: Hsla) -> Div {
@@ -70,14 +101,37 @@ pub fn text(role: Role, weight: FontWeight, color: Hsla) -> Div {
 /// Settings → Appearance "Follows the system").
 pub fn palette(window: &Window) -> Palette {
     match window.appearance() {
-        WindowAppearance::Dark | WindowAppearance::VibrantDark => Palette(&design::DARK),
-        WindowAppearance::Light | WindowAppearance::VibrantLight => Palette(&design::LIGHT),
+        WindowAppearance::Dark | WindowAppearance::VibrantDark => Palette {
+            colours: &design::DARK,
+            dark: true,
+        },
+        WindowAppearance::Light | WindowAppearance::VibrantLight => Palette {
+            colours: &design::LIGHT,
+            dark: false,
+        },
     }
 }
 
 /// One appearance's colours, as gpui takes them.
 #[derive(Clone, Copy)]
-pub struct Palette(&'static design::Palette);
+pub struct Palette {
+    colours: &'static design::Palette,
+    dark: bool,
+}
+
+impl Palette {
+    /// The scrim under a sheet (theme.ts: black at 0.4, 0.55 in the dark).
+    pub fn scrim(self) -> Hsla {
+        let alpha = if self.dark { 0.55 } else { 0.4 };
+        Rgba {
+            r: 0.,
+            g: 0.,
+            b: 0.,
+            a: alpha,
+        }
+        .into()
+    }
+}
 
 macro_rules! colours {
     ($($name:ident),*) => {
@@ -85,7 +139,7 @@ macro_rules! colours {
             $(
                 #[doc = concat!("`", stringify!($name), "`")]
                 pub fn $name(self) -> Hsla {
-                    let [r, g, b, a] = self.0.$name;
+                    let [r, g, b, a] = self.colours.$name;
                     Rgba { r, g, b, a }.into()
                 }
             )*
@@ -101,5 +155,10 @@ colours!(
     foreground,
     muted,
     faint,
-    accent
+    accent,
+    accent_soft,
+    primary,
+    primary_foreground,
+    success,
+    danger
 );
