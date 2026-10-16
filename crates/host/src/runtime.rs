@@ -53,13 +53,17 @@ pub fn handle() -> tokio::runtime::Handle {
 
 /// The app's quit hook (`shell::launch`, the one every quit path reaches):
 /// the notification log handed over, then a wait on every in-order queue
-/// (store files, the log, banners), then `kept` dropped. The returned
-/// future is the wait; gpui gives it `SHUTDOWN_TIMEOUT` (200 ms).
+/// (store files, the log, banners) and on the live session's close
+/// (`kernel::live::quit`), then `kept` dropped. The returned future is the
+/// wait; gpui gives it `SHUTDOWN_TIMEOUT` (200 ms).
 pub fn quitting(center: &notify::CenterHandle, kept: impl Sized) -> impl Future<Output = ()> {
     center.lock().flush();
     let drained = kernel::drain();
+    let live = kernel::live::quit();
     drop(kept);
-    drained
+    async move {
+        futures::future::join(drained, live).await;
+    }
 }
 
 /// A lock the window thread and the loaders share, taken even after a
@@ -183,9 +187,10 @@ mod display_diagnostics;
 pub mod pictures;
 
 /// The name a view's manifest gives it, the capabilities it declares, the
-/// narrowest it is laid out, its targets and its icon; empty and 0 for one
-/// whose manifest cannot be read (`compile` refuses those before a seat).
-fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>, u32, Vec<String>, String) {
+/// narrowest it is laid out, its targets, its icon and the wire it was
+/// built against; empty and 0 for one whose manifest cannot be read
+/// (`compile` refuses those before a seat).
+fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>, u32, Vec<String>, String, String) {
     view_wire::manifest::read_manifest(bytes)
         .map(|manifest| {
             (
@@ -194,6 +199,7 @@ fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>, u32, Vec<String>, Stri
                 manifest.min_width,
                 manifest.targets,
                 manifest.icon,
+                manifest.wire_id,
             )
         })
         .unwrap_or_default()

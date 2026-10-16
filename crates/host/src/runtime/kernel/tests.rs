@@ -926,6 +926,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
         network: node.node.network.clone(),
         chain: "test-network#1".into(),
         rev: view.connection.rev,
+        live: None,
     };
     // the props say the seated key holds account 7, the one the op names
     let props = Some(super::super::props(true, "test-network#1", "", Some(7), ""));
@@ -1043,6 +1044,7 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
         network: node.node.network.clone(),
         chain: "test-network#1".into(),
         rev: view.connection.rev,
+        live: None,
     };
     let submit = |view: &mut View, id: u64, target: &str| {
         view.activation = Some(Instant::now());

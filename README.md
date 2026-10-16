@@ -7,7 +7,7 @@ inside its chrome is a wasm view a program ships; the app's own screens are
 two — reach a node, unlock a key.
 
 ```bash
-# a node (ducktape-industries/ducktape, branch feat/capable-sandbox) is a
+# a node (ducktape-industries/ducktape, rev 8a0151a41) is a
 # separate process this app talks to over /v1; run one, then:
 cargo run -p ducktape-app
 DUCKTAPE_RPC=http://127.0.0.1:8844 cargo run -p ducktape-app   # skip the connect screen
@@ -20,6 +20,9 @@ Releases are published to `https://dl.ducktape.industries/app/`: one
 channel file per channel (`stable.json` is `main`, `nightly.json` is `dev`
 once a day) naming each platform's archive by its sha256. An installed app
 keeps itself up to date from there; Settings › Updates picks the channel.
+Its "Update automatically" switch (on unless turned off) stops that: off,
+the app still checks and says what is newer, but downloads and installs
+nothing until you press Update now there.
 For nightly, read `nightly.json` instead of `stable.json` below.
 
 **macOS (Apple silicon).** Needs `jq`. The archive is `Ducktape.app`, ad-hoc
@@ -69,11 +72,13 @@ tar xzf /tmp/ducktape.tar.gz -C /tmp
   `program.query`/`op.submit` `Call{target, body}`, `program.changes <program>`,
   `program.describe`, `chain.status`/`block`/`blocks`/`heads`, `invite.create`,
   `blob.get`, `blob.manifest`, `link.open`, `host.widget` (the one MessagePack method: a tree
-  command), and the app's own (`host.*`, `clock.ticks`, `clipboard.*`,
-  `notify.*`, `store.*`). A view reaches only the capabilities its manifest
-  declares. The app forwards the bytes to the
-  program the view names and signs writes with the seated key; it never
-  reads a payload.
+  command), `live.*` (`publish`/`send`/`subscribe`/`tracks`: a view's live
+  tracks through the node's relay, off consensus, on one QUIC or websocket
+  session per connection, `src/backend/live.rs`), and the app's own
+  (`host.*`, `clock.ticks`, `clipboard.*`, `notify.*`, `store.*`). A view
+  reaches only the capabilities its manifest declares. The app forwards the
+  bytes to the program the view names and signs writes with the seated key;
+  it never reads a payload.
 - **Sign in.** The key file under `$DUCKTAPE_USER_KEY`, else the network's
   active wallet under `<ducktape home>/remotes/<network>/`. A write is a frame
   anchored at the tip `/v1/status` reports and salted with a random number,
@@ -93,6 +98,7 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 | `crates/host` | the blind host core the desktop shell and the phone shell share; `src/contract.rs` is the one interface a shell implements (directories, the reader key, banners, OS facts, invite minting) |
 | `crates/host/src/backend/views.rs` | roster → blob → `ducktape.view` section |
 | `crates/host/src/backend/session.rs` | the seated key (any `noded_client::Signer`), its frames, preferences |
+| `crates/host/src/backend/live.rs`, `crates/host/src/runtime/kernel/live.rs` | the live session with the node's relay (core's `live-wire`: QUIC, or the websocket) and the `live.*` methods over it |
 | `crates/host/src/runtime.rs`, `runtime/` | the wasm view runtime: seats, loads, swaps, the kernel relay |
 | `crates/host/src/render.rs`, `render/` | the wire tree presenter, its text fields the kit's engine holds (IME, caret, clipboard, undo) |
 | `src/os.rs`, `src/backend/` | the desktop's `OsServices` impl (its directories, the freedesktop / macOS banners, invites with the node this machine runs) and what only the desktop runs: the device key, passkeys, recovery keys |
@@ -101,8 +107,9 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 
 ## Dependency line
 
-`ducktape-industries/programs` (`crates/sdk`; rev `618e25ecf9b4ec324d3467cd8047fc1c806945e0`): `abi`, `view-wire`, `ducklink`, `design`.
-`ducktape-industries/ducktape`: `blob` (rev `a4360f6d6ac3b807df95e3fda24d8d8a8b130049`), `keyscheme` (rev `9dfffb0662bd8a16293df8c75de8817a79b0810b`), `ducktape-home` and `keystore` (branch `feat/capable-sandbox`).
+`ducktape-industries/programs` (rev `7327a481c1291176de20757956e33562fa2127a0`): `abi`, `view-wire`, `program`, `ducklink`, `design`, `describe`, `identity`, `valset`, `programs`, `blobs`, and the `abi` patch over ducktape's.
+`ducktape-industries/ducktape` (rev `8a0151a411c3558453c34bb8272b93dfc428cb74`, the rev that programs rev pins): `blob`, `keyscheme`, `ducktape-home`, `keystore`, `live-wire`.
+`ducktape-industries/gpui-pre` (rev `1026d7a2bac0a21cc73cd9f31a2a56b23f973cea`, the rev that programs rev pins): `gpui-pre` and the crates it patches.
 
 ## Building
 

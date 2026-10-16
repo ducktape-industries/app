@@ -67,6 +67,12 @@
 //! A connect inside the network opens both again on the new node
 //! (`reconnected`): neither ends on it.
 //!
+//! In `live`, through the connection's one live session with the node's
+//! relay (`backend::live`), off consensus: `live.publish`, `live.send`,
+//! `live.subscribe`, `live.tracks`. Each item wakes its view at once,
+//! through [`Replies`] like any answer. A connect inside the network
+//! opens them again too.
+//!
 //! In a sibling module [`answer`] asks first:
 //! - `clipboard.read`, `clipboard.write` — `clipboard`, run on the window
 //!   thread after the tick.
@@ -103,6 +109,7 @@ fn malformed(error: impl std::fmt::Display) -> wire::Error {
 pub(super) type Answer = Result<Vec<u8>, wire::Error>;
 
 mod describe;
+pub(super) mod live;
 mod node;
 pub use node::Answered;
 mod replies;
@@ -367,6 +374,11 @@ pub(super) fn answer(
                 "`clock.ticks` names no period",
             ),
         },
+        // tracks through the connected node, off consensus (`live.rs`)
+        (Capability::Live, "publish") => live::publish(view, id, payload),
+        (Capability::Live, "send") => live::send(view, id, payload),
+        (Capability::Live, "subscribe") => live::subscribe(view, id, payload),
+        (Capability::Live, "tracks") => live::tracks(view, id, payload),
         (Capability::Host, "id") => {
             let prefix = methods::decode::<String>(payload).unwrap_or_default();
             let prefix = prefix.trim();

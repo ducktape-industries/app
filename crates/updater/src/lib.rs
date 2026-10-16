@@ -26,7 +26,7 @@ pub mod verify;
 pub use manifest::{Artifact, Manifest, Platform, Release, SCHEMA, SuccessorKey};
 pub use phase::{
     Command, Downloading, Event, Idle, PendingHealthy, Phase, RollbackReason, RolledBack, Staged,
-    SwapState, Swapping, UpdateBanner,
+    SwapState, Swapping, Take, UpdateBanner,
 };
 pub use release::{PublicKey, RELEASE_KEY, RELEASE_NS, Signature};
 pub use sha::Sha;

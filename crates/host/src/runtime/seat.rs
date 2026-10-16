@@ -165,6 +165,7 @@ pub(super) struct ViewCode {
     pub(super) min_width: u32,
     pub(super) capabilities: Vec<Capability>,
     pub(super) targets: Vec<String>,
+    pub(super) wire: String,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -181,6 +182,7 @@ impl ViewCode {
             min_width,
             capabilities: Vec::new(),
             targets: Vec::new(),
+            wire: view_wire::WIRE_ID.into(),
         })
     }
 }
@@ -215,7 +217,8 @@ pub enum Failure {
     /// Bytes this build does not run as a view, a load overtaken, or a
     /// loader that stopped.
     Refused(String),
-    /// The view was built against another wire than this app's.
+    /// A view built against another wire than this app's stopped: the
+    /// reason says what failed, where, and both wires.
     Wire(String),
 }
 
@@ -232,7 +235,7 @@ impl Failure {
             Failure::NotListed(_) => "This network does not list this view",
             Failure::Trapped(_) => "This view stopped",
             Failure::Refused(_) => "This view could not be loaded",
-            Failure::Wire(_) => "This view speaks a wire this app does not",
+            Failure::Wire(_) => "This view, built against another wire, stopped",
         }
     }
 }

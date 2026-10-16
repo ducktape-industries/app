@@ -164,6 +164,14 @@ impl Client {
         self.fetch(route::NETWORK).await
     }
 
+    /// The UDP port the node takes live sessions on (QUIC, ALPN
+    /// `ducktape-live`), at the host of its `/v1` address; `None` when it
+    /// bound no UDP, and a client takes the websocket at `/v1/live`. A node
+    /// that serves no live tracks answers 404.
+    pub async fn live_port(&self) -> Result<Option<u16>> {
+        self.fetch(route::LIVE_PORT).await
+    }
+
     pub async fn preconfirm(&self, frame: Vec<u8>) -> Result<Receipt> {
         let submit = Submit {
             frame,

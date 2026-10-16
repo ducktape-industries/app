@@ -117,11 +117,17 @@ pub(super) fn boot_at(layout: &Layout, own: &Path) -> Result<Boot, Refusal> {
         }
     };
     // a release staged for a channel the device has since left is that
-    // channel's offer: dropped, never flipped to
+    // channel's offer, and one the updater staged on its own before
+    // updating automatically went off was never asked for: dropped, never
+    // flipped to
     let first = match &phase {
         Phase::Staged(staged) if staged.channel != super::channel::read_channel(layout).name() => {
             warn!(target: TARGET, event = "app_update_refused", reason = "other_channel", staged = %staged.staged, channel = %staged.channel, "the device follows another channel now; not flipped");
             Event::ChannelChanged
+        }
+        Phase::Staged(staged) if !staged.asked && !super::channel::read_automatic(layout) => {
+            info!(target: TARGET, event = "app_update_dropped", reason = "not_automatic", staged = %staged.staged, "updating automatically is off and nobody asked for it; not flipped");
+            Event::AutomaticOff
         }
         _ => Event::Boot,
     };
@@ -148,10 +154,11 @@ pub(super) fn boot_at(layout: &Layout, own: &Path) -> Result<Boot, Refusal> {
     }
 }
 
-/// Step the machine from `event` (`Boot`, or `ChannelChanged` for a release
-/// another channel staged), performing each command in order and feeding
-/// the answers (`SwapResolved`, `QualifyPassed`/`Failed`) back in, until a
-/// list asks for nothing more. Returns the phase it settled on. `Exec`
+/// Step the machine from `event` (`Boot`, `ChannelChanged` for a release
+/// another channel staged, or `AutomaticOff` for one staged unasked while
+/// updating automatically is off), performing each command in order and
+/// feeding the answers (`SwapResolved`, `QualifyPassed`/`Failed`) back in,
+/// until a list asks for nothing more. Returns the phase it settled on. `Exec`
 /// needs nothing here: [`boot_at`] runs whatever the install path names
 /// once the machine is done with it.
 fn drive(layout: &Layout, mut phase: Phase, mut event: Event) -> Result<Phase, Refusal> {
