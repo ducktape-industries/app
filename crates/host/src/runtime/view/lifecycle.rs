@@ -302,6 +302,7 @@ impl View {
         fresh.targets = view.targets.clone();
         fresh.min_width = view.min_width;
         fresh.wire = view.wire.clone();
+        fresh.code = Some(Box::new(view.clone()));
         fresh.deployed(view.hash);
         Ok(fresh)
     }
@@ -649,6 +650,7 @@ impl View {
             targets,
             min_width,
             wire,
+            code,
             hash,
             connection: _,
             activation: _,
@@ -708,6 +710,7 @@ impl View {
         sibling.targets = targets.clone();
         sibling.min_width = *min_width;
         sibling.wire = wire.clone();
+        sibling.code = code.clone();
         sibling.hash = *hash;
         Ok(sibling)
     }
@@ -945,6 +948,7 @@ impl View {
             min_width: 0,
             // the manifest's, once `load` reads it
             wire: wire::WIRE_ID.into(),
+            code: None,
             undeclared_logged: Vec::new(),
             running,
             runner: runner.clone(),

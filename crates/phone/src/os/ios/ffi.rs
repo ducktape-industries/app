@@ -3,9 +3,11 @@
 //! paths; it never returns: gpui_ios runs `UIApplicationMain` with its own
 //! delegate, and the host starts on the main thread once UIKit is up.
 //!
-//! Foreign function defined here, called once, on the main thread:
-//! - `ducktape_phone_main(documents, caches)`: two NUL-terminated UTF-8
-//!   paths the caller owns, read before anything else runs.
+//! Foreign functions defined here, called on the main thread:
+//! - `ducktape_phone_main(documents, caches)`, once: two NUL-terminated
+//!   UTF-8 paths the caller owns, read before anything else runs.
+//! - `ducktape_phone_back()`: the left edge's swipe the launcher follows,
+//!   as Back.
 //!
 //! No `catch_unwind`: the phone profile builds with `panic = "abort"`
 //! (gpui_ios's ObjC entries have no unwind guard, `README.ducktape.md`).
@@ -30,13 +32,24 @@ pub unsafe extern "C" fn ducktape_phone_main(documents: *const c_char, caches: *
         tracing::error!(target: "ducktape::phone", "the launcher passed no app container");
         std::process::abort();
     };
-    gpui_kit::Application::with_platform(gpui_ios::current_platform(false))
-        .with_assets(crate::assets::PhoneAssets)
-        .run(move |cx| {
-            crate::os::start(documents, caches, cx);
-            crate::shell::open_window(cx);
-            cx.activate(true);
-        });
+    let app = gpui_kit::Application::with_platform(gpui_ios::current_platform(false))
+        .with_assets(crate::assets::PhoneAssets);
+    // a scene's URL contexts, at launch and later (`duck://`, `ducktape://`,
+    // Info.plist `CFBundleURLTypes`)
+    app.on_open_urls(|urls| urls.into_iter().for_each(crate::os::link));
+    app.run(move |cx| {
+        crate::os::start(documents, caches, cx);
+        crate::shell::open_window(cx);
+        cx.activate(true);
+    });
+}
+
+/// Back, from the launcher's left edge swipe (`App.swift`): gpui_ios hands
+/// no edge gesture to the app, so Back has no other source on iOS. Popped
+/// as Android's Back is.
+#[unsafe(no_mangle)]
+pub extern "C" fn ducktape_phone_back() {
+    crate::os::send(ducktape_host::contract::Signal::Back);
 }
 
 /// A path from the launcher; `None` for null or one that is not UTF-8.

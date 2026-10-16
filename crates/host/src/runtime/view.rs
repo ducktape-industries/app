@@ -119,6 +119,10 @@ pub(super) struct View {
     /// view built against another than this app's runs all the same, and
     /// whatever then fails says so ([`View::failure`]).
     pub wire: String,
+    /// The code this instance was seated from (`seated_from`), kept so a
+    /// seat its pane let go steps back to it (`seat::let_go`) rather than
+    /// loading again; none for an instance seated another way.
+    pub(super) code: Option<Box<ViewCode>>,
     /// The undeclared capabilities already logged, so each is logged once.
     pub undeclared_logged: Vec<Capability>,
     /// The running instance (`contract::ViewInstance`), and the runner that
