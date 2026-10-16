@@ -304,6 +304,7 @@ mod host_ids;
 mod inputs;
 mod layout;
 mod links;
+mod page_motion;
 #[cfg(target_os = "linux")]
 pub(super) mod picture_pixels;
 mod picture_presentation;
