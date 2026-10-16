@@ -270,9 +270,10 @@ impl Seat {
     /// The pane left every desk: one bounded update, then no more turns.
     /// Returns the intents that update produced: the caller (`Seats`) is
     /// about to drop this seat and its subscription in the same update, so
-    /// an emit here would be lost.
+    /// an emit here would be lost. In the background there is no update:
+    /// no call into a view is begun there (SPEC §4.3).
     #[must_use]
-    pub fn hide(&mut self) -> Vec<Intent> {
+    pub fn hide(&mut self, cx: &App) -> Vec<Intent> {
         let mounted = self.mounted.clone();
         let mut locked = lock(&mounted);
         let Mounted {
@@ -297,7 +298,7 @@ impl Seat {
         // (`landed`); this update's own waits behind it as any turn would,
         // nor runs while a swap owns the view: its replacement hears it
         // hidden. `Seats` drops this seat after, and the view goes with it
-        if !view.ticking() && !*owned {
+        if !view.ticking() && !*owned && !backgrounded(cx) {
             match view.begin_redraw(props) {
                 Redraw::Quiet => {}
                 Redraw::Ready => {
@@ -512,7 +513,7 @@ impl Seat {
                             view.parked = Some(landed);
                             break None;
                         }
-                    } else if let Ok(revived) = View::revive(&mounted, &alive).await {
+                    } else if let Ok(revived) = View::revive(&mounted, &alive, true).await {
                         landing = revived;
                         continue;
                     }

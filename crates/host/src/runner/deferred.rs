@@ -3,12 +3,23 @@
 //! [`Landing`] when the test says: at once (the desktop's order), on a
 //! later [`Pump::release_next`] / [`Pump::release_all`] (the next
 //! `cx.defer`, or late), or never. What a JSC page does across its
-//! process boundary, on Linux, before any simulator sees it.
+//! process boundary, on Linux, before any simulator sees it. A page that
+//! dies ([`Pump::die`]) stays dead: every call into its instance from then
+//! on lands the runner's fault, as the contract's dead-page rules say.
 
 use super::WasmtimeRunner;
-use crate::contract::{Landed, Landing, SeatId, ViewInstance, ViewRunner};
+use crate::contract::{Fault, Landed, Landing, SeatId, ViewInstance, ViewRunner};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// An instance's page is dead.
+type Dead = Arc<AtomicBool>;
+
+/// A page's death, as every call into it lands it.
+fn death() -> Landed {
+    Landed::Fault(Fault::Runner("the page died".into()))
+}
 
 /// The answers held back, and whether the next ones are held.
 #[derive(Clone, Default)]
@@ -20,7 +31,9 @@ struct Held {
     /// The page is dead while this is set: every answer lands as the
     /// runner's fault, at once.
     dying: bool,
-    answers: VecDeque<(Landing, Landed)>,
+    /// Each held answer, with the page of the instance it came from (none
+    /// for a seating's).
+    answers: VecDeque<(Landing, Landed, Option<Dead>)>,
 }
 
 impl Pump {
@@ -45,7 +58,7 @@ impl Pump {
         self.lock()
             .answers
             .iter()
-            .map(|(_, landed)| {
+            .map(|(_, landed, _)| {
                 let shown = format!("{landed:?}");
                 shown.split('(').next().unwrap_or_default().to_owned()
             })
@@ -60,7 +73,7 @@ impl Pump {
     /// Lands the oldest held answer; whether there was one.
     pub fn release_next(&self) -> bool {
         let next = self.lock().answers.pop_front();
-        next.map(|(land, landed)| land.send(landed)).is_some()
+        next.map(|(land, landed, _)| land.send(landed)).is_some()
     }
 
     /// Lands every held answer, oldest first; how many.
@@ -73,7 +86,9 @@ impl Pump {
     }
 
     /// The page the held answers came from dies (SPEC §6.5): each lands as
-    /// the runner's fault instead, and answers land at once from now on.
+    /// the runner's fault instead, the instances they came from stay dead
+    /// (every later call into one lands the runner's fault too), and
+    /// answers land at once from now on.
     pub fn die(&self) -> usize {
         let answers = {
             let mut held = self.lock();
@@ -81,10 +96,11 @@ impl Pump {
             std::mem::take(&mut held.answers)
         };
         let died = answers.len();
-        for (land, _) in answers {
-            land.send(Landed::Fault(crate::contract::Fault::Runner(
-                "the page died".into(),
-            )));
+        for (land, _, dead) in answers {
+            if let Some(dead) = dead {
+                dead.store(true, Ordering::Relaxed);
+            }
+            land.send(death());
         }
         died
     }
@@ -101,17 +117,19 @@ impl Pump {
         std::mem::take(&mut self.lock().answers).len()
     }
 
-    fn land(&self, land: &Landing, landed: Landed) {
+    /// Lands `landed`, from the instance whose page `dead` is (none for a
+    /// seating), as the test says.
+    fn land(&self, land: &Landing, landed: Landed, dead: Option<&Dead>) {
         let mut held = self.lock();
         if held.dying {
             drop(held);
-            land.send(Landed::Fault(crate::contract::Fault::Runner(
-                "the page died".into(),
-            )));
+            land.send(death());
             return;
         }
         match held.holding {
-            true => held.answers.push_back((land.clone(), landed)),
+            true => held
+                .answers
+                .push_back((land.clone(), landed, dead.cloned())),
             false => {
                 drop(held);
                 land.send(landed);
@@ -159,11 +177,12 @@ impl ViewRunner for DeferredRunner {
                 answers: inner,
                 land: land.clone(),
                 pump: self.pump.clone(),
+                dead: Dead::default(),
             })),
             Ok(other) => other,
             Err(_) => unreachable!("the wasmtime runner lands at once"),
         };
-        self.pump.land(&land, landed);
+        self.pump.land(&land, landed, None);
     }
 
     fn describe(
@@ -176,18 +195,27 @@ impl ViewRunner for DeferredRunner {
     }
 }
 
-/// A wasmtime instance whose answers go through the pump.
+/// A wasmtime instance whose answers go through the pump, on a page that
+/// may die (`dead`).
 struct DeferredInstance {
     inner: Box<dyn ViewInstance>,
     answers: async_channel::Receiver<Landed>,
     land: Landing,
     pump: Pump,
+    dead: Dead,
 }
 
 impl DeferredInstance {
-    fn pass(&self) {
+    /// `call` on the wasmtime instance, its answer through the pump; on a
+    /// dead page nothing runs and the call lands the runner's fault.
+    fn call(&mut self, call: impl FnOnce(&mut dyn ViewInstance)) {
+        if self.dead.load(Ordering::Relaxed) {
+            self.pump.land(&self.land, death(), Some(&self.dead));
+            return;
+        }
+        call(&mut *self.inner);
         while let Ok(landed) = self.answers.try_recv() {
-            self.pump.land(&self.land, landed);
+            self.pump.land(&self.land, landed, Some(&self.dead));
         }
     }
 }
@@ -198,23 +226,19 @@ impl ViewInstance for DeferredInstance {
     }
 
     fn begin_init(&mut self) {
-        self.inner.begin_init();
-        self.pass();
+        self.call(|inner| inner.begin_init());
     }
 
     fn begin_tick(&mut self, events: Vec<u8>) {
-        self.inner.begin_tick(events);
-        self.pass();
+        self.call(|inner| inner.begin_tick(events));
     }
 
     fn begin_snapshot(&mut self) {
-        self.inner.begin_snapshot();
-        self.pass();
+        self.call(|inner| inner.begin_snapshot());
     }
 
     fn begin_restore(&mut self, snapshot: Vec<u8>) {
-        self.inner.begin_restore(snapshot);
-        self.pass();
+        self.call(|inner| inner.begin_restore(snapshot));
     }
 
     fn fuel_used(&self) -> u64 {

@@ -1590,7 +1590,7 @@ fn a_landing_after_hide_is_kept_not_drawn(cx: &mut TestAppContext) {
     let turns = turns_of(&seat, &native);
     let rev = frame_rev_of(&seat, &native);
     let tree = seat.read_with(&native, |seat, _| seat.tree());
-    let intents = native.update(|_, cx| seat.update(cx, |seat, _| seat.hide()));
+    let intents = native.update(|_, cx| seat.update(cx, |seat, cx| seat.hide(cx)));
     assert!(intents.is_empty());
     assert_eq!(pump.release_all(), 1);
     draw_now(&mut native);
@@ -1827,8 +1827,8 @@ fn a_swap_waits_for_a_tick_in_flight_on_the_drawn_view(cx: &mut TestAppContext) 
 
 /// The page dies while the swap's snapshot is out (SPEC §6.5): only the
 /// swap fails (asked again at the next roster read); the drawn view keeps
-/// its seat with no fault of its own, for its next tick to find the death
-/// and take it up again on its kept replay.
+/// its seat with no fault of its own, and the death is taken up where it
+/// lands: the next tick goes to a new page, not the dead one.
 #[gpui_kit::test]
 fn a_death_under_the_swaps_snapshot_fails_only_the_swap(cx: &mut TestAppContext) {
     use super::first_frame_tests::frames_wat;
@@ -1857,6 +1857,289 @@ fn a_death_under_the_swaps_snapshot_fails_only_the_swap(cx: &mut TestAppContext)
     assert!(locked.swap.is_none() && !locked.owned);
     drop(locked);
     assert!(!in_flight(&seat, &native));
+    let ticks = ticks_of(&seat, &native);
+    assert_eq!(
+        next_tick_kinds(&seat, &mounted, &pump, &mut native),
+        ["Frame"],
+        "the next tick went into the dead page"
+    );
+    assert_eq!(ticks_of(&seat, &native), ticks + 1);
+}
+
+/// One tick of the drawn view on `seat` (a tree event, a turn), its answer
+/// held and seen, then landed: what the instance answered, by kind.
+fn next_tick_kinds(
+    seat: &Entity<Seat>,
+    mounted: &Arc<Mutex<Mounted>>,
+    pump: &Pump,
+    native: &mut VisualTestContext,
+) -> Vec<String> {
+    pump.hold();
+    native.update(|_, cx| {
+        match &mut mounted.lock().unwrap().slot {
+            Slot::Ready(view) => view.pending.push(wire::Event::Theme { dark: true }),
+            _ => panic!("not seated"),
+        }
+        seat.update(cx, |seat, cx| seat.turn(cx));
+    });
+    native.run_until_parked();
+    let kinds = pump.held_kinds();
+    pump.at_once();
+    pump.release_all();
+    native.run_until_parked();
+    kinds
+}
+
+/// The page dies under the swap's restore, the state taken and in hand
+/// (SPEC §6.5): the swap fails, as at the snapshot, and the drawn view
+/// keeps its seat and its state; the new instance is not started clean
+/// in its place.
+#[gpui_kit::test]
+fn a_death_under_the_swaps_restore_fails_only_the_swap(cx: &mut TestAppContext) {
+    use super::first_frame_tests::frames_wat;
+    const PROGRAM: &str = "deferred-swap-restore-death";
+    crate::contract::testing::snapshot_every_for_test(Some(Duration::from_secs(3600)));
+    let (seat, mut native, mounted, pump, runner, alive) = swappable(cx, PROGRAM);
+    let new = crate::runtime::view::prepared_on_for_test(&runner, frames_wat(&[keyed("new")]));
+    pump.hold();
+    park_swap(&mounted, PROGRAM, &runner, new);
+    for step in ["Snapshot", "Seated"] {
+        native.run_until_parked();
+        assert_eq!(pump.held_kinds(), [step]);
+        assert!(pump.release_next());
+    }
+    native.run_until_parked();
+    assert_eq!(pump.held_kinds(), ["Restored"]);
+    assert_eq!(pump.die(), 1);
+    native.run_until_parked();
+    draw_now(&mut native);
+    crate::contract::testing::snapshot_every_for_test(None);
+    {
+        let locked = mounted.lock().unwrap();
+        let Slot::Ready(view) = &locked.slot else {
+            panic!("not seated");
+        };
+        assert!(
+            Arc::ptr_eq(&view.alive, &alive),
+            "a replacement started clean took the seat: the state is lost"
+        );
+        assert_eq!(view.fault, None);
+        assert!(locked.retry.is_some() && locked.swap.is_none() && !locked.owned);
+    }
+    assert_eq!(
+        next_tick_kinds(&seat, &mounted, &pump, &mut native),
+        ["Frame"],
+        "the drawn view's own page is alive"
+    );
+}
+
+/// An idle view whose page died under a swap's snapshot is taken up where
+/// the death lands: the next roster read's swap asks a live page for the
+/// snapshot, and goes through. Before, nothing ticked the idle view, and
+/// every block's swap asked the dead page again.
+#[gpui_kit::test]
+fn an_idle_view_whose_page_died_swaps_at_the_next_read(cx: &mut TestAppContext) {
+    use super::first_frame_tests::frames_wat;
+    const PROGRAM: &str = "deferred-idle-dead-swap";
+    crate::contract::testing::snapshot_every_for_test(Some(Duration::from_secs(3600)));
+    let (_seat, mut native, mounted, pump, runner, alive) = swappable(cx, PROGRAM);
+    let new = crate::runtime::view::prepared_on_for_test(&runner, frames_wat(&[keyed("new")]));
+    pump.hold();
+    park_swap(&mounted, PROGRAM, &runner, new);
+    native.run_until_parked();
+    assert_eq!(pump.held_kinds(), ["Snapshot"]);
+    assert_eq!(pump.die(), 1);
+    native.run_until_parked();
+    draw_now(&mut native);
+    // the next block's read
+    pump.hold();
+    park_swap(&mounted, PROGRAM, &runner, new);
+    native.run_until_parked();
+    assert_eq!(pump.held_kinds(), ["Snapshot"], "asked of a live page");
+    pump.at_once();
+    pump.release_all();
+    native.run_until_parked();
+    draw_now(&mut native);
+    crate::contract::testing::snapshot_every_for_test(None);
+    let locked = mounted.lock().unwrap();
+    let Slot::Ready(fresh) = &locked.slot else {
+        panic!("not seated");
+    };
+    assert!(
+        !Arc::ptr_eq(&fresh.alive, &alive),
+        "the second read's swap went through"
+    );
+    assert_eq!(fresh.fault, None);
+    assert!(locked.swap.is_none() && !locked.owned);
+}
+
+/// The frames view of `five_trees`, its `snapshot` always refusing (the
+/// view's own word: it has work in hand, a write in flight).
+fn refusing_frames_wat() -> String {
+    use super::first_frame_tests::frames_wat;
+    let wat = frames_wat(&five_trees());
+    let answer = format!("i64.const {}", wire::abi::pack(32, 2));
+    assert!(wat.contains(&answer));
+    wat.replace(
+        "(i32.store8 (i32.const 33) (global.get $n))",
+        "(i32.store8 (i32.const 32) (i32.const 1))",
+    )
+    .replace(&answer, &format!("i64.const {}", wire::abi::pack(32, 1)))
+}
+
+/// A kept snapshot the view refuses (its own word, while work is in hand)
+/// is asked again after the next tick, not at once: the turn its refusal
+/// wakes asks nothing, and the main thread is not kept busy asking.
+#[gpui_kit::test]
+fn a_refused_kept_snapshot_is_asked_again_after_a_tick(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "deferred-keep-refused";
+    crate::contract::testing::snapshot_every_for_test(Some(Duration::from_secs(3600)));
+    let runner = DeferredRunner::default();
+    let pump = runner.pump.clone();
+    let runner: Arc<dyn ViewRunner> = Arc::new(runner);
+    let code = crate::runtime::view::prepared_on_for_test(&runner, refusing_frames_wat());
+    crate::runtime::seat_code_on_for_test(&runner, PROGRAM, 320, code);
+    let (seat, _, mut native) = open(cx, PROGRAM, false);
+    draw_now(&mut native);
+    let mounted = mounted_of(&seat, &native);
+    pump.hold();
+    crate::contract::testing::snapshot_every_for_test(Some(Duration::ZERO));
+    native.update(|_, cx| seat.update(cx, |seat, cx| seat.turn(cx)));
+    native.run_until_parked();
+    assert_eq!(pump.held_kinds(), ["SnapshotRefused"]);
+    assert!(pump.release_next());
+    native.run_until_parked();
+    assert_eq!(pump.held(), 0, "a refused snapshot was asked again at once");
+    // a tick: due again after it
+    native.update(|_, cx| {
+        match &mut mounted.lock().unwrap().slot {
+            Slot::Ready(view) => view.pending.push(wire::Event::Theme { dark: true }),
+            _ => panic!("not seated"),
+        }
+        seat.update(cx, |seat, cx| seat.turn(cx));
+    });
+    native.run_until_parked();
+    assert_eq!(pump.held_kinds(), ["Frame"]);
+    assert!(pump.release_next());
+    native.run_until_parked();
+    assert_eq!(pump.held_kinds(), ["SnapshotRefused"], "asked after the tick");
+    crate::contract::testing::snapshot_every_for_test(None);
+    pump.at_once();
+    pump.release_all();
+    native.run_until_parked();
+}
+
+/// The page dies under a kept snapshot (SPEC §6.5): the death is taken up
+/// where it lands, a new instance replaying every kept batch with nothing
+/// left in flight, and the dead page is not asked again; the next tick
+/// goes to the new page and lands the frame an uninterrupted run lands.
+#[gpui_kit::test]
+fn a_death_under_a_kept_snapshot_is_taken_up_where_it_lands(cx: &mut TestAppContext) {
+    use super::first_frame_tests::frames_wat;
+    const PROGRAM: &str = "deferred-keep-death";
+    crate::contract::testing::snapshot_every_for_test(Some(Duration::from_secs(3600)));
+    let runner = DeferredRunner::default();
+    let pump = runner.pump.clone();
+    let runner: Arc<dyn ViewRunner> = Arc::new(runner);
+    let code = crate::runtime::view::prepared_on_for_test(&runner, frames_wat(&five_trees()));
+    crate::runtime::seat_code_on_for_test(&runner, PROGRAM, 320, code);
+    let (seat, _, mut native) = open(cx, PROGRAM, false);
+    draw_now(&mut native);
+    subscribe_props(&seat, &native);
+    for props in [b"a".as_slice(), b"b".as_slice()] {
+        nudge(&seat, props, &mut native);
+        draw_now(&mut native);
+    }
+    let mounted = mounted_of(&seat, &native);
+    let ticks = ticks_of(&seat, &native);
+    pump.hold();
+    crate::contract::testing::snapshot_every_for_test(Some(Duration::ZERO));
+    native.update(|_, cx| seat.update(cx, |seat, cx| seat.turn(cx)));
+    native.run_until_parked();
+    assert_eq!(pump.held_kinds(), ["Snapshot"]);
+    crate::contract::testing::snapshot_every_for_test(Some(Duration::from_secs(3600)));
+    // the revive's calls land at once; anything after it is held, and seen
+    assert_eq!(pump.die(), 1);
+    native.run_until_parked();
+    pump.hold();
+    native.run_until_parked();
+    assert_eq!(pump.held(), 0, "the dead page was asked again");
+    {
+        let locked = mounted.lock().unwrap();
+        let Slot::Ready(view) = &locked.slot else {
+            panic!("not seated");
+        };
+        assert!(view.fault.is_none() && !view.ticking() && !locked.owned);
+        assert_eq!(view.ticks, ticks);
+    }
+    pump.at_once();
+    assert_eq!(
+        next_tick_kinds(&seat, &mounted, &pump, &mut native),
+        ["Frame"],
+        "the next tick went into the dead page"
+    );
+    let locked = mounted.lock().unwrap();
+    let Slot::Ready(view) = &locked.slot else {
+        panic!("not seated");
+    };
+    crate::contract::testing::snapshot_every_for_test(None);
+    assert_eq!(view.fault, None);
+    assert_eq!(view.ticks, ticks + 1);
+    assert_eq!(
+        wire::encode(&view.frame.root),
+        wire::encode(&keyed("four").root),
+        "the replay left the view where it was: tick 4 draws the fourth tree"
+    );
+}
+
+/// A death on the page a revive seats is no fault of the view's either
+/// (SPEC §6.5): the revive starts over on another page, and the tick that
+/// died lands its frame there.
+#[gpui_kit::test]
+fn a_death_during_a_revive_starts_it_over(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "deferred-revive-death";
+    crate::contract::testing::snapshot_every_for_test(Some(Duration::from_secs(3600)));
+    let (seat, _, mut native, pump) = deferred(cx, PROGRAM, &five_trees());
+    draw_now(&mut native);
+    subscribe_props(&seat, &native);
+    let ticks = ticks_of(&seat, &native);
+    pump.hold();
+    nudge(&seat, b"moved", &mut native);
+    assert!(in_flight(&seat, &native));
+    assert_eq!(pump.die(), 1);
+    pump.hold();
+    native.run_until_parked();
+    assert_eq!(pump.held_kinds(), ["Seated"], "the revive seats a new page");
+    assert!(pump.release_next());
+    native.run_until_parked();
+    assert_eq!(pump.held_kinds(), ["Inited"]);
+    // that page dies too
+    assert_eq!(pump.die(), 1);
+    native.run_until_parked();
+    draw_now(&mut native);
+    crate::contract::testing::snapshot_every_for_test(None);
+    assert!(!in_flight(&seat, &native));
+    assert_eq!(ticks_of(&seat, &native), ticks + 1, "the tick that died landed");
+    assert!(
+        matches!(&mounted_of(&seat, &native).lock().unwrap().slot, Slot::Ready(view) if view.fault.is_none()),
+        "a second death faulted the view"
+    );
+}
+
+/// In the background `hide` begins no call into the view (SPEC §4.3): its
+/// last update (the view told it is hidden) is not run.
+#[gpui_kit::test]
+fn hide_in_the_background_begins_no_tick(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "hide-background";
+    let (seat, _, mut native, pump) = deferred(cx, PROGRAM, &five_trees());
+    draw_now(&mut native);
+    let ticks = ticks_of(&seat, &native);
+    pump.hold();
+    native.update(|_, cx| cx.set_global(crate::runtime::Backgrounded(true)));
+    let intents = native.update(|_, cx| seat.update(cx, |seat, cx| seat.hide(cx)));
+    assert!(intents.is_empty());
+    assert_eq!(pump.held(), 0, "hide began a tick in the background");
+    assert_eq!(ticks_of(&seat, &native), ticks);
 }
 
 /// A death replay (SPEC §6.5): the instance dies with a tick in flight,
@@ -2123,7 +2406,7 @@ fn a_death_under_hide_is_no_fault_of_the_views(cx: &mut TestAppContext) {
     // the props the hidden pane's last update delivers
     mounted.lock().unwrap().props = Some(b"last".to_vec());
     pump.dying(true);
-    let intents = native.update(|_, cx| seat.update(cx, |seat, _| seat.hide()));
+    let intents = native.update(|_, cx| seat.update(cx, |seat, cx| seat.hide(cx)));
     pump.dying(false);
     crate::contract::testing::snapshot_every_for_test(None);
     assert!(intents.is_empty());

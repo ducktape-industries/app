@@ -24,21 +24,27 @@ pub(super) enum Redraw {
 /// What a fresh instance did with the state the drawn view left it. A trap
 /// is not one of these — it takes the instance with it and is the load's
 /// error. A refusal is the view's own word, reported before it builds
-/// anything, so the instance is untouched and can start clean instead.
+/// anything, so the instance is untouched and can start clean instead. A
+/// death (`Fault::Runner`, its page gone) is no answer of the view's: the
+/// state is still in hand, and the replacement waits for another try.
 pub(super) enum Restored {
     Carried,
     Refused(String),
+    Died(String),
 }
 
 /// What a death replay starts from (SPEC §6.5): the last accepted snapshot
 /// (`None`: the view's `init`), when it was taken, and every tick's events
 /// since, in order. An instance that dies is restored from it and replayed
-/// to where it was (`revive`).
+/// to where it was (`revive`). `asked`: the view's tick count when a new
+/// snapshot was last asked for, so one is asked at most once per tick,
+/// whatever it answered (taken, refused, or the page died).
 #[derive(Clone)]
 pub(super) struct Kept {
     pub(super) snapshot: Option<Vec<u8>>,
     pub(super) at: Instant,
     pub(super) batches: Vec<Vec<u8>>,
+    pub(super) asked: Option<u64>,
 }
 
 impl Kept {
@@ -48,6 +54,7 @@ impl Kept {
             snapshot: None,
             at: Instant::now(),
             batches: Vec::new(),
+            asked: None,
         }
     }
 
