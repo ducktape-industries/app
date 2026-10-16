@@ -101,7 +101,7 @@ const dt = (() => {
         return returned(e, bytes);
     }
 
-    async function seat(id, name) {
+    async function seatView(id, name) {
         let module;
         try {
             module = await compiled(name);
@@ -163,7 +163,7 @@ const dt = (() => {
                     fuel = BigInt(arg);
                     return `R 0 0 ${btoa(typeof WebAssembly)}`;
                 case "seat":
-                    return await seat(id, name);
+                    return await seatView(id, name);
                 case "describe":
                     return await describe(name, fromBase64(arg));
                 case "forget":

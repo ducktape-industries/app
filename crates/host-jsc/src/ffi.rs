@@ -36,7 +36,7 @@ use objc2::{
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{
-    NSData, NSDictionary, NSError, NSString, NSURL, NSURLRequest, NSURLResponse,
+    NSData, NSDictionary, NSError, NSHTTPURLResponse, NSString, NSURL, NSURLRequest,
 };
 use objc2_ui_kit::{UIApplication, UIResponder, UIView, UIWindowScene};
 use objc2_web_kit::{
@@ -261,13 +261,24 @@ fn serve(task: &ProtocolObject<dyn WKURLSchemeTask>) {
         unsafe { task.didFailWithError(&error) };
         return;
     };
-    let response = NSURLResponse::initWithURL_MIMEType_expectedContentLength_textEncodingName(
-        NSURLResponse::alloc(),
-        &url,
-        Some(&NSString::from_str(mime)),
-        isize::try_from(bytes.len()).unwrap_or(isize::MAX),
-        None,
+    // an HTTP response: a plain `NSURLResponse` reaches the page's `fetch`
+    // as status 0, which is no `ok`
+    let headers = NSDictionary::<NSString, NSString>::from_slices(
+        &[&*NSString::from_str("Content-Type")],
+        &[&*NSString::from_str(mime)],
     );
+    let Some(response) = NSHTTPURLResponse::initWithURL_statusCode_HTTPVersion_headerFields(
+        NSHTTPURLResponse::alloc(),
+        &url,
+        200,
+        Some(&NSString::from_str("HTTP/1.1")),
+        Some(&headers),
+    ) else {
+        let error = NSError::new(500, &NSString::from_str("industries.ducktape.views"));
+        // SAFETY: the task has not been answered
+        unsafe { task.didFailWithError(&error) };
+        return;
+    };
     // SAFETY: the task's one response, its data and its end, in order
     unsafe {
         task.didReceiveResponse(&response);
