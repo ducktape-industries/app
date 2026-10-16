@@ -10,8 +10,10 @@
 //! and one more, and at most two types per type; per function, one
 //! parameter, one local, and code whose size is bounded here operator by
 //! operator ([`added`]). The bound is what is checked, not the pass's actual
-//! output: a view is refused a little before the pass would reach a limit,
-//! and nothing is metered to find out.
+//! output: a view is refused before the pass would reach a limit, and
+//! nothing is metered to find out. How far before depends on the body: the
+//! bound counts each operator's most, so a loop-heavy body is refused at up
+//! to about three times the size the pass would actually make of it.
 use wasmparser::{
     BinaryReaderError, BlockType, CompositeInnerType, ExternalKind, FuncValidator,
     FuncValidatorAllocations, FunctionBody, Operator, Parser, Payload, RefType, TypeRef, ValType,
