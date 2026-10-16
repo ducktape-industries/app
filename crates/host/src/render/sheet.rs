@@ -2,8 +2,9 @@
 //! Under a Compact body (`design::width::COMPACT_BELOW`, the class the
 //! view itself reads off `Event::Viewport`) it docks to the bottom edge at
 //! its first detent, is dragged by its handle between its detents, and a
-//! release nearer the bottom than the first detent dismisses it; at a wider
-//! body it is a centred modal. Either way it covers the view's whole body,
+//! release nearer the bottom than the first detent dismisses it; with no
+//! detents it is as tall as its child, at most the body, and its one rest
+//! is there. At a wider body it is a centred modal. Either way it covers the view's whole body,
 //! not the box it sits in: the walk builds it where the node is (its ids,
 //! fields and focus keep their paths) and `ViewTree::render` lays it over
 //! the root. The view owns whether it is open: a dismissal (the scrim, a
@@ -14,11 +15,13 @@ use super::*;
 use gpui_kit::prelude::FluentBuilder as _;
 
 /// What the host keeps of a drawn sheet between frames: the detent it
-/// rests at, and the drag in progress.
+/// rests at, the drag in progress, and, for a sheet with no detents, the
+/// height its child gave it at rest, where a drag starts and snaps back to.
 #[derive(Default)]
 pub(super) struct SheetState {
     rest: usize,
     drag: Option<Drag>,
+    fit: Option<Pixels>,
 }
 
 impl SheetState {
@@ -71,12 +74,15 @@ impl ViewTree {
         let compact = f64::from(f32::from(body.width)) < design::width::COMPACT_BELOW;
         let palette = crate::theme::palette(cx);
         let state = self.sheets.entry(path.clone()).or_default();
-        // sanitize keeps one to eight ascending fractions in (0, 1]
-        let rest = detents[state.rest.min(detents.len() - 1)];
-        let height = match &state.drag {
-            Some(drag) => drag.now,
-            None => body.height * rest,
+        // sanitize keeps at most eight ascending fractions in (0, 1]; with
+        // none the panel is laid out as tall as its child, and only a drag
+        // gives it a height
+        let height = match (&state.drag, detents.len()) {
+            (Some(drag), _) => Some(drag.now),
+            (None, 0) => None,
+            (None, len) => Some(body.height * detents[state.rest.min(len - 1)]),
         };
+        let fit = state.fit;
         let content = self.node(child, window, cx);
         let dismiss = *on_dismiss;
         let mut panel = div()
@@ -92,11 +98,15 @@ impl ViewTree {
             // a press on the panel is the panel's, not the scrim's
             .occlude();
         if compact {
-            let top = *detents.last().unwrap_or(&1.);
             let view = cx.entity().downgrade();
             let (pressed, moved, released) = (path.clone(), path.clone(), path.clone());
-            let heights: Vec<Pixels> = detents.iter().map(|d| body.height * *d).collect();
-            let highest = body.height * top;
+            // a fitted sheet rests at the height its child gave it, measured
+            // as it last lay at rest
+            let heights: Vec<Pixels> = match detents.is_empty() {
+                true => fit.into_iter().collect(),
+                false => detents.iter().map(|d| body.height * *d).collect(),
+            };
+            let highest = heights.last().copied().unwrap_or(body.height);
             let grab = div()
                 .id(host_id("sheet-handle"))
                 .flex_none()
@@ -118,10 +128,11 @@ impl ViewTree {
                     cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                         cx.stop_propagation();
                         if let Some(state) = this.sheets.get_mut(&pressed) {
+                            let start = height.or(state.fit).unwrap_or(highest);
                             state.drag = Some(Drag {
                                 from: event.position.y,
-                                start: height,
-                                now: height,
+                                start,
+                                now: start,
                             });
                         }
                     }),
@@ -185,15 +196,37 @@ impl ViewTree {
             )
             .absolute()
             .size_0();
+            // the height a fitted panel's child gives it, taken at rest:
+            // mid-drag the panel is as tall as the drag
+            let measure = detents.is_empty().then(|| {
+                let view = cx.entity().downgrade();
+                let measured = path.clone();
+                canvas(
+                    move |bounds, _, cx| {
+                        let _ = view.update(cx, |this, _| {
+                            if let Some(state) = this.sheets.get_mut(&measured)
+                                && state.drag.is_none()
+                            {
+                                state.fit = Some(bounds.size.height);
+                            }
+                        });
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0()
+            });
             panel = panel
                 .w_full()
-                .h(height)
+                .when_some(height, |panel, height| panel.h(height))
+                .max_h(body.height)
                 .flex_none()
                 // a hairline over the panel, square corners: the Expo sheet
                 .border_t_1()
                 .border_color(crate::theme::hsla(palette.border_strong))
                 .child(grab)
-                .child(capture);
+                .child(capture)
+                .children(measure);
         } else {
             panel = panel
                 .w_full()

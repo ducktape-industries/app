@@ -173,8 +173,11 @@ impl Account {
     /// layout: every way in shows the layout step instead, once
     /// (`layout_chosen`).
     fn show(&self, screen: Screen, cx: &mut Context<Self>) {
+        // the layout is asked once, on a device that has more than one
+        let asked =
+            !contract::os().facts().one_layout && self.prefs.read(cx).get().layout.is_none();
         let screen = match screen {
-            Screen::Desk if self.prefs.read(cx).get().layout.is_none() => Screen::Layout,
+            Screen::Desk if asked => Screen::Layout,
             screen => screen,
         };
         self.screen.update(cx, |current, cx| {

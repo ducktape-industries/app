@@ -24,8 +24,9 @@ perf-deep = ["gpui-kit/profiler"]
 # the web piece draws pages through CEF (`render/web.rs`, `crates/web`)
 web = ["dep:ducktape-web", "ducktape-web/cef"]
 # the test helpers the desktop shell's tests reach (`*_for_test`,
-# `test_style`, ...): on for every test build, never for a shipped one
-test-support = ["gpui-kit/test-support"]
+# `test_style`, ...): on for every test build, never for a shipped one;
+# `wat` turns the test views' text into the wasm a runner takes
+test-support = ["gpui-kit/test-support", "dep:wat"]
 
 [dependencies]
 gpui-kit = "=0.7.3"
@@ -40,7 +41,7 @@ sha2.workspace = true
 identity.workspace = true
 # The roster's full query surface: its programs and its view-only entries.
 blob.workspace = true
-programs = { git = "https://github.com/ducktape-industries/programs", rev = "d5923b1c42d50e2421997acca9cba1cded90bc64", package = "programs" }
+programs = { git = "https://github.com/ducktape-industries/programs", rev = "74a6110699e3b328124dbc815ad64659028bf852", package = "programs" }
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -49,6 +50,17 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # (`render/svg_limits.rs`): gpui's own parser, already in the graph.
 usvg = { version = "0.46.0", default-features = false }
 tokio = { version = "1", features = ["fs", "macros", "net", "rt", "sync", "time"] }
+tokio-tungstenite.workspace = true
+# The live lane (`backend/live.rs`): QUIC to the UDP port the node's
+# `/v1/live/port` names, the node's key pinned by reading it out of its
+# certificate (rustls-webpki, already rustls's own), the websocket beside
+# it, and the wire's types from core's leaf crate.
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["alloc", "ring"] }
+live-wire.workspace = true
+# the node address's host, which the QUIC dial resolves: reqwest's own parser, already in the graph
+url = "2"
 tracing.workspace = true
 view-wire = { workspace = true, features = ["manifest"] }
 program.workspace = true
@@ -56,6 +68,12 @@ abi.workspace = true
 ducklink.workspace = true
 wasmtime.workspace = true
 wasmparser = "0.251"
+# `accepts`: the one rule every view runner applies before it compiles a
+# view (wasm-mobile SPEC §6.2), so wasmtime and JavaScriptCore take and
+# refuse the same views
+view-meter = { path = "../view-meter" }
+# feature `test-support` only (wasmtime's own `wat` already in the graph)
+wat = { version = "1", optional = true }
 libc.workspace = true
 sha1 = "0.10"
 # the node's client, shared with the phone; a signer is whatever the shell
@@ -65,6 +83,15 @@ noded-client = { path = "../noded-client" }
 ducktape-web = { path = "../web", optional = true }
 
 [dev-dependencies]
+# paused time for the live session's keep-alive and idle tests
+tokio = { version = "1", features = ["test-util"] }
+# `backend/live.rs`'s test node: a self-signed certificate of an ed25519 key, as halo makes its own
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+# the live tests' node: its key's verifier, as the handshake pins it
+keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a0151a411c3558453c34bb8272b93dfc428cb74", package = "keyscheme", features = ["testkit"] }
+# the consent card's words for a validators' vote
+valset = { git = "https://github.com/ducktape-industries/programs", rev = "74a6110699e3b328124dbc815ad64659028bf852", package = "valset" }
+borsh.workspace = true
 # the tests' keys: commonware's ed25519, through noded-client's impl
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -75,7 +102,7 @@ gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tempfile.workspace = true
 # a fake node's changes socket (`runtime/kernel/node/tests.rs`)
 tokio-tungstenite.workspace = true
-blobs = { git = "https://github.com/ducktape-industries/programs", rev = "d5923b1c42d50e2421997acca9cba1cded90bc64", package = "blobs" }
+blobs = { git = "https://github.com/ducktape-industries/programs", rev = "74a6110699e3b328124dbc815ad64659028bf852", package = "blobs" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # test-support: its headless renderer, which `render/tests/picture_pixels.rs`

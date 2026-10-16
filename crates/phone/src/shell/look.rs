@@ -57,11 +57,36 @@ pub const BIG_TITLE: Role = Role {
     size: 22.,
     line: 27.,
 };
+/// a header's title, 17 / 21
+pub const TITLE: Role = Role {
+    size: 17.,
+    line: 21.,
+};
+/// eyebrow 11 / 14, mono, upper case: the code box's label
+pub const EYEBROW: Role = Role {
+    size: 11.,
+    line: 14.,
+};
+/// the join code, 36 / 44, mono
+pub const DISPLAY: Role = Role {
+    size: 36.,
+    line: 44.,
+};
 
 /// The header (theme.ts `size.header`).
 pub const HEADER: f32 = 56.;
 /// A press target's side (`size.hit`).
 pub const HIT: f32 = 44.;
+/// A field, a plain button (`size.control`).
+pub const CONTROL: f32 = 44.;
+/// A primary button (`size.primary`).
+pub const PRIMARY: f32 = 48.;
+/// A small button (`size.small`).
+pub const SMALL_BUTTON: f32 = 36.;
+/// A row with a caption (`size.rowTall`).
+pub const ROW_TALL: f32 = 56.;
+/// A row's lead icon (`size.icon.row`).
+pub const ICON_ROW: f32 = 18.;
 /// The tab bar, over the bottom inset (`size.tabBar`).
 pub const TAB_BAR: f32 = 56.;
 /// A screen's side inset (`size.gutter` = spacing `block`).
@@ -72,10 +97,6 @@ pub const ICON_HIT: f32 = 22.;
 pub const ICON_EMPTY: f32 = 28.;
 /// The avatar in a list or header (`size.avatar.list`).
 pub const AVATAR: f32 = 32.;
-/// A field's box (`size.control`).
-pub const CONTROL: f32 = 44.;
-/// A primary button (`size.primary`).
-pub const PRIMARY: f32 = 48.;
 /// A sheet row (`size.sheetRow`).
 pub const SHEET_ROW: f32 = 52.;
 /// The icon in a sheet row (`size.icon.sheet`).
@@ -85,11 +106,20 @@ pub const SHEET_INSET: f32 = 20.;
 
 /// The design crate's spacing ladder (`spacing`).
 pub mod gap {
+    /// `xxs`
     pub const XXS: f32 = 4.;
+    /// `xs`
+    pub const XS: f32 = 6.;
+    /// `sm`
     pub const SM: f32 = 8.;
+    /// `md`
     pub const MD: f32 = 10.;
+    /// `lg`
     pub const LG: f32 = 12.;
+    /// `block`
     pub const BLOCK: f32 = 16.;
+    /// `xl`
+    pub const XL: f32 = 24.;
 }
 
 /// Text in `role`, `weight`, `color`, in the app's face.
@@ -167,5 +197,7 @@ colours!(
     faint,
     accent,
     primary,
-    primary_foreground
+    primary_foreground,
+    danger,
+    danger_soft
 );

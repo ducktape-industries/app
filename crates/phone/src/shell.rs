@@ -4,8 +4,9 @@
 //! inset, memory pressure, the consent queue, a link), and in the gate
 //! build the AX door.
 //!
-//! The window draws the [`stack`]: a tab root (Home, Open) under the tab
-//! bar, or the program on top, its view seated full screen under the
+//! The window draws the join ([`join`]) until the phone is on a network
+//! with an account, then the [`stack`]: a tab root (Home, Open) under the
+//! tab bar, or the program on top, its view seated full screen under the
 //! capsule; a program's page (its capabilities, from the capsule's About)
 //! over either; a sheet over all (the account menu, the capsule's menu,
 //! the consent sheet). Each program opened keeps one seat, placed with the
@@ -14,13 +15,13 @@
 
 mod about;
 mod home;
+mod join;
 mod look;
 mod running;
 mod sheet;
 pub mod stack;
 
-use ducktape_host::contract::{Boot, OsServices, RunnerConfig, Signal, SoftKeyboard};
-use ducktape_host::runner::WasmtimeRunner;
+use ducktape_host::contract::{Boot, OsServices, Signal, SoftKeyboard};
 use ducktape_host::runtime::notify::{Opened as Banner, Permission};
 use ducktape_host::runtime::{Back, consent};
 use ducktape_host::session::{Opening, Place, SeatsEvent, Session, SessionEvent, Shared};
@@ -88,15 +89,7 @@ pub fn launch(os: Arc<dyn OsServices>, cx: &mut App) {
         tracing::error!(target: "ducktape::phone", %error, "the bundled faces could not be registered");
     }
     ducktape_host::theme::configure_native_theme(cx);
-    // ponytail: iOS runs wasmtime too until the JSC runner lands (lane J
-    // part 2): the simulator JITs; a device refuses at `prepare`, and the
-    // seat says so in its standin.
-    let runner = Arc::new(WasmtimeRunner::new(RunnerConfig {
-        // an arm64 guest's trap under wasmtime's signal handlers kills an
-        // Android process (SPEC C3)
-        signals_based_traps: !cfg!(target_os = "android"),
-        cache_dir: Some(os.dirs().cache.join("view-code")),
-    }));
+    let runner = crate::os::runner(os.dirs());
     let boot = Boot {
         os,
         runner,
@@ -254,6 +247,7 @@ fn open_door(cx: &mut App) {
                 })
                 .unwrap_or_default()
         };
+        // whether every seat's tick has landed: a read parks until then
         let settle = move |cx: &mut App| seats.update(cx, |seats, cx| seats.settle(cx));
         let keep = |_: &Window, _: &App| None;
         let chords = Vec::new;
@@ -268,10 +262,11 @@ fn open_door(cx: &mut App) {
     .detach();
 }
 
-/// The window's root: the stack over the host's entities, the seats of the
-/// programs open, and the sheet over them.
+/// The window's root: the join, or the stack over the host's entities, the
+/// seats of the programs open, and the sheet over them.
 pub struct Root {
     shared: Shared,
+    join: Entity<join::Join>,
     stack: Entity<Stack>,
     sheet: Option<Sheet>,
     /// The program whose page is over the stack.
@@ -307,6 +302,7 @@ impl Root {
         let mut subscriptions = vec![
             cx.observe(&shared.rail, |root, _, cx| root.rail_moved(cx)),
             cx.observe(&shared.session, |_, _, cx| cx.notify()),
+            cx.observe(&shared.screen, |_, _, cx| cx.notify()),
             cx.observe(&shared.account, |_, _, cx| cx.notify()),
             cx.observe(&shared.toast, |_, _, cx| cx.notify()),
             cx.observe(&shared.prefs, |_, _, cx| cx.notify()),
@@ -345,10 +341,12 @@ impl Root {
         ];
         subscriptions.extend(crate::os::follow(window, cx));
         gpui_kit::component::Theme::sync_system_appearance(Some(window), cx);
+        let join = cx.new(|cx| join::Join::new(shared.clone(), window, cx));
         // an Activity made again finds the rail already read
         let known = home::all_read(shared.rail.read(cx).rows());
         Self {
             shared,
+            join,
             stack,
             sheet: None,
             about: None,
@@ -477,10 +475,17 @@ impl Root {
         cx.notify();
     }
 
-    /// Back (Android's button, iOS's edge): a sheet closes first, then a
-    /// program's page; else the view on top goes back inside itself when its last frame's root asks
-    /// to hear it; else the stack pops; at Home, the OS's own (SPEC §7.6).
+    /// Back (Android's button, iOS's edge): on the join, the code goes back
+    /// to the address and the address is the OS's own; else a sheet closes
+    /// first, then a program's page; else the view on top goes back inside
+    /// itself when its last frame's root asks to hear it; else the stack
+    /// pops; at Home, the OS's own (SPEC §7.6).
     fn back(&mut self, cx: &mut Context<Self>) {
+        match join::step(*self.shared.screen.read(cx).get()) {
+            Some(join::Step::Code) => return self.join.update(cx, |join, cx| join.leave(cx)),
+            Some(join::Step::Node) => return crate::os::back_at_root(),
+            None => {}
+        }
         if self.sheet.is_some() {
             return self.close_sheet(cx);
         }
@@ -603,6 +608,8 @@ impl Root {
                 cx.notify();
             }
             SeatsEvent::OpenLink(_, _, link) => self.open_link(link, cx),
+            // the reader's account: the account menu, as from a header's avatar
+            SeatsEvent::Show(_, _, view_wire::methods::Place::Account) => self.account_sheet(cx),
             // the desktop widens a window to a view that came; a phone
             // never does
             SeatsEvent::Seated(_) => {}
@@ -946,6 +953,20 @@ impl Render for Root {
             .flex_col()
             .bg(palette.background())
             .text_color(palette.foreground());
+        if join::step(*self.shared.screen.read(cx).get()).is_some() {
+            return root.child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .pt(edges.top)
+                    .pl(edges.left)
+                    .pr(edges.right)
+                    .pb(edges.bottom)
+                    .child(self.join.clone()),
+            );
+        }
         let toast_bottom;
         let about = self
             .about

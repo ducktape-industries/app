@@ -205,6 +205,12 @@ pub struct OsFacts {
     /// What this device's key is labelled on the account it joins
     /// (`identity::DeviceKey.label`): "Desktop", "iPhone", ...
     pub device_label: &'static str,
+    /// What the person calls this device in a sentence ("this phone's
+    /// network"): "phone", "computer".
+    pub device_noun: &'static str,
+    /// The device has one layout: the desk comes without the layout
+    /// question (`Account::show`). A phone.
+    pub one_layout: bool,
 }
 
 /// Values that differ by device and have a measured owner (SPEC §4.5).
@@ -342,23 +348,29 @@ pub fn runner() -> &'static Arc<dyn ViewRunner> {
 /// may be called from the kernel's blocking pool and may block it, NEVER
 /// from the window thread (a JSC impl posts to main and blocks the pool
 /// thread on a oneshot; main never waits on the pool). `instantiate` is
-/// called on the thread that seats the view; every `begin_*` on the
-/// seat's thread (the window thread), and each answers through the seat's
+/// called today on two threads, and on both a seating outside a swap or a
+/// revive takes the answer only if it landed before the call returned (a
+/// runner that answers later fails those loads, without waiting): a loader
+/// thread seats a first load, the developer override and
+/// `Preload::Seat`'s instance; a pane claiming a compiled seat
+/// (`View::start`) is seated on the window thread, from `Seat::new`
+/// (`mounted`), or on a loader thread when the claim lands with a load.
+/// The seat's thread (the window thread) seats a swap's replacement, a
+/// sibling after a restore trap, and a revive, and waits for the answer.
+/// Lane J part 2 moves every seating to the seat's thread. Every `begin_*`
+/// is called on the seat's thread, and each answers through the seat's
 /// [`Landing`], at once or later.
 pub trait ViewRunner: Send + Sync + 'static {
     /// Compile (wasmtime) or validate + meter + cache (JSC) `code`, whose
     /// sha256 is `hash`, for a view whose linear memory may reach
     /// `view_bytes` (the `memory.view_bytes` setting). Nothing runs. The
-    /// answer is where the code came from, for the load's log (`memory`,
-    /// `disk`, `cold`, ...).
-    fn prepare(
-        &self,
-        hash: [u8; 32],
-        code: &[u8],
-        view_bytes: usize,
-    ) -> Result<&'static str, Failure>;
-    /// Seat prepared code: lands [`Landed::Seated`] (or a `Fault`) on
-    /// `land`, which the instance keeps for every later answer.
+    /// code stays prepared while the answer's hold is held.
+    fn prepare(&self, hash: [u8; 32], code: &[u8], view_bytes: usize) -> Result<Prepared, Failure>;
+    /// Seat the prepared code `hash` names: lands [`Landed::Seated`] (or a
+    /// `Fault`) on `land`, which the instance keeps for every later answer.
+    /// Code nothing holds any more lands a `Fault::Runner`. Right after a
+    /// page died it seats the view on a new page (see [`ViewInstance`]'s
+    /// dead-page rules).
     fn instantiate(&self, hash: [u8; 32], seat: SeatId, land: Landing);
     /// `program.describe`: run the import-free describe module `module`
     /// (sha256 `hash`) on `op`, bounded by the same fuel; `None` on any
@@ -371,12 +383,81 @@ pub trait ViewRunner: Send + Sync + 'static {
     ) -> Option<view_wire::methods::Description>;
 }
 
+/// Where prepared code came from, for the load's log and counters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodeSource {
+    /// Prepared before, and still held: nothing compiled.
+    Memory,
+    /// The runner's disk cache.
+    Disk,
+    /// Compiled (wasmtime) or validated and metered (JSC) now.
+    Cold,
+}
+
+impl CodeSource {
+    /// How the load's log (`code=`) and its counter (`compile.*`) name it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Memory => "memory",
+            Self::Disk => "disk",
+            Self::Cold => "cold",
+        }
+    }
+}
+
+/// [`ViewRunner::prepare`]'s answer: where the code came from, and the
+/// runner's hold on it. Whatever may still seat the code holds the hold (a
+/// seat's compiled view, a parked swap, a load about to seat it); a running
+/// instance holds its own code. A runner may free code nothing holds.
+#[derive(Clone)]
+pub struct Prepared {
+    /// Where the code came from.
+    pub source: CodeSource,
+    /// The runner's hold on the code: opaque to the host.
+    pub hold: Arc<dyn std::any::Any + Send + Sync>,
+}
+
 /// One running view: the five exports (`alloc` and `memory` internal to the
 /// impl). `Send` so the seat registry may hold it; every entry is called
 /// on the seat's thread and is completion-shaped: it returns at once and
-/// the answer lands on the seat's [`Landing`]. `Any` so a test can reach
-/// the impl behind the box.
-pub trait ViewInstance: Send + std::any::Any {
+/// the answer lands on the seat's [`Landing`].
+///
+/// One call in flight per instance: the host begins a call only once the
+/// answer to the one before it landed (a tick in flight is `View::ticking`;
+/// a swap's or a kept snapshot's sequence owns the instance meanwhile,
+/// `Mounted::owned`), so each answer is the answer to the last call begun.
+/// Each call lands exactly one [`Landed`], once.
+///
+/// Dead pages (SPEC §6.5; the host relies on every rule here):
+/// - Every call into a dead page lands `Fault::Runner`, never nothing: the
+///   call in flight when the page died, and every call begun on the
+///   instance after, until it is dropped. A call that lands nothing leaves
+///   its seat waiting for good.
+/// - [`ViewRunner::instantiate`] right after a death seats the view on a
+///   new page: the host's revive asks at once, and a refusal there (a page
+///   still reloading) stops the view. A runner that needs time takes it
+///   before it lands `Seated`.
+/// - The host revives each seat itself (`View::revive`: a new instance,
+///   restored from the kept snapshot, the kept batches replayed): a runner
+///   never restores or replays a seat on its own. This replaces SPEC §6.5's
+///   runner-side restore.
+/// - A dead instance keeps holding its code until it is dropped: a revive
+///   seats the same code by hash while the dead instance is still the
+///   view's.
+///
+/// Ending: the host calls [`Self::stop`] on an instance it replaces while
+/// it lives (a revive's dead one). Every other instance is dropped, and
+/// dropping one stops it, as `stop` does. Drop runs on whichever thread
+/// drops it and must not wait on the seat's thread, which may be waiting
+/// on a lock the dropping thread holds: the seat's thread (a swap's
+/// install), a loader's (an install replacing the view, a `Loaded::Empty`
+/// install, both under the seat's lock), or the roster thread's (a
+/// program's `retire`, under the registry's and the seat's locks).
+/// dispatch2's `MainThreadBound` drops its value through `run_on_main`,
+/// which off the main thread is `exec_sync` on the main queue and waits on
+/// it: a page handle is posted to the main thread (`exec_async`) to be
+/// dropped there, not dropped through it.
+pub trait ViewInstance: Send {
     /// The sha256 of the code this is an instance of.
     fn code_hash(&self) -> [u8; 32];
     /// The `init` export: lands `Inited` or a `Fault`.
@@ -394,12 +475,26 @@ pub trait ViewInstance: Send + std::any::Any {
     fn fuel_used(&self) -> u64;
     /// The view's linear memory, in bytes.
     fn memory_bytes(&self) -> usize;
-    /// Ends the instance.
+    /// Ends the instance. Dropping it ends it too.
     fn stop(self: Box<Self>);
+    /// The instance's linear memory, for the host's own tests that read
+    /// it; only the wasmtime instance lends one.
+    #[cfg(test)]
+    fn memory_for_test(&self) -> &[u8] {
+        unimplemented!("only the wasmtime instance lends its memory to a test")
+    }
+    /// [`Self::memory_for_test`], for the tests that script it.
+    #[cfg(test)]
+    fn memory_mut_for_test(&mut self) -> &mut [u8] {
+        unimplemented!("only the wasmtime instance lends its memory to a test")
+    }
 }
 
-/// Which seat an instance is for: (program, instance), the seat registry's
-/// key.
+/// Which seat an instance is for: (program, instance). Today the host names
+/// every instance `(program, 0)`, whichever pane it is for (lane J part 2
+/// carries the pane's), and during a swap or a revive two live instances
+/// share one id: it names a program's seat for a runner's own logs and
+/// bookkeeping, and is no key two instances may not share.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SeatId(pub &'static str, pub u64);
 
@@ -407,7 +502,7 @@ pub struct SeatId(pub &'static str, pub u64);
 /// for an instance and kept by the instance; a runner `send`s each answer
 /// into it from wherever the answer appears.
 #[derive(Clone, Debug)]
-pub struct Landing(pub async_channel::Sender<Landed>);
+pub struct Landing(async_channel::Sender<Landed>);
 
 impl Landing {
     /// A landing and the seat's end of it.
@@ -487,19 +582,13 @@ impl std::fmt::Display for Fault {
 }
 
 /// `prepare`'s refusals: `Unsupported` names the operator or feature this
-/// runner does not run (the same answer on every runner); `Wire` is the
-/// manifest's `wire_id` against this app's; `Runner` the runner's own.
+/// runner does not run (the same answer on every runner); `Runner` the
+/// runner's own. A view built against another wire is not refused: it runs,
+/// and what fails names both wires.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Failure {
     /// Code this runner does not run.
     Unsupported(String),
-    /// Built against another wire than this app's.
-    Wire {
-        /// The wire the view was built against.
-        built: String,
-        /// The wire this app speaks.
-        app: String,
-    },
     /// The runner's own failure.
     Runner(String),
 }
@@ -508,10 +597,6 @@ impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unsupported(words) | Self::Runner(words) => f.write_str(words),
-            Self::Wire { built, app } => write!(
-                f,
-                "this view was built against wire {built}; this app speaks {app}"
-            ),
         }
     }
 }
@@ -755,6 +840,8 @@ pub mod testing {
                 rss_unit: 1024,
                 touch_first: TOUCH_FIRST.get(),
                 device_label: "Test",
+                device_noun: "computer",
+                one_layout: false,
             }
         }
 

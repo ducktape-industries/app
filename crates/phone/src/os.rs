@@ -20,7 +20,7 @@ pub mod ios {
 
 use ducktape_host::contract::{
     Banners, Dirs, Inbound, KeyRefusal, KeyStorage, Limits, MintInvite, OsFacts, OsServices,
-    Preload, Signal, SoftKeyboard,
+    Preload, RunnerConfig, Signal, SoftKeyboard, ViewRunner,
 };
 use ducktape_host::runtime::Answered;
 use ducktape_host::runtime::notify::{Click, Notice};
@@ -134,6 +134,17 @@ impl PhoneOs {
     }
 }
 
+/// What runs view code here: wasmtime on both phones until the iOS JSC
+/// runner lands, its compiled code kept under the cache. On Android without
+/// signal-based traps, which make every arm64 guest trap a clean error on
+/// libc 0.2.189 (wasm-mobile SPEC C3, S0-android §A).
+pub fn runner(dirs: &Dirs) -> Arc<dyn ViewRunner> {
+    Arc::new(ducktape_host::runner::WasmtimeRunner::new(RunnerConfig {
+        signals_based_traps: !cfg!(target_os = "android"),
+        cache_dir: Some(dirs.cache.join("view-code")),
+    }))
+}
+
 /// Banners are not posted yet: `post` answers that nothing went up.
 struct NoBanners;
 
@@ -225,6 +236,8 @@ impl OsServices for PhoneOs {
             touch_first: true,
             // the Expo build's label for this key (mobile `node.rs:344`)
             device_label: "Phone",
+            device_noun: "phone",
+            one_layout: true,
         }
     }
 
@@ -234,15 +247,16 @@ impl OsServices for PhoneOs {
             // killer is the owner of this bound (SPEC §4.5)
             loaders: 1,
             preload: Preload::Seat,
-            // wasmtime runs in this process: an instance dies only with the
-            // app (the JSC runner's page can die alone, and keeps 1 s)
+            // views run on wasmtime in this process on both phones until
+            // the iOS JSC runner lands (it keeps 1 s, SPEC §6.5): an
+            // instance cannot die without the app, so no replay is kept
             snapshot_every: None,
             snapshot_to_disk: true,
         }
     }
 
-    /// No view ships in the app yet (`views.lock`, SPEC §4.7): every view
-    /// the roster names is fetched.
+    /// No view ships in the app yet (the phone's `views.lock`, SPEC §4.7):
+    /// every one is the network's.
     fn bundled_view(&self, _: &abi::BlobId) -> Option<Vec<u8>> {
         None
     }

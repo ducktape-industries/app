@@ -13,6 +13,7 @@
 mod endpoints;
 pub mod identity;
 pub mod join;
+pub mod live;
 mod prefs;
 mod session;
 pub mod views;
@@ -109,11 +110,12 @@ pub fn user_error(message: String) -> String {
     message
 }
 
-/// A sentence for a connection attempt that never reached `origin`: the
-/// common shapes are `noded_client::words::unreachable`'s; any other text
-/// falls through [`user_error`] as it is.
-pub fn connect_error(origin: &str, message: String) -> String {
-    noded_client::words::unreachable(origin, &message).unwrap_or_else(|| user_error(message))
+/// A sentence for a connection attempt that never reached a node at
+/// `host`: the common shapes are `noded_client::words::unreachable`'s, in
+/// this device's noun; any other text falls through [`user_error`] as it is.
+pub fn connect_error(host: &str, message: String) -> String {
+    let device = crate::contract::os().facts().device_noun;
+    noded_client::words::unreachable(host, &message, device).unwrap_or_else(|| user_error(message))
 }
 
 /// Reads a device file through `parse`. A missing file is `Ok(None)`. A file

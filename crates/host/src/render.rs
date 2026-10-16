@@ -446,9 +446,9 @@ impl ViewTree {
             Node::Svg { .. } => self.vector(node, window, cx),
             Node::Canvas { .. } => self.drawing(node, cx),
             Node::Overlay { .. } => self.overlay(node, window, cx),
+            Node::Sheet { .. } => self.sheet(node, window, cx),
             Node::Anchored { .. } => self.anchored(node, window, cx),
             Node::Web { .. } => self.web(node, window, cx),
-            Node::Sheet { .. } => self.sheet(node, window, cx),
         };
         if entered_scope {
             self.authored_path.pop();

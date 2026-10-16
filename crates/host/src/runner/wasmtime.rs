@@ -1,6 +1,9 @@
 //! The wasmtime [`ViewRunner`]: the desktop's and Android's. It compiles a
-//! view's code with Cranelift on the loader thread (`prepare`), keeps the
-//! compiled module by the code's sha256, and runs each instance on the
+//! view's code with Cranelift on the loader thread (`prepare`), once
+//! `view_meter::accepts` takes it (the rule the iOS runner applies too, so
+//! a view runs on every platform or on none), finds the
+//! compiled module by the code's sha256 while anything holds it, and runs
+//! each instance on the
 //! calling thread: every `begin_*` lands its answer on the seat's
 //! [`Landing`] before it returns. Fuel ([`FUEL_PER_TICK`]) bounds each
 //! call; `ViewLimits` bounds memory and tables at the `memory.view_bytes`
@@ -11,10 +14,11 @@
 //! exports the bytes cross through (`wire::abi`).
 
 use crate::contract::{
-    FUEL_PER_TICK, Failure, Fault, Landed, Landing, RunnerConfig, SeatId, ViewInstance, ViewRunner,
+    CodeSource, FUEL_PER_TICK, Failure, Fault, Landed, Landing, Prepared, RunnerConfig, SeatId,
+    ViewInstance, ViewRunner,
 };
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use view_wire as wire;
 use wasmtime::{
     Cache, CacheConfig, Caller, Config, Engine, Linker, Memory, Module, OptLevel, Store, TypedFunc,
@@ -27,19 +31,18 @@ pub struct WasmtimeRunner {
     /// clone reads the hit counters the engine's copy writes.
     disk: Option<Cache>,
     /// Compiled view code by the sha256 of its bytes, with the
-    /// `view_bytes` it was last prepared for.
-    /// ponytail: kept for the process's life, one module per distinct view
-    /// code prepared (a deployment's, an override file's each time it
-    /// changes); release by hash when the seats that held it are gone if a
-    /// long session's memory says so.
-    code: Mutex<HashMap<[u8; 32], Prepared>>,
+    /// `view_bytes` it was last prepared for, while anything holds it
+    /// (`Prepared::hold`, a running instance): code nothing holds is freed,
+    /// and compiled again (from the disk cache) when it is prepared again.
+    code: Mutex<HashMap<[u8; 32], Compiled>>,
     /// Describe modules by the sha256 of their bytes; `None` for bytes that
     /// do not compile.
     described: Mutex<HashMap<[u8; 32], Option<Arc<Module>>>>,
 }
 
-/// Compiled code, and the `view_bytes` it was last prepared for.
-type Prepared = (Arc<Module>, usize);
+/// Compiled code, as long as something holds it, and the `view_bytes` it
+/// was last prepared for.
+type Compiled = (Weak<Module>, usize);
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
@@ -82,8 +85,13 @@ impl WasmtimeRunner {
     }
 
     fn instance(&self, hash: [u8; 32], land: &Landing) -> Result<WasmtimeInstance, Fault> {
-        let Some((module, view_bytes)) = lock(&self.code).get(&hash).cloned() else {
-            return Err(Fault::Runner("the view's code was not prepared".into()));
+        let held = lock(&self.code)
+            .get(&hash)
+            .and_then(|(module, view_bytes)| Some((module.upgrade()?, *view_bytes)));
+        let Some((module, view_bytes)) = held else {
+            return Err(Fault::Runner(
+                "the view's code is not prepared, or nothing holds it any more".into(),
+            ));
         };
         let mut store = Store::new(
             &self.engine,
@@ -137,15 +145,15 @@ impl WasmtimeRunner {
 }
 
 impl ViewRunner for WasmtimeRunner {
-    fn prepare(
-        &self,
-        hash: [u8; 32],
-        code: &[u8],
-        view_bytes: usize,
-    ) -> Result<&'static str, Failure> {
-        if let Some((_, bytes)) = lock(&self.code).get_mut(&hash) {
+    fn prepare(&self, hash: [u8; 32], code: &[u8], view_bytes: usize) -> Result<Prepared, Failure> {
+        if let Some((module, bytes)) = lock(&self.code).get_mut(&hash)
+            && let Some(module) = module.upgrade()
+        {
             *bytes = view_bytes;
-            return Ok("memory");
+            return Ok(Prepared {
+                source: CodeSource::Memory,
+                hold: module,
+            });
         }
         // compiled outside the lock, so unrelated views prepare at once; a
         // competing compile of the same code adopts the one kept first.
@@ -153,18 +161,25 @@ impl ViewRunner for WasmtimeRunner {
         // counter around the compile, and loaders compile concurrently on
         // purpose, so a hit landing from another thread can name a cold
         // compile `disk`.
+        view_meter::accepts(code).map_err(|refusal| Failure::Unsupported(refusal.to_string()))?;
         let before = self.disk.as_ref().map(Cache::cache_hits);
         let module =
             Module::new(&self.engine, code).map_err(|error| Failure::Runner(error.to_string()))?;
         let source = match (before, self.disk.as_ref().map(Cache::cache_hits)) {
-            (Some(before), Some(after)) if after > before => "disk",
-            _ => "cold",
+            (Some(before), Some(after)) if after > before => CodeSource::Disk,
+            _ => CodeSource::Cold,
         };
-        lock(&self.code)
-            .entry(hash)
-            .or_insert_with(|| (Arc::new(module), view_bytes))
-            .1 = view_bytes;
-        Ok(source)
+        let mut kept = lock(&self.code);
+        kept.retain(|_, (module, _)| module.strong_count() > 0);
+        let module = match kept.get(&hash).and_then(|(module, _)| module.upgrade()) {
+            Some(first) => first,
+            None => Arc::new(module),
+        };
+        kept.insert(hash, (Arc::downgrade(&module), view_bytes));
+        Ok(Prepared {
+            source,
+            hold: module,
+        })
     }
 
     fn instantiate(&self, hash: [u8; 32], _: SeatId, land: Landing) {
@@ -227,18 +242,6 @@ impl WasmtimeInstance {
         }
         Fault::Trap(first_line(error))
     }
-
-    /// The view's linear memory, for the tests that read it.
-    #[cfg(test)]
-    pub fn memory_for_test(&self) -> &[u8] {
-        self.exports.memory.data(&self.store)
-    }
-
-    /// The view's linear memory, for the tests that script it.
-    #[cfg(test)]
-    pub fn memory_mut_for_test(&mut self) -> &mut [u8] {
-        self.exports.memory.data_mut(&mut self.store)
-    }
 }
 
 impl ViewInstance for WasmtimeInstance {
@@ -293,6 +296,16 @@ impl ViewInstance for WasmtimeInstance {
     }
 
     fn stop(self: Box<Self>) {}
+
+    #[cfg(test)]
+    fn memory_for_test(&self) -> &[u8] {
+        self.exports.memory.data(&self.store)
+    }
+
+    #[cfg(test)]
+    fn memory_mut_for_test(&mut self) -> &mut [u8] {
+        self.exports.memory.data_mut(&mut self.store)
+    }
 }
 
 /// Reset the instruction allowance before entering the view.
@@ -525,8 +538,8 @@ mod tests {
             (func (export "restore") (param i32 i32) (result i64) i64.const 0))"#
         );
         let hash = [7; 32];
-        runner
-            .prepare(hash, code.as_bytes(), 4 * PAGE)
+        let _held = runner
+            .prepare(hash, &wat::parse_str(&code).expect("parses"), 4 * PAGE)
             .expect("compiles");
         let (land, landing) = Landing::channel();
         runner.instantiate(hash, SeatId("grow-past-maximum", 0), land);
@@ -539,5 +552,108 @@ mod tests {
             matches!(inited, Landed::Inited),
             "a grow after a refused one: {inited:?}"
         );
+    }
+
+    /// Compiled code is found while anything holds it (the hold `prepare`
+    /// answers, a running instance) and freed once nothing does: seating it
+    /// then lands the runner's fault, and preparing it again compiles it.
+    /// One rule on both sides (wasm-mobile SPEC §6.2): the runner prepares
+    /// what `view_meter::accepts` takes, the rule the iOS runner applies,
+    /// and refuses the rest as `Unsupported` in the meter's words. Each
+    /// refused shape is one wasmtime alone would compile.
+    #[test]
+    fn the_runner_takes_what_the_meter_accepts_and_nothing_else() {
+        let runner = WasmtimeRunner::new(RunnerConfig {
+            signals_based_traps: true,
+            cache_dir: None,
+        });
+        let view = |more: &str| {
+            format!(
+                r#"(module
+                (memory (export "memory") 1)
+                (func (export "alloc") (param i32) (result i32) i32.const 64)
+                {more})"#
+            )
+        };
+        let cases = [
+            ("a view", view(""), true),
+            ("a start function", view("(func $go) (start $go)"), false),
+            (
+                "an imported memory",
+                r#"(module (import "host" "memory" (memory 1)))"#.to_owned(),
+                false,
+            ),
+            (
+                "an export named as the meter's fuel",
+                view(r#"(global (export "gas_left") (mut i64) (i64.const 0))"#),
+                false,
+            ),
+            (
+                "SIMD",
+                view("(func (result v128) v128.const i64x2 0 0)"),
+                false,
+            ),
+            (
+                "a tail call",
+                view("(func $again return_call $again)"),
+                false,
+            ),
+        ];
+        for (nth, (what, text, takes)) in cases.into_iter().enumerate() {
+            let code = wat::parse_str(&text).expect("parses");
+            let meter = view_meter::accepts(&code);
+            assert_eq!(meter.is_ok(), takes, "the meter on {what}: {meter:?}");
+            assert_eq!(
+                runner.prepare([nth as u8; 32], &code, 4 * PAGE).err(),
+                meter
+                    .err()
+                    .map(|refusal| Failure::Unsupported(refusal.to_string())),
+                "the runner on {what}"
+            );
+        }
+    }
+
+    #[test]
+    fn code_nothing_holds_is_freed() {
+        let runner = WasmtimeRunner::new(RunnerConfig {
+            signals_based_traps: true,
+            cache_dir: None,
+        });
+        let code = r#"(module
+            (memory (export "memory") 1)
+            (func (export "alloc") (param i32) (result i32) i32.const 64)
+            (func (export "init"))
+            (func (export "tick") (param i32 i32) (result i64) i64.const 0)
+            (func (export "snapshot") (result i64) i64.const 0)
+            (func (export "restore") (param i32 i32) (result i64) i64.const 0))"#;
+        let hash = [8; 32];
+        let code = wat::parse_str(code).expect("parses");
+        let prepare = || runner.prepare(hash, &code, 4 * PAGE).expect("compiles");
+        let seat = || {
+            let (land, landing) = Landing::channel();
+            runner.instantiate(hash, SeatId("code-freed", 0), land);
+            landing.try_recv().expect("lands at once")
+        };
+        let held = prepare();
+        assert_eq!(held.source, CodeSource::Cold);
+        assert_eq!(
+            prepare().source,
+            CodeSource::Memory,
+            "held: not compiled again"
+        );
+        let Landed::Seated(instance) = seat() else {
+            panic!("not seated");
+        };
+        drop(held);
+        assert!(
+            matches!(seat(), Landed::Seated(_)),
+            "a running instance holds its code"
+        );
+        drop(instance);
+        assert!(
+            matches!(seat(), Landed::Fault(Fault::Runner(_))),
+            "nothing holds the code: it is freed"
+        );
+        assert_eq!(prepare().source, CodeSource::Cold, "compiled again");
     }
 }

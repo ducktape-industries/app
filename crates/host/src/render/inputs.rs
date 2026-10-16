@@ -370,9 +370,11 @@ impl ViewTree {
                         }),
                     )
                     .child(announce(
-                        // the base Textarea draws no node of its own, nor a box
+                        // the base Textarea draws no node of its own, nor a
+                        // box: the field's one node wears the view's id, as
+                        // a one-line field's does
                         crate::a11y::text_field(
-                            "editor-field",
+                            native_id(id),
                             &focus,
                             set_value,
                             Textarea::new(state),
@@ -380,7 +382,9 @@ impl ViewTree {
                         .when(fills, |field| field.h_full()),
                         accessible,
                     ));
-                let mut element = div().relative().id(native_id(id));
+                // the view's box, under a host name: the view's id is the
+                // field's node inside it
+                let mut element = div().relative().id(host_id("field"));
                 *element.style() = (*style).clone();
                 let element =
                     crate::a11y::around_field(element, focused, crate::a11y::ink(cx)).child(words);
@@ -507,6 +511,8 @@ impl Field {
     /// On a touch device a placeholder is the design's faint text, as the
     /// phone's fields have always drawn it, not the kit theme's muted text
     /// every desktop field shares. Set again when the theme's mode moves it.
+    /// The state's own placeholder colour, not its editor style: the kit's
+    /// `Input` sets that from its theme on every render (fork #38).
     fn placeholder_tone(&mut self, cx: &mut App) {
         if !crate::contract::os().facts().touch_first {
             return;
@@ -516,13 +522,8 @@ impl Field {
             return;
         }
         self.tone = Some(faint);
-        let style = gpui_base::input::InputEditorStyle {
-            muted_foreground: faint,
-            ..Default::default()
-        };
         engine!(&self.engine, |state| state.update(cx, |state, cx| {
-            state.set_editor_style(style);
-            cx.notify();
+            state.set_placeholder_color(Some(faint), cx)
         }));
     }
 

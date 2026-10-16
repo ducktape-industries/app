@@ -1,6 +1,8 @@
 //! Where an OS window goes: a pop-out off its source window (`cascade`,
-//! `unseated`), the launcher centred (`centered`); and how one leaves the
-//! screen (`remove`). Opening one is `entities::Windows`'.
+//! `unseated`), the launcher centred (`centered`), above other apps'
+//! windows or back among them (`keep_above`); and how one leaves the
+//! screen (`remove`). Opening one, and which are kept above, is
+//! `entities::Windows`'.
 
 use super::layout;
 use gpui_kit::{Bounds, Pixels, Point, Size, point, px, size};
@@ -103,6 +105,140 @@ pub(in crate::shell) fn remove(window: gpui_kit::AnyWindowHandle, cx: &mut gpui_
     });
 }
 
+/// Whether this platform keeps a window above other apps' windows: macOS
+/// does (a window level) and X11 does (EWMH's `_NET_WM_STATE_ABOVE`, which
+/// the window manager carries out). Wayland's xdg-shell has no such
+/// request, so there Keep on Top is not offered at all.
+pub(in crate::shell) fn can_keep_above(cx: &gpui_kit::App) -> bool {
+    cx.compositor_name() != "Wayland"
+}
+
+/// Tells the platform to keep `window` above other apps' windows, or to let
+/// it back among them. gpui sets a window's level only as it opens it
+/// (`WindowKind`), and nothing it does later (raising, activation, full
+/// screen) sets it again, so this holds until it is told otherwise.
+pub(in crate::shell) fn keep_above(window: &gpui_kit::Window, above: bool) -> Result<(), String> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let raw = match HasWindowHandle::window_handle(window) {
+        Ok(handle) => handle.as_raw(),
+        // the test platform's windows have no native handle: what it was
+        // told is kept for the test to read
+        #[cfg(test)]
+        Err(raw_window_handle::HandleError::NotSupported) => {
+            KEPT_ABOVE
+                .with_borrow_mut(|told| told.push((window.window_handle().window_id(), above)));
+            return Ok(());
+        }
+        Err(error) => return Err(format!("no native window: {error}")),
+    };
+    match raw {
+        #[cfg(target_os = "macos")]
+        RawWindowHandle::AppKit(handle) => mac_keep_above(handle.ns_view, above),
+        #[cfg(target_os = "linux")]
+        RawWindowHandle::Xcb(handle) => x11_keep_above(window, handle.window.get(), above),
+        other => Err(format!("{other:?} windows can't be kept on top")),
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What the test platform was told to keep above, in order.
+    pub(in crate::shell) static KEPT_ABOVE: std::cell::RefCell<Vec<(gpui_kit::WindowId, bool)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// macOS: the window's level. Floating is a palette's level, above every
+/// app's normal windows, where Zoom's and Slack's floating call windows sit.
+#[cfg(target_os = "macos")]
+fn mac_keep_above(ns_view: std::ptr::NonNull<std::ffi::c_void>, above: bool) -> Result<(), String> {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    /// `NSFloatingWindowLevel` and `NSNormalWindowLevel`.
+    const FLOATING: isize = 3;
+    const NORMAL: isize = 0;
+    let view = ns_view.as_ptr().cast::<AnyObject>();
+    // SAFETY: gpui's own NSView, alive while its `Window` is borrowed; this
+    // runs on the main thread, as all of gpui's window calls do.
+    unsafe {
+        let ns_window: *mut AnyObject = msg_send![view, window];
+        if ns_window.is_null() {
+            return Err("the view is in no window".to_owned());
+        }
+        let _: () = msg_send![ns_window, setLevel: if above { FLOATING } else { NORMAL }];
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+x11rb::atom_manager! {
+    /// The two atoms Keep on Top asks with.
+    AboveAtoms: AboveAtomsCookie {
+        _NET_WM_STATE,
+        _NET_WM_STATE_ABOVE,
+    }
+}
+
+/// X11: EWMH's `_NET_WM_STATE` request to the root window, on gpui's own
+/// connection (so it follows whatever gpui sent before it, the window's
+/// map included). The window manager carries it out.
+#[cfg(target_os = "linux")]
+fn x11_keep_above(window: &gpui_kit::Window, id: u32, above: bool) -> Result<(), String> {
+    use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{ConnectionExt as _, EventMask};
+    let said = |error: &dyn std::fmt::Display| error.to_string();
+    let display = HasDisplayHandle::display_handle(window).map_err(|error| said(&error))?;
+    let RawDisplayHandle::Xcb(display) = display.as_raw() else {
+        return Err("not an XCB display".to_owned());
+    };
+    let connection = display.connection.ok_or("no XCB connection")?;
+    // SAFETY: gpui's live connection, which outlives this call (the window
+    // is borrowed); `false`: it is gpui's to disconnect, not this wrapper's.
+    let xcb = unsafe {
+        x11rb::xcb_ffi::XCBConnection::from_raw_xcb_connection(connection.as_ptr(), false)
+    }
+    .map_err(|error| said(&error))?;
+    let root = usize::try_from(display.screen)
+        .ok()
+        .and_then(|screen| xcb.setup().roots.get(screen))
+        .ok_or("no such screen")?
+        .root;
+    let atoms = AboveAtoms::new(&xcb)
+        .map_err(|error| said(&error))?
+        .reply()
+        .map_err(|error| said(&error))?;
+    let request = above_request(id, atoms._NET_WM_STATE, atoms._NET_WM_STATE_ABOVE, above);
+    let mask = EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY;
+    // checked: a round trip, which also sends it
+    xcb.send_event(false, root, mask, request)
+        .map_err(|error| said(&error))?
+        .check()
+        .map_err(|error| said(&error))
+}
+
+/// EWMH's request that window `id` gain (`above`) or lose
+/// `_NET_WM_STATE_ABOVE`, from an application.
+#[cfg(target_os = "linux")]
+fn above_request(
+    id: u32,
+    net_wm_state: u32,
+    net_wm_state_above: u32,
+    above: bool,
+) -> x11rb::protocol::xproto::ClientMessageEvent {
+    /// `_NET_WM_STATE_REMOVE`, `_NET_WM_STATE_ADD`.
+    const REMOVE: u32 = 0;
+    const ADD: u32 = 1;
+    /// The source: a normal application (not a pager).
+    const APPLICATION: u32 = 1;
+    let action = if above { ADD } else { REMOVE };
+    x11rb::protocol::xproto::ClientMessageEvent::new(
+        32,
+        id,
+        net_wm_state,
+        [action, net_wm_state_above, 0, APPLICATION, 0],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,6 +323,20 @@ mod tests {
                 "{source:?} on {on:?}"
             );
         }
+    }
+
+    /// Keep on Top on X11 is EWMH's state request to the window manager:
+    /// add, then remove, `_NET_WM_STATE_ABOVE` on the window asked about,
+    /// as an application.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn keep_on_top_asks_the_x11_window_manager_for_above() {
+        let (window, state, above) = (0x0420_0007, 301, 302);
+        let on = above_request(window, state, above, true);
+        assert_eq!((on.format, on.window, on.type_), (32, window, state));
+        assert_eq!(on.data.as_data32(), [1, above, 0, 1, 0]);
+        let off = above_request(window, state, above, false);
+        assert_eq!(off.data.as_data32(), [0, above, 0, 1, 0]);
     }
 
     #[test]

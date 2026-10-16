@@ -133,7 +133,7 @@ async fn a_submit_whose_answer_was_lost_is_not_submitted_again() {
     ))
     .await;
     let (node, submits) = applying_node_with_a_lost_answer(noded::route::SUBMIT);
-    let answer = submit(node.clone(), call_registry()).await;
+    let answer = submit(node.clone(), call_registry(), Claim::default()).await;
     let sent = submits.lock().unwrap().clone();
     assert_eq!(sent.len(), 1, "one submit: the op was not applied twice");
     assert_eq!(
@@ -162,7 +162,7 @@ async fn a_submit_whose_anchor_read_was_lost_is_refused_unsent() {
     ))
     .await;
     let (node, submits) = applying_node_with_a_lost_answer(noded::route::STATUS);
-    let answer = submit(node.clone(), call_registry()).await;
+    let answer = submit(node.clone(), call_registry(), Claim::default()).await;
     assert_eq!(
         answer.unwrap_err().code,
         refusal::RPC_CLIENT,
@@ -194,7 +194,7 @@ async fn a_frame_the_node_refuses_outright_is_refused_not_submitted() {
             ))),
         ),
     ]);
-    let refusal = submit(node.node.clone(), call_registry())
+    let refusal = submit(node.node.clone(), call_registry(), Claim::default())
         .await
         .unwrap_err();
     assert_eq!(refusal.code, abi::reason::ANCHOR);
@@ -229,7 +229,7 @@ async fn a_predicted_refusal_is_still_a_pooled_frame() {
             ))),
         ),
     ]);
-    match decoded(submit(node.node.clone(), call_registry()).await) {
+    match decoded(submit(node.node.clone(), call_registry(), Claim::default()).await) {
         methods::Submitted::Refused { until, refusal, .. } => {
             assert_eq!(until, TIP.height + 256);
             assert_eq!(
@@ -250,7 +250,7 @@ fn a_query_to_a_stalled_node_holds_its_slot_until_the_view_cancels_it() {
     let mut view = view();
     let replies = view.replies.clone();
     let mut changed = view.replies.changes();
-    start(&mut view, 1, None, async move {
+    start(&mut view, 1, None, Claim::default(), async move {
         let answer = query(fake.node.clone(), call_registry()).await;
         replies.item(1, answer, true);
     });
@@ -315,7 +315,7 @@ async fn a_redirected_submit_goes_nowhere_else() {
         ),
         (noded::route::SUBMIT, Mode::Redirect(to)),
     ]);
-    let answer = submit(node.node.clone(), call_registry()).await;
+    let answer = submit(node.node.clone(), call_registry(), Claim::default()).await;
     assert_eq!(
         elsewhere.accepted.load(std::sync::atomic::Ordering::SeqCst),
         0,
@@ -414,8 +414,8 @@ async fn two_identical_submits_in_flight_are_two_frames() {
     .await;
     let (node, applied) = node_refusing_duplicates();
     let (first, second) = tokio::join!(
-        submit(node.clone(), call_registry()),
-        submit(node.clone(), call_registry())
+        submit(node.clone(), call_registry(), Claim::default()),
+        submit(node.clone(), call_registry(), Claim::default())
     );
     let applied_once = |answer| match decoded(answer) {
         methods::Submitted::Applied { frame, output, .. } if output.is_empty() => frame,
@@ -470,14 +470,18 @@ fn changes_node(heights: &'static [u64]) -> Node {
 /// running on the
 /// old connection is refused `stale_connection`. Before, the subscriptions
 /// were refused too, which ends a view's stream: the view went deaf to
-/// every block after the connect.
+/// every block after the connect. The old node never answers the heads'
+/// status read, so the subscription is still running when the connect
+/// comes (one the old node ended first stays ended:
+/// `a_reconnect_leaves_an_ended_request_ended`).
 #[test]
 fn a_reconnect_opens_a_views_subscriptions_again_on_the_new_node() {
     let mut view = view();
     view.targets = vec!["chat".into()];
     follow_changes(&mut view, 1, changes_node(&[]), "chat".into());
     spawn_reply(&mut view, 2, std::future::pending::<Answer>());
-    follow_heads(&mut view, 3, changes_node(&[]));
+    let stalled = fake_node(vec![(noded::route::STATUS, Mode::Stall)]);
+    follow_heads(&mut view, 3, stalled.node.clone());
     let new = changes_node(&[7]);
     let rev = view.connection.rev + 1;
     view.reconnect(&crate::runtime::Connection {
@@ -485,6 +489,7 @@ fn a_reconnect_opens_a_views_subscriptions_again_on_the_new_node() {
         network: new.network,
         chain: String::new(),
         rev,
+        live: None,
     });
     assert_eq!(refused(&mut view, 2).0, refusal::STALE_CONNECTION);
     assert_eq!(view.pending, [], "a subscription was refused");
@@ -524,4 +529,114 @@ fn a_reconnect_opens_a_views_subscriptions_again_on_the_new_node() {
         "{heads:?}"
     );
     assert_eq!(view.live_subscriptions, [(1, "chat".to_owned())]);
+}
+
+/// What `view`'s replies hold once `count` have come, waiting up to two
+/// seconds for them.
+fn drained(view: &View, count: usize) -> Vec<wire::Event> {
+    let mut items = Vec::new();
+    for _ in 0..200 {
+        view.replies.drain_into(&mut items);
+        if items.len() >= count {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    items
+}
+
+/// The connection to `node`, one rev on from the view's.
+fn connection_to(view: &View, node: Node) -> crate::runtime::Connection {
+    crate::runtime::Connection {
+        client: Some(node.client),
+        network: node.network,
+        chain: String::new(),
+        rev: view.connection.rev + 1,
+        live: None,
+    }
+}
+
+/// A request is ended once. A `chain.heads` the old node ended (it answers
+/// no status) and a reply already given, each still listed when the
+/// connect comes, stay ended: the heads is not opened again on the new
+/// node (which would end it a second time) and the reply is not refused
+/// `stale_connection` after its answer. Before, a reconnect under load
+/// reopened a heads the old node had just ended, and the view heard two
+/// ends for one id. One request per view: a later spawn prunes a finished
+/// task from the list.
+#[test]
+fn a_reconnect_leaves_an_ended_request_ended() {
+    let ended_then_reconnected = |begin: &dyn Fn(&mut View)| {
+        let mut view = view();
+        begin(&mut view);
+        let ended = drained(&view, 1);
+        assert!(
+            matches!(&ended[..], [wire::Event::Response { done: true, .. }]),
+            "{ended:?}"
+        );
+        assert_eq!(view.tasks.len(), 1, "still listed");
+        let new = connection_to(&view, changes_node(&[]));
+        view.reconnect(&new);
+        assert_eq!(view.pending, [], "nothing answered for an ended request");
+        assert!(view.tasks.is_empty(), "nothing opened again");
+        let mut after = Vec::new();
+        view.replies.drain_into(&mut after);
+        assert_eq!(after, [], "and nothing came after");
+    };
+    ended_then_reconnected(&|view| follow_heads(view, 3, changes_node(&[])));
+    ended_then_reconnected(&|view| spawn_reply(view, 2, std::future::ready(Ok(vec![1]))));
+}
+
+/// A submit whose frame went out to a node that has not answered is in
+/// doubt when a connect takes it: the old node may hold the frame. Before,
+/// it was refused `stale_connection`, which tells the view nothing reached
+/// the node, and a view that sends again on that may apply the op twice.
+#[tokio::test]
+async fn a_submit_out_at_a_reconnect_answers_in_doubt() {
+    use commonware_cryptography::Signer as _;
+    let _seat = backend::seat_serial();
+    backend::seat_key(std::sync::Arc::new(
+        commonware_cryptography::ed25519::PrivateKey::from_seed(41),
+    ))
+    .await;
+    let old = fake_node(vec![
+        (
+            noded::route::STATUS,
+            Mode::Answer(abi::encode(&status_at(TIP))),
+        ),
+        (noded::route::SUBMIT, Mode::Stall),
+    ]);
+    let mut view = view();
+    let (replies, node) = (view.replies.clone(), old.node.clone());
+    let claim = Claim::default();
+    let held = claim.clone();
+    start(&mut view, 5, None, claim, async move {
+        let answer = submit(node, call_registry(), held.clone()).await;
+        replies.answer(&held, 5, answer, true);
+    });
+    // the status read, then the submit: the frame is out
+    for _ in 0..200 {
+        if old.accepted.load(std::sync::atomic::Ordering::SeqCst) >= 2 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let new = connection_to(&view, changes_node(&[]));
+    view.reconnect(&new);
+    match view.pending.as_slice() {
+        [
+            wire::Event::Response {
+                id: 5,
+                result: Ok(answer),
+                done: true,
+            },
+        ] => assert!(
+            matches!(
+                methods::decode(answer).unwrap(),
+                methods::Submitted::InDoubt { until, .. } if until == TIP.height + 256
+            ),
+            "in doubt, with how long a block may carry it"
+        ),
+        other => panic!("{other:?}"),
+    }
 }

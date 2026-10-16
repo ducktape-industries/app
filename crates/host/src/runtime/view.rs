@@ -24,21 +24,27 @@ pub(super) enum Redraw {
 /// What a fresh instance did with the state the drawn view left it. A trap
 /// is not one of these — it takes the instance with it and is the load's
 /// error. A refusal is the view's own word, reported before it builds
-/// anything, so the instance is untouched and can start clean instead.
+/// anything, so the instance is untouched and can start clean instead. A
+/// death (`Fault::Runner`, its page gone) is no answer of the view's: the
+/// state is still in hand, and the replacement waits for another try.
 pub(super) enum Restored {
     Carried,
     Refused(String),
+    Died(String),
 }
 
 /// What a death replay starts from (SPEC §6.5): the last accepted snapshot
 /// (`None`: the view's `init`), when it was taken, and every tick's events
 /// since, in order. An instance that dies is restored from it and replayed
-/// to where it was (`revive`).
+/// to where it was (`revive`). `asked`: the view's tick count when a new
+/// snapshot was last asked for, so one is asked at most once per tick,
+/// whatever it answered (taken, refused, or the page died).
 #[derive(Clone)]
 pub(super) struct Kept {
     pub(super) snapshot: Option<Vec<u8>>,
     pub(super) at: Instant,
     pub(super) batches: Vec<Vec<u8>>,
+    pub(super) asked: Option<u64>,
 }
 
 impl Kept {
@@ -48,6 +54,7 @@ impl Kept {
             snapshot: None,
             at: Instant::now(),
             batches: Vec::new(),
+            asked: None,
         }
     }
 
@@ -108,6 +115,10 @@ pub(super) struct View {
     /// The manifest's `MIN_WINDOW_WIDTH`: the narrowest the view is laid
     /// out, and so the narrowest a window holding it is sized.
     pub min_width: u32,
+    /// The manifest's `wire_id`: the wire the view was built against. A
+    /// view built against another than this app's runs all the same, and
+    /// whatever then fails says so ([`View::failure`]).
+    pub wire: String,
     /// The undeclared capabilities already logged, so each is logged once.
     pub undeclared_logged: Vec<Capability>,
     /// The running instance (`contract::ViewInstance`), and the runner that
@@ -126,6 +137,14 @@ pub(super) struct View {
     /// What a death replay starts from, where the host keeps one
     /// (`Limits::snapshot_every`; none on the desktop).
     pub(super) kept: Option<Kept>,
+    /// A page's death, taken off its landing where it could not be taken up
+    /// again at once (`View::revive` begins calls). The tick in flight's,
+    /// in the background or in `Seat::hide`'s last update: the tick stays
+    /// in flight, and the turn that next takes the view up (in front again)
+    /// starts its wait from this. One outside a tick, under a kept
+    /// snapshot or a swap's handover: the seat's next turn in front takes
+    /// it up before anything else begins a call (`seat::take_up`).
+    pub(super) parked: Option<Landed>,
     /// The view's events for its next tick.
     pub pending: Vec<wire::Event>,
     /// The host's facts as the view last heard them: the theme, whether
@@ -179,6 +198,8 @@ pub(super) struct View {
     /// The view's `program.changes` subscriptions and the program each one
     /// watches: told on every block that wrote to that program.
     pub live_subscriptions: Vec<(u64, String)>,
+    /// The tracks this view publishes, where its `live.send`s go.
+    pub tracks: kernel::live::Tracks,
     /// Pending host requests and subscriptions, each owned by this view
     /// the kernel opened for it: retired with the cancel, and with the view.
     pub tasks: Vec<(u64, kernel::NodeTask)>,
@@ -216,13 +237,9 @@ impl View {
 
     /// The answer to the call just begun, when it lands: before the call
     /// returned on the wasmtime runner, later on one that answers across a
-    /// process boundary. A stopped instance answers nothing more.
+    /// process boundary.
     async fn landed(&mut self) -> Landed {
-        self.landing.recv().await.unwrap_or_else(|_| {
-            Landed::Fault(Fault::Runner(
-                "the instance stopped before it answered".into(),
-            ))
-        })
+        next(&self.landing).await
     }
 
     /// The answer to the call just begun, taken at once, as a test takes it
@@ -237,21 +254,13 @@ impl View {
     /// The wasmtime instance's linear memory, for the tests that read it.
     #[cfg(test)]
     pub fn memory_for_test(&self) -> &[u8] {
-        let instance: &dyn std::any::Any = &*self.running;
-        instance
-            .downcast_ref::<crate::runner::WasmtimeInstance>()
-            .expect("the view runs on the wasmtime runner")
-            .memory_for_test()
+        self.running.memory_for_test()
     }
 
     /// [`Self::memory_for_test`], for the tests that script it.
     #[cfg(test)]
     pub fn memory_mut_for_test(&mut self) -> &mut [u8] {
-        let instance: &mut dyn std::any::Any = &mut *self.running;
-        instance
-            .downcast_mut::<crate::runner::WasmtimeInstance>()
-            .expect("the view runs on the wasmtime runner")
-            .memory_mut_for_test()
+        self.running.memory_mut_for_test()
     }
 
     /// What the seat hands its tree to draw: the held tree with its style
@@ -264,6 +273,17 @@ impl View {
         };
         (tree, self.pictures.held())
     }
+}
+
+/// The next answer on `landing`. An instance that stopped (its landing
+/// closed) answers nothing more: the call it had out failed as the
+/// runner's, as a page's death does.
+pub(super) async fn next(landing: &async_channel::Receiver<Landed>) -> Landed {
+    landing.recv().await.unwrap_or_else(|_| {
+        Landed::Fault(Fault::Runner(
+            "the instance stopped before it answered".into(),
+        ))
+    })
 }
 
 /// One `view_perf` line as an installed instance leaves: a swap drops the
@@ -290,13 +310,18 @@ pub fn prepared_on_for_test(
     code: impl AsRef<[u8]>,
 ) -> [u8; 32] {
     use sha2::Digest as _;
+    // a test seats its code by hash, later: held for the test process's life
+    static HELD: Mutex<Vec<Arc<dyn std::any::Any + Send + Sync>>> = Mutex::new(Vec::new());
     let code = code.as_ref();
     let hash = sha2::Sha256::digest(code).into();
+    // the tests write their views as text; a runner takes wasm
+    let code = wat::parse_bytes(code).expect("the test's view parses");
     let view_bytes =
         usize::try_from(crate::backend::memory_bounds().view_bytes).unwrap_or(usize::MAX);
-    runner
-        .prepare(hash, code, view_bytes)
+    let prepared = runner
+        .prepare(hash, &code, view_bytes)
         .expect("the test's code compiles");
+    HELD.lock().unwrap().push(prepared.hold);
     hash
 }
 
@@ -343,10 +368,10 @@ pub(super) fn shape(
     Ok((frame, cuts))
 }
 
-/// A view built against another wire than this app's, as the plain refusal
-/// sentence.
-pub(super) fn wire_id(id: &str) -> Result<(), String> {
-    (id == wire::WIRE_ID).then_some(()).ok_or_else(|| {
+/// A view built against another wire than this app's, as the words its
+/// failures carry; `None` for one built against this app's.
+pub(super) fn foreign_wire(id: &str) -> Option<String> {
+    (id != wire::WIRE_ID).then(|| {
         format!(
             "this view was built against wire {id}; this app speaks {}",
             wire::WIRE_ID

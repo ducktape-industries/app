@@ -53,13 +53,17 @@ pub fn handle() -> tokio::runtime::Handle {
 
 /// The app's quit hook (`shell::launch`, the one every quit path reaches):
 /// the notification log handed over, then a wait on every in-order queue
-/// (store files, the log, banners), then `kept` dropped. The returned
-/// future is the wait; gpui gives it `SHUTDOWN_TIMEOUT` (200 ms).
+/// (store files, the log, banners) and on the live session's close
+/// (`kernel::live::quit`), then `kept` dropped. The returned future is the
+/// wait; gpui gives it `SHUTDOWN_TIMEOUT` (200 ms).
 pub fn quitting(center: &notify::CenterHandle, kept: impl Sized) -> impl Future<Output = ()> {
     center.lock().flush();
     let drained = kernel::drain();
+    let live = kernel::live::quit();
     drop(kept);
-    drained
+    async move {
+        futures::future::join(drained, live).await;
+    }
 }
 
 /// A lock the window thread and the loaders share, taken even after a
@@ -77,7 +81,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::contract::{FUEL_PER_TICK, Fault, Landed, Landing, SeatId, ViewInstance, ViewRunner};
+use crate::contract::{
+    CodeSource, FUEL_PER_TICK, Fault, Landed, Landing, Prepared, SeatId, ViewInstance, ViewRunner,
+};
 use gpui_kit::AppContext as _;
 use pictures::Pictures;
 use view_wire as wire;
@@ -108,6 +114,10 @@ pub enum Intent {
     Title(String),
     /// `link.open`: a link it pressed.
     OpenLink(String),
+    /// `host.show`: one of the host's own places, asked for by a press in
+    /// the view; how it looks is each shell's (the desktop's account menu,
+    /// the phone's account sheet).
+    Show(view_wire::methods::Place),
     /// A notice was posted: the bell and the permission bar redraw.
     Notified,
     /// A view was seated in its tab, first or after a new deployment: its
@@ -177,7 +187,9 @@ pub mod pictures;
 
 /// What a view's manifest says, read before any of its code runs: the
 /// name, icon and description the rail and Home list it by, the narrowest
-/// it is laid out, the capabilities it declares and its targets.
+/// it is laid out, the capabilities it declares, its targets, and the wire
+/// it was built against (another than this app's runs all the same, and
+/// whatever then fails says so: `View::failure`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Listing {
     pub name: String,
@@ -186,6 +198,7 @@ pub struct Listing {
     pub min_width: u32,
     pub capabilities: Vec<Capability>,
     pub targets: Vec<String>,
+    pub wire: String,
 }
 
 /// `bytes`' manifest as the host reads it; empty and 0 for one whose
@@ -199,6 +212,7 @@ fn manifest_of(bytes: &[u8]) -> Listing {
             min_width: manifest.min_width,
             capabilities: manifest.capabilities,
             targets: manifest.targets,
+            wire: manifest.wire_id,
         })
         .unwrap_or_default()
 }
@@ -219,6 +233,7 @@ pub fn listing(program: &str) -> Option<Listing> {
                 min_width: view.min_width,
                 capabilities: view.capabilities.clone(),
                 targets: view.targets.clone(),
+                wire: view.wire.clone(),
             }),
             Slot::Compiled(code) => Some(Listing {
                 name: code.name.clone(),
@@ -227,6 +242,7 @@ pub fn listing(program: &str) -> Option<Listing> {
                 min_width: code.min_width,
                 capabilities: code.capabilities.clone(),
                 targets: code.targets.clone(),
+                wire: code.wire.clone(),
             }),
             Slot::Listed(listing) | Slot::Compiling(listing) => Some((**listing).clone()),
             _ => None,
@@ -251,6 +267,9 @@ pub fn allows(capability: Capability) -> &'static str {
         Capability::Notify => "posts notifications",
         Capability::Store => "keeps its own data on this device",
         Capability::Web => "shows web pages, and takes the web links the app opens",
+        Capability::Live => {
+            "sends and hears live streams in its program's rooms, as the program grants"
+        }
     }
 }
 

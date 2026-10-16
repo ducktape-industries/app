@@ -24,7 +24,7 @@
 //! runs after the draw.
 use super::standin::{Standin, stage_words};
 use super::*;
-use gpui_kit::{AnyWindowHandle, Context, Entity, EventEmitter, Subscription};
+use gpui_kit::{AnyWindowHandle, App, Context, Entity, EventEmitter, Subscription};
 
 /// Frame pacing for a busy view (`frame.busy`): one more turn, a frame later.
 const BUSY_FRAME: Duration = Duration::from_millis(16);
@@ -37,6 +37,11 @@ const BUSY_FRAME: Duration = Duration::from_millis(16);
 pub struct Backgrounded(pub bool);
 
 impl gpui_kit::Global for Backgrounded {}
+
+/// Whether the app is in the background (`Backgrounded`).
+fn backgrounded(cx: &App) -> bool {
+    cx.try_global::<Backgrounded>().is_some_and(|phase| phase.0)
+}
 
 pub struct Seat {
     program: &'static str,
@@ -295,9 +300,10 @@ impl Seat {
     /// The pane left every desk: one bounded update, then no more turns.
     /// Returns the intents that update produced: the caller (`Seats`) is
     /// about to drop this seat and its subscription in the same update, so
-    /// an emit here would be lost.
+    /// an emit here would be lost. In the background there is no update:
+    /// no call into a view is begun there (SPEC §4.3).
     #[must_use]
-    pub fn hide(&mut self) -> Vec<Intent> {
+    pub fn hide(&mut self, cx: &App) -> Vec<Intent> {
         let mounted = self.mounted.clone();
         let mut locked = lock(&mounted);
         let Mounted {
@@ -319,22 +325,28 @@ impl Seat {
         }
         view.set_visible(false);
         // a tick in flight lands on the view as it is, kept, never drawn
-        // (`landed`); this update's own waits behind it as any turn would.
-        // One that lands later than this returns is the view's, taken in
-        // by whichever seat turns next (`turn` waits for it)
-        // nor while a swap owns the view: its replacement hears it hidden
-        if !view.ticking() && !*owned {
+        // (`landed`); this update's own waits behind it as any turn would,
+        // nor runs while a swap owns the view: its replacement hears it
+        // hidden. `Seats` drops this seat after, and the view goes with it
+        if !view.ticking() && !*owned && !backgrounded(cx) {
             match view.begin_redraw(props) {
                 Redraw::Quiet => {}
                 Redraw::Ready => {
                     view.finish_redraw(props);
                 }
-                Redraw::Ticking => {
-                    if let Some(landed) = view.landed_now() {
+                Redraw::Ticking => match view.landed_now() {
+                    // a death where a replay is kept is no fault of the
+                    // view's (SPEC §6.5), and this update begins no call
+                    // to take it up again: it stays on the view
+                    Some(landed @ Landed::Fault(Fault::Runner(_))) if view.kept.is_some() => {
+                        view.parked = Some(landed);
+                    }
+                    Some(landed) => {
                         view.redraw_landed(landed);
                         view.finish_redraw(props);
                     }
-                }
+                    None => {}
+                },
             }
         }
         std::mem::take(&mut view.intents)
@@ -358,8 +370,8 @@ impl Seat {
         }
         // a swap that runs owns the drawn view until it is done; it wakes
         // the seat then
-        let backgrounded = cx.try_global::<Backgrounded>().is_some_and(|phase| phase.0);
-        if self.holding || self.in_flight.is_some() || lock(&self.mounted).owned || backgrounded {
+        if self.holding || self.in_flight.is_some() || lock(&self.mounted).owned || backgrounded(cx)
+        {
             self.owed = true;
             return;
         }
@@ -408,15 +420,37 @@ impl Seat {
         // first, as this seat's own would
         if view.ticking() {
             let ticks = view.ticks;
-            return self.wait(view, ticks, shown, None, cx);
+            let parked = view.parked.take();
+            return self.wait(view, ticks, shown, parked, cx);
+        }
+        // a page that died outside a tick (a kept snapshot's, a swap's) is
+        // taken up again before anything else begins a call: in a task the
+        // seat does not own, which wakes the seat when done
+        if view.parked.is_some() {
+            drop(locked);
+            cx.spawn(async move |_, cx| {
+                // backgrounded before the task ran: the turn in front again
+                // spawns it again
+                if !cx.update(|cx| backgrounded(cx)) {
+                    take_up(mounted).await;
+                }
+            })
+            .detach();
+            return;
         }
         // a replacement the loader prepared runs on this thread once the
         // view owes nothing (its handover would refuse): a task the seat
         // does not own, so letting the seat go mid-swap stops nothing
         if swap.is_some() && view.settled() {
             drop(locked);
-            cx.spawn(async move |_, _| swap_in(mounted, program).await)
-                .detach();
+            cx.spawn(async move |_, cx| {
+                // backgrounded before the task ran: the turn in front again
+                // spawns it again
+                if !cx.update(|cx| backgrounded(cx)) {
+                    swap_in(mounted, program).await;
+                }
+            })
+            .detach();
             return;
         }
         let Some((width, height)) = self.body else {
@@ -487,7 +521,15 @@ impl Seat {
             self.wake(cx);
         } else if keep {
             let mounted = self.mounted.clone();
-            cx.spawn(async move |_, _| keep_in(mounted).await).detach();
+            cx.spawn(async move |_, cx| {
+                // no call is begun in the background (a frame that landed
+                // there finished its turn here): the turn in front again
+                // comes back
+                if !cx.update(|cx| backgrounded(cx)) {
+                    keep_in(mounted).await;
+                }
+            })
+            .detach();
         }
     }
 
@@ -506,23 +548,33 @@ impl Seat {
         let mounted = self.mounted.clone();
         self.in_flight = Some((ticks, shown));
         self._landing = Some(cx.spawn(async move |this, cx| {
-            let mut next = first;
+            let mut first = first;
             let landed = loop {
-                // `None`: the instance stopped, its answer with it
-                let landed = match next.take() {
-                    Some(landed) => Some(landed),
-                    None => landing.recv().await.ok(),
+                let landed = match first.take() {
+                    Some(landed) => landed,
+                    None => super::super::view::next(&landing).await,
                 };
                 // the instance died with the tick in flight: where a replay
                 // is kept it is taken up again on a new one, whose frame
-                // this waits for instead (SPEC §6.5)
-                if let Some(Landed::Fault(Fault::Runner(_))) = &landed
-                    && let Ok(revived) = View::revive(&mounted, &alive).await
-                {
-                    landing = revived;
-                    continue;
+                // this waits for instead (SPEC §6.5). In the background,
+                // where no call is begun, the death waits on the view for
+                // the turn in front again
+                if matches!(landed, Landed::Fault(Fault::Runner(_))) {
+                    if cx.update(|cx| backgrounded(cx)) {
+                        let mut locked = lock(&mounted);
+                        if let Slot::Ready(view) = &mut locked.slot
+                            && Arc::ptr_eq(&view.alive, &alive)
+                            && view.kept.is_some()
+                        {
+                            view.parked = Some(landed);
+                            break None;
+                        }
+                    } else if let Ok(revived) = View::revive(&mounted, &alive, true).await {
+                        landing = revived;
+                        continue;
+                    }
                 }
-                break landed;
+                break Some(landed);
             };
             let _ = this.update(cx, |this, cx| this.landed(&alive, landed, cx));
         }));
@@ -531,18 +583,24 @@ impl Seat {
     /// A frame that landed after its turn returned: taken in by the view it
     /// was asked of, and the turn finished. After `hide` it is kept on the
     /// view, its requests answered, and nothing is drawn. A turn owed
-    /// meanwhile runs now, unless the tree holds for its draw.
+    /// meanwhile runs now, unless the tree holds for its draw. `None`: a
+    /// death parked on the view in the background, which the turn in front
+    /// again takes up (`View::parked`).
     fn landed(&mut self, alive: &Arc<()>, landed: Option<Landed>, cx: &mut Context<Self>) {
         let Some((ticks, shown)) = self.in_flight.take() else {
             return;
         };
         self._landing = None;
+        let Some(landed) = landed else {
+            self.owed = true;
+            return;
+        };
         let mounted = self.mounted.clone();
         let mut locked = lock(&mounted);
         let Mounted { slot, props, .. } = &mut *locked;
-        match (slot, landed) {
+        match slot {
             // the instance it was asked of is still the seat's
-            (Slot::Ready(view), Some(landed)) if Arc::ptr_eq(alive, &view.alive) => {
+            Slot::Ready(view) if Arc::ptr_eq(alive, &view.alive) => {
                 view.redraw_landed(landed);
                 let again = view.finish_redraw(props);
                 if self.hidden {
@@ -578,7 +636,7 @@ impl Seat {
         let again = again || !view.pending.is_empty();
         let next_tick = kernel::next_tick(&view.clocks);
         if let Some(fault) = &view.fault {
-            let standin = Standin::from(&Failure::Trapped(fault.clone()));
+            let standin = Standin::from(&view.failure(fault.clone()));
             drop(locked);
             return self.show_standin(standin, cx);
         }

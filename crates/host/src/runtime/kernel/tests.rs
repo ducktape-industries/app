@@ -515,6 +515,48 @@ fn link_open_needs_an_activation_and_takes_it() {
     assert_eq!(view.intents.len(), 1);
 }
 
+/// `host.show` brings up the reader's account on the view's activation,
+/// as `link.open` opens a link: none refuses it `needs_gesture`, and one
+/// press brings up one place. A reader with no account (the props name
+/// none) is refused `unknown_request`; a place this host does not know
+/// does not decode.
+#[test]
+fn host_show_brings_up_the_readers_account_on_a_press() {
+    let show = |id, payload: Vec<u8>| wire::Request {
+        id,
+        kind: "host.show".into(),
+        payload,
+    };
+    let account = methods::encode(&methods::Place::Account);
+    let reader = |account| {
+        Some(methods::encode(&methods::Session {
+            account,
+            ..Default::default()
+        }))
+    };
+    let mut view = view();
+    view.answer(show(1, account.clone()), &reader(Some(5)));
+    assert_eq!(refusal_code(&mut view).as_deref(), Some("needs_gesture"));
+    view.activation = Some(Instant::now());
+    view.answer(show(2, account.clone()), &reader(None));
+    assert_eq!(refusal_code(&mut view).as_deref(), Some("unknown_request"));
+    view.answer(show(3, vec![1]), &reader(Some(5)));
+    assert_eq!(
+        refusal_code(&mut view).as_deref(),
+        Some("malformed_request")
+    );
+    assert!(view.intents.is_empty(), "nothing shown yet");
+    view.answer(show(4, account.clone()), &reader(Some(5)));
+    assert_eq!(refusal_code(&mut view), None);
+    assert_eq!(view.intents, [Intent::Show(methods::Place::Account)]);
+    view.answer(show(5, account), &reader(Some(5)));
+    assert_eq!(
+        refusal_code(&mut view).as_deref(),
+        Some("needs_gesture"),
+        "a second place on the same press"
+    );
+}
+
 /// A screen reader's press on a view's link is one gesture: AccessKit's
 /// Click (what the AX door's `press` sends) is the link's own click, once,
 /// with the one activation the host stamps for it, and the view's
@@ -939,6 +981,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
         network: node.node.network.clone(),
         chain: "test-network#1".into(),
         rev: view.connection.rev,
+        live: None,
     };
     // the props say the seated key holds account 7, the one the op names
     let props = Some(super::super::props(true, "test-network#1", "", Some(7), ""));
@@ -1056,6 +1099,7 @@ fn a_views_op_to_a_role_waits_for_the_targets_own_words() {
         network: node.node.network.clone(),
         chain: "test-network#1".into(),
         rev: view.connection.rev,
+        live: None,
     };
     let submit = |view: &mut View, id: u64, target: &str| {
         view.activation = Some(Instant::now());

@@ -10,6 +10,7 @@ fn plain_text(id: Option<wire::ElementIdWire>, content: &str) -> wire::Node {
         id,
         style: crate::render::test_style(gpui_kit::StyleRefinement::default()),
         content: content.into(),
+        transform: None,
     })
 }
 

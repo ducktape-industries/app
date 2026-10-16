@@ -178,6 +178,36 @@ fn tab_goes_round_a_view_dialog_and_never_out(cx: &mut gpui_kit::TestAppContext)
     );
 }
 
+/// On a touch device a dialog opens with the keys on its trap and on none
+/// of its controls: a first stop that is a field would bring the soft
+/// keyboard up over a sheet nobody has touched. A hardware keyboard's Tab
+/// still goes in.
+#[gpui_kit::test]
+fn under_touch_a_view_dialog_opens_on_no_control(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::AppContext as _;
+    crate::contract::testing::touch_first_for_test(true);
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(300.), px(200.)), |window, cx| {
+        let tree = cx.new(|_| ViewTree::new(screen(false)).with_keys_grant(true));
+        gpui_kit::component::Root::new(tree, window, cx)
+    });
+    let tree = window
+        .read_with(cx, |root, _| root.view().clone())
+        .unwrap()
+        .downcast::<ViewTree>()
+        .unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    tree.update(&mut native, |tree, cx| tree.replace(screen(true), &[], cx));
+    native.update(|window, cx| window.render_frame(cx));
+    native.run_until_parked();
+    assert!(inside(&tree, &mut native), "the dialog has the keys");
+    assert_eq!(holder(&tree, &mut native), None, "no control has them");
+    native.simulate_keystrokes("tab");
+    assert_eq!(holder(&tree, &mut native), Some(2), "Tab goes in, to Save");
+    crate::contract::testing::touch_first_for_test(false);
+}
+
 /// A screen whose dialog the view wraps around it only once it opens
 /// (chat's Create channel, chat-view `ui/mod.rs` `with_create`): the
 /// opener, a button with no view focus handle, moves under the overlay,

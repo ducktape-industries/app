@@ -29,6 +29,8 @@ pub mod route {
     pub const BLOCK: &str = "/v1/block";
     pub const TX: &str = "/v1/tx";
     pub const NETWORK: &str = "/v1/network";
+    /// The UDP port the node takes live sessions on (`live_wire::PORT_ROUTE`).
+    pub const LIVE_PORT: &str = "/v1/live/port";
 }
 
 /// `host::Layer`: which state a read sees.

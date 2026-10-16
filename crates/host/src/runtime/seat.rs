@@ -26,7 +26,10 @@ pub(super) struct Mounted {
     pub(super) swap: Option<Box<PendingSwap>>,
     /// A sequence of calls the seat's thread runs owns the drawn view (a
     /// swap, `swap_in`; a kept snapshot, `keep_in`): the seat does not turn
-    /// it until the sequence is done, which wakes the seat.
+    /// it until the sequence is done, which wakes the seat. One owner at a
+    /// time: a sequence starts only on a view nothing owns and no tick is in
+    /// flight on (one call in flight per instance, `ViewInstance`), sets
+    /// this under the same lock, and is the only one to clear it.
     pub(super) owned: bool,
 }
 
@@ -173,9 +176,9 @@ pub(super) enum Slot {
 }
 
 /// A view compiled and not started: its code, prepared on `runner` under
-/// the hash of its bytes, out of the `blob` the roster lists (none for the
-/// developer's override, which a pane reads again), and what its manifest
-/// says: the name
+/// the hash of its bytes and kept prepared by `_hold`, out of the `blob` the
+/// roster lists (none for the developer's override, which a pane reads
+/// again), and what its manifest says: the name
 /// the rail lists it by, the icon its tab draws folded (empty: it declares
 /// none), the narrowest it is laid out, its capabilities and its targets.
 /// All a pane needs to start it, with nothing fetched or compiled again.
@@ -184,12 +187,15 @@ pub(super) struct ViewCode {
     pub(super) runner: Arc<dyn ViewRunner>,
     pub(super) blob: Option<abi::BlobId>,
     pub(super) hash: [u8; 32],
+    /// Held only to keep the code prepared (`contract::Prepared`).
+    pub(super) _hold: Arc<dyn std::any::Any + Send + Sync>,
     pub(super) name: String,
     pub(super) icon: String,
     pub(super) description: String,
     pub(super) min_width: u32,
     pub(super) capabilities: Vec<Capability>,
     pub(super) targets: Vec<String>,
+    pub(super) wire: String,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -201,12 +207,14 @@ impl ViewCode {
             runner: crate::contract::runner().clone(),
             blob: None,
             hash: [0; 32],
+            _hold: Arc::new(()),
             name: name.into(),
             icon: icon.into(),
             description: String::new(),
             min_width,
             capabilities: Vec::new(),
             targets: Vec::new(),
+            wire: view_wire::WIRE_ID.into(),
         })
     }
 }
@@ -241,7 +249,8 @@ pub enum Failure {
     /// Bytes this build does not run as a view, a load overtaken, or a
     /// loader that stopped.
     Refused(String),
-    /// The view was built against another wire than this app's.
+    /// A view built against another wire than this app's stopped: the
+    /// reason says what failed, where, and both wires.
     Wire(String),
 }
 
@@ -258,7 +267,7 @@ impl Failure {
             Failure::NotListed(_) => "This network does not list this view",
             Failure::Trapped(_) => "This view stopped",
             Failure::Refused(_) => "This view could not be loaded",
-            Failure::Wire(_) => "This view speaks a wire this app does not",
+            Failure::Wire(_) => "This view, built against another wire, stopped",
         }
     }
 }
@@ -669,6 +678,14 @@ pub(super) async fn swap_in(mounted: Arc<Mutex<Mounted>>, program: &'static str)
         let Slot::Ready(old) = &locked.slot else {
             return;
         };
+        // a tick in flight, or a kept snapshot (`keep_in`), has the
+        // instance: the swap waits for it, and the turn after asks again
+        // (`Seat::after_turn`); so does a death the turn has to take up
+        // first (`take_up`), which wakes the seat when done
+        if old.ticking() || locked.owned || old.parked.is_some() {
+            locked.swap = Some(pending);
+            return;
+        }
         let alive = old.alive.clone();
         let instance = locked.instance;
         locked.owned = true;
@@ -744,7 +761,10 @@ pub(super) async fn swap_in(mounted: Arc<Mutex<Mounted>>, program: &'static str)
 
 /// The drawn view's kept replay started again from a new snapshot (SPEC
 /// §6.5), on the seat's thread, the view owned meanwhile so no tick
-/// crosses it; the seat is woken when it lands.
+/// crosses it; the seat is woken when it lands. A page that died under the
+/// snapshot is parked on the view (`View::parked`) for the turn that wake
+/// runs to take up ([`take_up`]): an idle view begins no tick that would
+/// find it, and in the background no call is begun.
 pub(super) async fn keep_in(mounted: Arc<Mutex<Mounted>>) {
     let (landing, alive) = {
         let mut locked = lock(&mounted);
@@ -761,18 +781,47 @@ pub(super) async fn keep_in(mounted: Arc<Mutex<Mounted>>) {
         locked.owned = true;
         asked
     };
-    let landed = landing.recv().await.unwrap_or_else(|_| {
-        Landed::Fault(Fault::Runner(
-            "the instance stopped before it answered".into(),
-        ))
-    });
+    let landed = super::view::next(&landing).await;
     let mut locked = lock(&mounted);
-    locked.owned = false;
     if let Slot::Ready(view) = &mut locked.slot
         && Arc::ptr_eq(&view.alive, &alive)
     {
-        view.kept_landed(landed);
+        match landed {
+            death @ Landed::Fault(Fault::Runner(_)) => view.parked = Some(death),
+            landed => view.kept_landed(landed),
+        }
     }
+    locked.owned = false;
+    locked.wake.send_replace(());
+}
+
+/// A death parked on the drawn view outside a tick (`View::parked`: under a
+/// kept snapshot or a swap's handover), taken up on the seat's thread in
+/// front (the turn spawns this only there): the view revived with nothing
+/// in flight, or stopped on it (`View::died`), owned meanwhile so no tick
+/// or swap crosses it; the seat is woken when it is done.
+pub(super) async fn take_up(mounted: Arc<Mutex<Mounted>>) {
+    let (alive, death) = {
+        let mut locked = lock(&mounted);
+        if locked.owned {
+            return;
+        }
+        let Slot::Ready(view) = &mut locked.slot else {
+            return;
+        };
+        if view.ticking() {
+            return;
+        }
+        let Some(Landed::Fault(Fault::Runner(death))) = view.parked.take() else {
+            return;
+        };
+        let alive = view.alive.clone();
+        locked.owned = true;
+        (alive, death)
+    };
+    View::died(&mounted, &alive, &death).await;
+    let mut locked = lock(&mounted);
+    locked.owned = false;
     locked.wake.send_replace(());
 }
 

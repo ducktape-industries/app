@@ -28,6 +28,8 @@ ax-door = ["ducktape-host/ax-door"]
 [dependencies]
 ducktape-host = { path = "../host" }
 noded-client = { path = "../noded-client" }
+# `abi::BlobId`, which `OsServices::bundled_view` names
+abi.workspace = true
 gpui-kit = "=0.7.3"
 design.workspace = true
 tracing.workspace = true
@@ -44,8 +46,8 @@ async-channel = "2"
 futures.workspace = true
 # a program's own link, for the capsule's Copy link
 ducklink.workspace = true
-# the roster's blob ids (`OsServices::bundled_view`)
-abi.workspace = true
+# the host's places a view asks for (`SeatsEvent::Show`)
+view-wire.workspace = true
 
 [target.'cfg(target_os = "ios")'.dependencies]
 gpui-pre-ios.workspace = true

@@ -93,8 +93,9 @@ fn ax_action_reaches_the_views_field(cx: &mut gpui_kit::TestAppContext, action: 
         window.render_frame(cx);
         window.render_frame(cx);
     });
-    let performed = native
-        .update(|window, cx| perform_by_id("t", window, cx, "t:editor-field", action, "hello"));
+    let performed = native.update(|window, cx| {
+        perform_by_id("t", window, cx, "t:draft-general/editor", action, "hello")
+    });
     assert!(performed, "the composer's AX field must be in the tree");
     native.update(|window, cx| {
         window.render_frame(cx);

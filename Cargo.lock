@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "abi"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d5923b1c42d50e2421997acca9cba1cded90bc64#d5923b1c42d50e2421997acca9cba1cded90bc64"
+source = "git+https://github.com/ducktape-industries/programs?rev=74a6110699e3b328124dbc815ad64659028bf852#74a6110699e3b328124dbc815ad64659028bf852"
 dependencies = [
  "borsh",
  "design",
@@ -493,6 +493,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "asn1-rs"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7f43a50ac4fdca5df8e885c21b835997f0a1cdee65494a6847694a98652d9d8"
+dependencies = [
+ "asn1-rs-derive",
+ "asn1-rs-impl",
+ "displaydoc",
+ "nom 7.1.3",
+ "num-traits",
+ "rusticata-macros",
+ "thiserror 2.0.20",
+ "time",
+]
+
+[[package]]
+name = "asn1-rs-derive"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3109e49b1e4909e9db6515a30c633684d68cdeaa252f215214cb4fa1a5bfee2c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "synstructure 0.13.2",
+]
+
+[[package]]
+name = "asn1-rs-impl"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b18050c2cd6fe86c3a76584ef5e0baf286d038cda203eb6223df2cc413565f7"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "async-broadcast"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -729,7 +768,7 @@ dependencies = [
  "anyhow",
  "arrayvec",
  "log",
- "nom",
+ "nom 8.0.0",
  "num-rational",
  "v_frame",
 ]
@@ -858,6 +897,9 @@ name = "bit-vec"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b71798fca2c1fe1086445a7258a4bc81e6e49dcd24c8d0dd9a1e57395b603f51"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "bit_field"
@@ -924,18 +966,7 @@ dependencies = [
 [[package]]
 name = "blob"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape?rev=a4360f6d6ac3b807df95e3fda24d8d8a8b130049#a4360f6d6ac3b807df95e3fda24d8d8a8b130049"
-dependencies = [
- "abi",
- "borsh",
- "sha1-checked",
- "sha2 0.10.9",
-]
-
-[[package]]
-name = "blob"
-version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape?rev=ccc50fd70fe4a96653c5df4b176fddf55ed834d3#ccc50fd70fe4a96653c5df4b176fddf55ed834d3"
+source = "git+https://github.com/ducktape-industries/ducktape?rev=8a0151a411c3558453c34bb8272b93dfc428cb74#8a0151a411c3558453c34bb8272b93dfc428cb74"
 dependencies = [
  "abi",
  "borsh",
@@ -946,10 +977,10 @@ dependencies = [
 [[package]]
 name = "blobs"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d5923b1c42d50e2421997acca9cba1cded90bc64#d5923b1c42d50e2421997acca9cba1cded90bc64"
+source = "git+https://github.com/ducktape-industries/programs?rev=74a6110699e3b328124dbc815ad64659028bf852#74a6110699e3b328124dbc815ad64659028bf852"
 dependencies = [
  "abi",
- "blob 0.1.0 (git+https://github.com/ducktape-industries/ducktape?rev=ccc50fd70fe4a96653c5df4b176fddf55ed834d3)",
+ "blob",
  "borsh",
  "describe",
  "program",
@@ -1169,7 +1200,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eadd868a2ce9ca38de7eeafdcec9c7065ef89b42b32f0839278d55f35c54d1ff"
 dependencies = [
  "heck 0.4.1",
- "indexmap",
+ "indexmap 2.14.2",
  "log",
  "proc-macro2",
  "quote",
@@ -1752,7 +1783,7 @@ dependencies = [
  "cookie",
  "document-features",
  "idna",
- "indexmap",
+ "indexmap 2.14.2",
  "log",
  "serde",
  "serde_derive",
@@ -2345,6 +2376,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "der-parser"
+version = "10.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07da5016415d5a3c4dd39b11ed26f915f52fc4e0dc197d87908bc916e51bc1a6"
+dependencies = [
+ "asn1-rs",
+ "displaydoc",
+ "nom 7.1.3",
+ "num-bigint",
+ "num-traits",
+ "rusticata-macros",
+]
+
+[[package]]
 name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2375,7 +2420,7 @@ dependencies = [
 [[package]]
 name = "describe"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d5923b1c42d50e2421997acca9cba1cded90bc64#d5923b1c42d50e2421997acca9cba1cded90bc64"
+source = "git+https://github.com/ducktape-industries/programs?rev=74a6110699e3b328124dbc815ad64659028bf852#74a6110699e3b328124dbc815ad64659028bf852"
 dependencies = [
  "borsh",
  "serde",
@@ -2385,7 +2430,7 @@ dependencies = [
 [[package]]
 name = "design"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d5923b1c42d50e2421997acca9cba1cded90bc64#d5923b1c42d50e2421997acca9cba1cded90bc64"
+source = "git+https://github.com/ducktape-industries/programs?rev=74a6110699e3b328124dbc815ad64659028bf852#74a6110699e3b328124dbc815ad64659028bf852"
 
 [[package]]
 name = "digest"
@@ -2555,7 +2600,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 [[package]]
 name = "ducklink"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d5923b1c42d50e2421997acca9cba1cded90bc64#d5923b1c42d50e2421997acca9cba1cded90bc64"
+source = "git+https://github.com/ducktape-industries/programs?rev=74a6110699e3b328124dbc815ad64659028bf852#74a6110699e3b328124dbc815ad64659028bf852"
 dependencies = [
  "abi",
  "program",
@@ -2593,6 +2638,7 @@ dependencies = [
  "p256 0.13.2",
  "program",
  "rand 0.8.8",
+ "raw-window-handle",
  "reqwest",
  "serde",
  "serde_json",
@@ -2605,6 +2651,7 @@ dependencies = [
  "tray-icon",
  "valset",
  "view-wire",
+ "x11rb",
  "zbus 5.19.0",
  "zeroize",
 ]
@@ -2612,7 +2659,7 @@ dependencies = [
 [[package]]
 name = "ducktape-home"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape?branch=feat%2Fcapable-sandbox#665907ddc65ccada5f3e3ba0a95ae955414bfb3c"
+source = "git+https://github.com/ducktape-industries/ducktape?rev=8a0151a411c3558453c34bb8272b93dfc428cb74#8a0151a411c3558453c34bb8272b93dfc428cb74"
 
 [[package]]
 name = "ducktape-host"
@@ -2620,8 +2667,9 @@ version = "0.1.0"
 dependencies = [
  "abi",
  "async-channel",
- "blob 0.1.0 (git+https://github.com/ducktape-industries/ducktape?rev=a4360f6d6ac3b807df95e3fda24d8d8a8b130049)",
+ "blob",
  "blobs",
+ "borsh",
  "commonware-codec",
  "commonware-cryptography",
  "describe",
@@ -2634,11 +2682,17 @@ dependencies = [
  "gpui-pre-wgpu",
  "identity",
  "image",
+ "keyscheme",
  "libc",
+ "live-wire",
  "noded-client",
  "program",
  "programs",
+ "quinn",
  "rand 0.8.8",
+ "rcgen",
+ "rustls",
+ "rustls-webpki",
  "serde",
  "serde_json",
  "sha1",
@@ -2648,7 +2702,10 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "unicode-segmentation",
+ "url",
  "usvg 0.46.0",
+ "valset",
+ "view-meter",
  "view-wire",
  "wasmparser 0.251.0",
  "wasmtime",
@@ -2678,6 +2735,7 @@ dependencies = [
  "tempfile",
  "tracing",
  "tracing-subscriber",
+ "view-wire",
 ]
 
 [[package]]
@@ -3004,7 +3062,7 @@ dependencies = [
 [[package]]
 name = "error"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d5923b1c42d50e2421997acca9cba1cded90bc64#d5923b1c42d50e2421997acca9cba1cded90bc64"
+source = "git+https://github.com/ducktape-industries/programs?rev=74a6110699e3b328124dbc815ad64659028bf852#74a6110699e3b328124dbc815ad64659028bf852"
 dependencies = [
  "borsh",
  "serde",
@@ -3065,6 +3123,12 @@ dependencies = [
  "smallvec",
  "zune-inflate",
 ]
+
+[[package]]
+name = "fallible-iterator"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4443176a9f2c162692bd3d352d745ef9413eec5782a80d8fd6f8a1ac692a07f7"
 
 [[package]]
 name = "fastrand"
@@ -3559,6 +3623,17 @@ dependencies = [
 
 [[package]]
 name = "gimli"
+version = "0.26.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22030e2c5a68ec659fde1e949a745124b48e6fa8b045b7ed5bd1fe4ccc5c4e5d"
+dependencies = [
+ "fallible-iterator",
+ "indexmap 1.9.3",
+ "stable_deref_trait",
+]
+
+[[package]]
+name = "gimli"
 version = "0.32.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
@@ -3571,7 +3646,7 @@ checksum = "0bf7f043f89559805f8c7cacc432749b2fa0d0a0a9ee46ce47164ed5ba7f126c"
 dependencies = [
  "fnv",
  "hashbrown 0.16.1",
- "indexmap",
+ "indexmap 2.14.2",
  "stable_deref_trait",
 ]
 
@@ -3674,7 +3749,7 @@ dependencies = [
 [[package]]
 name = "gpui-base"
 version = "0.7.3"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=83ba4627b0f082c3598ef794105a743c03bbb169#83ba4627b0f082c3598ef794105a743c03bbb169"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=ef025a323b35dae1f64b9de0304f15aff020ad46#ef025a323b35dae1f64b9de0304f15aff020ad46"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -4120,7 +4195,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre"
 version = "0.3.9"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=83ba4627b0f082c3598ef794105a743c03bbb169#83ba4627b0f082c3598ef794105a743c03bbb169"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=ef025a323b35dae1f64b9de0304f15aff020ad46#ef025a323b35dae1f64b9de0304f15aff020ad46"
 dependencies = [
  "accesskit 0.25.1",
  "anyhow",
@@ -4237,7 +4312,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "920c2f5b2f1a7813114d89f4841f26f6060d9c35d7c8a852a4205d1a767a7ce0"
 dependencies = [
  "gpui-pre-util",
- "indexmap",
+ "indexmap 2.14.2",
  "rustc-hash 2.1.3",
 ]
 
@@ -4274,7 +4349,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-ios"
 version = "0.3.9"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=83ba4627b0f082c3598ef794105a743c03bbb169#83ba4627b0f082c3598ef794105a743c03bbb169"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=ef025a323b35dae1f64b9de0304f15aff020ad46#ef025a323b35dae1f64b9de0304f15aff020ad46"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -4295,7 +4370,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-linux"
 version = "0.3.9"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=83ba4627b0f082c3598ef794105a743c03bbb169#83ba4627b0f082c3598ef794105a743c03bbb169"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=ef025a323b35dae1f64b9de0304f15aff020ad46#ef025a323b35dae1f64b9de0304f15aff020ad46"
 dependencies = [
  "accesskit 0.25.1",
  "accesskit_unix 0.24.0",
@@ -4339,7 +4414,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-macos"
 version = "0.3.9"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=83ba4627b0f082c3598ef794105a743c03bbb169#83ba4627b0f082c3598ef794105a743c03bbb169"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=ef025a323b35dae1f64b9de0304f15aff020ad46#ef025a323b35dae1f64b9de0304f15aff020ad46"
 dependencies = [
  "accesskit 0.25.1",
  "accesskit_macos 0.27.1",
@@ -4391,7 +4466,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-mobile"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=83ba4627b0f082c3598ef794105a743c03bbb169#83ba4627b0f082c3598ef794105a743c03bbb169"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=ef025a323b35dae1f64b9de0304f15aff020ad46#ef025a323b35dae1f64b9de0304f15aff020ad46"
 dependencies = [
  "accesskit_android",
  "android-activity",
@@ -4500,7 +4575,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-scheduler"
 version = "0.3.9"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=83ba4627b0f082c3598ef794105a743c03bbb169#83ba4627b0f082c3598ef794105a743c03bbb169"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=ef025a323b35dae1f64b9de0304f15aff020ad46#ef025a323b35dae1f64b9de0304f15aff020ad46"
 dependencies = [
  "async-task",
  "backtrace",
@@ -4580,7 +4655,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-wgpu"
 version = "0.3.9"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=83ba4627b0f082c3598ef794105a743c03bbb169#83ba4627b0f082c3598ef794105a743c03bbb169"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=ef025a323b35dae1f64b9de0304f15aff020ad46#ef025a323b35dae1f64b9de0304f15aff020ad46"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -4694,7 +4769,7 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "http",
- "indexmap",
+ "indexmap 2.14.2",
  "slab",
  "tokio",
  "tokio-util",
@@ -4711,6 +4786,18 @@ dependencies = [
  "crunchy",
  "num-traits",
  "zerocopy",
+]
+
+[[package]]
+name = "halo"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/programs?rev=74a6110699e3b328124dbc815ad64659028bf852#74a6110699e3b328124dbc815ad64659028bf852"
+dependencies = [
+ "abi",
+ "borsh",
+ "describe",
+ "program",
+ "store",
 ]
 
 [[package]]
@@ -4737,9 +4824,19 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
+
+[[package]]
+name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
+dependencies = [
+ "ahash",
+ "serde",
+]
 
 [[package]]
 name = "hashbrown"
@@ -5099,7 +5196,7 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 [[package]]
 name = "identity"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d5923b1c42d50e2421997acca9cba1cded90bc64#d5923b1c42d50e2421997acca9cba1cded90bc64"
+source = "git+https://github.com/ducktape-industries/programs?rev=74a6110699e3b328124dbc815ad64659028bf852#74a6110699e3b328124dbc815ad64659028bf852"
 dependencies = [
  "abi",
  "borsh",
@@ -5196,6 +5293,16 @@ name = "imgref"
 version = "1.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e44b0a4eaa4c82f441d50a963f2d5f05a787240aeee097597033e72accfd22f"
+
+[[package]]
+name = "indexmap"
+version = "1.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd070e393353796e801d209ad339e89596eb4c8d430d18ede6a1cced8fafbd99"
+dependencies = [
+ "autocfg",
+ "hashbrown 0.12.3",
+]
 
 [[package]]
 name = "indexmap"
@@ -5526,8 +5633,9 @@ dependencies = [
 [[package]]
 name = "keyscheme"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape?rev=9dfffb0662bd8a16293df8c75de8817a79b0810b#9dfffb0662bd8a16293df8c75de8817a79b0810b"
+source = "git+https://github.com/ducktape-industries/ducktape?rev=8a0151a411c3558453c34bb8272b93dfc428cb74#8a0151a411c3558453c34bb8272b93dfc428cb74"
 dependencies = [
+ "abi",
  "base64 0.22.1",
  "borsh",
  "commonware-codec",
@@ -5545,7 +5653,7 @@ dependencies = [
 [[package]]
 name = "keystore"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape?branch=feat%2Fcapable-sandbox#665907ddc65ccada5f3e3ba0a95ae955414bfb3c"
+source = "git+https://github.com/ducktape-industries/ducktape?rev=8a0151a411c3558453c34bb8272b93dfc428cb74#8a0151a411c3558453c34bb8272b93dfc428cb74"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -5623,6 +5731,12 @@ name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+
+[[package]]
+name = "leb128"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c83bff1d572d6b9aeef67ddfc8448e4a3737909cb28e81f97c791b9018703e52"
 
 [[package]]
 name = "leb128fmt"
@@ -5737,6 +5851,15 @@ name = "litrs"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
+
+[[package]]
+name = "live-wire"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/ducktape?rev=8a0151a411c3558453c34bb8272b93dfc428cb74#8a0151a411c3558453c34bb8272b93dfc428cb74"
+dependencies = [
+ "abi",
+ "borsh",
+]
 
 [[package]]
 name = "lock_api"
@@ -6002,6 +6125,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "minimal-lexical"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6104,7 +6233,7 @@ dependencies = [
  "half",
  "hashbrown 0.16.1",
  "hexf-parse",
- "indexmap",
+ "indexmap 2.14.2",
  "libm",
  "log",
  "num-traits",
@@ -6198,6 +6327,16 @@ name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
+
+[[package]]
+name = "nom"
+version = "7.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
+dependencies = [
+ "memchr",
+ "minimal-lexical",
+]
 
 [[package]]
 name = "nom"
@@ -6811,8 +6950,17 @@ checksum = "2e5a6c098c7a3b6547378093f5cc30bc54fd361ce711e05293a5cc589562739b"
 dependencies = [
  "crc32fast",
  "hashbrown 0.17.1",
- "indexmap",
+ "indexmap 2.14.2",
  "memchr",
+]
+
+[[package]]
+name = "oid-registry"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12f40cff3dde1b6087cc5d5f5d4d65712f34016a03ed60e9c08dcc392736b5b7"
+dependencies = [
+ "asn1-rs",
 ]
 
 [[package]]
@@ -7037,7 +7185,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4c5cc86750666a3ed20bdaf5ca2a0344f9c67674cae0515bec2da16fbaa47db"
 dependencies = [
  "fixedbitset 0.4.2",
- "indexmap",
+ "indexmap 2.14.2",
 ]
 
 [[package]]
@@ -7469,10 +7617,10 @@ dependencies = [
 [[package]]
 name = "program"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d5923b1c42d50e2421997acca9cba1cded90bc64#d5923b1c42d50e2421997acca9cba1cded90bc64"
+source = "git+https://github.com/ducktape-industries/programs?rev=74a6110699e3b328124dbc815ad64659028bf852#74a6110699e3b328124dbc815ad64659028bf852"
 dependencies = [
  "abi",
- "blob 0.1.0 (git+https://github.com/ducktape-industries/ducktape?rev=ccc50fd70fe4a96653c5df4b176fddf55ed834d3)",
+ "blob",
  "borsh",
  "error",
  "program-derive",
@@ -7482,7 +7630,7 @@ dependencies = [
 [[package]]
 name = "program-derive"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d5923b1c42d50e2421997acca9cba1cded90bc64#d5923b1c42d50e2421997acca9cba1cded90bc64"
+source = "git+https://github.com/ducktape-industries/programs?rev=74a6110699e3b328124dbc815ad64659028bf852#74a6110699e3b328124dbc815ad64659028bf852"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7492,10 +7640,10 @@ dependencies = [
 [[package]]
 name = "programs"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d5923b1c42d50e2421997acca9cba1cded90bc64#d5923b1c42d50e2421997acca9cba1cded90bc64"
+source = "git+https://github.com/ducktape-industries/programs?rev=74a6110699e3b328124dbc815ad64659028bf852#74a6110699e3b328124dbc815ad64659028bf852"
 dependencies = [
  "abi",
- "blob 0.1.0 (git+https://github.com/ducktape-industries/ducktape?rev=ccc50fd70fe4a96653c5df4b176fddf55ed834d3)",
+ "blob",
  "borsh",
  "describe",
  "program",
@@ -7907,6 +8055,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rcgen"
+version = "0.14.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8774e05a7d0de114588e6a28fe7e71694b82614ed569d86d8b389dfbc98b8ad8"
+dependencies = [
+ "ring",
+ "rustls-pki-types",
+ "time",
+ "x509-parser",
+ "yasna",
+]
+
+[[package]]
 name = "read-fonts"
 version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8161,7 +8322,7 @@ dependencies = [
 [[package]]
 name = "rmp-serde"
 version = "1.3.1"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=83ba4627b0f082c3598ef794105a743c03bbb169#83ba4627b0f082c3598ef794105a743c03bbb169"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=ef025a323b35dae1f64b9de0304f15aff020ad46#ef025a323b35dae1f64b9de0304f15aff020ad46"
 dependencies = [
  "rmp",
  "serde",
@@ -8303,6 +8464,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusticata-macros"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "faf0c4a6ece9950b9abdb62b1cfcf2a68b3b67a10ba445b3bb85be2a293d0632"
+dependencies = [
+ "nom 7.1.3",
+]
+
+[[package]]
 name = "rustix"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8439,7 +8609,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "687274d293b6cdc6e73e0fee520bf2049650090d7164f87672d212a3c530cf4a"
 dependencies = [
  "dyn-clone",
- "indexmap",
+ "indexmap 2.14.2",
  "ref-cast",
  "schemars_derive",
  "serde",
@@ -8681,7 +8851,7 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
- "indexmap",
+ "indexmap 2.14.2",
  "itoa",
  "memchr",
  "serde",
@@ -9062,7 +9232,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "store"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d5923b1c42d50e2421997acca9cba1cded90bc64#d5923b1c42d50e2421997acca9cba1cded90bc64"
+source = "git+https://github.com/ducktape-industries/programs?rev=74a6110699e3b328124dbc815ad64659028bf852#74a6110699e3b328124dbc815ad64659028bf852"
 dependencies = [
  "abi",
  "borsh",
@@ -9288,6 +9458,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263"
 dependencies = [
  "futures-core",
+]
+
+[[package]]
+name = "synstructure"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "728a70f3dbaf5bab7f0c4b1ac8d7ae5ea60a4b5549c8a5914361c99147a709d2"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -9679,7 +9860,7 @@ version = "0.9.12+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf92845e79fc2e2def6a5d828f0801e29a2f8acc037becc5ab08595c7d5e9863"
 dependencies = [
- "indexmap",
+ "indexmap 2.14.2",
  "serde_core",
  "serde_spanned 1.1.1",
  "toml_datetime 0.7.5+spec-1.1.0",
@@ -9694,7 +9875,7 @@ version = "1.1.6+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "920602543f0911ab71da12c50d59701da54c196d1a2bf5cb4b75667f137a406a"
 dependencies = [
- "indexmap",
+ "indexmap 2.14.2",
  "serde_core",
  "serde_spanned 1.1.1",
  "toml_datetime 1.1.1+spec-1.1.0",
@@ -9736,7 +9917,7 @@ version = "0.22.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "41fe8c660ae4257887cf66394862d21dbca4a6ddd26f04a3560410406a2f819a"
 dependencies = [
- "indexmap",
+ "indexmap 2.14.2",
  "serde",
  "serde_spanned 0.6.9",
  "toml_datetime 0.6.11",
@@ -9750,7 +9931,7 @@ version = "0.25.15+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1340ea94a5856333492c9064b02c778b191dd2c853778d9609debdcdfea3a614"
 dependencies = [
- "indexmap",
+ "indexmap 2.14.2",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
  "winnow 1.0.4",
@@ -10254,11 +10435,12 @@ dependencies = [
 [[package]]
 name = "valset"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d5923b1c42d50e2421997acca9cba1cded90bc64#d5923b1c42d50e2421997acca9cba1cded90bc64"
+source = "git+https://github.com/ducktape-industries/programs?rev=74a6110699e3b328124dbc815ad64659028bf852#74a6110699e3b328124dbc815ad64659028bf852"
 dependencies = [
  "abi",
  "borsh",
  "describe",
+ "halo",
  "program",
  "programs",
  "store",
@@ -10313,9 +10495,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "view-meter"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "sha2 0.10.9",
+ "walrus",
+ "wasmparser 0.251.0",
+ "wasmtime",
+ "wat",
+]
+
+[[package]]
 name = "view-wire"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/programs?rev=d5923b1c42d50e2421997acca9cba1cded90bc64#d5923b1c42d50e2421997acca9cba1cded90bc64"
+source = "git+https://github.com/ducktape-industries/programs?rev=74a6110699e3b328124dbc815ad64659028bf852#74a6110699e3b328124dbc815ad64659028bf852"
 dependencies = [
  "accesskit 0.25.1",
  "borsh",
@@ -10327,6 +10521,7 @@ dependencies = [
  "rmp-serde",
  "serde",
  "slotmap",
+ "strum",
  "unicode-segmentation",
  "uuid",
  "wasmparser 0.251.0",
@@ -10375,6 +10570,34 @@ checksum = "29790946404f91d9c5d06f9874efddea1dc06c5efe94541a7d6863108e3a5e4b"
 dependencies = [
  "same-file",
  "winapi-util",
+]
+
+[[package]]
+name = "walrus"
+version = "0.23.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6481311b98508f4bc2d0abbfa5d42172e7a54b4b24d8f15e28b0dc650be0c59f"
+dependencies = [
+ "anyhow",
+ "gimli 0.26.2",
+ "id-arena",
+ "leb128",
+ "log",
+ "walrus-macro",
+ "wasm-encoder 0.214.0",
+ "wasmparser 0.214.0",
+]
+
+[[package]]
+name = "walrus-macro"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "439ad39ff894c43c9649fa724cdde9a6fc50b855d517ef071a93e5df82fe51d3"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -10464,13 +10687,22 @@ checksum = "b089037d7eb453ed57b560fe7833de0707411c8b9fdc429745ced77e2a1bacb9"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
- "indexmap",
+ "indexmap 2.14.2",
  "log",
  "petgraph",
  "smallvec",
  "wasm-encoder 0.251.0",
  "wasmparser 0.251.0",
  "wat",
+]
+
+[[package]]
+name = "wasm-encoder"
+version = "0.214.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff694f02a8d7a50b6922b197ae03883fbf18cdb2ae9fbee7b6148456f5f44041"
+dependencies = [
+ "leb128",
 ]
 
 [[package]]
@@ -10520,13 +10752,27 @@ dependencies = [
 
 [[package]]
 name = "wasmparser"
+version = "0.214.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5309c1090e3e84dad0d382f42064e9933fdaedb87e468cc239f0eabea73ddcb6"
+dependencies = [
+ "ahash",
+ "bitflags 2.13.2",
+ "hashbrown 0.14.5",
+ "indexmap 2.14.2",
+ "semver",
+ "serde",
+]
+
+[[package]]
+name = "wasmparser"
 version = "0.251.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "437970b35b1a85cfde9c74b2398352d8d653f3bd8e3a3db0c063ea8f5b4b36ff"
 dependencies = [
  "bitflags 2.13.2",
  "hashbrown 0.17.1",
- "indexmap",
+ "indexmap 2.14.2",
  "semver",
  "serde",
 ]
@@ -10538,7 +10784,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0f7c12eac7bb587801590f6a67ff0bc84d0748513864b71108e4b311cc3df694"
 dependencies = [
  "bitflags 2.13.2",
- "indexmap",
+ "indexmap 2.14.2",
  "semver",
 ]
 
@@ -10619,7 +10865,7 @@ dependencies = [
  "cranelift-entity",
  "gimli 0.33.0",
  "hashbrown 0.17.1",
- "indexmap",
+ "indexmap 2.14.2",
  "log",
  "object 0.39.1",
  "postcard",
@@ -10789,7 +11035,7 @@ dependencies = [
  "anyhow",
  "bitflags 2.13.2",
  "heck 0.5.0",
- "indexmap",
+ "indexmap 2.14.2",
  "wit-parser",
 ]
 
@@ -11002,7 +11248,7 @@ dependencies = [
  "cfg_aliases",
  "document-features",
  "hashbrown 0.16.1",
- "indexmap",
+ "indexmap 2.14.2",
  "log",
  "naga",
  "once_cell",
@@ -11870,7 +12116,7 @@ dependencies = [
  "anyhow",
  "hashbrown 0.17.1",
  "id-arena",
- "indexmap",
+ "indexmap 2.14.2",
  "log",
  "semver",
  "serde",
@@ -11937,6 +12183,24 @@ dependencies = [
  "curve25519-dalek 5.0.0",
  "rand_core 0.10.1",
  "zeroize",
+]
+
+[[package]]
+name = "x509-parser"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d43b0f71ce057da06bc0851b23ee24f3f86190b07203dd8f567d0b706a185202"
+dependencies = [
+ "asn1-rs",
+ "data-encoding",
+ "der-parser",
+ "lazy_static",
+ "nom 7.1.3",
+ "oid-registry",
+ "ring",
+ "rusticata-macros",
+ "thiserror 2.0.20",
+ "time",
 ]
 
 [[package]]
@@ -12043,6 +12307,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a5a4b21e1a62b67a2970e6831bc091d7b87e119e7f9791aef9702e3bef04448"
 
 [[package]]
+name = "yasna"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5f6765e852b9b4dc8e2a76843e4d64d1cea8e79bcde0b6901aea8e7c7f08282"
+dependencies = [
+ "bit-vec 0.9.1",
+ "time",
+]
+
+[[package]]
 name = "yazi"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12079,7 +12353,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
- "synstructure",
+ "synstructure 0.14.0",
 ]
 
 [[package]]
@@ -12300,7 +12574,7 @@ dependencies = [
 [[package]]
 name = "zed-xim"
 version = "0.4.0-zed"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=83ba4627b0f082c3598ef794105a743c03bbb169#83ba4627b0f082c3598ef794105a743c03bbb169"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=ef025a323b35dae1f64b9de0304f15aff020ad46#ef025a323b35dae1f64b9de0304f15aff020ad46"
 dependencies = [
  "ahash",
  "hashbrown 0.14.5",
@@ -12354,7 +12628,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
- "synstructure",
+ "synstructure 0.14.0",
 ]
 
 [[package]]

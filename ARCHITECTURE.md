@@ -89,7 +89,7 @@ the core free of every shell, OS and key crate.
 | `runtime.rs`, `runtime/` | seats, views (wasmtime), the kernel relay, replies, notify, store, clipboard, roster, `Seat` | ticks on the window thread, off the draw path; loads on loader threads; node calls on `views-kernel` |
 | `render.rs`, `render/` | `ViewTree`: one wire tree drawn as GPUI elements, retained native state keyed by `AuthoredPath`, `wire::Event` out, accessibility mapping | window thread |
 | `render/web.rs`, `crates/web` | the web piece. With feature `web`, a page per `Node::Web` through CEF off-screen rendering (`crates/web` holds every CEF name; `render/web.rs` maps the piece onto it and picks the view that declares `web` for an https link); without it the piece draws a line and links go to the system browser | window thread (CEF's pump turns there) |
-| `backend/` (core) | what crosses the process boundary on every host: `noded` client and signed `Frame`, `session` (the seated key, any `noded_client::Signer`), `views`, `prefs`, recent nodes, `identity`, `join` (another device) | async, polled where the caller polls (see below) |
+| `backend/` (core) | what crosses the process boundary on every host: `noded` client and signed `Frame`, `session` (the seated key, any `noded_client::Signer`), `views`, `prefs`, recent nodes, `identity`, `join` (another device), `live` (the live session with the node's relay over core's `live-wire`: QUIC on the node's live port, or the websocket `/v1/live`; one per connection, on `Connection.live`, closed at quit) | async, polled where the caller polls (see below) |
 | `src/os.rs`, `src/backend/` (desktop) | the desktop's `OsServices` (`app_dirs`, the freedesktop / macOS banners, `invite`), `device_key`, `key_dir`, `passkey` through `auth_page` and `loopback`, `recovery` | same |
 | `a11y.rs` | role/name/keyboard/state helpers for shell and renderer, plus the class markers the AX door reads | window thread |
 | `ax.rs`, `ax/` | the AX test door: loopback HTTP over the AccessKit tree, its CLI client; built with the `ax-door` feature only | `ax-door` accept thread; answers on the window thread |
@@ -164,8 +164,9 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
 3. **Compile.** `View::load` on the loader thread: `DUCKTAPE_VIEWS_DIR`
    override first (`seat::view_override`, unverified, logged), else the
    network's bytes. Either way `View::compile` reads the manifest
-   (upstream `view_wire::manifest::read_manifest`), checks its `wire_id`
-   against `view_wire::WIRE_ID`, then `compiled_view` compiles through the one
+   (upstream `view_wire::manifest::read_manifest`), logs `view_wire_differs`
+   when its `wire_id` is not `view_wire::WIRE_ID` (the view runs all the
+   same, and a failure of it says so: `View::failure`), then `compiled_view` compiles through the one
    `Engine` (`view::engine`: `consume_fuel(true)`, opt level Speed, a
    wasmtime disk cache under `cache_dir()/view-code`); `runtime::manifest_of`
    reads the same manifest again for the tab's name and icon and the
@@ -298,9 +299,14 @@ at all, else the fresh one is `init`ed), the fresh instance, its `restore`,
 its `first_frame`, each begun once the one before landed (at once on the
 wasmtime runner, so the whole sequence runs in one poll there; later on a
 runner that answers across a process boundary). The seat does not turn the
-drawn view meanwhile (`Mounted::swapping`), so nothing can tick it between
+drawn view meanwhile (`Mounted::owned`), so nothing can tick it between
 the snapshot and the install. A view whose snapshot refuses ("its
-replacement waits") keeps its seat and the next block asks again. The swap
+replacement waits") keeps its seat and the next block asks again; so does
+one whose instance dies under the snapshot (the death waits on the view,
+`View::parked`, and the seat's next turn in front takes it up before
+anything else begins a call: the drawn view revives on a new page, its
+kept batches replayed, SPEC §6.5), and one whose fresh instance dies
+under its restore (the drawn view untouched). The swap
 installs only if the seat's `generation` is still the one it was asked for
 and the app is still on the node it was asked of (`Connection.rev`). The
 new view is `staged`: its first tree is already in `frame`, so the next
@@ -389,10 +395,13 @@ its meaning; the host and the views name the const, never the string.
    and turns; `View::redraw` drains the queue into
    `view.pending` as `Event::Response` values, so the answer reaches the
    view on its next tick. Nothing wakes the wasm from another thread.
-6. **Subscriptions.** `program.changes <program>` (`live`: one WebSocket
+6. **Subscriptions.** `program.changes <program>` (`follow_changes`: one WebSocket
    `/v1/changes/<program>` per subscription), `chain.heads` (`heads`: polls
    status at half the node's block time and reads the advance from
-   `/v1/blocks`), `clock.ticks`, `host.session`,
+   `/v1/blocks`), `live.publish`/`live.subscribe`/
+   `live.tracks` (`kernel/live.rs`: a request on the connection's live
+   session, opened again on a lost session or a reconnect, its items the
+   node's objects and announces), `clock.ticks`, `host.session`,
    `host.route`, `host.offset`, `host.visible` answer many times with
    `done: false`. After each item a node subscription parks on the
    `drained` watch until a redraw takes the queue
@@ -995,9 +1004,11 @@ House words, and where one word means several things.
   `Failure`. Check in order: is the program in
   the roster (`NotListed`); does the node hold the blob (`Unreachable`);
   does the section exist (`Slot::Empty`); do the bytes hash
-  (`HashMismatch`); does the manifest parse and name this app's `WIRE_ID`
-  (`Refused`, `Wire`); did `init` or the first tick
-  trap (`Trapped` — a panic message is in the sentence). To bypass the
+  (`HashMismatch`); does the manifest parse (`Refused`); did `init` or a
+  tick trap or send a frame the host refuses (`Trapped` — a panic message,
+  or the node, `node at [1, 1]: …` or `Field `search` at [0, 2]: …`, is in
+  the sentence; `Wire` when the view was built against another wire, and
+  then the sentence names both). To bypass the
   node, point `DUCKTAPE_VIEWS_DIR` at a directory of `<program>_view.wasm`.
   `RUST_LOG=ducktape::perf=debug` shows per-tick fuel.
 - **Run against a node.** Start a node from `ducktape-industries/ducktape`

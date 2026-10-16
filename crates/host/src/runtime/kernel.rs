@@ -67,6 +67,12 @@
 //! A connect inside the network opens both again on the new node
 //! (`reconnected`): neither ends on it.
 //!
+//! In `live`, through the connection's one live session with the node's
+//! relay (`backend::live`), off consensus: `live.publish`, `live.send`,
+//! `live.subscribe`, `live.tracks`. Each item wakes its view at once,
+//! through [`Replies`] like any answer. A connect inside the network
+//! opens them again too.
+//!
 //! In a sibling module [`answer`] asks first:
 //! - `clipboard.read`, `clipboard.write` — `clipboard`, run on the window
 //!   thread after the tick.
@@ -103,6 +109,7 @@ fn malformed(error: impl std::fmt::Display) -> wire::Error {
 pub(super) type Answer = Result<Vec<u8>, wire::Error>;
 
 mod describe;
+pub(super) mod live;
 mod node;
 pub use node::Answered;
 mod replies;
@@ -110,10 +117,10 @@ mod replies;
 pub(super) use node::{NodeTask, reconnected, spawn_reply};
 use node::{
     blob_get, blob_manifest, block, blocks, changes, heads, invite, network, query, spawn_asked,
-    status, submit, tx,
+    spawn_submit, status, tx,
 };
-use replies::InFlight;
 pub(super) use replies::Replies;
+use replies::{Claim, InFlight};
 
 /// The one current-thread tokio runtime every async I/O in the app runs
 /// on — node HTTP and websockets here, the shell's task stream, the loader
@@ -296,7 +303,7 @@ pub(super) fn answer(
                 &call.body,
                 own,
             ) {
-                None => spawn_asked(view, id, payload, submit, "host_call.op.submit"),
+                None => spawn_submit(view, id, payload),
                 Some(words) => node::spawn_consented(view, id, payload, call, words),
             }
         }
@@ -337,6 +344,38 @@ pub(super) fn answer(
             ),
             Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
         },
+        // one of the host's own places, as a link: only the person's press
+        // or key brings one up. The reader's account is shown only where
+        // there is one (`roster::props`); a place this host does not know
+        // does not decode
+        (Capability::Host, "show") => match methods::decode::<methods::Place>(payload) {
+            Ok(methods::Place::Account)
+                if props
+                    .as_deref()
+                    .and_then(|props| methods::decode::<methods::Session>(props).ok())
+                    .and_then(|session| session.account)
+                    .is_none() =>
+            {
+                view.refuse(
+                    id,
+                    refusal::UNKNOWN_REQUEST,
+                    "there is no reader's account to show",
+                )
+            }
+            Ok(place) => {
+                if !view.take_activation() {
+                    view.refuse(
+                        id,
+                        refusal::NEEDS_GESTURE,
+                        "`host.show` needs a press or key",
+                    );
+                    return true;
+                }
+                view.intents.push(Intent::Show(place));
+                view.reply(id, Ok(Vec::new()));
+            }
+            Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
+        },
         (Capability::Host, "badge") => match methods::decode::<i64>(payload).ok() {
             Some(count) => {
                 view.intents.push(Intent::Badge(count));
@@ -367,6 +406,11 @@ pub(super) fn answer(
                 "`clock.ticks` names no period",
             ),
         },
+        // tracks through the connected node, off consensus (`live.rs`)
+        (Capability::Live, "publish") => live::publish(view, id, payload),
+        (Capability::Live, "send") => live::send(view, id, payload),
+        (Capability::Live, "subscribe") => live::subscribe(view, id, payload),
+        (Capability::Live, "tracks") => live::tracks(view, id, payload),
         (Capability::Host, "id") => {
             let prefix = methods::decode::<String>(payload).unwrap_or_default();
             let prefix = prefix.trim();

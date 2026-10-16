@@ -171,15 +171,17 @@ pub(super) fn shortcuts(window: &Window, cx: &App) -> Vec<Shortcut> {
     out
 }
 
-/// Every served window's [`current`] nodes.
+/// Every served window's [`current`] nodes, read once every seat's tick
+/// landed or the client's deadline (`until`) passed (`settled`).
 pub(super) async fn read(
     door: &super::Door<'_>,
     filter: &Filter,
     bounds: bool,
+    until: Option<std::time::Instant>,
     seen: &mut Seen,
     cx: &mut AsyncApp,
 ) -> Vec<AxNode> {
-    super::settled(door, cx).await;
+    super::settled(door, until, cx).await;
     let list = cx.update(|cx| (door.windows)(cx));
     let mut out = Vec::new();
     for (name, _, handle) in &list {
