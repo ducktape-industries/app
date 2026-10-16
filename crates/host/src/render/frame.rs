@@ -195,8 +195,31 @@ impl ViewTree {
         self.variable_lists
             .retain(|id, _| variable_lists.contains(id));
         self.drags.retain(|key, _| drags.contains(key));
-        // a sheet the view stopped drawing opens at its first detent again
-        self.sheets.retain(|key, _| sheets.contains(key));
+        // a sheet the view stopped drawing opens at its first detent again;
+        // under touch, a docked one goes down as it was last drawn
+        let dropped: Vec<AuthoredPath> = self
+            .sheets
+            .keys()
+            .filter(|key| !sheets.contains(*key))
+            .cloned()
+            .collect();
+        for key in dropped {
+            let Some(state) = self.sheets.remove(&key) else {
+                continue;
+            };
+            if !state.moves() {
+                continue;
+            }
+            let mut leaving = None;
+            walk_authored_paths(&self.root, None, &mut Vec::new(), &mut |node, path| {
+                if leaving.is_none() && *path == key && matches!(node, wire::Node::Sheet { .. }) {
+                    leaving = state.leave(node, &self.styles, path, cx);
+                }
+            });
+            if leaving.is_some() {
+                self.leaving = leaving;
+            }
+        }
         let opener = &mut self.opener;
         self.dialogs.retain(|key, (entry, was)| {
             let open = dialogs.contains(key);

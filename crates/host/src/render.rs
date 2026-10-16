@@ -254,6 +254,11 @@ pub struct ViewTree {
     sheets: HashMap<AuthoredPath, sheet::SheetState>,
     /// The sheet this render built, laid over the root (`sheet.rs`).
     sheet_layer: Option<AnyElement>,
+    /// Under touch, a sheet the view dropped, going down as it was drawn;
+    /// and while it is walked, how far in it is, its height, whether it
+    /// slides (`sheet.rs`).
+    leaving: Option<sheet::Leaving>,
+    leaving_at: Option<(f32, Pixels, bool)>,
     /// The body the view is laid out in, as its seat last told the view
     /// (`Event::Viewport`): its width class docks a sheet or centres it.
     /// `None` before a seat tells it (a tree drawn alone): the window's.
@@ -356,6 +361,8 @@ impl ViewTree {
             sheet_layer: None,
             page,
             page_motion: None,
+            leaving: None,
+            leaving_at: None,
             body: None,
             dialogs: HashMap::new(),
             opener: None,
@@ -577,8 +584,14 @@ impl Render for ViewTree {
         // drawn in place: nothing in the walk reads `self.root`
         let root = std::mem::replace(&mut self.root, wire::Node::empty());
         let node = self.node(&root, window, cx);
-        let sheet = self.sheet_layer.take();
         self.root = root;
+        let sheet = match self.sheet_layer.take() {
+            Some(sheet) => {
+                self.leaving = None;
+                Some(sheet)
+            }
+            None => self.leaving_sheet(window, cx),
+        };
         // Carried-over state is for the first frame of a new tree only:
         // whatever that frame did not claim is dropped. The rows of a list
         // (variable or uniform) are built after this call returns, when gpui

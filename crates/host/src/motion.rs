@@ -33,6 +33,8 @@
 //! test moves it with `advance_clock`) and asks for the next frame from the
 //! render that draws it while it moves, never after its end
 //! ([`Tween::frame`]): a still window draws nothing (docs/perf.md).
+//! [`follow`] runs what comes and goes over the screen (a sheet, an alert,
+//! a toast) from the state that says whether it is up.
 
 use gpui_kit::{App, Window};
 use std::time::{Duration, Instant};
@@ -398,6 +400,86 @@ impl Tween {
         }
         self.at(now)
     }
+}
+
+/// Something drawn over the screen as it comes and goes (a sheet, an
+/// alert, a toast): what it shows, and its motion, toward 1 coming and
+/// toward 0 going.
+#[derive(Clone, Debug)]
+pub struct Shown<T> {
+    /// What it shows; kept while it goes, so it goes as it was.
+    pub what: T,
+    /// Its motion: 0 gone, 1 in place.
+    pub tween: Tween,
+    /// Whether it is going.
+    pub leaving: bool,
+}
+
+/// One frame of something [`follow`] draws.
+#[derive(Clone, Debug)]
+pub struct Showing<T> {
+    /// What it shows.
+    pub what: T,
+    /// How far in it is: 0 gone, 1 in place.
+    pub progress: f32,
+    /// Whether it slides (else, under Reduce Motion, it fades in place).
+    pub slides: bool,
+    /// Whether it is going: it takes no press.
+    pub leaving: bool,
+}
+
+impl<T> Showing<T> {
+    /// Its progress, whether it slides, whether it is going.
+    pub fn at(&self) -> (f32, bool, bool) {
+        (self.progress, self.slides, self.leaving)
+    }
+}
+
+/// `drawn` brought in line with `wanted` (what is up now, `None` when
+/// nothing is), from the render that draws it: what comes runs `come` from
+/// where it is, what goes runs `go` back to 0 and is dropped at its end,
+/// and something new while one is up takes its place without moving. What
+/// to draw this frame, the next one asked for while it moves.
+pub fn follow<T: Clone>(
+    drawn: &mut Option<Shown<T>>,
+    wanted: Option<T>,
+    (come, go): (Motion, Motion),
+    window: &Window,
+    cx: &App,
+) -> Option<Showing<T>> {
+    let at = now(cx);
+    match (wanted, drawn.as_mut()) {
+        (Some(what), None) => {
+            *drawn = Some(Shown {
+                what,
+                tween: Tween::start(come, cx),
+                leaving: false,
+            })
+        }
+        (Some(what), Some(shown)) => {
+            if shown.leaving {
+                shown.tween = Tween::between(shown.tween.at(at), 1., come, cx);
+                shown.leaving = false;
+            }
+            shown.what = what;
+        }
+        (None, Some(shown)) if !shown.leaving => {
+            shown.tween = Tween::between(shown.tween.at(at), 0., go, cx);
+            shown.leaving = true;
+        }
+        (None, _) => {}
+    }
+    let shown = drawn.as_ref()?;
+    if shown.leaving && shown.tween.done(at) {
+        *drawn = None;
+        return None;
+    }
+    Some(Showing {
+        what: shown.what.clone(),
+        progress: shown.tween.frame(window, cx),
+        slides: shown.tween.motion.slides,
+        leaving: shown.leaving,
+    })
 }
 
 #[cfg(test)]
