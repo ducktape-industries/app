@@ -2117,6 +2117,7 @@ impl ServerCertVerifier for Pinned {
 }
 
 #[cfg(any(feature = "call", test))]
+#[cfg_attr(not(feature = "call"), allow(dead_code))]
 pub(crate) mod media;
 
 #[cfg(test)]

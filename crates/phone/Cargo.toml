@@ -29,6 +29,7 @@ name = "ducktape_phone"
 ax-door = ["ducktape-host/ax-door"]
 # calls on the phone (the host's `call`: codecs, the echo-cancelled voice
 # I/O); on, as the desktop's default is
+default = ["call"]
 call = ["ducktape-host/call"]
 
 [dependencies]

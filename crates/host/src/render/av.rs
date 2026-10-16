@@ -184,6 +184,7 @@ struct Piece {
     on_state: std::rc::Rc<std::cell::Cell<Option<u32>>>,
     /// The device's state as last told, for `call.rs` to tell again with
     /// the track's.
+    #[cfg_attr(not(feature = "call"), allow(dead_code))]
     told: std::rc::Rc<std::cell::RefCell<wire::MediaState>>,
     _state: Option<Subscription>,
     /// Lets the device go the moment the piece drops, before gpui
