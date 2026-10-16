@@ -21,6 +21,8 @@ authors = ["Ducktape contributors"]
 
 [workspace]
 resolver = "2"
+# the phone shell; the other members are the root package's path dependencies
+members = ["crates/phone"]
 
 [workspace.package]
 edition = "2024"
@@ -63,6 +65,11 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 # wasmtime — pinned exactly, matching the node's runtime: a program-owned view
 # executes in the same wasm semantics the kernel does.
 wasmtime = "=46.0.3"
+# --- the phone platforms, vendored in the gpui-pre fork at the [patch.crates-io]
+# rev below (not on crates.io): zed's gpui_ios, and longbridge gpui-mobile's
+# Android half with its one line changed (crates/phone) ---
+gpui-pre-ios = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "83ba4627b0f082c3598ef794105a743c03bbb169" }
+gpui-pre-mobile = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "83ba4627b0f082c3598ef794105a743c03bbb169", default-features = false }
 libc = "0.2"
 
 [features]
@@ -183,6 +190,13 @@ codegen-units = 1
 # dev/test builds compile wasm views through cranelift (program-owned view
 # fixtures); unoptimized cranelift is 10-30x slower, so the code generator
 # itself is always built optimized. build-time only.
+# What a phone runs (`phone/Makefile`): gpui_ios's ObjC entries and gm's
+# JNI ones have no unwind guard, so a panic aborts with its logged reason
+# instead of unwinding into UIKit or the JVM (wasm-mobile SPEC §13.3).
+[profile.phone]
+inherits = "release"
+panic = "abort"
+
 [profile.dev.build-override]
 opt-level = 2
 

@@ -1,0 +1,33 @@
+# The phone's iOS launcher (XcodeGen): `App.swift`, the Expo build's
+# `DeviceKeyStore.swift` as it is, and the Rust library `phone/Makefile`
+# builds into `build/rust/<platform>` with the link flags rustc prints
+# (`build/rust/<platform>/link.xcconfig`). Simulator builds sign ad hoc;
+# signing for a phone is the owner's (SPEC §14).
+name: Ducktape
+options:
+  deploymentTarget:
+    iOS: "15.0"
+configFiles:
+  Debug: build/rust/link.xcconfig
+  Release: build/rust/link.xcconfig
+targets:
+  Ducktape:
+    type: application
+    platform: iOS
+    sources:
+      - App.swift
+      - DeviceKeyStore.swift
+      - Phone.h
+    settings:
+      base:
+        PRODUCT_NAME: Ducktape
+        PRODUCT_BUNDLE_IDENTIFIER: industries.ducktape.mobile
+        INFOPLIST_FILE: Info.plist
+        SWIFT_VERSION: "5.0"
+        SWIFT_OBJC_BRIDGING_HEADER: Phone.h
+        TARGETED_DEVICE_FAMILY: "1"
+        LIBRARY_SEARCH_PATHS: $(PROJECT_DIR)/build/rust/$(PLATFORM_NAME)
+        OTHER_LDFLAGS: $(inherited) -lducktape_phone $(RUST_NATIVE_LIBS)
+        ENABLE_BITCODE: NO
+        # the Rust library is built for the Apple-silicon simulator only
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64

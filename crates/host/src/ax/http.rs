@@ -75,6 +75,12 @@ pub fn open() -> Option<(futures::channel::mpsc::UnboundedReceiver<Call>, Writte
     )
 }
 
+/// Opens the door on `port`, whatever the environment says: for a shell
+/// whose launch takes no environment (a phone, wasm-mobile SPEC §11.1).
+pub fn open_at(port: u16) -> Option<(futures::channel::mpsc::UnboundedReceiver<Call>, Written)> {
+    open_env(Some(&port.to_string()), None, Ok(door_file()))
+}
+
 /// `private`: `DUCKTAPE_AX_DOOR_PRIVATE`; exactly `1` adds [`reveal`].
 /// `file`: where the door file goes ([`door_file`]).
 fn open_env(
