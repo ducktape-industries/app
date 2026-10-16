@@ -1063,6 +1063,48 @@ fn a_view_floats_its_pane_on_top_and_unfloat_puts_it_back(cx: &mut TestAppContex
     assert_eq!(pane_at(&app, instance, &mut native).0, console);
 }
 
+/// A view asks any size: its float fits the display it opens on, the
+/// view laid out no larger, its minimum no larger than that.
+#[gpui_kit::test]
+fn a_float_fits_its_display(cx: &mut TestAppContext) {
+    use crate::runtime::{Intent, intent_for_test, viewport_for_test};
+    const PROGRAM: &str = "float-huge-view";
+    let (app, console, _, mut native, instance) = floating_console(PROGRAM, cx);
+    let huge = view_wire::methods::Float {
+        width: 100_000,
+        height: 100_000,
+        min_width: 90_000,
+        min_height: 90_000,
+        on_top: false,
+    };
+    intent_for_test(PROGRAM, instance, Intent::Float(huge));
+    turn(&app, &mut native);
+    let (floated, _) = pane_at(&app, instance, &mut native);
+    assert_ne!(floated, console, "it floats");
+    let handle = app
+        .windows
+        .read_with(&native, |windows, _| windows.handles()[&floated]);
+    let (bounds, display) = native.update(|_, cx| {
+        handle
+            .update(cx, |_, window, cx| {
+                let display = window.display(cx).expect("a display").visible_bounds();
+                (window.bounds(), display)
+            })
+            .unwrap()
+    });
+    assert!(
+        bounds.size.width <= display.size.width && bounds.size.height <= display.size.height,
+        "{bounds:?} past {display:?}"
+    );
+    let (width, height) = viewport_for_test(PROGRAM).expect("laid out");
+    assert!(width <= f32::from(display.size.width) && height <= f32::from(display.size.height));
+    let min = app
+        .windows
+        .read_with(&native, |windows, _| windows.float_min(floated))
+        .expect("floating");
+    assert!(min <= f32::from(display.size.width));
+}
+
 /// The float's own close button does not end what is in it: the pane
 /// goes back on the desk as the window closes. The next float opens where
 /// that one was left.

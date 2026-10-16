@@ -287,9 +287,7 @@ pub(super) fn answer(
             Ok(_) => view.refuse(
                 id,
                 refusal::MALFORMED_REQUEST,
-                format!(
-                    "`host.float` names a size from its minimum (at least 1) up to {MAX_FLOAT}"
-                ),
+                "`host.float` names a size of at least its minimum, at least 1",
             ),
             Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
         },
@@ -550,17 +548,11 @@ pub fn plain(c: &char) -> bool {
         || matches!(c, '\u{2028}' | '\u{2029}'))
 }
 
-/// The widest and tallest a `host.float` may ask its view laid out: a
-/// window past any display is no float.
-const MAX_FLOAT: u32 = 8192;
-
 /// Whether a `host.float` names a size a window can have: each side at
-/// least its minimum, the minimum at least 1, nothing past [`MAX_FLOAT`].
+/// least its minimum, the minimum at least 1. The shell fits it to the
+/// display it opens on.
 fn floatable(float: &methods::Float) -> bool {
-    (1..=float.width).contains(&float.min_width)
-        && (1..=float.height).contains(&float.min_height)
-        && float.width <= MAX_FLOAT
-        && float.height <= MAX_FLOAT
+    (1..=float.width).contains(&float.min_width) && (1..=float.height).contains(&float.min_height)
 }
 
 /// Whether `link.open` may open `link`: `duck://` or `https://` with

@@ -802,8 +802,9 @@ impl Windows {
     /// A view's float (`host.float`) of the pane with this `instance`: the
     /// pane into a window of its own whose body is `body`, never under
     /// `min`, kept above other windows when `on_top` and this platform
-    /// can. It opens where this program's float was last left in this run,
-    /// else at the bottom-right of the display the pane was on
+    /// can; both fit the display the pane was on (a pane on no display
+    /// does not float). It opens where this program's float was last left
+    /// in this run, else at that display's bottom-right
     /// (`windows::corner`). Floating already, Keep on Top alone follows
     /// `on_top`. The shell knows nothing of what the view does in it.
     pub(crate) fn float(
@@ -825,19 +826,25 @@ impl Windows {
             }
             return;
         }
-        // the body is the float's: its window adds the strip above it
-        let window = |body: Size<Pixels>| size(body.width, body.height + px(layers::TITLE));
-        let at = self.left.get(program).copied().or_else(|| {
-            let display = self.handles.get(&from).and_then(|handle| {
-                handle
-                    .update(cx, |_, window, cx| {
-                        window.display(cx).map(|display| display.visible_bounds())
-                    })
-                    .ok()
-                    .flatten()
-            });
-            display.map(|display| windows::corner(window(body), display))
+        let display = self.handles.get(&from).and_then(|handle| {
+            handle
+                .update(cx, |_, window, cx| {
+                    window.display(cx).map(|display| display.visible_bounds())
+                })
+                .ok()
+                .flatten()
         });
+        let Some(display) = display else {
+            return;
+        };
+        // the body is the float's: its window adds the strip above it, and
+        // the two fit the display (a view asks any size)
+        let room = size(display.size.width, display.size.height - px(layers::TITLE));
+        let body = size(body.width.min(room.width), body.height.min(room.height));
+        let min = size(min.width.min(body.width), min.height.min(body.height));
+        let window = |body: Size<Pixels>| size(body.width, body.height + px(layers::TITLE));
+        let at = self.left.get(program).copied();
+        let at = at.or_else(|| Some(windows::corner(window(body), display)));
         let Some(key) = self.pop_out(from, index, at, Some(window(min)), cx) else {
             return;
         };

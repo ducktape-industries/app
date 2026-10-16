@@ -732,8 +732,8 @@ fn a_float_needs_a_press_and_says_what_the_platform_can() {
 }
 
 /// A float names a size a window can have: each side at least its
-/// minimum, the minimum at least 1, nothing past 8192. Anything else is
-/// refused before it spends the press.
+/// minimum, the minimum at least 1. Anything else is refused before it
+/// spends the press (a size past the display is the shell's to fit).
 #[test]
 fn a_float_of_no_size_is_refused() {
     let mut view = view();
@@ -748,14 +748,6 @@ fn a_float_of_no_size_is_refused() {
         },
         methods::Float {
             width: 239,
-            ..FLOAT
-        },
-        methods::Float {
-            width: 9000,
-            ..FLOAT
-        },
-        methods::Float {
-            height: u32::MAX,
             ..FLOAT
         },
     ] {
