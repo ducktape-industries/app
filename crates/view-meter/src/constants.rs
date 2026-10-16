@@ -1,5 +1,5 @@
-//! Validation (the shapes every view runner refuses, [`crate::accepts`]),
-//! and where wasmtime folds a size-charged operator's cost.
+//! Where wasmtime folds a size-charged operator's cost, found on a module
+//! [`crate::accepts`] took.
 //!
 //! wasmtime 46 charges `memory.copy`, `memory.fill`, `memory.init`,
 //! `table.copy`, `table.fill`, `table.init` and `table.grow` by their length
@@ -30,8 +30,22 @@
 //! stack keeps each value's identity, as the translator's does.
 //!
 //! An `externref` table or global, whose garbage collector barriers would
-//! add control flow of their own, is refused before any body is read, so
-//! every table here holds `funcref`s.
+//! add control flow of their own, is refused before (`accepts`), so every
+//! table here holds `funcref`s.
+//!
+//! The blocks replayed are those of wasmtime-internal-cranelift 46.0.3 and
+//! cranelift-frontend 0.133.3 (a test pins both versions: re-audit this
+//! module before moving either), under the `Config` the view runners use:
+//! - `consume_fuel` on: the fuel checks and their joins exist;
+//! - `epoch_interruption` off: its check would add a join at every loop
+//!   header and function entry;
+//! - `table_lazy_init` on: `call_indirect` and a funcref `table.get` join
+//!   after the lazy initialization, `table.fill` and `table.copy` loop
+//!   per element (off, they are a plain read, a memset and a memcpy).
+//!
+//! The SSA builder keeps each variable's definitions in a dense array by
+//! block, as Cranelift's `SSABuilder` does, so the replay's memory follows
+//! Cranelift's on the same body.
 //!
 //! The result maps each size-charged operator wasmtime sees a constant
 //! length for (by its byte offset in the module, which walrus keeps as the
@@ -39,20 +53,22 @@
 use std::collections::{HashMap, HashSet};
 
 use wasmparser::{
-    BinaryReaderError, BlockType, CompositeInnerType, FuncType, FuncValidator,
-    FuncValidatorAllocations, FunctionBody, MemoryType, Operator, Parser, Payload, RefType,
-    TypeRef, ValType, ValidPayload, Validator, ValidatorResources, WasmModuleResources,
+    BlockType, CompositeInnerType, FuncType, FuncValidator, FuncValidatorAllocations, FunctionBody,
+    MemoryType, Operator, Parser, Payload, TypeRef, ValType, ValidPayload, Validator,
+    ValidatorResources, WasmModuleResources,
 };
 
-use crate::{FEATURES, GAS, MEMORY_PAGES, PAGE, Refusal, SMALL_BULK};
+use crate::accepts::refuse;
+use crate::{FEATURES, MEMORY_PAGES, PAGE, Refusal, SMALL_BULK};
 
 /// Each size-charged operator whose length wasmtime sees as a constant, by
 /// its byte offset in the module, and the cost wasmtime folds for it.
 pub(crate) type Constants = HashMap<u32, i64>;
 
-/// Validates `code` against [`FEATURES`], refuses the shapes no view runner
-/// takes, and, when `replay`, finds its [`Constants`].
-pub(crate) fn validate(code: &[u8], replay: bool) -> Result<Constants, Refusal> {
+/// The [`Constants`] of `code`, which [`crate::accepts`] took: each body is
+/// replayed as the validator walks it (the validator gives each operator's
+/// arity).
+pub(crate) fn find(code: &[u8]) -> Result<Constants, Refusal> {
     let mut validator = Validator::new_with_features(FEATURES);
     let mut module = Module::default();
     let mut constants = Constants::new();
@@ -60,10 +76,8 @@ pub(crate) fn validate(code: &[u8], replay: bool) -> Result<Constants, Refusal> 
     for payload in Parser::new(0).parse_all(code) {
         let payload = payload.map_err(refuse)?;
         let valid = validator.payload(&payload).map_err(refuse)?;
-        module.read(&payload)?;
-        if let ValidPayload::Func(func, body) = valid
-            && replay
-        {
+        module.read(&payload).map_err(refuse)?;
+        if let ValidPayload::Func(func, body) = valid {
             let mut func = func.into_validator(std::mem::take(&mut allocations));
             Translation::new(&module, &func)?.run(&mut func, &body, &mut constants)?;
             allocations = func.into_allocations();
@@ -71,15 +85,6 @@ pub(crate) fn validate(code: &[u8], replay: bool) -> Result<Constants, Refusal> 
     }
     Ok(constants)
 }
-
-fn refuse(error: BinaryReaderError) -> Refusal {
-    Refusal::Unsupported(error.to_string())
-}
-
-/// The most parameters, and the most results, a function type may have
-/// (wasmparser's `MAX_WASM_FUNCTION_PARAMS` and `MAX_WASM_FUNCTION_RETURNS`,
-/// which wasmtime validates with): the count is one more of each.
-const ARITY: usize = 1000;
 
 /// What a body's translation reads from the rest of the module.
 #[derive(Default)]
@@ -96,74 +101,32 @@ struct Module {
 }
 
 impl Module {
-    /// Reads what the translation needs and refuses the shapes no runner
-    /// takes ([`crate::accepts`]).
-    fn read(&mut self, payload: &Payload<'_>) -> Result<(), Refusal> {
-        let refused = |what: &str| Err(Refusal::Unsupported(what.to_owned()));
-        let externref = "an externref table or global";
+    fn read(&mut self, payload: &Payload<'_>) -> wasmparser::Result<()> {
         match payload {
-            Payload::TypeSection(types) => {
-                for ty in types.clone().into_iter_err_on_gc_types() {
-                    let ty = ty.map_err(refuse)?;
-                    if ty.params().len() >= ARITY || ty.results().len() >= ARITY {
-                        return refused(&format!(
-                            "a function type at the {ARITY}-parameter or {ARITY}-result \
-                             limit (the count would take it past)"
-                        ));
-                    }
-                }
-            }
             Payload::ImportSection(imports) => {
                 for import in imports.clone().into_imports() {
-                    match import.map_err(refuse)?.ty {
-                        TypeRef::Memory(_) | TypeRef::Table(_) => {
-                            return refused("an imported memory or table");
-                        }
-                        TypeRef::Global(global) if is_externref(global.content_type) => {
-                            return refused(externref);
-                        }
-                        TypeRef::Global(_) => self.globals.push(None),
-                        _ => {}
-                    }
-                }
-            }
-            Payload::TableSection(tables) => {
-                for table in tables.clone() {
-                    if table.map_err(refuse)?.ty.element_type != RefType::FUNCREF {
-                        return refused(externref);
+                    if let TypeRef::Global(_) = import?.ty {
+                        self.globals.push(None);
                     }
                 }
             }
             Payload::MemorySection(memories) => {
                 for memory in memories.clone() {
-                    self.memory(memory.map_err(refuse)?);
+                    self.memory(memory?);
                 }
             }
             Payload::GlobalSection(globals) => {
                 for global in globals.clone() {
-                    let global = global.map_err(refuse)?;
-                    if is_externref(global.ty.content_type) {
-                        return refused(externref);
-                    }
+                    let global = global?;
                     let mut init = global.init_expr.get_operators_reader();
-                    let value = match init.read().map_err(refuse)? {
+                    let value = match init.read()? {
                         Operator::I32Const { value } => Some(i64::from(value)),
                         Operator::I64Const { value } => Some(value),
                         _ => None,
                     };
-                    let lone = matches!(init.read().map_err(refuse)?, Operator::End);
+                    let lone = matches!(init.read()?, Operator::End);
                     self.globals
                         .push(value.filter(|_| lone && !global.ty.mutable));
-                }
-            }
-            Payload::StartSection { .. } => {
-                return refused("a start function (it would run before the fuel is set)");
-            }
-            Payload::ExportSection(exports) => {
-                for export in exports.clone() {
-                    if export.map_err(refuse)?.name == GAS {
-                        return refused(&format!("the module already exports {GAS}"));
-                    }
                 }
             }
             _ => {}
@@ -181,22 +144,21 @@ impl Module {
     }
 }
 
-/// A reference type other than `funcref`: under reference types, `externref`.
-fn is_externref(ty: ValType) -> bool {
-    matches!(ty, ValType::Ref(element) if element != RefType::FUNCREF)
-}
-
 fn integer(ty: ValType) -> bool {
     matches!(ty, ValType::I32 | ValType::I64)
 }
 
-/// An SSA value, by index.
-type Value = u32;
+/// An SSA value, by its index in [`Ssa::values`] (what it is: a [`Val`]).
+type ValueId = u32;
 /// The shared value for everything that is not an integer constant.
-const OPAQUE: Value = 0;
+const OPAQUE: ValueId = 0;
 /// The function's entry block.
 const ENTRY: u32 = 0;
+/// No definition in that block (a value index never reached: a body has
+/// fewer than 2^32 values).
+const UNDEFINED: ValueId = u32::MAX;
 
+/// What an SSA value ([`ValueId`]) is.
 #[derive(Clone, Copy)]
 enum Val {
     /// An `iconst`, with its immediate as Cranelift stores it.
@@ -206,7 +168,7 @@ enum Val {
     /// A block parameter the SSA builder placed for a variable.
     Param,
     /// A parameter found redundant: the value it stands for.
-    Alias(Value),
+    Alias(ValueId),
 }
 
 #[derive(Default)]
@@ -215,12 +177,12 @@ struct Block {
     sealed: bool,
     single_pred: Option<u32>,
     /// variables looked up before the block was sealed, with their parameter
-    undef: Vec<(u32, Value)>,
+    undef: Vec<(u32, ValueId)>,
 }
 
 enum Call {
     UseVar(u32),
-    Finish { sentinel: Value, block: u32 },
+    Finish { sentinel: ValueId, block: u32 },
 }
 
 /// Cranelift's `SSABuilder` for one function, on the blocks the translator
@@ -228,18 +190,21 @@ enum Call {
 struct Ssa {
     values: Vec<Val>,
     blocks: Vec<Block>,
-    defs: HashMap<(u32, u32), Value>,
-    /// each variable's definition in the entry block
-    entry: Vec<Value>,
+    /// each variable's definition in each block, [`UNDEFINED`] where it has
+    /// none, dense by block (Cranelift's `variables`); the entry block's from
+    /// the start
+    defs: Vec<Vec<ValueId>>,
     /// whether each variable is an integer (a missing definition is `iconst 0`)
     int: Vec<bool>,
     calls: Vec<Call>,
-    results: Vec<Value>,
+    results: Vec<ValueId>,
     visited: HashSet<u32>,
 }
 
 impl Ssa {
-    fn value(&mut self, value: Val) -> Value {
+    // a body is at most 7,654,321 bytes (`accepts`), so its values and
+    // blocks number far below 2^32: the fallbacks are never taken
+    fn value(&mut self, value: Val) -> ValueId {
         self.values.push(value);
         u32::try_from(self.values.len() - 1).unwrap_or(OPAQUE)
     }
@@ -249,7 +214,7 @@ impl Ssa {
         u32::try_from(self.blocks.len() - 1).unwrap_or(ENTRY)
     }
 
-    fn resolve(&self, mut value: Value) -> Value {
+    fn resolve(&self, mut value: ValueId) -> ValueId {
         while let Some(Val::Alias(next)) = self.values.get(value as usize) {
             value = *next;
         }
@@ -257,7 +222,7 @@ impl Ssa {
     }
 
     /// The immediate of the `iconst` `value` stands for, if it is one.
-    fn constant(&self, value: Value) -> Option<i64> {
+    fn constant(&self, value: ValueId) -> Option<i64> {
         match self.values.get(self.resolve(value) as usize) {
             Some(Val::Const(imm)) => Some(*imm),
             _ => None,
@@ -268,27 +233,29 @@ impl Ssa {
         self.blocks[block as usize].preds.push(pred);
     }
 
-    fn def_var(&mut self, var: u32, block: u32, value: Value) {
-        self.defs.insert((var, block), value);
-    }
-
-    fn def(&self, var: u32, block: u32) -> Option<Value> {
-        if let Some(&value) = self.defs.get(&(var, block)) {
-            Some(value)
-        } else if block == ENTRY {
-            Some(self.entry[var as usize])
-        } else {
-            None
+    fn def_var(&mut self, var: u32, block: u32, value: ValueId) {
+        let defs = &mut self.defs[var as usize];
+        let block = block as usize;
+        if defs.len() <= block {
+            defs.resize(block + 1, UNDEFINED);
         }
+        defs[block] = value;
     }
 
-    fn use_var(&mut self, var: u32, block: u32) -> Value {
+    fn def(&self, var: u32, block: u32) -> Option<ValueId> {
+        self.defs[var as usize]
+            .get(block as usize)
+            .copied()
+            .filter(|&value| value != UNDEFINED)
+    }
+
+    fn use_var(&mut self, var: u32, block: u32) -> ValueId {
         self.use_var_nonlocal(var, block);
         self.run(var)
     }
 
     /// Cranelift's `run_state_machine`: an explicit stack, never recursion.
-    fn run(&mut self, var: u32) -> Value {
+    fn run(&mut self, var: u32) -> ValueId {
         while let Some(call) = self.calls.pop() {
             match call {
                 Call::UseVar(block) => self.use_var_nonlocal(var, block),
@@ -313,7 +280,7 @@ impl Ssa {
         }
     }
 
-    fn find_var(&mut self, var: u32, mut block: u32) -> (Value, u32) {
+    fn find_var(&mut self, var: u32, mut block: u32) -> (ValueId, u32) {
         self.visited.clear();
         while let Some(pred) = self.blocks[block as usize].single_pred {
             if !self.visited.insert(block) {
@@ -336,7 +303,7 @@ impl Ssa {
         (param, block)
     }
 
-    fn begin_preds(&mut self, sentinel: Value, block: u32) {
+    fn begin_preds(&mut self, sentinel: ValueId, block: u32) {
         self.calls.push(Call::Finish { sentinel, block });
         let preds = &self.blocks[block as usize].preds;
         self.calls
@@ -345,7 +312,7 @@ impl Ssa {
 
     /// Cranelift's `finish_predecessors_lookup`: a parameter every
     /// predecessor fills with the same definition is that definition.
-    fn finish(&mut self, var: u32, sentinel: Value, block: u32) {
+    fn finish(&mut self, var: u32, sentinel: ValueId, block: u32) {
         let count = self.blocks[block as usize].preds.len();
         let at = self.results.len().saturating_sub(count);
         let mut found = None;
@@ -414,7 +381,7 @@ struct Frame {
     header: u32,
     /// an `if`'s head block and parameters, for its `else`
     head: u32,
-    params: Vec<Value>,
+    params: Vec<ValueId>,
     /// an `if` whose parameters equal its results: the head branches to the
     /// destination until an `else` moves that edge (`ElseData::NoElse`)
     else_lazy: bool,
@@ -445,7 +412,7 @@ impl Frame {
 struct Translation<'m> {
     module: &'m Module,
     ssa: Ssa,
-    stack: Vec<Value>,
+    stack: Vec<ValueId>,
     frames: Vec<Frame>,
     current: u32,
     reachable: bool,
@@ -502,8 +469,7 @@ impl<'m> Translation<'m> {
         let mut ssa = Ssa {
             values: vec![Val::Opaque],
             blocks: Vec::new(),
-            defs: HashMap::new(),
-            entry: vec![OPAQUE; params.len()],
+            defs: vec![vec![OPAQUE]; params.len()],
             int: params.iter().map(|&ty| integer(ty)).collect(),
             calls: Vec::new(),
             results: Vec::new(),
@@ -540,7 +506,7 @@ impl<'m> Translation<'m> {
                 false => OPAQUE,
             };
             let count = count as usize;
-            self.ssa.entry.extend(std::iter::repeat_n(zero, count));
+            self.ssa.defs.extend(std::iter::repeat_n(vec![zero], count));
             self.ssa.int.extend(std::iter::repeat_n(integer(ty), count));
         }
         // `fuel_function_entry`
@@ -561,7 +527,7 @@ impl<'m> Translation<'m> {
         operators.finish().map_err(refuse)
     }
 
-    fn pop(&mut self) -> Value {
+    fn pop(&mut self) -> ValueId {
         self.stack.pop().unwrap_or(OPAQUE)
     }
 

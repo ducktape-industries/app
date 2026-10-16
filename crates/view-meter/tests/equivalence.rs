@@ -121,7 +121,7 @@ struct Run {
 }
 
 /// How a call ended.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum End {
     Returned(Vec<i64>),
     Stopped(Stop),
@@ -183,6 +183,18 @@ impl Compiled {
             instance,
             gas,
         }
+    }
+}
+
+/// `meter(code, budget)` for a module the test runs: [`accepts`] takes it,
+/// and then `meter` must meter it. Every module the suite meters comes
+/// through here (the sessions, the probes, the random bodies), so the rule
+/// and the pass cannot drift apart unseen.
+fn meter_accepted(code: &[u8], budget: u64) -> Vec<u8> {
+    assert_eq!(accepts(code), Ok(()), "accepts takes it");
+    match meter(code, budget) {
+        Ok(metered) => metered,
+        Err(refusal) => panic!("accepts takes it, and meter refuses: {refusal}"),
     }
 }
 
@@ -250,7 +262,7 @@ impl Both {
         let code = wat::parse_str(wat).unwrap();
         Self {
             original: Compiled::original(&code, budget).run(),
-            metered: Compiled::metered(&meter(&code, budget).unwrap(), budget).run(),
+            metered: Compiled::metered(&meter_accepted(&code, budget), budget).run(),
         }
     }
 
@@ -281,6 +293,41 @@ impl Both {
         let (_, total) = self.call(name, args, FUEL_PER_TICK);
         for fuel in 1..=total.unsigned_abs() + 2 {
             self.call(name, args, fuel);
+        }
+    }
+
+    /// How far a call at `fuel` got: its end and the module's `trace`
+    /// counter, the same under both (the counter is reset first).
+    fn reach(&mut self, name: &str, args: &[i32], fuel: u64) -> (End, i32) {
+        for run in [&mut self.original, &mut self.metered] {
+            let trace = run.instance.get_global(&mut run.store, "trace").unwrap();
+            trace.set(&mut run.store, Val::I32(0)).unwrap();
+        }
+        let (end, _) = self.call(name, args, fuel);
+        let (original, metered) = self.global("trace");
+        assert_eq!(original, metered, "trace of {name}{args:?} with {fuel}");
+        (end, original)
+    }
+
+    /// [`Self::every_budget`] by bisection, for a module that bumps a
+    /// `trace` counter after every size-charged operator: how a call ends
+    /// and how far it gets only move forward as the budget grows, so where
+    /// both runs agree at the two ends of a range of budgets, they agree all
+    /// through it; a range whose ends differ is split until it is one
+    /// budget wide. A check placed differently shows as a different trace.
+    fn bisect_budgets(&mut self, name: &str, args: &[i32]) {
+        let (_, total) = self.call(name, args, FUEL_PER_TICK);
+        let high = total.unsigned_abs() + 2;
+        let (at_low, at_high) = (self.reach(name, args, 1), self.reach(name, args, high));
+        let mut ranges = vec![(1, at_low, high, at_high)];
+        while let Some((low, at_low, high, at_high)) = ranges.pop() {
+            if at_low == at_high || high - low <= 1 {
+                continue;
+            }
+            let middle = low + (high - low) / 2;
+            let at_middle = self.reach(name, args, middle);
+            ranges.push((low, at_low, middle, at_middle.clone()));
+            ranges.push((middle, at_middle, high, at_high));
         }
     }
 
@@ -465,8 +512,8 @@ fn session(view: &str, wasm_sha256: &str, total: u64, k: usize, reference: &str)
         "the {view} module the numbers are for"
     );
     let ticks = recording(&fixture(&format!("{view}-desk.rec")));
-    let metered = meter(&code, VIEW_BYTES).unwrap();
-    assert_eq!(metered, meter(&code, VIEW_BYTES).unwrap(), "deterministic");
+    let metered = meter_accepted(&code, VIEW_BYTES);
+    assert_eq!(metered, meter_accepted(&code, VIEW_BYTES), "deterministic");
     assert_eq!(
         custom_sections(&code),
         custom_sections(&metered),
@@ -784,6 +831,14 @@ fn the_shapes_no_runner_takes_are_refused_wherever_asked() {
         "i32 ".repeat(1_000),
         "i32.const 0 ".repeat(1_000)
     );
+    // the limits, refused with the margin of what the pass could add (the
+    // other side of each: `the_limits_hold_once_metered`)
+    let locals = format!("(module (func (local {})))", "i32 ".repeat(49_999));
+    let segments = format!(
+        "(module (func $f) {})",
+        "(elem declare func $f) ".repeat(100_000)
+    );
+    let body = format!("(module (func {}))", "(loop) ".repeat(116_000));
     for (what, wat) in [
         (
             "an imported memory",
@@ -809,10 +864,19 @@ fn the_shapes_no_runner_takes_are_refused_wherever_asked() {
         ),
         ("1000 parameters", &params),
         ("1000 results", &results),
+        (
+            "49,999 locals (the pass adds 2; wasm allows 50,000)",
+            &locals,
+        ),
+        ("100,000 element segments (the pass may add 1)", &segments),
+        (
+            "a body of 116,000 loops (metered, past 7,654,321 bytes)",
+            &body,
+        ),
     ] {
         let code = wat::parse_str(wat).unwrap();
         // valid wasm within FEATURES: refused by the rule, not by wasmtime
-        assert!(Module::new(engine(true), &code).is_ok(), "{what}");
+        assert!(Module::validate(engine(true), &code).is_ok(), "{what}");
         assert!(
             matches!(accepts(&code), Err(Refusal::Unsupported(_))),
             "{what}: not accepted"
@@ -824,6 +888,57 @@ fn the_shapes_no_runner_takes_are_refused_wherever_asked() {
     }
     for view in ["chat", "forge"] {
         assert_eq!(accepts(&fixture(&format!("{view}_view.wasm"))), Ok(()));
+    }
+}
+
+#[test]
+fn the_limits_hold_once_metered() {
+    // one under each margin `the_shapes_no_runner_takes...` refuses at:
+    // accepted, so metered into valid wasm (`meter` validates its output)
+    // a parameter and 49,997 locals, all read, and a length from the
+    // parameter: the count and the scratch local make exactly 50,000
+    let gets: String = (0..49_998)
+        .map(|i| format!("local.get {i} drop "))
+        .collect();
+    let locals = format!(
+        "(module (memory 1) (func (export \"f\") (param i32) (local {}) {gets} \
+         i32.const 0 i32.const 0 local.get 0 memory.fill))",
+        "i32 ".repeat(49_997)
+    );
+    let segments = format!(
+        r#"(module (import "m" "p" (func $p)) {}
+            (func (export "f") (result i32) ref.func $p ref.is_null))"#,
+        "(elem declare func $p) ".repeat(99_999)
+    );
+    let body = format!("(module (func {}))", "(loop) ".repeat(115_000));
+    for wat in [&locals, &segments, &body] {
+        meter_accepted(&wat::parse_str(wat).unwrap(), VIEW_BYTES);
+    }
+    // custom sections the validator does not read, garbage inside
+    for name in ["name", "producers"] {
+        let mut code = wat::parse_str(r#"(module (func (export "f")))"#).unwrap();
+        let mut section = vec![u8::try_from(name.len()).unwrap()];
+        section.extend_from_slice(name.as_bytes());
+        section.extend_from_slice(&[0xff, 0xff, 0xff, 0x07, 0x01]);
+        code.extend([0, u8::try_from(section.len()).unwrap()]);
+        code.extend(section);
+        meter_accepted(&code, VIEW_BYTES);
+    }
+}
+
+#[test]
+fn the_replay_is_of_the_locked_wasmtime() {
+    let lock =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock")).unwrap();
+    for (name, version) in [
+        ("wasmtime-internal-cranelift", "46.0.3"),
+        ("cranelift-frontend", "0.133.3"),
+    ] {
+        assert!(
+            lock.contains(&format!("name = \"{name}\"\nversion = \"{version}\"\n")),
+            "{name} is no longer {version}: re-audit constants.rs (the replay of its \
+             translation) before changing this"
+        );
     }
 }
 
@@ -1082,54 +1197,122 @@ impl Rng {
     }
 }
 
-/// A random statement list: constants moved through locals, blocks, ifs,
-/// bounded loops, branches, a load past the memory's maximum in an arm
-/// never taken, and size-charged operators whose length comes from all of
-/// that. `labels` holds the enclosing labels, `true` for a loop (never a
-/// branch target: that would not end).
-fn statements(rng: &mut Rng, depth: usize, labels: &mut Vec<bool>, out: &mut String) {
+/// An enclosing label, as the generator sees it.
+#[derive(Clone, Copy)]
+enum Label {
+    /// a block or an `if` without values: a branch target
+    Block,
+    /// a loop counted down on `$k{depth}`: reached again only through it
+    Loop(usize),
+    /// a label with values: never branched to
+    Typed,
+}
+
+/// Bumps the `trace` global after a size-charged operator: a check placed
+/// differently there shows in how far the call got.
+const TRACE: &str = "global.get $trace i32.const 1 i32.add global.set $trace ";
+
+/// A random statement list: constants moved through locals (spread over
+/// several declarations), blocks, `if`s, loops and blocks with parameters,
+/// counted loops and continues into them from nested blocks, branches,
+/// `br_table` with and without values, `select`, `call_indirect`,
+/// `table.get`, every size-charged operator with a length from all of that,
+/// and a load past the memory's maximum in an arm never taken. `labels`
+/// holds the enclosing labels. (The review of #547 wrote it; it replaced a
+/// narrower one.)
+fn statements(rng: &mut Rng, depth: usize, labels: &mut Vec<Label>, out: &mut String) {
     const LOCALS: &[&str] = &["$a", "$b", "$c"];
     const VALUES: &[&str] = &["0", "3", "16", "128", "129", "200"];
     for _ in 0..1 + rng.below(5) {
-        let local = rng.pick(LOCALS);
-        let kind = rng.below(if depth < 3 { 17 } else { 11 });
-        let targets: Vec<usize> = (0..labels.len())
-            .filter(|&depth| !labels[labels.len() - 1 - depth])
+        let l = rng.pick(LOCALS);
+        let l2 = rng.pick(LOCALS);
+        let v = rng.pick(VALUES);
+        let v2 = rng.pick(VALUES);
+        let cond = rng.pick(&["$p", l2]);
+        let n = labels.len();
+        let blocks: Vec<usize> = (0..n)
+            .filter(|&d| matches!(labels[n - 1 - d], Label::Block))
             .collect();
-        match kind {
-            0 => *out += &format!("i32.const {} local.set {local} ", rng.pick(VALUES)),
-            1 => *out += &format!("local.get {} local.set {local} ", rng.pick(LOCALS)),
-            2 => *out += &format!("local.get $p local.set {local} "),
-            3 => *out += &format!("i32.const {} local.tee {local} drop ", rng.pick(VALUES)),
-            4 => *out += &format!("i32.const 0 i32.const 0 local.get {local} memory.fill "),
-            5 => *out += &format!("ref.null func local.get {local} table.grow 0 drop "),
+        let loops: Vec<(usize, usize)> = (0..n)
+            .filter_map(|d| match labels[n - 1 - d] {
+                Label::Loop(k) => Some((d, k)),
+                _ => None,
+            })
+            .collect();
+        match rng.below(if depth < 3 { 33 } else { 23 }) {
+            0 => *out += &format!("i32.const {v} local.set {l} "),
+            1 => *out += &format!("local.get {l2} local.set {l} "),
+            2 => *out += &format!("local.get $p local.set {l} "),
+            3 => *out += &format!("i32.const {v} local.tee {l} drop "),
+            4 => *out += &format!("i32.const 0 i32.const 0 local.get {l} memory.fill {TRACE}"),
+            5 => *out += &format!("ref.null func local.get {l} table.grow $g drop {TRACE}"),
             6 => {
-                *out += &format!(
-                    "global.get {} local.set {local} ",
-                    rng.pick(&["$g16", "$g200"])
-                )
+                let global = rng.pick(&["$g16", "$g200"]);
+                *out += &format!("global.get {global} local.set {l} ");
             }
             7 => *out += &burn(1 + rng.below(4) as usize),
-            8 => *out += &format!("i32.const 100 i32.const 0 local.get {local} memory.copy "),
-            9 if !targets.is_empty() => {
-                let target = targets[rng.below(targets.len() as u64) as usize];
-                *out += &format!("local.get {} br_if {target} ", rng.pick(&["$p", local]));
+            8 => *out += &format!("i32.const 100 i32.const 0 local.get {l} memory.copy {TRACE}"),
+            9 if !blocks.is_empty() => {
+                let target = blocks[rng.below(blocks.len() as u64) as usize];
+                *out += &format!("local.get {cond} br_if {target} ");
             }
-            10 if !targets.is_empty() && rng.below(4) == 0 => {
-                let target = targets[rng.below(targets.len() as u64) as usize];
+            10 if !blocks.is_empty() && rng.below(4) == 0 => {
+                let target = blocks[rng.below(blocks.len() as u64) as usize];
                 *out += &format!("br {target} ");
                 return;
             }
-            11 | 12 => {
+            11 if !loops.is_empty() => {
+                let (target, k) = loops[rng.below(loops.len() as u64) as usize];
+                *out += &format!(
+                    "local.get $k{k} i32.const 1 i32.sub local.tee $k{k} i32.const 0 i32.gt_s \
+                     br_if {target} "
+                );
+            }
+            12 => *out += "i32.const 0 call_indirect $w (type $v) ",
+            13 => {
+                *out += &format!(
+                    "local.get {l2} i32.const 1 call_indirect $w (type $ii) local.set {l} "
+                )
+            }
+            14 => *out += "i32.const 1 table.get $w drop ",
+            15 => *out += &format!("i32.const 0 ref.null func local.get {l} table.fill $u {TRACE}"),
+            16 => {
+                *out += &format!("i32.const 0 i32.const 0 local.get {l} table.copy $u $u {TRACE}")
+            }
+            17 => {
+                *out += &format!("i32.const 0 i32.const 0 local.get {l} table.init $u $e {TRACE}")
+            }
+            18 => *out += &format!("i32.const 0 i32.const 0 local.get {l} memory.init $d {TRACE}"),
+            19 => {
+                *out += &format!("i32.const {v} local.get {l2} local.get $p select local.set {l} ")
+            }
+            20 => {
+                *out += &format!(
+                    "i32.const 0 i32.const 0 i32.const {v} local.tee {l} memory.fill {TRACE}"
+                )
+            }
+            21 => {
+                *out += &format!(
+                    "(block (result i32) i32.const {v} local.get $p br_if 0 drop i32.const {v2}) \
+                     local.set {l} "
+                )
+            }
+            22 => {
+                *out += &format!(
+                    "(block (result i32) (block (result i32) i32.const {v} local.get $p \
+                     br_table 0 1 0) drop i32.const {v2}) local.set {l} "
+                )
+            }
+            23 | 24 => {
                 *out += "(block ";
-                labels.push(false);
+                labels.push(Label::Block);
                 statements(rng, depth + 1, labels, out);
                 labels.pop();
                 *out += ") ";
             }
-            13 => {
-                *out += &format!("local.get {} (if (then ", rng.pick(&["$p", local]));
-                labels.push(false);
+            25 => {
+                *out += &format!("local.get {cond} (if (then ");
+                labels.push(Label::Block);
                 statements(rng, depth + 1, labels, out);
                 if rng.below(2) == 0 {
                     *out += ") (else ";
@@ -1138,24 +1321,24 @@ fn statements(rng: &mut Rng, depth: usize, labels: &mut Vec<bool>, out: &mut Str
                 labels.pop();
                 *out += ")) ";
             }
-            14 => {
-                let counter = format!("$k{depth}");
-                *out += &format!("i32.const {} local.set {counter} (loop ", 1 + rng.below(3));
-                labels.push(true);
+            26 => {
+                *out += &format!("i32.const {} local.set $k{depth} (loop ", 1 + rng.below(3));
+                labels.push(Label::Loop(depth));
                 statements(rng, depth + 1, labels, out);
                 labels.pop();
                 *out += &format!(
-                    "local.get {counter} i32.const 1 i32.sub local.tee {counter} br_if 0) "
+                    "local.get $k{depth} i32.const 1 i32.sub local.tee $k{depth} i32.const 0 \
+                     i32.gt_s br_if 0) "
                 );
             }
-            15 if !targets.is_empty() => {
+            27 => {
                 *out += "(block (block ";
-                labels.extend([false, false]);
+                labels.extend([Label::Block, Label::Block]);
                 statements(rng, depth + 1, labels, out);
-                // the two new blocks, or an outer target two labels further
-                let pick = |rng: &mut Rng| match rng.below(2 + targets.len() as u64) as usize {
+                // the two new blocks, or an outer block two labels further
+                let pick = |rng: &mut Rng| match rng.below(2 + blocks.len() as u64) as usize {
                     new @ 0..=1 => new,
-                    outer => targets[outer - 2] + 2,
+                    outer => blocks[outer - 2] + 2,
                 };
                 let (first, second, default) = (pick(rng), pick(rng), pick(rng));
                 *out += &format!("local.get $p br_table {first} {second} {default}) ");
@@ -1164,44 +1347,114 @@ fn statements(rng: &mut Rng, depth: usize, labels: &mut Vec<bool>, out: &mut Str
                 *out += ") ";
                 labels.pop();
             }
-            16 => {
+            28 => {
                 *out += "i32.const 0 (if (then i32.const 0 i32.load offset=70000 drop ";
-                labels.push(false);
+                labels.push(Label::Block);
                 statements(rng, depth + 1, labels, out);
                 labels.pop();
                 *out += ")) ";
+            }
+            29 => {
+                *out += &format!(
+                    "local.get {l2} local.get {cond} (if (param i32) (then local.set {l} "
+                );
+                labels.push(Label::Block);
+                statements(rng, depth + 1, labels, out);
+                *out += &format!(") (else local.set {l} ");
+                statements(rng, depth + 1, labels, out);
+                labels.pop();
+                *out += ")) ";
+            }
+            30 => {
+                let l3 = rng.pick(LOCALS);
+                *out += &format!(
+                    "local.get {l2} local.get {cond} (if (param i32) (result i32) (then \
+                     local.tee {l} "
+                );
+                labels.push(Label::Typed);
+                statements(rng, depth + 1, labels, out);
+                if rng.below(2) == 0 {
+                    *out += &format!(") (else local.tee {l3} ");
+                    statements(rng, depth + 1, labels, out);
+                }
+                labels.pop();
+                *out += &format!(")) local.set {l} ");
+            }
+            31 => {
+                *out += &format!("local.get {l2} (loop (param i32) local.set {l} ");
+                labels.push(Label::Typed);
+                statements(rng, depth + 1, labels, out);
+                labels.pop();
+                *out += ") ";
+            }
+            32 => {
+                *out += &format!("local.get {l2} (block (param i32) local.set {l} ");
+                labels.push(Label::Block);
+                statements(rng, depth + 1, labels, out);
+                labels.pop();
+                *out += ") ";
             }
             _ => *out += "nop ",
         }
     }
 }
 
+/// The module the random bodies run in: two call targets in a table, a
+/// table to grow, one to fill, copy and init, a data and an element segment.
+fn random_module(seed: u64) -> String {
+    let mut rng = Rng(0x2545_f491_4f6c_dd1d ^ seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+    let mut functions = String::new();
+    for index in 0..RANDOM_FUNCTIONS {
+        let mut body = String::new();
+        statements(&mut rng, 0, &mut Vec::new(), &mut body);
+        let locals = match index % 2 {
+            0 => "(local $a i32) (local $x i64) (local $b i32) (local $y f32) (local $c i32)",
+            _ => "(local $a i32) (local $b i32) (local $c i32)",
+        };
+        functions += &format!(
+            "(func (export \"f{index}\") (param $p i32) {locals} (local $k0 i32) (local $k1 i32) \
+             (local $k2 i32) {body})\n"
+        );
+    }
+    format!(
+        r#"(module
+            (type $v (func))
+            (type $ii (func (param i32) (result i32)))
+            (import "ducktape_view" "panicked" (func $panicked (param i32 i32)))
+            (memory 1 1)
+            (data $d "{data}")
+            (table $g 0 1000 funcref)
+            (table $u 256 funcref)
+            (table $w 2 funcref)
+            (elem (table $w) (i32.const 0) func $nop $id)
+            (elem $e func {elements})
+            (global $g16 i32 (i32.const 16))
+            (global $g200 i32 (i32.const 200))
+            (global $trace (export "trace") (mut i32) (i32.const 0))
+            (func $nop (type $v))
+            (func $id (type $ii) local.get 0)
+            {functions})"#,
+        data = "x".repeat(256),
+        elements = " $nop".repeat(256),
+    )
+}
+
+const RANDOM_FUNCTIONS: usize = 24;
+
 #[test]
 fn random_bodies_stop_where_wasmtime_stops() {
-    for seed in 1..=16u64 {
-        let mut rng = Rng(0x9e37_79b9_7f4a_7c15 ^ seed);
-        let mut functions = String::new();
-        let count = 24;
-        for index in 0..count {
-            let mut body = String::new();
-            statements(&mut rng, 0, &mut Vec::new(), &mut body);
-            functions += &format!(
-                "(func (export \"f{index}\") (param $p i32) (local $a i32) (local $b i32) \
-                 (local $c i32) (local $k0 i32) (local $k1 i32) (local $k2 i32) {body})\n"
-            );
-        }
-        let wat = format!(
-            r#"(module
-                (memory 1 1)
-                (table 0 1000 funcref)
-                (global $g16 i32 (i32.const 16))
-                (global $g200 i32 (i32.const 200))
-                {functions})"#
-        );
-        let mut both = Both::new(&wat, VIEW_BYTES);
-        for index in 0..count {
+    for seed in 1..=16 {
+        let code = wat::parse_str(random_module(seed)).unwrap();
+        let original = Compiled::original(&code, VIEW_BYTES);
+        let metered = Compiled::metered(&meter_accepted(&code, VIEW_BYTES), VIEW_BYTES);
+        for index in 0..RANDOM_FUNCTIONS {
             for arg in [0, 1, 300] {
-                both.every_budget(&format!("f{index}"), &[arg]);
+                // a fresh instance each: no table grown by an earlier call
+                let mut both = Both {
+                    original: original.run(),
+                    metered: metered.run(),
+                };
+                both.bisect_budgets(&format!("f{index}"), &[arg]);
             }
         }
     }
@@ -1220,7 +1473,7 @@ fn many_imports_meter_in_linear_time() {
     let (small, large) = (module(10_000), module(40_000));
     let time = |code: &[u8]| {
         let start = std::time::Instant::now();
-        meter(code, VIEW_BYTES).unwrap();
+        meter_accepted(code, VIEW_BYTES);
         start.elapsed()
     };
     time(&small);
@@ -1246,8 +1499,8 @@ fn a_grow_costs_the_same_however_many_tables() {
     };
     let (one, many) = (module(1), module(100));
     let (one, many) = (
-        meter(&one, VIEW_BYTES).unwrap().len(),
-        meter(&many, VIEW_BYTES).unwrap().len(),
+        meter_accepted(&one, VIEW_BYTES).len(),
+        meter_accepted(&many, VIEW_BYTES).len(),
     );
     // the 99 more tables cost their declarations and one helper's lines,
     // not a copy at each of the 4,000 grows
@@ -1255,14 +1508,22 @@ fn a_grow_costs_the_same_however_many_tables() {
 }
 
 #[test]
-fn a_ref_func_of_an_import_only_its_export_declares_is_metered() {
-    // the adapter the ref.func now names is declared in its place
+fn a_ref_func_of_a_function_only_its_export_declares_is_metered() {
+    // the export names a wrapper now, or the import's adapter stands in:
+    // the function the ref.func names is declared in its place
     let mut both = Both::new(
         r#"(module
             (import "ducktape_view" "panicked" (func $p (param i32 i32)))
             (export "p" (func $p))
-            (func (export "f") (result i32) ref.func $p ref.is_null))"#,
+            (func $own (export "own"))
+            (func (export "import") (result i32) ref.func $p ref.is_null)
+            (func (export "local") (result i32) ref.func $own ref.is_null))"#,
         VIEW_BYTES,
     );
-    assert_eq!(both.call("f", &[], FUEL_PER_TICK).0, End::Returned(vec![0]));
+    for name in ["import", "local"] {
+        assert_eq!(
+            both.call(name, &[], FUEL_PER_TICK).0,
+            End::Returned(vec![0])
+        );
+    }
 }

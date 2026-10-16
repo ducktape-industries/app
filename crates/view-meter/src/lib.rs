@@ -17,9 +17,13 @@
 //!   `externref` table or global (its barriers are control flow the pass
 //!   does not replay); a start function (it would run before the fuel is
 //!   set); an export named [`GAS`]; a function type at the 1000-parameter
-//!   or 1000-result limit (the count would take it past). [`meter`] applies
-//!   the same rule, and validates the metered module again before it
-//!   returns it.
+//!   or 1000-result limit (the count would take it past); and a module
+//!   whose metered form could pass one of wasm's other limits (locals per
+//!   function, a body's size, the numbers of functions, types, globals,
+//!   exports and element segments), bounded from what the pass adds without
+//!   running it (`accepts.rs`). So whatever [`accepts`] takes, [`meter`]
+//!   meters: it applies the same rule first, and validates its output again
+//!   before it returns it.
 //! - **Fuel.** The count wasmtime 46 keeps (`wasmtime-environ`
 //!   `default_operator_cost`, `wasmtime-cranelift` `fuel_before_op` /
 //!   `pre_translate_bulk_op`): 1 per operator except `nop`, `drop`, `block`,
@@ -75,8 +79,9 @@
 //! exports anything new. The output is deterministic: the same input and
 //! budget give the same bytes.
 //!
-//! Map: this file is the rewrite; `constants.rs` validates the input and
-//! finds where wasmtime folds a length; `main.rs` is the command
+//! Map: this file is the rewrite; `accepts.rs` is the rule a module must
+//! pass; `constants.rs` finds where wasmtime folds a length; `main.rs` is
+//! the command
 //! (`view-meter <in.wasm> <out.wasm> <view_bytes>`); `tests/` is the runner
 //! equivalence gate against wasmtime (SPEC §13.3 (a)).
 use std::cell::RefCell;
@@ -93,6 +98,7 @@ use walrus::{
 };
 use wasmparser::{Validator, WasmFeatures};
 
+mod accepts;
 mod constants;
 
 use constants::Constants;
@@ -198,7 +204,7 @@ pub fn stop(gas_left: i64) -> Stop {
 /// the wasmtime and the JavaScriptCore runner apply, so a view runs on every
 /// platform or on none.
 pub fn accepts(code: &[u8]) -> Result<(), Refusal> {
-    constants::validate(code, false).map(drop)
+    accepts::check(code)
 }
 
 /// The metered module for `code`: fuel counted into [`GAS`], every grow
@@ -206,7 +212,8 @@ pub fn accepts(code: &[u8]) -> Result<(), Refusal> {
 /// table element), the maxima lowered to it. Refuses what [`accepts`]
 /// refuses. Deterministic.
 pub fn meter(code: &[u8], view_bytes: u64) -> Result<Vec<u8>, Refusal> {
-    let constants = constants::validate(code, true)?;
+    accepts::check(code)?;
+    let constants = constants::find(code)?;
     let mut module = ModuleConfig::new()
         .generate_producers_section(false)
         .parse(code)
@@ -287,8 +294,9 @@ fn instrument(module: &mut walrus::Module, constants: Constants, budget: i64) {
         widen(module, id, fuel);
     }
     redirect_import_values(module, &cx.adapters);
-    // a `ref.func` names only a declared function: the import it named may
-    // be declared by its export alone, so its adapter is declared here
+    // a `ref.func` names only a declared function, and an export no longer
+    // declares one (it names the wrapper now, or an import's adapter stands
+    // in): every function a body's `ref.func` names is declared here
     let referenced = cx.referenced.into_inner();
     if !referenced.is_empty() {
         let referenced = ElementItems::Functions(referenced.into_iter().collect());
@@ -317,7 +325,7 @@ struct Cx {
     adapters: HashMap<FunctionId, FunctionId>,
     /// where wasmtime folds a size-charged operator's length
     constants: Constants,
-    /// the adapters a `ref.func` in a body now names
+    /// every function a `ref.func` in a body names
     referenced: RefCell<BTreeSet<FunctionId>>,
 }
 
@@ -797,13 +805,8 @@ fn meter_seq(
             }
             Instr::RefFunc(RefFunc { func }) => {
                 pending += 1;
-                let func = match cx.adapters.get(&func) {
-                    Some(&adapter) => {
-                        cx.referenced.borrow_mut().insert(adapter);
-                        adapter
-                    }
-                    None => func,
-                };
+                let func = cx.adapters.get(&func).copied().unwrap_or(func);
+                cx.referenced.borrow_mut().insert(func);
                 RefFunc { func }.into()
             }
             Instr::Drop(_) => instr,
