@@ -511,6 +511,8 @@ impl Field {
     /// On a touch device a placeholder is the design's faint text, as the
     /// phone's fields have always drawn it, not the kit theme's muted text
     /// every desktop field shares. Set again when the theme's mode moves it.
+    /// The state's own placeholder colour, not its editor style: the kit's
+    /// `Input` sets that from its theme on every render (fork #38).
     fn placeholder_tone(&mut self, cx: &mut App) {
         if !crate::contract::os().facts().touch_first {
             return;
@@ -520,13 +522,8 @@ impl Field {
             return;
         }
         self.tone = Some(faint);
-        let style = gpui_base::input::InputEditorStyle {
-            muted_foreground: faint,
-            ..Default::default()
-        };
         engine!(&self.engine, |state| state.update(cx, |state, cx| {
-            state.set_editor_style(style);
-            cx.notify();
+            state.set_placeholder_color(Some(faint), cx)
         }));
     }
 
