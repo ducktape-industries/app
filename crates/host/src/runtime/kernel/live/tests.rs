@@ -734,7 +734,10 @@ fn a_host_publication_is_stamped_fed_and_published_again_after_a_refusal() {
         .expect("published again");
     assert!(matches!(again, Ask::Publish { objects: same, .. } if Arc::ptr_eq(&same, &objects)));
     drop(publication);
-    assert!(handle().block_on(objects.take()).is_none(), "dropped: the queue closes");
+    assert!(
+        handle().block_on(objects.take()).is_none(),
+        "dropped: the queue closes"
+    );
 }
 
 /// A host-run subscription is stamped as a view's and starts from the
@@ -771,9 +774,7 @@ fn a_host_subscription_streams_items_and_subscribes_again_on_the_announce() {
         object: 0,
         body: vec![7],
     };
-    handle()
-        .block_on(ends.data.send(object.clone()))
-        .unwrap();
+    handle().block_on(ends.data.send(object.clone())).unwrap();
     assert_eq!(subscription.recv(), Some(Subscribed::Data(object)));
     ends.heard
         .send(Heard::Closed(wire::Error::new(

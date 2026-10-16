@@ -2116,6 +2116,7 @@ impl ServerCertVerifier for Pinned {
     }
 }
 
+#[cfg(any(feature = "call", test))]
 pub(crate) mod media;
 
 #[cfg(test)]

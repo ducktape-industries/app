@@ -32,6 +32,7 @@ mod seat;
 mod store;
 mod view;
 
+#[cfg(feature = "call")]
 pub(crate) use kernel::live::Subscribed;
 pub use kernel::live::{HostLive, HostPublication, HostSubscription, TrackHeard};
 pub use kernel::{Answered, day, local_offset};

@@ -20,6 +20,7 @@
 //!   its level with the meter's hysteresis;
 //! - every piece's `MediaState.track` comes from what its track heard,
 //!   told through `on_state` on each change ([`Calls::poll`], 30 Hz).
+//!
 //! A view may have [`MAX_REMOTE`] remote pieces; its own devices' caps
 //! are `av.rs`'s. Without `call`, a remote piece says the build has no
 //! calls and `publish` publishes nothing.
@@ -242,20 +243,29 @@ mod inner {
             self.ensure_poll(cx);
         }
 
-        /// A publishing microphone piece at `path`: its meter fed by the
-        /// voice I/O, its frames published; `muted` drops the capture.
+        /// A publishing microphone piece at `path` (`node`): its meter fed
+        /// by the voice I/O, its frames published; `muted` drops the
+        /// capture.
         pub(in crate::render) fn microphone(
             &mut self,
             path: &AuthoredPath,
-            publish: Option<&LiveTrack>,
-            muted: bool,
-            device: Option<String>,
-            output: Option<String>,
+            node: &wire::Node,
             meter: &Entity<ducktape_av::Meter>,
             live: Option<&HostLive>,
             cx: &mut Context<ViewTree>,
         ) {
-            let Some((track, live)) = publish.zip(live) else {
+            let wire::Node::Microphone {
+                device,
+                output,
+                publish,
+                muted,
+                ..
+            } = node
+            else {
+                unreachable!()
+            };
+            let (muted, device, output) = (*muted, device.clone(), output.clone());
+            let Some((track, live)) = publish.as_ref().zip(live) else {
                 self.publishers.remove(path);
                 return;
             };

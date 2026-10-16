@@ -195,9 +195,10 @@ mod tests {
         let mut seen = Vec::new();
         let started = Instant::now();
         while seen.len() < 3 {
-            match bars.next(Duration::from_millis(100), true, false).unwrap() {
-                Got::Picture(picture) => seen.push(read_stamp(&picture).unwrap()),
-                _ => {}
+            if let Got::Picture(picture) =
+                bars.next(Duration::from_millis(100), true, false).unwrap()
+            {
+                seen.push(read_stamp(&picture).unwrap());
             }
         }
         assert_eq!(seen, vec![0, 1, 2]);

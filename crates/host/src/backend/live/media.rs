@@ -173,7 +173,11 @@ impl Reassembler {
         let ts_ms = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
         let (flags, part) = (header[4], header[5]);
         if part == 0 {
-            // a frame starts; one left unfinished is dropped
+            // a frame starts; one left unfinished is lost, and with it
+            // every delta until a keyframe
+            if self.gathering.take().is_some() {
+                self.armed = false;
+            }
             let keyframe = flags & KEY != 0;
             if keyframe {
                 self.armed = true;

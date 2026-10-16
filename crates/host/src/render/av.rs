@@ -527,16 +527,8 @@ impl ViewTree {
         #[cfg(feature = "call")]
         {
             let (path, live) = (self.authored_path.clone(), self.live.clone());
-            self.calls.microphone(
-                &path,
-                publish.as_ref(),
-                *muted,
-                device.clone(),
-                output.clone(),
-                &meter,
-                live.as_ref(),
-                cx,
-            );
+            self.calls
+                .microphone(&path, node, &meter, live.as_ref(), cx);
         }
         let _ = (publish, muted);
         meter.update(cx, |meter, cx| {
