@@ -29,16 +29,16 @@ version = "0.1.0"
 [workspace.dependencies]
 
 # --- sdk-line: crates/sdk of ducktape-industries/programs (abi, view-wire, program, ducklink, design, describe). Every crate of that repo here and below sits on ONE rev, and the views this app seats are built at that rev. One whose manifest's wire_id is not `view_wire::WIRE_ID` runs all the same, and a failure of it names both wires and the node (`View::failure`). Which rev and why is in `git log -- Cargo.toml`. ---
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "118f79e7859c4ccbc18e3a3372b07df93db24212", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "118f79e7859c4ccbc18e3a3372b07df93db24212", package = "view-wire" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "69c587bacc5b0e605eaf9a6122f050548fcbc02c", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "69c587bacc5b0e605eaf9a6122f050548fcbc02c", package = "view-wire" }
 # `program::is_name`: the one spelling of a program id
-program = { git = "https://github.com/ducktape-industries/programs", rev = "118f79e7859c4ccbc18e3a3372b07df93db24212", package = "program" }
-ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "118f79e7859c4ccbc18e3a3372b07df93db24212", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/programs", rev = "118f79e7859c4ccbc18e3a3372b07df93db24212", package = "design" }
+program = { git = "https://github.com/ducktape-industries/programs", rev = "69c587bacc5b0e605eaf9a6122f050548fcbc02c", package = "program" }
+ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "69c587bacc5b0e605eaf9a6122f050548fcbc02c", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/programs", rev = "69c587bacc5b0e605eaf9a6122f050548fcbc02c", package = "design" }
 # `program.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/programs", rev = "118f79e7859c4ccbc18e3a3372b07df93db24212", package = "describe" }
+describe = { git = "https://github.com/ducktape-industries/programs", rev = "69c587bacc5b0e605eaf9a6122f050548fcbc02c", package = "describe" }
 # the identity program's own types: the app's passkey lane and `crates/noded-client`'s flows
-identity = { git = "https://github.com/ducktape-industries/programs", rev = "118f79e7859c4ccbc18e3a3372b07df93db24212", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/programs", rev = "69c587bacc5b0e605eaf9a6122f050548fcbc02c", package = "identity" }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -99,7 +99,7 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b", package = "keyscheme" }
 identity.workspace = true
-valset = { git = "https://github.com/ducktape-industries/programs", rev = "118f79e7859c4ccbc18e3a3372b07df93db24212", package = "valset" }
+valset = { git = "https://github.com/ducktape-industries/programs", rev = "69c587bacc5b0e605eaf9a6122f050548fcbc02c", package = "valset" }
 base64.workspace = true
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -126,6 +126,9 @@ ducktape-updater = { path = "crates/updater" }
 # the release archive a self-update downloads (`.tar.gz`)
 tar = { version = "0.4", default-features = false }
 flate2 = "1"
+# an OS window's native handle, for what gpui does not do itself (Keep on
+# Top: `shell/windows.rs`); gpui's own, already in the graph
+raw-window-handle = "0.6"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tray-icon = { version = "0.24", default-features = false }
@@ -140,6 +143,11 @@ objc2-user-notifications = { version = "0.2", default-features = false, features
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 zbus = "5"
 
+# Keep on Top on X11 (`shell/windows.rs`): one EWMH request on gpui's own
+# XCB connection. Already in the graph under gpui-pre-linux, with this feature.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
+
 [dev-dependencies]
 # the host core's test helpers (`*_for_test`, `test_style`, the door)
 ducktape-host = { path = "crates/host", features = ["test-support", "ax-door"] }
@@ -149,20 +157,20 @@ keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9d
 p256 = "0.13"
 
 [patch."https://github.com/ducktape-industries/ducktape"]
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "118f79e7859c4ccbc18e3a3372b07df93db24212", package = "abi" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "69c587bacc5b0e605eaf9a6122f050548fcbc02c", package = "abi" }
 
 [patch.crates-io]
-gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "02724886f436f4f5b01ebfc1fb5cd37c09809a79" }
-rmp-serde = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "02724886f436f4f5b01ebfc1fb5cd37c09809a79" }
-gpui-pre-scheduler = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "02724886f436f4f5b01ebfc1fb5cd37c09809a79" }
-gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "02724886f436f4f5b01ebfc1fb5cd37c09809a79" }
+gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8fc712852ad6eaac4b5a120f8dbcac4243b7826d" }
+rmp-serde = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8fc712852ad6eaac4b5a120f8dbcac4243b7826d" }
+gpui-pre-scheduler = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8fc712852ad6eaac4b5a120f8dbcac4243b7826d" }
+gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8fc712852ad6eaac4b5a120f8dbcac4243b7826d" }
 # Window::set_bounds (X11, macOS) and the Linux clipboard reads' wait hook
 # (`crates/web`): the backends, vendored in the fork
-gpui-pre-linux = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "02724886f436f4f5b01ebfc1fb5cd37c09809a79" }
-gpui-pre-macos = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "02724886f436f4f5b01ebfc1fb5cd37c09809a79" }
+gpui-pre-linux = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8fc712852ad6eaac4b5a120f8dbcac4243b7826d" }
+gpui-pre-macos = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8fc712852ad6eaac4b5a120f8dbcac4243b7826d" }
 # the X11 input-method client gpui-pre-linux uses, vendored in the fork: it decodes
 # Hangul and Chinese from ibus and drops (does not panic on) text it cannot decode
-zed-xim = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "02724886f436f4f5b01ebfc1fb5cd37c09809a79" }
+zed-xim = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8fc712852ad6eaac4b5a120f8dbcac4243b7826d" }
 
 # Symbols are a fifth of the binary and nothing at run time reads them.
 [profile.release]

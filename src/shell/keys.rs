@@ -36,6 +36,9 @@ gpui_kit::actions!(
         FillPane,
         /// ⌘⇧M: the arrows move the window in front (⌥ sizes it).
         HoldPane,
+        /// ⌘⇧T: this OS window above other apps' windows, or back among
+        /// them (Keep on Top).
+        KeepOnTop,
         /// ⌘K.
         ToggleSpotlight,
         /// ⌘, : Settings, on any screen.
@@ -90,6 +93,14 @@ pub(crate) fn bind(cx: &mut gpui_kit::App) {
         KeyBinding::new("tab", MenuTab, Some(MENU)),
         KeyBinding::new("shift-tab", MenuTabBack, Some(MENU)),
     ];
+    // every window's, pop-outs too; none where the platform can't
+    if super::windows::can_keep_above(cx) {
+        bindings.push(KeyBinding::new(
+            "secondary-shift-t",
+            KeepOnTop,
+            Some(CONTEXT),
+        ));
+    }
     if super::layers::CHAT_READY {
         bindings.push(KeyBinding::new(
             "tab",
@@ -108,11 +119,17 @@ pub(crate) fn bind(cx: &mut gpui_kit::App) {
 }
 
 /// The macOS menu bar: the app's keys where a Mac user looks for them.
-pub(crate) fn menus(cx: &mut gpui_kit::App) {
+/// `on_top`: Keep on Top's check, the front window's (`Windows::sync_menu`).
+pub(crate) fn menus(on_top: bool, cx: &mut gpui_kit::App) {
     if !cfg!(target_os = "macos") {
         return;
     }
-    cx.set_menus(vec![
+    cx.set_menus(menu_bar(on_top));
+}
+
+/// The menu bar's menus, Keep on Top checked when `on_top`.
+fn menu_bar(on_top: bool) -> Vec<Menu> {
+    vec![
         Menu::new("Ducktape").items([
             MenuItem::action("Settings…", OpenSettings),
             MenuItem::separator(),
@@ -125,12 +142,13 @@ pub(crate) fn menus(cx: &mut gpui_kit::App) {
             MenuItem::separator(),
             MenuItem::action("Fill", FillPane),
             MenuItem::action("Move or Size", HoldPane),
+            MenuItem::action("Keep on Top", KeepOnTop).checked(on_top),
             MenuItem::separator(),
             MenuItem::action("Next Window", CycleForward),
             MenuItem::action("Previous Window", CycleBack),
         ]),
         Menu::new("Help").items([MenuItem::action("Ducktape Help", OpenHelp)]),
-    ]);
+    ]
 }
 
 impl WindowRoot {
@@ -175,6 +193,12 @@ impl WindowRoot {
             }))
             .on_action(cx.listener(|this, _: &FillPane, window, cx| this.fill_pane(window, cx)))
             .on_action(cx.listener(|this, _: &HoldPane, _, cx| this.hold_pane(cx)))
+            .on_action(cx.listener(|this, _: &KeepOnTop, _, cx| {
+                let key = this.key;
+                this.app
+                    .windows
+                    .update(cx, |windows, cx| windows.toggle_on_top(key, cx));
+            }))
             .on_action(cx.listener(|this, _: &CycleForward, window, cx| {
                 this.pane_message(PaneMessage::Cycle { forward: true }, window, cx)
             }))
@@ -325,6 +349,47 @@ mod tests {
             resolve("secondary-shift-m", &[desk, "hold"], cx).as_deref(),
             Some("desk::HoldPane")
         );
+    }
+
+    /// ⌘⇧T keeps on top whichever window it is pressed in: the console
+    /// (with something open over it too) and a pop-out alike.
+    #[gpui_kit::test]
+    fn keep_on_top_answers_in_every_window(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(bind);
+        for context in [
+            "Ducktape console on_desk desk",
+            "Ducktape console on_desk overlay",
+            "Ducktape",
+        ] {
+            assert_eq!(
+                resolve("secondary-shift-t", &[context], cx).as_deref(),
+                Some("desk::KeepOnTop"),
+                "{context}"
+            );
+        }
+        assert_eq!(resolve("secondary-t", &["Ducktape"], cx), None);
+    }
+
+    /// The Window menu's Keep on Top is checked as asked (the front
+    /// window's state, `Windows::sync_menu`).
+    #[test]
+    fn the_window_menus_keep_on_top_is_checked_as_asked() {
+        let checked = |on_top| {
+            menu_bar(on_top)
+                .into_iter()
+                .find(|menu| menu.name.as_ref() == "Window")
+                .expect("a Window menu")
+                .items
+                .into_iter()
+                .find_map(|item| match &item {
+                    MenuItem::Action { name, .. } if name.as_ref() == "Keep on Top" => {
+                        Some(item.is_checked())
+                    }
+                    _ => None,
+                })
+        };
+        assert_eq!(checked(true), Some(true));
+        assert_eq!(checked(false), Some(false));
     }
 
     /// Tab in an empty window switches to agent chat only once chat is

@@ -57,9 +57,10 @@ impl HelpPane {
 }
 
 impl Render for HelpPane {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf::count(crate::perf::Key::Window(self.key), "renders.help", 1);
         let (welcome, dark, side) = self.shown;
-        help::help_view(welcome, dark, side)
+        let on_top = super::super::windows::can_keep_above(cx);
+        help::help_view(welcome, dark, side, on_top)
     }
 }
