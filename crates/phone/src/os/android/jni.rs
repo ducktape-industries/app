@@ -27,12 +27,14 @@
 //!   which gm links whatever path a host takes) names; never called, since
 //!   no NativeActivity is declared (see its own doc).
 //!
-//! Called from here: `Activity.moveTaskToBack(boolean)` on gm's render thread,
-//! through gm's own attached `Env` and the Activity reference gm keeps.
+//! Called from here, through gm's own attached `Env` and the Activity reference
+//! gm keeps: `Activity.moveTaskToBack(boolean)` on gm's render thread, and
+//! `MainActivity.ask(permission)` (blocking until the person answers) and
+//! `MainActivity.openSettings(page)` on a camera's or a microphone's thread.
 #![allow(unsafe_code, reason = "the JNI entries the Android Activity calls")]
 
 use gpui_mobile::android::host::{self, Pointer};
-use jni::objects::{JClass, JFloatArray, JObject, JString};
+use jni::objects::{JClass, JFloatArray, JObject, JString, JValue};
 use jni::sys::{jboolean, jfloat, jint, jlong};
 use jni::{Env, EnvUnowned};
 use std::path::PathBuf;
@@ -67,6 +69,10 @@ pub extern "system" fn Java_industries_ducktape_mobile_Native_create<'caller>(
         if let Err(error) = host::set_activity(env, id(host), &activity) {
             tracing::error!(target: "ducktape::phone", %error, "gm did not take the Activity");
         }
+        if let Err(error) = hand_context(env, &activity) {
+            tracing::error!(target: "ducktape::phone", %error, "no Context for the camera and the microphone");
+        }
+        ducktape_av::asks_through(ask);
         host::on_open_window(|_, cx| crate::shell::open_window(cx));
         host::start_with_assets(crate::assets::PhoneAssets, move |cx| {
             crate::os::start(files, cache, cx);
@@ -295,5 +301,84 @@ pub fn move_task_to_back() {
     });
     if let Err(error) = moved {
         tracing::error!(target: "ducktape::phone", %error, "the app did not go behind the others");
+    }
+}
+
+/// Hands `ndk-context` the Java VM and the application's Context, once per
+/// process (an Activity made again finds them set): what av's JNI calls and
+/// cpal's AAudio host read. android-activity's glue does this on the
+/// NativeActivity path; the host-driven path's is this app's.
+fn hand_context(env: &mut Env, activity: &JObject) -> jni::errors::Result<()> {
+    static HANDED: std::sync::Once = std::sync::Once::new();
+    if HANDED.is_completed() {
+        return Ok(());
+    }
+    let vm = env.get_java_vm()?;
+    let app = env
+        .call_method(
+            activity,
+            jni::jni_str!("getApplicationContext"),
+            jni::jni_sig!("()Landroid/content/Context;"),
+            &[],
+        )?
+        .l()?;
+    let app = env.new_global_ref(&app)?;
+    HANDED.call_once(|| {
+        // SAFETY: the live VM, and a global reference to the application
+        // Context kept for the process (never deleted: forgotten below),
+        // handed before any camera or microphone thread or cpal call reads
+        // them (the host starts after this entry returns)
+        unsafe {
+            ndk_context::initialize_android_context(vm.get_raw().cast(), app.as_raw().cast());
+        }
+        std::mem::forget(app);
+    });
+    Ok(())
+}
+
+/// Asks the person for `permission` (`android.permission.CAMERA`) through the
+/// Activity: whether it is granted, the system's prompt raised first when it
+/// is not and may be. Blocks the calling camera or microphone thread until
+/// the person answers (`ducktape_av::asks_through`); refused when the
+/// Activity cannot be reached.
+fn ask(permission: &str) -> bool {
+    let asked = gpui_mobile::android::jni::with_env(|env| {
+        let activity = gpui_mobile::android::jni::activity(env)?;
+        let permission = env
+            .new_string(permission)
+            .map_err(|error| error.to_string())?;
+        env.call_method(
+            &activity,
+            jni::jni_str!("ask"),
+            jni::jni_sig!("(Ljava/lang/String;)Z"),
+            &[JValue::Object(&permission)],
+        )
+        .and_then(|granted| granted.z())
+        .map_err(|error| error.to_string())
+    });
+    asked.unwrap_or_else(|error| {
+        tracing::error!(target: "ducktape::phone", %error, "the permission was not asked");
+        false
+    })
+}
+
+/// Brings up the app's own page in Settings, `page` being its `package:`
+/// URI (`ducktape_av::settings_page`), where a refused camera or microphone
+/// is allowed.
+pub fn open_settings(page: &str) {
+    let opened = gpui_mobile::android::jni::with_env(|env| {
+        let activity = gpui_mobile::android::jni::activity(env)?;
+        let page = env.new_string(page).map_err(|error| error.to_string())?;
+        env.call_method(
+            &activity,
+            jni::jni_str!("openSettings"),
+            jni::jni_sig!("(Ljava/lang/String;)V"),
+            &[JValue::Object(&page)],
+        )
+        .map(drop)
+        .map_err(|error| error.to_string())
+    });
+    if let Err(error) = opened {
+        tracing::error!(target: "ducktape::phone", %error, "the app's settings did not open");
     }
 }

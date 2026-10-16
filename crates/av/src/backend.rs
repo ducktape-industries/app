@@ -1,6 +1,7 @@
 //! THE SEAM: every call into a capture or playback library, and nothing of
 //! gpui. Cameras through our own capture (V4L2 on Linux in `v4l2.rs`,
-//! AVFoundation on macOS in `apple.rs`) driven by one stream loop here,
+//! AVFoundation on macOS and iOS in `apple.rs`, Camera2 on Android in
+//! `android.rs`) driven by one stream loop here,
 //! microphones and speakers through cpal, each piece on a thread of its
 //! own that leaves what it has in a feed ([`CameraFeed`], [`MicFeed`]) for
 //! the gpui side to read. Another backend replaces this file and those
@@ -41,8 +42,8 @@ pub struct CameraDevice {
     pub device: Device,
     pub facing: Facing,
     /// The system's own name for it, which opens it (`platform::open`):
-    /// the V4L2 node (`video0`) on Linux, the unique id on macOS. Only a
-    /// listing fills it.
+    /// the V4L2 node (`video0`) on Linux, the unique id on macOS, the
+    /// Camera2 id on Android. Only a listing fills it.
     pub(crate) handle: String,
 }
 
@@ -126,6 +127,9 @@ pub struct MicFeed {
     monitor: AtomicBool,
     /// The monitor turned off under its piece ([`MicFeed::silence`]).
     silenced: AtomicBool,
+    /// How the microphone ended under its piece, not yet told
+    /// ([`MicFeed::end`]).
+    ended: Mutex<Option<Status>>,
     /// The speaker a recording and the monitor play on (an id this crate
     /// listed; `None`: the default), read each time one starts: another
     /// moves them without the microphone closing.
@@ -167,8 +171,15 @@ impl MicFeed {
 
     /// Turns the monitor off under its piece: its sound fell to the
     /// loudspeaker, where it would howl, or its speaker failed.
-    fn silence(&self) {
+    pub(crate) fn silence(&self) {
         self.silenced.store(true, Ordering::Relaxed);
+    }
+
+    /// Ends the microphone under its piece (a call took it): its thread
+    /// closes every stream, then tells `why`, as a camera's does, so a
+    /// piece told so has its device let go already.
+    pub(crate) fn end(&self, why: Status) {
+        *self.ended.lock().expect("feed ended") = Some(why);
     }
 }
 
@@ -547,10 +558,11 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
 /// go or the device ends: Live from the start, unless something ended it
 /// already (an interruption told before), and over the moment its status
 /// is anything but Live (Gone, Busy, a failure), as a camera's [`stream`]
-/// is: a microphone the system took never comes back on by itself. What
-/// its piece asks (a recording played back, the monitor) plays on its
-/// speaker meanwhile. Every stream, `input` and the speaker's, is closed
-/// when this returns: the device let go.
+/// is: a microphone the system took never comes back on by itself. One
+/// ended under its piece ([`MicFeed::end`]) is told so once every stream
+/// closed. What its piece asks (a recording played back, the monitor)
+/// plays on its speaker meanwhile. Every stream, `input` and the
+/// speaker's, is closed when this returns: the device let go.
 fn serve<S>(
     input: S,
     host: &cpal::Host,
@@ -559,13 +571,14 @@ fn serve<S>(
     heard: &Queue,
     feed: &MicFeed,
 ) {
+    let ended = || feed.ended.lock().expect("feed ended").is_some();
     {
         let mut status = feed.status.lock().expect("feed status");
-        if status.0 == Status::Starting {
+        if status.0 == Status::Starting && !ended() {
             status.0 = Status::Live;
         }
     }
-    let live = || feed.status.lock().expect("feed status").0 == Status::Live;
+    let live = || feed.status.lock().expect("feed status").0 == Status::Live && !ended();
     // the speaker's streams: a recording's playback, the monitor (with
     // the output it plays on)
     let mut playing: Option<(cpal::Stream, Queue)> = None;
@@ -642,6 +655,9 @@ fn serve<S>(
         }
     }
     drop((input, playing, monitoring));
+    if let Some(why) = feed.ended.lock().expect("feed ended").take() {
+        set(&feed.status, why);
+    }
 }
 
 /// `config` with a 20 ms buffer where the device takes one: a live loop
@@ -706,9 +722,10 @@ fn capture(
             };
             moved(&errors, named.as_deref(), to);
         }
+        // the microphone gone under its piece: told once its streams closed
         cpal::ErrorKind::DeviceNotAvailable
         | cpal::ErrorKind::BackendError
-        | cpal::ErrorKind::StreamInvalidated => set(&errors.status, audio_fault(&error, true)),
+        | cpal::ErrorKind::StreamInvalidated => errors.end(audio_fault(&error, true)),
         _ => {}
     };
     macro_rules! typed {
@@ -1154,6 +1171,39 @@ mod tests {
         serving(ended.clone(), closed.clone()).join().unwrap();
         assert!(closed.load(Ordering::SeqCst));
         assert_eq!(status(&ended), took);
+    }
+
+    /// A microphone ended under its piece (Android: a call silenced it) is
+    /// told so only once its streams closed, as a camera is: no Gone card
+    /// over a device still recording.
+    #[test]
+    fn a_microphone_ended_under_its_piece_is_told_once_let_go() {
+        struct Stream(Arc<AtomicBool>);
+        impl Drop for Stream {
+            fn drop(&mut self) {
+                // a device that takes its time to close
+                std::thread::sleep(Duration::from_millis(50));
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let status = |feed: &MicFeed| feed.status.lock().unwrap().0.clone();
+        let feed = Arc::new(MicFeed::default());
+        let closed = Arc::new(AtomicBool::new(false));
+        let served = {
+            let (feed, closed) = (feed.clone(), closed.clone());
+            std::thread::spawn(move || {
+                let host = cpal::default_host();
+                let (recording, heard) = (Recording::default(), Queue::default());
+                serve(Stream(closed), &host, 48_000, &recording, &heard, &feed)
+            })
+        };
+        until("live", || status(&feed) == Status::Live);
+        let took = Status::Gone("A call took the microphone.".into());
+        feed.end(took.clone());
+        until("told", || status(&feed) != Status::Live);
+        assert!(closed.load(Ordering::SeqCst), "told before let go");
+        assert_eq!(status(&feed), took);
+        served.join().unwrap();
     }
 
     /// THE HEADLINE: a live camera that stops delivering is told Gone no

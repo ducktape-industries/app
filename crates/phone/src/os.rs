@@ -369,6 +369,20 @@ pub fn follow<T: 'static>(window: &mut Window, cx: &mut Context<T>) -> Vec<Subsc
     }
 }
 
+/// Brings up a refused camera's or microphone's settings page
+/// (`render::av::settings_page`): a link the system opens on iOS; on
+/// Android the Activity starts it, gm's platform opening no link (its
+/// `open_url` only logs).
+pub fn open_settings(page: &str, cx: &App) {
+    #[cfg(target_os = "android")]
+    {
+        let _ = cx;
+        android::jni::open_settings(page);
+    }
+    #[cfg(not(target_os = "android"))]
+    cx.open_url(page);
+}
+
 /// What BACK does when the stack has nothing left to pop: Android puts the
 /// app behind the others; iOS has no such gesture.
 pub fn back_at_root() {

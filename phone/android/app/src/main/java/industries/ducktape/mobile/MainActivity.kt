@@ -1,16 +1,21 @@
 package industries.ducktape.mobile
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.ComponentCallbacks2
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.text.Editable
 import android.text.InputType
 import android.text.Selection
 import android.text.TextWatcher
+import android.util.Log
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
@@ -28,6 +33,7 @@ import android.widget.EditText
 import android.window.OnBackInvokedDispatcher
 import industries.ducktape.devicekey.DeviceKeyStore
 import java.io.File
+import java.util.concurrent.ArrayBlockingQueue
 
 /**
  * The phone's one Activity: a `SurfaceView` gpui draws into (gm's host-driven path), and everything the OS tells
@@ -135,8 +141,45 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     override fun onDestroy() {
-        if (isFinishing) Native.destroyed(host)
+        if (isFinishing) {
+            Native.destroyed(host)
+            // an ask still out is refused: no instance is left to hear the answer
+            asked?.offer(false)
+        }
         super.onDestroy()
+    }
+
+    /**
+     * A camera's or a microphone's ask (`crates/phone/src/os/android/jni.rs` `ask`), on its own thread, never the UI
+     * one: whether [permission] is granted, the system's prompt raised first when it is not. Blocks until the person
+     * answers. One ask at a time: Android drops a prompt asked while another shows, so a camera and a microphone
+     * opening together are asked in turn.
+     */
+    fun ask(permission: String): Boolean {
+        synchronized(asking) {
+            if (checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED) return true
+            // an instance on its way out hears no answer: refused, never waited on
+            if (isFinishing || isDestroyed) return false
+            val answer = ArrayBlockingQueue<Boolean>(1)
+            asked = answer
+            runOnUiThread { requestPermissions(arrayOf(permission), ASK) }
+            return answer.take().also { asked = null }
+        }
+    }
+
+    /** The person's answer, to the instance on screen then (one made again since the ask hears it too). */
+    override fun onRequestPermissionsResult(code: Int, permissions: Array<out String>, results: IntArray) {
+        if (code == ASK) asked?.offer(results.firstOrNull() == PackageManager.PERMISSION_GRANTED)
+    }
+
+    /** The app's own page in Settings, [page] its `package:` URI: where a refused camera or microphone is allowed. */
+    fun openSettings(page: String) = runOnUiThread {
+        try {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse(page)))
+        } catch (missing: ActivityNotFoundException) {
+            // a build of Android without the page: the Denied card's words still say where to go
+            Log.w("ducktape", "no settings page for the app", missing)
+        }
     }
 
     override fun onConfigurationChanged(config: Configuration) {
@@ -356,5 +399,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     private companion object {
         var next = 1L
+
+        /** [ask]'s request code, its lock, and the answer it waits for. */
+        const val ASK = 1
+        val asking = Any()
+        @Volatile
+        var asked: ArrayBlockingQueue<Boolean>? = null
     }
 }

@@ -11,22 +11,28 @@
 //!   speakers, on every OS; the camera's stream loop) over one module per
 //!   OS, picked below as `platform`: `v4l2` on Linux, `mac` on macOS,
 //!   `ios` on iOS (the last two over `apple`, the AVFoundation they
-//!   share). A platform module is the whole OS seam: `cameras()` (each
-//!   with the system's own handle to it), `open(handle)` (a
-//!   [`backend::Source`]), `camera_allowed()` and `microphone_allowed()`,
-//!   what a person is told of a refused device (`allow`, `settings_page`),
-//!   and the microphones and speakers: `audio_devices()` (each saying
-//!   what it is), `find()` (the cpal device a piece's id opens),
-//!   `input_name()`, `heard()` (the microphone heard now), `activate()`
-//!   (what is held while a microphone or the chime plays) and
-//!   `ROUTED_IN_PLACE` (whether the system moves a stream in place, then
-//!   telling an open microphone's moves to `backend::moved` itself).
+//!   share), `android` on Android. A platform module is the whole OS
+//!   seam: `cameras()` (each with the system's own handle to it),
+//!   `open(handle)` (a [`backend::Source`]), `camera_allowed()` and
+//!   `microphone_allowed()`, what a person is told of a refused device
+//!   (`allow`, `settings_page`), and the microphones and speakers:
+//!   `audio_devices()` (each saying what it is), `find()` (the cpal
+//!   device a piece's id opens), `input_name()`, `heard()` (the
+//!   microphone heard now), `activate()` (what is held while a microphone
+//!   or the chime plays) and `ROUTED_IN_PLACE` (whether the system moves
+//!   a stream in place, then telling an open microphone's moves to
+//!   `backend::moved` itself).
 //!   Linux and macOS share theirs (`devices`: cpal's own devices,
 //!   nothing held); iOS lists its audio session's routes instead of
 //!   cpal's one device, routes the session to the one picked, holds it
-//!   active and observes its route changes. Another OS (Android) is
-//!   another module and one more line below; nothing that calls this
-//!   crate moves.
+//!   active and observes its route changes. Android lists cpal's AAudio
+//!   devices, one row each a person picks, named by what Android says of
+//!   them (`recognizable`, in `android_rules`, built for every OS's tests
+//!   so they run on Linux), and holds a watcher while a microphone is
+//!   open: a recording Android silenced (`silenced`, told as `SILENCED`)
+//!   ends it, the monitor's sound falling onto the loudspeaker turns the
+//!   monitor off. Another OS is another module and one more line below;
+//!   nothing that calls this crate moves.
 //!   Each piece runs its device on a thread of its own that leaves
 //!   pictures, the level and its status in a feed; the latest picture
 //!   wins. A camera that stops delivering is told gone within
@@ -40,11 +46,20 @@
 //! Without feature `capture` the crate is empty (`Cargo.toml` says why).
 #![cfg(feature = "capture")]
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios")))]
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android"
+)))]
 compile_error!(
-    "ducktape-av captures cameras on Linux (V4L2), macOS and iOS (AVFoundation) only: build the app without `av` here"
+    "ducktape-av captures cameras on Linux (V4L2), macOS and iOS (AVFoundation) and Android (Camera2) only: build the app without `av` here"
 );
 
+#[cfg(target_os = "android")]
+mod android;
+#[cfg(any(target_os = "android", test))]
+mod android_rules;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple;
 mod backend;
@@ -59,6 +74,8 @@ mod meter;
 #[cfg(target_os = "linux")]
 mod v4l2;
 
+#[cfg(target_os = "android")]
+use android as platform;
 #[cfg(target_os = "ios")]
 use ios as platform;
 #[cfg(target_os = "macos")]
@@ -66,6 +83,8 @@ use mac as platform;
 #[cfg(target_os = "linux")]
 use v4l2 as platform;
 
+#[cfg(target_os = "android")]
+pub use android::{Asker, asks_through};
 #[cfg(feature = "test-support")]
 pub use backend::Ask;
 pub use backend::{
@@ -117,7 +136,7 @@ pub fn allow(kind: Kind) -> &'static str {
 
 /// The system's own settings page that allows `kind` for this app, as a
 /// link the system opens, where there is one (macOS's privacy pane,
-/// iOS's page of the app; [`allow`] names it).
+/// iOS's and Android's page of the app; [`allow`] names it).
 pub fn settings_page(kind: Kind) -> Option<&'static str> {
     platform::settings_page(kind)
 }

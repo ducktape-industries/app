@@ -864,7 +864,7 @@ impl Root {
             // kernel shows no other
             SeatsEvent::Show(_, _, place) => {
                 if let Some(page) = ducktape_host::render::av::settings_page(*place) {
-                    cx.open_url(page);
+                    crate::os::open_settings(page, cx);
                 }
             }
             // the desktop widens a window to a view that came; a phone
