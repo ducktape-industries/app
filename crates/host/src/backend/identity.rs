@@ -1,5 +1,5 @@
 //! The identity program as this app's own flows onto an account use it, on
-//! top of `noded_client::identity`: mint a plain account, tell a person's
+//! top of `noded_client::identity`: mint a plain account, tell a user's
 //! account from an agent's, submit an op signed by the seated key.
 //! `passkey` and `join` build on it; the rail's foot and the sign-in screen
 //! call it directly.
@@ -35,18 +35,18 @@ pub async fn create_seated(client: &RpcClient, network: &str, name: &str) -> Res
     abi::decode::<u64>(&output).map_err(|refusal| refusal.sentence)
 }
 
-/// A passkey or recovery-key flow is a person's: their own keys join their
-/// own account. An agent's keys are its manager's to add, and a program's
-/// account holds none, so a key that holds either is told so instead of
-/// sending an `AddKey` identity would refuse.
-pub fn person(account: &identity::Account) -> Result<(), String> {
+/// A passkey or recovery-key flow is a user's: their own keys join their
+/// own account. A program account's keys are its manager's to add, and a
+/// system account holds none, so a key that holds either is told so
+/// instead of sending an `AddKey` identity would refuse.
+pub fn user(account: &identity::Account) -> Result<(), String> {
     let name = &account.card.name;
     match &account.control {
         Control::User { .. } => Ok(()),
         Control::Program { manager, .. } => Err(format!(
-            "This key belongs to {name} (account {}), an agent managed by account {manager}. \
-             Passkeys and recovery keys are for a person's own account: sign in with a \
-             person's key.",
+            "This key belongs to {name} (account {}), a program account managed by account \
+             {manager}. Passkeys and recovery keys are for a user's own account: sign in \
+             with a user's key.",
             account.number
         )),
         Control::System { program } => Err(format!(

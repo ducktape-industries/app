@@ -291,6 +291,7 @@ impl View {
         fresh.capabilities = view.capabilities.clone();
         fresh.targets = view.targets.clone();
         fresh.min_width = view.min_width;
+        fresh.wire = view.wire.clone();
         fresh.deployed(view.hash);
         Ok(fresh)
     }
@@ -456,7 +457,7 @@ impl View {
             "first_frame",
             first_frame.as_micros() as u64,
         );
-        frame.map_err(Failure::Trapped)?;
+        frame.map_err(|reason| fresh.failure(reason))?;
         Ok(fresh)
     }
 
@@ -474,6 +475,7 @@ impl View {
             capabilities,
             targets,
             min_width,
+            wire,
             hash,
             connection: _,
             activation: _,
@@ -505,6 +507,7 @@ impl View {
             intents: _,
             replies: _,
             live_subscriptions: _,
+            tracks: _,
             tasks: _,
             clipboard: _,
             clocks: _,
@@ -519,6 +522,7 @@ impl View {
         sibling.capabilities = capabilities.clone();
         sibling.targets = targets.clone();
         sibling.min_width = *min_width;
+        sibling.wire = wire.clone();
         sibling.hash = *hash;
         Ok(sibling)
     }
@@ -543,7 +547,16 @@ impl View {
         timing.init = started.elapsed();
         crate::perf::record(self.perf_key(), "init", timing.init.as_micros() as u64);
         crate::perf::record(self.perf_key(), "fuel.init", self.fuel_used());
-        ran.map_err(Failure::Trapped)
+        ran.map_err(|reason| self.failure(reason))
+    }
+
+    /// Why the view stopped, as its seat shows it: one built against
+    /// another wire than this app's says so beside the reason.
+    pub fn failure(&self, reason: String) -> Failure {
+        match foreign_wire(&self.wire) {
+            Some(wire) => Failure::Wire(format!("{reason} ({wire})")),
+            None => Failure::Trapped(reason),
+        }
     }
 
     pub fn deployed(&mut self, hash: [u8; 32]) {
@@ -656,6 +669,7 @@ impl View {
             view.min_width,
             view.targets,
             view.icon,
+            view.wire,
         ) = manifest_of(bytes);
         crate::render::web::seen(program, &view.capabilities);
         view.init(shown)?;
@@ -675,7 +689,10 @@ impl View {
         let manifest = view_wire::manifest::read_manifest(bytes).ok_or_else(|| {
             Failure::Refused(format!("{shown}: the view's manifest cannot be read"))
         })?;
-        wire_id(&manifest.wire_id).map_err(|error| Failure::Wire(format!("{shown}: {error}")))?;
+        if let Some(wire) = foreign_wire(&manifest.wire_id) {
+            // run all the same: what fails names the wire and the node
+            tracing::warn!(target: "ducktape::app", reason = "view_wire_differs", "{shown}: {wire}");
+        }
         compiled_view(bytes).map_err(|error| Failure::Refused(format!("{shown}: {error}")))
     }
 
@@ -736,6 +753,8 @@ impl View {
             capabilities: Vec::new(),
             targets: Vec::new(),
             min_width: 0,
+            // the manifest's, once `load` reads it
+            wire: wire::WIRE_ID.into(),
             undeclared_logged: Vec::new(),
             store,
             exports,
@@ -764,6 +783,7 @@ impl View {
             intents: Vec::new(),
             replies: Arc::default(),
             live_subscriptions: Vec::new(),
+            tracks: Default::default(),
             tasks: Vec::new(),
             clipboard: Default::default(),
             clocks: Vec::new(),
@@ -835,7 +855,7 @@ fn view_code(
     code: Arc<Module>,
     bytes: &[u8],
 ) -> ViewCode {
-    let (name, capabilities, min_width, targets, icon) = manifest_of(bytes);
+    let (name, capabilities, min_width, targets, icon, wire) = manifest_of(bytes);
     crate::render::web::seen(program, &capabilities);
     ViewCode {
         blob,
@@ -846,5 +866,6 @@ fn view_code(
         min_width,
         capabilities,
         targets,
+        wire,
     }
 }
