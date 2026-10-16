@@ -26,7 +26,8 @@ impl EventEmitter<crate::State> for Meter {}
 impl Meter {
     /// Opens `device` (an input [`crate::audio_devices`] listed; `None`:
     /// the default), recordings and the monitor playing on `output` (an
-    /// output it listed; `None`: the default).
+    /// output it listed; `None`: the default; [`Meter::set_output`] moves
+    /// them).
     pub fn new(
         device: Option<String>,
         output: Option<String>,
@@ -34,7 +35,8 @@ impl Meter {
         cx: &mut Context<Self>,
     ) -> Self {
         let feed = Arc::new(MicFeed::default());
-        backend::start_microphone(device, output, feed.clone());
+        *feed.output.lock().expect("feed output") = output;
+        backend::start_microphone(device, feed.clone());
         let _poll = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(crate::POLL).await;
@@ -65,6 +67,18 @@ impl Meter {
         self.feed.monitor.store(monitor, Ordering::Relaxed);
     }
 
+    /// Whether the monitor is on, as last set.
+    pub fn monitor(&self) -> bool {
+        self.feed.monitor.load(Ordering::Relaxed)
+    }
+
+    /// The speaker recordings and the monitor play on from now (an output
+    /// [`crate::audio_devices`] listed; `None`: the default): the
+    /// microphone stays open, a monitor moves over.
+    pub fn set_output(&self, output: Option<String>) {
+        *self.feed.output.lock().expect("feed output") = output;
+    }
+
     /// Records `seconds` (one to [`backend::MAX_RECORD_SECONDS`]), then
     /// plays the recording back; replaces one under way.
     pub fn record(&self, seconds: u8) {
@@ -74,6 +88,23 @@ impl Meter {
     /// Ends a recording or its playback.
     pub fn stop(&self) {
         *self.feed.ask.lock().expect("feed ask") = Some(Ask::Stop);
+    }
+
+    /// What this piece asked its microphone last, not yet taken up.
+    pub fn asked(&self) -> Option<Ask> {
+        *self.feed.ask.lock().expect("feed ask")
+    }
+
+    /// What lets this microphone go at once when dropped
+    /// ([`crate::Release`]).
+    pub fn release(&self) -> crate::Release {
+        crate::Release(self.feed.clone())
+    }
+
+    /// Whether this microphone was let go: its device closes, or never
+    /// opens.
+    pub fn let_go(&self) -> bool {
+        self.feed.stop.load(Ordering::Relaxed)
     }
 
     pub fn state(&self) -> &crate::State {

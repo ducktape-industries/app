@@ -198,6 +198,12 @@ pub(crate) fn microphone_allowed() -> bool {
     true
 }
 
+/// Nor for its camera: the node's permissions answer as it opens. A view
+/// whose manifest declares `camera` is the consent.
+pub(crate) fn camera_allowed() -> bool {
+    true
+}
+
 /// What a listed microphone or speaker is, by its card's name, the one
 /// word ALSA has for it: a headset names itself so (a USB headset's card),
 /// and a screen's sound plays through its speakers. Anything else (the
@@ -336,6 +342,7 @@ pub(crate) fn listed(nodes: Vec<Node>) -> Vec<CameraDevice> {
                 default: at == 0,
             },
             facing: node.facing,
+            handle: node.node,
         })
         .collect()
 }
@@ -430,15 +437,11 @@ impl Drop for Camera {
     }
 }
 
-/// Opens the camera `id` names and starts its stream.
-pub(crate) fn open(id: &str) -> Result<Camera, Status> {
-    let node = nodes()
-        .map_err(|error| Status::Failed(error.to_string()))?
-        .into_iter()
-        .find(|node| node.id == id)
-        .ok_or(Status::NoDevice)?;
+/// Opens the listed camera whose node is `node` (its
+/// `CameraDevice::handle`, sysfs's name for it) and starts its stream.
+pub(crate) fn open(node: &str) -> Result<Camera, Status> {
     let fail = |errno| status(errno, false);
-    let fd = open_node(&Path::new("/dev").join(node.node)).map_err(fail)?;
+    let fd = open_node(&Path::new("/dev").join(node)).map_err(fail)?;
     let mut agreed = Vec::new();
     for fourcc in [YUYV, MJPG] {
         match agree(&fd, fourcc, WANT.0, WANT.1) {

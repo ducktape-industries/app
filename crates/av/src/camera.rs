@@ -40,6 +40,13 @@ impl Camera {
         feed.mirror.store(mirror, Ordering::Relaxed);
         feed.wanted.store(true, Ordering::Relaxed);
         backend::start_camera(device, feed.clone());
+        // the last picture shown leaves the atlas with the piece
+        cx.on_release(|this: &mut Self, cx| {
+            if let Some(shown) = this.shown.take() {
+                cx.drop_image(shown, None);
+            }
+        })
+        .detach();
         let _poll = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(crate::POLL).await;
@@ -73,6 +80,16 @@ impl Camera {
     /// The state as last emitted.
     pub fn state(&self) -> &crate::State {
         &self.told
+    }
+
+    /// What lets this camera go at once when dropped ([`crate::Release`]).
+    pub fn release(&self) -> crate::Release {
+        crate::Release(self.feed.clone())
+    }
+
+    /// Whether this camera was let go: its device closes, or never opens.
+    pub fn let_go(&self) -> bool {
+        self.feed.stop.load(Ordering::Relaxed)
     }
 
     /// A new state emitted; a redraw asked when a picture waits. Asked

@@ -10,10 +10,11 @@
 //! - every device call is in [`backend`] (cpal for microphones and
 //!   speakers, on every OS; the camera's stream loop) over one module per
 //!   OS, picked below as `platform`: `v4l2` on Linux, `mac` on macOS. A
-//!   platform module is the whole OS seam: `cameras()`, `open(id)` (a
-//!   [`backend::Source`]), `audio_kind()` (what a listed microphone or
-//!   speaker is), `microphone_allowed()`, and what a person is told
-//!   of a refused device (`allow`, `settings_page`). Another OS (iOS, its
+//!   platform module is the whole OS seam: `cameras()` (each with the
+//!   system's own handle to it), `open(handle)` (a [`backend::Source`]),
+//!   `audio_kind()` (what a listed microphone or speaker is),
+//!   `camera_allowed()` and `microphone_allowed()`, and what a person is
+//!   told of a refused device (`allow`, `settings_page`). Another OS (iOS, its
 //!   AVFoundation as macOS's where the API is the same; Android) is another
 //!   module and one more line below; nothing that calls this crate moves.
 //!   Each piece runs its device on a thread of its own that leaves
@@ -22,8 +23,9 @@
 //!   [`backend::QUIET`] and released.
 //! - the gpui side reads its feed on a 30 Hz timer while it lives and
 //!   redraws only on news: a new picture, a level that moved, a new state.
-//! - a piece's device is released when the piece is dropped: its thread
-//!   sees the feed's stop and closes the device (the camera's light off).
+//! - a piece's device is released when the piece is dropped, or at once
+//!   when its [`Release`] is: its thread sees the feed's stop and closes
+//!   the device (the camera's light off).
 //!
 //! Without feature `capture` the crate is empty (`Cargo.toml` says why).
 #![cfg(feature = "capture")]
@@ -46,7 +48,9 @@ use mac as platform;
 #[cfg(target_os = "linux")]
 use v4l2 as platform;
 
-pub use backend::{AudioDevice, AudioKind, CameraDevice, Device, Facing, Playback, Status};
+pub use backend::{
+    Ask, AudioDevice, AudioKind, CameraDevice, Device, Facing, Playback, Release, Status,
+};
 pub use camera::Camera;
 pub use meter::Meter;
 

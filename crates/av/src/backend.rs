@@ -39,6 +39,10 @@ pub enum Facing {
 pub struct CameraDevice {
     pub device: Device,
     pub facing: Facing,
+    /// The system's own name for it, which opens it (`platform::open`):
+    /// the V4L2 node (`video0`) on Linux, the unique id on macOS. Only a
+    /// listing fills it.
+    pub(crate) handle: String,
 }
 
 /// What a microphone or speaker is, as the system says.
@@ -116,6 +120,10 @@ pub struct MicFeed {
     pub level: AtomicU32,
     pub playback: Mutex<Playback>,
     pub monitor: AtomicBool,
+    /// The speaker a recording and the monitor play on (an id this crate
+    /// listed; `None`: the default), read each time one starts: another
+    /// moves them without the microphone closing.
+    pub output: Mutex<Option<String>>,
     /// What the piece asked last, not yet done.
     pub ask: Mutex<Option<Ask>>,
     pub stop: AtomicBool,
@@ -143,20 +151,40 @@ fn set(status: &Mutex<(Status, String)>, to: Status) {
 // ---------- one holder of a device at a time ----------
 
 /// A piece's feed, as its thread's hold on a device reads it: whether the
-/// piece let the device go.
-trait Held: Send + Sync {
+/// piece let the device go, and the piece letting it go.
+pub(crate) trait Held: Send + Sync {
     fn let_go(&self) -> bool;
+    fn stop(&self);
 }
 
 impl Held for CameraFeed {
     fn let_go(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
     }
+    fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
 }
 
 impl Held for MicFeed {
     fn let_go(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
+    }
+    fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+/// A piece's device, let go the moment this drops: its thread closes the
+/// device, and a piece made in its place opens only after ([`Holders`]).
+/// A piece's own drop comes later: gpui drops a released entity once its
+/// effects flush, by when the next piece may have started opening, and
+/// found nothing let go to wait for. Whoever drops a piece holds this.
+pub struct Release(pub(crate) Arc<dyn Held>);
+
+impl Drop for Release {
+    fn drop(&mut self) {
+        self.0.stop();
     }
 }
 
@@ -267,17 +295,26 @@ fn run_camera(device: Option<String>, feed: Arc<CameraFeed>) {
         return;
     }
     let feed = &*feed;
-    let listed = cameras().unwrap_or_default();
-    let mut listed = listed.iter().map(|camera| &camera.device);
+    // listed once: the one listed is the one opened, by the system's own
+    // handle, never by the view's string
+    let mut listed = cameras().unwrap_or_default().into_iter();
     let found = match &device {
-        Some(id) => listed.find(|d| &d.id == id),
+        Some(id) => listed.find(|camera| &camera.device.id == id),
         None => listed.next(),
     };
     let Some(found) = found else {
         return set(&feed.status, Status::NoDevice);
     };
-    feed.status.lock().expect("feed status").1 = found.name.clone();
-    match platform::open(&found.id) {
+    if !platform::camera_allowed() {
+        return set(&feed.status, Status::Denied);
+    }
+    // a permission prompt can take the person a while: a piece gone
+    // meanwhile opens nothing (no light comes on)
+    if feed.let_go() {
+        return;
+    }
+    feed.status.lock().expect("feed status").1 = found.device.name.clone();
+    match platform::open(&found.handle) {
         Ok(camera) => stream(camera, feed),
         Err(status) => set(&feed.status, status),
     }
@@ -440,12 +477,12 @@ fn recognizable<T>(devices: Vec<(Device, T)>) -> Vec<(Device, T)> {
 
 /// Opens `device` (the default microphone when `None`) on a thread of its
 /// own: its level into `feed`, a recording asked through `feed.ask`
-/// played back on `output`, and the monitor while `feed.monitor`, until
-/// `feed.stop`.
-pub fn start_microphone(device: Option<String>, output: Option<String>, feed: Arc<MicFeed>) {
+/// played back on `feed.output`, and the monitor while `feed.monitor`,
+/// until `feed.stop`.
+pub fn start_microphone(device: Option<String>, feed: Arc<MicFeed>) {
     let spawned = std::thread::Builder::new()
         .name("av-microphone".into())
-        .spawn(move || run_microphone(device, output, &feed));
+        .spawn(move || run_microphone(device, &feed));
     if let Err(error) = spawned {
         tracing_error("microphone thread", &error);
     }
@@ -500,20 +537,25 @@ fn audio_fault(error: &cpal::Error, open: bool) -> Status {
     }
 }
 
-fn run_microphone(device: Option<String>, output: Option<String>, feed: &Arc<MicFeed>) {
+fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
     // dropped last, after the microphone and the speaker
     let _held = MICROPHONES.hold(feed.clone());
     // its piece went before this opened anything: nothing to open
     if feed.let_go() {
         return;
     }
-    if !platform::microphone_allowed() {
-        return set(&feed.status, Status::Denied);
-    }
     let host = cpal::default_host();
     let Some(input) = find(&host, device.as_deref(), true) else {
         return set(&feed.status, Status::NoDevice);
     };
+    if !platform::microphone_allowed() {
+        return set(&feed.status, Status::Denied);
+    }
+    // a permission prompt can take the person a while: a piece gone
+    // meanwhile opens nothing
+    if feed.let_go() {
+        return;
+    }
     let name = input
         .description()
         .map(|d| d.name().to_owned())
@@ -541,9 +583,11 @@ fn run_microphone(device: Option<String>, output: Option<String>, feed: &Arc<Mic
         return set(&feed.status, audio_fault(&error, false));
     }
     set(&feed.status, Status::Live);
-    // the speaker's streams: a recording's playback, the monitor
+    // the speaker's streams: a recording's playback, the monitor (with
+    // the output it plays on)
     let mut playing: Option<(cpal::Stream, Queue)> = None;
-    let mut monitoring: Option<cpal::Stream> = None;
+    let mut monitoring: Option<(cpal::Stream, Option<String>)> = None;
+    let output = || feed.output.lock().expect("feed output").clone();
     let playback = |to: Playback| *feed.playback.lock().expect("feed playback") = to;
     while !feed.stop.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(10));
@@ -570,7 +614,7 @@ fn run_microphone(device: Option<String>, output: Option<String>, feed: &Arc<Mic
         };
         if let Some(samples) = recorded {
             let queue = Queue::new(Mutex::new(VecDeque::from(samples)));
-            match speaker(&host, output.as_deref(), rate, queue.clone()) {
+            match speaker(&host, output().as_deref(), rate, queue.clone()) {
                 Ok(stream) => {
                     playing = Some((stream, queue));
                     playback(Playback::Playing);
@@ -591,18 +635,22 @@ fn run_microphone(device: Option<String>, output: Option<String>, feed: &Arc<Mic
             playing = None;
             playback(Playback::Idle);
         }
-        let monitor = feed.monitor.load(Ordering::Relaxed);
-        if monitor && monitoring.is_none() {
+        // the monitor follows the output: another speaker picked moves it
+        let monitor = feed.monitor.load(Ordering::Relaxed).then(output);
+        if monitoring.as_ref().map(|(_, on)| on) != monitor.as_ref() {
+            monitoring = None;
+        }
+        if let Some(on) = monitor
+            && monitoring.is_none()
+        {
             heard.lock().expect("heard").clear();
-            match speaker(&host, output.as_deref(), rate, heard.clone()) {
-                Ok(stream) => monitoring = Some(stream),
+            match speaker(&host, on.as_deref(), rate, heard.clone()) {
+                Ok(stream) => monitoring = Some((stream, on)),
                 Err(status) => {
                     set(&feed.status, status);
                     feed.monitor.store(false, Ordering::Relaxed);
                 }
             }
-        } else if !monitor {
-            monitoring = None;
         }
     }
     drop((stream, playing, monitoring));
@@ -810,7 +858,7 @@ fn speaker(
 }
 
 fn tracing_error(what: &str, error: &dyn std::fmt::Display) {
-    eprintln!("ducktape-av: {what} did not start: {error}");
+    tracing::error!(target: "ducktape::av", %error, "{what} did not start");
 }
 
 #[cfg(test)]
@@ -926,7 +974,8 @@ mod tests {
             assert!(find(&host, Some(name), true).is_none(), "{name}");
             assert!(find(&host, Some(name), false).is_none(), "{name}");
             let feed = Arc::new(MicFeed::default());
-            run_microphone(Some(name.clone()), Some(name.clone()), &feed);
+            *feed.output.lock().unwrap() = Some(name.clone());
+            run_microphone(Some(name.clone()), &feed);
             assert_eq!(feed.status.lock().unwrap().0, Status::NoDevice, "{name}");
         }
         assert!(!written.exists(), "a plugin wrote {path}");
@@ -1010,20 +1059,37 @@ mod tests {
         );
     }
 
-    /// A camera that delivers a few frames.
+    /// A camera that delivers `frames` frames, then nothing.
     struct Fake {
         frames: usize,
+        run: Run,
+    }
+
+    /// What a test reads off a fake camera's run: whether it was released,
+    /// when it delivered its first and last frames, and how many waits
+    /// began after its piece let go.
+    #[derive(Clone)]
+    struct Run {
+        feed: Arc<CameraFeed>,
         released: Arc<AtomicBool>,
+        delivered: Arc<Mutex<Option<(Instant, Instant)>>>,
+        after_stop: Arc<AtomicU32>,
     }
 
     impl Source for Fake {
         fn next(&mut self, wait: Duration, wanted: bool, _: bool) -> Result<Got, Status> {
+            if self.run.feed.let_go() {
+                self.run.after_stop.fetch_add(1, Ordering::SeqCst);
+            }
             if self.frames == 0 {
                 std::thread::sleep(wait);
                 return Ok(Got::Nothing);
             }
             self.frames -= 1;
             std::thread::sleep(Duration::from_millis(33));
+            let now = Instant::now();
+            let mut delivered = self.run.delivered.lock().unwrap();
+            *delivered = Some((delivered.map_or(now, |(first, _)| first), now));
             Ok(match wanted {
                 true => Got::Picture(Picture {
                     width: 1,
@@ -1037,74 +1103,87 @@ mod tests {
 
     impl Drop for Fake {
         fn drop(&mut self) {
-            self.released.store(true, Ordering::SeqCst);
+            self.run.released.store(true, Ordering::SeqCst);
         }
     }
 
     /// Runs `stream` over a fake camera on a thread of its own.
-    fn streaming(frames: usize, wanted: bool) -> (Arc<CameraFeed>, Arc<AtomicBool>) {
-        let feed = Arc::new(CameraFeed::default());
-        feed.wanted.store(wanted, Ordering::Relaxed);
-        let released = Arc::new(AtomicBool::new(false));
+    fn streaming(frames: usize, wanted: bool) -> Run {
+        let run = Run {
+            feed: Arc::new(CameraFeed::default()),
+            released: Arc::default(),
+            delivered: Arc::default(),
+            after_stop: Arc::default(),
+        };
+        run.feed.wanted.store(wanted, Ordering::Relaxed);
         let camera = Fake {
             frames,
-            released: released.clone(),
+            run: run.clone(),
         };
-        let running = feed.clone();
-        std::thread::spawn(move || stream(camera, &running));
-        (feed, released)
+        let feed = run.feed.clone();
+        std::thread::spawn(move || stream(camera, &feed));
+        run
     }
 
     fn status(feed: &CameraFeed) -> Status {
         feed.status.lock().unwrap().0.clone()
     }
 
-    /// Waits up to `limit` for `feed`'s status to become `want`.
-    fn wait_for(feed: &CameraFeed, want: &Status, limit: Duration) -> Option<Instant> {
-        let deadline = Instant::now() + limit;
-        while Instant::now() < deadline {
-            if &status(feed) == want {
-                return Some(Instant::now());
+    /// Waits for `what` to hold, and returns when it was seen: the event is
+    /// waited on, however loaded the machine (a failsafe of 30 s ends a
+    /// test that would wait forever).
+    fn until(what: &str, holds: impl Fn() -> bool) -> Instant {
+        let failsafe = Instant::now() + Duration::from_secs(30);
+        loop {
+            if holds() {
+                return Instant::now();
             }
+            assert!(Instant::now() < failsafe, "never {what}");
             std::thread::sleep(Duration::from_millis(5));
         }
-        None
     }
 
-    /// THE HEADLINE: a live camera that stops delivering is told Gone
-    /// [`QUIET`] after its last frame, and is released by then.
+    /// THE HEADLINE: a live camera that stops delivering is told Gone no
+    /// sooner than [`QUIET`] after its last frame, and only once released.
     #[test]
     fn a_camera_that_stops_delivering_is_gone_and_released() {
-        let (feed, released) = streaming(3, true);
-        let live = wait_for(&feed, &Status::Live, Duration::from_secs(1)).expect("live");
-        let gone = wait_for(&feed, &Status::Gone, QUIET * 3);
-        feed.stop.store(true, Ordering::Relaxed);
-        let gone = gone.unwrap_or_else(|| panic!("still {:?}", status(&feed)));
-        assert!(released.load(Ordering::SeqCst), "told Gone before release");
-        assert!(feed.picture.lock().unwrap().is_some());
-        // the last frame came about 2 x 33 ms after Live
-        let quiet = gone - live;
+        let run = streaming(3, true);
+        until("live", || status(&run.feed) == Status::Live);
+        let gone = until("gone", || status(&run.feed) == Status::Gone);
         assert!(
-            quiet > QUIET && quiet < QUIET + Duration::from_millis(600),
-            "{quiet:?}"
+            run.released.load(Ordering::SeqCst),
+            "told Gone before release"
+        );
+        assert!(run.feed.picture.lock().unwrap().is_some());
+        let (_, last) = run.delivered.lock().unwrap().expect("frames came");
+        assert!(
+            gone - last > QUIET,
+            "{:?} after the last frame",
+            gone - last
         );
     }
 
-    /// Stop releases the camera within one wait; a camera taken only
-    /// (nothing draws it) gives no pictures and is not mistaken for gone.
+    /// Stop releases the camera within the wait under way; a camera taken
+    /// only (nothing draws it) gives no pictures and is not mistaken for
+    /// gone.
     #[test]
     fn stop_releases_at_once_and_a_hidden_camera_stays_live() {
-        let (feed, released) = streaming(usize::MAX, false);
-        wait_for(&feed, &Status::Live, Duration::from_secs(1)).expect("live");
-        std::thread::sleep(QUIET + Duration::from_millis(300));
-        assert_eq!(status(&feed), Status::Live);
-        assert!(feed.picture.lock().unwrap().is_none());
-        let stopped = Instant::now();
-        feed.stop.store(true, Ordering::Relaxed);
-        while !released.load(Ordering::SeqCst) {
-            assert!(stopped.elapsed() < SLICE * 2, "not released");
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert_eq!(status(&feed), Status::Live);
+        let run = streaming(usize::MAX, false);
+        until("live", || status(&run.feed) == Status::Live);
+        until("frames past QUIET", || {
+            run.delivered
+                .lock()
+                .unwrap()
+                .is_some_and(|(first, last)| last - first > QUIET + SLICE * 2)
+        });
+        assert_eq!(status(&run.feed), Status::Live);
+        assert!(run.feed.picture.lock().unwrap().is_none());
+        run.feed.stop();
+        until("released", || run.released.load(Ordering::SeqCst));
+        assert!(
+            run.after_stop.load(Ordering::SeqCst) <= 1,
+            "waited again after the stop"
+        );
+        assert_eq!(status(&run.feed), Status::Live);
     }
 }

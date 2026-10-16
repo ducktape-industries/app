@@ -68,6 +68,8 @@ const AUDIO: &str = "soun";
 fn allowed(media: &str) -> bool {
     let kind = NSString::from_str(media);
     // AVAuthorizationStatus: 0 not determined, 1 restricted, 2 denied, 3 authorized
+    // SAFETY: AVCaptureDevice's class method, an NSString media type in,
+    // an NSInteger out, callable on any thread
     let status: isize =
         unsafe { msg_send![class!(AVCaptureDevice), authorizationStatusForMediaType: &*kind] };
     match status {
@@ -77,6 +79,9 @@ fn allowed(media: &str) -> bool {
             let answer = RcBlock::new(move |granted: Bool| {
                 let _ = tell.send(granted.as_bool());
             });
+            // SAFETY: AVCaptureDevice's class method, the media type and a
+            // `void (^)(BOOL)` block in; the system copies the block and
+            // calls it once, on a queue of its own, after this returns
             unsafe {
                 let _: () = msg_send![
                     class!(AVCaptureDevice),
@@ -93,6 +98,11 @@ fn allowed(media: &str) -> bool {
 /// The system's microphone permission, asked the first time.
 pub(crate) fn microphone_allowed() -> bool {
     allowed(AUDIO)
+}
+
+/// The system's camera permission, asked the first time.
+pub(crate) fn camera_allowed() -> bool {
+    allowed(VIDEO)
 }
 
 // ---------- what a microphone or speaker is ----------
@@ -256,9 +266,10 @@ pub(crate) fn cameras() -> Result<Vec<CameraDevice>, String> {
                     device: Device {
                         default: default.as_ref() == Some(&id),
                         name: name.to_string(),
-                        id,
+                        id: id.clone(),
                     },
                     facing: facing(&device),
+                    handle: id,
                 }
             })
             .collect();
@@ -440,11 +451,10 @@ pub(crate) struct Camera {
     _queue: DispatchRetained<DispatchQueue>,
 }
 
-/// Opens the camera `id` names and starts its session.
+/// Opens the listed camera whose unique id is `id` (its
+/// `CameraDevice::handle`) and starts its session. The permission is
+/// asked before ([`camera_allowed`]).
 pub(crate) fn open(id: &str) -> Result<Camera, Status> {
-    if !allowed(VIDEO) {
-        return Err(Status::Denied);
-    }
     autoreleasepool(|_| {
         // SAFETY: AVFoundation's documented calls, on this thread of ours
         // (none needs the main one)
