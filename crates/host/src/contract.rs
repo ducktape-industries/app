@@ -434,6 +434,15 @@ pub struct Prepared {
 /// on the seat's thread and is completion-shaped: it returns at once and
 /// the answer lands on the seat's [`Landing`].
 ///
+/// A program's NOTIFIER (`runtime::notifier`) is seated the same way, on
+/// the same code path, budget and fuel: a module that exports `alloc`,
+/// `init` and `tick` only (no state to hand over). Every runner seats a
+/// module without `snapshot` and `restore`, and a `begin_snapshot` or
+/// `begin_restore` on it lands `Fault::Trap("the view exports no …")`. Its
+/// seat's thread is the notifier's own thread, never the window thread;
+/// its tick's answer is a [`Landed::Frame`] whose bytes the host reads as
+/// a notifier's turn. Nothing else about a runner tells the two apart.
+///
 /// One call in flight per instance: the host begins a call only once the
 /// answer to the one before it landed (a tick in flight is `View::ticking`;
 /// a swap's or a kept snapshot's sequence owns the instance meanwhile,
@@ -535,7 +544,9 @@ pub enum Landed {
     Seated(Box<dyn ViewInstance>),
     /// `init` ran.
     Inited,
-    /// A tick's frame, its bytes as the view wrote them.
+    /// A tick's answer, its bytes as the module wrote them: a view's
+    /// frame, or a notifier's turn (`view_wire::notifier::Turn`); the host
+    /// reads which, never the runner.
     Frame(Vec<u8>),
     /// The view's state.
     Snapshot(Vec<u8>),

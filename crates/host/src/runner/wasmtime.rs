@@ -408,13 +408,15 @@ impl wasmtime::ResourceLimiter for ViewLimits {
 }
 
 /// The view's exports and the memory their bytes cross in (`wire::abi`).
+/// `snapshot` and `restore` are optional (`ViewInstance`): a program's
+/// notifier hands no state over.
 struct Exports {
     memory: Memory,
     alloc: TypedFunc<u32, u32>,
     init: TypedFunc<(), ()>,
     tick: TypedFunc<(u32, u32), u64>,
-    snapshot: TypedFunc<(), u64>,
-    restore: TypedFunc<(u32, u32), u64>,
+    snapshot: Option<TypedFunc<(), u64>>,
+    restore: Option<TypedFunc<(u32, u32), u64>>,
 }
 
 impl Exports {
@@ -426,8 +428,8 @@ impl Exports {
             alloc: instance.get_typed_func(&mut *store, "alloc")?,
             init: instance.get_typed_func(&mut *store, "init")?,
             tick: instance.get_typed_func(&mut *store, "tick")?,
-            snapshot: instance.get_typed_func(&mut *store, "snapshot")?,
-            restore: instance.get_typed_func(&mut *store, "restore")?,
+            snapshot: optional(store, instance, "snapshot")?,
+            restore: optional(store, instance, "restore")?,
         })
     }
 
@@ -472,7 +474,7 @@ impl Exports {
 
     /// The view's state, or its own word that it cannot hand it over now.
     fn snapshot(&self, store: &mut Store<HostState>) -> wasmtime::Result<Result<Vec<u8>, String>> {
-        let packed = self.snapshot.call(&mut *store, ())?;
+        let packed = exported(&self.snapshot, "snapshot")?.call(&mut *store, ())?;
         self.result(store, packed)
     }
 
@@ -481,10 +483,32 @@ impl Exports {
         store: &mut Store<HostState>,
         state: &[u8],
     ) -> wasmtime::Result<Result<(), String>> {
+        let restore = exported(&self.restore, "restore")?;
         let (ptr, len) = self.give(store, state)?;
-        let packed = self.restore.call(&mut *store, (ptr, len))?;
+        let packed = restore.call(&mut *store, (ptr, len))?;
         Ok(self.result(store, packed)?.map(|_| ()))
     }
+}
+
+/// The export `name` when the module has one, typed as `bind` reads it; a
+/// module that has one of another type is refused as a missing required
+/// one is.
+fn optional<Params: wasmtime::WasmParams, Results: wasmtime::WasmResults>(
+    store: &mut Store<HostState>,
+    instance: &wasmtime::Instance,
+    name: &str,
+) -> wasmtime::Result<Option<TypedFunc<Params, Results>>> {
+    match instance.get_func(&mut *store, name) {
+        Some(func) => Ok(Some(func.typed(&*store)?)),
+        None => Ok(None),
+    }
+}
+
+/// An optional export, or the trap a call into one the module lacks is.
+fn exported<'a, T>(export: &'a Option<T>, name: &str) -> wasmtime::Result<&'a T> {
+    export
+        .as_ref()
+        .ok_or_else(|| wasmtime::Error::msg(format!("the view exports no {name}")))
 }
 
 fn panic_message(store: &mut Store<HostState>) -> Option<String> {
@@ -688,5 +712,34 @@ mod tests {
             "nothing holds the code: it is freed"
         );
         assert_eq!(prepare().source, CodeSource::Cold, "compiled again");
+    }
+
+    /// A module with no state to hand over (a program's notifier) is
+    /// seated and ticked; asked for its state, it traps.
+    #[test]
+    fn a_module_without_snapshot_and_restore_seats_and_traps_when_asked() {
+        let runner = WasmtimeRunner::new(RunnerConfig {
+            signals_based_traps: true,
+            cache_dir: None,
+        });
+        let code = r#"(module
+            (memory (export "memory") 1)
+            (func (export "alloc") (param i32) (result i32) i32.const 64)
+            (func (export "init"))
+            (func (export "tick") (param i32 i32) (result i64) i64.const 0))"#;
+        let hash = [9; 32];
+        let code = wat::parse_str(code).expect("parses");
+        let _held = runner.prepare(hash, &code, 4 * PAGE).expect("compiles");
+        let (land, landing) = Landing::channel();
+        runner.instantiate(hash, SeatId("headless", 0), land);
+        let Ok(Landed::Seated(mut instance)) = landing.try_recv() else {
+            panic!("not seated");
+        };
+        instance.begin_tick(Vec::new());
+        assert!(matches!(landing.try_recv(), Ok(Landed::Frame(_))));
+        instance.begin_snapshot();
+        assert!(
+            matches!(landing.try_recv(), Ok(Landed::Fault(Fault::Trap(words))) if words == "the view exports no snapshot")
+        );
     }
 }

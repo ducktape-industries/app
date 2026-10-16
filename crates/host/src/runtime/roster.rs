@@ -466,7 +466,7 @@ pub(super) fn read_roster(
         let previous = {
             let mut listed = roster.lock();
             if connection().lock().expect("views rpc").rev != asked_of.rev {
-                return;
+                return None;
             }
             std::mem::replace(&mut *listed, programs.clone())
         };

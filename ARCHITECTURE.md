@@ -959,7 +959,8 @@ House words, and where one word means several things.
 - **notifier** — a program's headless module (`ducktape.notify` in its
   code blob): what becomes a notice is decided there, by the program. The
   app runs one per listed program on the network in hand, off the window
-  thread, as a `View` with no tree (`runtime/notifier.rs`); a roster read
+  thread, as a `View` with no tree seated by the shell's runner (a module
+  with no `snapshot`/`restore`; `runtime/notifier.rs`); a roster read
   starts, keeps or replaces it, a connect or leaving the network stops it,
   and a program the person blocked runs none.
 - **door file / rig / walk / reveal / mask / settle / compact / offer /

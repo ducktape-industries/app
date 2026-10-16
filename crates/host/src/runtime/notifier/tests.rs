@@ -225,11 +225,13 @@ fn a_notifier_declaring_what_needs_a_person_is_refused() {
     let connection = connection().lock().unwrap().clone();
     for capability in ["link,", "op,", "clipboard,", "invite,"] {
         let bytes = notifier_posting("Pushy", &format!("notify,{capability}"), &mention());
-        let refused = View::notifier("notifier-tests-pushy", &bytes, &connection)
+        let refused = handle()
+            .block_on(View::notifier("notifier-tests-pushy", &bytes, &connection))
             .err()
             .unwrap_or_else(|| panic!("{capability} started"));
         assert!(refused.contains("no one in front of it"), "{refused}");
     }
     let bytes = notifier_posting("Quiet", "notify,store,", &mention());
-    assert!(View::notifier("notifier-tests-quiet", &bytes, &connection).is_ok());
+    let quiet = handle().block_on(View::notifier("notifier-tests-quiet", &bytes, &connection));
+    assert!(quiet.is_ok(), "{:?}", quiet.err());
 }
