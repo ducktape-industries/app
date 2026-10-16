@@ -87,7 +87,11 @@ impl Stack {
     /// was left in after): a program already on top is not pushed twice.
     /// Its seat instance.
     pub fn push(&mut self, program: &'static str) -> u64 {
-        let instance = match self.open.iter().position(|opened| opened.program == program) {
+        let instance = match self
+            .open
+            .iter()
+            .position(|opened| opened.program == program)
+        {
             Some(at) => {
                 let mut opened = self.open.remove(at);
                 opened.left = None;
@@ -164,7 +168,11 @@ impl Stack {
         if self.pushed.contains(&program) {
             return;
         }
-        if let Some(opened) = self.open.iter_mut().find(|opened| opened.program == program) {
+        if let Some(opened) = self
+            .open
+            .iter_mut()
+            .find(|opened| opened.program == program)
+        {
             opened.left = Some(now);
         }
     }

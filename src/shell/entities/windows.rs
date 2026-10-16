@@ -21,13 +21,13 @@ use super::{
     AccountEvent, Desk, DeskSeats, Entities, Front, Listed, Overlay, Overlays, Popped, Screen,
     SessionEvent, SettingsPage, Shared, Slice, Spotlight, WindowEntities,
 };
-use crate::runtime::notify::{CenterHandle, Entry};
 use crate::runtime::WindowKey;
-use ducktape_host::session::Opening;
+use crate::runtime::notify::{CenterHandle, Entry};
 use crate::shell::layers::{self, WindowRoot};
 use crate::shell::windows::{release_window_input, remove};
 use crate::shell::{WindowKind, theme, windows};
 use crate::ui::layout::{self, Layout};
+use ducktape_host::session::Opening;
 use futures::StreamExt as _;
 use futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use gpui_kit::{

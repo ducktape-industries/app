@@ -522,7 +522,10 @@ impl Root {
                 }
             }
             Opening::Elsewhere { chain, .. } => {
-                self.notice(format!("This link is for {chain}, you're on {network}."), cx);
+                self.notice(
+                    format!("This link is for {chain}, you're on {network}."),
+                    cx,
+                );
             }
             Opening::Browser(url) => cx.open_url(&url),
             Opening::Nothing(said) => self.notice(said, cx),
@@ -594,7 +597,8 @@ impl Root {
             return;
         }
         self.placed = (wanted.clone(), keys);
-        self.titles.retain(|instance, _| wanted.contains_key(instance));
+        self.titles
+            .retain(|instance, _| wanted.contains_key(instance));
         let seats = self.shared.seats.clone();
         cx.defer(move |cx| {
             seats.update(cx, |seats, cx| seats.place(wanted.clone(), cx));
@@ -619,9 +623,10 @@ impl Root {
         let (name, content): (&'static str, AnyElement) = match sheet {
             Sheet::Account => ("Account", self.account_menu(palette, cx)),
             Sheet::Capsule(program) => ("More", self.capsule_sheet(program, palette, cx)?),
-            Sheet::Notifications(program) => {
-                ("Notifications", self.notifications_sheet(program, palette, cx))
-            }
+            Sheet::Notifications(program) => (
+                "Notifications",
+                self.notifications_sheet(program, palette, cx),
+            ),
             Sheet::Consent(ask, opened) => {
                 let (_, words) = consent::front().filter(|(front, _)| *front == ask)?;
                 let title = words.title;
@@ -756,13 +761,19 @@ impl Root {
         );
         if let Some(link) = ducklink::mint(&chain, program, &[]) {
             menu = menu.child(
-                sheet::row("sheet/copy-link", Some("icons/link.svg"), "Copy link", None, palette)
-                    .on_click(cx.listener(move |root, _, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
-                        root.sheet = None;
-                        root.notice("Copied".into(), cx);
-                        cx.notify();
-                    })),
+                sheet::row(
+                    "sheet/copy-link",
+                    Some("icons/link.svg"),
+                    "Copy link",
+                    None,
+                    palette,
+                )
+                .on_click(cx.listener(move |root, _, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
+                    root.sheet = None;
+                    root.notice("Copied".into(), cx);
+                    cx.notify();
+                })),
             );
         }
         Some(menu.into_any_element())
@@ -778,7 +789,15 @@ impl Root {
     ) -> AnyElement {
         let name = home::row_of(&self.shared, program, cx)
             .map_or_else(|| program.to_owned(), |row| home::name_of(&row));
-        let now = self.shared.prefs.read(cx).get().notify.views.get(program).copied();
+        let now = self
+            .shared
+            .prefs
+            .read(cx)
+            .get()
+            .notify
+            .views
+            .get(program)
+            .copied();
         let head = sheet::head(palette).child(
             look::text(look::BODY, FontWeight::MEDIUM, palette.foreground())
                 .child(format!("Notifications from {name}")),
@@ -811,7 +830,12 @@ impl Root {
 
     /// The notice up (Expo `Toasts`): the foreground's block over the tab
     /// bar's line, the words in the background's colour, announced.
-    fn toast(&self, bottom: gpui_kit::Pixels, palette: look::Palette, cx: &App) -> Option<AnyElement> {
+    fn toast(
+        &self,
+        bottom: gpui_kit::Pixels,
+        palette: look::Palette,
+        cx: &App,
+    ) -> Option<AnyElement> {
         let said = self.shared.toast.read(cx).get().clone();
         if said.is_empty() {
             return None;
@@ -878,7 +902,13 @@ impl Render for Root {
                             .pb(edges.bottom)
                             .child(body),
                     )
-                    .child(running::capsule(program, edges.top, edges.right, palette, cx));
+                    .child(running::capsule(
+                        program,
+                        edges.top,
+                        edges.right,
+                        palette,
+                        cx,
+                    ));
                 toast_bottom = edges.bottom + px(look::gap::LG);
             }
             None => {

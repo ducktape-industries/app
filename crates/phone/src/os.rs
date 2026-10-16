@@ -49,10 +49,15 @@ pub fn send(signal: Signal) {
 /// Links the OS handed the app (an Android intent's data, an iOS scene's
 /// URL), from any thread, for the shell to open; one that comes before the
 /// shell is up waits here.
-static LINKS: OnceLock<(async_channel::Sender<String>, async_channel::Receiver<String>)> =
-    OnceLock::new();
+static LINKS: OnceLock<(
+    async_channel::Sender<String>,
+    async_channel::Receiver<String>,
+)> = OnceLock::new();
 
-fn links() -> &'static (async_channel::Sender<String>, async_channel::Receiver<String>) {
+fn links() -> &'static (
+    async_channel::Sender<String>,
+    async_channel::Receiver<String>,
+) {
     LINKS.get_or_init(async_channel::unbounded)
 }
 

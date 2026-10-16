@@ -27,7 +27,12 @@ const CAPSULE_RIGHT: f32 = 8.;
 /// What the seat shows: its standin (a load, a failure, a stopped view)
 /// over any tree it keeps, else its tree, else the program's opening state
 /// until the seat is there.
-pub fn body(seat: Option<&Entity<Seat>>, row: Option<&RailRow>, palette: Palette, cx: &App) -> AnyElement {
+pub fn body(
+    seat: Option<&Entity<Seat>>,
+    row: Option<&RailRow>,
+    palette: Palette,
+    cx: &App,
+) -> AnyElement {
     let Some(seat) = seat.map(|seat| seat.read(cx)) else {
         return opening(row, palette);
     };

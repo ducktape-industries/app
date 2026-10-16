@@ -11,9 +11,9 @@ use ducktape_host::runtime::RailRow;
 use ducktape_host::session::Shared;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::{
-    App, Context, Div, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    Pixels, Role, SharedString, StatefulInteractiveElement as _, Styled as _, div, px, relative,
-    svg,
+    App, Context, Div, Entity, FontWeight, InteractiveElement as _, IntoElement,
+    ParentElement as _, Pixels, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
+    div, px, relative, svg,
 };
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -205,9 +205,7 @@ pub fn glyph(row: &RailRow, side: f32, icon: f32, palette: Palette) -> Div {
 /// Whether `row` answers the filter `query` (lower case): its name or its
 /// id holds it.
 fn answers(row: &RailRow, query: &str) -> bool {
-    query.is_empty()
-        || name_of(row).to_lowercase().contains(query)
-        || row.program.contains(query)
+    query.is_empty() || name_of(row).to_lowercase().contains(query) || row.program.contains(query)
 }
 
 /// The filter field (Expo `Field` with a search lead): a 44 square box, a
@@ -325,7 +323,13 @@ pub fn home(
         .min_h_0()
         .flex()
         .flex_col()
-        .child(root_header(HOME_TITLE, caption(shared, cx), &name, palette, cx))
+        .child(root_header(
+            HOME_TITLE,
+            caption(shared, cx),
+            &name,
+            palette,
+            cx,
+        ))
         .child(body)
 }
 
@@ -382,7 +386,9 @@ pub fn open(
         let program = opened.program;
         let row = row_of(shared, program, cx);
         let name = row.as_ref().map_or_else(|| program.to_owned(), name_of);
-        let when = opened.left.map_or_else(|| "now".to_owned(), |left| ago(now - left));
+        let when = opened
+            .left
+            .map_or_else(|| "now".to_owned(), |left| ago(now - left));
         let caption = match titles.get(&opened.instance) {
             Some(title) if !title.is_empty() => format!("{title} · {when}"),
             _ => when,
@@ -408,7 +414,10 @@ pub fn open(
                     .flex_none()
                     .text_color(palette.foreground())
                     .into_any_element(),
-                None => div().size(px(look::ICON_HIT)).flex_none().into_any_element(),
+                None => div()
+                    .size(px(look::ICON_HIT))
+                    .flex_none()
+                    .into_any_element(),
             })
             .child(
                 div()
@@ -513,7 +522,9 @@ pub fn opening(row: &RailRow, palette: Palette) -> Div {
         .flex_col()
         .items_center()
         .gap(px(look::gap::XXS))
-        .child(look::text(look::BODY, FontWeight::MEDIUM, palette.foreground()).child(name_of(row)));
+        .child(
+            look::text(look::BODY, FontWeight::MEDIUM, palette.foreground()).child(name_of(row)),
+        );
     if let Some(stage) = row.note {
         words = words
             .child(look::text(look::SECONDARY, FontWeight::NORMAL, palette.muted()).child(stage));

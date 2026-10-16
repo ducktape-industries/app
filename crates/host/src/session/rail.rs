@@ -136,7 +136,10 @@ pub enum Opening {
     /// A chain link to `program` on another chain, labelled `chain`: not
     /// this chain's page to show. The desktop opens `program` and says so;
     /// the phone, as the Expo app, says whose link it is and opens nothing.
-    Elsewhere { program: &'static str, chain: String },
+    Elsewhere {
+        program: &'static str,
+        chain: String,
+    },
     /// An address for the system browser.
     Browser(String),
     /// Nothing opens; the notice says why.
@@ -200,7 +203,11 @@ mod tests {
         };
         let here = "testkit#0a1b2c3d";
         assert_eq!(
-            opening(Link::Chain(link(here, "chat", &["room", "42"])), lists, here),
+            opening(
+                Link::Chain(link(here, "chat", &["room", "42"])),
+                lists,
+                here
+            ),
             Opening::Seat {
                 program: "chat",
                 route: Some("room/42".into()),
