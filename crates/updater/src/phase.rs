@@ -65,6 +65,9 @@ pub struct Downloading {
     /// The channel that offered it (its manifest's).
     pub channel: String,
     pub successor_key: Option<SuccessorKey>,
+    /// Taken because the person asked ("Update now"), not by the updater on
+    /// its own: [`Staged::asked`] once it is verified.
+    pub asked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +84,10 @@ pub struct Staged {
     /// Why the staged release's own qualify last refused it, if it did. It is
     /// persisted because the boot step qualifies and the app reports it.
     pub refused: Option<String>,
+    /// Staged because the person asked ("Update now"): a start flips to it
+    /// even with updating automatically off, which drops a release the
+    /// updater staged on its own (`AutomaticOff`).
+    pub asked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,8 +201,12 @@ pub enum Event {
     Boot,
     /// Boot step, answering `ResolveSwap`: which side of the swap is live.
     SwapResolved(SwapState),
-    /// App: the channel manifest was fetched and its signature checked.
-    ManifestFetched(Result<VerifiedManifest, Refusal>),
+    /// App: the channel manifest was fetched and its signature checked;
+    /// `take` says what the check does with a newer release it offers.
+    ManifestFetched {
+        result: Result<VerifiedManifest, Refusal>,
+        take: Take,
+    },
     /// App: `releases/<sha>.partial` is complete.
     DownloadFinished { sha: Sha },
     /// App: the download could not complete; `reason` is a stable token.
@@ -219,6 +230,23 @@ pub enum Event {
     /// App: the person picked the other channel. A release the old channel
     /// offered is dropped; what runs, and its pin, stay.
     ChannelChanged,
+    /// App: updating automatically is off (switched off, or found off by a
+    /// start). A release the updater took on its own is dropped, as a
+    /// channel switch drops one; one the person asked for stays.
+    AutomaticOff,
+}
+
+/// What a check does with a newer release its channel offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Take {
+    /// Updating automatically: download it and stage it for the next start.
+    Automatic,
+    /// "Update now": the same, as the person asked, so the next start flips
+    /// to it with updating automatically off.
+    Asked,
+    /// Updating automatically is off: name it (`Banner(Available)`) and
+    /// download nothing.
+    Nothing,
 }
 
 /// What the executor found at the install path while `Swapping`.
@@ -276,6 +304,12 @@ pub enum UpdateBanner {
     /// "Ducktape <display> is ready": it takes over at the next start.
     Ready {
         staged: Sha,
+        display: String,
+    },
+    /// The channel offers `display`, newer than what runs, and updating
+    /// automatically is off: nothing was downloaded.
+    Available {
+        offered: Sha,
         display: String,
     },
     /// The manifest named nothing newer than what runs.
