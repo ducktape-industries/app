@@ -20,6 +20,11 @@
 //! (`notify.seen`): its own rows under the tag read, its standing banner
 //! under it taken down. Another view's rows are never touched.
 //!
+//! A notice with an `until` is never raised past it, and its banner is
+//! taken down at it by a timer of the host's ([`withdraw_at`]). A call
+//! ([`NoticeKind::Call`]) is the OS's call banner (Answer opens its row as
+//! a click does; Decline takes it down), never held back by the burst.
+//!
 //! A click on a banner opens its row, the way the centre's row does:
 //! freedesktop's `ActionInvoked` on the banner's default action, and on
 //! macOS the notification centre's delegate hearing the default action on a
@@ -30,7 +35,7 @@
 //! only the device's banners switch decides it, and a click on it opens
 //! Settings › Updates.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use super::kernel::{in_order, spawn_reply};
@@ -43,7 +48,7 @@ mod settings;
 #[cfg(test)]
 mod tests;
 
-pub use center::{CenterHandle, Entry, Notice, center, wall};
+pub use center::{CenterHandle, Entry, Notice, NoticeKind, Posted, center, wall};
 pub use settings::{
     BURSTS, Permission, Settings, not_now, save_banners, save_burst, save_in_front, set_permission,
 };
@@ -115,6 +120,15 @@ fn post(view: &mut View, center: &CenterHandle, id: u64, payload: &[u8]) {
     view.intents.push(Intent::Notified);
     // queued now, in the order the view posted, not when the task runs
     let raised = banner.map(|notice| {
+        if notice.until != 0 {
+            withdraw_at(
+                center.clone(),
+                view.recipient.clone(),
+                view.program,
+                notice.tag.clone(),
+                notice.until,
+            );
+        }
         let (tell, told) = tokio::sync::oneshot::channel();
         let recipient = view.recipient.clone();
         // ponytail: every recipient's banners queue under the program, one
@@ -161,6 +175,31 @@ fn seen(view: &mut View, id: u64, payload: &[u8]) {
         });
     }
     view.reply(id, Ok(methods::encode(&())));
+}
+
+/// The banner raised under `tag` taken down at `until` (Unix seconds),
+/// from where it went (`recipient`'s channel, or the OS's), queued behind
+/// `program`'s other banners, unless a later one stands there by then or
+/// it was taken down already ([`Center::ring_over`]). A banner with no tag
+/// has nothing to take it down by: it stays.
+fn withdraw_at(
+    center: CenterHandle,
+    recipient: Option<Arc<Recipient>>,
+    program: &'static str,
+    tag: String,
+    until: u64,
+) -> tokio::task::JoinHandle<()> {
+    super::kernel::handle().spawn(async move {
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(until);
+        if let Ok(left) = at.duration_since(std::time::SystemTime::now()) {
+            tokio::time::sleep(left).await;
+        }
+        if !tag.is_empty() && center.lock().ring_over(&tag, until) {
+            in_order(program, move || {
+                banners_of(recipient.as_deref()).withdraw(&tag)
+            });
+        }
+    })
 }
 
 /// What a click on a banner opens.

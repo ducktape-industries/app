@@ -446,6 +446,7 @@ mod tests {
             tag: "chat/#general".into(),
             program: "chat".into(),
             link: "duck://testkit-0a1b2c3d/chat/general/7".into(),
+            ..Notice::default()
         };
         let line = line("testkit", 2, &notice);
         assert!(!line.contains('\n'), "one line: {line}");

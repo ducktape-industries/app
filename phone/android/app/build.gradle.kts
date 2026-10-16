@@ -40,4 +40,14 @@ dependencies {
     // Ed25519 in software, for a device whose Keystore has none (below
     // Android 13): the Expo build's key store's one dependency
     implementation("com.google.crypto.tink:tink-android:1.23.0")
+    // the ring's messages (Ring.kt): Firebase Cloud Messaging, Apache-2.0
+    implementation("com.google.firebase:firebase-messaging:26.0.0")
+}
+
+// The owner's Firebase project (`google-services.json`, beside this file,
+// from the Firebase console): with it the build has a Firebase app and FCM
+// delivers the ring; without it the build is the same app, and the ring
+// comes only from its debug entry (Ring.kt).
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
 }
