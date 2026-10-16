@@ -12,6 +12,14 @@
 //! the consent sheet). Each program opened keeps one seat, placed with the
 //! safe body and in front only while it is on top and the window is: a
 //! program left stays warm where it was (wasm-mobile SPEC §7.1).
+//!
+//! It moves as the Expo build's moves (`ducktape_host::motion`): a program
+//! (or its page) pushed slides in from the right over the screen it left,
+//! which moves left under a dim, and a pop is the reverse; iOS's left-edge
+//! swipe drags the screen on top off under the finger; a sheet slides up
+//! over a fading scrim and down again; the alert and the toast fade. Tab
+//! switches do not move (Expo's tabs do not). Nothing moves while nothing
+//! changes: a frame is asked for only while something is under way.
 
 mod about;
 mod home;
@@ -23,6 +31,7 @@ pub mod stack;
 
 use ducktape_host::a11y::Control as _;
 use ducktape_host::contract::{Boot, OsServices, Signal, SoftKeyboard};
+use ducktape_host::motion::{self, Shown, Slide, Tween};
 use ducktape_host::runtime::notify::{Opened as Banner, Permission};
 use ducktape_host::runtime::{Back, Placed, consent};
 use ducktape_host::session::{Opening, Place, Seats, SeatsEvent, Session, SessionEvent, Shared};
@@ -36,8 +45,11 @@ use gpui_kit::{
 };
 use sheet::Sheet;
 use stack::{Stack, Tab};
+use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// The door's name for the phone's one window: its ids read
 /// `phone:home/<program>`.
@@ -208,6 +220,16 @@ fn handed_on(signal: Signal, cx: &mut App) {
                 root.update(cx, |root, cx| root.back(cx));
             }
         }
+        Signal::BackDrag(x) => {
+            if let Some(root) = root(cx) {
+                root.update(cx, |root, cx| root.drag(x, cx));
+            }
+        }
+        Signal::BackDragCancelled => {
+            if let Some(root) = root(cx) {
+                root.update(cx, |root, cx| root.drag_cancelled(cx));
+            }
+        }
         Signal::InsetsChanged => {
             if let Some(root) = root(cx) {
                 root.update(cx, |_, cx| cx.notify());
@@ -279,6 +301,46 @@ fn open_door(cx: &mut App) {
     .detach();
 }
 
+/// What the stack shows full screen: a tab root, the program on top, or a
+/// program's page over it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Page {
+    Root(Tab),
+    Program(&'static str),
+    About(&'static str),
+}
+
+impl Page {
+    /// Its layer's element id: a `::` name, which the AX door's paths leave
+    /// out (`ax::tree::element_path`), so the ids inside read as before.
+    fn layer(self) -> SharedString {
+        match self {
+            Page::Root(Tab::Home) => "screen::home".into(),
+            Page::Root(Tab::Open) => "screen::open".into(),
+            Page::Program(program) => format!("screen::program/{program}").into(),
+            Page::About(program) => format!("screen::about/{program}").into(),
+        }
+    }
+
+    /// The program seated full screen on it, if any.
+    fn program(self) -> Option<&'static str> {
+        match self {
+            Page::Program(program) => Some(program),
+            Page::Root(_) | Page::About(_) => None,
+        }
+    }
+}
+
+/// The stack moving from the screen it `left`: pushed over it, or popped
+/// off it (`pop`), as `slide` moves the two.
+#[derive(Clone, Copy, Debug)]
+struct Move {
+    left: Page,
+    pop: bool,
+    slide: Slide,
+    tween: Tween,
+}
+
 /// The window's root: the join, or the stack over the host's entities, the
 /// seats of the programs open, and the sheet over them.
 pub struct Root {
@@ -307,6 +369,21 @@ pub struct Root {
     /// Each placed seat, observed: a tree, a standin or a fault that moved
     /// draws the window again.
     watched: BTreeMap<u64, Subscription>,
+    /// The stack moving, until its motion ends.
+    moving: Option<Move>,
+    /// How far in (points) iOS's left-edge swipe has come while it drags
+    /// the screen on top off.
+    dragged: Option<f32>,
+    /// The window's width at the last draw: a drag's share of it.
+    width: f32,
+    /// The sheet, the consent sheet, the alert and the toast as drawn, each
+    /// coming and going; and each sheet's panel height, as last laid out.
+    drawn_sheet: Option<Shown<Sheet>>,
+    drawn_consent: Option<Shown<(u64, Instant, consent::Words)>>,
+    drawn_alert: Option<Shown<(&'static str, String)>>,
+    drawn_toast: Option<Shown<String>>,
+    sheet_height: Rc<Cell<Option<gpui_kit::Pixels>>>,
+    consent_height: Rc<Cell<Option<gpui_kit::Pixels>>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -375,6 +452,15 @@ impl Root {
             waiting: Vec::new(),
             search,
             watched: BTreeMap::new(),
+            moving: None,
+            dragged: None,
+            width: 0.,
+            drawn_sheet: None,
+            drawn_consent: None,
+            drawn_alert: None,
+            drawn_toast: None,
+            sheet_height: Rc::default(),
+            consent_height: Rc::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -391,27 +477,144 @@ impl Root {
         });
     }
 
-    /// `program` on top, in its seat; the seat's instance.
+    /// `program` on top, in its seat, pushed over the screen it was on; the
+    /// seat's instance.
     fn open(&mut self, program: &'static str, cx: &mut Context<Self>) -> u64 {
         self.sheet = None;
+        let from = self.page(cx);
         self.about = None;
-        self.stack.update(cx, |stack, cx| {
+        let instance = self.stack.update(cx, |stack, cx| {
             let instance = stack.push(program);
             cx.notify();
             instance
-        })
+        });
+        self.moved(from, false, cx);
+        instance
     }
 
-    /// `program`'s page over the stack.
+    /// `program`'s page pushed over the stack.
     fn show_about(&mut self, program: &'static str, cx: &mut Context<Self>) {
         self.sheet = None;
+        let from = self.page(cx);
         self.about = Some(program);
+        self.moved(from, false, cx);
         cx.notify();
     }
 
+    /// The program's page popped.
     fn close_about(&mut self, cx: &mut Context<Self>) {
+        let from = self.page(cx);
         self.about = None;
+        self.moved(from, true, cx);
         cx.notify();
+    }
+
+    /// What the stack shows now: a program's page (while the network lists
+    /// it), else the program on top, else the tab's root.
+    fn page(&self, cx: &App) -> Page {
+        if let Some(program) = self
+            .about
+            .filter(|program| home::row_of(&self.shared, program, cx).is_some())
+        {
+            return Page::About(program);
+        }
+        let stack = self.stack.read(cx);
+        stack.top().map_or(Page::Root(stack.tab()), Page::Program)
+    }
+
+    /// The screen a pop would show: the one under the page or the program
+    /// on top; `None` on a root.
+    fn under(&self, cx: &App) -> Option<Page> {
+        let stack = self.stack.read(cx);
+        let root = Page::Root(stack.tab());
+        if let Page::About(_) = self.page(cx) {
+            return Some(stack.top().map_or(root, Page::Program));
+        }
+        stack.top()?;
+        Some(stack.under().map_or(root, Page::Program))
+    }
+
+    /// The stack went from `from` to the screen it shows now, by a push, or
+    /// a pop when `pop`: the new screen slides in over the old, or the old
+    /// one off the new. A move under way ends where it was going, unless
+    /// this one undoes it (Back during a push): that turns back from where
+    /// it is. A pop the finger let go of goes on from where it let go. Tab
+    /// switches do not move.
+    fn moved(&mut self, from: Page, pop: bool, cx: &mut Context<Self>) {
+        let dragged = self.dragged.take();
+        let to = self.page(cx);
+        if from == to || matches!((from, to), (Page::Root(_), Page::Root(_))) {
+            return;
+        }
+        let (motion, slide) = motion::stack(pop, cx);
+        let start = match (dragged, self.moving) {
+            (Some(x), _) if pop && self.width > 0. => (x / self.width).clamp(0., 1.),
+            (None, Some(m)) if m.left == to && m.pop != pop => 1. - m.tween.at(motion::now(cx)),
+            _ => 0.,
+        };
+        self.moving = Some(Move {
+            left: from,
+            pop,
+            slide,
+            tween: Tween::between(start, 1., motion, cx),
+        });
+        cx.notify();
+    }
+
+    /// iOS's left-edge swipe, `x` points in: the screen on top follows the
+    /// finger while a Back would pop it (a program's page, or a program on
+    /// top whose view does not hear Back itself) and nothing is over it.
+    /// Under Reduce Motion nothing follows; the release is Back as before.
+    /// A swipe begun while the stack moves does not follow either.
+    fn drag(&mut self, x: f32, cx: &mut Context<Self>) {
+        let now = motion::now(cx);
+        let busy = self.moving.is_some_and(|moving| !moving.tween.done(now));
+        if self.dragged.is_none() && (busy || !self.can_drag(cx)) {
+            return;
+        }
+        // a move that has ended may not be cleared yet: it is over
+        self.moving = None;
+        self.dragged = Some(x.max(0.));
+        cx.notify();
+    }
+
+    fn can_drag(&self, cx: &App) -> bool {
+        let covered = self.consent.is_some() || self.alert.is_some() || self.sheet.is_some();
+        let joining = join::step(*self.shared.screen.read(cx).get()).is_some();
+        if covered || joining || motion::reduced(cx) || self.under(cx).is_none() {
+            return false;
+        }
+        matches!(self.page(cx), Page::About(_))
+            || self
+                .top_seat(cx)
+                .is_none_or(|seat| !seat.read(cx).hears_back())
+    }
+
+    /// The swipe let go short of Back: the screen on top slides back into
+    /// place over the one under it.
+    fn drag_cancelled(&mut self, cx: &mut Context<Self>) {
+        let Some(x) = self.dragged.take() else {
+            return;
+        };
+        cx.notify();
+        // no travel: already in place, nothing to spring back
+        if x <= 0. {
+            return;
+        }
+        let Some(under) = self.under(cx) else {
+            return;
+        };
+        let (motion, slide) = motion::stack(false, cx);
+        let start = match self.width > 0. {
+            true => 1. - (x / self.width).clamp(0., 1.),
+            false => 1.,
+        };
+        self.moving = Some(Move {
+            left: under,
+            pop: false,
+            slide,
+            tween: Tween::between(start, 1., motion, cx),
+        });
     }
 
     /// `program`'s own link (`duck://<chain>/<program>`) on the clipboard.
@@ -425,13 +628,15 @@ impl Root {
         cx.notify();
     }
 
-    /// The capsule's ×: Home, the program left where it is.
+    /// The capsule's ×: Home, the program left where it is, popped off.
     fn go_home(&mut self, cx: &mut Context<Self>) {
         let now = Self::now(cx);
+        let from = self.page(cx);
         self.stack.update(cx, |stack, cx| {
             stack.home(now);
             cx.notify();
         });
+        self.moved(from, true, cx);
     }
 
     /// Open's ×: the program's seat goes; it stays on Home.
@@ -490,13 +695,26 @@ impl Root {
     }
 
     /// Back (Android's button, iOS's edge): on the join, the code goes back
-    /// to the address and the address is the OS's own; else the consent
+    /// to the address on Android (iOS's swipe does nothing there) and the
+    /// address is the OS's own; else the consent
     /// sheet's ask is refused, an alert dismissed, a sheet closed, a
     /// program's page closed, each first; else the view on top goes back
     /// inside itself when its last frame's root asks to hear it; else the
-    /// stack pops; at Home, the OS's own (SPEC §7.6).
+    /// stack pops; at Home, the OS's own (SPEC §7.6). A drag under way
+    /// that this Back does not pop springs back.
     fn back(&mut self, cx: &mut Context<Self>) {
+        self.walk_back(cx);
+        if self.dragged.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn walk_back(&mut self, cx: &mut Context<Self>) {
         match join::step(*self.shared.screen.read(cx).get()) {
+            // iOS's Back is only the edge swipe, which the code refuses as
+            // Expo's does (`gestureEnabled: false`): its way out is its own
+            // Back button
+            Some(join::Step::Code) if cfg!(target_os = "ios") => return,
             Some(join::Step::Code) => return self.join.update(cx, |join, cx| join.leave(cx)),
             Some(join::Step::Node) => return crate::os::back_at_root(),
             None => {}
@@ -519,6 +737,7 @@ impl Root {
             return;
         }
         let now = Self::now(cx);
+        let from = self.page(cx);
         let popped = self.stack.update(cx, |stack, cx| {
             let popped = stack.back(now);
             cx.notify();
@@ -527,6 +746,7 @@ impl Root {
         if !popped {
             crate::os::back_at_root();
         }
+        self.moved(from, true, cx);
     }
 
     /// The seat of the program on top.
@@ -544,6 +764,8 @@ impl Root {
             cx.notify();
         });
         let_go_closed(&self.stack, &self.shared.seats, cx);
+        self.moving = None;
+        self.dragged = None;
         self.sheet = None;
         self.alert = None;
         self.titles.clear();
@@ -680,7 +902,16 @@ impl Root {
     fn place(&mut self, window: &Window, body: (f32, f32), cx: &mut Context<Self>) {
         let handle = window.window_handle();
         let active = window.is_window_active();
+        // while the stack moves, the program it left (or the one under the
+        // finger) is drawn too, so it stays in front until the move ends
+        let left = match (self.moving, self.dragged) {
+            (Some(moving), _) => Some(moving.left),
+            (None, Some(_)) => self.under(cx),
+            (None, None) => None,
+        }
+        .and_then(Page::program);
         let stack = self.stack.read(cx);
+        let left = left.and_then(|program| stack.instance(program));
         // a program's page covers the program on top
         let top = stack
             .top()
@@ -690,7 +921,8 @@ impl Root {
             .open()
             .iter()
             .map(|opened| {
-                let in_front = active && top == Some(opened.instance);
+                let shown = top == Some(opened.instance) || left == Some(opened.instance);
+                let in_front = active && shown;
                 let place = (handle, Some(body), in_front);
                 // a phone floats no pane (`OsFacts::floats`)
                 (
@@ -722,12 +954,12 @@ impl Root {
         });
     }
 
-    /// The sheet up, drawn: the frame over the window with its content.
+    /// The sheet up, drawn where `at` says: the frame over the window with
+    /// its content.
     fn sheet(
         &mut self,
         sheet: Sheet,
-        bottom: gpui_kit::Pixels,
-        room: gpui_kit::Pixels,
+        at: sheet::At,
         palette: look::Palette,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
@@ -740,28 +972,18 @@ impl Root {
             ),
         };
         let close = Self::close_sheet;
-        Some(sheet::frame(
-            "sheet",
-            name,
-            content,
-            (bottom, room),
-            close,
-            palette,
-            cx,
-        ))
+        Some(sheet::frame("sheet", name, content, at, close, palette, cx))
     }
 
-    /// The consent sheet for `ask`, opened at `opened`: the host's confirm
-    /// sheet content in the phone's sheet. `None` once `ask` is no longer
-    /// the queue's front (answered elsewhere).
+    /// The consent sheet for `ask`, opened at `opened`, its `words`: the
+    /// host's confirm sheet content in the phone's sheet, where `at` says.
     fn consent_sheet(
         &mut self,
-        (ask, opened): (u64, std::time::Instant),
-        (bottom, room): (gpui_kit::Pixels, gpui_kit::Pixels),
+        (ask, opened, words): (u64, Instant, consent::Words),
+        at: sheet::At,
         palette: look::Palette,
         cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        let (_, words) = consent::front().filter(|(front, _)| *front == ask)?;
+    ) -> AnyElement {
         let title = words.title;
         let this = cx.weak_entity();
         let answer = move |yes: bool, cx: &mut App| {
@@ -781,23 +1003,16 @@ impl Root {
         };
         let body = consent::sheet(words, palette.dark(), approved, answer);
         let refuse = Self::refuse_consent;
-        Some(sheet::frame(
-            "consent",
-            title,
-            body,
-            (bottom, room),
-            refuse,
-            palette,
-            cx,
-        ))
+        sheet::frame("consent", title, body, at, refuse, palette, cx)
     }
 
     /// The alert up (the shell boards' dialog, Expo `Alert` with one OK): a
     /// centred card over the scrim, its title, its sentence, OK at the
-    /// right.
+    /// right, `shown` as far as it has faded in. Going, it takes no press.
     fn alert_card(
         &self,
         (title, said): (&'static str, String),
+        (shown, leaving): (f32, bool),
         palette: look::Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -841,18 +1056,24 @@ impl Root {
                     .gap(px(look::gap::XXS))
                     .child(ok),
             );
-        div()
+        let scrim = div()
             .id("alert/scrim")
             .absolute()
             .top_0()
             .left_0()
             .right_0()
             .bottom_0()
-            .occlude()
+            .opacity(shown)
             .bg(palette.scrim())
             .flex()
             .flex_col()
-            .justify_center()
+            .justify_center();
+        if leaving {
+            let cover = div().absolute().inset_0().occlude();
+            return scrim.child(card.child(cover)).into_any_element();
+        }
+        scrim
+            .occlude()
             .child(ducktape_host::a11y::modal(card))
             .into_any_element()
     }
@@ -1040,18 +1261,15 @@ impl Root {
             .into_any_element()
     }
 
-    /// The notice up (Expo `Toasts`): the foreground's block over the tab
-    /// bar's line, the words in the background's colour, announced.
+    /// The notice `said` (Expo `Toasts`): the foreground's block over the
+    /// tab bar's line, the words in the background's colour, announced,
+    /// `shown` as far as it has faded in.
     fn toast(
-        &self,
+        said: String,
         bottom: gpui_kit::Pixels,
+        shown: f32,
         palette: look::Palette,
-        cx: &App,
-    ) -> Option<AnyElement> {
-        let said = self.shared.toast.read(cx).get().clone();
-        if said.is_empty() {
-            return None;
-        }
+    ) -> AnyElement {
         let words = ducktape_host::a11y::live(
             div().id("toast").role(gpui_kit::Role::Status),
             gpui_kit::accesskit::Live::Polite,
@@ -1061,17 +1279,84 @@ impl Root {
         .px(px(look::gap::BLOCK))
         .py(px(look::gap::SM))
         .child(look::text(look::SMALL, FontWeight::NORMAL, palette.background()).child(said));
-        Some(
+        div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom(bottom)
+            .opacity(shown)
+            .flex()
+            .justify_center()
+            .child(words)
+            .into_any_element()
+    }
+
+    /// `page` as one layer over the whole window: its body in the safe
+    /// area, over a program its capsule; and the toast's bottom over it.
+    fn layer(
+        &mut self,
+        page: Page,
+        edges: gpui_kit::Edges<gpui_kit::Pixels>,
+        window: &Window,
+        palette: look::Palette,
+        cx: &mut Context<Self>,
+    ) -> (gpui_kit::Stateful<gpui_kit::Div>, gpui_kit::Pixels) {
+        let layer = div()
+            .id(page.layer())
+            .absolute()
+            .inset_0()
+            .flex()
+            .flex_col()
+            .bg(palette.background());
+        let safe = || {
             div()
-                .absolute()
-                .left_0()
-                .right_0()
-                .bottom(bottom)
-                .flex()
-                .justify_center()
-                .child(words)
-                .into_any_element(),
-        )
+                .flex_1()
+                .min_h_0()
+                .pt(edges.top)
+                .pl(edges.left)
+                .pr(edges.right)
+        };
+        match page {
+            Page::About(program) => {
+                let page = home::row_of(&self.shared, program, cx).map(|row| {
+                    let listing = ducktape_host::runtime::listing(row.program);
+                    about::page(&row, listing, palette, cx)
+                });
+                let body = safe().flex().flex_col().pb(edges.bottom).children(page);
+                (layer.child(body), edges.bottom + px(look::gap::LG))
+            }
+            Page::Program(program) => {
+                let instance = self.stack.read(cx).instance(program);
+                let seat = instance.and_then(|instance| self.shared.seats.read(cx).seat(instance));
+                let row = home::row_of(&self.shared, program, cx);
+                let body = running::body(seat.as_ref(), row.as_ref(), palette, cx);
+                let capsule = running::capsule(program, edges.top, edges.right, palette, cx);
+                let layer = layer
+                    .child(safe().pb(edges.bottom).child(body))
+                    .child(capsule);
+                (layer, edges.bottom + px(look::gap::LG))
+            }
+            Page::Root(tab) => {
+                let screen = match tab {
+                    Tab::Home => {
+                        let searching = self.search.read(cx).focus_handle(cx).is_focused(window);
+                        home::home(&self.shared, &self.search, searching, palette, cx)
+                    }
+                    Tab::Open => {
+                        let opened = self.stack.read(cx).open().to_vec();
+                        home::open(&self.shared, &opened, &self.titles, palette, cx)
+                    }
+                };
+                let body = safe().flex().flex_col().child(screen).child(home::tab_bar(
+                    tab,
+                    edges.bottom,
+                    palette,
+                    cx,
+                ));
+                let bottom = edges.bottom + px(look::TAB_BAR + look::gap::LG);
+                (layer.child(body), bottom)
+            }
+        }
     }
 }
 
@@ -1087,8 +1372,13 @@ impl Render for Root {
             f32::from(viewport.width - edges.left - edges.right).max(0.),
             f32::from(viewport.height - edges.top - edges.bottom).max(0.),
         );
+        // a move at its end is over before anything reads it: `place` puts
+        // the page it left out of front this draw
+        let now = motion::now(cx);
+        if self.moving.is_some_and(|moving| moving.tween.done(now)) {
+            self.moving = None;
+        }
         self.place(window, body, cx);
-        let top = self.stack.read(cx).top();
         let mut root = div()
             .size_full()
             .relative()
@@ -1110,109 +1400,110 @@ impl Render for Root {
                     .child(self.join.clone()),
             );
         }
-        let toast_bottom;
-        let about = self
-            .about
-            .and_then(|program| home::row_of(&self.shared, program, cx));
-        if let Some(row) = about {
-            let listing = ducktape_host::runtime::listing(row.program);
-            root = root.child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_col()
-                    .pt(edges.top)
-                    .pl(edges.left)
-                    .pr(edges.right)
-                    .pb(edges.bottom)
-                    .child(about::page(&row, listing, palette, cx)),
-            );
-            toast_bottom = edges.bottom + px(look::gap::LG);
-        } else {
-            match top {
-                Some(program) => {
-                    let instance = self.stack.read(cx).instance(program);
-                    let seat =
-                        instance.and_then(|instance| self.shared.seats.read(cx).seat(instance));
-                    let row = home::row_of(&self.shared, program, cx);
-                    let body = running::body(seat.as_ref(), row.as_ref(), palette, cx);
-                    root = root
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_h_0()
-                                .pt(edges.top)
-                                .pl(edges.left)
-                                .pr(edges.right)
-                                .pb(edges.bottom)
-                                .child(body),
-                        )
-                        .child(running::capsule(
-                            program,
-                            edges.top,
-                            edges.right,
-                            palette,
-                            cx,
-                        ));
-                    toast_bottom = edges.bottom + px(look::gap::LG);
-                }
-                None => {
-                    let tab = self.stack.read(cx).tab();
-                    let screen = match tab {
-                        Tab::Home => {
-                            let searching =
-                                self.search.read(cx).focus_handle(cx).is_focused(window);
-                            home::home(&self.shared, &self.search, searching, palette, cx)
-                        }
-                        Tab::Open => {
-                            let opened = self.stack.read(cx).open().to_vec();
-                            home::open(&self.shared, &opened, &self.titles, palette, cx)
-                        }
-                    };
-                    root = root.child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .flex()
-                            .flex_col()
-                            .pt(edges.top)
-                            .pl(edges.left)
-                            .pr(edges.right)
-                            .child(screen)
-                            .child(home::tab_bar(tab, edges.bottom, palette, cx)),
-                    );
-                    toast_bottom = edges.bottom + px(look::TAB_BAR + look::gap::LG);
-                }
+        self.width = f32::from(viewport.width);
+        let page = self.page(cx);
+        let (layer, toast_bottom) = self.layer(page, edges, window, palette, cx);
+        // the stack moving: the page it left drawn too, and taking no press;
+        // `left_over` when that page is the one on top (a pop sliding it
+        // off), not under a push or under the finger
+        let under_finger = self.dragged.zip(self.under(cx));
+        let moving = match (under_finger, self.moving) {
+            (Some((x, under)), _) => {
+                let progress = (x / self.width.max(1.)).clamp(0., 1.);
+                let (_, slide) = motion::stack(true, cx);
+                Some((under, false, slide.at(progress, progress, true)))
             }
-        }
-        if let Some(toast) = self.toast(toast_bottom, palette, cx) {
-            root = root.child(toast);
+            (None, Some(moving)) => {
+                let progress = moving.tween.frame(window, cx);
+                let time = moving.tween.time(now);
+                let placed = moving.slide.at(progress, time, moving.pop);
+                Some((moving.left, moving.pop, placed))
+            }
+            (None, None) => None,
+        };
+        root = match moving {
+            None => root.child(layer),
+            Some((left, left_over, placed)) => {
+                let (other, _) = self.layer(left, edges, window, palette, cx);
+                let other = other.child(div().absolute().inset_0().occlude());
+                let (over, under) = match left_over {
+                    true => (other, layer),
+                    false => (layer, other),
+                };
+                let width = self.width;
+                let shift = |layer: gpui_kit::Stateful<gpui_kit::Div>, by: f32| {
+                    layer.left(px(by * width)).right(px(-by * width))
+                };
+                let dim = div()
+                    .absolute()
+                    .inset_0()
+                    .bg(gpui_kit::hsla(0., 0., 0., placed.dim));
+                root.child(shift(under, placed.under))
+                    .child(dim)
+                    .child(shift(over, placed.top).opacity(placed.opacity))
+            }
+        };
+        let said = self.shared.toast.read(cx).get().clone();
+        let said = (!said.is_empty()).then_some(said);
+        let toasts = (motion::TOAST_IN, motion::TOAST_OUT);
+        if let Some(toast) = motion::follow(&mut self.drawn_toast, said, toasts, window, cx) {
+            root = root.child(Self::toast(
+                toast.what,
+                toast_bottom,
+                toast.progress,
+                palette,
+            ));
         }
         let room = viewport.height - edges.top;
-        // what a sheet was over is gone (a program no longer listed, an ask
-        // answered elsewhere): `place` withheld the keys for it this draw,
-        // so the window draws again
-        if let Some(sheet) = self.sheet {
-            match self.sheet(sheet, edges.bottom, room, palette, cx) {
+        let sheets = (motion::SHEET_IN, motion::SHEET_OUT);
+        let at = |(progress, slides, leaving), height: &Rc<Cell<_>>| sheet::At {
+            bottom: edges.bottom,
+            room,
+            progress,
+            slides,
+            leaving,
+            height: height.clone(),
+        };
+        if self.drawn_sheet.is_none() {
+            self.sheet_height.set(None);
+        }
+        if let Some(shown) = motion::follow(&mut self.drawn_sheet, self.sheet, sheets, window, cx) {
+            let at = at(shown.at(), &self.sheet_height);
+            match self.sheet(shown.what, at, palette, cx) {
                 Some(sheet) => root = root.child(sheet),
+                // what a sheet was over is gone (a program no longer
+                // listed): `place` withheld the keys for it this draw, so
+                // the window draws again
                 None => {
-                    self.sheet = None;
-                    cx.notify();
+                    self.drawn_sheet = None;
+                    if self.sheet.take().is_some() {
+                        cx.notify();
+                    }
                 }
             }
         }
-        if let Some(alert) = self.alert.clone() {
-            root = root.child(self.alert_card(alert, palette, cx));
+        let alerts = (motion::ALERT_IN, motion::ALERT_OUT);
+        let alert = self.alert.clone();
+        if let Some(shown) = motion::follow(&mut self.drawn_alert, alert, alerts, window, cx) {
+            let faded = (shown.progress, shown.leaving);
+            root = root.child(self.alert_card(shown.what, faded, palette, cx));
         }
-        if let Some(asked) = self.consent {
-            match self.consent_sheet(asked, (edges.bottom, room), palette, cx) {
-                Some(sheet) => root = root.child(sheet),
-                None => {
-                    self.consent = None;
-                    cx.notify();
-                }
-            }
+        // an ask answered elsewhere is no longer the queue's front: its
+        // sheet goes
+        let asked = self.consent.and_then(|(ask, opened)| {
+            let (_, words) = consent::front().filter(|(front, _)| *front == ask)?;
+            Some((ask, opened, words))
+        });
+        if self.consent.is_some() && asked.is_none() {
+            self.consent = None;
+            cx.notify();
+        }
+        if self.drawn_consent.is_none() {
+            self.consent_height.set(None);
+        }
+        if let Some(shown) = motion::follow(&mut self.drawn_consent, asked, sheets, window, cx) {
+            let at = at(shown.at(), &self.consent_height);
+            root = root.child(self.consent_sheet(shown.what, at, palette, cx));
         }
         root
     }
@@ -1223,6 +1514,7 @@ mod tests {
     use super::*;
     use ducktape_host::runtime::Roster;
     use ducktape_host::session::Screen;
+    use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{TestAppContext, VisualTestContext};
 
     const PROGRAM: &str = "phone-root-test";
@@ -1230,6 +1522,298 @@ mod tests {
     /// The program on top of the stack.
     fn top(stack: &Entity<Stack>, cx: &mut VisualTestContext) -> Option<&'static str> {
         stack.read_with(cx, |stack, _| stack.top())
+    }
+
+    /// The frames the last draw asked for, delivered (and drawn): how many
+    /// were asked for.
+    fn frames(cx: &mut VisualTestContext) -> usize {
+        let asked = cx.update(|window, cx| window.simulate_next_frame(cx));
+        cx.run_until_parked();
+        asked
+    }
+
+    /// The clock past every motion under way, and the frame each asked for.
+    fn run_out(cx: &mut VisualTestContext) {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        frames(cx);
+    }
+
+    /// A phone's window on a network (the stack, not the join): its root,
+    /// its stack, the host's entities.
+    fn phone(cx: &mut TestAppContext) -> (Entity<Root>, Entity<Stack>, &mut VisualTestContext) {
+        cx.executor().allow_parking();
+        cx.update(gpui_kit::init);
+        let shared = cx.update(|cx| Shared::for_test(Default::default(), Default::default(), cx));
+        let stack = cx.new(|_| Stack::default());
+        cx.update(|cx| {
+            cx.set_global(Phone {
+                shared: shared.clone(),
+                stack: stack.clone(),
+                window: None,
+                waiting: Vec::new(),
+            })
+        });
+        let (root, cx) =
+            cx.add_window_view(|window, cx| Root::new(shared.clone(), stack.clone(), window, cx));
+        cx.update(|window, _| window.activate_window());
+        shared.screen.update(cx, |screen, cx| {
+            screen.set(Screen::Desk, cx);
+        });
+        cx.run_until_parked();
+        (root, stack, cx)
+    }
+
+    /// The stack's move under way: the page it left, whether it pops.
+    fn moving(root: &Entity<Root>, cx: &mut VisualTestContext) -> Option<(Page, bool)> {
+        root.read_with(cx, |root, _| root.moving.map(|it| (it.left, it.pop)))
+    }
+
+    /// A program opened from Home slides in over it, asking for frames only
+    /// while it moves, and is gone to the still layout at its end, with no
+    /// frame asked for after; a second push during a push ends the first
+    /// where it was going; Back slides the program off; under Reduce Motion
+    /// nothing slides (a cross-fade); the edge swipe drags the program off
+    /// under the finger, springs back when let go short, and goes on from
+    /// where the finger was when it is Back.
+    #[gpui_kit::test]
+    fn the_stack_moves_while_it_changes_and_never_after(cx: &mut TestAppContext) {
+        let (root, stack, cx) = phone(cx);
+        assert_eq!(frames(cx), 0, "a still window asked for a frame");
+
+        // where Home is drawn, if it is: its filter field, the one element
+        // the kit's test support observes there
+        let search = root.read_with(cx, |root, _| root.search.entity_id().as_u64());
+        let home = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                window.render_frame(cx);
+                let field = gpui_kit::ElementId::NamedInteger("input".into(), search);
+                window.try_find(field).map(|it| it.bounds())
+            })
+        };
+        let still = home(cx).expect("Home drawn");
+        root.update(cx, |root, cx| root.open(PROGRAM, cx));
+        cx.run_until_parked();
+        assert_eq!(moving(&root, cx), Some((Page::Root(Tab::Home), false)));
+        assert!(frames(cx) > 0, "a push asked for no frame");
+        cx.executor().advance_clock(motion::PUSH.duration / 4);
+        assert!(frames(cx) > 0, "a push under way asked for no frame");
+        assert!(moving(&root, cx).is_some(), "the push ended early");
+        let under = home(cx).expect("Home drawn under the push");
+        assert!(
+            under.left() < still.left(),
+            "Home is not moving left under it"
+        );
+        cx.executor().advance_clock(motion::PUSH.duration);
+        frames(cx);
+        assert_eq!(moving(&root, cx), None, "the push outlived its motion");
+        assert_eq!(frames(cx), 0, "a frame asked for after the push ended");
+        assert_eq!(home(cx), None, "Home still drawn under the program");
+
+        // Back: the program slides off and Home lands exactly where it was
+        root.update(cx, |root, cx| root.back(cx));
+        cx.run_until_parked();
+        assert_eq!(moving(&root, cx), Some((Page::Program(PROGRAM), true)));
+        cx.executor().advance_clock(motion::POP.duration / 4);
+        frames(cx);
+        let coming = home(cx).expect("Home drawn under the pop");
+        assert!(
+            coming.left() < still.left(),
+            "Home is not coming from the left"
+        );
+        run_out(cx);
+        assert_eq!(home(cx), Some(still), "the pop ended off the still layout");
+        assert_eq!(frames(cx), 0, "a frame asked for after the pop ended");
+
+        // a second push during the first: from the page the first was going to
+        root.update(cx, |root, cx| root.open("phone-root-second", cx));
+        root.update(cx, |root, cx| root.open("phone-root-third", cx));
+        cx.run_until_parked();
+        assert_eq!(
+            moving(&root, cx),
+            Some((Page::Program("phone-root-second"), false))
+        );
+        run_out(cx);
+
+        root.update(cx, |root, cx| root.back(cx));
+        cx.run_until_parked();
+        assert_eq!(top(&stack, cx), Some("phone-root-second"));
+        assert_eq!(
+            moving(&root, cx),
+            Some((Page::Program("phone-root-third"), true)),
+            "Back did not slide the program off"
+        );
+        run_out(cx);
+        assert_eq!(frames(cx), 0, "a frame asked for after the pop ended");
+
+        // the capsule's ×: Home, the program slid off it
+        root.update(cx, |root, cx| root.go_home(cx));
+        cx.run_until_parked();
+        assert_eq!(
+            moving(&root, cx),
+            Some((Page::Program("phone-root-second"), true))
+        );
+        run_out(cx);
+
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        root.update(cx, |root, cx| root.open(PROGRAM, cx));
+        let (fade, slide) = root.read_with(cx, |root, _| {
+            let moving = root.moving.expect("no move under Reduce Motion");
+            (moving.tween.motion, moving.slide)
+        });
+        assert_eq!(fade, motion::FADE, "Reduce Motion kept the slide's motion");
+        assert_eq!((slide.over, slide.under, slide.dim), (0., 0., 0.));
+        root.update(cx, |root, cx| root.drag(40., cx));
+        assert!(
+            root.read_with(cx, |root, _| root.dragged.is_none()),
+            "a drag followed under Reduce Motion"
+        );
+        run_out(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(false));
+        cx.run_until_parked();
+
+        let width = root.read_with(cx, |root, _| root.width);
+        assert!(width > 0.);
+        root.update(cx, |root, cx| root.drag(width / 4., cx));
+        cx.run_until_parked();
+        assert_eq!(
+            frames(cx),
+            0,
+            "a drag asks for no frame: the finger moves it"
+        );
+        assert!(
+            home(cx).expect("Home under the finger").left() < still.left(),
+            "Home is not under the program, to the left"
+        );
+        root.update(cx, |root, cx| root.drag_cancelled(cx));
+        cx.run_until_parked();
+        let back = root.read_with(cx, |root, _| {
+            root.moving.map(|it| (it.left, it.pop, it.tween.from))
+        });
+        assert_eq!(
+            back,
+            Some((Page::Root(Tab::Home), false, 0.75)),
+            "let go short"
+        );
+        assert_eq!(top(&stack, cx), Some(PROGRAM), "a drag let go short popped");
+        run_out(cx);
+
+        root.update(cx, |root, cx| root.drag(width / 2., cx));
+        root.update(cx, |root, cx| root.back(cx));
+        cx.run_until_parked();
+        let off = root.read_with(cx, |root, _| {
+            root.moving.map(|it| (it.left, it.pop, it.tween.from))
+        });
+        assert_eq!(
+            off,
+            Some((Page::Program(PROGRAM), true, 0.5)),
+            "Back from a drag"
+        );
+        assert_eq!(top(&stack, cx), None);
+        run_out(cx);
+        assert_eq!(frames(cx), 0);
+
+        // a swipe begun during a push leaves it be; Back during it turns it
+        // back from where it is
+        root.update(cx, |root, cx| root.open(PROGRAM, cx));
+        cx.run_until_parked();
+        cx.executor().advance_clock(motion::PUSH.duration / 8);
+        frames(cx);
+        root.update(cx, |root, cx| root.drag(10., cx));
+        assert_eq!(
+            root.read_with(cx, |root, _| (root.dragged, root.moving.is_some())),
+            (None, true),
+            "a swipe took over a push"
+        );
+        let pushed = root.read_with(cx, |root, cx| {
+            root.moving.map(|it| it.tween.at(motion::now(cx)))
+        });
+        let pushed = pushed.expect("a push under way");
+        assert!(0. < pushed && pushed < 1., "{pushed}");
+        root.update(cx, |root, cx| root.back(cx));
+        cx.run_until_parked();
+        let back = root.read_with(cx, |root, _| {
+            root.moving.map(|it| (it.left, it.pop, it.tween.from))
+        });
+        assert_eq!(
+            back,
+            Some((Page::Program(PROGRAM), true, 1. - pushed)),
+            "Back during a push jumped"
+        );
+        run_out(cx);
+        assert_eq!(frames(cx), 0);
+    }
+
+    /// A sheet slides up and stays up asking for no frame; closed, it goes
+    /// down as it was drawn and is dropped at the end, with no frame asked
+    /// for after; the alert and the toast fade in and out the same way.
+    #[gpui_kit::test]
+    fn the_overlays_come_and_go_and_then_stay_still(cx: &mut TestAppContext) {
+        let (root, _, cx) = phone(cx);
+        let sheet = |cx: &mut VisualTestContext| {
+            root.read_with(cx, |root, _| {
+                root.drawn_sheet.as_ref().map(|it| (it.what, it.leaving))
+            })
+        };
+        root.update(cx, |root, cx| root.account_sheet(cx));
+        cx.run_until_parked();
+        assert_eq!(sheet(cx), Some((Sheet::Account, false)));
+        assert!(frames(cx) > 0, "a sheet coming asked for no frame");
+        run_out(cx);
+        assert_eq!(sheet(cx), Some((Sheet::Account, false)));
+        assert_eq!(frames(cx), 0, "a sheet up asked for a frame");
+
+        root.update(cx, |root, cx| root.close_sheet(cx));
+        cx.run_until_parked();
+        assert_eq!(
+            sheet(cx),
+            Some((Sheet::Account, true)),
+            "a sheet went at once"
+        );
+        assert!(frames(cx) > 0);
+        run_out(cx);
+        assert_eq!(sheet(cx), None, "a sheet gone is still drawn");
+        assert_eq!(frames(cx), 0, "a frame asked for after the sheet went");
+
+        // Back while a sheet still comes up turns it back from where it is
+        root.update(cx, |root, cx| root.account_sheet(cx));
+        cx.run_until_parked();
+        cx.executor().advance_clock(motion::SHEET_IN.duration / 8);
+        frames(cx);
+        let coming = root.read_with(cx, |root, cx| {
+            root.drawn_sheet
+                .as_ref()
+                .map(|it| it.tween.at(motion::now(cx)))
+        });
+        let coming = coming.expect("a sheet coming");
+        assert!(0. < coming && coming < 1., "{coming}");
+        root.update(cx, |root, cx| root.back(cx));
+        cx.run_until_parked();
+        let going = root.read_with(cx, |root, _| {
+            root.drawn_sheet
+                .as_ref()
+                .map(|it| (it.leaving, it.tween.from))
+        });
+        assert_eq!(going, Some((true, coming)), "Back made the sheet jump");
+        run_out(cx);
+        assert_eq!(sheet(cx), None);
+
+        root.update(cx, |root, cx| root.alert("Another network", "x".into(), cx));
+        cx.run_until_parked();
+        assert!(frames(cx) > 0, "an alert coming asked for no frame");
+        root.update(cx, |root, cx| root.back(cx));
+        cx.run_until_parked();
+        let leaving = root.read_with(cx, |root, _| root.drawn_alert.as_ref().map(|it| it.leaving));
+        assert_eq!(leaving, Some(true), "the alert went at once");
+        run_out(cx);
+        assert!(root.read_with(cx, |root, _| root.drawn_alert.is_none()));
+        assert_eq!(frames(cx), 0);
+
+        root.update(cx, |root, cx| root.notice("Copied".into(), cx));
+        cx.run_until_parked();
+        assert!(frames(cx) > 0, "a toast coming asked for no frame");
+        run_out(cx);
+        assert_eq!(frames(cx), 0, "a toast up asked for a frame");
     }
 
     /// The window over a phone on a network with an account (the stack, not
@@ -1316,6 +1900,12 @@ mod tests {
         root.update(cx, |root, cx| root.back(cx));
         cx.run_until_parked();
         assert_eq!(top(&stack, cx), None, "Back did not pop");
+        assert_eq!(
+            placed(cx),
+            (true, false),
+            "a program sliding off is drawn, in front, without the keys"
+        );
+        run_out(cx);
         assert_eq!(
             placed(cx),
             (false, false),

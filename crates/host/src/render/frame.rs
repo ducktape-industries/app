@@ -183,16 +183,43 @@ impl ViewTree {
                 .min();
             field.frame(fields[key], queued);
         }
-        self.scrolls.retain(|key, _| scrolls.contains(key));
+        // a sheet the view stopped drawing opens at its first detent again;
+        // under touch, a docked one goes down as it was last drawn, its
+        // scrolls and lists kept where they were until it is gone
+        let dropped: Vec<AuthoredPath> = self
+            .sheets
+            .keys()
+            .filter(|key| !sheets.contains(*key))
+            .cloned()
+            .collect();
+        for key in dropped {
+            let Some(state) = self.sheets.remove(&key) else {
+                continue;
+            };
+            if !state.moves() {
+                continue;
+            }
+            let mut leaving = None;
+            walk_authored_paths(&self.root, None, &mut Vec::new(), &mut |node, path| {
+                if leaving.is_none() && *path == key && matches!(node, wire::Node::Sheet { .. }) {
+                    leaving = state.leave(node, &self.styles, path, cx);
+                }
+            });
+            if leaving.is_some() {
+                self.leaving = leaving;
+            }
+        }
+        let leaving = self.leaving.as_ref().map(|leaving| &leaving.path);
+        let kept = |key: &AuthoredPath| leaving.is_some_and(|path| key.starts_with(path));
+        self.scrolls
+            .retain(|key, _| scrolls.contains(key) || kept(key));
         self.uniform_lists
-            .retain(|id, _| uniform_lists.contains(id));
+            .retain(|key, _| uniform_lists.contains(key) || kept(key));
+        self.variable_lists
+            .retain(|key, _| variable_lists.contains(key) || kept(key));
         self.tooltips
             .retain(|request, _| tooltip_routes.contains(request));
-        self.variable_lists
-            .retain(|id, _| variable_lists.contains(id));
         self.drags.retain(|key, _| drags.contains(key));
-        // a sheet the view stopped drawing opens at its first detent again
-        self.sheets.retain(|key, _| sheets.contains(key));
         let opener = &mut self.opener;
         self.dialogs.retain(|key, (entry, was)| {
             let open = dialogs.contains(key);

@@ -11,7 +11,14 @@
 //! drag down, Escape) is the view's `on_dismiss`, and the panel stays at
 //! its first detent until the view's next frame drops it, so a sheet the
 //! view keeps (or opens again) is never left half-closed.
+//!
+//! Under touch a docked sheet moves as the Expo build's (gorhom's
+//! `BottomSheetModal`, `motion::SHEET_IN`): it slides up by its own height
+//! as it first draws, a release settles at its detent, and one the view
+//! drops goes down as it was last drawn ([`Leaving`]), the scrim fading
+//! with it. A pointer window's sheet does not move.
 use super::*;
+use crate::motion::{self, Tween};
 use gpui_kit::prelude::FluentBuilder as _;
 
 /// What the host keeps of a drawn sheet between frames: the detent it
@@ -22,6 +29,56 @@ pub(super) struct SheetState {
     rest: usize,
     drag: Option<Drag>,
     fit: Option<Pixels>,
+    /// Under touch: the panel coming up as it first draws.
+    came: Option<Tween>,
+    /// Under touch: a release settling at its rest, from the height it was
+    /// let go at.
+    settle: Option<(Pixels, Tween)>,
+    /// Under touch: the panel's height as last drawn (a drag's, a detent's,
+    /// its child's), which a sheet the view drops goes down from.
+    drawn: Option<Pixels>,
+}
+
+/// A docked sheet the view dropped under touch, going down as it was last
+/// drawn: its node and the style table it was drawn with, where it sat in
+/// the tree, its height, its motion (1 in place, 0 gone). It takes no
+/// press, and nothing it draws is a dialog.
+pub(super) struct Leaving {
+    node: wire::Node,
+    styles: wire::Styles,
+    /// Its scrolls and lists are kept while it goes (`ViewTree::replace`).
+    pub(super) path: AuthoredPath,
+    height: Pixels,
+    tween: Tween,
+}
+
+impl SheetState {
+    /// Whether it was drawn docked under touch, where a sheet moves.
+    pub(super) fn moves(&self) -> bool {
+        self.drawn.is_some()
+    }
+
+    /// What goes down when the view drops the sheet `node` (at `path`, drawn
+    /// with `styles`) this state kept: `None` unless it was drawn docked
+    /// under touch.
+    pub(super) fn leave(
+        &self,
+        node: &wire::Node,
+        styles: &wire::Styles,
+        path: &AuthoredPath,
+        cx: &App,
+    ) -> Option<Leaving> {
+        let height = self.drawn?;
+        let now = motion::now(cx);
+        let from = self.came.map_or(1., |came| came.at(now));
+        Some(Leaving {
+            node: node.clone(),
+            styles: styles.clone(),
+            path: path.clone(),
+            height,
+            tween: Tween::between(from, 0., motion::SHEET_OUT, cx),
+        })
+    }
 }
 
 impl SheetState {
@@ -73,18 +130,64 @@ impl ViewTree {
         let body = self.body.unwrap_or_else(|| window.viewport_size());
         let compact = f64::from(f32::from(body.width)) < design::width::COMPACT_BELOW;
         let palette = crate::theme::palette(cx);
-        let state = self.sheets.entry(path.clone()).or_default();
+        // under touch a docked sheet moves; a pointer's never does
+        let moves = compact && crate::contract::os().facts().touch_first;
+        let now = motion::now(cx);
+        // a sheet opened again as it goes down comes up from where it is
+        let from = self
+            .leaving
+            .as_ref()
+            .filter(|leaving| leaving.path == path)
+            .map_or(0., |leaving| leaving.tween.at(now));
+        // a sheet the view dropped, walked once more as it goes down
+        // (`leaving_sheet`): its height as last drawn, no state of its own
+        let leaving = self.leaving_at;
+        let mut kept = SheetState::default();
+        let state = match leaving {
+            Some(_) => &mut kept,
+            None => self.sheets.entry(path.clone()).or_default(),
+        };
+        if moves && leaving.is_none() && state.drawn.is_none() && state.came.is_none() {
+            state.came = Some(Tween::between(from, 1., motion::SHEET_IN, cx));
+        }
         // sanitize keeps at most eight ascending fractions in (0, 1]; with
         // none the panel is laid out as tall as its child, and only a drag
         // gives it a height
-        let height = match (&state.drag, detents.len()) {
-            (Some(drag), _) => Some(drag.now),
-            (None, 0) => None,
-            (None, len) => Some(body.height * detents[state.rest.min(len - 1)]),
+        let rest = match detents.len() {
+            0 => None,
+            len => Some(body.height * detents[state.rest.min(len - 1)]),
         };
+        if state.settle.is_some_and(|(_, tween)| tween.done(now)) {
+            state.settle = None;
+        }
+        let height = match (&state.drag, state.settle, leaving) {
+            (_, _, Some((_, height, _))) => Some(height),
+            (Some(drag), _, None) => Some(drag.now),
+            // a release settling at its rest, a fitted one at its child's
+            (None, Some((from, tween)), None) => {
+                let to = rest.or(state.fit).unwrap_or(from);
+                Some(from + (to - from) * tween.frame(window, cx))
+            }
+            (None, None, None) => rest,
+        };
+        // how far in the panel is, and whether it slides there (else, under
+        // Reduce Motion, it fades)
+        if state.came.is_some_and(|came| came.done(now)) {
+            state.came = None;
+        }
+        let shown = match (leaving, state.came) {
+            (Some((progress, _, slides)), _) => Some((progress, slides)),
+            (None, Some(came)) => Some((came.frame(window, cx), came.motion.slides)),
+            (None, None) => None,
+        };
+        // down by its own height at 0; unmeasured, below the body
+        let lifted = height.or(state.fit).unwrap_or(body.height);
+        if moves && leaving.is_none() {
+            state.drawn = Some(lifted);
+        }
         let fitted = detents.is_empty();
         let content = self.node(child, window, cx);
-        let dismiss = *on_dismiss;
+        let dismiss = leaving.is_none().then_some(*on_dismiss).flatten();
         let mut panel = div()
             .id(host_id("sheet-panel"))
             .relative()
@@ -126,6 +229,8 @@ impl ViewTree {
                     cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                         cx.stop_propagation();
                         if let Some(state) = this.sheets.get_mut(&pressed) {
+                            // a press takes the panel where it is, settling or not
+                            state.settle = None;
                             let start = height.or(state.fit).unwrap_or(highest);
                             state.drag = Some(Drag {
                                 from: event.position.y,
@@ -188,7 +293,16 @@ impl ViewTree {
                                 false => heights.clone(),
                             };
                             match snap(drag.now, &heights) {
-                                Some(rest) => state.rest = rest,
+                                Some(rest) => {
+                                    state.rest = rest;
+                                    // under touch it settles there from where
+                                    // it was let go; under Reduce Motion it
+                                    // is there at once
+                                    if moves && !motion::reduced(cx) {
+                                        let settle = Tween::start(motion::SHEET_IN, cx);
+                                        state.settle = Some((drag.now, settle));
+                                    }
+                                }
                                 None => {
                                     // back to where it opens: the view closes it
                                     state.rest = 0;
@@ -235,7 +349,12 @@ impl ViewTree {
                 .border_color(crate::theme::hsla(palette.border_strong))
                 .child(grab)
                 .child(capture)
-                .children(measure);
+                .children(measure)
+                // coming up or going down by its own height, or fading
+                .when_some(shown, |panel, (progress, slides)| match slides {
+                    true => panel.top(lifted * (1. - progress)),
+                    false => panel.opacity(progress),
+                });
         } else {
             panel = panel
                 .w_full()
@@ -251,17 +370,23 @@ impl ViewTree {
                     panel.child(div().flex_none().h(px(HANDLE_BAND)))
                 });
         }
-        let panel = panel.child(div().flex_1().min_h_0().child(content));
+        let panel = panel
+            .child(div().flex_1().min_h_0().child(content))
+            // a sheet going takes no press: a cover over what it draws
+            .when(leaving.is_some(), |panel| {
+                panel.child(div().absolute().inset_0().occlude())
+            });
         let named = label.as_deref().is_some_and(|label| !label.is_empty());
         let nested = has_named_overlay(child);
+        let faded = shown.map_or(1., |(progress, _)| progress);
         let scrim = div()
             .id(host_id("sheet-scrim"))
             .absolute()
             .inset_0()
             .bg(rgb(0x000000))
             .opacity(match gpui_kit::component::Theme::global(cx).is_dark() {
-                true => SCRIM.1,
-                false => SCRIM.0,
+                true => SCRIM.1 * faded,
+                false => SCRIM.0 * faded,
             })
             .role(gpui_kit::Role::Button)
             .aria_label("Close")
@@ -277,8 +402,6 @@ impl ViewTree {
             .id(native_id(id))
             .absolute()
             .inset_0()
-            // what the sheet covers takes no press while it is open
-            .occlude()
             .flex()
             .flex_col()
             .child(scrim)
@@ -287,10 +410,50 @@ impl ViewTree {
             true => layer.justify_end(),
             false => layer.justify_center().items_center().p(px(16.)),
         };
-        let layer = self.dialog(path, named, nested, layer, dismiss, node, window, cx);
+        let layer = match leaving {
+            // going: no dialog, and what it covers takes presses again
+            Some(_) => layer.into_any_element(),
+            None => {
+                // what the sheet covers takes no press while it is open
+                let layer = layer.occlude();
+                self.dialog(path, named, nested, layer, dismiss, node, window, cx)
+            }
+        };
         // the walk goes on where the node sits; the layer goes over the body
         self.sheet_layer = Some(layer);
         div().absolute().into_any_element()
+    }
+
+    /// The sheet the view dropped, walked once more where it sat, with the
+    /// table it was drawn with, as it goes down: its layer, while its motion
+    /// lasts and no other sheet is drawn.
+    pub(super) fn leaving_sheet(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let mut leaving = self.leaving.take()?;
+        if self.sheet_layer.is_some() || leaving.tween.done(motion::now(cx)) {
+            return None;
+        }
+        let progress = leaving.tween.frame(window, cx);
+        let slides = leaving.tween.motion.slides;
+        // the walk enters the sheet's own scope from where it sat
+        let mut path = leaving.path.clone();
+        if wire::identity::segment(leaving.node.identity().cloned(), None).is_some() {
+            path.pop();
+        }
+        let path = std::mem::replace(&mut self.authored_path, path);
+        let index = std::mem::take(&mut self.render_index);
+        std::mem::swap(&mut self.styles, &mut leaving.styles);
+        self.leaving_at = Some((progress, leaving.height, slides));
+        self.node(&leaving.node, window, cx);
+        self.leaving_at = None;
+        std::mem::swap(&mut self.styles, &mut leaving.styles);
+        self.render_index = index;
+        self.authored_path = path;
+        self.leaving = Some(leaving);
+        self.sheet_layer.take()
     }
 }
 

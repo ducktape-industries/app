@@ -371,20 +371,35 @@ impl Seat {
         let Slot::Ready(view) = &mut locked.slot else {
             return Back::Leave;
         };
-        let on_back = view
-            .frame
-            .root
-            .as_ref()
-            .and_then(wire::Node::interactivity)
-            .and_then(|interactivity| interactivity.on_back);
-        let heard = view.fault.is_none() && self.generation == view.seated_generation();
-        let Some(handler) = on_back.filter(|_| heard) else {
+        let Some(handler) = self.back_handler(view) else {
             return Back::Leave;
         };
         view.pending.push(wire::Event::Back { handler });
         drop(locked);
         self.turn(cx);
         Back::Heard
+    }
+
+    /// What [`Seat::back`] would come to now, asked without going back: a
+    /// shell that lets the finger drag the program off asks first.
+    pub fn hears_back(&self) -> bool {
+        let locked = lock(&self.mounted);
+        match &locked.slot {
+            Slot::Ready(view) => self.back_handler(view).is_some(),
+            _ => false,
+        }
+    }
+
+    /// The handler a Back goes to: the `on_back` of the root of the last
+    /// frame that landed, while this seat's view draws it unfaulted.
+    fn back_handler(&self, view: &View) -> Option<u32> {
+        let heard = view.fault.is_none() && self.generation == view.seated_generation();
+        view.frame
+            .root
+            .as_ref()
+            .and_then(wire::Node::interactivity)
+            .and_then(|interactivity| interactivity.on_back)
+            .filter(|_| heard)
     }
 
     /// The pane left every desk: one bounded update, then no more turns.
