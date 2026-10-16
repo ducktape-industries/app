@@ -11,7 +11,7 @@
 #
 # The device code is `src/backend.rs` (the seam: the camera's stream loop,
 # cpal for audio) over the camera capture we own: V4L2 on Linux
-# (`src/v4l2.rs`), AVFoundation on macOS (`src/mac.rs`). Another backend
+# (`src/v4l2.rs`), AVFoundation on macOS (`src/apple.rs`, `src/mac.rs`). Another backend
 # replaces those. The gpui side (`camera.rs`, `meter.rs`) reads only what
 # they leave in a feed. Other systems (Windows) are not built with
 # `capture`: a build there is a `--no-default-features` one, without av.

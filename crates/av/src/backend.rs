@@ -1,6 +1,6 @@
 //! THE SEAM: every call into a capture or playback library, and nothing of
 //! gpui. Cameras through our own capture (V4L2 on Linux in `v4l2.rs`,
-//! AVFoundation on macOS in `mac.rs`) driven by one stream loop here,
+//! AVFoundation on macOS in `apple.rs`) driven by one stream loop here,
 //! microphones and speakers through cpal, each piece on a thread of its
 //! own that leaves what it has in a feed ([`CameraFeed`], [`MicFeed`]) for
 //! the gpui side to read. Another backend replaces this file and those

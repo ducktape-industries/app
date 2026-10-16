@@ -35,6 +35,8 @@ compile_error!(
     "ducktape-av captures cameras on Linux (V4L2) and macOS (AVFoundation) only: build the app without `av` here"
 );
 
+#[cfg(target_os = "macos")]
+mod apple;
 mod backend;
 mod camera;
 #[cfg(target_os = "macos")]
