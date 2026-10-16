@@ -361,7 +361,8 @@ pub trait ViewRunner: Send + Sync + 'static {
     /// dead-page rules).
     fn instantiate(&self, hash: [u8; 32], seat: SeatId, land: Landing);
     /// `program.describe`: run the import-free describe module `module`
-    /// (sha256 `hash`) on `op`, bounded by the same fuel; `None` on any
+    /// (sha256 `hash`) on `op`, bounded by the same fuel, once
+    /// `view_meter::accepts` takes it as it would a view; `None` on any
     /// failure.
     fn describe(
         &self,

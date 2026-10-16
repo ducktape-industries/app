@@ -22,10 +22,12 @@ mod app {
     use ducktape_host_jsc::{JscRunner, gate};
     use objc2::rc::Retained;
     use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
-    use objc2::{ClassType, MainThreadMarker, MainThreadOnly, define_class};
-    use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+    use objc2::{ClassType, MainThreadOnly, define_class};
     use objc2_foundation::NSString;
-    use objc2_ui_kit::{UIApplication, UIApplicationDelegate, UIViewController, UIWindow};
+    use objc2_ui_kit::{
+        UIApplication, UIApplicationDelegate, UIScene, UISceneDelegate, UIViewController, UIWindow,
+        UIWindowScene, UIWindowSceneDelegate,
+    };
     use std::cell::RefCell;
     use std::time::Duration;
 
@@ -42,13 +44,29 @@ mod app {
 
         unsafe impl NSObjectProtocol for Delegate {}
 
-        unsafe impl UIApplicationDelegate for Delegate {
-            #[unsafe(method(application:didFinishLaunchingWithOptions:))]
-            fn launched(&self, _: &UIApplication, _: Option<&AnyObject>) -> bool {
-                launch(self.mtm());
-                true
+        unsafe impl UIApplicationDelegate for Delegate {}
+    );
+
+    define_class!(
+        /// The app's one scene (iOS 27 runs no app without one): its
+        /// window, then the gate.
+        #[unsafe(super(NSObject))]
+        #[thread_kind = MainThreadOnly]
+        #[name = "DucktapeSimGateScene"]
+        struct Scene;
+
+        unsafe impl NSObjectProtocol for Scene {}
+
+        unsafe impl UISceneDelegate for Scene {
+            #[unsafe(method(scene:willConnectToSession:options:))]
+            fn connect(&self, scene: &UIScene, _: &AnyObject, _: &AnyObject) {
+                if let Some(scene) = scene.downcast_ref::<UIWindowScene>() {
+                    launch(scene);
+                }
             }
         }
+
+        unsafe impl UIWindowSceneDelegate for Scene {}
     );
 
     fn line(text: String) {
@@ -57,13 +75,9 @@ mod app {
 
     /// A window as the phone has one, the runner, and the gate on a thread
     /// of its own (the runner's answers land on this one).
-    fn launch(mtm: MainThreadMarker) {
-        let frame = CGRect::new(CGPoint::new(0., 0.), CGSize::new(390., 844.));
-        #[expect(
-            deprecated,
-            reason = "the gate has no scene; the phone's window is gpui_ios's"
-        )]
-        let window = UIWindow::initWithFrame(UIWindow::alloc(mtm), frame);
+    fn launch(scene: &UIWindowScene) {
+        let mtm = scene.mtm();
+        let window = UIWindow::initWithWindowScene(UIWindow::alloc(mtm), scene);
         window.setRootViewController(Some(&UIViewController::new(mtm)));
         window.makeKeyAndVisible();
         WINDOW.with(|kept| *kept.borrow_mut() = Some(window));
@@ -154,9 +168,11 @@ mod app {
     }
 
     pub fn main() {
-        let Some(mtm) = MainThreadMarker::new() else {
+        let Some(mtm) = objc2::MainThreadMarker::new() else {
             return;
         };
+        // registered before UIKit looks the scene's class up by name
+        let _scene = Scene::class();
         let delegate = NSString::from_class(Delegate::class());
         UIApplication::main(None, Some(&delegate), mtm);
     }
