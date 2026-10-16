@@ -105,6 +105,7 @@ fn text(key: &str, content: impl Into<String>) -> wire::Node {
         id: Some(named_id(key)),
         style: crate::render::test_style(gpui_kit::StyleRefinement::default()),
         content: content.into(),
+        transform: None,
     })
 }
 

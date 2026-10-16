@@ -230,6 +230,7 @@ fn a_drag_across_a_plain_text_copies_it_too(cx: &mut gpui_kit::TestAppContext) {
         id: Some(named_id("author")),
         style: crate::render::test_style(div().h(px(20.)).style().clone()),
         content: "ada".into(),
+        transform: None,
     });
     let root = container_with_style(
         "pane",
@@ -259,6 +260,7 @@ fn a_controls_label_is_no_text_to_select(cx: &mut gpui_kit::TestAppContext) {
             id: Some(named_id(key)),
             style: crate::render::test_style(div().h(px(20.)).style().clone()),
             content: words.into(),
+            transform: None,
         })
     };
     let mut button = container_with_style(
@@ -333,6 +335,7 @@ fn a_drag_down_numbered_lines_copies_the_code_not_the_numbers(cx: &mut gpui_kit:
                 id: Some(named_id(&format!("number-{number}"))),
                 style: crate::render::test_style(div().style().clone()),
                 content: number.into(),
+                transform: None,
             })],
         );
         if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut gutter {

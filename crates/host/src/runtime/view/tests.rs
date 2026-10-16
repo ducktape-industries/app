@@ -237,8 +237,8 @@ fn a_hostile_sheet_or_back_is_refused() {
             "a sheet detent is a fraction of the body",
         ),
         (
-            backed(2, vec![sheet("s0", Vec::new(), empty())]),
-            "a sheet has one to eight detents",
+            backed(2, vec![sheet("s0", vec![0.5; 9], empty())]),
+            "a sheet has at most eight detents",
         ),
         (
             backed(2, vec![backed(3, Vec::new())]),
