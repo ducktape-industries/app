@@ -107,6 +107,9 @@ pub struct State {
     pub playback: Playback,
     /// A microphone's: the person is speaking ([`meter`]'s hysteresis).
     pub speaking: bool,
+    /// A microphone's: its monitor was turned off under its piece and is
+    /// held off until the piece asks it off ([`backend::MicFeed::silence`]).
+    pub monitor_stopped: bool,
 }
 
 /// The cameras the system lists now; the first is the default.
