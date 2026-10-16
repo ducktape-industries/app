@@ -89,7 +89,15 @@ jobs:
       APP: phone/ios/build/Ducktape.xcarchive/Products/Applications/Ducktape.app
     steps:
       - uses: actions/checkout@v4
+      # app CI is off, so this is the only gate before TestFlight; row 4 (no
+      # wasmtime on iOS) stops a build whose JIT a device kills
+      - name: dependency gate
+        run: tools/dep-gate.sh
       - run: make -C phone ios-archive BUILD="$BUILD"
+      # the JSC runner looks WebKit's classes up at run time, so a missing
+      # link only shows as a crash at launch
+      - name: WebKit linked
+        run: otool -L "$APP/Ducktape" | grep -q '/WebKit.framework/' || { echo "::error::$APP/Ducktape does not link WebKit.framework"; exit 1; }
       - name: privacy gate
         run: phone/ios/privacy-scan.sh "$APP"
       # an artifact keeps no file modes: the archive travels as a tarball
