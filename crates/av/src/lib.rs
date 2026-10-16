@@ -29,10 +29,10 @@
 //!   devices, one row each a person picks, named by what Android says of
 //!   them (`recognizable`, in `android_rules`, built for every OS's tests
 //!   so they run on Linux), and holds a watcher while a microphone is
-//!   open: a recording Android silenced (`silenced`, told as `SILENCED`)
-//!   ends it, the monitor's sound falling onto the loudspeaker turns the
-//!   monitor off. Another OS is another module and one more line below;
-//!   nothing that calls this crate moves.
+//!   open: a recording Android silenced (`silenced`) ends it, the
+//!   monitor's sound falling onto the loudspeaker turns the monitor off.
+//!   Another OS is another module and one more line below; nothing that
+//!   calls this crate moves.
 //!   Each piece runs its device on a thread of its own that leaves
 //!   pictures, the level and its status in a feed; the latest picture
 //!   wins. A camera that stops delivering is told gone within
@@ -92,6 +92,11 @@ pub use backend::{
 };
 pub use camera::Camera;
 pub use meter::Meter;
+
+/// What a phone's microphone the system took is told (iOS's interrupted
+/// session, Android's silenced recording): neither says which took it.
+#[cfg(any(target_os = "ios", target_os = "android"))]
+const MICROPHONE_TAKEN: &str = "A call, another app or the background took the microphone.";
 
 /// What a piece emits whenever any of it changes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
