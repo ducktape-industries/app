@@ -55,9 +55,14 @@ pub fn sheet(
         .px(px(INSET))
         .pb(px(MD))
         .child(
+            // drawn in capitals, read as written, as a view's text with a
+            // transform is: one Label node, the drawn words in no node
             face(11., 14., 400, true)
+                .id("consent-title")
+                .role(Role::Label)
+                .aria_value(asked.title)
                 .text_color(color(palette.muted))
-                .child(words("consent-title".into(), asked.title.to_uppercase())),
+                .child(asked.title.to_uppercase()),
         )
         .child(
             face(17., 21., 500, false)
