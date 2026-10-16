@@ -10,11 +10,14 @@
 //!   store (`phone/ios/DeviceKeyStore.swift`, `phone/android/.../DeviceKeyStore.kt`)
 //!   under the Expo build's aliases, so a phone that ran the Expo app keeps
 //!   its key and its account.
+//! - [`assets`]: gpui-kit's catalog with its Lucide icons at the Expo
+//!   build's stroke.
 //! - [`shell`]: the window: the stack (Home, Open, Account under a tab bar;
 //!   a program pushed over them) and Home, the network's programs.
 //!
 //! Nothing here names a user program; the host decides what runs.
 
+pub mod assets;
 pub mod key;
 pub mod os;
 pub mod shell;

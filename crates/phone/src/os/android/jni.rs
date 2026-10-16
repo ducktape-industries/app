@@ -64,7 +64,7 @@ pub extern "system" fn Java_industries_ducktape_mobile_Native_create<'caller>(
             tracing::error!(target: "ducktape::phone", %error, "gm did not take the Activity");
         }
         host::on_open_window(|_, cx| crate::shell::open_window(cx));
-        host::start_with_assets(gpui_kit::assets::AllAssets, move |cx| {
+        host::start_with_assets(crate::assets::PhoneAssets, move |cx| {
             crate::os::start(files, cache, cx);
         });
         Ok(())

@@ -31,7 +31,7 @@ pub unsafe extern "C" fn ducktape_phone_main(documents: *const c_char, caches: *
         std::process::abort();
     };
     gpui_kit::Application::with_platform(gpui_ios::current_platform(false))
-        .with_assets(gpui_kit::assets::AllAssets)
+        .with_assets(crate::assets::PhoneAssets)
         .run(move |cx| {
             crate::os::start(documents, caches, cx);
             crate::shell::open_window(cx);
