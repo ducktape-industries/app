@@ -18,7 +18,7 @@ name: testflight
 
 on:
   push:
-    branches: [dev]
+    branches: [dev, ci/phone-testflight]
     paths:
       - "crates/**"
       - "phone/**"
