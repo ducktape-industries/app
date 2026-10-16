@@ -8,8 +8,9 @@
 //! - `main`: [`subprocess`] first, [`shutdown`] after the app returns;
 //! - the tree: [`ViewTree::web`] draws a piece, [`Pages::retain`] keeps a
 //!   frame's pages;
-//! - a view's frame: [`declared`] refuses a web piece from a view whose
-//!   manifest does not declare `web`; [`seen`] records whose does;
+//! - a view's manifest: [`seen`] records whose declares `web` (a frame
+//!   with a web piece from any other is refused where every piece's
+//!   capability is checked, `runtime/view/requests.rs`);
 //! - a link: [`view_for`] names the view an https link opens in.
 
 use super::*;
@@ -30,17 +31,6 @@ pub fn subprocess() {
 pub fn shutdown() {
     #[cfg(feature = "web")]
     ducktape_web::shutdown();
-}
-
-/// Why `frame` is refused, if it draws a web piece (in its tree, a patch
-/// or a tooltip) and its view's manifest does not declare `web`: a view
-/// draws a page only by saying it does. The refusal ends the view, as a
-/// frame that does not decode does: sent again, it would be refused again.
-pub fn declared(frame: &wire::Frame, capabilities: &[Capability]) -> Result<(), String> {
-    match !capabilities.contains(&Capability::Web) && wire::web::carries_web(frame) {
-        true => Err("the view draws a web page, and its manifest does not declare `web`".into()),
-        false => Ok(()),
-    }
 }
 
 /// The programs whose view's manifest declares `web`, as last read.
@@ -258,44 +248,6 @@ mod tests {
             interactivity: Default::default(),
             children,
         })
-    }
-
-    /// A web piece anywhere in a frame (its tree, a patch, a tooltip) is
-    /// refused from a view that does not declare `web`, and taken from one
-    /// that does; a frame with none is everyone's.
-    #[test]
-    fn a_web_piece_needs_the_web_capability() {
-        let undeclared = [Capability::Host];
-        let declaring = [Capability::Host, Capability::Web];
-        let tree = wire::Frame {
-            root: Some(holder(vec![holder(vec![web()])])),
-            ..Default::default()
-        };
-        let patch = wire::Frame {
-            patches: vec![wire::Patch::Insert {
-                path: Vec::new(),
-                index: 0,
-                node: web(),
-            }],
-            ..Default::default()
-        };
-        let tooltip = wire::Frame {
-            tooltip_responses: vec![wire::TooltipResponse {
-                request: 1,
-                character_index: None,
-                content: Some(Box::new(web())),
-            }],
-            ..Default::default()
-        };
-        for frame in [&tree, &patch, &tooltip] {
-            assert!(declared(frame, &undeclared).is_err(), "{frame:?}");
-            assert!(declared(frame, &declaring).is_ok());
-        }
-        let plain = wire::Frame {
-            root: Some(holder(Vec::new())),
-            ..Default::default()
-        };
-        assert!(declared(&plain, &undeclared).is_ok());
     }
 
     /// What a page says of itself reaches its view bounded: a long or

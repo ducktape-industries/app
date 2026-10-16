@@ -691,6 +691,11 @@ impl View {
             visible: _,
             visibility_change: _,
             visibility_subscriptions: _,
+            placement: _,
+            placement_change: _,
+            placement_subscriptions: _,
+            keeps_above: _,
+            floats: _,
             route_subscriptions: _,
             intents: _,
             replies: _,
@@ -979,6 +984,11 @@ impl View {
             visible: false,
             visibility_change: None,
             visibility_subscriptions: Vec::new(),
+            placement: Default::default(),
+            placement_change: None,
+            placement_subscriptions: Vec::new(),
+            keeps_above: false,
+            floats: crate::contract::os().facts().floats,
             route_subscriptions: Vec::new(),
             intents: Vec::new(),
             replies: Arc::default(),
@@ -1016,6 +1026,16 @@ impl View {
         self.visibility_change = Some(visible);
     }
 
+    /// Where the seat placed the pane: told to the `host.placement`
+    /// subscriptions on the next redraw when it moved.
+    pub fn set_placement(&mut self, placement: wire::methods::Placement) {
+        if self.placement == placement {
+            return;
+        }
+        self.placement = placement;
+        self.placement_change = Some(placement);
+    }
+
     /// A route a link left for this seat goes to its first route
     /// subscriber, once; with no subscriber it waits.
     pub fn sync_route(&mut self) {
@@ -1033,6 +1053,15 @@ impl View {
         };
         for id in self.visibility_subscriptions.clone() {
             self.stream_item(id, wire::methods::encode(&visible));
+        }
+    }
+
+    pub fn sync_placement(&mut self) {
+        let Some(placement) = self.placement_change.take() else {
+            return;
+        };
+        for id in self.placement_subscriptions.clone() {
+            self.stream_item(id, wire::methods::encode(&placement));
         }
     }
 }

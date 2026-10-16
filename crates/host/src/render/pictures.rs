@@ -454,7 +454,8 @@ impl ViewTree {
     }
 }
 
-fn primitive_object_fit(fit: wire::ImageObjectFit) -> ObjectFit {
+/// gpui's fit for a picture's: an image's, a camera's (`render/av.rs`).
+pub(super) fn primitive_object_fit(fit: wire::ImageObjectFit) -> ObjectFit {
     match fit {
         wire::ImageObjectFit::Fill => ObjectFit::Fill,
         wire::ImageObjectFit::Contain => ObjectFit::Contain,

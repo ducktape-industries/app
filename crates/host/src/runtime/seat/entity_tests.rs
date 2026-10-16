@@ -1498,6 +1498,7 @@ fn placed_by_seats(
         let place = (
             program,
             Some((window.window_handle(), Some((400., 300.)), true)),
+            crate::runtime::Placed::default(),
         );
         placing.update(cx, |seats, cx| {
             seats.place(std::collections::BTreeMap::from([(pane, place)]), cx)

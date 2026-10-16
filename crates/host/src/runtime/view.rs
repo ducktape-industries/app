@@ -79,7 +79,7 @@ pub(super) enum Snapshot {
 /// sent, and everything the host keeps on its behalf between ticks — the
 /// events owed to it, its pictures, and the
 /// subscriptions it opened. Every subscription here (`props`,
-/// `visibility`, `offset`, `route`, `live`, `tasks`, `clocks`) has one
+/// `visibility`, `placement`, `offset`, `route`, `live`, `tasks`, `clocks`) has one
 /// lifecycle: opened by a request, retired by its cancel in `redraw`, and
 /// gone with the instance. A replacement prepared by `load` is a second
 /// `View` seated over this one (`alive`, `staged`).
@@ -189,6 +189,16 @@ pub(super) struct View {
     pub visible: bool,
     pub visibility_change: Option<bool>,
     pub visibility_subscriptions: Vec<u64>,
+    /// Where its pane is (`host.placement`), as the seat last placed it,
+    /// the change not told yet, and the subscriptions that hear it.
+    pub placement: wire::methods::Placement,
+    pub placement_change: Option<wire::methods::Placement>,
+    pub placement_subscriptions: Vec<u64>,
+    /// Whether this platform keeps a window above others: what a
+    /// `host.float` reply says it could do (the seat places it).
+    pub keeps_above: bool,
+    /// Whether this host floats a pane at all (`OsFacts::floats`).
+    pub floats: bool,
     /// `host.route` subscriptions; the first is handed a pending link route.
     pub route_subscriptions: Vec<u64>,
     /// What the view asked the app to do this redraw.

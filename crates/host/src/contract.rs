@@ -211,6 +211,11 @@ pub struct OsFacts {
     /// The device has one layout: the desk comes without the layout
     /// question (`Account::show`). A phone.
     pub one_layout: bool,
+    /// A view's pane can leave for a window of its own (`host.float`):
+    /// the desktop's. A phone shows one full-screen window, and its views
+    /// are refused `host.float`, `host.unfloat` and `host.placement` as
+    /// unknown requests.
+    pub floats: bool,
 }
 
 /// Values that differ by device and have a measured owner (SPEC §4.5).
@@ -842,6 +847,7 @@ pub mod testing {
                 device_label: "Test",
                 device_noun: "computer",
                 one_layout: false,
+                floats: true,
             }
         }
 

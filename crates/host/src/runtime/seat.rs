@@ -976,7 +976,7 @@ pub(super) fn view_override(program: &str) -> Option<PathBuf> {
 mod entity;
 mod standin;
 
-pub use entity::{Backgrounded, Seat};
+pub use entity::{Backgrounded, Placed, Seat};
 
 /// What a Back the shell took came to at the seat in front
 /// ([`Seat::back`]).

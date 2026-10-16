@@ -59,6 +59,8 @@ pub struct Seat {
     /// is on screen (`host.visible`) only then. A pane in a window behind
     /// another, or in an app the person left, is not being looked at.
     in_front: bool,
+    /// Where the pane sits beyond its window (`set_placed`).
+    placed: Placed,
     tree: Option<Entity<crate::render::ViewTree>>,
     _tree_events: Option<Subscription>,
     _tree_drawn: Option<Subscription>,
@@ -100,6 +102,21 @@ pub struct Seat {
 }
 
 impl EventEmitter<Intent> for Seat {}
+
+/// Where a pane sits beyond its window, as the shell says (the desktop's
+/// `DeskSeats` reads it off its windows): floated by its view
+/// (`host.float`), laid out down to the float's minimum width; its window
+/// kept above other windows; and whether this platform keeps any window
+/// above (a `host.float` reply says so).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Placed {
+    /// Floating, laid out down to this width (the float's minimum, which
+    /// its OS window keeps to) rather than to the view's own
+    /// `MIN_WINDOW_WIDTH`; `None` while not floating.
+    pub float_min: Option<f32>,
+    pub on_top: bool,
+    pub keeps_above: bool,
+}
 
 /// The view's root, sized to the seat: a wire root that names no size
 /// would otherwise take its content's, and a Fill-sized pane inside it
@@ -148,6 +165,7 @@ impl Seat {
             window: None,
             body: None,
             in_front: false,
+            placed: Placed::default(),
             tree: None,
             _tree_events: None,
             _tree_drawn: None,
@@ -231,6 +249,14 @@ impl Seat {
             self.window = Some(window);
             self.body = body;
             self.in_front = in_front;
+            self.wake(cx);
+        }
+    }
+
+    /// The shell says where the pane sits beyond its window ([`Placed`]).
+    pub fn set_placed(&mut self, placed: Placed, cx: &mut Context<Self>) {
+        if self.placed != placed {
+            self.placed = placed;
             self.wake(cx);
         }
     }
@@ -467,11 +493,16 @@ impl Seat {
         *props = self.props.clone();
         let ticks = view.ticks;
         view.set_visible(self.in_front);
+        view.keeps_above = self.placed.keeps_above;
+        view.set_placement(wire::methods::Placement {
+            floating: self.placed.float_min.is_some(),
+            on_top: self.placed.on_top,
+        });
         view.sync_theme(gpui_kit::component::Theme::global(cx).is_dark());
         view.sync_pointer(crate::contract::os().facts().touch_first);
-        // the view is never laid out narrower than its own minimum
-        // (`layers/panes.rs` gives its body `min_w`)
-        view.sync_viewport(width.max(view.min_width as f32), height);
+        // the view is never laid out narrower than its own minimum, or a
+        // float's (`layers/panes.rs` gives its body `min_w`)
+        view.sync_viewport(width.max(self.layout_min(view)), height);
         let again = match view.begin_redraw(props) {
             Redraw::Quiet => false,
             Redraw::Ready => view.finish_redraw(props),
@@ -490,6 +521,11 @@ impl Seat {
         };
         self.finish(locked, ticks, shown, again, cx);
         self.after_turn(cx);
+    }
+
+    /// The narrowest `view` is laid out: its own minimum, or a float's.
+    fn layout_min(&self, view: &View) -> f32 {
+        self.placed.float_min.unwrap_or(view.min_width as f32)
     }
 
     /// After a turn: a swap parked while the view owed work runs once it
@@ -663,7 +699,7 @@ impl Seat {
             .collect();
         let intents = std::mem::take(&mut view.intents);
         let tooltips = std::mem::take(&mut view.tooltip_responses);
-        let min_width = view.min_width as f32;
+        let min_width = self.layout_min(view);
         let body = view.viewport_sent;
         let first_tree = ticks == 0 && view.ticks == 1;
         drop(locked);

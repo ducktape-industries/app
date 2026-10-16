@@ -110,6 +110,7 @@ impl View {
         // Queued results precede becoming visible, so a view can distinguish
         // arrivals while hidden from data received after it returns to screen.
         self.sync_visibility();
+        self.sync_placement();
         self.sync_offset(kernel::offset_minutes());
         self.sync_route();
         if self.staged {
@@ -170,6 +171,8 @@ impl View {
             self.live_subscriptions.retain(|(live, _)| *live != id);
             self.tracks.cancel(id);
             self.visibility_subscriptions
+                .retain(|subscription| *subscription != id);
+            self.placement_subscriptions
                 .retain(|subscription| *subscription != id);
             self.route_subscriptions
                 .retain(|subscription| *subscription != id);
@@ -439,8 +442,17 @@ impl View {
             let _decoded = perf::time(key, "tick.decode");
             shape(&frame, &mut self.styles)
         });
-        let outcome = outcome.and_then(|shaped| {
-            crate::render::web::declared(&shaped.0, &self.capabilities).map(|()| shaped)
+        // a view places a web, camera or microphone piece only by declaring
+        // its capability: the refusal ends the view, as a frame that does
+        // not decode does (sent again, it would be refused again)
+        let outcome = outcome.and_then(|shaped| match shaped.0.undeclared(&self.capabilities) {
+            Some(capability) => {
+                let name = capability.as_str();
+                Err(format!(
+                    "the view places a {name} piece, and its manifest does not declare `{name}`"
+                ))
+            }
+            None => Ok(shaped),
         });
         match outcome {
             Ok((mut frame, mut reports)) => {

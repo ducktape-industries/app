@@ -1,37 +1,48 @@
 //! Every placed view pane's `Seat`, by the pane's layout `instance`: one
 //! per view pane the shell's windows hold, placed where the shell says
-//! (`place`), told when it left every window, and handed the session as
+//! (`place`: its window, and where it sits beyond it), told when it left
+//! every window, and handed the session as
 //! its props (`Session`, `Account` and the appearance, observed here; a
 //! seat turns only when the bytes moved). It routes what a seat asks for:
 //! a badge to `Rail`, a notice to `Notifications`; what concerns the
-//! shell's windows (a title, a view seated, a link) is a `SeatsEvent`.
+//! shell's windows (a title, a view seated, a link, a float) is a
+//! `SeatsEvent`.
 //! Which panes exist, and in which window, is the shell's
 //! (the desktop's `shell::entities::DeskSeats` follows its desks).
 use super::{Account, Notifications, Rail, Session};
-use crate::runtime::{Intent, Seat};
+use crate::runtime::{Intent, Placed, Seat};
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Context, Entity, EventEmitter, Subscription,
 };
 use std::collections::BTreeMap;
 
 /// A pane's seat and the routes out of it.
-struct Placed {
+struct Routed {
     seat: Entity<Seat>,
     /// Its intents, routed here; dropping it unsubscribes.
     _intents: Subscription,
 }
 
-/// Where the shell wants one pane's seat: its program, and the window it
-/// is drawn in with the body it is laid out in and whether that window is
-/// the one in front (`None` while the window is not open yet).
+/// Where the shell wants one pane's seat: its program, the window it is
+/// drawn in with the body it is laid out in and whether that window is the
+/// one in front (`None` while the window is not open yet), and where it
+/// sits beyond its window.
 pub type Place = (
     &'static str,
     Option<(AnyWindowHandle, Option<(f32, f32)>, bool)>,
+    Placed,
 );
 
 /// What a seat asked for that the shell's windows answer.
 #[derive(Clone, Debug)]
 pub enum SeatsEvent {
+    /// The view in the pane with this layout `instance` floats it
+    /// (`host.float`): a window of its own, or only Keep on Top while it
+    /// floats.
+    Float(u64, view_wire::methods::Float),
+    /// The view in the pane with this layout `instance` puts it back
+    /// (`host.unfloat`).
+    Unfloat(u64),
     /// The pane with this layout `instance` named its window.
     Title(u64, String),
     /// `program`'s view came: a window placed before it is widened to it.
@@ -44,7 +55,7 @@ pub enum SeatsEvent {
 }
 
 pub struct Seats {
-    map: BTreeMap<u64, Placed>,
+    map: BTreeMap<u64, Routed>,
     session: Entity<Session>,
     account: Entity<Account>,
     rail: Entity<Rail>,
@@ -103,15 +114,15 @@ impl Seats {
             return;
         }
         self.props = props;
-        for placed in self.map.values() {
+        for routed in self.map.values() {
             let props = self.props.clone();
-            placed.seat.update(cx, |seat, cx| seat.set_props(props, cx));
+            routed.seat.update(cx, |seat, cx| seat.set_props(props, cx));
         }
     }
 
     /// The seat of the pane with this layout `instance`.
     pub fn seat(&self, instance: u64) -> Option<Entity<Seat>> {
-        self.map.get(&instance).map(|placed| placed.seat.clone())
+        self.map.get(&instance).map(|routed| routed.seat.clone())
     }
 
     /// A seat for every pane in `wanted`, placed where it says, and none
@@ -128,9 +139,9 @@ impl Seats {
             .copied()
             .collect();
         let mut moved = !gone.is_empty();
-        for (instance, (program, window)) in wanted {
+        for (instance, (program, window, placed)) in wanted {
             let props = &self.props;
-            let placed = self.map.entry(instance).or_insert_with(|| {
+            let routed = self.map.entry(instance).or_insert_with(|| {
                 moved = true;
                 let seat = cx.new(|cx| Seat::new(program, instance, cx));
                 let _intents = cx.subscribe(&seat, move |this, _, intent: &Intent, cx| {
@@ -138,23 +149,24 @@ impl Seats {
                 });
                 // the session as it stands, before its first turn
                 seat.update(cx, |seat, cx| seat.set_props(props.clone(), cx));
-                Placed { seat, _intents }
+                Routed { seat, _intents }
             });
             if let Some((window, body, in_front)) = window {
-                placed
-                    .seat
-                    .update(cx, |seat, cx| seat.place(window, body, in_front, cx));
+                routed.seat.update(cx, |seat, cx| {
+                    seat.place(window, body, in_front, cx);
+                    seat.set_placed(placed, cx);
+                });
             }
         }
         let mut hidden = Vec::new();
         for instance in gone {
-            let Some(placed) = self.map.remove(&instance) else {
+            let Some(routed) = self.map.remove(&instance) else {
                 continue;
             };
-            let program = placed.seat.read(cx).program();
-            let intents = placed.seat.update(cx, |seat, cx| seat.hide(cx));
+            let program = routed.seat.read(cx).program();
+            let intents = routed.seat.update(cx, |seat, cx| seat.hide(cx));
             // the seat drops with this entry: its images leave the atlas
-            if let Some(tree) = placed.seat.read(cx).tree() {
+            if let Some(tree) = routed.seat.read(cx).tree() {
                 tree.update(cx, |tree, cx| tree.release(cx));
             }
             hidden.extend(
@@ -191,6 +203,8 @@ impl Seats {
             Intent::Seated => cx.emit(SeatsEvent::Seated(program)),
             Intent::OpenLink(link) => cx.emit(SeatsEvent::OpenLink(program, instance, link)),
             Intent::Show(place) => cx.emit(SeatsEvent::Show(program, instance, place)),
+            Intent::Float(float) => cx.emit(SeatsEvent::Float(instance, float)),
+            Intent::Unfloat => cx.emit(SeatsEvent::Unfloat(instance)),
         }
     }
 
@@ -205,9 +219,9 @@ impl Seats {
     #[cfg(any(test, feature = "ax-door"))]
     pub fn settle(&self, cx: &mut Context<Self>) -> bool {
         let mut landed = true;
-        for placed in self.map.values() {
-            placed.seat.update(cx, |seat, cx| seat.turn(cx));
-            landed &= !placed.seat.read(cx).in_flight();
+        for routed in self.map.values() {
+            routed.seat.update(cx, |seat, cx| seat.turn(cx));
+            landed &= !routed.seat.read(cx).in_flight();
         }
         landed
     }
