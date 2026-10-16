@@ -1,7 +1,7 @@
 //! AVFoundation, as macOS and iOS share it: the system's camera and
 //! microphone permission, and a camera through our own capture session.
 //! What differs (which cameras are listed, which way each looks, what a
-//! person is told) is the system's own module (`mac.rs`).
+//! person is told) is each system's own module (`mac.rs`, `ios.rs`).
 //!
 //! The permission is asked through AVFoundation. The prompt needs a usage
 //! string in the app's Info.plist (macOS: an unbundled build carries one
@@ -14,7 +14,9 @@
 //! sends it, as a picture while one is wanted, to the stream loop
 //! ([`crate::backend::stream`]), which waits for it with a time limit.
 //! The device's disconnect and the session's runtime error are sent the
-//! same way, as Gone. Dropping a [`Camera`] stops the session (the light
+//! same way, as Gone, and on iOS its interruption, with why
+//! (`ios::interrupted`); a phone's pictures are turned upright
+//! (`ios::upright`). Dropping a [`Camera`] stops the session (the light
 //! off) and takes it apart.
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -289,14 +291,20 @@ pub(crate) fn open(id: &str) -> Result<Camera, Status> {
             if fits {
                 session.addInput(&input);
                 session.addOutput(&output);
+                // a phone's pictures upright for its portrait screen
+                #[cfg(target_os = "ios")]
+                crate::ios::upright(&output);
             }
             session.commitConfiguration();
-            // gone: the device unplugged, or the session stopped on an error
+            // gone: the device unplugged, the session stopped on an error,
+            // or (iOS) interrupted, `why` saying how
             let center = NSNotificationCenter::defaultCenter();
-            let observe = |name, object: &AnyObject| {
+            let observe = |name, object: &AnyObject, why: fn(&NSNotification) -> String| {
                 let tell = tell.clone();
-                let gone = RcBlock::new(move |_: NonNull<NSNotification>| {
-                    let _ = tell.send(Err(Status::Gone(String::new())));
+                let gone = RcBlock::new(move |notification: NonNull<NSNotification>| {
+                    // SAFETY: the notification the center lends for this call
+                    let why = why(notification.as_ref());
+                    let _ = tell.send(Err(Status::Gone(why)));
                 });
                 center.addObserverForName_object_queue_usingBlock(
                     Some(name),
@@ -305,9 +313,17 @@ pub(crate) fn open(id: &str) -> Result<Camera, Status> {
                     &gone,
                 )
             };
+            let unsaid = |_: &NSNotification| String::new();
             let observers = vec![
-                observe(AVCaptureDeviceWasDisconnectedNotification, &device),
-                observe(AVCaptureSessionRuntimeErrorNotification, &session),
+                observe(AVCaptureDeviceWasDisconnectedNotification, &device, unsaid),
+                observe(AVCaptureSessionRuntimeErrorNotification, &session, unsaid),
+                // a call, another app or the background took the camera
+                #[cfg(target_os = "ios")]
+                observe(
+                    objc2_av_foundation::AVCaptureSessionWasInterruptedNotification,
+                    &session,
+                    crate::ios::interrupted,
+                ),
             ];
             let camera = Camera {
                 session,

@@ -263,7 +263,7 @@ const MAX_ID_BYTES: usize = 256;
 
 /// Whether a piece can name `device` back: its id at most
 /// [`MAX_ID_BYTES`].
-fn nameable(device: &Device) -> bool {
+pub(crate) fn nameable(device: &Device) -> bool {
     device.id.len() <= MAX_ID_BYTES
 }
 
@@ -391,6 +391,7 @@ pub(crate) fn stream(mut camera: impl Source, feed: &CameraFeed) {
 // ---------- microphones and speakers ----------
 
 /// The microphones and the speakers the system lists now.
+#[cfg(not(target_os = "ios"))]
 pub fn audio_devices() -> Result<(Vec<AudioDevice>, Vec<AudioDevice>), String> {
     let host = cpal::default_host();
     let kinds = |input: bool| {
@@ -407,9 +408,15 @@ pub fn audio_devices() -> Result<(Vec<AudioDevice>, Vec<AudioDevice>), String> {
     Ok((kinds(true)?, kinds(false)?))
 }
 
+/// iOS: cpal opens one audio unit, which the app's audio session routes:
+/// the devices listed are the session's routes.
+#[cfg(target_os = "ios")]
+pub(crate) use platform::audio_devices;
+
 /// The microphones (`input`) or the speakers the system lists now, as this
 /// crate names them, each with the device it is: the one list
 /// [`audio_devices`] answers from and a piece opens from ([`find`]).
+#[cfg(not(target_os = "ios"))]
 fn listed(host: &cpal::Host, input: bool) -> Result<Vec<(Device, cpal::Device)>, String> {
     let id = |device: &cpal::Device| device.id().map(|id| id.to_string()).ok();
     let (devices, default): (Vec<cpal::Device>, _) = match input {
@@ -472,7 +479,7 @@ fn recognizable<T>(devices: Vec<(Device, T)>) -> Vec<(Device, T)> {
         .collect()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "ios")))]
 fn recognizable<T>(devices: Vec<(Device, T)>) -> Vec<(Device, T)> {
     devices
 }
@@ -511,6 +518,7 @@ type Queue = Arc<Mutex<VecDeque<f32>>>;
 /// whole. A view's string never reaches the system: on Linux an id is an
 /// ALSA PCM name, and such a name can name a plugin that writes a file or
 /// runs a program.
+#[cfg(not(target_os = "ios"))]
 fn find(host: &cpal::Host, id: Option<&str>, input: bool) -> Option<cpal::Device> {
     match id {
         Some(id) => picked(listed(host, input).ok()?, id),
@@ -519,7 +527,20 @@ fn find(host: &cpal::Host, id: Option<&str>, input: bool) -> Option<cpal::Device
     }
 }
 
+/// iOS: cpal's one audio unit, the session routed first to `id`, one of
+/// its routes ([`platform::route`]: an id it does not list opens
+/// nothing).
+#[cfg(target_os = "ios")]
+fn find(host: &cpal::Host, id: Option<&str>, input: bool) -> Option<cpal::Device> {
+    platform::route(id, input)?;
+    match input {
+        true => host.default_input_device(),
+        false => host.default_output_device(),
+    }
+}
+
 /// What `listed` holds for the device with id `id`, if it lists one.
+#[cfg(not(target_os = "ios"))]
 fn picked<T>(listed: Vec<(Device, T)>, id: &str) -> Option<T> {
     listed
         .into_iter()
@@ -558,10 +579,21 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
     if feed.let_go() {
         return;
     }
+    // iOS: the app's audio session active while the microphone is open,
+    // its interruptions told as Gone
+    #[cfg(target_os = "ios")]
+    let _session = match platform::activate(Some(feed)) {
+        Ok(session) => session,
+        Err(status) => return set(&feed.status, status),
+    };
     let name = input
         .description()
         .map(|d| d.name().to_owned())
         .unwrap_or_default();
+    // iOS: cpal's one unit is the default device; the session names what
+    // it hears
+    #[cfg(target_os = "ios")]
+    let name = platform::heard().unwrap_or(name);
     feed.status.lock().expect("feed status").1 = name;
     let config = match input.default_input_config() {
         Ok(config) => config,
@@ -703,13 +735,17 @@ fn capture(
             heard.drain(..over);
         }
     };
+    // iOS tells a route change (another speaker picked, a headset in or
+    // out) as an invalidated stream, though its audio unit plays on; the
+    // session's own ends come from `platform::activate`
+    let invalidated_ends = !cfg!(target_os = "ios");
     let on_error = move |error: cpal::Error| {
-        if matches!(
-            error.kind(),
-            cpal::ErrorKind::DeviceNotAvailable
-                | cpal::ErrorKind::StreamInvalidated
-                | cpal::ErrorKind::BackendError
-        ) {
+        let ends = match error.kind() {
+            cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::BackendError => true,
+            cpal::ErrorKind::StreamInvalidated => invalidated_ends,
+            _ => false,
+        };
+        if ends {
             set(&errors.status, audio_fault(&error, true));
         }
     };
@@ -747,6 +783,15 @@ fn capture(
 /// out. Bounded: a speaker that takes no samples for 2 s past the chime's
 /// length is an error, not a wait forever.
 pub fn play_chime(output: Option<&str>) -> Result<(), String> {
+    let said = |status| match status {
+        Status::Failed(why) => why,
+        Status::Denied => "the system refused the speaker".into(),
+        Status::Busy => "another app is using the speaker".into(),
+        _ => "the speaker is gone".into(),
+    };
+    // iOS: the app's audio session active while the chime plays
+    #[cfg(target_os = "ios")]
+    let _session = platform::activate(None).map_err(said)?;
     let host = cpal::default_host();
     let rate = find(&host, output, false)
         .ok_or("no such speaker")?
@@ -756,12 +801,7 @@ pub fn play_chime(output: Option<&str>) -> Result<(), String> {
     let samples = chime(rate);
     let length = Duration::from_secs_f32(samples.len() as f32 / rate.max(1) as f32);
     let queue = Queue::new(Mutex::new(VecDeque::from(samples)));
-    let stream = speaker(&host, output, rate, queue.clone()).map_err(|status| match status {
-        Status::Failed(why) => why,
-        Status::Denied => "the system refused the speaker".into(),
-        Status::Busy => "another app is using the speaker".into(),
-        _ => "the speaker is gone".into(),
-    })?;
+    let stream = speaker(&host, output, rate, queue.clone()).map_err(said)?;
     let deadline = std::time::Instant::now() + length + Duration::from_secs(2);
     while !queue.lock().expect("chime").is_empty() {
         if std::time::Instant::now() > deadline {
@@ -932,6 +972,7 @@ mod tests {
     /// into a program, a card it left out, a listed id with more after it)
     /// opens nothing.
     #[test]
+    #[cfg(not(target_os = "ios"))]
     fn a_device_opens_only_by_an_id_this_crate_listed() {
         let row = |id: &str| {
             let device = Device {

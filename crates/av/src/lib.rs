@@ -9,14 +9,19 @@
 //! Shape:
 //! - every device call is in [`backend`] (cpal for microphones and
 //!   speakers, on every OS; the camera's stream loop) over one module per
-//!   OS, picked below as `platform`: `v4l2` on Linux, `mac` on macOS. A
-//!   platform module is the whole OS seam: `cameras()` (each with the
-//!   system's own handle to it), `open(handle)` (a [`backend::Source`]),
-//!   `audio_kind()` (what a listed microphone or speaker is),
-//!   `camera_allowed()` and `microphone_allowed()`, and what a person is
-//!   told of a refused device (`allow`, `settings_page`). Another OS (iOS, its
-//!   AVFoundation as macOS's where the API is the same; Android) is another
-//!   module and one more line below; nothing that calls this crate moves.
+//!   OS, picked below as `platform`: `v4l2` on Linux, `mac` on macOS,
+//!   `ios` on iOS (the last two over `apple`, the AVFoundation they
+//!   share). A platform module is the whole OS seam: `cameras()` (each
+//!   with the system's own handle to it), `open(handle)` (a
+//!   [`backend::Source`]), `audio_kind()` (what a listed microphone or
+//!   speaker is), `camera_allowed()` and `microphone_allowed()`, and what
+//!   a person is told of a refused device (`allow`, `settings_page`). iOS
+//!   lists its audio session's routes (each saying what it is) instead of
+//!   cpal's one device, routes the session to the one picked, and holds
+//!   the session active while a microphone or the chime plays
+//!   (`audio_devices`, `route`, `activate`). Another OS (Android) is
+//!   another module and one more line below; nothing that calls this
+//!   crate moves.
 //!   Each piece runs its device on a thread of its own that leaves
 //!   pictures, the level and its status in a feed; the latest picture
 //!   wins. A camera that stops delivering is told gone within
@@ -30,21 +35,25 @@
 //! Without feature `capture` the crate is empty (`Cargo.toml` says why).
 #![cfg(feature = "capture")]
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios")))]
 compile_error!(
-    "ducktape-av captures cameras on Linux (V4L2) and macOS (AVFoundation) only: build the app without `av` here"
+    "ducktape-av captures cameras on Linux (V4L2), macOS and iOS (AVFoundation) only: build the app without `av` here"
 );
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple;
 mod backend;
 mod camera;
+#[cfg(target_os = "ios")]
+mod ios;
 #[cfg(target_os = "macos")]
 mod mac;
 mod meter;
 #[cfg(target_os = "linux")]
 mod v4l2;
 
+#[cfg(target_os = "ios")]
+use ios as platform;
 #[cfg(target_os = "macos")]
 use mac as platform;
 #[cfg(target_os = "linux")]
@@ -99,9 +108,9 @@ pub fn allow(kind: Kind) -> &'static str {
     platform::allow(kind)
 }
 
-/// The system's own privacy settings page that allows `kind` for this
-/// app, as a link the system opens, where there is one (macOS's, which
-/// [`allow`] names).
+/// The system's own settings page that allows `kind` for this app, as a
+/// link the system opens, where there is one (macOS's privacy pane,
+/// iOS's page of the app; [`allow`] names it).
 pub fn settings_page(kind: Kind) -> Option<&'static str> {
     platform::settings_page(kind)
 }
