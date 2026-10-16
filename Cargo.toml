@@ -21,6 +21,8 @@ authors = ["Ducktape contributors"]
 
 [workspace]
 resolver = "2"
+# `crates/pushd` is no dependency of the app: the host with no screen
+members = ["crates/pushd"]
 
 [workspace.package]
 edition = "2024"

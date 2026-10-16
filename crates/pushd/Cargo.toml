@@ -1,0 +1,32 @@
+# pushd: the app's host without a window. For each account it carries
+# notices for, it runs every program's notifier (the `ducktape.notify`
+# section of its code blob) as the desktop app runs it for the person at
+# the screen, and sends what the notifier posts to that account's devices.
+# It follows one node per network and trusts it, as the app does.
+#
+# What becomes a notice, for whom, its words, tag and link, and when it is
+# taken down are decided by each program in its own notifier; pushd, like
+# the app, carries them and names no program.
+[package]
+name = "pushd"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+# the runtime without its window half: no gpui-kit in this graph
+ducktape-host = { path = "../host", default-features = false }
+# the throwaway key queries are signed with, as the desktop's reader
+noded-client = { path = "../noded-client", features = ["commonware"] }
+commonware-cryptography.workspace = true
+commonware-codec.workspace = true
+rand.workspace = true
+ducklink.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.8"
+tokio = { version = "1", features = ["sync", "time"] }
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
