@@ -158,7 +158,8 @@ jobs:
             -exportOptionsPlist options.plist -exportPath out -allowProvisioningUpdates \
             -authenticationKeyPath "$PWD/key.p8" -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER"
-          ls -l out
+          # an upload goes straight to App Store Connect and leaves no out/
+          if [ "$DESTINATION" = export ]; then ls -l out; fi
       - name: forget the key
         if: always()
         run: rm -rf "$RUNNER_TEMP/testflight"
