@@ -236,27 +236,45 @@ pub fn run(runner: &dyn ViewRunner, session: &Session) -> Result<Ran, String> {
 /// What a death and the host's revive gave.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Revived {
-    /// What the tick begun on the dead instance landed: `Runner: <words>`
-    /// for the runner's fault, `Frame` for a frame.
-    pub dead_tick: String,
+    /// What the tick in flight when the page died landed: `Runner:
+    /// <words>` for the runner's fault, `Frame` for a frame.
+    pub in_flight: String,
+    /// What a tick begun on the dead instance after landed, the same way.
+    pub begun_after: String,
+    /// Whether anything more landed on the dead instance by the end: every
+    /// call is answered once.
+    pub stray: bool,
     /// FNV-1a 64 over the frames after the death, and their fuel: what
     /// [`Session::revived`] pins.
     pub after: (String, u64),
 }
 
+/// How [`revive`] kills the page: begins the tick (its event batch given)
+/// on the instance, and returns once the page died with it in flight.
+pub type Kill<'a> = &'a dyn Fn(&mut dyn ViewInstance, Vec<u8>) -> Result<(), String>;
+
+fn landed_as(landed: Landed) -> String {
+    match landed {
+        Landed::Frame(_) => "Frame".to_owned(),
+        Landed::Fault(Fault::Runner(words)) => format!("Runner: {words}"),
+        other => format!("{other:?}"),
+    }
+}
+
 /// A death and the host's revive (contract `ViewInstance`, SPEC §6.5): to
 /// `snapshot_at`, a snapshot kept; ten more ticks, their batches kept; then
-/// `kill` (which returns once the page is dead; `None`: no death, as on
-/// wasmtime, where the same revive runs on a living view); a tick begun on
-/// the old instance (on a dead page it lands `Fault::Runner` at once); a new
-/// instance seated at once (right after a death it waits for the new page),
-/// by the code only the dead instance still holds, restored from the kept
-/// snapshot, the kept batches replayed, and the rest of the session ticked
-/// on it: their frames hashed and their fuel summed.
+/// a tick in flight as `kill` kills the page under it (`None`: no death, as
+/// on wasmtime, where the same revive runs on a living view: the tick just
+/// lands); a tick begun on the old instance after (on a dead page it lands
+/// `Fault::Runner` at once); a new instance seated at once (right after a
+/// death it waits for the new page), by the code only the dead instance
+/// still holds, restored from the kept snapshot, the kept batches replayed,
+/// and the rest of the session ticked on it: their frames hashed and their
+/// fuel summed.
 pub fn revive(
     runner: &dyn ViewRunner,
     session: &Session,
-    kill: Option<&dyn Fn() -> Result<(), String>>,
+    kill: Option<Kill<'_>>,
 ) -> Result<Revived, String> {
     let hash = hash_of(&session.code);
     let held = runner
@@ -275,15 +293,16 @@ pub fn revive(
     }
     // from here only the instance holds its code, as a drawn view's does
     drop(held);
-    if let Some(kill) = kill {
-        kill()?;
-    }
     let died = &session.ticks[last_kept + 1];
-    let dead_tick = match old.tick(&died.0) {
-        Landed::Frame(_) => "Frame".to_owned(),
-        Landed::Fault(Fault::Runner(words)) => format!("Runner: {words}"),
-        other => format!("{other:?}"),
-    };
+    let in_flight = landed_as(match kill {
+        Some(kill) => {
+            kill(&mut *old.instance, died.0.clone())?;
+            next(&old.landing)
+        }
+        None => old.tick(&died.0),
+    });
+    let begun_after = landed_as(old.tick(&died.0));
+    let dead = old.landing.clone();
     // the host's revive: a new instance at once, its code still held by
     // the dead one
     let mut new = seat(runner, hash, 5)?;
@@ -298,7 +317,9 @@ pub fn revive(
         fuel += new.instance.fuel_used();
     }
     Ok(Revived {
-        dead_tick,
+        in_flight,
+        begun_after,
+        stray: dead.try_recv().is_ok(),
         after: (fnv(frames.iter().map(Vec::as_slice)), fuel),
     })
 }
@@ -329,7 +350,12 @@ mod tests {
             assert_eq!(ran.frames, (all, all), "{}: frames", session.view);
             assert_eq!(ran.restored, session.restored, "{}: restore", session.view);
             let revived = revive(&runner, &session, None).unwrap();
-            assert_eq!(revived.dead_tick, "Frame", "no death on wasmtime");
+            assert_eq!(
+                (revived.in_flight.as_str(), revived.begun_after.as_str()),
+                ("Frame", "Frame"),
+                "no death on wasmtime"
+            );
+            assert!(!revived.stray, "{}: a second landing", session.view);
             assert_eq!(
                 (revived.after.0.as_str(), revived.after.1),
                 session.revived,

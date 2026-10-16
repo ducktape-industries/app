@@ -2215,6 +2215,96 @@ fn a_death_during_a_revive_starts_it_over(cx: &mut TestAppContext) {
     );
 }
 
+/// A death under the revive's seating (a cold page fetching and compiling
+/// the code, a real window on JSC) is no fault of the view's either: the
+/// revive seats it on another page, and the tick that died lands its frame
+/// there.
+#[gpui_kit::test]
+fn a_death_under_a_revives_seating_starts_it_over(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "deferred-revive-seat-death";
+    crate::contract::testing::snapshot_every_for_test(Some(Duration::from_secs(3600)));
+    let (seat, _, mut native, pump) = deferred(cx, PROGRAM, &five_trees());
+    draw_now(&mut native);
+    subscribe_props(&seat, &native);
+    let ticks = ticks_of(&seat, &native);
+    pump.hold();
+    nudge(&seat, b"moved", &mut native);
+    assert!(in_flight(&seat, &native));
+    assert_eq!(pump.die(), 1);
+    pump.hold();
+    native.run_until_parked();
+    assert_eq!(pump.held_kinds(), ["Seated"], "the revive seats a new page");
+    // that page dies before the seating lands
+    assert_eq!(pump.die(), 1);
+    native.run_until_parked();
+    draw_now(&mut native);
+    crate::contract::testing::snapshot_every_for_test(None);
+    assert!(!in_flight(&seat, &native));
+    assert_eq!(
+        ticks_of(&seat, &native),
+        ticks + 1,
+        "the tick that died landed"
+    );
+    assert!(
+        matches!(&mounted_of(&seat, &native).lock().unwrap().slot, Slot::Ready(view) if view.fault.is_none()),
+        "a death under the seating faulted the view"
+    );
+}
+
+/// A start a load parked (`Mounted::to_start`) runs on the seat's turn,
+/// its answers landing late, as JSC's do (SPEC §4.4): the pane shows its
+/// stand-in until the start lands, and a page that dies under the start's
+/// `init` ends it Failed, with Retry.
+#[gpui_kit::test]
+fn a_parked_start_lands_late_and_a_death_under_its_init_fails_it(cx: &mut TestAppContext) {
+    use super::first_frame_tests::frames_wat;
+    const PROGRAM: &str = "deferred-start-late";
+    let runner = DeferredRunner::default();
+    let pump = runner.pump.clone();
+    let runner: Arc<dyn ViewRunner> = Arc::new(runner);
+    let hash = crate::runtime::view::prepared_on_for_test(&runner, frames_wat(&five_trees()));
+    let (seat, _, mut native) = open(cx, PROGRAM, false);
+    let mounted = mounted_of(&seat, &native);
+    pump.hold();
+    {
+        let mut locked = lock(&mounted);
+        let mut code = ViewCode::for_test("Late", "", 320);
+        code.runner = runner.clone();
+        code.hash = hash;
+        let generation = locked.start();
+        locked.slot = Slot::Compiled(code.clone());
+        locked.to_start = Some(Box::new(Parked {
+            code,
+            shown: "Late".into(),
+            generation,
+            asked_of: connection().lock().unwrap().clone(),
+            timing: LoadTiming::default(),
+        }));
+    }
+    native.update(|_, cx| seat.update(cx, |seat, cx| seat.turn(cx)));
+    native.run_until_parked();
+    let loading = |native: &VisualTestContext| {
+        seat.read_with(native, |s, _| s.standin().is_some_and(|s| s.loading))
+    };
+    assert_eq!(pump.held_kinds(), ["Seated"]);
+    assert!(loading(&native), "no stand-in while the seating is out");
+    assert!(pump.release_next());
+    native.run_until_parked();
+    assert_eq!(pump.held_kinds(), ["Inited"]);
+    assert!(loading(&native), "no stand-in while the init is out");
+    assert!(matches!(lock(&mounted).slot, Slot::Compiled(_)));
+    // the page dies under the init
+    assert_eq!(pump.die(), 1);
+    native.run_until_parked();
+    draw_now(&mut native);
+    assert!(matches!(lock(&mounted).slot, Slot::Failed(_)));
+    let standin = seat.read_with(&native, |s, _| s.standin().cloned());
+    assert!(
+        standin.as_ref().is_some_and(|s| s.retry && !s.loading),
+        "{standin:?}"
+    );
+}
+
 /// In the background `hide` begins no call into the view (SPEC §4.3): its
 /// last update (the view told it is hidden) is not run.
 #[gpui_kit::test]

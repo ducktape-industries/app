@@ -235,7 +235,7 @@ impl OsServices for PhoneOs {
 pub fn runner(dirs: &Dirs) -> Arc<dyn ViewRunner> {
     let config = RunnerConfig {
         signals_based_traps: !cfg!(target_os = "android"),
-        cache_dir: Some(code_cache(&dirs.cache)),
+        cache_dir: code_cache(&dirs.cache),
     };
     #[cfg(target_os = "ios")]
     {
@@ -256,13 +256,14 @@ pub fn runner(dirs: &Dirs) -> Arc<dyn ViewRunner> {
 /// Where the runner keeps its code under `cache`. On iOS, one folder per
 /// app build (`DUCKTAPE_APP_BUILD`, the commit and any uncommitted change),
 /// the other builds' removed: the code kept there is the meter pass's
-/// output, and another build's pass may differ. wasmtime keys its own
-/// cache by its version and settings, so it shares one across builds.
-fn code_cache(cache: &Path) -> PathBuf {
+/// output, and another build's pass may differ; a build that knows no
+/// commit (no git) keeps none. wasmtime keys its own cache by its version
+/// and settings, so it shares one across builds.
+fn code_cache(cache: &Path) -> Option<PathBuf> {
     let dir = cache.join("view-code");
     match cfg!(target_os = "ios") {
-        true => per_build(&dir, option_env!("DUCKTAPE_APP_BUILD").unwrap_or("unknown")),
-        false => dir,
+        true => option_env!("DUCKTAPE_APP_BUILD").map(|build| per_build(&dir, build)),
+        false => Some(dir),
     }
 }
 

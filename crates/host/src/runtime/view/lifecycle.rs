@@ -1,5 +1,11 @@
 use super::*;
 
+/// The pages a revive ([`View::revive`]) seats the view on before a death
+/// stands: a page that dies under the revive is no fault of the view's,
+/// but a view whose replay takes every new page down with it stops, where
+/// it would otherwise kill page after page.
+const REVIVE_TRIES: u32 = 3;
+
 /// The host's facts a drawn view holds for its replacement (`View::ambient`).
 pub struct Ambient {
     pub theme_dark: Option<bool>,
@@ -354,8 +360,9 @@ impl View {
     /// intents and trees were taken in the first time). `in_flight`: the
     /// death landed on a tick, the last kept batch, which is begun again on
     /// the new instance rather than replayed; else nothing is left in
-    /// flight. A death on the new page is no fault of the view's either: it
-    /// starts over on another. The channel the new instance answers on, or
+    /// flight. A death on the new page, under its seating or its replay, is
+    /// no fault of the view's either: it starts over on another, up to
+    /// `REVIVE_TRIES` pages. The channel the new instance answers on, or
     /// why there is none: the death then stands.
     pub async fn revive(
         mounted: &Arc<Mutex<Mounted>>,
@@ -380,18 +387,21 @@ impl View {
             }
             false => (&kept.batches[..], None),
         };
+        let mut tries = 0;
         let (running, landing) = loop {
+            tries += 1;
             let (land, landing) = Landing::channel();
             runner.instantiate(hash, seat, land);
-            // a runner that cannot seat the code at all is no page's death
             let running = match next(&landing).await {
                 Landed::Seated(running) => running,
+                // the new page died under the seating
+                Landed::Fault(Fault::Runner(_)) if tries < REVIVE_TRIES => continue,
                 other => return Err(unexpected(other)),
             };
             match replayed_on(running, &landing, &kept, replayed).await {
                 Ok(running) => break (running, landing),
-                // the new page died too
-                Err(Landed::Fault(Fault::Runner(_))) => continue,
+                // the new page died under the replay
+                Err(Landed::Fault(Fault::Runner(_))) if tries < REVIVE_TRIES => continue,
                 Err(other) => return Err(unexpected(other)),
             }
         };

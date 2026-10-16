@@ -20,6 +20,13 @@ fn main() {
             println!("cargo:rerun-if-changed={resolved}");
         }
     }
+    // and when the meter pass's source moves, uncommitted: the phone's iOS
+    // code cache is kept per stamp (`crates/phone/src/os.rs`), and a dev
+    // build with another pass must not read the last one's output. From
+    // the repository's root, as the phone runs this script too.
+    if let Some(top) = git(&["rev-parse", "--show-toplevel"]) {
+        println!("cargo:rerun-if-changed={top}/crates/view-meter/src");
+    }
 
     if let Some(build) = build_id() {
         println!("cargo:rustc-env=DUCKTAPE_APP_BUILD={build}");

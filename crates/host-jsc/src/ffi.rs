@@ -38,7 +38,9 @@ use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{
     NSData, NSDictionary, NSError, NSHTTPURLResponse, NSString, NSURL, NSURLRequest,
 };
-use objc2_ui_kit::{UIApplication, UIResponder, UIView, UIWindowScene};
+use objc2_ui_kit::{
+    NSObjectUIAccessibility as _, UIApplication, UIResponder, UIView, UIWindowScene,
+};
 use objc2_web_kit::{
     WKContentWorld, WKFrameInfo, WKNavigationDelegate, WKURLSchemeHandler, WKURLSchemeTask,
     WKWebViewConfiguration,
@@ -105,7 +107,7 @@ define_class!(
 
         #[unsafe(method(webView:didFailNavigation:withError:))]
         fn did_fail(&self, _web: &AnyObject, _navigation: Option<&AnyObject>, error: &NSError) {
-            crate::runner::page_failed(error.localizedDescription().to_string());
+            failed(error);
         }
 
         #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
@@ -115,7 +117,7 @@ define_class!(
             _navigation: Option<&AnyObject>,
             error: &NSError,
         ) {
-            crate::runner::page_failed(error.localizedDescription().to_string());
+            failed(error);
         }
 
         #[unsafe(method(webViewWebContentProcessDidTerminate:))]
@@ -135,7 +137,18 @@ define_class!(
     }
 );
 
-/// The page's web view and the delegate it reports to.
+/// A load that did not finish, unless a later load cancelled it (WebKit's
+/// `NSURLErrorCancelled`): that one is not the page failing.
+fn failed(error: &NSError) {
+    if error.code() == -999 && error.domain().to_string() == "NSURLErrorDomain" {
+        return;
+    }
+    crate::runner::page_failed(error.localizedDescription().to_string());
+}
+
+/// The page's web view and the delegate it reports to: two references to
+/// the same objects when cloned.
+#[derive(Clone)]
 pub(crate) struct Web {
     view: Retained<WebView>,
     _delegate: Retained<PageDelegate>,
@@ -145,8 +158,9 @@ pub(crate) struct Web {
 const PAGE: &str = "dt://app/index.html";
 
 impl Web {
-    /// The hidden 1x1 web view, its `dt` scheme served by [`PageDelegate`],
-    /// loading the page.
+    /// The hidden 1x1 web view, its `dt` scheme served by [`PageDelegate`]:
+    /// no touch reaches it, and VoiceOver passes it by. Not loaded yet
+    /// ([`Self::load`]).
     pub(crate) fn new(mtm: MainThreadMarker) -> Self {
         let delegate: Retained<PageDelegate> =
             // SAFETY: `NSObject`'s `init` on a class of ours with no ivars
@@ -165,12 +179,12 @@ impl Web {
         let view =
             WebView::init_with_frame_configuration(WebView::alloc(mtm), frame, &configuration);
         view.set_navigation_delegate(Some(ProtocolObject::from_ref(&*delegate)));
-        let web = Self {
+        view.setUserInteractionEnabled(false);
+        view.setAccessibilityElementsHidden(true, mtm);
+        Self {
             view,
             _delegate: delegate,
-        };
-        web.load();
-        web
+        }
     }
 
     /// Loads the page again: at start, and on a new content process after
@@ -251,11 +265,12 @@ impl Web {
 fn serve(task: &ProtocolObject<dyn WKURLSchemeTask>) {
     // SAFETY: the task's request, while WebKit runs the task
     let request = unsafe { task.request() };
-    let Some(url) = request.URL() else {
-        return;
-    };
-    let name = url.path().map(|path| path.to_string()).unwrap_or_default();
-    let Some((bytes, mime)) = crate::runner::served(name.trim_start_matches('/')) else {
+    let found = request.URL().and_then(|url| {
+        let name = url.path().map(|path| path.to_string()).unwrap_or_default();
+        crate::runner::served(name.trim_start_matches('/')).map(|found| (url, found))
+    });
+    // every task is answered: one left open hangs the page's `fetch`
+    let Some((url, (bytes, mime))) = found else {
         let error = NSError::new(404, &NSString::from_str("industries.ducktape.views"));
         // SAFETY: the task has not been answered
         unsafe { task.didFailWithError(&error) };

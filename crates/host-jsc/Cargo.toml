@@ -16,7 +16,7 @@ publish = false
 # the simulator gate (`examples/sim_gate.rs`): the recorded sessions, the
 # session driver, and the content process's pid, which only the gate's
 # killer reads (a private WebKit key: never in a shipped build)
-gate = ["dep:flate2", "dep:sha2", "dep:async-channel", "objc2-ui-kit/UIViewController"]
+gate = ["dep:flate2", "dep:sha2", "dep:async-channel", "dep:libc", "objc2-ui-kit/UIViewController"]
 
 [dependencies]
 # no wasmtime: views run in the page
@@ -29,6 +29,8 @@ tracing.workspace = true
 flate2 = { version = "1", optional = true }
 sha2 = { workspace = true, optional = true }
 async-channel = { version = "2", optional = true }
+# the gate's wait for the content process it had killed (`kill(pid, 0)`)
+libc = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.6"
@@ -40,8 +42,8 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSObject", "NSSet", "NSString", "NSURL", "NSURLRequest", "NSURLResponse", "NSValue",
 ] }
 objc2-ui-kit = { version = "0.3", default-features = false, features = [
-    "std", "objc2-core-foundation", "UIApplication", "UIResponder", "UIScene", "UIView", "UIWindow",
-    "UIWindowScene",
+    "std", "objc2-core-foundation", "UIAccessibility", "UIApplication", "UIResponder", "UIScene",
+    "UIView", "UIWindow", "UIWindowScene",
 ] }
 objc2-web-kit = { version = "0.3", default-features = false, features = [
     "std", "block2", "WKContentWorld", "WKFrameInfo", "WKNavigation", "WKNavigationDelegate",

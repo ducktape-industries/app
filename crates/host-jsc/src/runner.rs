@@ -35,6 +35,10 @@ type Work = Box<dyn FnOnce(Result<u64, String>)>;
 struct Page {
     web: Web,
     calls: Calls<Done, Work>,
+    /// The life a failed page was loaded again for ([`page_failed`]): a
+    /// failure of that load stands, so a page that keeps failing is loaded
+    /// again once per failure, not in a loop.
+    reloaded: Option<u64>,
 }
 
 thread_local! {
@@ -85,6 +89,34 @@ fn on_main(work: impl FnOnce(MainThreadMarker) + Send + 'static) {
 /// run; `None` before the runner made the page.
 fn with_page<T>(work: impl FnOnce(&mut Page) -> T) -> Option<T> {
     PAGE.with(|page| page.borrow_mut().as_mut().map(work))
+}
+
+/// Loads the page (again), outside its borrow: WebKit may call a delegate
+/// back as a load begins (the load it cancels failing), and that delegate
+/// borrows the page.
+fn load_page() {
+    if let Some(web) = with_page(|page| page.web.clone()) {
+        web.load();
+    }
+}
+
+/// The glue's words for code it could not fetch or compile (`glue.js`,
+/// `seatView`).
+const NOT_LOADED: &str = "the view's code did not load";
+
+/// Code the page could not load, let go: no longer found by `hash`, and its
+/// cached file removed, so the next `prepare` meters it again (a corrupt
+/// file would otherwise fail the view on every launch).
+fn forget_code(hash: &[u8; 32], name: &str) {
+    let Some(shared) = SHARED.get() else {
+        return;
+    };
+    lock(&shared.code).remove(hash);
+    if let Some(cache) = &shared.cache {
+        // one that cannot be removed is metered again only once it is
+        // purged; nothing else depends on it
+        let _gone = std::fs::remove_file(cache.join(name));
+    }
 }
 
 /// Metered code the page loads by `name`, kept by whatever may still seat
@@ -207,16 +239,44 @@ fn booted(life: u64, answered: Answered) {
     }
 }
 
-/// The page did not load, or did not boot: every seating held is refused
-/// with `why`, and every later one.
+/// The page did not load, or did not boot. A page that booted before (a
+/// load after a death, its boot) is loaded once more on a new life, every
+/// call on it answered as dead; otherwise, or when that load fails too,
+/// every seating held is refused with `why`, and every later one, until
+/// the next death loads the page again.
 pub(crate) fn page_failed(why: String) {
     tracing::error!(target: "ducktape::jsc", %why, "the views' page did not load");
-    if let Some(shared) = SHARED.get() {
+    let booted_before = SHARED.get().is_some_and(|shared| {
         let mut wasm = lock(&shared.wasm);
-        if wasm.is_none() {
-            *wasm = Some(Err(why.clone()));
-            shared.probed.notify_all();
+        match &*wasm {
+            Some(Ok(())) => true,
+            Some(Err(_)) => false,
+            None => {
+                *wasm = Some(Err(why.clone()));
+                shared.probed.notify_all();
+                false
+            }
         }
+    });
+    let again = booted_before
+        .then(|| {
+            with_page(|page| {
+                if page.reloaded == Some(page.calls.life()) {
+                    return None;
+                }
+                let flying = page.calls.died();
+                page.reloaded = Some(page.calls.life());
+                Some(flying)
+            })
+            .flatten()
+        })
+        .flatten();
+    if let Some(flying) = again {
+        load_page();
+        for done in flying {
+            done(Err(DEAD.into()));
+        }
+        return;
     }
     if let Some(held) = with_page(|page| page.calls.failed(why.clone())) {
         for work in held {
@@ -227,20 +287,24 @@ pub(crate) fn page_failed(why: String) {
 
 /// The content process died (`webViewWebContentProcessDidTerminate:`):
 /// every call in flight lands the runner's fault, every instance of the
-/// dead page is dead, and the page loads again in a new process.
+/// dead page is dead, and the page loads again in a new process. A first
+/// boot the death cut short says nothing about the page: the next boot's
+/// answer is its fact.
 pub(crate) fn page_died(_: MainThreadMarker) {
     tracing::warn!(target: "ducktape::jsc", reason = "page_died", "the views' content process died");
-    let flying = with_page(|page| {
-        let flying = page.calls.died();
-        page.web.load();
-        flying
-    });
-    for done in flying.into_iter().flatten() {
-        done(Err(DEAD.into()));
-    }
+    let flying = with_page(|page| page.calls.died());
     if let Some(shared) = SHARED.get() {
+        let mut wasm = lock(&shared.wasm);
+        if matches!(&*wasm, Some(Err(why)) if why != "WebAssembly") {
+            *wasm = None;
+        }
+        drop(wasm);
         *lock(&shared.deaths) += 1;
         shared.died.notify_all();
+    }
+    load_page();
+    for done in flying.into_iter().flatten() {
+        done(Err(DEAD.into()));
     }
 }
 
@@ -302,8 +366,10 @@ impl JscRunner {
             *page.borrow_mut() = Some(Page {
                 web: Web::new(mtm),
                 calls: Calls::new(),
+                reloaded: None,
             });
         });
+        load_page();
         Ok(Self { shared })
     }
 
@@ -356,6 +422,19 @@ impl JscRunner {
     #[cfg(feature = "gate")]
     pub fn deaths(&self) -> u64 {
         *lock(&self.shared.deaths)
+    }
+
+    /// Keeps the page busy until its process is killed, for the simulator
+    /// gate: a call begun after this is still in flight in the page when it
+    /// dies (where one the page already answered would land as answered).
+    /// On the main thread, as every call is begun.
+    #[cfg(feature = "gate")]
+    pub fn stall(&self) {
+        on_main(|_| {
+            if let Some(life) = with_page(|page| page.calls.life()) {
+                call(life, "stall", 0, "-", "", Box::new(|_| {}));
+            }
+        });
     }
 }
 
@@ -428,7 +507,13 @@ impl ViewRunner for JscRunner {
                                 }),
                                 _code: code,
                             })),
-                            Err(fault) => Landed::Fault(fault),
+                            Err(fault) => {
+                                if matches!(&fault, Fault::Runner(words) if words.starts_with(NOT_LOADED))
+                                {
+                                    forget_code(&hash, &code.name);
+                                }
+                                Landed::Fault(fault)
+                            }
                         };
                         land.send(landed);
                     }),
@@ -468,26 +553,36 @@ impl ViewRunner for JscRunner {
                     .clone()
             }
         }?;
-        let (send, answered) = std::sync::mpsc::channel();
         let arg = base64::engine::general_purpose::STANDARD.encode(op);
-        on_main(move |_| {
-            seating(Box::new(move |ready| match ready {
-                Ok(life) => call(
-                    life,
-                    "describe",
-                    0,
-                    &code.name,
-                    &arg,
-                    Box::new(move |answered| {
-                        let _sent = send.send(answered);
-                    }),
-                ),
-                Err(why) => {
-                    let _sent = send.send(Err(why));
-                }
-            }));
-        });
-        let text = answered.recv().ok()?.ok()?;
+        let ask = || {
+            let (send, answered) = std::sync::mpsc::channel();
+            let (code, arg) = (code.clone(), arg.clone());
+            on_main(move |_| {
+                seating(Box::new(move |ready| match ready {
+                    Ok(life) => call(
+                        life,
+                        "describe",
+                        0,
+                        &code.name,
+                        &arg,
+                        Box::new(move |answered| {
+                            let _sent = send.send(answered);
+                        }),
+                    ),
+                    Err(why) => {
+                        let _sent = send.send(Err(why));
+                    }
+                }));
+            });
+            answered.recv().ok()
+        };
+        let mut answered = ask()?;
+        // the page died under the call: asked once more, of the new page
+        // (the kernel keeps a `None` for the op for good)
+        if matches!(&answered, Err(why) if why == DEAD) {
+            answered = ask()?;
+        }
+        let text = answered.ok()?;
         let bytes = answer::read(&text).outcome.ok()?;
         view_wire::methods::Description::decode(&bytes)
     }

@@ -172,6 +172,11 @@ const dt = (() => {
                 case "drop":
                     seats.delete(id);
                     return "R 0 0 ";
+                // the simulator gate's (`JscRunner::stall`): the page busy
+                // until its process is killed, so a call begun after it is
+                // still in flight when the page dies. Nothing else sends it.
+                case "stall":
+                    for (;;) {}
             }
             const seat = seats.get(id);
             if (!seat) return `E no view is seated as ${id}`;
