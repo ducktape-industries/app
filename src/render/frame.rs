@@ -144,6 +144,11 @@ impl ViewTree {
                 } if named_overlay(label, children) => {
                     dialogs.insert(path.clone());
                 }
+                wire::Node::Sheet {
+                    label: Some(label), ..
+                } if !label.is_empty() => {
+                    dialogs.insert(path.clone());
+                }
                 wire::Node::Sensor { .. } => {
                     sensors.insert(path.clone());
                 }

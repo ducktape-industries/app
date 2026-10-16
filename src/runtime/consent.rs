@@ -650,20 +650,30 @@ mod tests {
         }
     }
 
-    /// Claim: a vote on a halo op reads on the card in the halo program's
-    /// own words, through the validators' program's description.
+    /// Claim: a vote on a role's op reads on the card in that program's own
+    /// words (halo's here), through the validators' program's description;
+    /// a vote on the roles table names the role and the program it binds.
     #[test]
-    fn a_halo_vote_reads_in_the_halo_programs_words() {
+    fn a_role_vote_reads_in_its_programs_words_and_a_bind_names_both() {
         let open = abi::role::halo::Op::Open {
             name: "ducktape/live".into(),
             cap: abi::role::halo::Class::Client,
         };
-        let vote = valset::Op::Vote(valset::Motion::Halo {
+        let vote = valset::Op::Vote(valset::Motion::Role {
+            role: abi::role::HALO.into(),
             op: abi::encode(&open),
         });
         assert_eq!(
             shown(Some(&valset::describe(&vote)), 0),
             "Vote · Open lane · ducktape/live\ncap Client"
+        );
+        let bind = valset::Op::Vote(valset::Motion::Bind {
+            role: abi::role::EGRESS.into(),
+            program: Some("gateway".into()),
+        });
+        assert_eq!(
+            shown(Some(&valset::describe(&bind)), 0),
+            "Vote · bind egress to gateway\nrole egress · program gateway"
         );
     }
 

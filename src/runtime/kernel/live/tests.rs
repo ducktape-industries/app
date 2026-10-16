@@ -72,7 +72,7 @@ fn opened(opens: &std_mpsc::Receiver<(Ask, Ends)>) -> (Ask, Ends) {
 fn next(view: &View, changes: &mut tokio::sync::watch::Receiver<()>) -> wire::Event {
     loop {
         let mut events = Vec::new();
-        view.replies.drain_into(&mut events).unwrap();
+        view.replies.drain_into(&mut events);
         if let Some(event) = events.into_iter().next() {
             return event;
         }
@@ -213,7 +213,7 @@ fn a_full_stream_queue_cuts_the_group_whole_and_a_newer_one_starts_clean() {
         (1, Ok(Publishing::Cut { group: 1 }), false)
     );
     let mut rest = Vec::new();
-    view.replies.drain_into(&mut rest).unwrap();
+    view.replies.drain_into(&mut rest);
     assert_eq!(rest, [], "the cut is told once");
     let next_send = LiveSend {
         track: track("presence/7"),
@@ -555,7 +555,7 @@ fn a_reconnect_inside_the_network_takes_a_rooms_tracks_down_first() {
     let (again, _ends) = opened(&reopens);
     assert!(matches!(again, Ask::Watch { .. }));
     let mut events = Vec::new();
-    view.replies.drain_into(&mut events).unwrap();
+    view.replies.drain_into(&mut events);
     let downs: Vec<String> = events
         .into_iter()
         .filter_map(|event| match item::<Watching>(event) {

@@ -499,10 +499,6 @@ mod tests {
             bytes.extend(text(role));
             bytes.extend(text(program));
         }
-        // egress, an `Option`: bound here
-        bytes.push(1);
-        bytes.extend(text("e"));
-        bytes.extend(text("h"));
         let status = Status {
             network: "n".into(),
             time: 1,
