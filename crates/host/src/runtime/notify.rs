@@ -170,7 +170,12 @@ fn withdraw_at(
     until: u64,
 ) -> tokio::task::JoinHandle<()> {
     super::kernel::handle().spawn(async move {
-        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(until);
+        // an `until` past any time the clock can name: no timer (adding it
+        // would panic, and a phone's panic aborts the app)
+        let Some(at) = std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(until))
+        else {
+            return;
+        };
         if let Ok(left) = at.duration_since(std::time::SystemTime::now()) {
             tokio::time::sleep(left).await;
         }

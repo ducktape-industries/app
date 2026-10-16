@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use std::path::Path;
 
-use super::center::{Center, CenterHandle, NoticeKind, Posted, read_log};
+use super::center::{Center, CenterHandle, Notice, NoticeKind, Posted, read_log};
 use super::settings::{BURST_PREF, FRONT_PREF, NOTIFY_PREF, Permission, Settings, VIEWS_PREF};
 use super::{checked, in_order};
 use crate::runtime::WindowKey;
@@ -578,7 +578,7 @@ fn a_call_rings_past_the_burst_and_once_before_the_persons_word() {
             .title
             .ends_with("more from Chat")
     );
-    let (posted, banner) = center.post(&allowed, "chat", "Chat", call("call/1", 0), now, 4);
+    let (posted, banner) = center.post(&allowed, "chat", "Chat", call("call/1", 100), now, 4);
     let banner = banner.unwrap();
     assert_eq!(posted, Delivery::Banner);
     assert_eq!(
@@ -588,33 +588,33 @@ fn a_call_rings_past_the_burst_and_once_before_the_persons_word() {
 
     let unasked = settings(None);
     let mut center = Center::default();
-    let (posted, banner) = center.post(&unasked, "chat", "Chat", call("call/1", 0), now, 0);
+    let (posted, banner) = center.post(&unasked, "chat", "Chat", call("call/1", 100), now, 0);
     assert_eq!(
         (posted, banner.map(|notice| notice.kind)),
         (Delivery::Banner, Some(NoticeKind::Call))
     );
     assert!(center.asking.contains("chat"), "the bar asks too");
-    let (posted, banner) = center.post(&unasked, "chat", "Chat", call("call/2", 0), now, 1);
+    let (posted, banner) = center.post(&unasked, "chat", "Chat", call("call/2", 100), now, 1);
     assert_eq!(
         (posted, banner),
         (Delivery::Logged, None),
         "a second call rang unasked"
     );
-    let (posted, banner) = center.post(&unasked, "forge", "Forge", call("call/3", 0), now, 2);
+    let (posted, banner) = center.post(&unasked, "forge", "Forge", call("call/3", 100), now, 2);
     assert_eq!(posted, Delivery::Banner, "another view rings its own once");
     assert!(banner.is_some());
     // the person's word still decides: Silent logs, Block drops
     let silent = settings(Some(Permission::Silent));
     assert_eq!(
         center
-            .post(&silent, "chat", "Chat", call("call/4", 0), now, 3)
+            .post(&silent, "chat", "Chat", call("call/4", 100), now, 3)
             .0,
         Delivery::Logged
     );
     let blocked = settings(Some(Permission::Block));
     assert_eq!(
         center
-            .post(&blocked, "chat", "Chat", call("call/5", 0), now, 4)
+            .post(&blocked, "chat", "Chat", call("call/5", 100), now, 4)
             .0,
         Delivery::Blocked
     );
@@ -647,8 +647,9 @@ fn a_banner_is_over_at_its_until_unless_its_tag_moved_on() {
     assert!(center.ring_over("chat/call/1", 100));
     assert!(!center.ring_over("chat/call/1", 100), "over twice");
 
+    // rung again past its until, before the first ring's timer ran
     center.post(&allowed, "chat", "Chat", call("call/1", 100), now, 0);
-    center.post(&allowed, "chat", "Chat", call("call/1", 160), now, 0);
+    center.post(&allowed, "chat", "Chat", call("call/1", 160), now, 100);
     assert!(
         !center.ring_over("chat/call/1", 100),
         "the first ring's timer took the second down"
@@ -668,6 +669,71 @@ fn a_banner_is_over_at_its_until_unless_its_tag_moved_on() {
         !center.ring_over("chat/call/3", 100),
         "a plain notice took the tag"
     );
+}
+
+/// One call stands per program: another of its calls while it rings,
+/// under any tag, is logged only; once it is seen or past its `until` the
+/// next rings. A call with no `until` or no tag is a plain notice.
+#[test]
+fn a_program_rings_one_call_at_a_time() {
+    let now = Instant::now();
+    let mut center = Center::default();
+    let allowed = settings(Some(Permission::Allow));
+    let mut ring = |program: &str, tag: &str, until: u64, wall: i64| {
+        center.post(&allowed, program, program, call(tag, until), now, wall)
+    };
+    assert_eq!(ring("chat", "call/1", 100, 0).0, Delivery::Banner);
+    assert_eq!(
+        ring("chat", "call/2", 100, 1),
+        (Delivery::Logged, None),
+        "a second call rang over the first"
+    );
+    assert_eq!(
+        ring("chat", "call/1", 160, 2),
+        (Delivery::Logged, None),
+        "the standing call rang again"
+    );
+    assert_eq!(
+        ring("forge", "call/1", 100, 3).0,
+        Delivery::Banner,
+        "another program's call"
+    );
+    center.read_tag("chat", "call/1");
+    let mut ring = |program: &str, tag: &str, until: u64, wall: i64| {
+        center.post(&allowed, program, program, call(tag, until), now, wall)
+    };
+    assert_eq!(
+        ring("chat", "call/2", 100, 4).0,
+        Delivery::Banner,
+        "seen, the next rings"
+    );
+    assert_eq!(
+        ring("chat", "call/3", 200, 100).0,
+        Delivery::Banner,
+        "past its until, the next rings"
+    );
+    // raised past the standing call/3, as notices go: through the burst
+    let plain = |(_, banner): (Delivery, Option<Notice>)| banner.map(|notice| notice.kind);
+    assert_eq!(
+        plain(ring("chat", "call/4", 0, 101)),
+        Some(NoticeKind::Notice)
+    );
+    assert_eq!(plain(ring("chat", "", 300, 101)), Some(NoticeKind::Notice));
+}
+
+/// An `until` past any time the clock can name sets no timer: adding it
+/// panicked, and a phone's panic aborts the app.
+#[test]
+fn an_until_past_the_clock_sets_no_timer() {
+    let timer = super::withdraw_at(
+        CenterHandle::default(),
+        "chat",
+        "chat/call/1".into(),
+        u64::MAX,
+    );
+    crate::runtime::kernel::handle()
+        .block_on(timer)
+        .expect("the timer panicked");
 }
 
 /// The host's timer takes a call's banner down at its `until`, and only
