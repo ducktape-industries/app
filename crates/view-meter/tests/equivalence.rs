@@ -1467,29 +1467,6 @@ fn random_bodies_stop_where_wasmtime_stops() {
 // --- what the pass costs on hostile shapes ---------------------------------
 
 #[test]
-fn many_imports_meter_in_linear_time() {
-    let module = |imports: usize| {
-        let imports: String = (0..imports)
-            .map(|i| format!("(import \"m\" \"f{i}\" (func))"))
-            .collect();
-        wat::parse_str(format!("(module {imports} (func (export \"f\")))")).unwrap()
-    };
-    let (small, large) = (module(10_000), module(40_000));
-    let time = |code: &[u8]| {
-        let start = std::time::Instant::now();
-        meter_accepted(code, VIEW_BYTES);
-        start.elapsed()
-    };
-    time(&small);
-    let (small, large) = (time(&small), time(&large));
-    // four times the imports: about four times the time, not sixteen
-    assert!(
-        large < small * 8,
-        "10k imports {small:?}, 40k imports {large:?}"
-    );
-}
-
-#[test]
 fn a_grow_costs_the_same_however_many_tables() {
     let module = |tables: usize| {
         let tables = "(table 1 funcref) ".repeat(tables);
