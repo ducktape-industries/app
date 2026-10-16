@@ -910,8 +910,9 @@ fn a_constant_length_is_folded_wherever_wasmtime_sees_one() {
             both.every_budget(name, &[arg]);
         }
     }
-    // a length of 2^64 - 1 costs i64::MAX: the count wraps past an overrun
-    // exactly as wasmtime's does
+    // an immutable i32 global of -1 is sign-extended, as wasmtime's constant
+    // is: a length of 2^64 - 1 that costs i64::MAX, so its run has no end to
+    // sweep to; the low budgets cover it
     for fuel in 1..=64 {
         both.call("negative_global", &[], fuel);
     }
