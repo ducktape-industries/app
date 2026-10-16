@@ -110,6 +110,7 @@ impl View {
         // Queued results precede becoming visible, so a view can distinguish
         // arrivals while hidden from data received after it returns to screen.
         self.sync_visibility();
+        self.sync_placement();
         self.sync_offset(kernel::offset_minutes());
         self.sync_route();
         if self.staged {
@@ -171,6 +172,8 @@ impl View {
             self.tracks.cancel(id);
             self.visibility_subscriptions
                 .retain(|subscription| *subscription != id);
+            self.placement_subscriptions
+                .retain(|subscription| *subscription != id);
             self.route_subscriptions
                 .retain(|subscription| *subscription != id);
             // dropping the stream aborts it: the node socket goes with the
@@ -181,12 +184,19 @@ impl View {
         self.fault.is_none() && (self.frame.busy || !self.pending.is_empty())
     }
 
+    /// Whether this view's activation is fresh: a press or key within
+    /// [`super::ACTIVATION_EXPIRY`], not taken yet.
+    pub fn pressed(&self) -> bool {
+        self.activation
+            .is_some_and(|at| at.elapsed() <= super::ACTIVATION_EXPIRY)
+    }
+
     /// Whether this view's activation is fresh, taking it: the gated call
     /// that asks first is the one the person's input admits.
     pub fn take_activation(&mut self) -> bool {
-        self.activation
-            .take()
-            .is_some_and(|at| at.elapsed() <= super::ACTIVATION_EXPIRY)
+        let pressed = self.pressed();
+        self.activation = None;
+        pressed
     }
 
     /// Routes one request: the manifest's capability gate,
@@ -439,8 +449,17 @@ impl View {
             let _decoded = perf::time(key, "tick.decode");
             shape(&frame, &mut self.styles)
         });
-        let outcome = outcome.and_then(|shaped| {
-            crate::render::web::declared(&shaped.0, &self.capabilities).map(|()| shaped)
+        // a view places a web, camera or microphone piece only by declaring
+        // its capability: the refusal ends the view, as a frame that does
+        // not decode does (sent again, it would be refused again)
+        let outcome = outcome.and_then(|shaped| match shaped.0.undeclared(&self.capabilities) {
+            Some(capability) => {
+                let name = capability.as_str();
+                Err(format!(
+                    "the view places a {name} piece, and its manifest does not declare `{name}`"
+                ))
+            }
+            None => Ok(shaped),
         });
         match outcome {
             Ok((mut frame, mut reports)) => {
