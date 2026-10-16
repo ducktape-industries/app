@@ -470,6 +470,19 @@ pub fn name_for_test(program: &str, name: &str) {
     }
 }
 
+/// Every seated view of `program` declares `capabilities`, as its
+/// manifest would.
+#[cfg(any(test, feature = "test-support"))]
+pub fn declare_for_test(program: &str, capabilities: &[Capability]) {
+    for ((name, _), seat) in registry().lock().unwrap().iter() {
+        if *name == program
+            && let Slot::Ready(view) = &mut lock(seat).slot
+        {
+            view.capabilities = capabilities.to_vec();
+        }
+    }
+}
+
 /// `program`'s seat `instance` traps: its view keeps its tree but shows a
 /// fault from now on, and the seat is woken as a trapping tick would.
 #[cfg(any(test, feature = "test-support"))]

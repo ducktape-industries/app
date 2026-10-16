@@ -855,6 +855,14 @@ impl Seat {
     fn show_standin(&mut self, standin: Standin, cx: &mut Context<Self>) {
         // the standin goes over the tree, whose draw would release the hold
         self.holding = false;
+        // a view that stopped (a fault, a failed load, none to show) keeps
+        // no camera or microphone open under its standin; a load's leaves
+        // the tree as it is
+        if !standin.loading
+            && let Some(tree) = &self.tree
+        {
+            tree.update(cx, |tree, _| tree.release_media());
+        }
         if self.standin.as_ref() != Some(&standin) {
             self.standin = Some(standin);
             cx.notify();
@@ -930,6 +938,10 @@ impl Seat {
                 }
             }),
         );
+        // the tree replaced closes its devices before the new one's open
+        if let Some(old) = &self.tree {
+            old.update(cx, |old, _| old.release_media());
+        }
         self.tree = Some(tree);
         if owed {
             // an answer that landed before the subscription still needs delivery
