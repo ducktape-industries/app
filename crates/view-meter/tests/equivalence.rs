@@ -1,0 +1,708 @@
+//! The runner equivalence gate, Linux half (wasm-mobile SPEC §13.3 (a)): a
+//! metered module run in wasmtime WITHOUT fuel answers exactly as the
+//! original module does in wasmtime WITH fuel and the app's `ViewLimits`.
+//!
+//! - `chat_session`, `forge_session`: the recorded desk sessions of the S0
+//!   probes (`tests/sessions`, gzipped; programs `afb9e33e` builds of the chat
+//!   and forge views, lane 02's recordings, sha256s asserted below). Every
+//!   tick's frame equals the recording under both, every tick's fuel equals
+//!   wasmtime's, the totals are the S0-native ones, and the frames after a
+//!   snapshot + restore at mid-session hash to the S0-webkit reference.
+//! - the rest: hand-written modules for each edge the pass must answer the
+//!   way wasmtime does (grows past the budget, size-charged operators, where
+//!   fuel runs out, refused features, hostile input).
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test fails loudly on the first surprise"
+)]
+
+use std::io::Read;
+
+use sha2::{Digest, Sha256};
+use view_meter::{FEATURES, GAS, GROW_REFUSED, Refusal, Stop, meter, stop};
+use wasmtime::{
+    Config, Engine, Global, Instance, Linker, Module, OptLevel, ResourceLimiter, Store, Trap, Val,
+    WasmFeatures,
+};
+
+/// The app's budget per call (`crates/host/src/runtime.rs`).
+const FUEL_PER_TICK: u64 = 250_000_000;
+/// The `memory.view_bytes` default (`crates/host/src/backend/prefs.rs`).
+const VIEW_BYTES: u64 = 64 << 20;
+
+/// A wasmtime engine the way a view runner configures one: Cranelift at
+/// speed, every feature outside [`FEATURES`] refused (the recipe the wasmtime
+/// runner applies), fuel on for the original module, off for the metered.
+fn engine(fuel: bool) -> Engine {
+    let mut config = Config::new();
+    config.cranelift_opt_level(OptLevel::Speed);
+    config.consume_fuel(fuel);
+    config.wasm_features(WasmFeatures::all().difference(FEATURES), false);
+    Engine::new(&config).unwrap()
+}
+
+/// The desktop's `ViewLimits` (`crates/host/src/runtime/view/abi.rs`): linear
+/// memory plus a pointer per table element, against one budget; past it the
+/// grow is an error, so the call traps.
+struct ViewLimits {
+    budget: usize,
+    memory: usize,
+    tables: usize,
+}
+
+#[derive(Debug)]
+struct PastBudget;
+
+impl std::fmt::Display for PastBudget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the view is past the device's view memory setting")
+    }
+}
+
+impl std::error::Error for PastBudget {}
+
+impl ViewLimits {
+    fn fits(&self, memory: usize, tables: usize) -> wasmtime::Result<()> {
+        match memory.saturating_add(tables) <= self.budget {
+            true => Ok(()),
+            false => Err(wasmtime::Error::new(PastBudget)),
+        }
+    }
+}
+
+impl ResourceLimiter for ViewLimits {
+    fn memory_growing(
+        &mut self,
+        _current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        self.fits(desired, self.tables)?;
+        self.memory = desired;
+        Ok(true)
+    }
+
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        let added = desired.saturating_sub(current);
+        let tables = self
+            .tables
+            .saturating_add(added.saturating_mul(std::mem::size_of::<usize>()));
+        self.fits(self.memory, tables)?;
+        self.tables = tables;
+        Ok(true)
+    }
+}
+
+/// One instance, original (fuel + `ViewLimits`) or metered (no fuel, no
+/// limiter: the module bounds itself).
+struct Run {
+    store: Store<ViewLimits>,
+    instance: Instance,
+    gas: Option<Global>,
+}
+
+/// How a call ended.
+#[derive(Debug, PartialEq)]
+enum End {
+    Returned(Vec<i64>),
+    Stopped(Stop),
+}
+
+impl Run {
+    fn original(code: &[u8], budget: u64) -> Self {
+        Self::seat(&engine(true), code, budget, false)
+    }
+
+    fn metered(code: &[u8], budget: u64) -> Self {
+        Self::seat(&engine(false), &meter(code, budget).unwrap(), budget, true)
+    }
+
+    fn seat(engine: &Engine, code: &[u8], budget: u64, metered: bool) -> Self {
+        let module = Module::new(engine, code).unwrap();
+        let limits = ViewLimits {
+            // the metered run's limiter never refuses: the module does
+            budget: if metered {
+                usize::MAX
+            } else {
+                usize::try_from(budget).unwrap()
+            },
+            memory: 0,
+            tables: 0,
+        };
+        let mut store = Store::new(engine, limits);
+        store.limiter(|limits| limits);
+        if !metered {
+            store.set_fuel(FUEL_PER_TICK).unwrap();
+        }
+        let mut linker = Linker::new(engine);
+        linker
+            .func_wrap("ducktape_view", "panicked", |_: u32, _: u32| {})
+            .unwrap();
+        let instance = linker.instantiate(&mut store, &module).unwrap();
+        let gas = metered.then(|| instance.get_global(&mut store, GAS).unwrap());
+        Self {
+            store,
+            instance,
+            gas,
+        }
+    }
+
+    fn arm(&mut self, fuel: u64) {
+        match self.gas {
+            Some(gas) => gas
+                .set(&mut self.store, Val::I64(i64::try_from(fuel).unwrap()))
+                .unwrap(),
+            None => self.store.set_fuel(fuel).unwrap(),
+        }
+    }
+
+    /// What is left of the fuel (metered: [`GAS`], which may be below 0).
+    fn left(&mut self) -> i64 {
+        match self.gas {
+            Some(gas) => gas.get(&mut self.store).unwrap_i64(),
+            None => i64::try_from(self.store.get_fuel().unwrap()).unwrap(),
+        }
+    }
+
+    /// Calls an export with i32 arguments, armed with `fuel`.
+    fn call(&mut self, name: &str, args: &[i32], fuel: u64) -> End {
+        self.arm(fuel);
+        let func = self.instance.get_func(&mut self.store, name).unwrap();
+        let args: Vec<Val> = args.iter().map(|&arg| Val::I32(arg)).collect();
+        let mut results = vec![Val::I32(0); func.ty(&self.store).results().len()];
+        match func.call(&mut self.store, &args, &mut results) {
+            Ok(()) => End::Returned(
+                results
+                    .iter()
+                    .map(|value| value.i32().map_or_else(|| value.unwrap_i64(), i64::from))
+                    .collect(),
+            ),
+            Err(error) => End::Stopped(self.stopped(&error)),
+        }
+    }
+
+    /// The original's trap read the way the host reads it; the metered one's
+    /// read from [`GAS`] the way the iOS runner will.
+    fn stopped(&mut self, error: &wasmtime::Error) -> Stop {
+        match self.gas {
+            Some(gas) => {
+                assert!(
+                    error.downcast_ref::<Trap>().is_some(),
+                    "a metered call stops by a trap: {error:?}"
+                );
+                stop(gas.get(&mut self.store).unwrap_i64())
+            }
+            None if error.downcast_ref::<PastBudget>().is_some() => Stop::Memory,
+            None if error.downcast_ref::<Trap>() == Some(&Trap::OutOfFuel) => Stop::OutOfFuel,
+            None => Stop::Trap,
+        }
+    }
+}
+
+/// Both runs of one module: every call must end alike and use the same fuel.
+struct Both {
+    original: Run,
+    metered: Run,
+}
+
+impl Both {
+    fn new(wat: &str, budget: u64) -> Self {
+        let code = wat::parse_str(wat).unwrap();
+        Self {
+            original: Run::original(&code, budget),
+            metered: Run::metered(&code, budget),
+        }
+    }
+
+    /// Calls both; asserts the same end and, when the call returned, the
+    /// same fuel used (after a trap no host reads the count). Returns the
+    /// end and the original's fuel used.
+    fn call(&mut self, name: &str, args: &[i32], fuel: u64) -> (End, i64) {
+        let original = self.original.call(name, args, fuel);
+        let metered = self.metered.call(name, args, fuel);
+        assert_eq!(original, metered, "{name}{args:?}");
+        let fuel = i64::try_from(fuel).unwrap();
+        let used = fuel - self.original.left();
+        if matches!(original, End::Returned(_)) {
+            assert_eq!(
+                used,
+                fuel - self.metered.left(),
+                "fuel used by {name}{args:?}"
+            );
+        }
+        (original, used)
+    }
+
+    fn global(&mut self, name: &str) -> (i32, i32) {
+        let read = |run: &mut Run| {
+            run.instance
+                .get_global(&mut run.store, name)
+                .unwrap()
+                .get(&mut run.store)
+                .unwrap_i32()
+        };
+        (read(&mut self.original), read(&mut self.metered))
+    }
+}
+
+// --- the recorded sessions -------------------------------------------------
+
+fn fixture(name: &str) -> Vec<u8> {
+    let path = format!("{}/tests/sessions/{name}.gz", env!("CARGO_MANIFEST_DIR"));
+    let mut bytes = Vec::new();
+    flate2::read::GzDecoder::new(std::fs::File::open(path).unwrap())
+        .read_to_end(&mut bytes)
+        .unwrap();
+    bytes
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+struct Tick {
+    events: Vec<u8>,
+    frame: Vec<u8>,
+}
+
+/// Lane 02's recording: per tick, u8 rendered, u32le len + the event batch,
+/// u32le len + the frame the native view answered.
+fn recording(bytes: &[u8]) -> Vec<Tick> {
+    let mut at = 0;
+    let chunk = |at: &mut usize| {
+        let len = u32::from_le_bytes(bytes[*at..*at + 4].try_into().unwrap()) as usize;
+        *at += 4 + len;
+        bytes[*at - len..*at].to_vec()
+    };
+    let mut ticks = Vec::new();
+    while at < bytes.len() {
+        at += 1;
+        let events = chunk(&mut at);
+        let frame = chunk(&mut at);
+        ticks.push(Tick { events, frame });
+    }
+    ticks
+}
+
+/// A seated view driven the way the app drives one.
+struct Seat(Run);
+
+impl Seat {
+    fn func<P: wasmtime::WasmParams, R: wasmtime::WasmResults>(
+        &mut self,
+        name: &str,
+    ) -> wasmtime::TypedFunc<P, R> {
+        self.0
+            .instance
+            .get_typed_func(&mut self.0.store, name)
+            .unwrap()
+    }
+
+    fn answer(&mut self, packed: u64) -> Vec<u8> {
+        let memory = self
+            .0
+            .instance
+            .get_memory(&mut self.0.store, "memory")
+            .unwrap();
+        let (at, len) = ((packed >> 32) as usize, (packed & 0xffff_ffff) as usize);
+        memory.data(&self.0.store)[at..at + len].to_vec()
+    }
+
+    fn give(&mut self, bytes: &[u8]) -> (u32, u32) {
+        let ptr = self
+            .func::<u32, u32>("alloc")
+            .call(&mut self.0.store, bytes.len() as u32)
+            .unwrap();
+        let memory = self
+            .0
+            .instance
+            .get_memory(&mut self.0.store, "memory")
+            .unwrap();
+        memory
+            .write(&mut self.0.store, ptr as usize, bytes)
+            .unwrap();
+        (ptr, bytes.len() as u32)
+    }
+
+    fn init(&mut self) {
+        self.0.arm(FUEL_PER_TICK);
+        self.func::<(), ()>("init")
+            .call(&mut self.0.store, ())
+            .unwrap();
+    }
+
+    /// One tick as the app runs it (armed once for alloc + write + tick):
+    /// the frame and the fuel it used.
+    fn tick(&mut self, events: &[u8]) -> (Vec<u8>, u64) {
+        self.0.arm(FUEL_PER_TICK);
+        let args = self.give(events);
+        let packed = self
+            .func::<(u32, u32), u64>("tick")
+            .call(&mut self.0.store, args)
+            .unwrap();
+        let used = FUEL_PER_TICK - u64::try_from(self.0.left()).unwrap();
+        (self.answer(packed), used)
+    }
+
+    fn snapshot(&mut self) -> Vec<u8> {
+        self.0.arm(FUEL_PER_TICK);
+        let packed = self
+            .func::<(), u64>("snapshot")
+            .call(&mut self.0.store, ())
+            .unwrap();
+        self.answer(packed)
+    }
+
+    fn restore(&mut self, body: &[u8]) -> u8 {
+        self.0.arm(FUEL_PER_TICK);
+        let args = self.give(body);
+        let packed = self
+            .func::<(u32, u32), u64>("restore")
+            .call(&mut self.0.store, args)
+            .unwrap();
+        self.answer(packed)[0]
+    }
+}
+
+/// S0-webkit's restore crosscheck (`replay.js restore`): run to tick `k`,
+/// snapshot, a fresh instance restores it, the rest of the session is
+/// replayed and its frames hashed (FNV-1a 64 over u32le length + bytes).
+fn post_restore_hash(seat: impl Fn() -> Seat, ticks: &[Tick], k: usize) -> String {
+    let mut first = seat();
+    first.init();
+    for tick in &ticks[..=k] {
+        first.tick(&tick.events);
+    }
+    let state = first.snapshot();
+    assert_eq!(state[0], 0, "the snapshot at tick {k} is accepted");
+    let mut fresh = seat();
+    assert_eq!(fresh.restore(&state[1..]), 0, "the restore is accepted");
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for tick in &ticks[k + 1..] {
+        let (frame, _) = fresh.tick(&tick.events);
+        for byte in (frame.len() as u32).to_le_bytes().iter().chain(&frame) {
+            hash = (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3);
+        }
+    }
+    format!("{hash:016x}")
+}
+
+/// The custom sections of a module (name, bytes) the host may read.
+fn custom_sections(code: &[u8]) -> Vec<(String, Vec<u8>)> {
+    wasmparser::Parser::new(0)
+        .parse_all(code)
+        .filter_map(|payload| match payload.unwrap() {
+            // the pass rewrites `name` and drops the toolchain's `producers`
+            wasmparser::Payload::CustomSection(section)
+                if !["name", "producers"].contains(&section.name()) =>
+            {
+                Some((section.name().to_owned(), section.data().to_vec()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn session(view: &str, wasm_sha256: &str, total: u64, k: usize, reference: &str) {
+    let code = fixture(&format!("{view}_view.wasm"));
+    assert_eq!(
+        sha256(&code),
+        wasm_sha256,
+        "the {view} module the numbers are for"
+    );
+    let ticks = recording(&fixture(&format!("{view}-desk.rec")));
+    let metered = meter(&code, VIEW_BYTES).unwrap();
+    assert_eq!(metered, meter(&code, VIEW_BYTES).unwrap(), "deterministic");
+    assert_eq!(
+        custom_sections(&code),
+        custom_sections(&metered),
+        "the view's custom sections (its manifest) are kept"
+    );
+
+    let original = || Seat(Run::original(&code, VIEW_BYTES));
+    let metered = || Seat(Run::metered(&code, VIEW_BYTES));
+    let (mut a, mut b) = (original(), metered());
+    a.init();
+    b.init();
+    let mut fuel = (0, 0);
+    for (i, tick) in ticks.iter().enumerate() {
+        let (frame_a, used_a) = a.tick(&tick.events);
+        let (frame_b, used_b) = b.tick(&tick.events);
+        assert!(
+            frame_a == tick.frame,
+            "{view} tick {i}: the original's frame"
+        );
+        assert!(frame_b == tick.frame, "{view} tick {i}: the metered frame");
+        assert_eq!(used_a, used_b, "{view} tick {i}: fuel");
+        fuel = (fuel.0 + used_a, fuel.1 + used_b);
+    }
+    assert_eq!(fuel, (total, total), "{view}: fuel over the session");
+    assert_eq!(post_restore_hash(original, &ticks, k), reference);
+    assert_eq!(post_restore_hash(metered, &ticks, k), reference);
+}
+
+#[test]
+fn chat_session() {
+    session(
+        "chat",
+        "1f18207dd8104e35c56f6588967e62f58536d51b727410b0eea01baef43f23e1",
+        1_906_273_787,
+        119,
+        "bf0bc34cfbd3be03",
+    );
+}
+
+#[test]
+fn forge_session() {
+    session(
+        "forge",
+        "7e88335107f087810fa28506a361cf2b5fbcb0a0c55151b38dc70b112e7399ee",
+        1_325_536_710,
+        92,
+        "13577549968c5b26",
+    );
+}
+
+// --- the edges -------------------------------------------------------------
+
+const PAGE: u64 = 65_536;
+
+#[test]
+fn a_grow_past_the_budget_traps_as_memory_under_both() {
+    // one budget for memory and tables, as ViewLimits keeps it: 4 pages and
+    // 8 table elements, the table's own 4 already in it
+    let budget = 4 * PAGE + 8 * 8;
+    let mut both = Both::new(
+        r#"(module
+            (memory (export "memory") 1)
+            (table 4 funcref)
+            (func (export "grow") (param i32) (result i32)
+                local.get 0 memory.grow)
+            (func (export "grow_table") (param i32) (result i32)
+                ref.null func local.get 0 table.grow 0))"#,
+        budget,
+    );
+    let fuel = FUEL_PER_TICK;
+    assert_eq!(both.call("grow", &[0], fuel).0, End::Returned(vec![1]));
+    assert_eq!(both.call("grow", &[2], fuel).0, End::Returned(vec![1]));
+    // the budget is asked before any size limit, even past 4 GiB
+    assert_eq!(
+        both.call("grow", &[70_000], fuel).0,
+        End::Stopped(Stop::Memory)
+    );
+    assert_eq!(both.call("grow", &[2], fuel).0, End::Stopped(Stop::Memory));
+    assert_eq!(both.call("grow", &[1], fuel).0, End::Returned(vec![3]));
+    // memory is at its 4 pages: the tables' 4 more elements fit, 1 more not
+    assert_eq!(
+        both.call("grow_table", &[4], fuel).0,
+        End::Returned(vec![4])
+    );
+    assert_eq!(
+        both.call("grow_table", &[0], fuel).0,
+        End::Returned(vec![8])
+    );
+    assert_eq!(
+        both.call("grow_table", &[1], fuel).0,
+        End::Stopped(Stop::Memory)
+    );
+}
+
+#[test]
+fn a_grow_past_the_modules_own_maximum_answers_minus_one_under_both() {
+    let mut both = Both::new(
+        r#"(module
+            (memory 1 2)
+            (table 1 2 funcref)
+            (func (export "grow") (param i32) (result i32)
+                local.get 0 memory.grow)
+            (func (export "grow_table") (param i32) (result i32)
+                ref.null func local.get 0 table.grow 0))"#,
+        VIEW_BYTES,
+    );
+    assert_eq!(
+        both.call("grow", &[2], FUEL_PER_TICK).0,
+        End::Returned(vec![-1])
+    );
+    assert_eq!(
+        both.call("grow", &[1], FUEL_PER_TICK).0,
+        End::Returned(vec![1])
+    );
+    assert_eq!(
+        both.call("grow_table", &[2], FUEL_PER_TICK).0,
+        End::Returned(vec![-1])
+    );
+}
+
+#[test]
+fn size_charged_operators_cost_what_wasmtime_charges() {
+    let mut both = Both::new(
+        r#"(module
+            (memory 1)
+            (data $d "0123456789abcdef0123456789abcdef")
+            (table 64 funcref)
+            (elem $e func $f $f $f $f $f $f $f $f)
+            (func $f)
+            (func (export "memory_copy") (param i32)
+                i32.const 0 i32.const 100 local.get 0 memory.copy)
+            (func (export "memory_fill") (param i32)
+                i32.const 0 i32.const 7 local.get 0 memory.fill)
+            (func (export "memory_init") (param i32)
+                i32.const 0 i32.const 0 local.get 0 memory.init $d)
+            (func (export "table_init") (param i32)
+                i32.const 0 i32.const 0 local.get 0 table.init $e)
+            (func (export "table_copy") (param i32)
+                i32.const 0 i32.const 10 local.get 0 table.copy)
+            (func (export "table_fill") (param i32)
+                i32.const 0 ref.null func local.get 0 table.fill 0)
+            (func (export "table_grow") (param i32) (result i32)
+                ref.null func local.get 0 table.grow 0)
+            (func (export "copy_16")
+                i32.const 0 i32.const 100 i32.const 16 memory.copy)
+            (func (export "copy_1000")
+                i32.const 0 i32.const 100 i32.const 1000 memory.copy))"#,
+        VIEW_BYTES,
+    );
+    // a constant length is folded into the cost (wasmtime checks only past
+    // 128); the count is the same either way
+    let small = both.call("copy_16", &[], FUEL_PER_TICK).1;
+    let large = both.call("copy_1000", &[], FUEL_PER_TICK).1;
+    assert_eq!(large - small, 1000 - 16);
+    for (name, sizes) in [
+        ("memory_copy", [0, 1, 5000]),
+        ("memory_fill", [0, 1, 5000]),
+        ("memory_init", [0, 1, 32]),
+        ("table_init", [0, 1, 8]),
+        ("table_copy", [0, 1, 50]),
+        ("table_fill", [0, 1, 64]),
+        ("table_grow", [0, 1, 1000]),
+    ] {
+        let used: Vec<i64> = sizes
+            .iter()
+            .map(|&size| both.call(name, &[size], FUEL_PER_TICK).1)
+            .collect();
+        // each element or byte is one unit of fuel, under both
+        assert_eq!(used[1] - used[0], 1, "{name}");
+        assert_eq!(used[2] - used[0], i64::from(sizes[2]), "{name}");
+    }
+}
+
+#[test]
+fn fuel_runs_out_at_the_same_point_under_both() {
+    let mut both = Both::new(
+        r#"(module
+            (global $n (export "n") (mut i32) (i32.const 0))
+            (func $step
+                global.get $n i32.const 1 i32.add global.set $n)
+            (func (export "spin")
+                (loop
+                    global.get $n i32.const 1 i32.add global.set $n
+                    br 0))
+            (func (export "spin_calls")
+                (loop call $step br 0)))"#,
+        VIEW_BYTES,
+    );
+    for (name, fuel) in [
+        ("spin", 10_000),
+        ("spin", 10_003),
+        ("spin_calls", 10_000),
+        ("spin_calls", 10_001),
+        ("spin_calls", FUEL_PER_TICK),
+    ] {
+        let start = both.global("n");
+        assert_eq!(both.call(name, &[], fuel).0, End::Stopped(Stop::OutOfFuel));
+        let end = both.global("n");
+        assert_eq!(
+            end.0 - start.0,
+            end.1 - start.1,
+            "{name} with {fuel}: iterations before the trap"
+        );
+    }
+}
+
+#[test]
+fn a_view_trap_stays_the_views_under_both() {
+    let mut both = Both::new(
+        r#"(module
+            (memory 1)
+            (func (export "oob") (result i32) i32.const 70000 i32.load)
+            (func (export "panic") unreachable))"#,
+        VIEW_BYTES,
+    );
+    assert_eq!(
+        both.call("oob", &[], FUEL_PER_TICK).0,
+        End::Stopped(Stop::Trap)
+    );
+    assert_eq!(
+        both.call("panic", &[], FUEL_PER_TICK).0,
+        End::Stopped(Stop::Trap)
+    );
+}
+
+#[test]
+fn tail_calls_threads_and_simd_are_refused_under_both() {
+    for (what, wat) in [
+        ("tail calls", r#"(module (func $f return_call $f))"#),
+        ("threads", r#"(module (memory 1 1 shared))"#),
+        (
+            "simd",
+            r#"(module (func (result v128) v128.const i64x2 0 0))"#,
+        ),
+    ] {
+        let code = wat::parse_str(wat).unwrap();
+        assert!(
+            matches!(meter(&code, VIEW_BYTES), Err(Refusal::Unsupported(_))),
+            "{what}: the pass refuses it"
+        );
+        for fuel in [true, false] {
+            assert!(
+                Module::new(&engine(fuel), &code).is_err(),
+                "{what}: wasmtime with FEATURES refuses it"
+            );
+        }
+    }
+}
+
+#[test]
+fn hostile_or_oversized_input_is_a_typed_refusal() {
+    let unsupported = |code: &[u8]| matches!(meter(code, VIEW_BYTES), Err(Refusal::Unsupported(_)));
+    assert!(unsupported(b"\0asm\x01\0\0\0\x01\xff"));
+    assert!(unsupported(b"not wasm at all"));
+    assert!(unsupported(&[]));
+    assert!(unsupported(
+        &wat::parse_str(r#"(module (import "x" "m" (memory 1)))"#).unwrap()
+    ));
+    assert!(unsupported(
+        &wat::parse_str(r#"(module (global (export "gas_left") i32 (i32.const 0)))"#).unwrap()
+    ));
+    assert!(unsupported(
+        &wat::parse_str(r#"(module (func $s) (start $s))"#).unwrap()
+    ));
+    let big = wat::parse_str(r#"(module (memory 2) (table 8 funcref))"#).unwrap();
+    assert_eq!(
+        meter(&big, PAGE),
+        Err(Refusal::Memory {
+            needs: 2 * PAGE + 64,
+            view_bytes: PAGE
+        })
+    );
+    // no memory, no table: metered all the same
+    let bare = wat::parse_str(r#"(module (func (export "f")))"#).unwrap();
+    assert!(meter(&bare, VIEW_BYTES).is_ok());
+}
+
+#[test]
+fn stop_reads_the_gas_left() {
+    assert_eq!(stop(GROW_REFUSED), Stop::Memory);
+    assert_eq!(stop(0), Stop::OutOfFuel);
+    assert_eq!(stop(-41), Stop::OutOfFuel);
+    assert_eq!(stop(1), Stop::Trap);
+}

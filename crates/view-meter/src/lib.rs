@@ -13,25 +13,33 @@
 //!   network bytes never reach the rewrite unchecked. The wasmtime runner
 //!   sets the same set on its `Config`, so every runner accepts and refuses
 //!   the same modules.
-//! - **Fuel.** One exported mutable `i64` global, [`GAS`], counts down the
-//!   way wasmtime 46 counts fuel (`wasmtime-environ` `default_operator_cost`,
-//!   `wasmtime-cranelift` `fuel_before_op` / `pre_translate_bulk_op`): 1 per
-//!   operator except `nop`, `drop`, `block`, `loop`, `unreachable`, `return`,
-//!   `else`, `end`; 1 more per function invocation; the length on
-//!   `memory.copy`, `memory.fill`, `memory.init`, `table.copy`, `table.fill`,
-//!   `table.init` and the delta on `table.grow`. Pending cost is charged at
-//!   the points wasmtime charges it, and the budget is checked at function
-//!   entry, at every loop header and after every size-charged operator; a
-//!   check traps when [`GAS`] is `<= 0`. The host sets [`GAS`] to its budget
-//!   before a call and reads it after: used = budget - left, equal to
-//!   wasmtime's fuel count per call.
+//! - **Fuel.** The count wasmtime 46 keeps (`wasmtime-environ`
+//!   `default_operator_cost`, `wasmtime-cranelift` `fuel_before_op` /
+//!   `pre_translate_bulk_op`): 1 per operator except `nop`, `drop`, `block`,
+//!   `loop`, `unreachable`, `return`, `else`, `end`; 1 more per function
+//!   invocation; the length on `memory.copy`, `memory.fill`, `memory.init`,
+//!   `table.copy`, `table.fill`, `table.init` and the delta on `table.grow`.
+//!   Pending cost is summed per straight-line run and charged at the points
+//!   wasmtime charges it; the budget is checked where wasmtime checks it
+//!   (function entry, every loop header, after a size-charged operator whose
+//!   length is not a constant of at most 128), and a check traps when the
+//!   count is `<= 0`. As in wasmtime, the count lives in a function-local
+//!   (a register) while a function runs and is kept in one exported mutable
+//!   `i64` global, [`GAS`], wherever the host or another function can read
+//!   it: loaded at function entry and after a call, stored before a call, a
+//!   return, a trap and at the function's end. The host sets [`GAS`] to its
+//!   budget before a call and reads it after: used = budget - left, equal to
+//!   wasmtime's fuel count per call, and fuel runs out at the same check.
 //! - **Memory.** Every `memory.grow` and `table.grow` first checks the whole
 //!   budget the way `ViewLimits` does (the grown size, plus the memory or
 //!   tables it does not grow, against `view_bytes`); past it the call traps
-//!   with [`GAS`] set to [`GROW_REFUSED`]. A grow wasmtime answers with `-1`
-//!   (past the module's own maximum, past 4 GiB, no allocation) still
-//!   answers `-1`. The memory and table maxima are lowered to the budget too,
-//!   and a module whose initial memory and tables alone exceed it is refused
+//!   with [`GAS`] set to [`GROW_REFUSED`] (a value fuel never reaches, so the
+//!   one export carries both answers; no second export). A grow within the
+//!   budget that wasmtime answers with `-1` (past the module's own maximum,
+//!   no allocation) still answers `-1`: the budget is asked before the grow,
+//!   in wasmtime's order, rather than every `-1` turned into a trap. The memory
+//!   and table maxima are lowered to the budget too, and a module whose
+//!   initial memory and tables alone exceed it is refused
 //!   ([`Refusal::Memory`]).
 //! - **After a trap**, [`stop`] reads [`GAS`]: out of fuel, past the memory
 //!   budget, or the view's own trap.
@@ -46,8 +54,9 @@
 //! equivalence gate against wasmtime (SPEC §13.3 (a)).
 use walrus::ir::{
     BinaryOp, Binop, Block, Br, BrIf, BrTable, Call, CallIndirect, Const, GlobalGet, GlobalSet,
-    IfElse, Instr, InstrLocId, InstrSeqId, LocalGet, LocalTee, Loop, MemoryGrow, MemorySize,
-    ReturnCall, ReturnCallIndirect, TableGrow, TableSize, UnaryOp, Unop, Unreachable, Value,
+    IfElse, Instr, InstrLocId, InstrSeqId, LocalGet, LocalSet, LocalTee, Loop, MemoryGrow,
+    MemorySize, ReturnCall, ReturnCallIndirect, TableGrow, TableSize, UnaryOp, Unop, Unreachable,
+    Value,
 };
 use walrus::{
     ConstExpr, FunctionBuilder, GlobalId, LocalId, MemoryId, ModuleConfig, TableId, ValType,
@@ -57,7 +66,10 @@ use wasmparser::{Validator, WasmFeatures};
 /// The one wasm feature set every view runner accepts: what Rust's
 /// `wasm32-unknown-unknown` emits (MVP, mutable globals, sign extension,
 /// non-trapping float-to-int, multi-value, bulk memory, reference types).
-/// No SIMD, tail calls, threads, exceptions, GC, multi-memory or memory64.
+/// No tail calls, threads, exceptions, GC, multi-memory or memory64; and no
+/// SIMD, which Rust emits only when asked and no view asks for (the pass
+/// would charge it as wasmtime does, 1 per operator: adding it is this one
+/// line).
 /// A wasmtime runner applies it with
 /// `config.wasm_features(WasmFeatures::all().difference(FEATURES), false)`.
 pub const FEATURES: WasmFeatures = WasmFeatures::WASM1
@@ -76,11 +88,13 @@ pub const GAS: &str = "gas_left";
 /// of zero, and no charge exceeds `u32::MAX`.
 pub const GROW_REFUSED: i64 = i64::MIN;
 
+/// A bulk operator with a constant length up to this is folded into the
+/// pending cost without a check (wasmtime `SMALL_BULK_OP_COST`).
+const SMALL_BULK: i64 = 128;
 /// Bytes per wasm page.
 const PAGE: u64 = 65_536;
-/// A 32-bit memory's own limit, in pages: a grow past it answers `-1` before
-/// any budget is asked (wasmtime `Memory::grow`, `allow_growth_to`).
-const MEMORY_PAGES: i64 = 65_536;
+/// A 32-bit memory's own limit, in pages (4 GiB).
+const MEMORY_PAGES: u64 = 65_536;
 /// What one table element costs the budget: a pointer, as `ViewLimits`
 /// charges it (`size_of::<usize>()` on the 64-bit hosts views run on).
 const ELEMENT_BYTES: u64 = 8;
@@ -90,7 +104,8 @@ const ELEMENT_BYTES: u64 = 8;
 pub enum Refusal {
     /// The bytes are not wasm the runners accept: invalid, or using a
     /// feature outside [`FEATURES`], or a shape the pass does not take (an
-    /// imported memory or table, an export already named [`GAS`]). The text
+    /// imported memory or table, an export already named [`GAS`], a start
+    /// function, which would run before the host could set [`GAS`]). The text
     /// names what was refused.
     Unsupported(String),
     /// The module's initial memory and tables alone exceed `view_bytes`.
@@ -161,6 +176,11 @@ pub fn meter(code: &[u8], view_bytes: u64) -> Result<Vec<u8>, Refusal> {
             "an imported memory or table".to_owned(),
         ));
     }
+    if module.start.is_some() {
+        return Err(Refusal::Unsupported(
+            "a start function (it would run before the fuel is set)".to_owned(),
+        ));
+    }
     if module.exports.iter().any(|export| export.name == GAS) {
         return Err(Refusal::Unsupported(format!(
             "the module already exports {GAS}"
@@ -183,7 +203,7 @@ pub fn meter(code: &[u8], view_bytes: u64) -> Result<Vec<u8>, Refusal> {
     // Never reached before the grow checks below; they bound what the
     // engine reserves and say the budget in the module itself.
     for memory in module.memories.iter_mut() {
-        let pages = view_bytes / PAGE;
+        let pages = (view_bytes / PAGE).min(MEMORY_PAGES);
         memory.maximum = Some(memory.maximum.map_or(pages, |declared| declared.min(pages)));
     }
     for table in module.tables.iter_mut() {
@@ -201,9 +221,9 @@ pub fn meter(code: &[u8], view_bytes: u64) -> Result<Vec<u8>, Refusal> {
     module.exports.add(GAS, gas);
     let cx = Cx {
         gas,
-        // one scratch local id serves every function (walrus numbers locals
-        // per function on emit): a size-charged operator's length, a grow's
-        // delta
+        // one local id each serves every function (walrus numbers locals per
+        // function on emit)
+        fuel: module.locals.add(ValType::I64),
         scratch: module.locals.add(ValType::I32),
         memory: module.memories.iter().next().map(|memory| memory.id()),
         tables: module.tables.iter().map(|table| table.id()).collect(),
@@ -213,14 +233,20 @@ pub fn meter(code: &[u8], view_bytes: u64) -> Result<Vec<u8>, Refusal> {
     for (_, function) in module.funcs.iter_local_mut() {
         let entry = function.entry_block();
         // a function invocation costs 1 (wasmtime: `fuel_consumed: 1`)
-        meter_seq(function.builder_mut(), &cx, entry, 1, true);
+        meter_seq(function.builder_mut(), &cx, entry, entry, 1, true);
     }
     Ok(module.emit_wasm())
 }
 
 /// What every rewritten sequence needs.
 struct Cx {
+    /// [`GAS`]: what the host and the other functions read
     gas: GlobalId,
+    /// the count while the function runs (wasmtime's `fuel_var`): loaded
+    /// from [`GAS`] at entry and after a call, stored back before a call, a
+    /// return, a trap and the function's end
+    fuel: LocalId,
+    /// a size-charged operator's length, a grow's delta
     scratch: LocalId,
     memory: Option<MemoryId>,
     tables: Vec<TableId>,
@@ -246,27 +272,40 @@ fn binop(seq: &mut Seq, op: BinaryOp) {
     put(seq, Binop { op });
 }
 
-/// `gas -= pending`; nothing when there is nothing to charge.
+/// `fuel -= pending`; nothing when there is nothing to charge.
 fn charge(cx: &Cx, seq: &mut Seq, pending: &mut i64) {
     if *pending > 0 {
-        put(seq, GlobalGet { global: cx.gas });
+        put(seq, LocalGet { local: cx.fuel });
         i64_const(seq, *pending);
         binop(seq, BinaryOp::I64Sub);
-        put(seq, GlobalSet { global: cx.gas });
+        put(seq, LocalSet { local: cx.fuel });
     }
     *pending = 0;
 }
 
-/// `if gas <= 0 { unreachable }`: wasmtime traps once the consumed fuel
-/// reaches the budget.
+/// [`GAS`] = the function's count: before control leaves the function or
+/// another function may read it (a call, a return, a trap, the end).
+fn store(cx: &Cx, seq: &mut Seq) {
+    put(seq, LocalGet { local: cx.fuel });
+    put(seq, GlobalSet { global: cx.gas });
+}
+
+/// The function's count = [`GAS`]: at entry and after a call returns.
+fn load(cx: &Cx, seq: &mut Seq) {
+    put(seq, GlobalGet { global: cx.gas });
+    put(seq, LocalSet { local: cx.fuel });
+}
+
+/// `if fuel <= 0 { gas = fuel; unreachable }`: wasmtime traps once the
+/// consumed fuel reaches the budget.
 fn check(builder: &mut FunctionBuilder, cx: &Cx, seq: &mut Seq) {
     let trap = {
         let mut trap = builder.dangling_instr_seq(None);
-        trap.unreachable();
+        trap.local_get(cx.fuel).global_set(cx.gas).unreachable();
         trap.id()
     };
     let empty = builder.dangling_instr_seq(None).id();
-    put(seq, GlobalGet { global: cx.gas });
+    put(seq, LocalGet { local: cx.fuel });
     i64_const(seq, 0);
     binop(seq, BinaryOp::I64LeS);
     put(
@@ -279,11 +318,11 @@ fn check(builder: &mut FunctionBuilder, cx: &Cx, seq: &mut Seq) {
 }
 
 /// The size charge of a bulk operator whose length (or `table.grow` delta)
-/// is on top of the stack: `gas -= len`, the length kept in place and in the
-/// scratch local, then a check.
+/// is on top of the stack: `fuel -= len`, the length kept in place and in
+/// the scratch local, then a check.
 fn charge_len(builder: &mut FunctionBuilder, cx: &Cx, seq: &mut Seq) {
     put(seq, LocalTee { local: cx.scratch });
-    put(seq, GlobalGet { global: cx.gas });
+    put(seq, LocalGet { local: cx.fuel });
     put(seq, LocalGet { local: cx.scratch });
     put(
         seq,
@@ -292,7 +331,7 @@ fn charge_len(builder: &mut FunctionBuilder, cx: &Cx, seq: &mut Seq) {
         },
     );
     binop(seq, BinaryOp::I64Sub);
-    put(seq, GlobalSet { global: cx.gas });
+    put(seq, LocalSet { local: cx.fuel });
     check(builder, cx, seq);
 }
 
@@ -363,10 +402,11 @@ fn refuse_if(builder: &mut FunctionBuilder, cx: &Cx, seq: &mut Seq) {
 }
 
 /// Before `memory.grow` (its delta on top of the stack, kept there): traps
-/// as [`GROW_REFUSED`] when the delta is not 0, the new size is within the
-/// 32-bit limit and it, plus the tables, is past the budget. That is the
-/// order wasmtime asks in: a zero delta asks nothing, a size past 4 GiB is
-/// `-1`, then `ViewLimits::memory_growing`.
+/// as [`GROW_REFUSED`] when the delta is not 0 and the new size plus the
+/// tables is past the budget. That is the order wasmtime asks in
+/// (`Memory::grow`): a zero delta asks nothing, then
+/// `ViewLimits::memory_growing`, and only then the memory's own maximum and
+/// 4 GiB, which answer `-1`.
 fn guard_memory_grow(builder: &mut FunctionBuilder, cx: &Cx, memory: MemoryId, seq: &mut Seq) {
     put(seq, LocalTee { local: cx.scratch });
     put(seq, LocalGet { local: cx.scratch });
@@ -377,22 +417,15 @@ fn guard_memory_grow(builder: &mut FunctionBuilder, cx: &Cx, memory: MemoryId, s
         },
     );
     binop(seq, BinaryOp::I32Ne);
-    let new_pages = |seq: &mut Seq| {
-        put(seq, MemorySize { memory });
-        put(
-            seq,
-            Unop {
-                op: UnaryOp::I64ExtendUI32,
-            },
-        );
-        scratch_i64(cx, seq);
-        binop(seq, BinaryOp::I64Add);
-    };
-    new_pages(seq);
-    i64_const(seq, MEMORY_PAGES);
-    binop(seq, BinaryOp::I64LeU);
-    binop(seq, BinaryOp::I32And);
-    new_pages(seq);
+    put(seq, MemorySize { memory });
+    put(
+        seq,
+        Unop {
+            op: UnaryOp::I64ExtendUI32,
+        },
+    );
+    scratch_i64(cx, seq);
+    binop(seq, BinaryOp::I64Add);
     i64_const(seq, PAGE as i64);
     binop(seq, BinaryOp::I64Mul);
     table_bytes(cx, seq);
@@ -429,26 +462,59 @@ fn guard_table_grow(builder: &mut FunctionBuilder, cx: &Cx, seq: &mut Seq) {
     refuse_if(builder, cx, seq);
 }
 
-/// Rewrites one instruction sequence of the original code. `pending` is the
-/// cost carried in from the enclosing sequence (a `block` body continues
-/// straight-line code); `entry_check` puts a budget check at its start
-/// (function entry, loop header). Only the original sequences are visited:
-/// the code the pass adds is never charged.
+/// Rewrites one instruction sequence of the original code. `entry` is the
+/// function's body (a branch to it returns); `pending` is the cost carried
+/// in from the enclosing sequence (a `block` body continues straight-line
+/// code); `entry_check` puts a budget check at its start (function entry,
+/// loop header). Only the original sequences are visited: the code the pass
+/// adds is never charged.
 fn meter_seq(
     builder: &mut FunctionBuilder,
     cx: &Cx,
+    entry: InstrSeqId,
     seq: InstrSeqId,
     mut pending: i64,
     entry_check: bool,
 ) {
     let old = std::mem::take(builder.instr_seq(seq).instrs_mut());
     let mut new = Vec::with_capacity(old.len() + 8);
+    if seq == entry {
+        load(cx, &mut new);
+    }
     if entry_check {
         charge(cx, &mut new, &mut pending);
         check(builder, cx, &mut new);
     }
     let mut children = Vec::new();
+    // the length of a bulk operator when the operator before it pushed it
+    // as a constant: wasmtime folds such a cost and checks only past 128
+    let mut constant: Option<i64> = None;
     for (instr, loc) in old {
+        let length = constant.take();
+        if let Instr::Const(Const {
+            value: Value::I32(value),
+        }) = &instr
+        {
+            constant = Some(i64::from(*value as u32));
+        }
+        let bulk = matches!(
+            instr,
+            Instr::MemoryCopy(_)
+                | Instr::MemoryFill(_)
+                | Instr::MemoryInit(_)
+                | Instr::TableCopy(_)
+                | Instr::TableFill(_)
+                | Instr::TableInit(_)
+        );
+        if let (true, Some(length)) = (bulk, length) {
+            pending += 1 + length;
+            if length > SMALL_BULK {
+                charge(cx, &mut new, &mut pending);
+                check(builder, cx, &mut new);
+            }
+            new.push((instr, loc));
+            continue;
+        }
         match &instr {
             Instr::Block(Block { seq: child }) => {
                 // no charge on entry: the body continues our straight line
@@ -468,19 +534,32 @@ fn meter_seq(
                 children.push((*consequent, 0, false));
                 children.push((*alternative, 0, false));
             }
-            Instr::Br(Br { .. })
-            | Instr::BrIf(BrIf { .. })
-            | Instr::BrTable(BrTable { .. })
-            | Instr::Call(Call { .. })
+            Instr::Br(Br { block }) | Instr::BrIf(BrIf { block }) => {
+                pending += 1;
+                charge(cx, &mut new, &mut pending);
+                if *block == entry {
+                    store(cx, &mut new);
+                }
+            }
+            Instr::BrTable(BrTable { blocks, default }) => {
+                pending += 1;
+                charge(cx, &mut new, &mut pending);
+                if *default == entry || blocks.contains(&entry) {
+                    store(cx, &mut new);
+                }
+            }
+            Instr::Call(Call { .. })
             | Instr::CallIndirect(CallIndirect { .. })
             // outside FEATURES, so never seen; charged as wasmtime would
             | Instr::ReturnCall(ReturnCall { .. })
             | Instr::ReturnCallIndirect(ReturnCallIndirect { .. }) => {
                 pending += 1;
                 charge(cx, &mut new, &mut pending);
+                store(cx, &mut new);
             }
             Instr::Return(_) | Instr::Unreachable(Unreachable { .. }) => {
                 charge(cx, &mut new, &mut pending);
+                store(cx, &mut new);
             }
             Instr::Drop(_) => {}
             Instr::MemoryCopy(_)
@@ -503,12 +582,19 @@ fn meter_seq(
             Instr::TableGrow(TableGrow { .. }) => guard_table_grow(builder, cx, &mut new),
             _ => {}
         }
+        let returns_here = matches!(instr, Instr::Call(_) | Instr::CallIndirect(_));
         new.push((instr, loc));
+        if returns_here {
+            load(cx, &mut new);
+        }
     }
     // the `end` (or `else`) of this sequence
     charge(cx, &mut new, &mut pending);
+    if seq == entry {
+        store(cx, &mut new);
+    }
     *builder.instr_seq(seq).instrs_mut() = new;
     for (child, carried, entry_check) in children {
-        meter_seq(builder, cx, child, carried, entry_check);
+        meter_seq(builder, cx, entry, child, carried, entry_check);
     }
 }
