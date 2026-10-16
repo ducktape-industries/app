@@ -23,16 +23,20 @@
 //!   wasmtime charges it; the budget is checked where wasmtime checks it
 //!   (function entry, every loop header, after a size-charged operator whose
 //!   length is not a constant of at most 128), and a check traps when the
-//!   count is `<= 0`. As in wasmtime, the count lives in a function-local
-//!   (a register) while a function runs and in one global between
-//!   functions: loaded at function entry and after a call, stored before a
-//!   call, a return and at the function's end. That global is internal;
-//!   the host's side is one exported mutable `i64` global, [`GAS`], which
-//!   every exported function's wrapper copies in before the call and out
-//!   after it, and which a fuel or memory trap writes. The host sets [`GAS`]
-//!   to its budget before a call and reads it after: used = budget - left,
-//!   equal to wasmtime's fuel count per call, and fuel runs out at the same
-//!   check.
+//!   count is `<= 0`. The count never leaves a register between the
+//!   exports' entry and exit: every function of the module takes it as one
+//!   more parameter and gives it back as one more result (each call passes
+//!   it and takes it back; imports keep their type, and an import used as a
+//!   value is reached through an adapter of the widened type). The host's
+//!   side is one exported mutable `i64` global, [`GAS`]: each exported
+//!   function becomes a wrapper with its original type that passes [`GAS`]
+//!   in and stores the result back, and a fuel or memory trap writes it.
+//!   The host sets [`GAS`] to its budget before a call and reads it after:
+//!   used = budget - left, equal to wasmtime's fuel count per call, and fuel
+//!   runs out at the same check. (Measured in JavaScriptCore on the chat
+//!   view, unmetered = 1: the count in an exported global at every charge
+//!   3.3x; in a local, stored to that global around calls 1.32x; to an
+//!   internal global 1.19x; passed as a parameter 1.09x.)
 //! - **Memory.** Every `memory.grow` and `table.grow` first checks the whole
 //!   budget the way `ViewLimits` does (the grown size, plus the memory or
 //!   tables it does not grow, against `view_bytes`); past it the call traps
@@ -55,14 +59,17 @@
 //! Map: this file is the whole pass; `main.rs` is the command
 //! (`view-meter <in.wasm> <out.wasm> <view_bytes>`); `tests/` is the runner
 //! equivalence gate against wasmtime (SPEC §13.3 (a)).
+use std::collections::HashMap;
+
 use walrus::ir::{
-    BinaryOp, Binop, Block, Br, BrIf, BrTable, Call, CallIndirect, Const, GlobalGet, GlobalSet,
-    IfElse, Instr, InstrLocId, InstrSeqId, LocalGet, LocalSet, LocalTee, Loop, MemoryGrow,
-    MemorySize, ReturnCall, ReturnCallIndirect, TableGrow, TableSize, UnaryOp, Unop, Unreachable,
-    Value,
+    BinaryOp, Binop, Block, Br, BrIf, BrTable, Call, CallIndirect, Const, IfElse, Instr,
+    InstrLocId, InstrSeqId, InstrSeqType, LocalGet, LocalSet, LocalTee, Loop, MemoryGrow,
+    MemorySize, RefFunc, ReturnCall, ReturnCallIndirect, TableGrow, TableSize, UnaryOp, Unop,
+    Unreachable, Value,
 };
 use walrus::{
-    ConstExpr, FunctionBuilder, GlobalId, LocalId, MemoryId, ModuleConfig, TableId, ValType,
+    ConstExpr, ElementItems, FunctionBuilder, FunctionId, FunctionKind, GlobalId, GlobalKind,
+    LocalId, MemoryId, ModuleConfig, ModuleTypes, TableId, TypeId, ValType,
 };
 use wasmparser::{Validator, WasmFeatures};
 
@@ -222,49 +229,223 @@ pub fn meter(code: &[u8], view_bytes: u64) -> Result<Vec<u8>, Refusal> {
     let gas = module
         .globals
         .add_local(ValType::I64, true, false, ConstExpr::Value(Value::I64(0)));
+    // one local id each serves every function (walrus numbers locals per
+    // function on emit)
+    let fuel = module.locals.add(ValType::I64);
+    let adapters = adapt_imports(&mut module);
     let cx = Cx {
         gas,
-        shared: module.globals.add_local(
-            ValType::I64,
-            true,
-            false,
-            ConstExpr::Value(Value::I64(0)),
-        ),
-        // one local id each serves every function (walrus numbers locals per
-        // function on emit)
-        fuel: module.locals.add(ValType::I64),
+        fuel,
         scratch: module.locals.add(ValType::I32),
         memory: module.memories.iter().next().map(|memory| memory.id()),
         tables: module.tables.iter().map(|table| table.id()).collect(),
         // a budget past i64::MAX would never be reached by a wasm32 view
         budget: i64::try_from(view_bytes).unwrap_or(i64::MAX),
+        adapters,
     };
-    for (_, function) in module.funcs.iter_local_mut() {
-        let entry = function.entry_block();
-        // a function invocation costs 1 (wasmtime: `fuel_consumed: 1`)
-        meter_seq(function.builder_mut(), &cx, entry, entry, 1, true);
+    let original: Vec<FunctionId> = module
+        .funcs
+        .iter_local()
+        .map(|(id, _)| id)
+        .filter(|id| !cx.adapters.values().any(|adapter| adapter == id))
+        .collect();
+    for &id in &original {
+        if let FunctionKind::Local(function) = &mut module.funcs.get_mut(id).kind {
+            let entry = function.entry_block();
+            meter_function(function.builder_mut(), &mut module.types, &cx, entry);
+        }
     }
-    hand_over(&mut module, &cx);
+    for &id in &original {
+        widen(&mut module, id, fuel);
+    }
+    redirect_import_values(&mut module, &cx.adapters);
+    hand_over(&mut module, gas);
     module.exports.add(GAS, gas);
     Ok(module.emit_wasm())
 }
 
-/// Every exported function becomes a wrapper that hands the count over:
-/// [`GAS`] into the internal global before the call, back after it. The
-/// count crosses every internal call in the internal global, which engines
-/// reach without the indirection an exported mutable global costs (in
-/// JavaScriptCore the difference was 1.32x against 1.17x of the unmetered
-/// tick). The wrapper is the pass's own code: never charged.
-fn hand_over(module: &mut walrus::Module, cx: &Cx) {
-    let exported: Vec<(walrus::ExportId, walrus::FunctionId)> = module
+/// What every rewritten sequence needs.
+struct Cx {
+    /// [`GAS`]: what the host sets and reads, written by the wrappers of the
+    /// exports and by the pass's traps
+    gas: GlobalId,
+    /// the count: each function's extra parameter, which it returns as its
+    /// extra result (wasmtime's `fuel_var`, kept in a register across calls)
+    fuel: LocalId,
+    /// a size-charged operator's length, a grow's delta, an indirect
+    /// call's table index
+    scratch: LocalId,
+    memory: Option<MemoryId>,
+    tables: Vec<TableId>,
+    budget: i64,
+    /// each imported function and the adapter that stands in for it where
+    /// the module uses it as a value
+    adapters: HashMap<FunctionId, FunctionId>,
+}
+
+/// One adapter per imported function, with the widened type: it calls the
+/// import and hands the count through. An import keeps its own type, so a
+/// direct call to it passes nothing; the adapter is what a table or a
+/// `ref.func` holds instead, so an indirect call through the widened type
+/// still reaches it. The adapter is the pass's own code: never charged.
+fn adapt_imports(module: &mut walrus::Module) -> HashMap<FunctionId, FunctionId> {
+    let imports: Vec<(FunctionId, Vec<ValType>, Vec<ValType>)> = module
+        .funcs
+        .iter()
+        .filter(|function| matches!(function.kind, FunctionKind::Import(_)))
+        .map(|function| {
+            let (params, results) = module.types.params_results(function.ty());
+            (function.id(), params.to_vec(), results.to_vec())
+        })
+        .collect();
+    let mut adapters = HashMap::new();
+    for (import, params, results) in imports {
+        let args: Vec<LocalId> = params
+            .iter()
+            .map(|&param| module.locals.add(param))
+            .collect();
+        let count = module.locals.add(ValType::I64);
+        let mut adapter = FunctionBuilder::new(&mut module.types, &wide(&params), &wide(&results));
+        let mut body = adapter.func_body();
+        for &arg in &args {
+            body.local_get(arg);
+        }
+        body.call(import).local_get(count);
+        let all = args.into_iter().chain([count]).collect();
+        adapters.insert(import, adapter.finish(all, &mut module.funcs));
+    }
+    adapters
+}
+
+/// Elements and global initializers that name an import name its adapter.
+fn redirect_import_values(module: &mut walrus::Module, adapters: &HashMap<FunctionId, FunctionId>) {
+    let swap = |function: &mut FunctionId| {
+        if let Some(&adapter) = adapters.get(function) {
+            *function = adapter;
+        }
+    };
+    let swap_expr = |expr: &mut ConstExpr| {
+        if let ConstExpr::RefFunc(function) = expr {
+            swap(function);
+        }
+    };
+    for element in module.elements.iter_mut() {
+        match &mut element.items {
+            ElementItems::Functions(functions) => functions.iter_mut().for_each(swap),
+            ElementItems::Expressions(_, exprs) => exprs.iter_mut().for_each(swap_expr),
+        }
+    }
+    let globals: Vec<GlobalId> = module.globals.iter().map(|global| global.id()).collect();
+    for global in globals {
+        if let GlobalKind::Local(expr) = &mut module.globals.get_mut(global).kind {
+            swap_expr(expr);
+        }
+    }
+}
+
+/// `types` with the count appended.
+fn wide(types: &[ValType]) -> Vec<ValType> {
+    types.iter().copied().chain([ValType::I64]).collect()
+}
+
+/// The widened form of function type `ty`: the count as one more parameter
+/// and one more result.
+fn wide_type(types: &mut ModuleTypes, ty: TypeId) -> TypeId {
+    let (params, results) = types.params_results(ty);
+    let (params, results) = (wide(params), wide(results));
+    types.add(&params, &results)
+}
+
+/// Gives function `id` the widened type: its (metered) body is copied, as
+/// it is, into a block of the function's original results inside a new body
+/// that takes the count as its last parameter and pushes it as its last
+/// result. A branch to the old body is a branch to that block, which then
+/// falls through to the push; a `return` already pushes it (`meter_seq`).
+fn widen(module: &mut walrus::Module, id: FunctionId, fuel: LocalId) {
+    let ty = module.funcs.get(id).ty();
+    let (params, results) = {
+        let (params, results) = module.types.params_results(ty);
+        (params.to_vec(), results.to_vec())
+    };
+    let inner_ty = InstrSeqType::new(&mut module.types, &[], &results);
+    let mut builder = FunctionBuilder::new(&mut module.types, &wide(&params), &wide(&results));
+    let FunctionKind::Local(old) = &module.funcs.get(id).kind else {
+        return;
+    };
+    let inner = builder.dangling_instr_seq(inner_ty).id();
+    copy_body(old, &mut builder, inner);
+    builder
+        .func_body()
+        .instr(Block { seq: inner })
+        .local_get(fuel);
+    let args = old.args.iter().copied().chain([fuel]).collect();
+    let widened = builder.finish(args, &mut module.funcs);
+    let kind = std::mem::replace(
+        &mut module.funcs.get_mut(widened).kind,
+        FunctionKind::Uninitialized(ty),
+    );
+    module.funcs.get_mut(id).kind = kind;
+    module.funcs.delete(widened);
+}
+
+/// Copies every sequence of `old`'s body into `builder`, its entry into
+/// `inner`, with the block and branch references renamed. A worklist, not
+/// recursion: untrusted nesting depth never grows the stack.
+fn copy_body(old: &walrus::LocalFunction, builder: &mut FunctionBuilder, inner: InstrSeqId) {
+    let mut names = HashMap::from([(old.entry_block(), inner)]);
+    let mut work = vec![(old.entry_block(), inner)];
+    let nest = |seq: InstrSeqId,
+                builder: &mut FunctionBuilder,
+                names: &mut HashMap<InstrSeqId, InstrSeqId>,
+                work: &mut Vec<(InstrSeqId, InstrSeqId)>| {
+        let copy = builder.dangling_instr_seq(old.block(seq).ty).id();
+        names.insert(seq, copy);
+        work.push((seq, copy));
+        copy
+    };
+    while let Some((from, to)) = work.pop() {
+        let mut copied = Vec::with_capacity(old.block(from).instrs.len());
+        for (instr, loc) in &old.block(from).instrs {
+            // a branch names an enclosing block, named before its body
+            let name = |seq: &InstrSeqId| names.get(seq).copied().unwrap_or(*seq);
+            let instr = match instr {
+                Instr::Block(Block { seq }) => Instr::Block(Block {
+                    seq: nest(*seq, builder, &mut names, &mut work),
+                }),
+                Instr::Loop(Loop { seq }) => Instr::Loop(Loop {
+                    seq: nest(*seq, builder, &mut names, &mut work),
+                }),
+                Instr::IfElse(IfElse {
+                    consequent,
+                    alternative,
+                }) => Instr::IfElse(IfElse {
+                    consequent: nest(*consequent, builder, &mut names, &mut work),
+                    alternative: nest(*alternative, builder, &mut names, &mut work),
+                }),
+                Instr::Br(Br { block }) => Instr::Br(Br { block: name(block) }),
+                Instr::BrIf(BrIf { block }) => Instr::BrIf(BrIf { block: name(block) }),
+                Instr::BrTable(BrTable { blocks, default }) => Instr::BrTable(BrTable {
+                    blocks: blocks.iter().map(name).collect(),
+                    default: name(default),
+                }),
+                other => other.clone(),
+            };
+            copied.push((instr, *loc));
+        }
+        *builder.instr_seq(to).instrs_mut() = copied;
+    }
+}
+
+/// Every exported function becomes a wrapper with its original type that
+/// hands the count over: [`GAS`] in as the extra argument, the extra result
+/// back into [`GAS`]. The wrapper is the pass's own code: never charged.
+fn hand_over(module: &mut walrus::Module, gas: GlobalId) {
+    let exported: Vec<(walrus::ExportId, FunctionId)> = module
         .exports
         .iter()
         .filter_map(|export| match export.item {
             walrus::ExportItem::Function(function)
-                if matches!(
-                    module.funcs.get(function).kind,
-                    walrus::FunctionKind::Local(_)
-                ) =>
+                if matches!(module.funcs.get(function).kind, FunctionKind::Local(_)) =>
             {
                 Some((export.id(), function))
             }
@@ -272,40 +453,23 @@ fn hand_over(module: &mut walrus::Module, cx: &Cx) {
         })
         .collect();
     for (export, function) in exported {
-        let ty = module.types.get(module.funcs.get(function).ty());
-        let (params, results) = (ty.params().to_vec(), ty.results().to_vec());
+        let (params, results) = module.types.params_results(module.funcs.get(function).ty());
+        // the widened type less the count
+        let params = params[..params.len().saturating_sub(1)].to_vec();
+        let results = results[..results.len().saturating_sub(1)].to_vec();
         let args: Vec<LocalId> = params
             .iter()
             .map(|&param| module.locals.add(param))
             .collect();
         let mut wrapper = FunctionBuilder::new(&mut module.types, &params, &results);
         let mut body = wrapper.func_body();
-        body.global_get(cx.gas).global_set(cx.shared);
         for &arg in &args {
             body.local_get(arg);
         }
-        body.call(function).global_get(cx.shared).global_set(cx.gas);
+        body.global_get(gas).call(function).global_set(gas);
         let wrapper = wrapper.finish(args, &mut module.funcs);
         module.exports.get_mut(export).item = walrus::ExportItem::Function(wrapper);
     }
-}
-
-/// What every rewritten sequence needs.
-struct Cx {
-    /// [`GAS`]: what the host sets and reads, written by the wrappers of the
-    /// exports and by a trap
-    gas: GlobalId,
-    /// the count between functions (internal, so cheap to reach)
-    shared: GlobalId,
-    /// the count while the function runs (wasmtime's `fuel_var`): loaded
-    /// from `shared` at entry and after a call, stored back before a call,
-    /// a return and the function's end
-    fuel: LocalId,
-    /// a size-charged operator's length, a grow's delta
-    scratch: LocalId,
-    memory: Option<MemoryId>,
-    tables: Vec<TableId>,
-    budget: i64,
 }
 
 type Seq = Vec<(Instr, InstrLocId)>;
@@ -336,19 +500,6 @@ fn charge(cx: &Cx, seq: &mut Seq, pending: &mut i64) {
         put(seq, LocalSet { local: cx.fuel });
     }
     *pending = 0;
-}
-
-/// `shared` = the function's count: before control leaves the function or
-/// another function may read it (a call, a return, the end).
-fn store(cx: &Cx, seq: &mut Seq) {
-    put(seq, LocalGet { local: cx.fuel });
-    put(seq, GlobalSet { global: cx.shared });
-}
-
-/// The function's count = `shared`: at entry and after a call returns.
-fn load(cx: &Cx, seq: &mut Seq) {
-    put(seq, GlobalGet { global: cx.shared });
-    put(seq, LocalSet { local: cx.fuel });
 }
 
 /// `if fuel <= 0 { gas = fuel; unreachable }`: wasmtime traps once the
@@ -517,30 +668,43 @@ fn guard_table_grow(builder: &mut FunctionBuilder, cx: &Cx, seq: &mut Seq) {
     refuse_if(builder, cx, seq);
 }
 
-/// Rewrites one instruction sequence of the original code. `entry` is the
-/// function's body (a branch to it returns); `pending` is the cost carried
-/// in from the enclosing sequence (a `block` body continues straight-line
-/// code); `entry_check` puts a budget check at its start (function entry,
-/// loop header). Only the original sequences are visited: the code the pass
-/// adds is never charged.
-fn meter_seq(
+/// Meters one function's body: every sequence of the original code, from
+/// the entry. A worklist, not recursion: untrusted nesting depth never grows
+/// the stack.
+fn meter_function(
     builder: &mut FunctionBuilder,
+    types: &mut ModuleTypes,
     cx: &Cx,
     entry: InstrSeqId,
+) {
+    // a function invocation costs 1 (wasmtime: `fuel_consumed: 1`)
+    let mut work = vec![(entry, 1, true)];
+    while let Some((seq, pending, entry_check)) = work.pop() {
+        meter_seq(builder, types, cx, seq, pending, entry_check, &mut work);
+    }
+}
+
+/// Rewrites one instruction sequence of the original code. `pending` is the
+/// cost carried in from the enclosing sequence (a `block` body continues
+/// straight-line code); `entry_check` puts a budget check at its start
+/// (function entry, loop header). The nested sequences go on `work`: only
+/// the original sequences are visited, so the code the pass adds is never
+/// charged.
+fn meter_seq(
+    builder: &mut FunctionBuilder,
+    types: &mut ModuleTypes,
+    cx: &Cx,
     seq: InstrSeqId,
     mut pending: i64,
     entry_check: bool,
+    work: &mut Vec<(InstrSeqId, i64, bool)>,
 ) {
     let old = std::mem::take(builder.instr_seq(seq).instrs_mut());
     let mut new = Vec::with_capacity(old.len() + 8);
-    if seq == entry {
-        load(cx, &mut new);
-    }
     if entry_check {
         charge(cx, &mut new, &mut pending);
         check(builder, cx, &mut new);
     }
-    let mut children = Vec::new();
     // the length of a bulk operator when the operator before it pushed it
     // as a constant: wasmtime folds such a cost and checks only past 128
     let mut constant: Option<i64> = None;
@@ -570,15 +734,17 @@ fn meter_seq(
             new.push((instr, loc));
             continue;
         }
-        match &instr {
+        let instr = match instr {
             Instr::Block(Block { seq: child }) => {
                 // no charge on entry: the body continues our straight line
-                children.push((*child, pending, false));
+                work.push((child, pending, false));
                 pending = 0;
+                instr
             }
             Instr::Loop(Loop { seq: child }) => {
                 charge(cx, &mut new, &mut pending);
-                children.push((*child, 0, true));
+                work.push((child, 0, true));
+                instr
             }
             Instr::IfElse(IfElse {
                 consequent,
@@ -586,40 +752,62 @@ fn meter_seq(
             }) => {
                 pending += 1;
                 charge(cx, &mut new, &mut pending);
-                children.push((*consequent, 0, false));
-                children.push((*alternative, 0, false));
+                work.push((consequent, 0, false));
+                work.push((alternative, 0, false));
+                instr
             }
-            Instr::Br(Br { block }) | Instr::BrIf(BrIf { block }) => {
-                pending += 1;
-                charge(cx, &mut new, &mut pending);
-                if *block == entry {
-                    store(cx, &mut new);
-                }
-            }
-            Instr::BrTable(BrTable { blocks, default }) => {
-                pending += 1;
-                charge(cx, &mut new, &mut pending);
-                if *default == entry || blocks.contains(&entry) {
-                    store(cx, &mut new);
-                }
-            }
-            Instr::Call(Call { .. })
-            | Instr::CallIndirect(CallIndirect { .. })
+            Instr::Br(Br { .. })
+            | Instr::BrIf(BrIf { .. })
+            | Instr::BrTable(BrTable { .. })
             // outside FEATURES, so never seen; charged as wasmtime would
             | Instr::ReturnCall(ReturnCall { .. })
             | Instr::ReturnCallIndirect(ReturnCallIndirect { .. }) => {
                 pending += 1;
                 charge(cx, &mut new, &mut pending);
-                store(cx, &mut new);
+                instr
+            }
+            Instr::Call(Call { func }) => {
+                pending += 1;
+                charge(cx, &mut new, &mut pending);
+                // an import keeps its type: it neither takes nor gives the count
+                if cx.adapters.contains_key(&func) {
+                    new.push((instr, loc));
+                    continue;
+                }
+                put(&mut new, LocalGet { local: cx.fuel });
+                new.push((instr, loc));
+                put(&mut new, LocalSet { local: cx.fuel });
+                continue;
+            }
+            Instr::CallIndirect(CallIndirect { ty, table }) => {
+                pending += 1;
+                charge(cx, &mut new, &mut pending);
+                // the count goes under the table index
+                put(&mut new, LocalSet { local: cx.scratch });
+                put(&mut new, LocalGet { local: cx.fuel });
+                put(&mut new, LocalGet { local: cx.scratch });
+                let ty = wide_type(types, ty);
+                new.push((CallIndirect { ty, table }.into(), loc));
+                put(&mut new, LocalSet { local: cx.fuel });
+                continue;
             }
             Instr::Return(_) => {
                 charge(cx, &mut new, &mut pending);
-                store(cx, &mut new);
+                put(&mut new, LocalGet { local: cx.fuel });
+                instr
             }
-            // a trap: nothing reads the count after it but the host, from
-            // [`GAS`], which keeps what it was armed with: the view's trap
-            Instr::Unreachable(Unreachable { .. }) => charge(cx, &mut new, &mut pending),
-            Instr::Drop(_) => {}
+            Instr::Unreachable(Unreachable { .. }) => {
+                charge(cx, &mut new, &mut pending);
+                instr
+            }
+            Instr::RefFunc(RefFunc { func }) => {
+                pending += 1;
+                RefFunc {
+                    func: cx.adapters.get(&func).copied().unwrap_or(func),
+                }
+                .into()
+            }
+            Instr::Drop(_) => instr,
             Instr::MemoryCopy(_)
             | Instr::MemoryFill(_)
             | Instr::MemoryInit(_)
@@ -630,9 +818,13 @@ fn meter_seq(
                 pending += 1;
                 charge(cx, &mut new, &mut pending);
                 charge_len(builder, cx, &mut new);
+                instr
             }
-            _ => pending += 1,
-        }
+            _ => {
+                pending += 1;
+                instr
+            }
+        };
         match &instr {
             Instr::MemoryGrow(MemoryGrow { memory }) => {
                 guard_memory_grow(builder, cx, *memory, &mut new);
@@ -640,19 +832,9 @@ fn meter_seq(
             Instr::TableGrow(TableGrow { .. }) => guard_table_grow(builder, cx, &mut new),
             _ => {}
         }
-        let returns_here = matches!(instr, Instr::Call(_) | Instr::CallIndirect(_));
         new.push((instr, loc));
-        if returns_here {
-            load(cx, &mut new);
-        }
     }
     // the `end` (or `else`) of this sequence
     charge(cx, &mut new, &mut pending);
-    if seq == entry {
-        store(cx, &mut new);
-    }
     *builder.instr_seq(seq).instrs_mut() = new;
-    for (child, carried, entry_check) in children {
-        meter_seq(builder, cx, entry, child, carried, entry_check);
-    }
 }

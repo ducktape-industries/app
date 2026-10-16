@@ -629,6 +629,37 @@ fn fuel_runs_out_at_the_same_point_under_both() {
 }
 
 #[test]
+fn an_import_in_a_table_is_still_reached_under_both() {
+    let mut both = Both::new(
+        r#"(module
+            (import "ducktape_view" "panicked" (func $p (param i32 i32)))
+            (type $t (func (param i32 i32)))
+            (table 2 funcref)
+            (elem (i32.const 0) $p $own)
+            (func $own (param i32 i32))
+            (func (export "through") (param i32)
+                i32.const 1 i32.const 2 local.get 0 call_indirect (type $t))
+            (func (export "direct")
+                i32.const 1 i32.const 2 call $p))"#,
+        VIEW_BYTES,
+    );
+    for index in [0, 1] {
+        assert_eq!(
+            both.call("through", &[index], FUEL_PER_TICK).0,
+            End::Returned(vec![])
+        );
+    }
+    assert_eq!(
+        both.call("through", &[2], FUEL_PER_TICK).0,
+        End::Stopped(Stop::Trap)
+    );
+    assert_eq!(
+        both.call("direct", &[], FUEL_PER_TICK).0,
+        End::Returned(vec![])
+    );
+}
+
+#[test]
 fn a_view_trap_stays_the_views_under_both() {
     let mut both = Both::new(
         r#"(module
