@@ -283,7 +283,10 @@ fn run(io: Weak<Io>) {
                 tried = true;
                 match open_input(&host, &io) {
                     Ok(opened) => input = Some(opened),
-                    Err(status) => io.set_status(status, String::new()),
+                    Err(status) => {
+                        platform::call(false);
+                        io.set_status(status, String::new());
+                    }
                 }
             }
             (false, true) => {

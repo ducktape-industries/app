@@ -126,7 +126,7 @@ mod inner {
     use crate::backend::live::media::{
         AudioNumbering, Chunker, FRESH, Frame, GOP, Ladder, Reassembler, Rung,
     };
-    use crate::backend::live::{Data, Mode, Object, Pushed};
+    use crate::backend::live::{Data, Mode, Object, Pushed, Start};
     use crate::runtime::{HostLive, HostPublication, Subscribed, TrackHeard};
     use ducktape_av::codec::{AudioEncoder, VideoDecoder, VideoEncoder};
     use ducktape_av::{CameraFeed, MicFeed, Speaking, Status, voice};
@@ -200,6 +200,15 @@ mod inner {
         on_state: Option<u32>,
         /// Ends the subscription, and with it the thread.
         _stopper: Option<tokio::task::AbortHandle>,
+    }
+
+    impl Drop for Remote {
+        /// The piece goes: its subscription ends, and its thread with it.
+        fn drop(&mut self) {
+            if let Some(stopper) = self._stopper.take() {
+                stopper.abort();
+            }
+        }
     }
 
     enum Plays {
@@ -461,7 +470,13 @@ mod inner {
         cx: &mut Context<ViewTree>,
     ) -> Remote {
         let standing: Arc<Mutex<RemoteStanding>> = Arc::default();
-        let mut subscription = live.subscribe(track);
+        // a picture from the group the node holds (its keyframe); a voice
+        // from the next packet, never a second of stale voice first
+        let from = match media {
+            wire::RemoteMedia::Video { .. } => Start::Latest,
+            wire::RemoteMedia::Audio { .. } => Start::Next,
+        };
+        let mut subscription = live.subscribe(track, from);
         let stopper = subscription.stopper();
         let plays = match media {
             wire::RemoteMedia::Video { object_fit } => {

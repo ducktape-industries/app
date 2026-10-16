@@ -175,20 +175,16 @@ fn stamp_room(chain: &str, program: &str, room: &str) -> Result<String, String> 
     Ok(namespace)
 }
 
-/// `name` on the track's stamped room, held to the node's rule: the one
-/// stamping of a view's own requests and of the tracks the host runs for
-/// its pieces ([`HostLive`]).
-fn stamp(chain: &str, program: &str, room: &str, name: &str) -> Result<Track, String> {
-    let namespace = stamp_room(chain, program, room)?;
-    if !live_wire::well_named(name) {
-        return Err(format!(
-            "a track name is 1 to {} bytes of `/`-separated segments, none empty or `..`",
-            live_wire::MAX_TRACK_NAME
-        ));
-    }
+/// `track` on its stamped room, held to the wire's one rule
+/// (`LiveTrack::check`, the sanitizer's) and the node's namespace bound:
+/// the one stamping of a view's own requests and of the tracks the host
+/// runs for its pieces ([`HostLive`]).
+fn stamp(chain: &str, program: &str, track: &LiveTrack) -> Result<Track, String> {
+    track.check().map_err(str::to_owned)?;
+    let namespace = stamp_room(chain, program, &track.room)?;
     Ok(Track {
         namespace,
-        name: name.to_owned(),
+        name: track.name.clone(),
     })
 }
 
@@ -206,8 +202,8 @@ fn stamped_room(view: &mut View, id: u64, room: &str) -> Option<String> {
 
 /// [`stamp`] for the view's request `id`; `None` with the request refused
 /// `malformed_request`.
-fn stamped(view: &mut View, id: u64, room: &str, name: &str) -> Option<Track> {
-    match stamp(&view.connection.chain, view.program, room, name) {
+fn stamped(view: &mut View, id: u64, track: &LiveTrack) -> Option<Track> {
+    match stamp(&view.connection.chain, view.program, track) {
         Ok(track) => Some(track),
         Err(why) => {
             view.refuse(id, refusal::MALFORMED_REQUEST, why);
@@ -269,7 +265,7 @@ pub(super) fn publish(view: &mut View, id: u64, payload: &[u8]) {
 }
 
 fn open_publication(view: &mut View, id: u64, session: Arc<dyn Session>, ask: LivePublish) {
-    let Some(track) = stamped(view, id, &ask.track.room, &ask.track.name) else {
+    let Some(track) = stamped(view, id, &ask.track) else {
         return;
     };
     // one publisher per track in the app: the view knows before the node
@@ -413,7 +409,7 @@ fn open_subscription(
     track: LiveTrack,
     from: Start,
 ) {
-    let Some(stamped) = stamped(view, id, &track.room, &track.name) else {
+    let Some(stamped) = stamped(view, id, &track) else {
         return;
     };
     let key = view.perf_key();
@@ -768,7 +764,7 @@ impl HostLive {
                 tokio::time::sleep(HOLD).await;
                 continue;
             };
-            let stamped = match stamp(&chain, self.program, &track.room, &track.name) {
+            let stamped = match stamp(&chain, self.program, &track) {
                 Ok(stamped) => stamped,
                 // a name that is no name never becomes one
                 Err(_) => return drop(tell.send(ended(refusal::MALFORMED_REQUEST))),
@@ -809,21 +805,22 @@ impl HostLive {
         }
     }
 
-    /// Subscribes to `track` from the group the node holds for as long as
-    /// the subscription is held: ended by the node (the publisher gone,
-    /// the track unknown), it waits for the node to announce the track
-    /// again and subscribes once more.
-    pub fn subscribe(&self, track: &LiveTrack) -> HostSubscription {
+    /// Subscribes to `track` `from` the group the node holds or the next
+    /// one, for as long as the subscription is held: ended by the node
+    /// (the publisher gone, the track unknown), it waits for the node to
+    /// announce the track again and subscribes once more, from where it
+    /// first asked.
+    pub fn subscribe(&self, track: &LiveTrack, from: Start) -> HostSubscription {
         let (give, items) = mpsc::channel(CONSUMED_BACKLOG);
         let live = self.clone();
         let track = track.clone();
         let task = super::handle().spawn(async move {
-            live.subscribing(track, give).await;
+            live.subscribing(track, from, give).await;
         });
         HostSubscription { items, task }
     }
 
-    async fn subscribing(self, track: LiveTrack, give: mpsc::Sender<Subscribed>) {
+    async fn subscribing(self, track: LiveTrack, from: Start, give: mpsc::Sender<Subscribed>) {
         let ended = |code: &str| {
             Subscribed::Heard(TrackHeard::Ended {
                 code: code.to_owned(),
@@ -838,13 +835,13 @@ impl HostLive {
                 tokio::time::sleep(HOLD).await;
                 continue;
             };
-            let stamped = match stamp(&chain, self.program, &track.room, &track.name) {
+            let stamped = match stamp(&chain, self.program, &track) {
                 Ok(stamped) => stamped,
                 Err(_) => return drop(give.send(ended(refusal::MALFORMED_REQUEST)).await),
             };
             let open = Ask::Subscribe {
                 track: stamped.clone(),
-                from: Start::Latest,
+                from,
             };
             let refused = match session.open(open).await {
                 Ok(mut request) => loop {

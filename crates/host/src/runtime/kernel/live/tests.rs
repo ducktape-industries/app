@@ -747,7 +747,7 @@ fn a_host_publication_is_stamped_fed_and_published_again_after_a_refusal() {
 #[test]
 fn a_host_subscription_streams_items_and_subscribes_again_on_the_announce() {
     let (live, opens) = host_live();
-    let mut subscription = live.subscribe(&track("cam/7"));
+    let mut subscription = live.subscribe(&track("cam/7"), Start::Latest);
     let (asked, ends) = opened(&opens);
     let Ask::Subscribe {
         track: stamped,
