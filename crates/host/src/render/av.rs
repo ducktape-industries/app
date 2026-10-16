@@ -551,6 +551,7 @@ fn told(state: &ducktape_av::State, kind: ducktape_av::Kind) -> wire::MediaState
         detail,
         speaking: state.speaking,
         opens_settings,
+        monitor_stopped: state.monitor_stopped,
     }
 }
 
@@ -846,6 +847,7 @@ mod tests {
                 device: "Cam\u{202e}era".into(),
                 playback: ducktape_av::Playback::Playing,
                 speaking: true,
+                monitor_stopped: true,
             },
             ducktape_av::Kind::Microphone,
         );
@@ -853,7 +855,7 @@ mod tests {
         assert!(state.detail.len() <= 200 && !state.detail.contains('\n'));
         assert_eq!(state.device, "Camera");
         assert_eq!(state.playback, wire::Playback::Playing);
-        assert!(state.speaking && !state.opens_settings);
+        assert!(state.speaking && state.monitor_stopped && !state.opens_settings);
         let denied = told(
             &ducktape_av::State {
                 status: ducktape_av::Status::Denied,

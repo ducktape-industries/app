@@ -133,6 +133,7 @@ impl Meter {
             device,
             playback,
             speaking,
+            monitor_stopped: self.feed.monitor_stopped(),
         };
         if state != self.told {
             self.told = state.clone();

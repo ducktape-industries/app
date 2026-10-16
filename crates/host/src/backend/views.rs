@@ -7,6 +7,10 @@
 //! entries: a name and a blob that is the view itself, with no program
 //! behind it (Explorer); they follow the programs.
 //!
+//! A program may also carry its NOTIFIER, the headless module that decides
+//! its notices, as the custom section [`NOTIFY_SECTION`] of the same blob
+//! (`runtime::notifier` runs it).
+//!
 //! Nothing here knows a program by name: the roster's order (programs by
 //! name, then view-only entries by name, as the programs role answers them) is the
 //! rail's order, the manifest inside the view names the tab.
@@ -19,6 +23,7 @@ use super::RpcClient;
 use noded_client::wire::{Layer, unframe};
 
 pub const VIEW_SECTION: &str = "ducktape.view";
+pub const NOTIFY_SECTION: &str = "ducktape.notify";
 
 /// One roster entry, as the rail lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -245,6 +250,13 @@ fn hashes_to(framed: &[u8], code: &BlobId) -> Result<bool, Fetch> {
 /// The bytes of the [`VIEW_SECTION`] custom section ([`section`]).
 pub fn view_section(bytes: &[u8]) -> Option<Vec<u8>> {
     section(bytes, VIEW_SECTION).map(<[u8]>::to_vec)
+}
+
+/// The notifier inside `code`'s blob, or `None` when the program ships
+/// none (a view-only entry never does).
+pub async fn notifier_of(client: &RpcClient, code: &BlobId) -> Result<Option<Vec<u8>>, Fetch> {
+    let (bytes, _) = program_bytes(client, code).await?;
+    Ok(section(&bytes, NOTIFY_SECTION).map(<[u8]>::to_vec))
 }
 
 /// The bytes of the custom section `name`, out of a core module or a

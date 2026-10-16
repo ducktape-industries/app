@@ -239,7 +239,7 @@ fn run(
 /// One SUBSCRIPTION's writing end, handed to the loop that feeds it: every
 /// item goes through the same park as a node socket's, so a source that
 /// outruns the redraw waits for the redraw that takes its item.
-pub(super) struct Items {
+pub(in crate::runtime) struct Items {
     replies: std::sync::Arc<Replies>,
     drained: tokio::sync::watch::Receiver<()>,
     claim: Claim,
@@ -250,7 +250,7 @@ impl Items {
     /// One more item. `false` when the view is gone or the subscription
     /// was taken from this task (a reconnect opened it again): it should
     /// end — the caller returns, and everything it holds is dropped.
-    pub(super) async fn send(&mut self, result: Answer) -> bool {
+    pub(in crate::runtime) async fn send(&mut self, result: Answer) -> bool {
         self.replies
             .subscription_item(&mut self.drained, &self.claim, self.id, result)
             .await
@@ -281,6 +281,16 @@ where
         id,
     };
     start(view, id, Some(follows), claim, body(items));
+}
+
+/// A subscription fed by the app itself, not the node (`store.changes`,
+/// `host.screen`): a reconnect leaves it running ([`Follow::Host`]).
+pub(in crate::runtime) fn spawn_host_subscription<Body, Fut>(view: &mut View, id: u64, body: Body)
+where
+    Body: FnOnce(Items) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    spawn_subscription(view, id, Follow::Host, body);
 }
 
 /// Runs `future` on the kernel runtime and delivers its result as the one
@@ -344,6 +354,11 @@ pub(in crate::runtime) fn reconnected(view: &mut View, connection: &super::super
     // counted again as each opens
     view.live_subscriptions.clear();
     for (id, mut task) in std::mem::take(&mut view.tasks) {
+        // the app's own feed has no socket on the old connection
+        if matches!(task.follows, Some(Follow::Host)) {
+            view.tasks.push((id, task));
+            continue;
+        }
         // taken from the task before anything is answered for it: a
         // request its task already ended (a subscription the old node
         // ended, a reply not yet pruned) stays ended, and whatever the
@@ -555,7 +570,7 @@ pub(in crate::runtime) struct NodeTask {
     claim: Claim,
 }
 
-/// A node subscription, as a reconnect opens it again.
+/// A subscription, as a reconnect opens it again.
 pub(super) enum Follow {
     /// `program.changes` of this program.
     Changes(String),
@@ -563,6 +578,8 @@ pub(super) enum Follow {
     Heads,
     /// A `live.*` request (`live.rs`).
     Live(super::live::LiveFollow),
+    /// The app's own feed: it goes on as it is.
+    Host,
 }
 
 impl Drop for NodeTask {

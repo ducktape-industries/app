@@ -134,7 +134,9 @@ const dt = (() => {
         }
         const e = instance.exports;
         if (!(e.memory instanceof WebAssembly.Memory)) return "F the view exports no memory";
-        for (const name of ["alloc", "init", "tick", "snapshot", "restore"]) {
+        // snapshot and restore are optional (`ViewInstance`): a program's
+        // notifier hands no state over, and a call into one it lacks traps
+        for (const name of ["alloc", "init", "tick"]) {
             if (typeof e[name] !== "function") return `F the view exports no ${name}`;
         }
         if (!(e.gas_left instanceof WebAssembly.Global)) return "F the view is not metered";
@@ -180,6 +182,9 @@ const dt = (() => {
             }
             const seat = seats.get(id);
             if (!seat) return `E no view is seated as ${id}`;
+            if ((op === "snapshot" || op === "restore") && typeof seat.e[op] !== "function") {
+                return `F the view exports no ${op}`;
+            }
             switch (op) {
                 case "init":
                     return enter(seat, e => (e.init(), new Uint8Array(0)));
