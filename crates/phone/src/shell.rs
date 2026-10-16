@@ -57,14 +57,13 @@ pub fn launch(os: Arc<dyn OsServices>, cx: &mut App) {
     }
     ducktape_host::theme::configure_native_theme(cx);
     let runner = crate::os::runner(os.dirs());
-    let (host, inbound) = ducktape_host::start::start(
-        Boot {
-            os,
-            runner,
-            open: opened,
-        },
-        cx,
-    );
+    let boot = Boot {
+        os,
+        runner,
+        // banners are not posted yet (`os::NoBanners`): no click lands
+        open: |_| {},
+    };
+    let (host, inbound) = ducktape_host::start::start(boot, cx);
     crate::os::install_inbound(inbound);
     if let Some(target) = Session::boot_target() {
         host.shared
@@ -83,10 +82,6 @@ pub fn launch(os: Arc<dyn OsServices>, cx: &mut App) {
     })
     .detach();
 }
-
-/// What a banner click names, opened: the phone posts no banners yet
-/// (`os::NoBanners`), so no click ever names anything.
-fn opened(_: ducktape_host::runtime::notify::Opened) {}
 
 /// Opens the phone's window over the host [`launch`] started.
 pub fn open_window(cx: &mut App) {
@@ -165,9 +160,8 @@ fn open_door(cx: &mut App) {
                 })
                 .unwrap_or_default()
         };
-        let settle = move |cx: &mut App| {
-            seats.update(cx, |seats, cx| seats.settle(cx));
-        };
+        // whether every seat's tick has landed: a read parks until then
+        let settle = move |cx: &mut App| seats.update(cx, |seats, cx| seats.settle(cx));
         let keep = |_: &Window, _: &App| None;
         let chords = Vec::new;
         let door = ax::Door {

@@ -302,8 +302,10 @@ runner that answers across a process boundary). The seat does not turn the
 drawn view meanwhile (`Mounted::owned`), so nothing can tick it between
 the snapshot and the install. A view whose snapshot refuses ("its
 replacement waits") keeps its seat and the next block asks again; so does
-one whose instance dies under the snapshot (its next tick takes the death
-up, SPEC §6.5). The swap
+one whose instance dies under the snapshot (the death is taken up where
+it lands: the drawn view revives on a new page, its kept batches
+replayed, SPEC §6.5), and one whose fresh instance dies under its restore
+(the drawn view untouched). The swap
 installs only if the seat's `generation` is still the one it was asked for
 and the app is still on the node it was asked of (`Connection.rev`). The
 new view is `staged`: its first tree is already in `frame`, so the next

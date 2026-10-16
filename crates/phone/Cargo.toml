@@ -30,6 +30,8 @@ ax-door = ["ducktape-host/ax-door"]
 # JavaScriptCore on iOS, where no wasmtime is linked
 ducktape-host = { path = "../host", default-features = false }
 noded-client = { path = "../noded-client" }
+# `abi::BlobId`, which `OsServices::bundled_view` names
+abi.workspace = true
 gpui-kit = "=0.7.3"
 design.workspace = true
 tracing.workspace = true

@@ -2740,6 +2740,7 @@ dependencies = [
 name = "ducktape-phone"
 version = "0.1.0"
 dependencies = [
+ "abi",
  "android-activity",
  "commonware-utils",
  "design",

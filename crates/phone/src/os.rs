@@ -123,7 +123,10 @@ impl OsServices for PhoneOs {
         &self.dirs
     }
 
-    fn device_key(&self, keyring: &str) -> Result<Arc<dyn noded_client::Signer>, KeyRefusal> {
+    fn device_key(
+        &self,
+        keyring: &str,
+    ) -> Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal> {
         #[cfg(any(target_os = "ios", target_os = "android"))]
         {
             let key = crate::key::DeviceKey::open(keyring).map_err(KeyRefusal::Denied)?;
@@ -132,7 +135,7 @@ impl OsServices for PhoneOs {
             let public = noded_client::Signer::public_key(&key);
             let public: String = public.iter().map(|byte| format!("{byte:02x}")).collect();
             tracing::info!(target: "ducktape::phone", keyring, %public, "this device's key opened");
-            Ok(Arc::new(key))
+            Ok(Some(Arc::new(key)))
         }
         #[cfg(not(any(target_os = "ios", target_os = "android")))]
         {
@@ -209,6 +212,12 @@ impl OsServices for PhoneOs {
         }
     }
 
+    /// No view ships in the app yet (the phone's `views.lock`, SPEC §4.7):
+    /// every one is the network's.
+    fn bundled_view(&self, _: &abi::BlobId) -> Option<Vec<u8>> {
+        None
+    }
+
     fn mint_invite(&self, _: MintInvite) -> Option<Answered> {
         None
     }
@@ -216,8 +225,9 @@ impl OsServices for PhoneOs {
 
 /// What runs the views (`contract::ViewRunner`): JavaScriptCore's page on
 /// iOS, where no process of ours may JIT (`ducktape_host_jsc`); wasmtime
-/// elsewhere, its traps without signals on Android (an arm64 guest trap
-/// would otherwise take the process down). Either keeps its code under the
+/// elsewhere, its traps without signals on Android (which make every arm64
+/// guest trap a clean error on libc 0.2.189: SPEC C3, S0-android §A).
+/// Either keeps its code under the
 /// cache. A runner iOS cannot make (not on the main thread, which the
 /// launch is) stops the phone with the reason logged.
 pub fn runner(dirs: &Dirs) -> Arc<dyn ViewRunner> {
