@@ -450,11 +450,6 @@ impl Seat {
     /// starts it); else a kept replay due a new snapshot takes it
     /// (`keep_in`), in a task the seat does not own.
     fn after_turn(&self, cx: &mut Context<Self>) {
-        // no call is begun in the background: the turn in front again
-        // comes back here
-        if backgrounded(cx) {
-            return;
-        }
         let (swap, keep) = {
             let locked = lock(&self.mounted);
             match &locked.slot {
@@ -470,6 +465,9 @@ impl Seat {
         } else if keep {
             let mounted = self.mounted.clone();
             cx.spawn(async move |_, cx| {
+                // no call is begun in the background (a frame that landed
+                // there finished its turn here): the turn in front again
+                // comes back
                 if !cx.update(|cx| backgrounded(cx)) {
                     keep_in(mounted).await;
                 }

@@ -2070,6 +2070,44 @@ fn a_death_in_the_background_is_taken_up_in_front(cx: &mut TestAppContext) {
     );
 }
 
+/// A frame that lands in the background begins nothing after it: no kept
+/// snapshot, however due (SPEC §4.3); the turn in front again takes it.
+#[gpui_kit::test]
+fn a_frame_landing_in_the_background_begins_no_snapshot(cx: &mut TestAppContext) {
+    use super::first_frame_tests::frames_wat;
+    const PROGRAM: &str = "background-keep";
+    crate::contract::testing::snapshot_every_for_test(Some(Duration::from_secs(3600)));
+    let runner = DeferredRunner::default();
+    let pump = runner.pump.clone();
+    let runner: Arc<dyn ViewRunner> = Arc::new(runner);
+    let code = crate::runtime::view::prepared_on_for_test(&runner, frames_wat(&five_trees()));
+    crate::runtime::seat_code_on_for_test(&runner, PROGRAM, 320, code);
+    let (seat, _, mut native) = open(cx, PROGRAM, false);
+    draw_now(&mut native);
+    subscribe_props(&seat, &native);
+    pump.hold();
+    nudge(&seat, b"moved", &mut native);
+    assert!(in_flight(&seat, &native));
+    native.update(|_, cx| cx.set_global(Backgrounded(true)));
+    // due from here on
+    crate::contract::testing::snapshot_every_for_test(Some(Duration::ZERO));
+    assert!(pump.release_next());
+    native.run_until_parked();
+    assert!(!in_flight(&seat, &native));
+    assert_eq!(pump.held(), 0, "a snapshot was begun in the background");
+    native.update(|_, cx| cx.set_global(Backgrounded(false)));
+    native.run_until_parked();
+    assert_eq!(
+        pump.held_kinds(),
+        ["Snapshot"],
+        "in front, the due snapshot"
+    );
+    pump.at_once();
+    assert_eq!(pump.release_all(), 1);
+    native.run_until_parked();
+    crate::contract::testing::snapshot_every_for_test(None);
+}
+
 /// A death `hide`'s last update lands at once, where a replay is kept, is
 /// no fault of the view's (SPEC §6.5): the update begins no call to take it
 /// up again, and it stays on the view, which goes with the seat.
