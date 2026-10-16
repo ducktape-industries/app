@@ -46,6 +46,33 @@ pub fn send(signal: Signal) {
     }
 }
 
+/// Links the OS handed the app (an Android intent's data, an iOS scene's
+/// URL), from any thread, for the shell to open; one that comes before the
+/// shell is up waits here.
+static LINKS: OnceLock<(
+    async_channel::Sender<String>,
+    async_channel::Receiver<String>,
+)> = OnceLock::new();
+
+fn links() -> &'static (
+    async_channel::Sender<String>,
+    async_channel::Receiver<String>,
+) {
+    LINKS.get_or_init(async_channel::unbounded)
+}
+
+/// Hands `url` to the shell ([`links_to_open`]).
+pub fn link(url: String) {
+    if let Err(error) = links().0.try_send(url) {
+        tracing::error!(target: "ducktape::phone", %error, "a link the OS handed over was lost");
+    }
+}
+
+/// The links to open, in the order they came.
+pub(crate) fn links_to_open() -> async_channel::Receiver<String> {
+    links().1.clone()
+}
+
 /// The host's directories inside the app container: `documents` is the
 /// directory the OS keeps and backs up (iOS `Documents`, Android
 /// `filesDir`), `caches` the one it may purge (iOS `Library/Caches`, Android
@@ -123,6 +150,8 @@ impl OsServices for PhoneOs {
         &self.dirs
     }
 
+    /// Always an OS-kept key (made on first ask): a phone never had the
+    /// desktop's password-locked key files.
     fn device_key(
         &self,
         keyring: &str,
@@ -316,9 +345,11 @@ pub fn follow<T: 'static>(window: &mut Window, cx: &mut Context<T>) -> Vec<Subsc
     }
     #[cfg(target_os = "android")]
     {
+        // the window active is the app in the foreground (SPEC §7.5): the
+        // session's status poll starts again on it
         vec![cx.observe_window_activation(window, |_, window, _| {
             send(Signal::Lifecycle(if window.is_window_active() {
-                gpui_kit::AppLifecyclePhase::Active
+                gpui_kit::AppLifecyclePhase::Foreground
             } else {
                 gpui_kit::AppLifecyclePhase::Background
             }))

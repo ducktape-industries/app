@@ -1186,6 +1186,7 @@ mod tests {
                 description: String::new(),
                 note: None,
                 empty: false,
+                pending: false,
             };
             super::folded_icon(&row, &gpui_kit::assets::AllAssets)
         };

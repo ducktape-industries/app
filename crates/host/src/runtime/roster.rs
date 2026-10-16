@@ -201,6 +201,10 @@ pub struct RailRow {
     pub note: Option<&'static str>,
     /// The program ships no view: the rail leaves it out.
     pub empty: bool,
+    /// Its code not read yet (no seat, or the bytes still coming): whether
+    /// it ships a view is not known, so `empty` is `false` meanwhile and
+    /// the row says `Loading`. Home lists no program before this is known.
+    pub pending: bool,
 }
 
 /// How far a seat's view has come, readiest first: the rail names a
@@ -262,6 +266,10 @@ impl Roster {
                     // else the raw program id flashes in the rail/pane title.
                     Some(_) | None => (program.to_owned(), Some("Loading"), false),
                 };
+                let pending = matches!(
+                    seat.as_ref().map(|seat| &seat.slot),
+                    None | Some(Slot::Loading | Slot::Fetching { .. })
+                );
                 // the manifest's, as the name is: none before it is read
                 let (icon, description) = match seat.as_ref().map(|seat| &seat.slot) {
                     Some(Slot::Ready(view)) => (view.icon.clone(), view.description.clone()),
@@ -278,6 +286,7 @@ impl Roster {
                     description,
                     note,
                     empty,
+                    pending,
                 }
             })
             .collect()
@@ -546,6 +555,7 @@ mod local_link_tests {
             description: String::new(),
             note: None,
             empty: false,
+            pending: false,
         }];
         assert_eq!(local_seat("duck://catalog", &rows), Some("catalog"));
         assert_eq!(local_seat("duck://preferences", &rows), Some("catalog"));
@@ -584,6 +594,7 @@ mod local_link_tests {
             description: String::new(),
             note: None,
             empty: false,
+            pending: false,
         });
         assert_eq!(local_seat("duck://preferences", &rows), None);
         rows[1].empty = true;
@@ -601,6 +612,7 @@ mod local_link_tests {
             description: String::new(),
             note: None,
             empty: false,
+            pending: false,
         }];
         let view = |route: Option<&str>| Link::View {
             program: "catalog",
@@ -636,6 +648,7 @@ mod local_link_tests {
             description: String::new(),
             note: None,
             empty: false,
+            pending: false,
         }];
         for name in ["forge:web:3", "보고서 #1", "a b"] {
             let link = ducklink::mint("testkit#0a1b2c3d", "chat", &[name, "42"]).unwrap();
@@ -700,6 +713,7 @@ mod rail_tests {
         assert_eq!(row.label, program);
         assert_eq!(row.note, Some("Loading"));
         assert!(!row.empty);
+        assert!(row.pending, "whether it ships a view is not known yet");
     }
 
     /// A seat preloaded only as far as compiled is a row ready to open,
@@ -718,7 +732,28 @@ mod rail_tests {
             .expect("listed program appears in the rail");
         lock(registry()).remove(&(program, 0));
         assert_eq!((row.label.as_str(), row.note), ("Compiled view", None));
-        assert!(!row.empty);
+        assert!(!row.empty && !row.pending);
+    }
+
+    /// A program whose bytes are still coming is pending; once read and
+    /// found to ship no view it is empty, and no longer pending.
+    #[test]
+    fn a_program_is_pending_until_its_code_is_read() {
+        let program = "rail-tests-pending";
+        let seat = Mounted::seat();
+        let row = |seat: &Arc<Mutex<Mounted>>, slot| {
+            lock(seat).slot = slot;
+            lock(registry()).insert((program, 0), seat.clone());
+            let row = Roster::listing(&[program]).rail().remove(0);
+            lock(registry()).remove(&(program, 0));
+            (row.empty, row.pending)
+        };
+        let fetching = Slot::Fetching {
+            received: 1,
+            total: Some(2),
+        };
+        assert_eq!(row(&seat, fetching), (false, true));
+        assert_eq!(row(&seat, Slot::Empty), (true, false));
     }
 
     /// A seat whose bytes are here and whose manifest is read, its code not

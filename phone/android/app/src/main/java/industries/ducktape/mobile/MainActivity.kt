@@ -1,6 +1,8 @@
 package industries.ducktape.mobile
 
 import android.app.Activity
+import android.content.ComponentCallbacks2
+import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Color
 import android.os.Build
@@ -38,6 +40,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private val host = next++
 
     override fun onCreate(state: Bundle?) {
+        // a walk's `am start -e DUCKTAPE_PERF 1`: an app is launched with no environment, so the extra becomes one,
+        // before the library loads and Rust reads it (`perf::start`)
+        intent?.getStringExtra("DUCKTAPE_PERF")?.let { android.system.Os.setenv("DUCKTAPE_PERF", it, true) }
         super.onCreate(state)
         // the key store first: loading its class loads the library and hands Rust the class
         DeviceKeyStore.sealedDir = File(noBackupFilesDir, "device-keys")
@@ -52,6 +57,31 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) {
                 Native.back()
             }
+        }
+        // the launching link once: not again when the Activity is made again (a font or locale change) or the app is
+        // relaunched from Recents, which hands the old intent back
+        if (state == null && (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0) handOn(intent)
+    }
+
+    /** `singleTask`: a link while the app runs comes here, not to a new instance. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // what `intent` reads from now on, so a re-creation finds this one, not the launch's
+        setIntent(intent)
+        handOn(intent)
+    }
+
+    private fun handOn(intent: Intent?) {
+        val url = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.dataString ?: return
+        Native.link(url)
+    }
+
+    /** Memory pressure, not the UI going out of sight (`TRIM_MEMORY_UI_HIDDEN`, which the lifecycle says). */
+    @Suppress("DEPRECATION")
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW && level != ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
+            Native.memoryWarning()
         }
     }
 

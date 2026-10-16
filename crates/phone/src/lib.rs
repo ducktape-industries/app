@@ -12,8 +12,10 @@
 //!   its key and its account.
 //! - [`assets`]: gpui-kit's catalog with its Lucide icons at the Expo
 //!   build's stroke.
-//! - [`shell`]: the window: the stack (Home, Open, Account under a tab bar;
-//!   a program pushed over them) and Home, the network's programs.
+//! - [`shell`]: the window: the stack (Home and Open under a tab bar; a
+//!   program on top, its view seated full screen under the capsule), the
+//!   sheets over it (the account menu, the capsule's menu, the consent
+//!   sheet), Back, the links the OS hands over, memory pressure.
 //!
 //! Nothing here names a user program; the host decides what runs.
 

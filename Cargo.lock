@@ -2744,10 +2744,13 @@ version = "0.1.0"
 dependencies = [
  "abi",
  "android-activity",
+ "async-channel",
  "commonware-utils",
  "design",
+ "ducklink",
  "ducktape-host",
  "ducktape-host-jsc",
+ "futures",
  "gpui-kit",
  "gpui-pre-ios",
  "gpui-pre-mobile",
@@ -2758,6 +2761,7 @@ dependencies = [
  "tempfile",
  "tracing",
  "tracing-subscriber",
+ "view-wire",
 ]
 
 [[package]]

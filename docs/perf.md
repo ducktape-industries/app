@@ -305,6 +305,11 @@ only when on and only when the tree changed.
   per view.
 - Off: `{"error": "perf is off: launch with DUCKTAPE_PERF=1"}` with status
   409, so a gate fails loudly instead of passing on empty data.
+- Phones: the iOS simulator passes it as `SIMCTL_CHILD_DUCKTAPE_PERF=1 xcrun
+  simctl launch ...`; Android as an extra, `am start -e DUCKTAPE_PERF 1 ...`
+  (`MainActivity` sets it in the process environment before Rust starts;
+  read once a process, so a launch that only brings the running app to the
+  front changes nothing).
 - Access as for every door call: loopback only, bearer token from the door
   file (`ax::http::open`).
 

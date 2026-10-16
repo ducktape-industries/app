@@ -217,6 +217,61 @@ fn manifest_of(bytes: &[u8]) -> Listing {
         .unwrap_or_default()
 }
 
+/// What `program`'s manifest says, once one of its seats has read it: the
+/// phone's product page (wasm-mobile SPEC §7.2). `None` while its bytes
+/// are coming, when it failed, or ships no view.
+pub fn listing(program: &str) -> Option<Listing> {
+    // a drawn view and its compiled code carry the manifest's facts under
+    // the same names
+    macro_rules! listing_of {
+        ($held:expr) => {
+            Listing {
+                name: $held.name.clone(),
+                icon: $held.icon.clone(),
+                description: $held.description.clone(),
+                min_width: $held.min_width,
+                capabilities: $held.capabilities.clone(),
+                targets: $held.targets.clone(),
+                wire: $held.wire.clone(),
+            }
+        };
+    }
+    let registry = lock(registry());
+    registry
+        .iter()
+        .filter(|((name, _), _)| *name == program)
+        .find_map(|(_, seat)| match &lock(seat).slot {
+            Slot::Ready(view) => Some(listing_of!(view)),
+            Slot::Compiled(code) => Some(listing_of!(code)),
+            Slot::Listed(listing) | Slot::Compiling(listing) => Some((**listing).clone()),
+            _ => None,
+        })
+}
+
+/// What `capability` lets a view do, in a line a person reads: the Expo
+/// app's words (mobile `src/network/words.ts` `ALLOWS`, explorer-view's
+/// program page). Every capability is worded here, so a new one is
+/// worded before it ships.
+pub fn allows(capability: Capability) -> &'static str {
+    match capability {
+        Capability::Chain => "reads the chain: blocks, transactions and the node's status",
+        Capability::Program => "asks programs questions and follows what they change",
+        Capability::Op => "sends operations to the chain in your name",
+        Capability::Invite => "mints invites with the node's key",
+        Capability::Link => "opens links: another view, or the browser",
+        Capability::Blob => "reads blobs the node holds",
+        Capability::Host => "knows the session: who you are, which chain, when it is on screen",
+        Capability::Clock => "wakes on a timer",
+        Capability::Clipboard => "reads and writes the clipboard",
+        Capability::Notify => "posts notifications",
+        Capability::Store => "keeps its own data on this device",
+        Capability::Web => "shows web pages, and takes the web links the app opens",
+        Capability::Live => {
+            "sends and hears live streams in its program's rooms, as the program grants"
+        }
+    }
+}
+
 /// The narrowest `program`'s view is laid out, in px, once one of its seats
 /// holds it drawn or compiled; `None` while it loads, failed, or has none.
 pub fn min_width(program: &str) -> Option<f32> {
@@ -535,5 +590,18 @@ pub fn seat_code_on_for_test(
         let mut locked = seat.lock().unwrap();
         locked.slot = ready();
         locked.wake.send_replace(());
+    }
+}
+
+#[cfg(test)]
+mod listing_tests {
+    /// A seated view's manifest is what the product page reads; a program
+    /// no seat holds has none.
+    #[test]
+    fn a_seated_views_listing_is_read_off_its_seat() {
+        super::seat_for_test("listing-test", 640);
+        let listing = super::listing("listing-test").map(|listing| listing.min_width);
+        assert_eq!(listing, Some(640));
+        assert_eq!(super::listing("listing-test-unseated"), None);
     }
 }

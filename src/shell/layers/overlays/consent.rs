@@ -7,10 +7,7 @@ use crate::runtime::consent;
 use crate::shell::entities::Overlay;
 use gpui_kit::*;
 
-/// How long Approve takes no press after the card opens: a second press
-/// the view asked for ("press twice") lands on the card before anyone
-/// read it.
-pub(in crate::shell) const SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
+pub(in crate::shell) use crate::runtime::consent::SETTLE;
 
 /// The card's usual height, a few lines of description in it: where it
 /// hangs in a short window (`dialog_fit`).
@@ -176,174 +173,11 @@ impl OverlayLayer {
     ) -> AnyElement {
         use crate::a11y::Control as _;
         use gpui_kit::component::FocusTrapElement as _;
-        use gpui_kit::prelude::FluentBuilder as _;
         let dark = self.prefs.read(cx).get().dark();
         let palette = design::palette(dark);
         let color = ducktape_host::theme::hsla;
-        let card = asked.card;
-        let face = |size: f32, line: f32, weight: u16, mono: bool| {
-            div()
-                .font_family(match mono {
-                    true => crate::shell::theme::FAMILY_MONO,
-                    false => crate::shell::theme::FAMILY_UI,
-                })
-                .font_weight(FontWeight(f32::from(weight)))
-                .text_size(px(size))
-                .line_height(px(line))
-        };
-        // the kit's `Text` roles: title 17/21, small 14/19, body 15/21,
-        // secondary 13/18, caption 12/16, eyebrow mono 11/14 uppercase
-        let head = div()
-            .flex()
-            .flex_col()
-            .gap(px(XS))
-            .px(px(INSET))
-            .pb(px(MD))
-            .child(
-                // drawn in capitals, read as written, as a view's text with
-                // a transform is: one Label node, the drawn words in no node
-                face(11., 14., 400, true)
-                    .id("consent-title")
-                    .role(Role::Label)
-                    .aria_value(asked.title)
-                    .text_color(color(palette.muted))
-                    .child(asked.title.to_uppercase()),
-            )
-            .child(
-                face(17., 21., 500, false)
-                    .text_color(color(palette.foreground))
-                    .child(words("consent-card-title", card.title)),
-            );
-        // the kit's `KeyValue`: a 96 wide label, the value beside it
-        let facts = card.facts.into_iter().enumerate().map(|(at, fact)| {
-            div()
-                .min_h(px(44.))
-                .flex()
-                .items_start()
-                .gap(px(LG))
-                .py(px(MD))
-                .px(px(BLOCK))
-                .border_b_1()
-                .border_color(color(palette.border))
-                .child(
-                    face(14., 19., 400, false)
-                        .w(px(96.))
-                        .flex_none()
-                        .text_color(color(palette.muted))
-                        .child(words(format!("consent-fact-{at}"), fact.label)),
-                )
-                .child(
-                    face(14., 19., 400, fact.mono)
-                        .flex_1()
-                        .min_w_0()
-                        .text_color(color(palette.foreground))
-                        .child(words(format!("consent-fact-{at}-value"), fact.value)),
-                )
-        });
-        let warning = face(13., 18., 400, false)
-            .px(px(INSET))
-            .pt(px(MD))
-            .text_color(color(palette.warning))
-            .child(words("consent-warning", card.warning));
-        // the kit's `Button`: Cancel quiet at the primary's 48, the verb
-        // twice its width, 48 as a primary and 44 in danger, as the kit's
-        // own heights put them (`size.primary`, `size.control`)
-        let pressable = |id: &'static str,
-                         label: &'static str,
-                         ground: Option<design::Color>,
-                         edge: Option<design::Color>,
-                         tone: design::Color,
-                         weight: u16,
-                         tall: f32,
-                         run: Box<dyn Fn(&mut App)>| {
-            let filled = ground.is_some();
-            let button = face(15., 21., weight, false)
-                .id(id)
-                .control(Role::Button, label)
-                .h(px(tall))
-                .flex_basis(px(0.))
-                .min_w_0()
-                .px(px(BLOCK))
-                .flex()
-                .items_center()
-                .justify_center()
-                .border_1()
-                .border_color(edge.map_or(gpui_kit::transparent_black(), color))
-                .when_some(ground, |button, ground| button.bg(color(ground)))
-                .text_color(color(tone))
-                .cursor_pointer()
-                .on_click(move |_, _, cx| {
-                    cx.stop_propagation();
-                    run(cx)
-                })
-                .child(div().truncate().child(label));
-            let ring = match filled {
-                true => color(palette.background),
-                false => color(palette.foreground),
-            };
-            crate::a11y::keyboard(button, ring)
-        };
-        let mut cancel = pressable(
-            "consent-cancel",
-            "Cancel",
-            None,
-            None,
-            palette.muted,
-            400,
-            48.,
-            Box::new(move |cx| answer(false, cx)),
-        );
-        cancel.style().flex_grow = Some(1.);
-        let (ground, edge, tone, tall) = match card.danger {
-            true => (None, palette.danger, palette.danger, 44.),
-            false => (
-                Some(palette.primary),
-                palette.primary,
-                palette.primary_foreground,
-                48.,
-            ),
-        };
-        let mut verb = pressable(
-            "consent-approve",
-            card.verb,
-            ground,
-            Some(edge),
-            tone,
-            500,
-            tall,
-            Box::new(approved),
-        );
-        verb.style().flex_grow = Some(2.);
-        let buttons = div()
-            .flex()
-            .items_start()
-            .gap(px(SM))
-            .px(px(INSET))
-            .pt(px(BLOCK))
-            .child(cancel)
-            .child(verb);
-        let caption = face(12., 16., 400, false)
-            .px(px(INSET))
-            .pt(px(MD))
-            .text_color(color(palette.muted))
-            .child(words(
-                "consent-caption",
-                "This phone's key signs it. The node runs the program's rules; \
-                 a refusal comes back in its words.",
-            ));
-        let body = div()
-            .id("confirm")
-            .min_h_0()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .pt(px(XS))
-            .pb(px(LG))
-            .child(head)
-            .children(facts)
-            .child(warning)
-            .child(buttons)
-            .child(caption);
+        let title = asked.title;
+        let body = consent::sheet(asked, dark, approved, answer);
         // the Expo sheet's handle, in its band
         let handle = div()
             .flex_none()
@@ -362,7 +196,7 @@ impl OverlayLayer {
         let room = f32::from(window.viewport_size().height) - inset.top;
         let panel = div()
             .id(SharedString::from(format!("consent-{ask}")))
-            .control(Role::Dialog, asked.title)
+            .control(Role::Dialog, title)
             .occlude()
             .flex()
             .flex_col()
@@ -397,12 +231,3 @@ impl OverlayLayer {
             .into_any_element()
     }
 }
-
-/// The phone's spacing ladder (the design crate's, which the Expo kit's
-/// `gap` is), and the 20 its confirm card insets its lines by.
-const XS: f32 = design::spacing::XS as f32;
-const SM: f32 = design::spacing::SM as f32;
-const MD: f32 = design::spacing::MD as f32;
-const LG: f32 = design::spacing::LG as f32;
-const BLOCK: f32 = design::spacing::BLOCK as f32;
-const INSET: f32 = 20.;

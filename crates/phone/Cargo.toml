@@ -44,6 +44,15 @@ commonware-utils = "2026.9.0"
 # the throwaway reader key (`OsServices::reader`): Ed25519 from the TLS
 # stack's own crate, already in the graph
 ring = "0.17"
+# the links the OS hands the app, from its own thread (`os::link`); the
+# host's channel crate
+async-channel = "2"
+# the host's consent queue wakes the shell on a futures channel
+futures.workspace = true
+# a program's own link, for the capsule's Copy link
+ducklink.workspace = true
+# the host's places a view asks for (`SeatsEvent::Show`)
+view-wire.workspace = true
 
 [target.'cfg(target_os = "ios")'.dependencies]
 ducktape-host-jsc = { path = "../host-jsc" }

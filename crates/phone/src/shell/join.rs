@@ -719,7 +719,7 @@ fn button(
             Some(palette.primary()),
         ),
         Kind::Small => (
-            look::SMALL,
+            look::SMALL_BUTTON,
             look::SECONDARY,
             FontWeight::MEDIUM,
             palette.foreground(),

@@ -200,6 +200,23 @@ fn a_views_first_tick_carries_the_hosts_facts(cx: &mut TestAppContext) {
     );
 }
 
+/// A manifest's minimum is the narrowest pointer window. Under a finger
+/// a view is laid out at its body's width even when its minimum is wider
+/// (a phone's screen): never widened, so never cut at the screen's edge.
+/// (Under a pointer it is widened: `a_views_viewport_is_never_narrower_than_its_minimum`.)
+#[gpui_kit::test]
+fn under_touch_a_view_is_laid_out_at_its_body_under_its_minimum(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "first-frame-touch-minimum-test";
+    crate::contract::testing::touch_first_for_test(true);
+    frames_in_order(PROGRAM, 640, &[full(boxed("card"))]);
+    let (_seat, _drawn, mounted, opened) = open(cx, PROGRAM);
+    opened.native.run_until_parked();
+    crate::contract::testing::touch_first_for_test(false);
+    let (_, viewport, _, touch) = facts(&ticked_with(&mounted)[0]);
+    assert_eq!(touch, Some(true));
+    assert_eq!(viewport, Some(WINDOW), "the body, not the 640 minimum");
+}
+
 /// A pane with no body yet (its desk is not drawn: a pane popped out while
 /// its view was loading, any pane of a window before its first frame) does
 /// not tick its view: the view would lay itself out in a viewport nobody

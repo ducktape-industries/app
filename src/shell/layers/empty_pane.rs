@@ -727,6 +727,7 @@ mod tests {
             description: String::new(),
             note: None,
             empty,
+            pending: false,
         }
     }
 

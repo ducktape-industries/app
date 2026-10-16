@@ -146,6 +146,31 @@ impl Mounted {
         self.generation
     }
 
+    /// The pane that claimed the seat let it go: a drawn view steps back to
+    /// the code it was seated from (its instance and memory go, the code
+    /// stays), a compiled one stays as it is, and a load on its way for the
+    /// pane lands nowhere. False when there is nothing compiled to keep, or
+    /// a sequence owns the drawn view: the seat goes.
+    fn step_back(&mut self) -> bool {
+        if self.owned {
+            return false;
+        }
+        match &mut self.slot {
+            Slot::Ready(view) => match view.code.take() {
+                Some(code) => self.slot = Slot::Compiled(code),
+                None => return false,
+            },
+            Slot::Compiled(_) => {}
+            _ => return false,
+        }
+        self.instance = 0;
+        self.generation += 1;
+        self.swap = None;
+        self.to_start = None;
+        self.wake.send_replace(());
+        true
+    }
+
     /// The program left the roster: the seat is emptied, and the `Seat`
     /// woken to draw that, since nothing else about it moves.
     pub(super) fn retire(&mut self) {
@@ -308,6 +333,22 @@ pub(super) type Registry = Mutex<HashMap<(&'static str, u64), Arc<Mutex<Mounted>
 pub(super) fn registry() -> &'static Registry {
     static MOUNTED: OnceLock<Registry> = OnceLock::new();
     MOUNTED.get_or_init(Mutex::default)
+}
+
+/// The pane `instance` let go of `program`'s seat: it is put back as the
+/// program's preloaded seat, `(program, 0)`, which the next pane's
+/// [`mounted`] claims, stepped back to its compiled code
+/// (`Mounted::step_back`), so neither the next open nor the roster's next
+/// read loads it again and the rail keeps listing it. A seat with nothing
+/// compiled to keep, or a program that has a preloaded seat already, goes.
+pub(super) fn let_go(program: &'static str, instance: u64) {
+    let mut registry = lock(registry());
+    let Some(seat) = registry.remove(&(program, instance)) else {
+        return;
+    };
+    if !registry.contains_key(&(program, 0)) && lock(&seat).step_back() {
+        registry.insert((program, 0), seat);
+    }
 }
 
 /// Claim a preloaded seat or create a distinct view for this view instance.

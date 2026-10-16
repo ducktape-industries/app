@@ -26,7 +26,7 @@ pub use node::{STATUS_EVERY, StatusSource};
 pub use node::{Session, SessionEvent, SessionState};
 pub use notifications::{Notifications, permission};
 pub use prefs::Prefs;
-pub use rail::Rail;
+pub use rail::{Opening, Rail};
 pub use screen::{AccountStep, Screen};
 pub use seats::{Place, Seats, SeatsEvent};
 pub use slice::{Observed, Slice, on_runtime, spawn_on_runtime};
