@@ -201,6 +201,8 @@ colours!(
     accent,
     primary,
     primary_foreground,
+    success,
+    success_soft,
     danger,
     danger_soft
 );

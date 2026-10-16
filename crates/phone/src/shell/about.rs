@@ -53,7 +53,7 @@ pub fn page(
         .border_color(palette.border())
         .child(
             hit("about/back", "Back", "icons/arrow-left.svg")
-                .on_click(cx.listener(|root, _, _, cx| root.close_about(cx))),
+                .on_click(cx.listener(|root, _, _, cx| root.pop_page(cx))),
         )
         .child(
             hit("about/copy-link", "Copy link", "icons/link.svg")
@@ -101,7 +101,7 @@ pub fn page(
             look::text(look::BODY, FontWeight::MEDIUM, palette.primary_foreground()).child("Open"),
         )
         .on_click(cx.listener(move |root, _, _, cx| {
-            root.close_about(cx);
+            root.pop_page(cx);
             root.open(program, cx);
         }));
     let mut body = div()
@@ -149,7 +149,7 @@ pub fn page(
 
 /// A section's head (Expo `SectionHead`): 12 medium muted label, a count
 /// at the right.
-fn section(label: &'static str, count: Option<String>, palette: Palette) -> Div {
+pub(super) fn section(label: &'static str, count: Option<String>, palette: Palette) -> Div {
     div()
         .min_h(px(40.))
         .flex()
