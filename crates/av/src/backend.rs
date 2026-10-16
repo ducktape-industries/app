@@ -1,6 +1,7 @@
 //! THE SEAM: every call into a capture or playback library, and nothing of
 //! gpui. Cameras through our own capture (V4L2 on Linux in `v4l2.rs`,
-//! AVFoundation on macOS in `apple.rs`) driven by one stream loop here,
+//! AVFoundation on macOS and iOS in `apple.rs`, Camera2 on Android in
+//! `android.rs`) driven by one stream loop here,
 //! microphones and speakers through cpal, each piece on a thread of its
 //! own that leaves what it has in a feed ([`CameraFeed`], [`MicFeed`]) for
 //! the gpui side to read. Another backend replaces this file and those
@@ -41,8 +42,8 @@ pub struct CameraDevice {
     pub device: Device,
     pub facing: Facing,
     /// The system's own name for it, which opens it (`platform::open`):
-    /// the V4L2 node (`video0`) on Linux, the unique id on macOS. Only a
-    /// listing fills it.
+    /// the V4L2 node (`video0`) on Linux, the unique id on macOS, the
+    /// Camera2 id on Android. Only a listing fills it.
     pub(crate) handle: String,
 }
 

@@ -23,8 +23,8 @@ use view_wire::methods::{self, refusal};
 
 /// The system's page `host.show` brings up for a refused camera's or
 /// microphone's settings place, where this host has one (macOS's privacy
-/// panes, iOS's page of the app: `ducktape_av::settings_page`), as a
-/// refused device's state says
+/// panes, iOS's and Android's page of the app:
+/// `ducktape_av::settings_page`), as a refused device's state says
 /// (`MediaState::opens_settings`). The shell hands it to the system. The
 /// reader's account is the shell's own place, no page of the system's.
 pub fn settings_page(place: view_wire::methods::Place) -> Option<&'static str> {

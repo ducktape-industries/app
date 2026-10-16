@@ -13,10 +13,11 @@
 # cpal for audio) over the camera capture we own: V4L2 on Linux
 # (`src/v4l2.rs`), AVFoundation on macOS and iOS (`src/apple.rs`, with
 # `src/mac.rs` and `src/ios.rs` for what each has of its own: on iOS the
-# app's audio session and its routes). Another backend replaces those.
-# The gpui side (`camera.rs`, `meter.rs`) reads only what
-# they leave in a feed. Other systems (Windows) are not built with
-# `capture`: a build there is a `--no-default-features` one, without av.
+# app's audio session and its routes), Camera2 on Android
+# (`src/android.rs`). Another backend replaces those. The gpui side
+# (`camera.rs`, `meter.rs`) reads only what they leave in a feed. Other
+# systems (Windows) are not built with `capture`: a build there is a
+# `--no-default-features` one, without av.
 #
 # Without feature `capture` it is empty and has no dependencies. The host's
 # `av` feature turns `capture` on, and the app's default build turns that
@@ -36,6 +37,7 @@ capture = [
     "dep:objc2", "dep:block2", "dep:objc2-foundation", "dep:objc2-av-foundation",
     "dep:objc2-core-media", "dep:objc2-core-video", "dep:dispatch2", "dep:objc2-core-audio",
     "dep:objc2-avf-audio",
+    "dep:jni", "dep:ndk", "dep:ndk-context", "dep:ndk-sys",
 ]
 
 # what a test reads off a piece (`Camera::let_go`, `Meter::monitor`,
@@ -45,7 +47,8 @@ test-support = []
 
 [dependencies]
 gpui-kit = { version = "=0.7.3", optional = true }
-# microphones and speakers: ALSA on Linux, Core Audio on macOS and iOS
+# microphones and speakers: ALSA on Linux, Core Audio on macOS and iOS,
+# AAudio on Android
 cpal = { version = "=0.18.2", optional = true }
 # the pictures gpui draws; on Linux also a MJPEG camera's frames, by its
 # pure-Rust JPEG decoder
@@ -78,6 +81,16 @@ objc2-core-audio = { version = "0.3", default-features = false, features = ["std
 # interruptions), which cpal's one audio unit plays through
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2-avf-audio = { version = "0.3", default-features = false, features = ["std", "AVAudioSession", "AVAudioSessionRoute", "AVAudioSessionTypes"], optional = true }
+
+# Android: the camera through the NDK's Camera2 (`ndk-sys`, its
+# `libcamera2ndk`) into an image reader (`ndk`'s); the permission, the
+# audio routes and the settings page through the app's Context over JNI
+# (`ndk-context`, which the phone's glue sets, as cpal's AAudio host needs)
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { version = "0.22", optional = true }
+ndk = { version = "0.9", default-features = false, features = ["media", "api-level-26"], optional = true }
+ndk-context = { version = "0.1", optional = true }
+ndk-sys = { version = "0.6", optional = true }
 
 [dev-dependencies]
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
