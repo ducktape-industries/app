@@ -333,7 +333,7 @@ impl Seat {
         let again = again || !view.pending.is_empty();
         let next_tick = kernel::next_tick(&view.clocks);
         if let Some(fault) = &view.fault {
-            let standin = Standin::from(&Failure::Trapped(fault.clone()));
+            let standin = Standin::from(&view.failure(fault.clone()));
             drop(locked);
             return self.show_standin(standin, cx);
         }
