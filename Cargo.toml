@@ -21,10 +21,10 @@ authors = ["Ducktape contributors"]
 
 [workspace]
 resolver = "2"
-# Crates no other member depends on yet (path dependencies are members
-# already): the meter pass (`crates/view-meter`), which the iOS view runner
-# will call.
-members = ["crates/view-meter"]
+# the phone shell (`crates/phone`), and crates no other member depends on yet
+# (path dependencies are members already): the meter pass (`crates/view-meter`),
+# which the iOS view runner will call.
+members = ["crates/phone", "crates/view-meter"]
 
 [workspace.package]
 edition = "2024"
@@ -33,16 +33,16 @@ version = "0.1.0"
 [workspace.dependencies]
 
 # --- sdk-line: crates/sdk of ducktape-industries/programs (abi, view-wire, program, ducklink, design, describe). Every crate of that repo here and below sits on ONE rev, and the views this app seats are built at that rev. One whose manifest's wire_id is not `view_wire::WIRE_ID` runs all the same, and a failure of it names both wires and the node (`View::failure`). Which rev and why is in `git log -- Cargo.toml`. ---
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "7327a481c1291176de20757956e33562fa2127a0", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "7327a481c1291176de20757956e33562fa2127a0", package = "view-wire" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "aa6380d1ef62732bf5f6261d2da13a256b61140b", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "aa6380d1ef62732bf5f6261d2da13a256b61140b", package = "view-wire" }
 # `program::is_name`: the one spelling of a program id
-program = { git = "https://github.com/ducktape-industries/programs", rev = "7327a481c1291176de20757956e33562fa2127a0", package = "program" }
-ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "7327a481c1291176de20757956e33562fa2127a0", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/programs", rev = "7327a481c1291176de20757956e33562fa2127a0", package = "design" }
+program = { git = "https://github.com/ducktape-industries/programs", rev = "aa6380d1ef62732bf5f6261d2da13a256b61140b", package = "program" }
+ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "aa6380d1ef62732bf5f6261d2da13a256b61140b", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/programs", rev = "aa6380d1ef62732bf5f6261d2da13a256b61140b", package = "design" }
 # `program.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/programs", rev = "7327a481c1291176de20757956e33562fa2127a0", package = "describe" }
+describe = { git = "https://github.com/ducktape-industries/programs", rev = "aa6380d1ef62732bf5f6261d2da13a256b61140b", package = "describe" }
 # the identity program's own types: the app's passkey lane and `crates/noded-client`'s flows
-identity = { git = "https://github.com/ducktape-industries/programs", rev = "7327a481c1291176de20757956e33562fa2127a0", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/programs", rev = "aa6380d1ef62732bf5f6261d2da13a256b61140b", package = "identity" }
 
 # --- node-side: ducktape-industries/ducktape at the rev the programs rev above pins ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a0151a411c3558453c34bb8272b93dfc428cb74", package = "ducktape-home" }
@@ -69,6 +69,11 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 # wasmtime — pinned exactly, matching the node's runtime: a program-owned view
 # executes in the same wasm semantics the kernel does.
 wasmtime = "=46.0.3"
+# --- the phone platforms, vendored in the gpui-pre fork at the [patch.crates-io]
+# rev below (not on crates.io): zed's gpui_ios, and longbridge gpui-mobile's
+# Android half with its one line changed (crates/phone) ---
+gpui-pre-ios = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }
+gpui-pre-mobile = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea", default-features = false }
 libc = "0.2"
 
 [features]
@@ -105,7 +110,7 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a0151a411c3558453c34bb8272b93dfc428cb74", package = "keyscheme" }
 identity.workspace = true
-valset = { git = "https://github.com/ducktape-industries/programs", rev = "7327a481c1291176de20757956e33562fa2127a0", package = "valset" }
+valset = { git = "https://github.com/ducktape-industries/programs", rev = "aa6380d1ef62732bf5f6261d2da13a256b61140b", package = "valset" }
 base64.workspace = true
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -163,7 +168,7 @@ keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a
 p256 = "0.13"
 
 [patch."https://github.com/ducktape-industries/ducktape"]
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "7327a481c1291176de20757956e33562fa2127a0", package = "abi" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "aa6380d1ef62732bf5f6261d2da13a256b61140b", package = "abi" }
 
 [patch.crates-io]
 gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }
@@ -190,6 +195,13 @@ strip = true
 inherits = "release"
 lto = "fat"
 codegen-units = 1
+
+# What a phone runs (`phone/Makefile`): gpui_ios's ObjC entries and gm's
+# JNI ones have no unwind guard, so a panic aborts with its logged reason
+# instead of unwinding into UIKit or the JVM (wasm-mobile SPEC §13.3).
+[profile.phone]
+inherits = "release"
+panic = "abort"
 
 # dev/test builds compile wasm views through cranelift (program-owned view
 # fixtures); unoptimized cranelift is 10-30x slower, so the code generator
