@@ -275,6 +275,10 @@ pub struct Root {
     placed: (BTreeMap<u64, Place>, Option<u64>),
     /// A link that came before the network listed its programs.
     waiting: Option<String>,
+    /// Home has listed the network's programs: every one's code was read
+    /// once. Until then Home lists none (a program with no view would show
+    /// for a moment); after, one still on its way is left out alone.
+    known: bool,
     /// Home's filter.
     search: Entity<InputState>,
     /// Each placed seat, observed: a tree, a standin or a fault that moved
@@ -341,6 +345,7 @@ impl Root {
             titles: BTreeMap::new(),
             placed: Default::default(),
             waiting: None,
+            known: false,
             search,
             watched: BTreeMap::new(),
             _subscriptions: subscriptions,
@@ -508,13 +513,18 @@ impl Root {
         self.titles.clear();
         self.about = None;
         self.waiting = None;
+        self.known = false;
         cx.notify();
     }
 
     /// The rail moved: Home redraws, and a link kept until the network
     /// listed its programs opens now.
     fn rail_moved(&mut self, cx: &mut Context<Self>) {
-        if !home::listed(&self.shared, cx).is_empty()
+        if !self.known {
+            let rows = self.shared.rail.read(cx).rows();
+            self.known = !rows.is_empty() && rows.iter().all(|row| !row.pending);
+        }
+        if self.known
             && let Some(link) = self.waiting.take()
         {
             self.open_link(&link, cx);
@@ -529,7 +539,7 @@ impl Root {
             Some(rest) => format!("duck://{rest}"),
             None => link,
         };
-        if home::listed(&self.shared, cx).is_empty() {
+        if !self.known {
             self.waiting = Some(link);
         } else {
             self.open_link(&link, cx);
@@ -982,7 +992,14 @@ impl Render for Root {
                         Tab::Home => {
                             let searching =
                                 self.search.read(cx).focus_handle(cx).is_focused(window);
-                            home::home(&self.shared, &self.search, searching, palette, cx)
+                            home::home(
+                                &self.shared,
+                                &self.search,
+                                searching,
+                                self.known,
+                                palette,
+                                cx,
+                            )
                         }
                         Tab::Open => {
                             let opened = self.stack.read(cx).open().to_vec();

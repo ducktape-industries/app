@@ -36,15 +36,15 @@ pub fn name_of(row: &RailRow) -> String {
     }
 }
 
-/// The rows Home lists: every program the network lists with a view, in the
-/// roster's order (the desktop rail's), none privileged.
+/// The rows Home lists: every program the network lists that is known to
+/// ship a view, in the roster's order (the desktop rail's), none privileged.
 pub fn listed(shared: &Shared, cx: &App) -> Vec<RailRow> {
     shared
         .rail
         .read(cx)
         .rows()
         .iter()
-        .filter(|row| !row.empty)
+        .filter(|row| !row.empty && !row.pending)
         .cloned()
         .collect()
 }
@@ -247,11 +247,13 @@ fn search(field: &Entity<InputState>, focused: bool, palette: Palette) -> Div {
 
 /// Home: the network's programs that answer the filter, three across; a
 /// tile opens its program; one a view asked about shows a dot (never a
-/// count, Expo `Dot`).
+/// count, Expo `Dot`). Until every program's code is `known` once, a
+/// `Loading` line stands where the tiles go.
 pub fn home(
     shared: &Shared,
     field: &Entity<InputState>,
     searching: bool,
+    known: bool,
     palette: Palette,
     cx: &mut Context<Root>,
 ) -> Div {
@@ -309,16 +311,25 @@ pub fn home(
         .flex_1()
         .min_h_0()
         .overflow_y_scroll()
-        .child(search(field, searching, palette))
-        .child(section_head("Programs", rows.len(), palette))
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .px(px(look::GUTTER - look::gap::XXS))
-                .py(px(look::gap::SM))
-                .children(tiles),
-        );
+        .child(search(field, searching, palette));
+    let body = if known {
+        body.child(section_head("Programs", rows.len(), palette))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .px(px(look::GUTTER - look::gap::XXS))
+                    .py(px(look::gap::SM))
+                    .children(tiles),
+            )
+    } else {
+        body.child(
+            look::text(look::SECONDARY, FontWeight::NORMAL, palette.muted())
+                .px(px(look::GUTTER))
+                .py(px(look::gap::LG))
+                .child("Loading"),
+        )
+    };
     let name = me(shared, cx).map(|(_, name)| name).unwrap_or_default();
     div()
         .flex_1()
@@ -619,6 +630,7 @@ mod tests {
             description: String::new(),
             note,
             empty: false,
+            pending: false,
         }
     }
 
