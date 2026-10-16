@@ -81,7 +81,7 @@ fn start_parked(seat: &Arc<Mutex<Mounted>>, program: &'static str) {
 
 /// Waits, up to ten seconds, for `done`; panics naming `what` if it never
 /// is.
-pub(super) fn eventually(what: &str, done: impl Fn() -> bool) {
+pub(in crate::runtime) fn eventually(what: &str, done: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !done() {
         assert!(Instant::now() < deadline, "never: {what}");
@@ -95,8 +95,8 @@ pub(super) fn eventually(what: &str, done: impl Fn() -> bool) {
 /// a blob among `blobs` (bodies) with its bytes. Any other blob it holds —
 /// the request read, no answer — until it is dropped, counting the blobs it
 /// holds at once and the most it ever did.
-struct FakeNode {
-    asked_of: Connection,
+pub(in crate::runtime) struct FakeNode {
+    pub(in crate::runtime) asked_of: Connection,
     held: Arc<Mutex<Held>>,
 }
 
@@ -124,7 +124,7 @@ enum RolesAnswer {
 }
 
 impl FakeNode {
-    fn new(
+    pub(in crate::runtime) fn new(
         programs: Vec<::programs::Entry>,
         views: Vec<::programs::View>,
         blobs: Vec<Vec<u8>>,
@@ -411,7 +411,7 @@ fn framed(body: &[u8]) -> Vec<u8> {
     framed
 }
 
-fn blob_id(body: &[u8]) -> abi::BlobId {
+pub(in crate::runtime) fn blob_id(body: &[u8]) -> abi::BlobId {
     use sha2::Digest as _;
     abi::BlobId::Sha256(sha2::Sha256::digest(framed(body)).into())
 }

@@ -700,6 +700,8 @@ impl View {
             fault: _,
             alive: _,
             staged: _,
+            notifier,
+            showing: _,
         } = self;
         let mut sibling =
             Self::seated(program, *instance, runner, running.code_hash(), shown).await?;
@@ -712,6 +714,7 @@ impl View {
         sibling.wire = wire.clone();
         sibling.code = code.clone();
         sibling.hash = *hash;
+        sibling.notifier = *notifier;
         Ok(sibling)
     }
 
@@ -996,6 +999,8 @@ impl View {
             hash: None,
             alive: Arc::new(()),
             staged: false,
+            notifier: false,
+            showing: None,
         })
     }
 
@@ -1019,6 +1024,16 @@ impl View {
         }
         self.visible = visible;
         self.visibility_change = Some(visible);
+        self.screen_moved();
+    }
+
+    /// What this view shows, on screen or not, to `host.screen`.
+    pub(crate) fn screen_moved(&mut self) {
+        let route = self
+            .showing
+            .clone()
+            .filter(|route| self.visible && !route.is_empty());
+        kernel::screen::shown(self.program, self.instance, route);
     }
 
     /// Where the seat placed the pane: told to the `host.placement`
