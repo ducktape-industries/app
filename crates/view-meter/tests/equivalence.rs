@@ -811,6 +811,10 @@ fn tail_calls_threads_and_simd_are_refused_under_both() {
     ] {
         let code = wat::parse_str(wat).unwrap();
         assert!(
+            matches!(accepts(&code), Err(Refusal::Unsupported(_))),
+            "{what}: the rule refuses it"
+        );
+        assert!(
             matches!(meter(&code, VIEW_BYTES), Err(Refusal::Unsupported(_))),
             "{what}: the pass refuses it"
         );
