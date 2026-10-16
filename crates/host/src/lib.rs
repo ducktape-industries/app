@@ -14,6 +14,8 @@
 //! - [`fonts`], [`theme`], [`a11y`]: faces and fallbacks, the product theme,
 //!   role/name/keyboard helpers for native controls.
 //! - [`perf`]: the performance journal.
+//! - [`motion`]: how a phone moves: each transition's duration and curve,
+//!   Reduce Motion's cross-fade, a motion under way.
 //! - [`ax`] (feature `ax-door`, and every test): the AX test door.
 //! - [`contract`]: THE interface file: what a shell gives the host
 //!   (`OsServices`, `Boot`), feeds it (`Inbound`), and what a view runner
@@ -35,6 +37,7 @@ pub mod ax;
 pub mod backend;
 pub mod contract;
 pub mod fonts;
+pub mod motion;
 pub mod perf;
 pub mod render;
 pub mod runner;
