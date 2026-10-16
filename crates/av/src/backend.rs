@@ -572,6 +572,11 @@ fn serve<S>(
     let mut monitoring: Option<(cpal::Stream, Option<String>)> = None;
     let output = || feed.output.lock().expect("feed output").clone();
     let playback = |to: Playback| *feed.playback.lock().expect("feed playback") = to;
+    // a speaker stream on the output `on` names, found as it starts
+    let play = |on: Option<&str>, queue: Queue| {
+        let device = platform::find(host, on, false).ok_or(Status::Failed("no speaker".into()))?;
+        speaker(&device, rate, queue)
+    };
     while !feed.stop.load(Ordering::Relaxed) && live() {
         std::thread::sleep(Duration::from_millis(10));
         let asked = feed.ask.lock().expect("feed ask").take();
@@ -597,7 +602,7 @@ fn serve<S>(
         };
         if let Some(samples) = recorded {
             let queue = Queue::new(Mutex::new(VecDeque::from(samples)));
-            match speaker(host, output().as_deref(), rate, queue.clone()) {
+            match play(output().as_deref(), queue.clone()) {
                 Ok(stream) => {
                     playing = Some((stream, queue));
                     playback(Playback::Playing);
@@ -627,7 +632,7 @@ fn serve<S>(
             && monitoring.is_none()
         {
             heard.lock().expect("heard").clear();
-            match speaker(host, on.as_deref(), rate, heard.clone()) {
+            match play(on.as_deref(), heard.clone()) {
                 Ok(stream) => monitoring = Some((stream, on)),
                 Err(status) => {
                     set(&feed.status, status);
@@ -758,7 +763,10 @@ pub fn play_chime(output: Option<&str>) -> Result<(), String> {
     let samples = chime(rate);
     let length = Duration::from_secs_f32(samples.len() as f32 / rate.max(1) as f32);
     let queue = Queue::new(Mutex::new(VecDeque::from(samples)));
-    let stream = speaker(&host, output, rate, queue.clone()).map_err(said)?;
+    // on the speaker found above: found again, the id could name none
+    // once the session left recording (a Bluetooth headset's hands-free
+    // id, listed among the inputs)
+    let stream = speaker(&found, rate, queue.clone()).map_err(said)?;
     let deadline = std::time::Instant::now() + length + Duration::from_secs(2);
     while !queue.lock().expect("chime").is_empty() {
         if std::time::Instant::now() > deadline {
@@ -792,15 +800,9 @@ pub(crate) fn chime(rate: u32) -> Vec<f32> {
         .collect()
 }
 
-/// A speaker stream playing `queue` (mono at `rate`) on every channel,
-/// silent once it is empty.
-fn speaker(
-    host: &cpal::Host,
-    output: Option<&str>,
-    rate: u32,
-    queue: Queue,
-) -> Result<cpal::Stream, Status> {
-    let speaker = platform::find(host, output, false).ok_or(Status::Failed("no speaker".into()))?;
+/// A stream on `speaker` playing `queue` (mono at `rate`) on every
+/// channel, silent once it is empty.
+fn speaker(speaker: &cpal::Device, rate: u32, queue: Queue) -> Result<cpal::Stream, Status> {
     let config = speaker
         .default_output_config()
         .map_err(|error| audio_fault(&error, false))?;
