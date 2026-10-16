@@ -18,6 +18,7 @@
 )]
 
 use std::io::Read;
+use std::sync::OnceLock;
 
 use sha2::{Digest, Sha256};
 use view_meter::{FEATURES, GAS, GROW_REFUSED, Refusal, Stop, meter, stop};
@@ -34,12 +35,15 @@ const VIEW_BYTES: u64 = 64 << 20;
 /// A wasmtime engine the way a view runner configures one: Cranelift at
 /// speed, every feature outside [`FEATURES`] refused (the recipe the wasmtime
 /// runner applies), fuel on for the original module, off for the metered.
-fn engine(fuel: bool) -> Engine {
-    let mut config = Config::new();
-    config.cranelift_opt_level(OptLevel::Speed);
-    config.consume_fuel(fuel);
-    config.wasm_features(WasmFeatures::all().difference(FEATURES), false);
-    Engine::new(&config).unwrap()
+fn engine(fuel: bool) -> &'static Engine {
+    static ENGINES: [OnceLock<Engine>; 2] = [OnceLock::new(), OnceLock::new()];
+    ENGINES[usize::from(fuel)].get_or_init(|| {
+        let mut config = Config::new();
+        config.cranelift_opt_level(OptLevel::Speed);
+        config.consume_fuel(fuel);
+        config.wasm_features(WasmFeatures::all().difference(FEATURES), false);
+        Engine::new(&config).unwrap()
+    })
 }
 
 /// The desktop's `ViewLimits` (`crates/host/src/runtime/view/abi.rs`): linear
@@ -114,45 +118,66 @@ enum End {
     Stopped(Stop),
 }
 
-impl Run {
+/// A module compiled once, original (run with fuel and `ViewLimits`) or
+/// metered (run with neither: it bounds itself), seated as often as needed.
+struct Compiled {
+    module: Module,
+    budget: u64,
+    metered: bool,
+}
+
+impl Compiled {
     fn original(code: &[u8], budget: u64) -> Self {
-        Self::seat(&engine(true), code, budget, false)
+        Self {
+            module: Module::new(engine(true), code).unwrap(),
+            budget,
+            metered: false,
+        }
     }
 
-    fn metered(code: &[u8], budget: u64) -> Self {
-        Self::seat(&engine(false), &meter(code, budget).unwrap(), budget, true)
+    /// `metered` is `meter(code, budget)`.
+    fn metered(metered: &[u8], budget: u64) -> Self {
+        Self {
+            module: Module::new(engine(false), metered).unwrap(),
+            budget,
+            metered: true,
+        }
     }
 
-    fn seat(engine: &Engine, code: &[u8], budget: u64, metered: bool) -> Self {
-        let module = Module::new(engine, code).unwrap();
+    fn run(&self) -> Run {
+        let engine = self.module.engine();
         let limits = ViewLimits {
             // the metered run's limiter never refuses: the module does
-            budget: if metered {
+            budget: if self.metered {
                 usize::MAX
             } else {
-                usize::try_from(budget).unwrap()
+                usize::try_from(self.budget).unwrap()
             },
             memory: 0,
             tables: 0,
         };
         let mut store = Store::new(engine, limits);
         store.limiter(|limits| limits);
-        if !metered {
+        if !self.metered {
             store.set_fuel(FUEL_PER_TICK).unwrap();
         }
         let mut linker = Linker::new(engine);
         linker
             .func_wrap("ducktape_view", "panicked", |_: u32, _: u32| {})
             .unwrap();
-        let instance = linker.instantiate(&mut store, &module).unwrap();
-        let gas = metered.then(|| instance.get_global(&mut store, GAS).unwrap());
-        Self {
+        let instance = linker.instantiate(&mut store, &self.module).unwrap();
+        let gas = self
+            .metered
+            .then(|| instance.get_global(&mut store, GAS).unwrap());
+        Run {
             store,
             instance,
             gas,
         }
     }
+}
 
+impl Run {
     fn arm(&mut self, fuel: u64) {
         match self.gas {
             Some(gas) => gas
@@ -215,28 +240,39 @@ impl Both {
     fn new(wat: &str, budget: u64) -> Self {
         let code = wat::parse_str(wat).unwrap();
         Self {
-            original: Run::original(&code, budget),
-            metered: Run::metered(&code, budget),
+            original: Compiled::original(&code, budget).run(),
+            metered: Compiled::metered(&meter(&code, budget).unwrap(), budget).run(),
         }
     }
 
-    /// Calls both; asserts the same end and, when the call returned, the
-    /// same fuel used (after a trap no host reads the count). Returns the
+    /// Calls both; asserts the same end and, when the call returned or ran
+    /// out of fuel, the same fuel used as the host reports it: wasmtime's
+    /// `get_fuel` stops at 0, so a metered count past the budget is capped
+    /// at it (after any other trap neither runner has a count). Returns the
     /// end and the original's fuel used.
     fn call(&mut self, name: &str, args: &[i32], fuel: u64) -> (End, i64) {
         let original = self.original.call(name, args, fuel);
         let metered = self.metered.call(name, args, fuel);
-        assert_eq!(original, metered, "{name}{args:?}");
+        assert_eq!(original, metered, "{name}{args:?} with {fuel}");
         let fuel = i64::try_from(fuel).unwrap();
         let used = fuel - self.original.left();
-        if matches!(original, End::Returned(_)) {
+        if matches!(original, End::Returned(_) | End::Stopped(Stop::OutOfFuel)) {
             assert_eq!(
                 used,
-                fuel - self.metered.left(),
-                "fuel used by {name}{args:?}"
+                fuel.saturating_sub(self.metered.left()).min(fuel),
+                "fuel used by {name}{args:?} with {fuel}"
             );
         }
         (original, used)
+    }
+
+    /// Calls `name` at every budget from 1 to 2 past what it uses: every
+    /// point the fuel can run out at must end alike.
+    fn every_budget(&mut self, name: &str, args: &[i32]) {
+        let (_, total) = self.call(name, args, FUEL_PER_TICK);
+        for fuel in 1..=total.unsigned_abs() + 2 {
+            self.call(name, args, fuel);
+        }
     }
 
     fn global(&mut self, name: &str) -> (i32, i32) {
@@ -428,8 +464,11 @@ fn session(view: &str, wasm_sha256: &str, total: u64, k: usize, reference: &str)
         "the view's custom sections (its manifest) are kept"
     );
 
-    let original = || Seat(Run::original(&code, VIEW_BYTES));
-    let metered = || Seat(Run::metered(&code, VIEW_BYTES));
+    let (original, metered) = (
+        Compiled::original(&code, VIEW_BYTES),
+        Compiled::metered(&metered, VIEW_BYTES),
+    );
+    let (original, metered) = (|| Seat(original.run()), || Seat(metered.run()));
     let (mut a, mut b) = (original(), metered());
     a.init();
     b.init();
@@ -695,7 +734,7 @@ fn tail_calls_threads_and_simd_are_refused_under_both() {
         );
         for fuel in [true, false] {
             assert!(
-                Module::new(&engine(fuel), &code).is_err(),
+                Module::new(engine(fuel), &code).is_err(),
                 "{what}: wasmtime with FEATURES refuses it"
             );
         }
@@ -736,4 +775,430 @@ fn stop_reads_the_gas_left() {
     assert_eq!(stop(0), Stop::OutOfFuel);
     assert_eq!(stop(-41), Stop::OutOfFuel);
     assert_eq!(stop(1), Stop::Trap);
+}
+
+// --- where the fuel runs out: every budget ---------------------------------
+
+/// `(drop (i32.const 1))` `n` times: `n` fuel of straight-line code.
+fn burn(n: usize) -> String {
+    "(drop (i32.const 1)) ".repeat(n)
+}
+
+#[test]
+fn a_constant_length_is_folded_wherever_wasmtime_sees_one() {
+    // a run of straight-line code around each size-charged operator: the
+    // fuel can run out inside it, where only a check would stop the call
+    let b = burn(8);
+    let fill = |length: &str| format!("i32.const 0 i32.const 0 {length} memory.fill");
+    let wat = format!(
+        r#"(module
+            (memory 1 1)
+            (table $t 0 100 funcref)
+            (global $g16 i32 (i32.const 16))
+            (global $negative i32 (i32.const -1))
+            (func (export "local") (local $n i32)
+                i32.const 16 local.set $n {b} {fill_n} {b})
+            (func (export "tee") (local $n i32)
+                {b} i32.const 0 i32.const 0 i32.const 16 local.tee $n memory.fill {b})
+            (func (export "table_grow")
+                {b} ref.null func i32.const 1 table.grow $t drop {b})
+            (func (export "table_grow_large")
+                {b} ref.null func i32.const 200 table.grow $t drop {b})
+            (func (export "across_a_block") (local $n i32)
+                i32.const 16 local.set $n {b} (block {b}) {fill_n} {b})
+            (func (export "across_br_if") (param $p i32) (local $n i32)
+                i32.const 16 local.set $n
+                (block local.get $p br_if 0 {b})
+                {fill_n} {b})
+            (func (export "if_arms_keep_it") (param $p i32) (local $n i32)
+                i32.const 16 local.set $n
+                local.get $p (if (then {b}) (else {b}))
+                {fill_n} {b})
+            (func (export "if_arms_set_it_apart") (param $p i32) (local $n i32)
+                local.get $p
+                (if (then i32.const 16 local.set $n) (else i32.const 16 local.set $n))
+                {b} {fill_n} {b})
+            (func (export "inside_a_loop") (local $n i32) (local $k i32)
+                i32.const 16 local.set $n i32.const 2 local.set $k
+                (loop {b} {fill_n} {b}
+                    local.get $k i32.const 1 i32.sub local.tee $k br_if 0))
+            (func (export "after_a_loop") (local $n i32) (local $k i32)
+                i32.const 16 local.set $n i32.const 2 local.set $k
+                (loop local.get $k i32.const 1 i32.sub local.tee $k br_if 0)
+                {b} {fill_n} {b})
+            (func (export "immutable_global") {b} {fill_g} {b})
+            (func (export "zeroed_local") (local $n i32) {b} {fill_n} {b})
+            (func (export "copied_local") (local $a i32) (local $n i32)
+                i32.const 16 local.set $a local.get $a local.set $n {b} {fill_n} {b})
+            (func (export "past_128") (local $n i32)
+                i32.const 200 local.set $n {b} {fill_n} {b})
+            (func (export "a_parameter") (param $n i32) {b} {fill_n} {b})
+            (func (export "dead_branch") (param $p i32) (local $n i32)
+                i32.const 16 local.set $n
+                (block
+                    local.get $p
+                    (if (then
+                        ;; past the memory's maximum: wasmtime stops
+                        ;; translating, so the branch below adds no edge
+                        i32.const 0 i32.load offset=70000 drop
+                        i32.const 5 local.set $n br 1))
+                    {b})
+                {fill_n} {b})
+            (func (export "negative_global") {b} {fill_neg} {b}))"#,
+        fill_n = fill("local.get $n"),
+        fill_g = fill("global.get $g16"),
+        fill_neg = fill("global.get $negative"),
+    );
+    let mut both = Both::new(&wat, VIEW_BYTES);
+    for name in [
+        "local",
+        "tee",
+        "table_grow",
+        "table_grow_large",
+        "across_a_block",
+        "inside_a_loop",
+        "after_a_loop",
+        "immutable_global",
+        "zeroed_local",
+        "copied_local",
+        "past_128",
+    ] {
+        both.every_budget(name, &[]);
+    }
+    for name in [
+        "across_br_if",
+        "if_arms_keep_it",
+        "if_arms_set_it_apart",
+        "dead_branch",
+        "a_parameter",
+    ] {
+        for arg in [0, 1, 16] {
+            both.every_budget(name, &[arg]);
+        }
+    }
+    // a length of 2^64 - 1 costs i64::MAX: the count wraps past an overrun
+    // exactly as wasmtime's does
+    for fuel in 1..=64 {
+        both.call("negative_global", &[], fuel);
+    }
+}
+
+#[test]
+fn every_operator_class_stops_where_wasmtime_stops() {
+    let mut both = Both::new(
+        r#"(module
+            (type $ii (func (param i32) (result i32)))
+            (memory 1)
+            (data $d "abcdefghijklmnop")
+            (table $t0 4 funcref)
+            (table $t1 4 funcref)
+            (elem (table $t0) (i32.const 0) func $inc $dbl)
+            (elem (table $t1) (i32.const 0) func $dbl $inc)
+            (elem $e func $inc $dbl)
+            (global $n (mut i32) (i32.const 0))
+            (func $inc (type $ii) local.get 0 i32.const 1 i32.add)
+            (func $dbl (type $ii) local.get 0 i32.const 2 i32.mul)
+            (func (export "br_table") (param $p i32) (result i32)
+                (block (block (block local.get $p br_table 0 1 2)
+                    i32.const 10 return)
+                    i32.const 20 return)
+                i32.const 30)
+            (func (export "if_else") (param $p i32) (result i32)
+                local.get $p (if (result i32) (then i32.const 1) (else i32.const 2)))
+            (func (export "multi_value") (param $p i32) (result i32 i32)
+                local.get $p i32.const 1
+                (block (param i32 i32) (result i32 i32) i32.add i32.const 3))
+            (func (export "nested_loops") (param $p i32) (result i32)
+                (local $i i32) (local $j i32) (local $s i32)
+                (loop $outer
+                    i32.const 0 local.set $j
+                    (loop $inner
+                        local.get $s i32.const 1 i32.add local.set $s
+                        local.get $j i32.const 1 i32.add local.tee $j
+                        i32.const 3 i32.lt_u br_if $inner)
+                    local.get $i i32.const 1 i32.add local.tee $i
+                    local.get $p i32.lt_u br_if $outer)
+                local.get $s)
+            (func (export "indirect_0") (param $p i32) (result i32)
+                i32.const 5 local.get $p call_indirect $t0 (type $ii))
+            (func (export "indirect_1") (param $p i32) (result i32)
+                i32.const 5 local.get $p call_indirect $t1 (type $ii))
+            (func (export "table_get_set") (param $p i32)
+                local.get $p (table.get $t0 (local.get $p)) table.set $t1)
+            (func (export "typed_select") (param $p i32) (result i32)
+                i32.const 1 i32.const 2 local.get $p select (result i32))
+            (func (export "early_return") (param $p i32) (result i32)
+                local.get $p (if (then i32.const 7 return)) i32.const 8)
+            (func (export "br_to_the_function") (param $p i32) (result i32)
+                i32.const 9 local.get $p br_if 0 drop i32.const 10)
+            (func (export "segments") (param $p i32)
+                i32.const 0 i32.const 0 local.get $p memory.init $d
+                data.drop $d
+                i32.const 0 i32.const 0 local.get $p table.init $t0 $e
+                elem.drop $e)
+            (func $recursion (export "recursion") (param $p i32) (result i32)
+                local.get $p
+                (if (result i32)
+                    (then local.get $p i32.const 1 i32.sub call $recursion
+                        i32.const 1 i32.add)
+                    (else i32.const 0)))
+            (func (export "dead_code") (param $p i32) (result i32)
+                (block local.get $p br_if 0 i32.const 1 drop br 0 i32.const 2 drop)
+                i32.const 3)
+            (func (export "fill_copy") (param $p i32)
+                i32.const 0 i32.const 7 local.get $p memory.fill
+                i32.const 100 i32.const 0 local.get $p memory.copy
+                i32.const 0 i32.const 1 local.get $p table.copy $t0 $t0)
+            (func (export "divide") (param $p i32) (result i32)
+                i32.const 10 local.get $p i32.div_u)
+            (func (export "grows") (param $p i32) (result i32)
+                local.get $p memory.grow
+                ref.null func local.get $p table.grow $t1 i32.add)
+            (func (export "counter") (param $p i32)
+                (loop global.get $n i32.const 1 i32.add global.set $n
+                    local.get $p i32.const 1 i32.sub local.tee $p br_if 0)))"#,
+        VIEW_BYTES,
+    );
+    for (name, args) in [
+        ("br_table", &[0, 1, 2, 7][..]),
+        ("if_else", &[0, 1]),
+        ("multi_value", &[4]),
+        ("nested_loops", &[1, 3]),
+        ("indirect_0", &[0, 1, 2, 9]),
+        ("indirect_1", &[0, 1, 3]),
+        ("table_get_set", &[0, 1]),
+        ("typed_select", &[0, 1]),
+        ("early_return", &[0, 1]),
+        ("br_to_the_function", &[0, 1]),
+        ("recursion", &[0, 5]),
+        ("dead_code", &[0, 1]),
+        ("fill_copy", &[0, 3, 200]),
+        ("divide", &[2, 0]),
+        ("grows", &[0, 1]),
+        ("counter", &[1, 6]),
+        // last: the first call drops the segments, the next ones trap
+        ("segments", &[0, 2]),
+    ] {
+        for &arg in args {
+            both.every_budget(name, &[arg]);
+        }
+    }
+}
+
+/// A seeded xorshift: the random modules are the same on every run.
+struct Rng(u64);
+
+impl Rng {
+    fn below(&mut self, n: u64) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0 % n
+    }
+
+    fn pick<'a>(&mut self, from: &[&'a str]) -> &'a str {
+        from[self.below(from.len() as u64) as usize]
+    }
+}
+
+/// A random statement list: constants moved through locals, blocks, ifs,
+/// bounded loops, branches, a load past the memory's maximum in an arm
+/// never taken, and size-charged operators whose length comes from all of
+/// that. `labels` holds the enclosing labels, `true` for a loop (never a
+/// branch target: that would not end).
+fn statements(rng: &mut Rng, depth: usize, labels: &mut Vec<bool>, out: &mut String) {
+    const LOCALS: &[&str] = &["$a", "$b", "$c"];
+    const VALUES: &[&str] = &["0", "3", "16", "128", "129", "200"];
+    for _ in 0..1 + rng.below(5) {
+        let local = rng.pick(LOCALS);
+        let kind = rng.below(if depth < 3 { 17 } else { 11 });
+        let targets: Vec<usize> = (0..labels.len())
+            .filter(|&depth| !labels[labels.len() - 1 - depth])
+            .collect();
+        match kind {
+            0 => *out += &format!("i32.const {} local.set {local} ", rng.pick(VALUES)),
+            1 => *out += &format!("local.get {} local.set {local} ", rng.pick(LOCALS)),
+            2 => *out += &format!("local.get $p local.set {local} "),
+            3 => *out += &format!("i32.const {} local.tee {local} drop ", rng.pick(VALUES)),
+            4 => *out += &format!("i32.const 0 i32.const 0 local.get {local} memory.fill "),
+            5 => *out += &format!("ref.null func local.get {local} table.grow 0 drop "),
+            6 => {
+                *out += &format!(
+                    "global.get {} local.set {local} ",
+                    rng.pick(&["$g16", "$g200"])
+                )
+            }
+            7 => *out += &burn(1 + rng.below(4) as usize),
+            8 => *out += &format!("i32.const 100 i32.const 0 local.get {local} memory.copy "),
+            9 if !targets.is_empty() => {
+                let target = targets[rng.below(targets.len() as u64) as usize];
+                *out += &format!("local.get {} br_if {target} ", rng.pick(&["$p", local]));
+            }
+            10 if !targets.is_empty() && rng.below(4) == 0 => {
+                let target = targets[rng.below(targets.len() as u64) as usize];
+                *out += &format!("br {target} ");
+                return;
+            }
+            11 | 12 => {
+                *out += "(block ";
+                labels.push(false);
+                statements(rng, depth + 1, labels, out);
+                labels.pop();
+                *out += ") ";
+            }
+            13 => {
+                *out += &format!("local.get {} (if (then ", rng.pick(&["$p", local]));
+                labels.push(false);
+                statements(rng, depth + 1, labels, out);
+                if rng.below(2) == 0 {
+                    *out += ") (else ";
+                    statements(rng, depth + 1, labels, out);
+                }
+                labels.pop();
+                *out += ")) ";
+            }
+            14 => {
+                let counter = format!("$k{depth}");
+                *out += &format!("i32.const {} local.set {counter} (loop ", 1 + rng.below(3));
+                labels.push(true);
+                statements(rng, depth + 1, labels, out);
+                labels.pop();
+                *out += &format!(
+                    "local.get {counter} i32.const 1 i32.sub local.tee {counter} br_if 0) "
+                );
+            }
+            15 if !targets.is_empty() => {
+                *out += "(block (block ";
+                labels.extend([false, false]);
+                statements(rng, depth + 1, labels, out);
+                // the two new blocks, or an outer target two labels further
+                let pick = |rng: &mut Rng| match rng.below(2 + targets.len() as u64) as usize {
+                    new @ 0..=1 => new,
+                    outer => targets[outer - 2] + 2,
+                };
+                let (first, second, default) = (pick(rng), pick(rng), pick(rng));
+                *out += &format!("local.get $p br_table {first} {second} {default}) ");
+                labels.pop();
+                statements(rng, depth + 1, labels, out);
+                *out += ") ";
+                labels.pop();
+            }
+            16 => {
+                *out += "i32.const 0 (if (then i32.const 0 i32.load offset=70000 drop ";
+                labels.push(false);
+                statements(rng, depth + 1, labels, out);
+                labels.pop();
+                *out += ")) ";
+            }
+            _ => *out += "nop ",
+        }
+    }
+}
+
+#[test]
+fn random_bodies_stop_where_wasmtime_stops() {
+    for seed in 1..=4u64 {
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15 ^ seed);
+        let mut functions = String::new();
+        let count = 24;
+        for index in 0..count {
+            let mut body = String::new();
+            statements(&mut rng, 0, &mut Vec::new(), &mut body);
+            functions += &format!(
+                "(func (export \"f{index}\") (param $p i32) (local $a i32) (local $b i32) \
+                 (local $c i32) (local $k0 i32) (local $k1 i32) (local $k2 i32) {body})\n"
+            );
+        }
+        let wat = format!(
+            r#"(module
+                (memory 1 1)
+                (table 0 1000 funcref)
+                (global $g16 i32 (i32.const 16))
+                (global $g200 i32 (i32.const 200))
+                {functions})"#
+        );
+        let mut both = Both::new(&wat, VIEW_BYTES);
+        for index in 0..count {
+            for arg in [0, 1, 300] {
+                both.every_budget(&format!("f{index}"), &[arg]);
+            }
+        }
+    }
+}
+
+// --- what the pass costs on hostile shapes ---------------------------------
+
+#[test]
+fn many_imports_meter_in_linear_time() {
+    let module = |imports: usize| {
+        let imports: String = (0..imports)
+            .map(|i| format!("(import \"m\" \"f{i}\" (func))"))
+            .collect();
+        wat::parse_str(format!("(module {imports} (func (export \"f\")))")).unwrap()
+    };
+    let (small, large) = (module(10_000), module(40_000));
+    let time = |code: &[u8]| {
+        let start = std::time::Instant::now();
+        meter(code, VIEW_BYTES).unwrap();
+        start.elapsed()
+    };
+    time(&small);
+    let (small, large) = (time(&small), time(&large));
+    // four times the imports: about four times the time, not sixteen
+    assert!(
+        large < small * 8,
+        "10k imports {small:?}, 40k imports {large:?}"
+    );
+}
+
+#[test]
+fn a_grow_costs_the_same_however_many_tables() {
+    let module = |tables: usize| {
+        let tables = "(table 1 funcref) ".repeat(tables);
+        let grows = "(drop (memory.grow (local.get 0))) \
+                     (drop (table.grow 0 (ref.null func) (local.get 0))) "
+            .repeat(2_000);
+        wat::parse_str(format!(
+            "(module (memory 1) {tables} (func (export \"f\") (param i32) {grows}))"
+        ))
+        .unwrap()
+    };
+    let (one, many) = (module(1), module(100));
+    let (one, many) = (
+        meter(&one, VIEW_BYTES).unwrap().len(),
+        meter(&many, VIEW_BYTES).unwrap().len(),
+    );
+    // the 99 more tables cost their declarations and one helper's lines,
+    // not a copy at each of the 4,000 grows
+    assert!(many - one < 4_096, "1 table {one} bytes, 100 tables {many}");
+}
+
+#[test]
+fn a_module_the_rewrite_cannot_express_is_refused() {
+    let params = format!(
+        "(module (func (export \"f\") (param {})))",
+        "i32 ".repeat(1_000)
+    );
+    let results = format!(
+        "(module (func (export \"f\") (result {}) {}))",
+        "i32 ".repeat(1_000),
+        "i32.const 0 ".repeat(1_000)
+    );
+    let export_declared = r#"(module
+        (import "ducktape_view" "panicked" (func $p (param i32 i32)))
+        (export "p" (func $p))
+        (func (export "f") (result funcref) ref.func $p))"#;
+    for (what, wat) in [
+        ("1000 parameters", params.as_str()),
+        ("1000 results", results.as_str()),
+        ("a ref.func its export declares", export_declared),
+    ] {
+        let code = wat::parse_str(wat).unwrap();
+        // wasmtime runs it; the count would take it past what wasm allows
+        assert!(Module::new(engine(true), &code).is_ok(), "{what}");
+        assert!(
+            matches!(meter(&code, VIEW_BYTES), Err(Refusal::Unsupported(_))),
+            "{what}: refused"
+        );
+    }
 }
