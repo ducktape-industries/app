@@ -8,12 +8,18 @@
 //! The file is read and written off the window thread, one request after
 //! another in the order the view sent them (`kernel::in_order` under the
 //! file's path), so a `get` reads the `set` before it.
+//!
+//! The file is the program's, shared by every instance of it on the device
+//! (its panes, its notifier): `store.changes` tells each the keys another
+//! one set, once the value is in the file, so a `get` it asks then reads
+//! it. An instance never hears its own.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use super::View;
-use super::kernel::{Answer, in_order, spawn_reply};
+use super::kernel::{Answer, in_order, spawn_host_subscription, spawn_reply};
 use super::wire::{self, methods, methods::Capability};
 
 type Kept = BTreeMap<String, Vec<u8>>;
@@ -27,7 +33,21 @@ pub(super) fn answer(
 ) -> bool {
     let method: Method = match (capability, operation) {
         (Capability::Store, "get") => ("io.store.get", get),
-        (Capability::Store, "set") => ("io.store.set", set),
+        (Capability::Store, "set") => (SET, set),
+        (Capability::Store, "changes") => {
+            match (payload.is_empty(), file(view)) {
+                (false, _) => view.reply(
+                    id,
+                    Err(refusal(
+                        methods::refusal::MALFORMED_REQUEST,
+                        "`store.changes` takes no payload",
+                    )),
+                ),
+                (true, Ok(path)) => listen(view, id, path),
+                (true, Err(refused)) => view.reply(id, Err(refused)),
+            }
+            return true;
+        }
         _ => return false,
     };
     match file(view) {
@@ -37,22 +57,81 @@ pub(super) fn answer(
     true
 }
 
+/// An instance of a program, as `store.changes` tells them apart: the
+/// view's own identity (`View::alive`).
+fn instance(view: &View) -> usize {
+    std::sync::Arc::as_ptr(&view.alive) as usize
+}
+
+type Listeners = HashMap<PathBuf, Vec<(usize, tokio::sync::mpsc::UnboundedSender<String>)>>;
+
+/// Each file's `store.changes` subscribers, by the instance each is.
+fn listeners() -> std::sync::MutexGuard<'static, Listeners> {
+    static LISTENERS: OnceLock<Mutex<Listeners>> = OnceLock::new();
+    LISTENERS
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// `store.changes` on the file at `path`: each key another instance sets.
+fn listen(view: &mut View, id: u64, path: PathBuf) {
+    let (send, mut keys) = tokio::sync::mpsc::unbounded_channel();
+    listeners()
+        .entry(path)
+        .or_default()
+        .push((instance(view), send));
+    spawn_host_subscription(view, id, move |mut items| async move {
+        while let Some(key) = keys.recv().await {
+            if !items.send(Ok(methods::encode(&key))).await {
+                return;
+            }
+        }
+    });
+}
+
+/// `key` was set in the file at `path` by `writer`: every other instance
+/// listening hears it. One that stopped listening is let go.
+fn told(path: &Path, key: String, writer: usize) {
+    let mut listeners = listeners();
+    let Some(listening) = listeners.get_mut(path) else {
+        return;
+    };
+    listening.retain(|(instance, send)| *instance == writer || send.send(key.clone()).is_ok());
+    if listening.is_empty() {
+        listeners.remove(path);
+    }
+}
+
 /// A store method: its perf timer, and what it does to the file.
 type Method = (&'static str, fn(&Path, &[u8]) -> Answer);
 
+/// `store.set`'s perf timer, which is also how [`ask`] knows a set.
+const SET: &str = "io.store.set";
+
 /// `method` on the file at `path`, queued behind the view's earlier
-/// requests on it and answered as a reply.
+/// requests on it and answered as a reply. A `set` that kept its value is
+/// told to the program's other instances ([`told`]).
 fn ask(view: &mut View, id: u64, path: PathBuf, (stage, run): Method, payload: Vec<u8>) {
-    let (tell, told) = tokio::sync::oneshot::channel();
+    let (tell, answer) = tokio::sync::oneshot::channel();
     spawn_reply(view, id, async move {
-        told.await
+        answer
+            .await
             .unwrap_or_else(|_| Err(refusal(methods::refusal::HOST_FAULT, "the store job died")))
     });
+    let writer = instance(view);
     // timed where it runs, on the blocking pool (docs/perf.md, question 7)
     let name = path.to_string_lossy().into_owned();
     in_order(&name, move || {
         let _timed = crate::perf::time(crate::perf::Key::Shell, stage);
-        let _ = tell.send(run(&path, &payload));
+        let answered = run(&path, &payload);
+        if stage == SET
+            && answered.is_ok()
+            && let Ok((key, _)) = methods::decode::<(String, Option<Vec<u8>>)>(&payload)
+        {
+            told(&path, key, writer);
+        }
+        let _ = tell.send(answered);
     });
 }
 
@@ -263,6 +342,47 @@ mod tests {
             .map(|nth| (2 * nth + 1, Some(nth.to_string().into_bytes())))
             .collect();
         assert_eq!(gets, want, "each get reads the set just before it");
+        let _ = std::fs::remove_dir_all(config);
+    }
+
+    /// A `set` that kept its value is told to every other instance of the
+    /// program listening on its file (`store.changes`), after the value is
+    /// in it; the instance that set it hears nothing of its own.
+    #[test]
+    fn a_set_is_told_to_the_programs_other_instances() {
+        let config = scratch();
+        let file = path(&config, "dev#01", "chat");
+        let mut pane = crate::runtime::kernel::tests::view();
+        let mut notifier = crate::runtime::kernel::tests::view();
+        listen(&mut pane, 1, file.clone());
+        listen(&mut notifier, 1, file.clone());
+        let asked = methods::encode(&("reads".to_owned(), Some(b"3".to_vec())));
+        ask(&mut pane, 2, file.clone(), (SET, set), asked);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut heard = Vec::new();
+        while heard.is_empty() && std::time::Instant::now() < deadline {
+            notifier.replies.drain_into(&mut heard);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let [
+            wire::Event::Response {
+                id: 1,
+                result: Ok(key),
+                done: false,
+            },
+        ] = heard.as_slice()
+        else {
+            panic!("{heard:?}");
+        };
+        assert_eq!(methods::decode::<String>(key).unwrap(), "reads");
+        assert_eq!(load(&file).unwrap()["reads"], b"3", "told once kept");
+        let mut own = Vec::new();
+        pane.replies.drain_into(&mut own);
+        assert!(
+            own.iter()
+                .all(|event| !matches!(event, wire::Event::Response { id: 1, .. })),
+            "the writer heard its own set: {own:?}"
+        );
         let _ = std::fs::remove_dir_all(config);
     }
 

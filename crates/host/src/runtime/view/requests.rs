@@ -337,7 +337,10 @@ impl View {
         let events = std::mem::take(&mut self.pending);
         #[cfg(any(test, feature = "test-support"))]
         self.ticked_with.push(events.clone());
-        let bytes = wire::encode(&events);
+        let bytes = match self.notifier {
+            true => notifier::answers(events),
+            false => wire::encode(&events),
+        };
         perf::record(key, "events_bytes", bytes.len() as u64);
         arm(&mut self.store);
         let called = perf::time(key, "tick.call");
@@ -352,10 +355,14 @@ impl View {
         // `RUST_LOG=ducktape::perf=debug`: how much of the budget a tick took
         tracing::debug!(target: "ducktape::perf", program = self.program,
             used = self.fuel_used(), limit = FUEL_PER_TICK);
+        let headless = self.notifier;
         let outcome = answer.and_then(|frame| {
             perf::record(key, "frame_bytes", frame.len() as u64);
             let _decoded = perf::time(key, "tick.decode");
-            shape(&frame, &mut self.styles)
+            match headless {
+                true => notifier::turn(&frame),
+                false => shape(&frame, &mut self.styles),
+            }
         });
         let outcome = outcome.and_then(|shaped| {
             crate::render::web::declared(&shaped.0, &self.capabilities).map(|()| shaped)

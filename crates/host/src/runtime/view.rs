@@ -148,6 +148,13 @@ pub(super) struct View {
     /// A replacement's first tree is in `frame` with its requests still
     /// to dispatch — the first redraw does that, without another tick.
     pub staged: bool,
+    /// A program's notifier, not a pane's view (`runtime::notifier`): no
+    /// tree, ticked with borsh answers and answering a borsh turn
+    /// (`wire::notifier`), never on the window thread.
+    pub(crate) notifier: bool,
+    /// The route this view last named as the one it shows (`host.showing`),
+    /// which `host.screen` lists while the view is on screen.
+    pub(crate) showing: Option<String>,
 }
 
 impl View {
@@ -176,11 +183,15 @@ impl View {
 }
 
 /// One `view_perf` line as an installed instance leaves: a swap drops the
-/// old view, a retry and a roster removal empty its slot.
+/// old view, a retry and a roster removal empty its slot. What it showed
+/// leaves the screen with it.
 impl Drop for View {
     fn drop(&mut self) {
         if self.installed_generation.is_some() {
             crate::perf::retire(self.program, self.instance);
+        }
+        if self.showing.is_some() {
+            kernel::screen::shown(self.program, self.instance, None);
         }
     }
 }

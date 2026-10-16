@@ -6,7 +6,9 @@
 //! a badge to `Rail`, a notice to `Notifications`; what concerns the
 //! shell's windows (a title, a view seated, a link) is a `SeatsEvent`.
 //! Which panes exist, and in which window, is the shell's
-//! (the desktop's `shell::entities::DeskSeats` follows its desks).
+//! (the desktop's `shell::entities::DeskSeats` follows its desks). Each
+//! program's notifier (`runtime::notifier`) is handed the same session and
+//! has what it asks routed as a pane's.
 use super::{Account, Notifications, Rail, Session};
 use crate::runtime::{Intent, Seat};
 use gpui_kit::{
@@ -49,6 +51,8 @@ pub struct Seats {
     /// The session as every seat last heard it, encoded.
     props: Vec<u8>,
     _observing: Vec<Subscription>,
+    /// What the programs' notifiers ask for, routed as a pane's is.
+    _notifiers: gpui_kit::Task<()>,
 }
 
 impl EventEmitter<SeatsEvent> for Seats {}
@@ -61,7 +65,21 @@ impl Seats {
         notifications: &Entity<Notifications>,
         cx: &mut Context<Self>,
     ) -> Self {
+        // a notifier is no pane's: what it asks moves the rail and the bell
+        let mut heard = crate::runtime::notifier::intents();
+        let _notifiers = cx.spawn(async move |this, cx| {
+            use futures::StreamExt as _;
+            while let Some((program, intent)) = heard.next().await {
+                let routed = this.update(cx, |this, cx| {
+                    this.route(program, crate::runtime::notifier::INSTANCE, intent, cx)
+                });
+                if routed.is_err() {
+                    break;
+                }
+            }
+        });
         let mut this = Self {
+            _notifiers,
             map: BTreeMap::new(),
             props: Vec::new(),
             _observing: vec![
@@ -74,6 +92,7 @@ impl Seats {
             notifications: notifications.clone(),
         };
         this.props = this.encode(cx);
+        crate::runtime::notifier::set_props(this.props.clone());
         this
     }
 
@@ -100,6 +119,7 @@ impl Seats {
             return;
         }
         self.props = props;
+        crate::runtime::notifier::set_props(self.props.clone());
         for placed in self.map.values() {
             let props = self.props.clone();
             placed.seat.update(cx, |seat, cx| seat.set_props(props, cx));

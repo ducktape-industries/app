@@ -278,6 +278,8 @@ impl Roster {
 /// A node was connected: every seat is asked again of it, and the roster
 /// is read so the rail lists what the network runs.
 pub fn connected(client: &crate::backend::RpcClient, network: &str, chain: &str) {
+    // the last connection's notifiers end; the read below starts each again
+    super::notifier::notifiers().stop_all();
     let snapshot = {
         let mut connection = connection().lock().expect("views rpc");
         connection.rev += 1;
@@ -316,7 +318,11 @@ fn spawn_roster_read(asked_of: Connection, then: impl FnOnce() + Send + 'static)
     let spawned = std::thread::Builder::new()
         .name("roster".into())
         .spawn(move || {
-            let read = std::panic::AssertUnwindSafe(|| read_roster(asked_of, roster(), registry()));
+            let read = std::panic::AssertUnwindSafe(|| {
+                if let Some(programs) = read_roster(asked_of.clone(), roster(), registry()) {
+                    super::notifier::notifiers().reconcile(&asked_of, &programs);
+                }
+            });
             let _ = std::panic::catch_unwind(read);
             then();
         });
@@ -336,10 +342,13 @@ fn spawn_roster_read(asked_of: Connection, then: impl FnOnce() + Send + 'static)
 /// seated (instance 0), and every seat whose code moved, or that was never
 /// asked of this node, is queued a load. The read is over once they are
 /// queued: nothing waits on a load, which lands in its seat on its own.
-pub(super) fn read_roster(asked_of: Connection, roster: &Roster, registry: &Registry) {
-    let Some(client) = asked_of.client.as_ref() else {
-        return;
-    };
+/// What it listed, unless the node did not answer or was left meanwhile.
+pub(super) fn read_roster(
+    asked_of: Connection,
+    roster: &Roster,
+    registry: &Registry,
+) -> Option<Vec<crate::backend::views::Program>> {
+    let client = asked_of.client.as_ref()?;
     let read = crate::perf::time(crate::perf::Key::Shell, "roster");
     let programs = handle().block_on(crate::backend::views::programs(client, &asked_of.network));
     drop(read);
@@ -352,7 +361,7 @@ pub(super) fn read_roster(asked_of: Connection, roster: &Roster, registry: &Regi
                 error = %error,
                 "the node's programs were not listed"
             );
-            return;
+            return None;
         }
     };
     let roles_due = roster.bound().asked_of != Some(asked_of.rev) || *roster.lock() != programs;
@@ -367,7 +376,7 @@ pub(super) fn read_roster(asked_of: Connection, roster: &Roster, registry: &Regi
                     error = %error,
                     "the node's role bindings were not read"
                 );
-                return;
+                return None;
             }
         }
     } else {
@@ -376,7 +385,7 @@ pub(super) fn read_roster(asked_of: Connection, roster: &Roster, registry: &Regi
     let loads = {
         let node_since_left = connection().lock().expect("views rpc").rev != asked_of.rev;
         if node_since_left {
-            return;
+            return None;
         }
         if let Some(roles) = roles {
             *roster.bound() = Bound {
@@ -436,6 +445,7 @@ pub(super) fn read_roster(asked_of: Connection, roster: &Roster, registry: &Regi
     for load in loads {
         queue(load);
     }
+    Some(programs)
 }
 
 /// What a link names, as far as the app can tell without the chain in

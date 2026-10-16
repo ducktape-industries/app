@@ -344,8 +344,10 @@ its meaning; the host and the views name the const, never the string.
 2. **Route.** `kernel::answer(view, capability, operation, id, payload)`
    tries `clipboard::answer`, `notify::answer`, `store::answer`, then its own
    arms: host methods (`host.visible`, `host.badge`, `host.title`,
-   `host.route`, `host.offset`, `host.id`, `link.open`, `clock.ticks`) are
-   answered at once from app state; node methods are spawned. Three kinds
+   `host.route`, `host.showing`, `host.screen`, `host.offset`, `host.id`,
+   `link.open`, `clock.ticks`) are answered at once from app state
+   (`host.screen` is a subscription to the routes the program's views show
+   on screen, `kernel/screen.rs`); node methods are spawned. Three kinds
    never reach the kernel and are handled in `View::answer` after it
    returns `false`: `host.widget` (the one MessagePack method: a `WidgetCommand`),
    `host.session` (the props subscription) and `host.log`.
@@ -937,10 +939,16 @@ House words, and where one word means several things.
   runs it (`AUTH_PAGE`); the auth host's one-shot mailbox `/r/<id>`, which
   two devices joining by code pass messages through.
 - **notice / banner / centre / tag / burst / permission / in front** —
-  what a view posts (`notify.post`); the OS banner the host may raise; the
-  per-chain log (`notify::Center`); a view-chosen fold key; the per-view
-  token bucket (`BURSTS`); the person's Allow/Silent/Block choice; the
-  view in the active window, which gets no banner.
+  what a view or a notifier posts (`notify.post`); the OS banner the host
+  may raise; the per-chain log (`notify::Center`); a view-chosen fold key;
+  the per-view token bucket (`BURSTS`); the person's Allow/Silent/Block
+  choice; the view in the active window, which gets no banner.
+- **notifier** — a program's headless module (`ducktape.notify` in its
+  code blob): what becomes a notice is decided there, by the program. The
+  app runs one per listed program on the network in hand, off the window
+  thread, as a `View` with no tree (`runtime/notifier.rs`); a roster read
+  starts, keeps or replaces it, a connect or leaving the network stops it,
+  and a program the person blocked runs none.
 - **door file / rig / walk / reveal / mask / settle / compact / offer /
   delta / nearest** — AX-door words: the `{port, token}` file; the QA
   harness launching the app; one QA scenario run; the private-mode read of

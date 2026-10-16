@@ -71,21 +71,36 @@ impl wasmtime::ResourceLimiter for ViewLimits {
 }
 
 /// The view's exports and the memory their bytes cross in (`wire::abi`).
+/// A notifier (`runtime::notifier`) has no state to hand over: no
+/// `snapshot`, no `restore`.
 pub(super) struct Exports {
     /// read directly by the view tests that poke a view's memory
     pub(super) memory: Memory,
     alloc: TypedFunc<u32, u32>,
     init: TypedFunc<(), ()>,
     tick: TypedFunc<(u32, u32), u64>,
+    handover: Option<Handover>,
+}
+
+struct Handover {
     snapshot: TypedFunc<(), u64>,
     restore: TypedFunc<(u32, u32), u64>,
 }
 
 impl Exports {
+    /// A view's five exports, or a notifier's three.
     pub(super) fn bind(
         store: &mut Store<HostState>,
         instance: &wasmtime::Instance,
+        notifier: bool,
     ) -> wasmtime::Result<Self> {
+        let handover = match notifier {
+            true => None,
+            false => Some(Handover {
+                snapshot: instance.get_typed_func(&mut *store, "snapshot")?,
+                restore: instance.get_typed_func(&mut *store, "restore")?,
+            }),
+        };
         Ok(Self {
             memory: instance
                 .get_memory(&mut *store, "memory")
@@ -93,9 +108,14 @@ impl Exports {
             alloc: instance.get_typed_func(&mut *store, "alloc")?,
             init: instance.get_typed_func(&mut *store, "init")?,
             tick: instance.get_typed_func(&mut *store, "tick")?,
-            snapshot: instance.get_typed_func(&mut *store, "snapshot")?,
-            restore: instance.get_typed_func(&mut *store, "restore")?,
+            handover,
         })
+    }
+
+    fn handover(&self) -> wasmtime::Result<&Handover> {
+        self.handover
+            .as_ref()
+            .ok_or_else(|| wasmtime::Error::msg("a notifier hands no state over"))
     }
 
     /// `bytes` in a buffer the view allocated and owns from the next call on.
@@ -143,7 +163,7 @@ impl Exports {
 
     /// The view's state.
     pub(super) fn snapshot(&self, store: &mut Store<HostState>) -> wasmtime::Result<Snapshot> {
-        let packed = self.snapshot.call(&mut *store, ())?;
+        let packed = self.handover()?.snapshot.call(&mut *store, ())?;
         Ok(match self.result(store, packed)? {
             Ok(state) => Snapshot::Taken(state),
             Err(refusal) => Snapshot::Refused(refusal),
@@ -155,8 +175,9 @@ impl Exports {
         store: &mut Store<HostState>,
         state: &[u8],
     ) -> wasmtime::Result<Result<(), String>> {
+        let restore = self.handover()?.restore.clone();
         let (ptr, len) = self.give(store, state)?;
-        let packed = self.restore.call(&mut *store, (ptr, len))?;
+        let packed = restore.call(&mut *store, (ptr, len))?;
         Ok(self.result(store, packed)?.map(|_| ()))
     }
 }

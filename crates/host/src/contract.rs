@@ -346,11 +346,26 @@ pub mod testing {
         }
     }
 
-    /// Banners that go nowhere.
+    /// Banners that go nowhere: each one asked for is kept, for a test to
+    /// read ([`banners_asked`]), and none is raised.
     pub struct NoBanners;
 
+    static ASKED: std::sync::Mutex<Vec<Notice>> = std::sync::Mutex::new(Vec::new());
+
+    /// Every banner the host asked for so far, by every test.
+    pub fn banners_asked() -> Vec<Notice> {
+        ASKED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     impl Banners for NoBanners {
-        fn post(&self, _: &Notice, _: Option<Click>) -> bool {
+        fn post(&self, notice: &Notice, _: Option<Click>) -> bool {
+            ASKED
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(notice.clone());
             false
         }
 
