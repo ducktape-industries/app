@@ -13,9 +13,9 @@ use ducktape_host::contract::SoftKeyboard;
 use ducktape_host::session::{AccountState, AccountStep, Screen, Shared};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::{
-    AnyElement, ClipboardItem, Context, Div, Entity, FontWeight, HighlightStyle,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, StyledText, Subscription, Task,
+    AnyElement, AppContext as _, ClipboardItem, Context, Div, Entity, Focusable as _, FontWeight,
+    HighlightStyle, InteractiveElement as _, IntoElement, ParentElement as _, Render, Role,
+    SharedString, StatefulInteractiveElement as _, Styled as _, StyledText, Subscription, Task,
     TextInputConfiguration, VirtualKeyboard, Window, div, px, svg,
 };
 use std::time::{Duration, Instant};
