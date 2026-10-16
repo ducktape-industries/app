@@ -30,5 +30,12 @@ serde_json.workspace = true
 toml = "0.8"
 tokio = { version = "1", features = ["sync", "time"] }
 tracing.workspace = true
+# the push channel (src/push.rs): APNs speaks HTTP/2 only; the JWTs it and
+# Google's token endpoint take are signed with ring, already in the graph
+reqwest = { workspace = true, features = ["http2"] }
+ring = "0.17"
+base64.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[dev-dependencies]
+tempfile.workspace = true

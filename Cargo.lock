@@ -7952,6 +7952,7 @@ name = "pushd"
 version = "0.1.0"
 dependencies = [
  "abi",
+ "base64 0.22.1",
  "commonware-codec",
  "commonware-cryptography",
  "ducklink",
@@ -7959,8 +7960,11 @@ dependencies = [
  "futures",
  "noded-client",
  "rand 0.8.8",
+ "reqwest",
+ "ring",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "toml 0.8.23",
  "tracing",
@@ -8443,6 +8447,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "futures-core",
+ "h2",
  "http",
  "http-body",
  "http-body-util",

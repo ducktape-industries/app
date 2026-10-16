@@ -17,8 +17,13 @@
 //! A notifier never signs (`op.submit` is not a notifier's), so pushd holds
 //! no user key.
 //!
-//! The channel today is `log`: one JSON line on stdout per notice the centre
-//! lets through, and one per badge that moved. APNs and FCM come next.
+//! The channel is `push` (`push.rs`): a call (a notice of kind `Call`) goes
+//! to the account's phones as an APNs VoIP push and an FCM high-priority
+//! message, its withdraw as a background push and a `withdraw` message;
+//! every notice is also one JSON line on stdout (`log`), as is each badge
+//! that moved. The APNs auth key and the Firebase service account are files
+//! pushd.toml names (`[apns]`, `[fcm]`), never in a repo; without them a
+//! call is logged only.
 //!
 //! The runtime keeps one network per process, so pushd runs one process per
 //! network: with several in the config and no `--network`, it starts itself
@@ -41,6 +46,9 @@ use ducktape_host::contract::{
 use ducktape_host::runtime::notify::{CenterHandle, Click, Notice, Permission, Settings};
 use ducktape_host::runtime::{self, Answered, Intent, Recipient};
 
+mod push;
+use push::{Apns, ApnsConfig, Device, Fcm, FcmConfig, Push};
+
 /// How often the node's status is read: the app's own pace
 /// (`session::node::STATUS_EVERY`). A moved height reads the roster again.
 const STATUS_EVERY: Duration = Duration::from_secs(2);
@@ -54,6 +62,10 @@ const BURST: u32 = 6;
 #[derive(Debug, serde::Deserialize)]
 struct Config {
     networks: Vec<Network>,
+    /// The team's APNs auth key: a call to an iPhone.
+    apns: Option<ApnsConfig>,
+    /// The Firebase project's service account: a call to an Android phone.
+    fcm: Option<FcmConfig>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -72,6 +84,9 @@ struct Account {
     /// session names. One notifier per account, never one per device, or
     /// a device would hear every notice once per key.
     signer: String,
+    /// The account's phones: their push tokens (`push::Device`).
+    #[serde(default)]
+    devices: Vec<Device>,
 }
 
 fn main() -> ExitCode {
@@ -130,9 +145,9 @@ fn start() -> Result<(), String> {
                 .iter()
                 .find(|network| network.name == name)
                 .ok_or_else(|| format!("the config lists no network {name}"))?;
-            run(network, &data)
+            run(network, &config, &data)
         }
-        (None, [network]) => run(network, &data),
+        (None, [network]) => run(network, &config, &data),
         (None, networks) => supervise(&config_path, &data, networks),
     }
 }
@@ -182,7 +197,20 @@ fn supervise(config: &Path, data: &Path, networks: &[Network]) -> Result<(), Str
 
 /// pushd on one network: the host installed, one recipient per account,
 /// the node connected, and its status followed for as long as it runs.
-fn run(network: &Network, data: &Path) -> Result<(), String> {
+fn run(network: &Network, config: &Config, data: &Path) -> Result<(), String> {
+    let apns = config
+        .apns
+        .as_ref()
+        .map(Apns::load)
+        .transpose()?
+        .map(Arc::new);
+    let fcm = config
+        .fcm
+        .as_ref()
+        .map(Fcm::load)
+        .transpose()?
+        .map(Arc::new);
+    let http: Arc<dyn push::Http> = Arc::new(push::Client::new());
     let home = data.join(&network.name);
     contract::install(Arc::new(Headless::new(&home)?));
     // the notifiers run on wasmtime, their compiled code kept across runs
@@ -232,10 +260,16 @@ fn run(network: &Network, data: &Path) -> Result<(), String> {
                 // account's devices say otherwise
                 unasked: Some(Permission::Allow),
             },
-            banners: Arc::new(Log {
-                network: network.name.clone(),
-                account: account.account,
-            }),
+            banners: Arc::new(Push::new(
+                Log {
+                    network: network.name.clone(),
+                    account: account.account,
+                },
+                chain.clone(),
+                account.devices.clone(),
+                (apns.clone(), fcm.clone()),
+                http.clone(),
+            )),
             said,
         });
         runtime::handle().spawn(badges(heard, network.name.clone(), account.account));
@@ -475,11 +509,24 @@ mod tests {
             [[networks]]
             name = "testkit"
             node_url = "http://127.0.0.1:8844"
-            accounts = [{ account = 2, signer = "ab" }]
+            accounts = [{ account = 2, signer = "ab", devices = [{ kind = "voip", token = "ab12" }] }]
+
+            [apns]
+            key_file = "/etc/pushd/AuthKey_ABC123.p8"
+            key_id = "ABC123"
+            team_id = "8464KRUNQG"
+            topic = "industries.ducktape.mobile"
             "#,
         )
         .unwrap();
         assert_eq!(config.networks[0].accounts[0].account, 2);
+        assert_eq!(config.networks[0].accounts[0].devices[0].kind, "voip");
+        let apns = config.apns.unwrap();
+        assert_eq!(
+            (apns.topic.as_str(), apns.sandbox),
+            ("industries.ducktape.mobile", false)
+        );
+        assert!(config.fcm.is_none());
         assert!(named("testkit") && named("duck-pond_1.x"));
         assert!(!named("..") && !named("a/b") && !named(""));
     }
