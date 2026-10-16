@@ -603,12 +603,8 @@ mod tests {
             let code = wat::parse_str(&text).expect("parses");
             let meter = view_meter::accepts(&code);
             assert_eq!(meter.is_ok(), takes, "the meter on {what}: {meter:?}");
-            let refused = match runner.prepare([nth as u8; 32], &code, 4 * PAGE) {
-                Ok(_) => None,
-                Err(failure) => Some(failure),
-            };
             assert_eq!(
-                refused,
+                runner.prepare([nth as u8; 32], &code, 4 * PAGE).err(),
                 meter
                     .err()
                     .map(|refusal| Failure::Unsupported(refusal.to_string())),
