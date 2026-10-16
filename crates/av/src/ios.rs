@@ -3,9 +3,10 @@
 //! ([`crate::apple`]: the permission, the capture session), its pictures
 //! turned upright for the portrait screen ([`upright`]).
 //!
-//! The audio session is a call's: play and record in video chat mode, on
-//! the loudspeaker unless a headset is in, Bluetooth headsets and AirPods
-//! taken ([`session`]). cpal opens the one audio unit the session routes,
+//! The audio session is a call's while a microphone holds it: play and
+//! record, on the loudspeaker unless a headset is in, Bluetooth headsets
+//! and AirPods taken; the chime alone plays without recording
+//! ([`configured`]). cpal opens the one audio unit the session routes,
 //! so the devices listed are the session's routes ([`audio_devices`]): a
 //! microphone is one of its inputs, made the preferred one when picked; a
 //! speaker is the loudspeaker (an override when picked) or what the
@@ -31,9 +32,10 @@ use objc2_av_foundation::{
 };
 use objc2_avf_audio::{
     AVAudioSession, AVAudioSessionCategoryOptions, AVAudioSessionCategoryPlayAndRecord,
-    AVAudioSessionInterruptionNotification, AVAudioSessionInterruptionType,
-    AVAudioSessionInterruptionTypeKey, AVAudioSessionMediaServicesWereLostNotification,
-    AVAudioSessionMediaServicesWereResetNotification, AVAudioSessionModeVideoChat,
+    AVAudioSessionCategoryPlayback, AVAudioSessionInterruptionNotification,
+    AVAudioSessionInterruptionType, AVAudioSessionInterruptionTypeKey,
+    AVAudioSessionMediaServicesWereLostNotification,
+    AVAudioSessionMediaServicesWereResetNotification, AVAudioSessionModeDefault,
     AVAudioSessionPort, AVAudioSessionPortAirPlay, AVAudioSessionPortBluetoothHFP,
     AVAudioSessionPortBluetoothLE, AVAudioSessionPortBuiltInReceiver,
     AVAudioSessionPortBuiltInSpeaker, AVAudioSessionPortCarAudio, AVAudioSessionPortDescription,
@@ -190,22 +192,62 @@ fn number(notification: &NSNotification, key: &NSString) -> Option<isize> {
 
 // ---------- the audio session ----------
 
-/// The app's audio session, set for a call: play and record in video chat
-/// mode, on the loudspeaker unless a headset is in, Bluetooth headsets
-/// (hands-free) and headphones taken. Set only when it is not already:
-/// setting it again is a route change. Setting it asks for nothing (the
-/// microphone's prompt comes with its first recording).
+/// How many hold the session active ([`Active`]), and how many of them
+/// are microphones.
+struct Holds {
+    all: usize,
+    microphones: usize,
+}
+
+static ACTIVE: Mutex<Holds> = Mutex::new(Holds {
+    all: 0,
+    microphones: 0,
+});
+
+/// Whether the session records: while a microphone holds it, or one is
+/// coming (`microphone`). The chime alone plays without: a session that
+/// records raises the microphone's prompt when it goes active, and a
+/// speaker test asks for no microphone.
+fn records(holds: &Holds, microphone: bool) -> bool {
+    microphone || holds.microphones > 0
+}
+
+/// The app's audio session as listing and routing find it: in the
+/// category its holds need, and while nothing holds it set up for the
+/// next microphone (whose inputs it lists).
 fn session() -> Result<Retained<AVAudioSession>, String> {
-    // SAFETY: AVFAudio constants, there since iOS 6 and 7
+    let holds = ACTIVE.lock().expect("audio session");
+    configured(holds.all == 0 || records(&holds, false))
+}
+
+/// The app's audio session set for a call (`record`: play and record, on
+/// the loudspeaker unless a headset is in, Bluetooth headsets
+/// (hands-free) and headphones taken) or for the chime alone (plain
+/// playback, where the system routes it), in the default mode: video
+/// chat mode's voice processing is for an audio unit cpal does not open,
+/// and it lowers the sound. Set only when it is not already: setting it
+/// again is a route change. Setting it asks for nothing (the
+/// microphone's prompt comes when a recording session goes active).
+fn configured(record: bool) -> Result<Retained<AVAudioSession>, String> {
+    // SAFETY: AVFAudio constants, there since iOS 3, 6 and 5
     let (category, mode) = unsafe {
+        let category = match record {
+            true => AVAudioSessionCategoryPlayAndRecord,
+            false => AVAudioSessionCategoryPlayback,
+        };
         (
-            AVAudioSessionCategoryPlayAndRecord.ok_or("iOS has no play-and-record category")?,
-            AVAudioSessionModeVideoChat.ok_or("iOS has no video chat mode")?,
+            category.ok_or("iOS lacks the audio category")?,
+            AVAudioSessionModeDefault.ok_or("iOS has no default audio mode")?,
         )
     };
-    let options = AVAudioSessionCategoryOptions::DefaultToSpeaker
-        | AVAudioSessionCategoryOptions::AllowBluetoothHFP
-        | AVAudioSessionCategoryOptions::AllowBluetoothA2DP;
+    let options = match record {
+        true => {
+            AVAudioSessionCategoryOptions::DefaultToSpeaker
+                | AVAudioSessionCategoryOptions::AllowBluetoothHFP
+                | AVAudioSessionCategoryOptions::AllowBluetoothA2DP
+        }
+        false => AVAudioSessionCategoryOptions::empty(),
+    };
     // SAFETY: the app's one session, its documented calls (any thread)
     unsafe {
         let session = AVAudioSession::sharedInstance();
@@ -478,32 +520,33 @@ pub(crate) fn heard() -> Option<String> {
     })
 }
 
-/// How many hold the session active ([`Active`]).
-static ACTIVE: Mutex<usize> = Mutex::new(0);
-
 /// The session held active, for a microphone or the chime; with a
 /// microphone's feed, its ends (an interruption, the media services
 /// lost) are told to it as Gone. The last one dropped deactivates the
 /// session, telling the other apps they may play again.
 pub(crate) struct Active {
+    microphone: bool,
     observers: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
 }
 
-/// The session active from now until the returned hold drops;
-/// `microphone` the open microphone's feed, which hears how it ends. A
-/// call that has the audio refuses it (Busy).
+/// The session active from now until the returned hold drops, recording
+/// only for a microphone ([`records`]); `microphone` the open
+/// microphone's feed, which hears how it ends. A call that has the audio
+/// refuses it (Busy).
 pub(crate) fn activate(microphone: Option<&Arc<MicFeed>>) -> Result<Active, Status> {
-    let session = session().map_err(Status::Failed)?;
     {
-        let mut active = ACTIVE.lock().expect("audio session");
-        if *active == 0 {
+        let mut holds = ACTIVE.lock().expect("audio session");
+        let session = configured(records(&holds, microphone.is_some())).map_err(Status::Failed)?;
+        if holds.all == 0 {
             // SAFETY: the session's documented activation, off the main
             // thread (it can block)
             unsafe { session.setActive_error(true) }.map_err(|error| refused(&error))?;
         }
-        *active += 1;
+        holds.all += 1;
+        holds.microphones += usize::from(microphone.is_some());
     }
     Ok(Active {
+        microphone: microphone.is_some(),
         observers: microphone.map(watch).unwrap_or_default(),
     })
 }
@@ -515,9 +558,10 @@ impl Drop for Active {
             // SAFETY: an observer this hold added
             unsafe { center.removeObserver(observer.as_ref()) };
         }
-        let mut active = ACTIVE.lock().expect("audio session");
-        *active -= 1;
-        if *active == 0 {
+        let mut holds = ACTIVE.lock().expect("audio session");
+        holds.all -= 1;
+        holds.microphones -= usize::from(self.microphone);
+        if holds.all == 0 {
             // SAFETY: the session's documented deactivation, every stream
             // of this hold's closed before it drops
             let ended = unsafe {
@@ -690,11 +734,44 @@ mod tests {
         assert!(interrupted(&told(camera, reason, away)).contains("background"));
     }
 
+    /// One test at a time sets the app's one session.
+    static ONE_SESSION: Mutex<()> = Mutex::new(());
+
+    /// The chime alone plays in a session that does not record, so a
+    /// speaker test never raises the microphone's prompt; a microphone,
+    /// coming or holding, makes it a call's, in the default mode. Nothing
+    /// is activated.
+    #[test]
+    fn only_a_microphone_makes_the_session_record() {
+        let _one = ONE_SESSION.lock().unwrap();
+        let holds = |all, microphones| Holds { all, microphones };
+        assert!(!records(&holds(0, 0), false));
+        assert!(!records(&holds(1, 0), false));
+        assert!(records(&holds(0, 0), true));
+        assert!(records(&holds(2, 1), false));
+        // SAFETY: AVFAudio constants and the session's documented reads
+        unsafe {
+            let chime = configured(false).unwrap();
+            assert_eq!(*chime.category(), *AVAudioSessionCategoryPlayback.unwrap());
+            let call = configured(true).unwrap();
+            assert_eq!(
+                *call.category(),
+                *AVAudioSessionCategoryPlayAndRecord.unwrap()
+            );
+            assert_eq!(*call.mode(), *AVAudioSessionModeDefault.unwrap());
+            assert!(
+                call.categoryOptions()
+                    .contains(AVAudioSessionCategoryOptions::DefaultToSpeaker)
+            );
+        }
+    }
+
     /// The session lists the loudspeaker first among the speakers, routes
     /// to it, and routes to nothing it does not list. Nothing is opened
     /// or activated; the cameras are listed front first.
     #[test]
     fn the_session_lists_and_routes_only_its_own() {
+        let _one = ONE_SESSION.lock().unwrap();
         let (inputs, outputs) = audio_devices().unwrap();
         eprintln!("inputs: {inputs:?}\noutputs: {outputs:?}");
         assert_eq!(

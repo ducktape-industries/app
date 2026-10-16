@@ -678,11 +678,12 @@ pub fn play_chime(output: Option<&str>) -> Result<(), String> {
         Status::Busy => "another app is using the speaker".into(),
         _ => "the speaker is gone".into(),
     };
-    // the system's audio session (a phone's) held while the chime plays
-    let _session = platform::activate(None).map_err(said)?;
     let host = cpal::default_host();
-    let rate = platform::find(&host, output, false)
-        .ok_or("no such speaker")?
+    let found = platform::find(&host, output, false).ok_or("no such speaker")?;
+    // the system's audio session (a phone's) held while the chime plays,
+    // once the speaker is known: an id that names none activates nothing
+    let _session = platform::activate(None).map_err(said)?;
+    let rate = found
         .default_output_config()
         .map_err(|error| error.to_string())?
         .sample_rate();
