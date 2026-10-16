@@ -108,6 +108,10 @@ pub(super) struct View {
     /// The manifest's `MIN_WINDOW_WIDTH`: the narrowest the view is laid
     /// out, and so the narrowest a window holding it is sized.
     pub min_width: u32,
+    /// The manifest's `wire_id`: the wire the view was built against. A
+    /// view built against another than this app's runs all the same, and
+    /// whatever then fails says so ([`View::failure`]).
+    pub wire: String,
     /// The undeclared capabilities already logged, so each is logged once.
     pub undeclared_logged: Vec<Capability>,
     /// The running instance (`contract::ViewInstance`), and the runner that
@@ -341,10 +345,10 @@ pub(super) fn shape(
     Ok((frame, cuts))
 }
 
-/// A view built against another wire than this app's, as the plain refusal
-/// sentence.
-pub(super) fn wire_id(id: &str) -> Result<(), String> {
-    (id == wire::WIRE_ID).then_some(()).ok_or_else(|| {
+/// A view built against another wire than this app's, as the words its
+/// failures carry; `None` for one built against this app's.
+pub(super) fn foreign_wire(id: &str) -> Option<String> {
+    (id != wire::WIRE_ID).then(|| {
         format!(
             "this view was built against wire {id}; this app speaks {}",
             wire::WIRE_ID

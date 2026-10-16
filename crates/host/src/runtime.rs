@@ -177,7 +177,9 @@ pub mod pictures;
 
 /// What a view's manifest says, read before any of its code runs: the
 /// name, icon and description the rail and Home list it by, the narrowest
-/// it is laid out, the capabilities it declares and its targets.
+/// it is laid out, the capabilities it declares, its targets, and the wire
+/// it was built against (another than this app's runs all the same, and
+/// whatever then fails says so: `View::failure`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Listing {
     pub name: String,
@@ -186,6 +188,7 @@ pub struct Listing {
     pub min_width: u32,
     pub capabilities: Vec<Capability>,
     pub targets: Vec<String>,
+    pub wire: String,
 }
 
 /// `bytes`' manifest as the host reads it; empty and 0 for one whose
@@ -199,6 +202,7 @@ fn manifest_of(bytes: &[u8]) -> Listing {
             min_width: manifest.min_width,
             capabilities: manifest.capabilities,
             targets: manifest.targets,
+            wire: manifest.wire_id,
         })
         .unwrap_or_default()
 }

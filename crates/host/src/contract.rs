@@ -487,19 +487,13 @@ impl std::fmt::Display for Fault {
 }
 
 /// `prepare`'s refusals: `Unsupported` names the operator or feature this
-/// runner does not run (the same answer on every runner); `Wire` is the
-/// manifest's `wire_id` against this app's; `Runner` the runner's own.
+/// runner does not run (the same answer on every runner); `Runner` the
+/// runner's own. A view built against another wire is not refused: it runs,
+/// and what fails names both wires.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Failure {
     /// Code this runner does not run.
     Unsupported(String),
-    /// Built against another wire than this app's.
-    Wire {
-        /// The wire the view was built against.
-        built: String,
-        /// The wire this app speaks.
-        app: String,
-    },
     /// The runner's own failure.
     Runner(String),
 }
@@ -508,10 +502,6 @@ impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unsupported(words) | Self::Runner(words) => f.write_str(words),
-            Self::Wire { built, app } => write!(
-                f,
-                "this view was built against wire {built}; this app speaks {app}"
-            ),
         }
     }
 }

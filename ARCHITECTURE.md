@@ -164,8 +164,9 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
 3. **Compile.** `View::load` on the loader thread: `DUCKTAPE_VIEWS_DIR`
    override first (`seat::view_override`, unverified, logged), else the
    network's bytes. Either way `View::compile` reads the manifest
-   (upstream `view_wire::manifest::read_manifest`), checks its `wire_id`
-   against `view_wire::WIRE_ID`, then `compiled_view` compiles through the one
+   (upstream `view_wire::manifest::read_manifest`), logs `view_wire_differs`
+   when its `wire_id` is not `view_wire::WIRE_ID` (the view runs all the
+   same, and a failure of it says so: `View::failure`), then `compiled_view` compiles through the one
    `Engine` (`view::engine`: `consume_fuel(true)`, opt level Speed, a
    wasmtime disk cache under `cache_dir()/view-code`); `runtime::manifest_of`
    reads the same manifest again for the tab's name and icon and the
@@ -995,9 +996,11 @@ House words, and where one word means several things.
   `Failure`. Check in order: is the program in
   the roster (`NotListed`); does the node hold the blob (`Unreachable`);
   does the section exist (`Slot::Empty`); do the bytes hash
-  (`HashMismatch`); does the manifest parse and name this app's `WIRE_ID`
-  (`Refused`, `Wire`); did `init` or the first tick
-  trap (`Trapped` — a panic message is in the sentence). To bypass the
+  (`HashMismatch`); does the manifest parse (`Refused`); did `init` or a
+  tick trap or send a frame the host refuses (`Trapped` — a panic message,
+  or the node, `node at [1, 1]: …` or `Field `search` at [0, 2]: …`, is in
+  the sentence; `Wire` when the view was built against another wire, and
+  then the sentence names both). To bypass the
   node, point `DUCKTAPE_VIEWS_DIR` at a directory of `<program>_view.wasm`.
   `RUST_LOG=ducktape::perf=debug` shows per-tick fuel.
 - **Run against a node.** Start a node from `ducktape-industries/ducktape`
