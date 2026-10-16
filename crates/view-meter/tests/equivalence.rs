@@ -1151,7 +1151,6 @@ fn random_bodies_stop_where_wasmtime_stops() {
                 (global $g200 i32 (i32.const 200))
                 {functions})"#
         );
-        eprintln!("SEED {seed}");
         let mut both = Both::new(&wat, VIEW_BYTES);
         for index in 0..count {
             for arg in [0, 1, 300] {
