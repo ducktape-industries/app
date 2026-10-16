@@ -427,9 +427,6 @@ impl ViewTree {
             Node::Sheet { .. } => self.sheet(node, window, cx),
             Node::Anchored { .. } => self.anchored(node, window, cx),
             Node::Web { .. } => self.web(node, window, cx),
-            // ponytail: draws nothing; lane WH lowers the sheet (wasm-mobile
-            // SPEC §8.5) in the app pin PR, which replaces this branch-local pin
-            Node::Sheet { .. } => div().into_any_element(),
         };
         if entered_scope {
             self.authored_path.pop();
