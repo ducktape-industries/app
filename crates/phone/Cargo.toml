@@ -1,0 +1,73 @@
+# ducktape-phone — the phone shell: the blind host core (`crates/host`) in one
+# full-screen window on iOS (zed's `gpui_ios`, the fork's
+# `vendor/gpui-pre-ios`) and Android (longbridge gpui-mobile's host-driven
+# path, the fork's `vendor/gpui-pre-mobile`). It gives the host its
+# `OsServices` (`src/os.rs`, one arm per OS), keeps this device's key in the
+# OS key store (`src/key`), and draws the phone's own chrome: the stack, Home
+# and the tab bar (`src/shell`). It names no user program.
+#
+# Built per phone target, never with `--workspace` (feature unification would
+# switch on host features a phone must not link): `phone/Makefile`. The
+# library is an rlib here; the launchers take it as a static library (iOS) or
+# a shared one (Android) through `cargo rustc --crate-type`, so a Linux
+# workspace build links neither.
+
+[package]
+name = "ducktape-phone"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+[lib]
+name = "ducktape_phone"
+
+[features]
+# the AX test door on the phone: the gate build (wasm-mobile SPEC §11.1)
+ax-door = ["ducktape-host/ax-door"]
+
+[dependencies]
+ducktape-host = { path = "../host" }
+noded-client = { path = "../noded-client" }
+gpui-kit = "=0.7.3"
+design.workspace = true
+tracing.workspace = true
+# the namespaced message a frame proof signs (`union_unique`), as the Expo
+# core's key does (mobile `crates/mobile-core/src/key.rs`)
+commonware-utils = "2026.9.0"
+# the throwaway reader key (`OsServices::reader`): Ed25519 from the TLS
+# stack's own crate, already in the graph
+ring = "0.17"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+gpui-pre-ios.workspace = true
+# the log on the simulator's console (Android's goes to logcat through gm's
+# `android_logger`, which tracing's `log` records reach)
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+gpui-pre-mobile.workspace = true
+# gpui-mobile's own JNI and NDK versions: one of each in the graph
+jni = "0.22"
+ndk = { version = "0.9", features = ["nativewindow"] }
+
+[dev-dependencies]
+ducktape-host = { path = "../host", features = ["test-support"] }
+gpui-kit = { version = "=0.7.3", features = ["test-support"] }
+tempfile.workspace = true
+
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+allow_attributes_without_reason = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+let_underscore_must_use = "deny"
