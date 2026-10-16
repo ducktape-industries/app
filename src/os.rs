@@ -186,6 +186,7 @@ impl OsServices for DesktopOs {
             device_noun: "computer",
             one_layout: false,
             floats: true,
+            motion: ducktape_host::motion::IOS,
         }
     }
 

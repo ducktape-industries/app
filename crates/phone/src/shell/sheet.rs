@@ -4,7 +4,7 @@
 //! A press on the scrim closes the sheet, as Back does; a sheet is the
 //! first thing Back closes (SPEC §7.6). It slides up by its own height as
 //! it comes and down as it goes, the scrim fading with it (gorhom's
-//! `BottomSheetModal` and `BottomSheetBackdrop`, `motion::SHEET_IN`); a
+//! `BottomSheetModal` and `BottomSheetBackdrop`, `motion::Idiom::sheet`); a
 //! sheet going draws what it drew open and takes no press.
 
 use super::Root;

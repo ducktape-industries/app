@@ -119,7 +119,7 @@ fn a_push_and_a_pop_slide_and_land_still(cx: &mut gpui_kit::TestAppContext) {
     let (over, under) = (left(&mut native, "room"), left(&mut native, "rooms"));
     assert!(0. < over && over < WIDTH, "{over}");
     assert!((-WIDTH * 0.3..0.).contains(&under), "{under}");
-    later(&tree, &mut native, crate::motion::PUSH.duration);
+    later(&tree, &mut native, crate::motion::idiom().push.duration);
     assert!(!moving(&tree, &native));
     assert_eq!(left(&mut native, "room"), 0.);
     assert!(!drawn(&mut native, "rooms"), "the old page is gone");
@@ -135,7 +135,7 @@ fn a_push_and_a_pop_slide_and_land_still(cx: &mut gpui_kit::TestAppContext) {
     let (over, under) = (left(&mut native, "room"), left(&mut native, "rooms"));
     assert!(0. < over && over < WIDTH, "{over}");
     assert!(-WIDTH * 0.3 < under && under < 0., "{under}");
-    later(&tree, &mut native, crate::motion::POP.duration);
+    later(&tree, &mut native, crate::motion::idiom().push.duration);
     assert!(!moving(&tree, &native));
     assert_eq!(left(&mut native, "rooms"), 0.);
     assert!(!drawn(&mut native, "room"));
@@ -253,7 +253,7 @@ fn a_press_on_the_page_going_reaches_nothing(cx: &mut gpui_kit::TestAppContext) 
     assert!(moving(&tree, &native));
     press(&mut native);
     assert_eq!(clicks(&events), 0, "the press went through the page going");
-    later(&tree, &mut native, crate::motion::POP.duration);
+    later(&tree, &mut native, crate::motion::idiom().push.duration);
     assert!(!moving(&tree, &native));
     press(&mut native);
     assert_eq!(
