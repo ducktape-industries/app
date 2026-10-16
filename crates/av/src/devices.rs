@@ -119,13 +119,25 @@ fn picked<T>(listed: Vec<(Device, T)>, id: &str) -> Option<T> {
         .map(|(_, found)| found)
 }
 
-/// The name a person knows the opened microphone `input` by: the
-/// system's own.
+/// The name a person knows the opened microphone `input` by: its row's,
+/// as it would be listed to pick from ("System default" for ALSA's
+/// default), else the system's own.
 pub(crate) fn input_name(input: &cpal::Device) -> String {
-    input
+    let name = input
         .description()
         .map(|d| d.name().to_owned())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let Ok(id) = input.id() else {
+        return name;
+    };
+    let row = Device {
+        id: id.to_string(),
+        name: name.clone(),
+        default: false,
+    };
+    recognizable(vec![(row, ())])
+        .pop()
+        .map_or(name, |(row, ())| row.name)
 }
 
 /// The microphone the system hears by default now, as listed.
@@ -203,6 +215,15 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    /// The default microphone is named as its row is listed: on Linux,
+    /// ALSA's default is "System default", not the PCM's own "default".
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_default_microphone_is_named_as_listed() {
+        let input = find(&cpal::default_host(), None, true).expect("ALSA's default");
+        assert_eq!(input_name(&input), "System default");
     }
 
     /// A piece opens only a device this crate listed, by its whole id: a
