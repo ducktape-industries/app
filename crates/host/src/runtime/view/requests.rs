@@ -396,6 +396,9 @@ impl View {
         crate::perf::record(key, "events_bytes", bytes.len() as u64);
         self.tick_call = crate::perf::time(key, "tick.call");
         self.ticking = true;
+        if let Some(kept) = &mut self.kept {
+            kept.batches.push(bytes.clone());
+        }
         self.running.begin_tick(bytes);
     }
 

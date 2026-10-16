@@ -191,6 +191,8 @@ impl OsServices for DesktopOs {
             // one loader a core: a fetch and a cranelift compile each
             loaders: std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
             preload: Preload::Compile,
+            // wasmtime runs in this process: an instance dies with the app
+            snapshot_every: None,
             snapshot_to_disk: false,
         }
     }

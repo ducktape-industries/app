@@ -30,6 +30,36 @@ pub(super) enum Restored {
     Refused(String),
 }
 
+/// What a death replay starts from (SPEC §6.5): the last accepted snapshot
+/// (`None`: the view's `init`), when it was taken, and every tick's events
+/// since, in order. An instance that dies is restored from it and replayed
+/// to where it was (`revive`).
+#[derive(Clone)]
+pub(super) struct Kept {
+    pub(super) snapshot: Option<Vec<u8>>,
+    pub(super) at: Instant,
+    pub(super) batches: Vec<Vec<u8>>,
+}
+
+impl Kept {
+    /// A fresh start's: replayed from `init`.
+    fn new() -> Self {
+        Self {
+            snapshot: None,
+            at: Instant::now(),
+            batches: Vec::new(),
+        }
+    }
+
+    /// Whether the host keeps a replay for this view: a new instance's.
+    pub(super) fn if_kept() -> Option<Self> {
+        crate::contract::os()
+            .limits()
+            .snapshot_every
+            .map(|_| Self::new())
+    }
+}
+
 /// What a drawn view answered when asked for its state: the state, or the
 /// view's own word that it cannot hand it over now. A trap is not one of
 /// these: it ends the instance.
@@ -93,6 +123,9 @@ pub(super) struct View {
     /// A tick begun, its frame not landed: whichever seat turns next waits
     /// for it before it begins another.
     ticking: bool,
+    /// What a death replay starts from, where the host keeps one
+    /// (`Limits::snapshot_every`; none on the desktop).
+    pub(super) kept: Option<Kept>,
     /// The view's events for its next tick.
     pub pending: Vec<wire::Event>,
     /// The host's facts as the view last heard them: the theme, the

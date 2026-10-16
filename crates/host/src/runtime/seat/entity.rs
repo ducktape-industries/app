@@ -261,10 +261,7 @@ impl Seat {
         let mounted = self.mounted.clone();
         let mut locked = lock(&mounted);
         let Mounted {
-            slot,
-            props,
-            swapping,
-            ..
+            slot, props, owned, ..
         } = &mut *locked;
         let Slot::Ready(view) = slot else {
             return Vec::new();
@@ -286,7 +283,7 @@ impl Seat {
         // One that lands later than this returns is the view's, taken in
         // by whichever seat turns next (`turn` waits for it)
         // nor while a swap owns the view: its replacement hears it hidden
-        if !view.ticking() && !*swapping {
+        if !view.ticking() && !*owned {
             match view.begin_redraw(props) {
                 Redraw::Quiet => {}
                 Redraw::Ready => {
@@ -306,7 +303,7 @@ impl Seat {
     /// Whether a tick is in flight (begun, its frame not landed) or a swap
     /// runs (`seat::swap_in`): the AX door parks a read until neither.
     pub fn in_flight(&self) -> bool {
-        self.in_flight.is_some() || lock(&self.mounted).swapping
+        self.in_flight.is_some() || lock(&self.mounted).owned
     }
 
     /// Every wake ends here: a reply, a clock item, a `ViewTree` event,
@@ -321,7 +318,7 @@ impl Seat {
         }
         // a swap that runs owns the drawn view until it is done; it wakes
         // the seat then
-        if self.holding || self.in_flight.is_some() || lock(&self.mounted).swapping {
+        if self.holding || self.in_flight.is_some() || lock(&self.mounted).owned {
             self.owed = true;
             return;
         }
@@ -370,7 +367,7 @@ impl Seat {
         // first, as this seat's own would
         if view.ticking() {
             let ticks = view.ticks;
-            return self.wait(view, ticks, shown, cx);
+            return self.wait(view, ticks, shown, None, cx);
         }
         // a replacement the loader prepared runs on this thread once the
         // view owes nothing (its handover would refuse): a task the seat
@@ -403,40 +400,78 @@ impl Seat {
             Redraw::Quiet => false,
             Redraw::Ready => view.finish_redraw(props),
             Redraw::Ticking => match view.landed_now() {
+                // dead already: taken up again as a later death is
+                Some(landed @ Landed::Fault(Fault::Runner(_))) if view.kept.is_some() => {
+                    return self.wait(view, ticks, shown, Some(landed), cx);
+                }
                 Some(landed) => {
                     view.redraw_landed(landed);
                     view.finish_redraw(props)
                 }
                 // the frame lands later: the turn's second half waits for it
-                None => return self.wait(view, ticks, shown, cx),
+                None => return self.wait(view, ticks, shown, None, cx),
             },
         };
         self.finish(locked, ticks, shown, again, cx);
-        self.swap_when_settled(cx);
+        self.after_turn(cx);
     }
 
-    /// A swap parked while the view owed work runs once it owes none: the
-    /// turn that settled the view asks for one more, which starts it.
-    fn swap_when_settled(&self, cx: &mut Context<Self>) {
-        let due = {
+    /// After a turn: a swap parked while the view owed work runs once it
+    /// owes none (the turn that settled the view asks for one more, which
+    /// starts it); else a kept replay due a new snapshot takes it
+    /// (`keep_in`), in a task the seat does not own.
+    fn after_turn(&self, cx: &mut Context<Self>) {
+        let (swap, keep) = {
             let locked = lock(&self.mounted);
-            locked.swap.is_some()
-                && matches!(&locked.slot, Slot::Ready(view) if view.settled() && !view.ticking())
+            match &locked.slot {
+                Slot::Ready(view) if !locked.owned => (
+                    locked.swap.is_some() && view.settled() && !view.ticking(),
+                    locked.swap.is_none() && view.keep_due(),
+                ),
+                _ => (false, false),
+            }
         };
-        if due {
+        if swap {
             self.wake(cx);
+        } else if keep {
+            let mounted = self.mounted.clone();
+            cx.spawn(async move |_, _| keep_in(mounted).await).detach();
         }
     }
 
     /// The turn's second half waits for `view`'s tick in flight: a task of
     /// the seat's takes the frame when it lands (`landed`).
-    fn wait(&mut self, view: &View, ticks: u64, shown: Instant, cx: &mut Context<Self>) {
-        let landing = view.landing();
+    fn wait(
+        &mut self,
+        view: &View,
+        ticks: u64,
+        shown: Instant,
+        first: Option<Landed>,
+        cx: &mut Context<Self>,
+    ) {
+        let mut landing = view.landing();
         let alive = view.alive.clone();
+        let mounted = self.mounted.clone();
         self.in_flight = Some((ticks, shown));
         self._landing = Some(cx.spawn(async move |this, cx| {
-            // `None`: the instance stopped, its answer with it
-            let landed = landing.recv().await.ok();
+            let mut next = first;
+            let landed = loop {
+                // `None`: the instance stopped, its answer with it
+                let landed = match next.take() {
+                    Some(landed) => Some(landed),
+                    None => landing.recv().await.ok(),
+                };
+                // the instance died with the tick in flight: where a replay
+                // is kept it is taken up again on a new one, whose frame
+                // this waits for instead (SPEC §6.5)
+                if let Some(Landed::Fault(Fault::Runner(_))) = &landed
+                    && let Ok(revived) = View::revive(&mounted, &alive).await
+                {
+                    landing = revived;
+                    continue;
+                }
+                break landed;
+            };
             let _ = this.update(cx, |this, cx| this.landed(&alive, landed, cx));
         }));
     }
@@ -462,7 +497,7 @@ impl Seat {
                     return;
                 }
                 self.finish(locked, ticks, shown, again, cx);
-                self.swap_when_settled(cx);
+                self.after_turn(cx);
             }
             // replaced or stopped meanwhile: the answer went with it
             _ => drop(locked),

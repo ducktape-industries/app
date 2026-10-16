@@ -217,9 +217,16 @@ pub struct Limits {
     /// What a roster read does for a program nobody opened (SPEC §4.7).
     /// Read by `View::load`.
     pub preload: Preload,
+    /// How often a seated view's state is kept for a death replay (SPEC
+    /// §6.5): a snapshot after a settled tick once the last kept one is
+    /// older than this, and every tick's events since, so an instance that
+    /// dies is restored and replayed to where it was. `None` where an
+    /// instance cannot die without the app (the desktop: wasmtime runs in
+    /// this process); the phone's JSC page: 1 s.
+    pub snapshot_every: Option<std::time::Duration>,
     /// Whether settled snapshots are written under `Dirs::data` so a cold
     /// start reopens where the person was. Phone true; desktop false.
-    /// Read by the runner cut.
+    /// Not read yet: the phone's persistence (SPEC §7.5) reads it.
     pub snapshot_to_disk: bool,
 }
 
@@ -647,6 +654,19 @@ pub mod testing {
         fn withdraw(&self, _: &str) {}
     }
 
+    thread_local! {
+        /// This test thread's `Limits::snapshot_every`: the desktop's
+        /// `None` unless a test keeps a death replay
+        /// ([`snapshot_every_for_test`]).
+        static SNAPSHOT_EVERY: std::cell::Cell<Option<std::time::Duration>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    /// `Limits::snapshot_every` on this test thread from now on.
+    pub fn snapshot_every_for_test(every: Option<std::time::Duration>) {
+        SNAPSHOT_EVERY.set(every);
+    }
+
     impl OsServices for TestOs {
         fn dirs(&self) -> &Dirs {
             thread_local! {
@@ -732,6 +752,7 @@ pub mod testing {
                 loaders: std::thread::available_parallelism()
                     .map_or(1, std::num::NonZeroUsize::get),
                 preload: Preload::Compile,
+                snapshot_every: SNAPSHOT_EVERY.get(),
                 snapshot_to_disk: false,
             }
         }

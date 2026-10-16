@@ -69,6 +69,23 @@ impl Pump {
         released
     }
 
+    /// The page the held answers came from dies (SPEC §6.5): each lands as
+    /// the runner's fault instead, and answers land at once from now on.
+    pub fn die(&self) -> usize {
+        let answers = {
+            let mut held = self.lock();
+            held.holding = false;
+            std::mem::take(&mut held.answers)
+        };
+        let died = answers.len();
+        for (land, _) in answers {
+            land.send(Landed::Fault(crate::contract::Fault::Runner(
+                "the page died".into(),
+            )));
+        }
+        died
+    }
+
     /// Drops every held answer: they never land.
     pub fn drop_all(&self) -> usize {
         std::mem::take(&mut self.lock().answers).len()

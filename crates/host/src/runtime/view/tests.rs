@@ -685,7 +685,7 @@ fn a_view_ticking_on_a_clock_swaps_to_new_code_with_its_state() {
         ["chat"],
         "the manifest's targets are seated, so its node methods still reach the program"
     );
-    assert!(locked.retry.is_none() && locked.swap.is_none() && !locked.swapping);
+    assert!(locked.retry.is_none() && locked.swap.is_none() && !locked.owned);
 }
 
 /// A swap the drawn view's handover refuses (here: an event waits for the

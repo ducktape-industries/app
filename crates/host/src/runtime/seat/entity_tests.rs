@@ -1615,7 +1615,7 @@ fn the_hot_swap_sequence_lands_in_order(cx: &mut TestAppContext) {
         !Arc::ptr_eq(&fresh.alive, &alive),
         "the new code took the seat"
     );
-    assert!(locked.swap.is_none() && !locked.swapping && locked.retry.is_none());
+    assert!(locked.swap.is_none() && !locked.owned && locked.retry.is_none());
     drop(locked);
     assert!(renders_of(PROGRAM) > renders, "the new tree was drawn");
     let (ticks, rev) = *root
@@ -1629,4 +1629,68 @@ fn the_hot_swap_sequence_lands_in_order(cx: &mut TestAppContext) {
     );
     assert!(ticks >= 1);
     assert_eq!(pump.held(), 0);
+}
+
+/// A death replay (SPEC §6.5): the instance dies with a tick in flight,
+/// and where the host keeps a replay the seat takes the view up again on a
+/// new instance, from its kept start (here `init`), replays every tick's
+/// events since with their frames discarded, and begins the tick that died
+/// again. The frame that tick lands is the one an uninterrupted run lands
+/// at the same tick, byte for byte, and nothing else draws or turns twice.
+#[gpui_kit::test]
+fn a_death_replay_reproduces_the_frame_of_tick_n(cx: &mut TestAppContext) {
+    use sha2::Digest as _;
+    // a replay kept from `init`, never snapshotted again in this test
+    crate::contract::testing::snapshot_every_for_test(Some(Duration::from_secs(3600)));
+    let frame_hash = |seat: &Entity<Seat>, cx: &TestAppContext| -> [u8; 32] {
+        match &mounted_of(seat, cx).lock().unwrap().slot {
+            Slot::Ready(view) => sha2::Sha256::digest(wire::encode(&view.frame.root)).into(),
+            _ => panic!("not seated"),
+        }
+    };
+    let script = |seat: &Entity<Seat>, native: &mut VisualTestContext, pump: &Pump, die: bool| {
+        draw_now(native);
+        subscribe_props(seat, native);
+        for props in [b"a".as_slice(), b"b".as_slice()] {
+            nudge(seat, props, native);
+            draw_now(native);
+        }
+        // tick 4: in flight when the page dies
+        pump.hold();
+        nudge(seat, b"c", native);
+        assert!(in_flight(seat, native));
+        match die {
+            true => assert_eq!(pump.die(), 1),
+            false => {
+                pump.at_once();
+                assert_eq!(pump.release_all(), 1);
+            }
+        }
+        native.run_until_parked();
+        draw_now(native);
+        (
+            ticks_of(seat, native),
+            turns_of(seat, native),
+            frame_hash(seat, native),
+        )
+    };
+    let (seat, _, mut native, pump) = deferred(cx, "replay-steady", &five_trees());
+    let steady = script(&seat, &mut native, &pump, false);
+    let runner = DeferredRunner::default();
+    let dying = runner.pump.clone();
+    let runner: Arc<dyn ViewRunner> = Arc::new(runner);
+    crate::runtime::seat_ticking_on_for_test(&runner, "replay-dying", 320, &five_trees());
+    let (seat, _, mut native) = another(cx, "replay-dying", false);
+    let revived = script(&seat, &mut native, &dying, true);
+    crate::contract::testing::snapshot_every_for_test(None);
+    assert_eq!(steady.0, 4, "four ticks: the first frame, a, b, c");
+    assert_eq!(
+        revived, steady,
+        "(ticks, turns, frame hash at tick 4) after the death"
+    );
+    assert!(
+        matches!(&mounted_of(&seat, &native).lock().unwrap().slot, Slot::Ready(view) if view.fault.is_none()),
+        "the death is no fault of the view's"
+    );
+    assert_eq!(dying.held(), 0);
 }

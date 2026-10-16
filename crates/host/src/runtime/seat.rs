@@ -24,8 +24,10 @@ pub(super) struct Mounted {
     /// A replacement for the drawn view, its code prepared on a loader
     /// thread, waiting for the seat's thread to run it (`swap_in`).
     pub(super) swap: Option<Box<PendingSwap>>,
-    /// `swap_in` runs: the drawn view is not turned until it is done.
-    pub(super) swapping: bool,
+    /// A sequence of calls the seat's thread runs owns the drawn view (a
+    /// swap, `swap_in`; a kept snapshot, `keep_in`): the seat does not turn
+    /// it until the sequence is done, which wakes the seat.
+    pub(super) owned: bool,
 }
 
 /// A replacement prepared by a load and parked on the seat: its code, the
@@ -60,7 +62,7 @@ impl Mounted {
             retry: None,
             wake: tokio::sync::watch::Sender::new(()),
             swap: None,
-            swapping: false,
+            owned: false,
         }))
     }
 
@@ -651,7 +653,7 @@ fn install(
 /// answer awaited as it lands (at once on the wasmtime runner, so the
 /// whole sequence runs in one poll there), then installed on the
 /// conditions a load installs on. The seat does not turn the drawn view
-/// meanwhile (`Mounted::swapping`); the seat is woken when it is done. A
+/// meanwhile (`Mounted::owned`); the seat is woken when it is done. A
 /// swap refused or failed keeps the drawn view and is asked again at the
 /// next roster read.
 pub(super) async fn swap_in(mounted: Arc<Mutex<Mounted>>, program: &'static str) {
@@ -665,7 +667,7 @@ pub(super) async fn swap_in(mounted: Arc<Mutex<Mounted>>, program: &'static str)
         };
         let alive = old.alive.clone();
         let instance = locked.instance;
-        locked.swapping = true;
+        locked.owned = true;
         (pending, alive, instance)
     };
     let (pending, alive, instance) = started;
@@ -690,7 +692,7 @@ pub(super) async fn swap_in(mounted: Arc<Mutex<Mounted>>, program: &'static str)
     let mut locked = lock(&mounted);
     timing.lock_wait = waited.elapsed();
     let installed = Instant::now();
-    locked.swapping = false;
+    locked.owned = false;
     let current = connection().lock().expect("views rpc").clone();
     let stale = locked.generation != generation
         || (view_override(program).is_none() && current.rev != asked_of.rev);
@@ -729,6 +731,40 @@ pub(super) async fn swap_in(mounted: Arc<Mutex<Mounted>>, program: &'static str)
         crate::perf::record(key, "install", timing.install.as_micros() as u64);
         timing.log(program);
     }
+}
+
+/// The drawn view's kept replay started again from a new snapshot (SPEC
+/// §6.5), on the seat's thread, the view owned meanwhile so no tick
+/// crosses it; the seat is woken when it lands.
+pub(super) async fn keep_in(mounted: Arc<Mutex<Mounted>>) {
+    let (landing, alive) = {
+        let mut locked = lock(&mounted);
+        if locked.owned {
+            return;
+        }
+        let Slot::Ready(view) = &mut locked.slot else {
+            return;
+        };
+        if !view.keep_due() {
+            return;
+        }
+        let asked = (view.begin_keep(), view.alive.clone());
+        locked.owned = true;
+        asked
+    };
+    let landed = landing.recv().await.unwrap_or_else(|_| {
+        Landed::Fault(Fault::Runner(
+            "the instance stopped before it answered".into(),
+        ))
+    });
+    let mut locked = lock(&mounted);
+    locked.owned = false;
+    if let Slot::Ready(view) = &mut locked.slot
+        && Arc::ptr_eq(&view.alive, &alive)
+    {
+        view.kept_landed(landed);
+    }
+    locked.wake.send_replace(());
 }
 
 /// `fresh`, prepared as the replacement of the drawn view `alive` names,
