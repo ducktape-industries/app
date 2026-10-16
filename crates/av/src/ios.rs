@@ -40,7 +40,9 @@ use objc2_avf_audio::{
     AVAudioSessionPortBluetoothLE, AVAudioSessionPortBuiltInReceiver,
     AVAudioSessionPortBuiltInSpeaker, AVAudioSessionPortCarAudio, AVAudioSessionPortDescription,
     AVAudioSessionPortHDMI, AVAudioSessionPortHeadphones, AVAudioSessionPortHeadsetMic,
-    AVAudioSessionPortOverride, AVAudioSessionSetActiveOptions,
+    AVAudioSessionPortOverride, AVAudioSessionRouteChangeNotification,
+    AVAudioSessionRouteChangeReason, AVAudioSessionRouteChangeReasonKey,
+    AVAudioSessionSetActiveOptions,
 };
 use objc2_foundation::{
     NSArray, NSError, NSNotification, NSNotificationCenter, NSNotificationName, NSNumber, NSString,
@@ -277,13 +279,10 @@ struct Route {
 /// The microphones (`input`) or speakers the session routes to now, each
 /// one a piece can name back (`backend::nameable`). Microphones: its
 /// inputs, the one it hears now the default. Speakers: the loudspeaker,
-/// what the route plays on now besides it (the earpiece, a headset,
-/// AirPlay), and each Bluetooth headset among the inputs.
-// ponytail: wired headphones without a microphone, and Bluetooth
-// headphones without a hands-free microphone, are listed only while the
-// route plays on them, so not while the loudspeaker is picked over them;
-// picking the earpiece-or-headset entry there needs a route the session
-// does not list.
+/// what the route plays on now besides it (headphones, AirPlay) or what
+/// the loudspeaker was picked over ([`REPLACED`]), and each Bluetooth
+/// headset among the inputs. The earpiece is not one: the call session
+/// plays on the loudspeaker instead.
 fn routes(session: &AVAudioSession, input: bool) -> Vec<Route> {
     let mut listed = match input {
         true => inputs(session),
@@ -370,6 +369,19 @@ fn outputs(session: &AVAudioSession) -> Vec<Route> {
             prefers: None,
         });
     }
+    // what the loudspeaker was picked over, while it plays in its place
+    let replaced = REPLACED.lock().expect("replaced output").clone();
+    if let Some(audio) = replaced
+        && listed[0].audio.device.default
+        && !listed
+            .iter()
+            .any(|route| route.audio.device == audio.device)
+    {
+        listed.push(Route {
+            audio,
+            prefers: None,
+        });
+    }
     for port in available(session) {
         let id = uid(&port);
         // SAFETY: a plain property of a port the session listed
@@ -442,36 +454,36 @@ pub(crate) fn audio_devices() -> Result<(Vec<AudioDevice>, Vec<AudioDevice>), St
 }
 
 /// Routes the session to the microphone (`input`) or speaker `id` it
-/// lists now, before cpal opens its audio unit; `None` leaves it to the
-/// system (no preferred input, no override). Nothing when it lists no
-/// such device: an id is resolved only against this listing. A route the
-/// system refuses is logged and the unit opens where the session is.
+/// lists now, before cpal opens its audio unit; `None` leaves the route
+/// as it is (another piece's pick holds). Nothing when it lists no such
+/// device: an id is resolved only against this listing. Picking the
+/// loudspeaker remembers what it is picked over ([`REPLACED`]); picking
+/// another speaker lifts it. A route the system refuses is logged and
+/// the unit opens where the session is.
 pub(crate) fn route(id: Option<&str>, input: bool) -> Option<()> {
+    let Some(id) = id else {
+        return Some(());
+    };
     autoreleasepool(|_| {
         let session = session().ok()?;
-        let picked = match id {
-            Some(id) => Some(
-                routes(&session, input)
-                    .into_iter()
-                    .find(|route| route.audio.device.id == id)?,
-            ),
-            None => None,
-        };
-        let speaker = !input && id == Some(SPEAKER);
-        let prefers = picked.and_then(|route| route.prefers);
+        let picked = routes(&session, input)
+            .into_iter()
+            .find(|route| route.audio.device.id == id)?;
         // SAFETY: the session's documented setters, in its category
         let routed = unsafe {
-            match input {
-                true => session.setPreferredInput_error(prefers.as_deref()),
-                false => session
-                    .overrideOutputAudioPort_error(match speaker {
-                        true => AVAudioSessionPortOverride::Speaker,
-                        false => AVAudioSessionPortOverride::None,
-                    })
-                    .and_then(|()| match &prefers {
+            if input {
+                session.setPreferredInput_error(picked.prefers.as_deref())
+            } else if id == SPEAKER {
+                remember(&session);
+                session.overrideOutputAudioPort_error(AVAudioSessionPortOverride::Speaker)
+            } else {
+                *REPLACED.lock().expect("replaced output") = None;
+                session
+                    .overrideOutputAudioPort_error(AVAudioSessionPortOverride::None)
+                    .and_then(|()| match &picked.prefers {
                         Some(port) => session.setPreferredInput_error(Some(port)),
                         None => Ok(()),
-                    }),
+                    })
             }
         };
         if let Err(error) = routed {
@@ -479,6 +491,88 @@ pub(crate) fn route(id: Option<&str>, input: bool) -> Option<()> {
         }
         Some(())
     })
+}
+
+/// The speaker the loudspeaker was picked over (headphones without a
+/// microphone, Bluetooth headphones, AirPlay), listed while the
+/// loudspeaker plays in its place: the session lists only what plays,
+/// and picking it lifts the override. Forgotten when another speaker is
+/// picked, or a device comes or goes ([`forget_on_change`]).
+static REPLACED: Mutex<Option<AudioDevice>> = Mutex::new(None);
+
+/// Remembers what the route plays on now as the loudspeaker is picked
+/// over it ([`REPLACED`]): not a Bluetooth headset (listed among the
+/// inputs anyway) nor the earpiece (the call session plays on the
+/// loudspeaker instead). What was remembered stays while the loudspeaker
+/// plays already.
+fn remember(session: &AVAudioSession) {
+    // SAFETY: AVFAudio constants
+    let (loudspeaker, kept) = unsafe {
+        (
+            [AVAudioSessionPortBuiltInSpeaker],
+            [
+                AVAudioSessionPortBluetoothHFP,
+                AVAudioSessionPortBuiltInReceiver,
+            ],
+        )
+    };
+    // SAFETY: the session's documented read, and plain properties of the
+    // ports it lists
+    let playing: Vec<_> = unsafe { session.currentRoute().outputs() }
+        .iter()
+        .map(|port| (unsafe { port.portType() }, port))
+        .collect();
+    if playing.iter().any(|(kind, _)| is(kind, &loudspeaker)) {
+        return;
+    }
+    *REPLACED.lock().expect("replaced output") = playing
+        .iter()
+        .find(|(kind, _)| !is(kind, &kept))
+        .map(|(_, port)| row(port, false, false));
+    forget_on_change();
+}
+
+/// Forgets [`REPLACED`] once a device comes or goes: the system lifts
+/// the loudspeaker's override at such a route change, and what it was
+/// picked over may be gone. Observed once, for the app's life.
+fn forget_on_change() {
+    static OBSERVED: std::sync::Once = std::sync::Once::new();
+    OBSERVED.call_once(|| {
+        let forget = RcBlock::new(|notification: NonNull<NSNotification>| {
+            // SAFETY: the notification the center lends for this call
+            if came_or_went(unsafe { notification.as_ref() }) {
+                *REPLACED.lock().expect("replaced output") = None;
+            }
+        });
+        // SAFETY: an AVFAudio constant; an observer block on the posting
+        // thread, never removed
+        if let Some(name) = unsafe { AVAudioSessionRouteChangeNotification } {
+            let observer =
+                unsafe {
+                    NSNotificationCenter::defaultCenter()
+                        .addObserverForName_object_queue_usingBlock(Some(name), None, None, &forget)
+                };
+            // kept for the app's life
+            std::mem::forget(observer);
+        }
+    });
+}
+
+/// Whether a route change came of a device coming or going.
+fn came_or_went(notification: &NSNotification) -> bool {
+    // SAFETY: an AVFAudio constant
+    let Some(key) = (unsafe { AVAudioSessionRouteChangeReasonKey }) else {
+        return false;
+    };
+    let reason =
+        number(notification, key).map(|reason| AVAudioSessionRouteChangeReason(reason as usize));
+    matches!(
+        reason,
+        Some(
+            AVAudioSessionRouteChangeReason::NewDeviceAvailable
+                | AVAudioSessionRouteChangeReason::OldDeviceUnavailable
+        )
+    )
 }
 
 /// cpal's one audio unit, the session routed first to `id`, one of its
@@ -763,6 +857,76 @@ mod tests {
                 call.categoryOptions()
                     .contains(AVAudioSessionCategoryOptions::DefaultToSpeaker)
             );
+        }
+    }
+
+    /// What the loudspeaker was picked over stays listed while the
+    /// loudspeaker plays in its place, and picking it lifts the override;
+    /// a device coming or going forgets it, the override's own route
+    /// change does not. Nothing is activated.
+    #[test]
+    fn what_the_loudspeaker_replaced_stays_listed() {
+        let _one = ONE_SESSION.lock().unwrap();
+        let headphones = AudioDevice {
+            device: Device {
+                id: "test-headphones".into(),
+                name: "Headphones".into(),
+                default: false,
+            },
+            kind: AudioKind::Headphones,
+        };
+        let listed = || {
+            let outputs = audio_devices().unwrap().1;
+            outputs
+                .iter()
+                .any(|output| output.device == headphones.device)
+        };
+        // the simulator plays on its loudspeaker
+        assert!(audio_devices().unwrap().1[0].device.default);
+        *REPLACED.lock().unwrap() = Some(headphones.clone());
+        assert!(listed());
+        assert!(route(Some("test-headphones"), false).is_some());
+        assert!(!listed());
+        forget_on_change();
+        // SAFETY: AVFAudio constants
+        let (name, key) = unsafe {
+            (
+                AVAudioSessionRouteChangeNotification.unwrap(),
+                AVAudioSessionRouteChangeReasonKey.unwrap(),
+            )
+        };
+        let changed = |reason: AVAudioSessionRouteChangeReason| {
+            *REPLACED.lock().unwrap() = Some(headphones.clone());
+            let told = told(name, key, reason.0 as isize);
+            NSNotificationCenter::defaultCenter().postNotification(&told);
+            listed()
+        };
+        assert!(!changed(
+            AVAudioSessionRouteChangeReason::OldDeviceUnavailable
+        ));
+        assert!(!changed(
+            AVAudioSessionRouteChangeReason::NewDeviceAvailable
+        ));
+        assert!(changed(AVAudioSessionRouteChangeReason::Override));
+        *REPLACED.lock().unwrap() = None;
+    }
+
+    /// A piece left to the default leaves the route another picked: the
+    /// preferred microphone stays. Nothing is activated.
+    #[test]
+    fn a_default_piece_leaves_the_route_as_it_is() {
+        let _one = ONE_SESSION.lock().unwrap();
+        let (inputs, _) = audio_devices().unwrap();
+        let picked = &inputs[0].device.id;
+        assert!(route(Some(picked), true).is_some());
+        assert!(route(None, true).is_some());
+        assert!(route(None, false).is_some());
+        // SAFETY: the app's one session, its documented read and setter
+        unsafe {
+            let session = AVAudioSession::sharedInstance();
+            let preferred = session.preferredInput().map(|port| uid(&port));
+            assert_eq!(preferred.as_ref(), Some(picked));
+            session.setPreferredInput_error(None).unwrap();
         }
     }
 
