@@ -185,6 +185,7 @@ impl OsServices for DesktopOs {
             device_label: DEVICE_LABEL,
             device_noun: "computer",
             one_layout: false,
+            floats: true,
         }
     }
 

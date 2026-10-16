@@ -227,6 +227,7 @@ impl OsServices for PhoneOs {
             device_label: "Phone",
             device_noun: "phone",
             one_layout: true,
+            floats: false,
         }
     }
 

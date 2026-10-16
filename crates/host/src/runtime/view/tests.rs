@@ -981,36 +981,76 @@ fn a_seat_drawing_the_same_trees_with_one_byte_pictures() {
     resident_at_the_picture_budget(1);
 }
 
-/// A frame with a web piece ends a view whose manifest does not declare
-/// `web`, as a frame the host cannot take does; a view that declares it
-/// draws it.
+/// A frame with a web, camera or microphone piece ends a view whose
+/// manifest does not declare that piece's capability (another one does
+/// not stand in), as a frame the host cannot take does; a view that
+/// declares it draws it.
 #[test]
-fn a_web_piece_from_a_view_without_the_web_capability_ends_the_view() {
-    let page = || wire::Node::Web {
-        id: wire::ElementIdWire::Name("page".into()),
-        url: "https://example.com/".into(),
-        style: crate::render::plain_style(),
-        revision: 0,
-        commands: Vec::new(),
-        on_state: None,
-    };
-    let mut declaring = scripted_view();
-    declaring.capabilities = vec![Capability::Web];
-    draw(&mut declaring, vec![page()]);
+fn a_piece_from_a_view_without_its_capability_ends_the_view() {
+    let style = crate::render::plain_style();
+    let pieces = [
+        (
+            Capability::Web,
+            wire::Node::Web {
+                id: wire::ElementIdWire::Name("page".into()),
+                url: "https://example.com/".into(),
+                style,
+                revision: 0,
+                commands: Vec::new(),
+                on_state: None,
+            },
+        ),
+        (
+            Capability::Camera,
+            wire::Node::Camera {
+                id: wire::ElementIdWire::Name("camera".into()),
+                style,
+                device: None,
+                mirror: true,
+                object_fit: wire::ImageObjectFit::Cover,
+                on_state: None,
+            },
+        ),
+        (
+            Capability::Microphone,
+            wire::Node::Microphone {
+                id: wire::ElementIdWire::Name("mic".into()),
+                style,
+                device: None,
+                output: None,
+                monitor: false,
+                revision: 0,
+                commands: Vec::new(),
+                on_state: None,
+            },
+        ),
+    ];
+    for (own, piece) in &pieces {
+        let mut declaring = scripted_view();
+        declaring.capabilities = vec![*own];
+        draw(&mut declaring, vec![piece.clone()]);
 
-    let mut view = scripted_view();
-    answer(
-        &mut view,
-        &crate::render::sent(wire::Frame {
-            root: Some(page()),
-            ..Default::default()
-        }),
-    );
-    assert!(
-        view.fault
-            .as_deref()
-            .is_some_and(|fault| fault.contains("`web`")),
-        "{:?}",
-        view.fault
-    );
+        let others: Vec<Capability> = pieces
+            .iter()
+            .map(|(capability, _)| *capability)
+            .filter(|capability| capability != own)
+            .collect();
+        let mut view = scripted_view();
+        view.capabilities = others;
+        answer(
+            &mut view,
+            &crate::render::sent(wire::Frame {
+                root: Some(piece.clone()),
+                ..Default::default()
+            }),
+        );
+        let name = format!("`{}`", own.as_str());
+        assert!(
+            view.fault
+                .as_deref()
+                .is_some_and(|fault| fault.contains(&name)),
+            "{name}: {:?}",
+            view.fault
+        );
+    }
 }

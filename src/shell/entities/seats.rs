@@ -1,16 +1,17 @@
 //! The desktop's half of the seats: which view panes exist, and in which
 //! window, is the windows' desks' to say. `DeskSeats` follows `Windows`
 //! and every window's `Desk`, tells the shared `Seats` where each pane's
-//! seat is placed (`Seats::place`), and answers what a seat asks of the
+//! seat is placed (`Seats::place`: its window, floated by its view or
+//! not, kept on top or not), and answers what a seat asks of the
 //! windows (`SeatsEvent`): a title to the desk holding its pane, a view
-//! seated to the desks holding it, a link to `Windows`.
+//! seated to the desks holding it, a link or a float to `Windows`.
 use super::{Seats, Windows};
-use crate::runtime::WindowKey;
+use crate::runtime::{Placed, WindowKey};
 use crate::shell::WindowKind;
 use crate::shell::layers::view_body;
 use crate::ui::layout::Layout;
 use ducktape_host::session::{Place, SeatsEvent};
-use gpui_kit::{Context, Entity, Subscription, WeakEntity};
+use gpui_kit::{Context, Entity, Subscription, WeakEntity, px, size};
 use std::collections::BTreeMap;
 
 pub(crate) struct DeskSeats {
@@ -73,26 +74,34 @@ impl DeskSeats {
         let Some(windows) = self.windows.upgrade() else {
             return;
         };
+        let keeps_above = crate::shell::windows::can_keep_above(cx);
         let (layouts, handles, front) = {
             let windows = windows.read(cx);
             // the body is the frame's on a console's desk, where the pane
             // is drawn framed; a window one view fills (a pop-out, `--live`)
-            // lays its pane out edge to edge, whatever frame the layout keeps
-            let layouts: BTreeMap<WindowKey, (Layout, bool)> = windows
+            // lays its pane out edge to edge, whatever frame the layout
+            // keeps. And what the window is beyond holding its panes:
+            // floated by a view, kept on top
+            let layouts: BTreeMap<WindowKey, (Layout, bool, Placed)> = windows
                 .by_window()
                 .iter()
                 .map(|(key, own)| {
                     let on_desk = own.kind == WindowKind::Console;
-                    (*key, (own.desk.read(cx).get().clone(), on_desk))
+                    let placed = Placed {
+                        float_min: windows.float_min(*key),
+                        on_top: windows.on_top(*key),
+                        keeps_above,
+                    };
+                    (*key, (own.desk.read(cx).get().clone(), on_desk, placed))
                 })
                 .collect();
             (layouts, windows.handles().clone(), windows.front())
         };
         let wanted: BTreeMap<u64, Place> = layouts
             .iter()
-            .flat_map(|(key, (layout, on_desk))| {
+            .flat_map(|(key, (layout, on_desk, placed))| {
                 let window = handles.get(key).copied();
-                let on_desk = *on_desk;
+                let (on_desk, placed) = (*on_desk, *placed);
                 let in_front = front == Some(*key);
                 layout
                     .panes
@@ -101,10 +110,8 @@ impl DeskSeats {
                     .filter(|(_, pane)| pane.is_view())
                     .map(move |(index, pane)| {
                         let body = view_body(on_desk, layout, index);
-                        (
-                            pane.instance,
-                            (pane.program, window.map(|window| (window, body, in_front))),
-                        )
+                        let window = window.map(|window| (window, body, in_front));
+                        (pane.instance, (pane.program, window, placed))
                     })
             })
             .collect();
@@ -158,6 +165,30 @@ impl DeskSeats {
             // the reader's account: the console bar's account menu
             SeatsEvent::Show(_, _, view_wire::methods::Place::Account) => {
                 windows.update(cx, |windows, cx| windows.show_account(cx));
+            }
+            // a refused camera's or microphone's system settings: the
+            // kernel shows only a place this host has a page for
+            SeatsEvent::Show(
+                _,
+                _,
+                place @ (view_wire::methods::Place::CameraSettings
+                | view_wire::methods::Place::MicrophoneSettings),
+            ) => {
+                if let Some(page) = crate::render::av::settings_page(*place) {
+                    cx.open_url(page);
+                }
+            }
+            // its own pane into a window of its own, the view laid out at
+            // the float's size, or back
+            SeatsEvent::Float(instance, float) => {
+                let body = size(px(float.width as f32), px(float.height as f32));
+                let min = size(px(float.min_width as f32), px(float.min_height as f32));
+                windows.update(cx, |windows, cx| {
+                    windows.float(*instance, body, min, float.on_top, cx)
+                });
+            }
+            SeatsEvent::Unfloat(instance) => {
+                windows.update(cx, |windows, cx| windows.unfloat(*instance, cx));
             }
         }
     }

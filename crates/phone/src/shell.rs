@@ -24,7 +24,7 @@ pub mod stack;
 use ducktape_host::a11y::Control as _;
 use ducktape_host::contract::{Boot, OsServices, Signal, SoftKeyboard};
 use ducktape_host::runtime::notify::{Opened as Banner, Permission};
-use ducktape_host::runtime::{Back, consent};
+use ducktape_host::runtime::{Back, Placed, consent};
 use ducktape_host::session::{Opening, Place, Seats, SeatsEvent, Session, SessionEvent, Shared};
 use futures::StreamExt as _;
 use gpui_kit::component::input::{InputEvent, InputState};
@@ -227,7 +227,7 @@ fn let_go_closed(stack: &Entity<Stack>, seats: &Entity<Seats>, cx: &mut App) {
         .read(cx)
         .open()
         .iter()
-        .map(|opened| (opened.instance, (opened.program, None)))
+        .map(|opened| (opened.instance, (opened.program, None, Placed::default())))
         .collect();
     seats.update(cx, |seats, cx| seats.place(kept, cx));
 }
@@ -637,9 +637,20 @@ impl Root {
             SeatsEvent::OpenLink(_, _, link) => self.open_link(link, cx),
             // the reader's account: the account menu, as from a header's avatar
             SeatsEvent::Show(_, _, view_wire::methods::Place::Account) => self.account_sheet(cx),
+            // a refused camera's or microphone's system settings, where this
+            // host has that page (`render/av.rs`: none without `av`); the
+            // kernel shows no other
+            SeatsEvent::Show(_, _, place) => {
+                if let Some(page) = ducktape_host::render::av::settings_page(*place) {
+                    cx.open_url(page);
+                }
+            }
             // the desktop widens a window to a view that came; a phone
             // never does
             SeatsEvent::Seated(_) => {}
+            // a phone floats no pane (`OsFacts::floats`): its views' kernel
+            // knows no float method, so neither comes
+            SeatsEvent::Float(..) | SeatsEvent::Unfloat(_) => {}
         }
     }
 
@@ -681,7 +692,11 @@ impl Root {
             .map(|opened| {
                 let in_front = active && top == Some(opened.instance);
                 let place = (handle, Some(body), in_front);
-                (opened.instance, (opened.program, Some(place)))
+                // a phone floats no pane (`OsFacts::floats`)
+                (
+                    opened.instance,
+                    (opened.program, Some(place), Placed::default()),
+                )
             })
             .collect();
         let covered = self.sheet.is_some() || self.consent.is_some() || self.alert.is_some();
