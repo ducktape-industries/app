@@ -1238,9 +1238,13 @@ mod tests {
     /// in front with the keys; the capsule's menu withholding them; Back
     /// closing the sheet, then popping (the seat kept, out of front); a
     /// consent ask refused by Back; a memory warning letting the seat of a
-    /// program left go with no draw.
+    /// program left go with no draw; leaving the network taking its program
+    /// list with it, so a link is held again until the next network's list,
+    /// never opened against the old one.
     #[gpui_kit::test]
     fn the_root_holds_links_places_seats_and_walks_back(cx: &mut TestAppContext) {
+        // leaving the network locks the key: the seat is one for the process
+        let _seat = ducktape_host::backend::seat_serial();
         cx.executor().allow_parking();
         cx.update(gpui_kit::init);
         let shared = cx.update(|cx| Shared::for_test(Default::default(), Default::default(), cx));
@@ -1344,6 +1348,33 @@ mod tests {
         assert!(
             seat(cx).is_none(),
             "the seat of a program left outlived the warning"
+        );
+
+        shared
+            .session
+            .update(cx, |session, cx| session.disconnect(cx));
+        cx.run_until_parked();
+        assert!(
+            shared.rail.read_with(cx, |rail, _| rail.rows().is_empty()),
+            "the left network's programs are still listed"
+        );
+        root.update(cx, |root, cx| {
+            root.take_link(format!("duck://{PROGRAM}"), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            top(&stack, cx),
+            None,
+            "a link opened against the left network's list"
+        );
+        shared.rail.update(cx, |rail, cx| {
+            rail.read_off(Roster::listing(&[PROGRAM]), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            top(&stack, cx),
+            Some(PROGRAM),
+            "the link held over the leave did not open on the next list"
         );
     }
 }

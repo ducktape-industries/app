@@ -38,7 +38,7 @@ pub use kernel::shown_title;
 // (render/av.rs)
 #[cfg(feature = "av")]
 pub use kernel::plain;
-pub use roster::{Link, RailRow, connected, deployments_checked, props, valid_route};
+pub use roster::{Link, RailRow, connected, deployments_checked, disconnected, props, valid_route};
 pub use roster::{Roster, changes_channel, roster};
 pub use seat::{Back, Backgrounded, Failure, Placed, Seat, serve_starts};
 
