@@ -32,6 +32,8 @@ gpui-kit = "=0.7.3"
 gpui-base = "=0.7.3"
 unicode-segmentation = "1"
 futures.workspace = true
+# a notifier's answers and turn (`view_wire::notifier`)
+borsh.workspace = true
 async-channel = "2"
 zeroize.workspace = true
 design.workspace = true
@@ -40,7 +42,7 @@ sha2.workspace = true
 identity.workspace = true
 # The roster's full query surface: its programs and its view-only entries.
 blob.workspace = true
-programs = { git = "https://github.com/ducktape-industries/programs", rev = "618e25ecf9b4ec324d3467cd8047fc1c806945e0", package = "programs" }
+programs = { git = "https://github.com/ducktape-industries/programs", rev = "3a064143fd2c7778675866df5c4f313c0bc20447", package = "programs" }
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -75,7 +77,7 @@ gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tempfile.workspace = true
 # a fake node's changes socket (`runtime/kernel/node/tests.rs`)
 tokio-tungstenite.workspace = true
-blobs = { git = "https://github.com/ducktape-industries/programs", rev = "618e25ecf9b4ec324d3467cd8047fc1c806945e0", package = "blobs" }
+blobs = { git = "https://github.com/ducktape-industries/programs", rev = "3a064143fd2c7778675866df5c4f313c0bc20447", package = "blobs" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # test-support: its headless renderer, which `render/tests/picture_pixels.rs`

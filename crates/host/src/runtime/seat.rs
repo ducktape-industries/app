@@ -814,4 +814,4 @@ mod entity_tests;
 #[cfg(test)]
 mod first_frame_tests;
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

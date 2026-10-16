@@ -511,8 +511,10 @@ impl View {
             fault: _,
             alive: _,
             staged: _,
+            notifier,
+            showing: _,
         } = self;
-        let mut sibling = Self::instantiate(program, code, shown)?;
+        let mut sibling = Self::instantiated(program, code, shown, *notifier)?;
         sibling.instance = *instance;
         sibling.name = name.clone();
         sibling.icon = icon.clone();
@@ -682,6 +684,16 @@ impl View {
     /// The module instantiated, its exports bound, nothing run yet: a
     /// fresh view is `init`ed, a replacement `restore`d.
     pub fn instantiate(program: &'static str, code: &Module, shown: &str) -> Result<Self, String> {
+        Self::instantiated(program, code, shown, false)
+    }
+
+    /// [`Self::instantiate`], of a view or of a `notifier`'s module.
+    pub(crate) fn instantiated(
+        program: &'static str,
+        code: &Module,
+        shown: &str,
+        notifier: bool,
+    ) -> Result<Self, String> {
         let engine = engine();
         let budget = crate::backend::memory_bounds().view_bytes;
         let limits = ViewLimits::new(usize::try_from(budget).unwrap_or(usize::MAX));
@@ -724,8 +736,8 @@ impl View {
         let instance = linker
             .instantiate(&mut store, code)
             .map_err(|error| format!("{shown}: {}", first_line(&error)))?;
-        let exports =
-            Exports::bind(&mut store, &instance).map_err(|error| format!("{shown}: {error}"))?;
+        let exports = Exports::bind(&mut store, &instance, notifier)
+            .map_err(|error| format!("{shown}: {error}"))?;
         Ok(Self {
             connection: connection().lock().expect("views rpc").clone(),
             activation: None,
@@ -771,6 +783,8 @@ impl View {
             hash: None,
             alive: Arc::new(()),
             staged: false,
+            notifier,
+            showing: None,
         })
     }
 
@@ -794,6 +808,16 @@ impl View {
         }
         self.visible = visible;
         self.visibility_change = Some(visible);
+        self.screen_moved();
+    }
+
+    /// What this view shows, on screen or not, to `host.screen`.
+    pub(crate) fn screen_moved(&mut self) {
+        let route = self
+            .showing
+            .clone()
+            .filter(|route| self.visible && !route.is_empty());
+        kernel::screen::shown(self.program, self.instance, route);
     }
 
     /// A route a link left for this seat goes to its first route

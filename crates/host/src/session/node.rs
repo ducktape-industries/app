@@ -460,6 +460,7 @@ impl Session {
         });
         self.screen
             .update(cx, |screen, cx| screen.set(Screen::Connect, cx));
+        crate::runtime::notifier::disconnected();
         cx.emit(SessionEvent::LeftNetwork);
     }
 
