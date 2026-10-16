@@ -918,7 +918,7 @@ pub(super) fn view_override(program: &str) -> Option<PathBuf> {
 mod entity;
 mod standin;
 
-pub use entity::Seat;
+pub use entity::{Backgrounded, Seat};
 
 #[cfg(test)]
 mod entity_tests;

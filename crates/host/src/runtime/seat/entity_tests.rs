@@ -1694,3 +1694,37 @@ fn a_death_replay_reproduces_the_frame_of_tick_n(cx: &mut TestAppContext) {
     );
     assert_eq!(dying.held(), 0);
 }
+
+/// In the background no seat turns, so no call into a view is begun: the
+/// moved props wait, and the seat turns once, delivering them, when the app
+/// is in front again (SPEC §4.3).
+#[gpui_kit::test]
+fn no_seat_turns_in_the_background(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "background-turns";
+    crate::runtime::seat_ticking_for_test(PROGRAM, 320, &five_trees());
+    let (seat, _, mut native) = open(cx, PROGRAM, false);
+    draw_now(&mut native);
+    subscribe_props(&seat, &native);
+    let (turns, ticks) = (turns_of(&seat, &native), ticks_of(&seat, &native));
+    native.update(|_, cx| cx.set_global(Backgrounded(true)));
+    nudge(&seat, b"moved", &mut native);
+    native.update(|_, cx| seat.update(cx, |seat, cx| seat.turn(cx)));
+    native.run_until_parked();
+    assert_eq!(
+        (turns_of(&seat, &native), ticks_of(&seat, &native)),
+        (turns, ticks),
+        "a seat turned in the background"
+    );
+    native.update(|_, cx| cx.set_global(Backgrounded(false)));
+    draw_now(&mut native);
+    assert_eq!(
+        turns_of(&seat, &native),
+        turns + 1,
+        "one turn in front again"
+    );
+    assert_eq!(
+        ticks_of(&seat, &native),
+        ticks + 1,
+        "the props it held, delivered"
+    );
+}

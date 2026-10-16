@@ -65,6 +65,10 @@ fn drain(
         while let Ok(signal) = signals.recv().await {
             match signal {
                 Signal::Lifecycle(phase) => {
+                    // seats stop turning in the background and turn again
+                    // in front (`Backgrounded`)
+                    let backgrounded = matches!(phase, gpui_kit::AppLifecyclePhase::Background);
+                    cx.update(|cx| cx.set_global(crate::runtime::Backgrounded(backgrounded)));
                     if session
                         .update(cx, |session, cx| session.lifecycle(phase, cx))
                         .is_err()

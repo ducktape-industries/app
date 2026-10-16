@@ -29,6 +29,15 @@ use gpui_kit::{AnyWindowHandle, Context, Entity, EventEmitter, Subscription};
 /// Frame pacing for a busy view (`frame.busy`): one more turn, a frame later.
 const BUSY_FRAME: Duration = Duration::from_millis(16);
 
+/// The app is in the background (`Signal::Lifecycle`, SPEC §4.3): no seat
+/// turns, so no call into a view is begun; replies and clock items wait in
+/// the views, and every seat turns once the app is in front again. A
+/// global of the app's, set by `start`'s drain; the desktop never sends
+/// the phase.
+pub struct Backgrounded(pub bool);
+
+impl gpui_kit::Global for Backgrounded {}
+
 pub struct Seat {
     program: &'static str,
     instance: u64,
@@ -117,6 +126,7 @@ impl Seat {
     /// in the registry: a link's route waits for it by that key.
     pub fn new(program: &'static str, instance: u64, cx: &mut Context<Self>) -> Self {
         let theme = cx.observe_global::<gpui_kit::component::Theme>(|this, cx| this.turn(cx));
+        let phase = cx.observe_global::<Backgrounded>(|this, cx| this.turn(cx));
         let mounted = mounted(program, instance);
         let mut woken = lock(&mounted).wake.subscribe();
         let wake = cx.spawn(async move |this, cx| {
@@ -152,7 +162,7 @@ impl Seat {
             _wake: wake,
             clock: None,
             busy: None,
-            _observers: vec![theme],
+            _observers: vec![theme, phase],
             #[cfg(any(test, feature = "test-support"))]
             turns: 0,
         }
@@ -318,7 +328,8 @@ impl Seat {
         }
         // a swap that runs owns the drawn view until it is done; it wakes
         // the seat then
-        if self.holding || self.in_flight.is_some() || lock(&self.mounted).owned {
+        let backgrounded = cx.try_global::<Backgrounded>().is_some_and(|phase| phase.0);
+        if self.holding || self.in_flight.is_some() || lock(&self.mounted).owned || backgrounded {
             self.owed = true;
             return;
         }
