@@ -9,7 +9,7 @@
 //! page at the same depth (a tab, a page put in place of another) is not
 //! moved. A pointer window never moves, and its frames carry no mark.
 use super::*;
-use crate::motion::{self, Slide, Tween};
+use crate::motion::{self, Motion, Slide, Tween};
 
 /// The page a frame shows: its path, and how far over its stack's root.
 pub(super) type Shown = (AuthoredPath, u32);
@@ -20,7 +20,10 @@ pub(super) struct PageMotion {
     leaving: Entity<ViewTree>,
     /// Whether the new page is shallower: the old slides off it.
     pop: bool,
-    tween: Tween,
+    motion: Motion,
+    /// From the first frame that draws it, not the frame's arrival: a new
+    /// page slow to lay out still moves its whole way.
+    tween: Option<Tween>,
     slide: Slide,
 }
 
@@ -99,11 +102,12 @@ impl ViewTree {
             tree
         });
         let pop = *to < depth;
-        let (moving, slide) = motion::stack(pop, cx);
+        let (motion, slide) = motion::stack(pop, cx);
         self.page_motion = Some(PageMotion {
             leaving,
             pop,
-            tween: Tween::start(moving, cx),
+            motion,
+            tween: None,
             slide,
         });
     }
@@ -120,18 +124,19 @@ impl ViewTree {
             .page
             .as_ref()
             .is_some_and(|(path, _)| *path == self.authored_path);
-        let Some(moving) = self.page_motion.as_ref().filter(|_| on_top) else {
+        let Some(moving) = self.page_motion.as_mut().filter(|_| on_top) else {
             return page;
         };
+        let tween = *moving
+            .tween
+            .get_or_insert_with(|| Tween::start(moving.motion, cx));
         let now = motion::now(cx);
-        if moving.tween.done(now) {
+        if tween.done(now) {
             self.page_motion = None;
             return page;
         }
-        let progress = moving.tween.frame(window, cx);
-        let placed = moving
-            .slide
-            .at(progress, moving.tween.time(now), moving.pop);
+        let progress = tween.frame(window, cx);
+        let placed = moving.slide.at(progress, tween.time(now), moving.pop);
         let leaving = moving.leaving.clone().into_any_element();
         let (top, under) = match moving.pop {
             true => (leaving, page),
