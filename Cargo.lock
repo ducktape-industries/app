@@ -2661,9 +2661,12 @@ name = "ducktape-phone"
 version = "0.1.0"
 dependencies = [
  "android-activity",
+ "async-channel",
  "commonware-utils",
  "design",
+ "ducklink",
  "ducktape-host",
+ "futures",
  "gpui-kit",
  "gpui-pre-ios",
  "gpui-pre-mobile",
