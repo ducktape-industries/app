@@ -361,53 +361,122 @@ pub(super) fn changes(view: &mut View, id: u64, payload: &[u8]) {
     follow_changes(view, id, node, program);
 }
 
-/// Subscription `id`: `program.changes` of `program` on `node`.
+/// Subscription `id`: `program.changes` of `program` on `node`, one
+/// follower of its [`Feed`]. A follower that falls more than
+/// [`FEED_BACKLOG`] items behind is told to re-read (`None`), as after a
+/// reopened socket, rather than holding the socket up for everyone.
 fn follow_changes(view: &mut View, id: u64, node: Node, program: String) {
     let replies = view.replies.clone();
     let subscribed = (id, program.clone());
     let follows = Follow::Changes(program.clone());
+    let (feed, mut items) = feed(&node, &program);
     start(view, id, Some(follows), async move {
-        use futures::StreamExt as _;
+        use tokio::sync::broadcast::error::RecvError;
+        // held while the subscription runs: the last follower gone, the
+        // socket closes
+        let _feed = feed;
         let mut drained = replies.drains();
         loop {
-            let mut changes = match node.client.changes(&program).await {
-                Ok(changes) => changes,
-                Err(error) => {
-                    tracing::debug!(target: "ducktape::app", %error, program, "changes stream not opened");
-                    replies.item(id, Err(refused(error)), true);
-                    return;
-                }
+            let item = match items.recv().await {
+                Ok(item) => item,
+                Err(RecvError::Lagged(_)) => Ok(methods::encode(&None::<methods::Change>)),
+                Err(RecvError::Closed) => return,
             };
-            while let Some(change) = changes.next().await {
-                // what the node publishes, as it publishes it: the height and
-                // the keys the block wrote (the values stay on the node)
-                let item = match change {
-                    Ok(change) => Ok(methods::encode(&Some(methods::Change {
-                        height: change.height,
-                        keys: change.writes.into_iter().map(|(key, _)| key).collect(),
-                    }))),
-                    Err(_) => break,
-                };
-                if !replies.subscription_item(&mut drained, id, item).await {
-                    return;
-                }
+            // a node that did not take the socket ends the subscription with why
+            if item.is_err() {
+                return replies.item(id, item, true);
             }
-            // the socket closed: the node restarted or the link dropped. Say
-            // so once (the view re-reads) and open it again; a node that
-            // does not take it again ends the subscription with why.
-            if !replies
-                .subscription_item(
-                    &mut drained,
-                    id,
-                    Ok(methods::encode(&None::<methods::Change>)),
-                )
-                .await
-            {
+            if !replies.subscription_item(&mut drained, id, item).await {
                 return;
             }
         }
     });
     view.live_subscriptions.push(subscribed);
+}
+
+/// Items a follower may fall behind its feed before it is told to re-read.
+const FEED_BACKLOG: usize = 256;
+
+/// ONE `/v1/changes/<program>` socket per node and program, however many
+/// subscriptions follow it (a program's panes and its notifier; on a host
+/// with no screen, one notifier per account): each item goes to every
+/// follower. Opened by the first follower, closed with the last.
+struct Feed {
+    items: tokio::sync::broadcast::Sender<Answer>,
+    socket: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for Feed {
+    fn drop(&mut self) {
+        self.socket.abort();
+    }
+}
+
+type Feeds = HashMap<(String, String), std::sync::Weak<Feed>>;
+
+/// The feed of `program` on `node`, opened if none runs, and a follower's
+/// own place in it (made before the socket can send anything).
+fn feed(
+    node: &Node,
+    program: &str,
+) -> (
+    std::sync::Arc<Feed>,
+    tokio::sync::broadcast::Receiver<Answer>,
+) {
+    static FEEDS: OnceLock<Mutex<Feeds>> = OnceLock::new();
+    let mut feeds = FEEDS
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let key = (node.client.endpoint().to_owned(), program.to_owned());
+    // a feed whose node refused the socket has ended: the next follower opens another
+    if let Some(feed) = feeds.get(&key).and_then(std::sync::Weak::upgrade)
+        && !feed.socket.is_finished()
+    {
+        let follower = feed.items.subscribe();
+        return (feed, follower);
+    }
+    feeds.retain(|_, feed| feed.strong_count() > 0);
+    let (items, follower) = tokio::sync::broadcast::channel(FEED_BACKLOG);
+    let socket = handle().spawn(socket(
+        node.client.clone(),
+        program.to_owned(),
+        items.clone(),
+    ));
+    let feed = std::sync::Arc::new(Feed { items, socket });
+    feeds.insert(key, std::sync::Arc::downgrade(&feed));
+    (feed, follower)
+}
+
+/// A feed's socket: each change the node publishes, to every follower.
+async fn socket(client: RpcClient, program: String, items: tokio::sync::broadcast::Sender<Answer>) {
+    use futures::StreamExt as _;
+    loop {
+        let mut changes = match client.changes(&program).await {
+            Ok(changes) => changes,
+            Err(error) => {
+                tracing::debug!(target: "ducktape::app", %error, program, "changes stream not opened");
+                let _ = items.send(Err(refused(error)));
+                return;
+            }
+        };
+        while let Some(change) = changes.next().await {
+            // what the node publishes, as it publishes it: the height and
+            // the keys the block wrote (the values stay on the node)
+            let item = match change {
+                Ok(change) => methods::encode(&Some(methods::Change {
+                    height: change.height,
+                    keys: change.writes.into_iter().map(|(key, _)| key).collect(),
+                })),
+                Err(_) => break,
+            };
+            let _ = items.send(Ok(item));
+        }
+        // the socket closed: the node restarted or the link dropped. Say so
+        // once (each follower re-reads) and open it again; a node that does
+        // not take it again ends every follower's subscription with why.
+        let _ = items.send(Ok(methods::encode(&None::<methods::Change>)));
+    }
 }
 
 /// `chain.heads`: one [`methods::Head`] per finalized block, oldest first. The
