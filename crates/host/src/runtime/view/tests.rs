@@ -82,10 +82,14 @@ fn draw(view: &mut View, children: Vec<wire::Node>) {
 
 /// One tick of `view`, answering with `frame` as it stands.
 fn answer(view: &mut View, frame: &wire::Frame) {
-    let frame = wire::encode(frame);
+    answer_bytes(view, &wire::encode(frame));
+}
+
+/// One tick of `view`, answering with `frame`'s bytes as they stand.
+fn answer_bytes(view: &mut View, frame: &[u8]) {
     let memory = view.exports.memory;
     let at = memory.data_size(&view.store) - frame.len();
-    memory.write(&mut view.store, at, &frame).unwrap();
+    memory.write(&mut view.store, at, frame).unwrap();
     let answer = wire::abi::pack(at as u32, frame.len() as u32);
     memory
         .write(&mut view.store, 8, &answer.to_le_bytes())
@@ -147,7 +151,7 @@ fn the_host_holds_a_trees_styles_and_refuses_a_style_it_does_not_hold() {
     answer(&mut view, &whole(1));
     assert_eq!(
         view.fault.as_deref(),
-        Some("a node names a style its table does not hold")
+        Some("Container at []: a node names a style its table does not hold")
     );
     assert_eq!(
         view.frame.root,
@@ -343,14 +347,61 @@ fn a_view_says_its_min_width_once_it_is_drawn() {
     assert_eq!(min_width("min-width-seat"), None, "gone");
 }
 
+/// A view built against another wire than this app's runs. Where the two
+/// read its frame differently it stops, and its seat says what failed, at
+/// which node, and both wires; one on this app's wire says what failed.
 #[test]
-fn a_view_built_against_another_wire_is_refused_at_load() {
-    assert!(wire_id(wire::WIRE_ID).is_ok());
-    let refused = wire_id("0").unwrap_err();
-    assert!(
-        refused.contains("wire 0;") && refused.contains(wire::WIRE_ID),
-        "{refused}"
+fn a_view_on_another_wire_runs_and_its_failure_names_the_node_and_both_wires() {
+    // [`scripted_view`], its manifest naming wire 0
+    let bytes = wat::parse_str(format!(
+        r#"(module
+            (@custom "{}" "ducktape.view.manifest\nForeign\n\n\n320\n0\n\n")
+            (memory (export "memory") 40)
+            (func (export "alloc") (param i32) (result i32) i32.const 64)
+            (func (export "init"))
+            (func (export "tick") (param i32 i32) (result i64) (i64.load (i32.const 8)))
+            (func (export "snapshot") (result i64) unreachable)
+            (func (export "restore") (param i32 i32) (result i64) unreachable))"#,
+        wire::manifest::MANIFEST_SECTION
+    ))
+    .unwrap();
+    let mut view = View::from_bytes("foreign", &bytes, "foreign").expect("loaded all the same");
+    assert_eq!((view.name.as_str(), view.wire.as_str()), ("Foreign", "0"));
+    // a tree whose second child is a node kind this app does not know
+    let space = wire::encode(&wire::Node::Space)[0];
+    let mut frame = wire::encode(&crate::render::sent(wire::Frame {
+        root: Some(wire::Node::Container(view_wire::ContainerNode {
+            id: None,
+            style: crate::render::plain_style(),
+            interactivity: Default::default(),
+            children: vec![wire::Node::Space, wire::Node::Space],
+        })),
+        ..Default::default()
+    }));
+    let second = frame
+        .windows(3)
+        .rposition(|bytes| bytes == [0x92, space, space])
+        .expect("the two children")
+        + 2;
+    frame[second] = 0x7f;
+    answer_bytes(&mut view, &frame);
+    let fault = view.fault.clone().expect("the view stopped");
+    assert!(fault.starts_with("node at [1]: "), "{fault}");
+
+    let failure = view.failure(fault.clone());
+    assert_eq!(
+        failure.title(),
+        "This view, built against another wire, stopped"
     );
+    assert_eq!(
+        failure.to_string(),
+        format!(
+            "{fault} (this view was built against wire 0; this app speaks {})",
+            wire::WIRE_ID
+        )
+    );
+    view.wire = wire::WIRE_ID.into();
+    assert_eq!(view.failure(fault.clone()), Failure::Trapped(fault));
 }
 
 /// A large state the swap tests carry over.

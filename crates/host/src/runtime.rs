@@ -183,9 +183,10 @@ mod display_diagnostics;
 pub mod pictures;
 
 /// The name a view's manifest gives it, the capabilities it declares, the
-/// narrowest it is laid out, its targets and its icon; empty and 0 for one
-/// whose manifest cannot be read (`compile` refuses those before a seat).
-fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>, u32, Vec<String>, String) {
+/// narrowest it is laid out, its targets, its icon and the wire it was
+/// built against; empty and 0 for one whose manifest cannot be read
+/// (`compile` refuses those before a seat).
+fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>, u32, Vec<String>, String, String) {
     view_wire::manifest::read_manifest(bytes)
         .map(|manifest| {
             (
@@ -194,6 +195,7 @@ fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>, u32, Vec<String>, Stri
                 manifest.min_width,
                 manifest.targets,
                 manifest.icon,
+                manifest.wire_id,
             )
         })
         .unwrap_or_default()
