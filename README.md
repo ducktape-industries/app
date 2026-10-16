@@ -20,6 +20,9 @@ Releases are published to `https://dl.ducktape.industries/app/`: one
 channel file per channel (`stable.json` is `main`, `nightly.json` is `dev`
 once a day) naming each platform's archive by its sha256. An installed app
 keeps itself up to date from there; Settings › Updates picks the channel.
+Its "Update automatically" switch (on unless turned off) stops that: off,
+the app still checks and says what is newer, but downloads and installs
+nothing until you press Update now there.
 For nightly, read `nightly.json` instead of `stable.json` below.
 
 **macOS (Apple silicon).** Needs `jq`. The archive is `Ducktape.app`, ad-hoc

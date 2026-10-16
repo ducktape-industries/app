@@ -38,6 +38,13 @@
 //!   switch never downgrades: the next check takes the new channel's release
 //!   only when its sequence is newer than the pin. Sequences are one order
 //!   across channels (a release's sequence is its commit's committer time).
+//! - Updating automatically off: a check's `ManifestFetched` with
+//!   `take: Nothing` names a newer release (`Banner(Available)`) and
+//!   downloads nothing; `take: Asked` ("Update now") downloads and stages it
+//!   as `Automatic` does, marked `asked`. A staged release is superseded only
+//!   by a check that takes. `AutomaticOff` drops a release the updater took
+//!   on its own as `ChannelChanged` does; one the person asked for stays, and
+//!   the next start flips to it.
 //! - A boot whose command list carries no `Exec` runs [`Phase::current`].
 
 use std::cmp::Ordering;
@@ -45,7 +52,7 @@ use std::cmp::Ordering;
 use crate::manifest::Platform;
 use crate::phase::{
     Command, Downloading, Event, Idle, PendingHealthy, Phase, RollbackReason, RolledBack, Staged,
-    SwapState, Swapping, UpdateBanner,
+    SwapState, Swapping, Take, UpdateBanner,
 };
 use crate::sha::Sha;
 use crate::verify::{Refusal, VerifiedManifest};
@@ -55,7 +62,9 @@ pub fn step(phase: Phase, event: Event) -> (Phase, Vec<Command>) {
     match (phase, event) {
         // Idle: the only phase that checks for updates from scratch.
         (Phase::Idle(idle), Event::Tick) => idle_tick(idle),
-        (Phase::Idle(idle), Event::ManifestFetched(result)) => idle_manifest_fetched(idle, result),
+        (Phase::Idle(idle), Event::ManifestFetched { result, take }) => {
+            idle_manifest_fetched(idle, result, take)
+        }
         (
             phase @ Phase::Idle(_),
             Event::Boot
@@ -68,7 +77,8 @@ pub fn step(phase: Phase, event: Event) -> (Phase, Vec<Command>) {
             | Event::QualifyFailed { .. }
             | Event::DismissRollbackNotice
             | Event::Rendered
-            | Event::ChannelChanged,
+            | Event::ChannelChanged
+            | Event::AutomaticOff,
         ) => unchanged(phase),
 
         // Downloading: the app is fetching, then verifying, `target`.
@@ -88,10 +98,13 @@ pub fn step(phase: Phase, event: Event) -> (Phase, Vec<Command>) {
         (Phase::Downloading(downloading), Event::ChannelChanged) => {
             downloading_channel_changed(downloading)
         }
+        (Phase::Downloading(downloading), Event::AutomaticOff) => {
+            downloading_automatic_off(downloading)
+        }
         (
             phase @ Phase::Downloading(_),
             Event::SwapResolved(_)
-            | Event::ManifestFetched(_)
+            | Event::ManifestFetched { .. }
             | Event::QualifyPassed(_)
             | Event::QualifyFailed { .. }
             | Event::DismissRollbackNotice
@@ -107,10 +120,11 @@ pub fn step(phase: Phase, event: Event) -> (Phase, Vec<Command>) {
             staged_qualify_failed(staged, sha, reason)
         }
         (Phase::Staged(staged), Event::Tick) => staged_tick(staged),
-        (Phase::Staged(staged), Event::ManifestFetched(result)) => {
-            staged_manifest_fetched(staged, result)
+        (Phase::Staged(staged), Event::ManifestFetched { result, take }) => {
+            staged_manifest_fetched(staged, result, take)
         }
         (Phase::Staged(staged), Event::ChannelChanged) => staged_channel_changed(staged),
+        (Phase::Staged(staged), Event::AutomaticOff) => staged_automatic_off(staged),
         (
             phase @ Phase::Staged(_),
             Event::SwapResolved(_)
@@ -129,7 +143,7 @@ pub fn step(phase: Phase, event: Event) -> (Phase, Vec<Command>) {
         }
         (
             phase @ Phase::Swapping(_),
-            Event::ManifestFetched(_)
+            Event::ManifestFetched { .. }
             | Event::DownloadFinished { .. }
             | Event::DownloadFailed { .. }
             | Event::Verified(_)
@@ -139,7 +153,8 @@ pub fn step(phase: Phase, event: Event) -> (Phase, Vec<Command>) {
             | Event::DismissRollbackNotice
             | Event::Rendered
             | Event::Tick
-            | Event::ChannelChanged,
+            | Event::ChannelChanged
+            | Event::AutomaticOff,
         ) => unchanged(phase),
 
         // PendingHealthy: flipped, waiting for the first frame.
@@ -148,7 +163,7 @@ pub fn step(phase: Phase, event: Event) -> (Phase, Vec<Command>) {
         (
             phase @ Phase::PendingHealthy(_),
             Event::SwapResolved(_)
-            | Event::ManifestFetched(_)
+            | Event::ManifestFetched { .. }
             | Event::DownloadFinished { .. }
             | Event::DownloadFailed { .. }
             | Event::Verified(_)
@@ -157,7 +172,8 @@ pub fn step(phase: Phase, event: Event) -> (Phase, Vec<Command>) {
             | Event::QualifyFailed { .. }
             | Event::DismissRollbackNotice
             | Event::Tick
-            | Event::ChannelChanged,
+            | Event::ChannelChanged
+            | Event::AutomaticOff,
         ) => unchanged(phase),
 
         // RolledBack: the notice stands until the app has read it.
@@ -168,7 +184,7 @@ pub fn step(phase: Phase, event: Event) -> (Phase, Vec<Command>) {
             phase @ Phase::RolledBack(_),
             Event::Boot
             | Event::SwapResolved(_)
-            | Event::ManifestFetched(_)
+            | Event::ManifestFetched { .. }
             | Event::DownloadFinished { .. }
             | Event::DownloadFailed { .. }
             | Event::Verified(_)
@@ -177,7 +193,8 @@ pub fn step(phase: Phase, event: Event) -> (Phase, Vec<Command>) {
             | Event::QualifyFailed { .. }
             | Event::Rendered
             | Event::Tick
-            | Event::ChannelChanged,
+            | Event::ChannelChanged
+            | Event::AutomaticOff,
         ) => unchanged(phase),
     }
 }
@@ -199,9 +216,10 @@ fn idle_tick(idle: Idle) -> (Phase, Vec<Command>) {
 fn idle_manifest_fetched(
     idle: Idle,
     result: Result<VerifiedManifest, Refusal>,
+    take: Take,
 ) -> (Phase, Vec<Command>) {
     match result {
-        Ok(verified) => idle_offer(idle, verified),
+        Ok(verified) => idle_offer(idle, verified, take),
         Err(refusal) => banner_only(Phase::Idle(idle), UpdateBanner::Refused(refusal)),
     }
 }
@@ -211,20 +229,21 @@ fn idle_manifest_fetched(
 /// never lowers — so an EQUAL sequence is the release that runs, or the one a
 /// rollback left as `previous`, which a newer sequence supersedes. Neither is
 /// downloaded again. An older sequence is a downgrade; a newer one is offered.
-fn idle_offer(idle: Idle, verified: VerifiedManifest) -> (Phase, Vec<Command>) {
+fn idle_offer(idle: Idle, verified: VerifiedManifest, take: Take) -> (Phase, Vec<Command>) {
     match verified.manifest.sequence.cmp(&idle.pinned_sequence) {
         Ordering::Less => banner_only(
             Phase::Idle(idle),
             UpdateBanner::Refused(Refusal::SequenceNotNewer),
         ),
         Ordering::Equal => banner_only(Phase::Idle(idle), UpdateBanner::UpToDate),
-        Ordering::Greater => offer_newer(idle, verified),
+        Ordering::Greater => offer_newer(idle, verified, take),
     }
 }
 
 /// A newer sequence: take it if it ships this platform and names something
-/// other than what runs.
-fn offer_newer(idle: Idle, verified: VerifiedManifest) -> (Phase, Vec<Command>) {
+/// other than what runs, and the check takes; with updating automatically
+/// off, only name it.
+fn offer_newer(idle: Idle, verified: VerifiedManifest, take: Take) -> (Phase, Vec<Command>) {
     let manifest = verified.manifest;
     let Some(artifact) = manifest.artifact_for(Platform::HOST) else {
         return banner_only(
@@ -236,6 +255,13 @@ fn offer_newer(idle: Idle, verified: VerifiedManifest) -> (Phase, Vec<Command>) 
     if already_running {
         return banner_only(Phase::Idle(idle), UpdateBanner::UpToDate);
     }
+    if take == Take::Nothing {
+        let available = UpdateBanner::Available {
+            offered: artifact.sha256,
+            display: manifest.release.display.clone(),
+        };
+        return banner_only(Phase::Idle(idle), available);
+    }
     let downloading = Downloading {
         current: idle.current,
         previous: idle.previous,
@@ -246,6 +272,7 @@ fn offer_newer(idle: Idle, verified: VerifiedManifest) -> (Phase, Vec<Command>) 
         display: manifest.release.display.clone(),
         channel: manifest.channel.clone(),
         successor_key: manifest.successor_key.clone(),
+        asked: take == Take::Asked,
     };
     let download = Command::Download {
         sha: downloading.target,
@@ -338,6 +365,7 @@ fn downloading_verified(downloading: Downloading, sha: Sha) -> (Phase, Vec<Comma
         display: downloading.display.clone(),
         channel: downloading.channel.clone(),
         refused: None,
+        asked: downloading.asked,
     });
     let banner = UpdateBanner::Ready {
         staged: downloading.target,
@@ -389,6 +417,15 @@ fn downloading_channel_changed(downloading: Downloading) -> (Phase, Vec<Command>
         Command::Gc { keep },
     ];
     (Phase::Idle(idle), commands)
+}
+
+/// Updating automatically went off: a download the updater started on its
+/// own goes as a channel switch's does; one the person asked for goes on.
+fn downloading_automatic_off(downloading: Downloading) -> (Phase, Vec<Command>) {
+    match downloading.asked {
+        true => unchanged(Phase::Downloading(downloading)),
+        false => downloading_channel_changed(downloading),
+    }
 }
 
 fn abandon_download(downloading: Downloading, banner: UpdateBanner) -> (Phase, Vec<Command>) {
@@ -450,9 +487,10 @@ fn staged_tick(staged: Staged) -> (Phase, Vec<Command>) {
 fn staged_manifest_fetched(
     staged: Staged,
     result: Result<VerifiedManifest, Refusal>,
+    take: Take,
 ) -> (Phase, Vec<Command>) {
     match result {
-        Ok(verified) => staged_offer(staged, verified),
+        Ok(verified) => staged_offer(staged, verified, take),
         Err(refusal) => banner_only(Phase::Staged(staged), UpdateBanner::Refused(refusal)),
     }
 }
@@ -461,14 +499,16 @@ fn staged_manifest_fetched(
 /// manifest as `Idle` would. The staged sequence, or a lower one, changes
 /// nothing and says nothing: a check repeats every hour for as long as the
 /// release waits, `Ready` was said once when it staged, and a refusal is read
-/// from `Staged::refused`, not re-announced.
-fn staged_offer(staged: Staged, verified: VerifiedManifest) -> (Phase, Vec<Command>) {
-    let supersedes = verified.manifest.sequence > staged.sequence;
+/// from `Staged::refused`, not re-announced. With updating automatically off
+/// nothing supersedes it: the release the person asked for still takes over
+/// at the next start, as Settings said.
+fn staged_offer(staged: Staged, verified: VerifiedManifest, take: Take) -> (Phase, Vec<Command>) {
+    let supersedes = verified.manifest.sequence > staged.sequence && take != Take::Nothing;
     if !supersedes {
         return unchanged(Phase::Staged(staged));
     }
     let (idle, mut commands) = discard_staged(staged);
-    let (phase, offer) = idle_offer(idle, verified);
+    let (phase, offer) = idle_offer(idle, verified, take);
     commands.extend(offer);
     (phase, commands)
 }
@@ -477,6 +517,16 @@ fn staged_offer(staged: Staged, verified: VerifiedManifest) -> (Phase, Vec<Comma
 fn staged_channel_changed(staged: Staged) -> (Phase, Vec<Command>) {
     let (idle, commands) = discard_staged(staged);
     (Phase::Idle(idle), commands)
+}
+
+/// Updating automatically went off: a release the updater staged on its own
+/// is dropped as a channel switch drops one, so no start applies it unasked;
+/// one the person asked for still takes over at the next start.
+fn staged_automatic_off(staged: Staged) -> (Phase, Vec<Command>) {
+    match staged.asked {
+        true => unchanged(Phase::Staged(staged)),
+        false => staged_channel_changed(staged),
+    }
 }
 
 /// Back to `Idle` on what runs, the pin kept, the staged directory collected.
@@ -618,6 +668,7 @@ mod tests {
             display: "0.1.0+b".into(),
             channel: "stable".into(),
             successor_key: None,
+            asked: false,
         }
     }
 
@@ -631,7 +682,16 @@ mod tests {
             display: "0.1.0+b".into(),
             channel: "stable".into(),
             refused: None,
+            asked: false,
         }
+    }
+
+    /// Staged because the person asked ("Update now").
+    fn asked(current: &str, staged_sha: &str) -> Phase {
+        Phase::Staged(Staged {
+            asked: true,
+            ..staged(current, staged_sha)
+        })
     }
 
     fn refused(current: &str, staged_sha: &str, reason: &str) -> Phase {
@@ -670,9 +730,24 @@ mod tests {
         })
     }
 
+    /// A check updating automatically fetched this manifest.
     fn fetched(sequence: u64, platform_key: &str, artifact: &str) -> Event {
+        fetched_taking(Take::Automatic, sequence, platform_key, artifact)
+    }
+
+    fn fetched_taking(take: Take, sequence: u64, platform_key: &str, artifact: &str) -> Event {
         let manifest = sample(sequence, platform_key, sha(artifact));
-        Event::ManifestFetched(Ok(VerifiedManifest { manifest }))
+        Event::ManifestFetched {
+            result: Ok(VerifiedManifest { manifest }),
+            take,
+        }
+    }
+
+    fn refused_manifest() -> Event {
+        Event::ManifestFetched {
+            result: Err(Refusal::BadSignature),
+            take: Take::Automatic,
+        }
     }
 
     /// The whole flip, from `from` to `to`: swap bit, flip, pending, exec.
@@ -722,6 +797,7 @@ mod tests {
             display: "0.1.0+b".into(),
             channel: "stable".into(),
             refused: None,
+            asked: false,
         });
         let accepted = Downloading {
             current: sha("a"),
@@ -733,6 +809,11 @@ mod tests {
             display: "0.1.0+9d71b254".into(),
             channel: "stable".into(),
             successor_key: None,
+            asked: false,
+        };
+        let asked_for = Downloading {
+            asked: true,
+            ..accepted.clone()
         };
         vec![
             // ---- Idle
@@ -809,7 +890,7 @@ mod tests {
             Case {
                 name: "idle refused manifest is a banner",
                 phase: idle("a", None, 17),
-                event: Event::ManifestFetched(Err(Refusal::BadSignature)),
+                event: refused_manifest(),
                 expect: (
                     idle("a", None, 17),
                     vec![Command::Banner(UpdateBanner::Refused(
@@ -1041,7 +1122,7 @@ mod tests {
             Case {
                 name: "staged refused manifest is a banner",
                 phase: Phase::Staged(staged("a", "b")),
-                event: Event::ManifestFetched(Err(Refusal::BadSignature)),
+                event: refused_manifest(),
                 expect: (
                     Phase::Staged(staged("a", "b")),
                     vec![Command::Banner(UpdateBanner::Refused(
@@ -1222,6 +1303,116 @@ mod tests {
                 phase: pending("b", "a", 1),
                 event: Event::ChannelChanged,
                 expect: (pending("b", "a", 1), vec![]),
+            },
+            // ---- updating automatically off
+            Case {
+                name: "off, a newer release is named and nothing is downloaded",
+                phase: idle("a", Some("z"), 17),
+                event: fetched_taking(Take::Nothing, 18, &host(), "b"),
+                expect: (
+                    idle("a", Some("z"), 17),
+                    vec![Command::Banner(UpdateBanner::Available {
+                        offered: sha("b"),
+                        display: accepted.display.clone(),
+                    })],
+                ),
+            },
+            Case {
+                name: "off, the release that runs is up to date",
+                phase: idle("a", None, 17),
+                event: fetched_taking(Take::Nothing, 18, &host(), "a"),
+                expect: (
+                    idle("a", None, 17),
+                    vec![Command::Banner(UpdateBanner::UpToDate)],
+                ),
+            },
+            Case {
+                name: "update now downloads the newer release, asked for",
+                phase: idle("a", Some("z"), 17),
+                event: fetched_taking(Take::Asked, 18, &host(), "b"),
+                expect: (
+                    Phase::Downloading(asked_for.clone()),
+                    vec![
+                        Command::Persist(Phase::Downloading(asked_for.clone())),
+                        Command::Download {
+                            sha: sha("b"),
+                            size: 42,
+                        },
+                    ],
+                ),
+            },
+            Case {
+                name: "an asked download verified stages it asked for",
+                phase: Phase::Downloading(Downloading {
+                    asked: true,
+                    ..downloading("b", 18)
+                }),
+                event: Event::Verified(sha("b")),
+                expect: (
+                    asked("a", "b"),
+                    vec![
+                        Command::Persist(asked("a", "b")),
+                        Command::Gc {
+                            keep: vec![sha("a"), sha("b"), sha("z")],
+                        },
+                        Command::Banner(UpdateBanner::Ready {
+                            staged: sha("b"),
+                            display: "0.1.0+b".into(),
+                        }),
+                    ],
+                ),
+            },
+            Case {
+                name: "off, a newer release does not supersede the one the person asked for",
+                phase: asked("a", "b"),
+                event: fetched_taking(Take::Nothing, 19, &host(), "c"),
+                expect: (asked("a", "b"), vec![]),
+            },
+            Case {
+                name: "off drops a release the updater staged on its own",
+                phase: Phase::Staged(staged("a", "b")),
+                event: Event::AutomaticOff,
+                expect: (
+                    idle("a", Some("z"), 17),
+                    vec![
+                        Command::Persist(idle("a", Some("z"), 17)),
+                        Command::Gc {
+                            keep: vec![sha("a"), sha("z")],
+                        },
+                    ],
+                ),
+            },
+            Case {
+                name: "off keeps a release the person asked for",
+                phase: asked("a", "b"),
+                event: Event::AutomaticOff,
+                expect: (asked("a", "b"), vec![]),
+            },
+            Case {
+                name: "off drops a download the updater started on its own",
+                phase: Phase::Downloading(downloading("b", 18)),
+                event: Event::AutomaticOff,
+                expect: (
+                    idle("a", Some("z"), 17),
+                    vec![
+                        Command::Persist(idle("a", Some("z"), 17)),
+                        Command::Gc {
+                            keep: vec![sha("a"), sha("z")],
+                        },
+                    ],
+                ),
+            },
+            Case {
+                name: "off keeps a download the person asked for",
+                phase: Phase::Downloading(asked_for.clone()),
+                event: Event::AutomaticOff,
+                expect: (Phase::Downloading(asked_for.clone()), vec![]),
+            },
+            Case {
+                name: "off while idle changes nothing",
+                phase: idle("a", Some("z"), 17),
+                event: Event::AutomaticOff,
+                expect: (idle("a", Some("z"), 17), vec![]),
             },
         ]
     }
@@ -1413,6 +1604,7 @@ mod tests {
             idle("a", Some("z"), 17),
             Phase::Downloading(downloading("b", 18)),
             Phase::Staged(staged("a", "b")),
+            asked("a", "b"),
             Phase::Swapping(swapping("a", "b")),
             pending("b", "a", 0),
             rolled_back("a", "b"),
@@ -1420,8 +1612,10 @@ mod tests {
         let events = vec![
             Event::Boot,
             Event::SwapResolved(SwapState::Landed),
-            Event::ManifestFetched(Err(Refusal::BadSignature)),
+            refused_manifest(),
             fetched(19, &host(), "c"),
+            fetched_taking(Take::Nothing, 19, &host(), "c"),
+            fetched_taking(Take::Asked, 19, &host(), "c"),
             Event::DownloadFinished { sha: sha("b") },
             Event::DownloadFailed {
                 sha: sha("b"),
@@ -1441,6 +1635,7 @@ mod tests {
             Event::Rendered,
             Event::Tick,
             Event::ChannelChanged,
+            Event::AutomaticOff,
         ];
         for phase in &phases {
             for event in &events {

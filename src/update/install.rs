@@ -91,7 +91,7 @@ pub(super) fn adopt(layout: &Layout, own: &Path) -> Result<Phase, Refusal> {
 /// macOS adopts the running bundle; Linux keeps the release the install path
 /// names, which must be the image that runs (its sequence is the pin). As
 /// after an install, nothing to go back to and nothing staged; the channel,
-/// `seen.json` and a successor key stay.
+/// the automatic switch, `seen.json` and a successor key stay.
 pub(super) fn rebuild(layout: &Layout, own: &Path) -> Result<Phase, Refusal> {
     if cfg!(target_os = "macos") {
         return adopt(layout, own);
