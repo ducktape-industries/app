@@ -774,7 +774,7 @@ impl View {
 
     /// The view's `init` export: a fresh start, with no snapshot to restore,
     /// taken at once (a test's, on the wasmtime runner).
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn init(&mut self, shown: &str) -> Result<(), String> {
         now(self.inited(shown))
     }
@@ -823,16 +823,9 @@ impl View {
         Ok(())
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn load_from(program: &'static str, path: &std::path::Path) -> Result<Self, String> {
-        let shown = path.display().to_string();
-        let bytes = std::fs::read(path).map_err(|error| format!("{shown}: {error}"))?;
-        Self::from_bytes(program, &bytes, &shown)
-    }
-
     /// The view instantiated and mounted; `shown` names it in errors: a
     /// test's, on the wasmtime runner, which answers at once.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn from_bytes(program: &'static str, bytes: &[u8], shown: &str) -> Result<Self, String> {
         let runner = crate::contract::runner();
         // held until the instance holds the code itself

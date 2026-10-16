@@ -43,10 +43,12 @@ fn backgrounded(cx: &App) -> bool {
     cx.try_global::<Backgrounded>().is_some_and(|phase| phase.0)
 }
 
-/// The window thread's end of the seats a load parked a start on
-/// (`Mounted::to_start`), installed by `start` ([`serve_starts`]).
-static STARTS: OnceLock<async_channel::Sender<(Arc<Mutex<Mounted>>, &'static str)>> =
-    OnceLock::new();
+/// A seat a load parked a start on (`Mounted::to_start`), and its program.
+type ToStart = (Arc<Mutex<Mounted>>, &'static str);
+
+/// The window thread's end of the parked starts, installed by `start`
+/// ([`serve_starts`]).
+static STARTS: OnceLock<async_channel::Sender<ToStart>> = OnceLock::new();
 
 /// Runs every start a load parks (`seat::start_in`) on this, the window
 /// thread, whether or not a pane holds the seat: a seat `Preload::Seat`
