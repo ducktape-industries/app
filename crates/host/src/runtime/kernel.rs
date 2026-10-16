@@ -25,6 +25,9 @@
 //!   address instead, checked by the web piece's own rule
 //!   (`render/web.rs` `view_for`: https, or http on this machine, no user
 //!   name or password).
+//! - `host.showing` — the route the view shows, kept while it is on
+//!   screen; `host.screen` — a subscription to the routes the views of its
+//!   program show on screen, sorted, the first item at once (`screen`).
 //! - `host.badge` — the tab's unread count; `host.title` — the name of the
 //!   view's window, cleaned ([`shown_title`]); `host.id` — a minted id under a
 //!   prefix word; `link.open` — the one way out: a `duck://` link, or an
@@ -87,7 +90,9 @@
 //! - `clipboard.read`, `clipboard.write` — `clipboard`, run on the window
 //!   thread after the tick.
 //! - `notify.post`, `notify.seen` — `notify`, the notification centre.
-//! - `store.get`, `store.set` — `store`, the view's file on this device.
+//! - `store.get`, `store.set` — `store`, the view's file on this device;
+//!   `store.changes` — a subscription to the keys another instance of the
+//!   program (a pane, its notifier) set in that file.
 //!
 //! Not the kernel's — `View::answer` (`view/requests.rs`) takes them once
 //! [`answer`] says `false`, since they read the view's own state:
@@ -123,8 +128,9 @@ pub(super) mod live;
 mod node;
 pub use node::Answered;
 mod replies;
+pub(super) mod screen;
 
-pub(super) use node::{NodeTask, reconnected, spawn_reply};
+pub(super) use node::{NodeTask, reconnected, spawn_host_subscription, spawn_reply};
 use node::{
     blob_get, blob_manifest, block, blocks, changes, heads, invite, network, query, spawn_asked,
     spawn_submit, status, tx,
@@ -299,6 +305,27 @@ pub(super) fn answer(
             }
             Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
         },
+        // the route the view shows, and the routes its program's views
+        // show on screen (`screen`)
+        (Capability::Host, "showing") => match methods::decode::<String>(payload) {
+            Ok(route) => {
+                view.showing = Some(route);
+                view.screen_moved();
+                view.reply(id, Ok(methods::encode(&())));
+            }
+            Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
+        },
+        (Capability::Host, "screen") => {
+            if !payload.is_empty() {
+                view.refuse(
+                    id,
+                    refusal::MALFORMED_REQUEST,
+                    "screen subscription takes no payload",
+                );
+                return true;
+            }
+            screen::follow(view, id);
+        }
         (Capability::Host, "route") => {
             if !payload.is_empty() {
                 view.refuse(

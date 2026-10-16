@@ -483,6 +483,7 @@ impl Session {
     /// drops what was its (`LeftNetwork`).
     fn left_network(&mut self, cx: &mut Context<Self>) {
         crate::runtime::disconnected();
+        crate::runtime::notifier::disconnected();
         self.roster.clear();
         cx.emit(SessionEvent::LeftNetwork);
     }

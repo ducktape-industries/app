@@ -3,6 +3,7 @@
 //! per-view [`Permission`], read off disk once and kept, and saved by the
 //! settings and permission-bar screens.
 
+#[cfg(any(test, feature = "test-support"))]
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
@@ -55,26 +56,40 @@ pub struct Settings {
     pub views: BTreeMap<String, Permission>,
 }
 
+/// The settings as last read: forgotten when a notice setting is saved,
+/// and replaced by every [`Settings::load`]. One for the process, as the
+/// prefs file is: views post on the window thread, notifiers on their own
+/// (`runtime::notifier`), and the shell saves on the window thread.
+#[cfg(not(any(test, feature = "test-support")))]
+static KEPT: std::sync::Mutex<Option<Settings>> = std::sync::Mutex::new(None);
+
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    /// The settings as last read on this thread, the window thread, where
-    /// views post and the shell saves: forgotten when a notice setting is
-    /// saved here, and replaced by every [`Settings::load`].
+    /// A test's prefs are its thread's own (`backend::prefs`), and so are
+    /// the settings read off them.
     static KEPT: RefCell<Option<Settings>> = const { RefCell::new(None) };
+}
+
+/// `change` on the kept settings.
+fn kept<R>(change: impl FnOnce(&mut Option<Settings>) -> R) -> R {
+    #[cfg(not(any(test, feature = "test-support")))]
+    return change(&mut KEPT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+    #[cfg(any(test, feature = "test-support"))]
+    KEPT.with(|kept| change(&mut kept.borrow_mut()))
 }
 
 impl Settings {
     /// Off the prefs file, and kept for [`Settings::kept`].
     pub fn load() -> Self {
         let settings = Self::of(&read_prefs().unwrap_or_default());
-        KEPT.with(|kept| *kept.borrow_mut() = Some(settings.clone()));
+        kept(|kept| *kept = Some(settings.clone()));
         settings
     }
 
     /// As last read, or off the prefs file the first time: what each post
     /// is judged by, without a prefs read per post.
     pub fn kept() -> Self {
-        KEPT.with(|kept| kept.borrow().clone())
-            .unwrap_or_else(Self::load)
+        kept(|kept| kept.clone()).unwrap_or_else(Self::load)
     }
 
     pub(super) fn of(prefs: &serde_json::Value) -> Self {
@@ -100,7 +115,7 @@ impl Settings {
 /// A notice setting saved: the kept settings are read again on next use.
 fn edit(change: impl FnOnce(&mut serde_json::Value)) {
     edit_prefs(change);
-    KEPT.with(|kept| *kept.borrow_mut() = None);
+    kept(|kept| *kept = None);
 }
 
 pub fn save_banners(on: bool) {
@@ -116,6 +131,8 @@ pub fn save_burst(burst: u32) {
 }
 
 /// The person answered a view: its bar goes, and the word is kept.
+/// A program blocked has no notifier running, and one let through again
+/// has its own started (`runtime::notifier`).
 pub fn set_permission(center: &mut Center, program: &str, permission: Permission) {
     edit(|prefs| {
         if !prefs[VIEWS_PREF].is_object() {
@@ -124,6 +141,7 @@ pub fn set_permission(center: &mut Center, program: &str, permission: Permission
         prefs[VIEWS_PREF][program] = serde_json::json!(permission.word());
     });
     center.asking.remove(program);
+    crate::runtime::notifier::permission_moved(program, permission);
 }
 
 /// "Not now": the bar goes for this run; the view's notices stay logged
