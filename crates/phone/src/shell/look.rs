@@ -5,8 +5,12 @@
 //! has are ported to these numbers exactly; screens it lacks (Home, the
 //! capsule, Open) are drawn with them (design `fidelity/TARGET.md`).
 
+use ducktape_host::a11y::Control as _;
 use ducktape_host::fonts::FAMILY_UI;
-use gpui_kit::{Div, FontWeight, Hsla, Rgba, Styled as _, Window, WindowAppearance, div, px};
+use gpui_kit::{
+    App, ClickEvent, Div, FontWeight, Hsla, InteractiveElement as _, ParentElement as _, Rgba,
+    StatefulInteractiveElement as _, Styled as _, Window, WindowAppearance, div, px, svg,
+};
 
 /// A text role: size and line height in points (theme.ts `type`).
 #[derive(Clone, Copy)]
@@ -83,8 +87,12 @@ pub const CONTROL: f32 = 44.;
 pub const PRIMARY: f32 = 48.;
 /// A small button (`size.small`).
 pub const SMALL_BUTTON: f32 = 36.;
+/// A row (`size.row`).
+pub const ROW: f32 = 48.;
 /// A row with a caption (`size.rowTall`).
 pub const ROW_TALL: f32 = 56.;
+/// A badge's height (`size.badge`).
+pub const BADGE: f32 = 20.;
 /// A row's lead icon (`size.icon.row`).
 pub const ICON_ROW: f32 = 18.;
 /// The tab bar, over the bottom inset (`size.tabBar`).
@@ -133,6 +141,43 @@ pub fn text(role: Role, weight: FontWeight, color: Hsla) -> Div {
         .line_height(px(role.line))
         .font_weight(weight)
         .text_color(color)
+}
+
+/// The Expo `Header` of a page that is not a root (kit `Header.tsx`): 56
+/// tall, the back hit `id` at the left, then what the page adds (its
+/// title block, its right hits), on the background, a hairline under.
+pub fn header(
+    id: &'static str,
+    back: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    palette: Palette,
+) -> Div {
+    let back = div()
+        .id(id)
+        .control(gpui_kit::Role::Button, "Back")
+        .size(px(HIT))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .active(|style| style.opacity(PRESSED))
+        .child(
+            svg()
+                .path("icons/arrow-left.svg")
+                .size(px(ICON_HIT))
+                .text_color(palette.foreground()),
+        )
+        .on_click(back);
+    div()
+        .h(px(HEADER))
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(gap::XXS))
+        .px(px(gap::SM))
+        .border_b_1()
+        .border_color(palette.border())
+        .bg(palette.background())
+        .child(back)
 }
 
 /// The palette of the system's appearance: no in-app toggle (Expo

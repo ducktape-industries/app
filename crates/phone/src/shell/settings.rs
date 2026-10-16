@@ -9,14 +9,13 @@
 //! said as the page opened; it writes nothing.
 
 use super::look::{self, Palette};
-use super::{Root, about};
+use super::{Root, about, join};
 use ducktape_host::a11y::Control as _;
 use ducktape_host::contract::{KeyLevel, KeyStorage};
 use ducktape_host::session::Shared;
 use gpui_kit::{
-    AnyElement, App, ClickEvent, Context, Div, FontWeight, InteractiveElement as _, IntoElement,
-    ParentElement as _, Role, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
-    Window, div, px, svg,
+    AnyElement, Context, Div, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
+    Role, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, div, px, svg,
 };
 
 /// The page: its Back header, then the sections, scrolled.
@@ -37,11 +36,7 @@ pub fn page(
             palette,
         ),
         false => {
-            let host = session
-                .connected_rpc
-                .strip_prefix("https://")
-                .or_else(|| session.connected_rpc.strip_prefix("http://"))
-                .unwrap_or(&session.connected_rpc);
+            let host = join::host_of(&session.connected_rpc);
             let founded = shared.chain.read(cx).node.as_ref().map(|node| node.time);
             let caption = match founded {
                 Some(founded) => format!("{host} · founded {}", day(founded)),
@@ -152,52 +147,16 @@ pub fn page(
         .min_h_0()
         .flex()
         .flex_col()
-        .child(header("settings/back", Some("App settings"), back, palette))
-        .child(body)
-}
-
-/// The Expo `Header` of a page that is not a root: the back arrow, the
-/// title 17 medium when there is one, a hairline under.
-pub fn header(
-    id: &'static str,
-    title: Option<&'static str>,
-    back: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    palette: Palette,
-) -> Div {
-    let back = div()
-        .id(id)
-        .control(Role::Button, "Back")
-        .size(px(look::HIT))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .active(|style| style.opacity(look::PRESSED))
         .child(
-            svg()
-                .path("icons/arrow-left.svg")
-                .size(px(look::ICON_HIT))
-                .text_color(palette.foreground()),
+            look::header("settings/back", back, palette).child(
+                div().flex_1().min_w_0().px(px(look::gap::SM)).child(
+                    look::text(look::TITLE, FontWeight::MEDIUM, palette.foreground())
+                        .truncate()
+                        .child("App settings"),
+                ),
+            ),
         )
-        .on_click(back);
-    div()
-        .h(px(look::HEADER))
-        .flex_none()
-        .flex()
-        .items_center()
-        .gap(px(look::gap::XXS))
-        .px(px(look::gap::SM))
-        .border_b_1()
-        .border_color(palette.border())
-        .bg(palette.background())
-        .child(back)
-        .children(title.map(|title| {
-            div().flex_1().min_w_0().px(px(look::gap::SM)).child(
-                look::text(look::TITLE, FontWeight::MEDIUM, palette.foreground())
-                    .truncate()
-                    .child(title),
-            )
-        }))
+        .child(body)
 }
 
 /// A list row (Expo `Row`): the 24 lead column with its 18 muted icon, the
@@ -226,7 +185,7 @@ fn row(
         .children(caption);
     div()
         .id(id)
-        .min_h(px(if tall { look::ROW_TALL } else { ROW }))
+        .min_h(px(if tall { look::ROW_TALL } else { look::ROW }))
         .flex()
         .items_center()
         .gap(px(look::gap::LG))
@@ -245,9 +204,6 @@ fn row(
         .child(words)
 }
 
-/// A row without a caption (`size.row`).
-const ROW: f32 = 48.;
-
 /// A row's caption: 12 muted, one line.
 fn caption(text: impl Into<SharedString>, palette: Palette) -> Div {
     look::text(look::CAPTION, FontWeight::NORMAL, palette.muted())
@@ -264,7 +220,7 @@ fn caption_mono(text: impl Into<SharedString>, palette: Palette) -> Div {
 /// `success_soft`.
 fn badge(label: &'static str, palette: Palette) -> AnyElement {
     div()
-        .h(px(20.))
+        .h(px(look::BADGE))
         .flex_none()
         .px(px(look::gap::XS))
         .flex()

@@ -430,8 +430,12 @@ impl Root {
                 &shared.session,
                 |root, _, event: &SessionEvent, cx| match event {
                     SessionEvent::LeftNetwork => root.left_network(cx),
-                    // the same chain answered (another chain left it first)
+                    // the same chain answered (another chain left it first);
+                    // only the host's `connect_answered` sends it today, a
+                    // new sender would pop Switch network too
                     SessionEvent::Connected => root.switched(cx),
+                    // only the host's `connect_failed` sends it (a reach
+                    // failed while on a network): taken as the switch's
                     SessionEvent::Toast(said) => root.switch_failed(said.clone(), cx),
                 },
             ),
@@ -575,7 +579,10 @@ impl Root {
         }
         self.join
             .update(cx, |join, cx| join.switch_failed(said, cx));
-        self.shared.toast.update(cx, |toast, cx| toast.dismiss(cx));
+        // deferred: the notice is down after the host's `Toast` put it up,
+        // whichever of the two heard the session first
+        let toast = self.shared.toast.clone();
+        cx.defer(move |cx| toast.update(cx, |toast, cx| toast.dismiss(cx)));
     }
 
     /// What the stack shows now: the shell's page on top (a program's page
@@ -769,8 +776,8 @@ impl Root {
     /// Back (Android's button, iOS's edge): on the join, the code goes back
     /// to the address on Android (iOS's swipe does nothing there) and the
     /// address is the OS's own; else the consent
-    /// sheet's ask is refused, an alert dismissed, a sheet closed, a
-    /// program's page closed, each first; else the view on top goes back
+    /// sheet's ask is refused, an alert dismissed, a sheet closed, the
+    /// shell's page on top popped, each first; else the view on top goes back
     /// inside itself when its last frame's root asks to hear it; else the
     /// stack pops; at Home, the OS's own (SPEC §7.6). A drag under way
     /// that this Back does not pop springs back.
@@ -782,11 +789,6 @@ impl Root {
     }
 
     fn walk_back(&mut self, cx: &mut Context<Self>) {
-        // Switch network draws the join's address step: its Back pops it,
-        // never the address screen's own (the app put behind the others)
-        if self.page(cx) == Page::Switch {
-            return self.pop_page(cx);
-        }
         match join::step(*self.shared.screen.read(cx).get()) {
             // iOS's Back is only the edge swipe, which the code refuses as
             // Expo's does (`gestureEnabled: false`): its way out is its own
@@ -1430,7 +1432,7 @@ impl Root {
             }
             Page::Switch => {
                 let back = cx.listener(|root, _, _, cx| root.pop_page(cx));
-                let header = settings::header("switch/back", None, back, palette);
+                let header = look::header("switch/back", back, palette);
                 let body = safe()
                     .flex()
                     .flex_col()
@@ -1958,11 +1960,14 @@ mod tests {
         }
     }
 
-    /// Back on Switch network pops it, to App settings when it came from
-    /// there, then App settings off to where the sheet was: never the
-    /// address screen's own Back, which puts the app behind the others.
+    /// Back on Switch network closes an alert over it first, as on any
+    /// page, then pops it, to App settings when it came from there, then
+    /// App settings off to where the sheet was: never the address screen's
+    /// own Back, which puts the app behind the others.
     #[gpui_kit::test]
-    fn back_on_switch_network_pops_it_and_never_leaves_the_app(cx: &mut TestAppContext) {
+    fn back_on_switch_network_closes_an_alert_first_then_pops_it_and_never_leaves_the_app(
+        cx: &mut TestAppContext,
+    ) {
         let (root, _, cx) = phone(cx);
         root.update(cx, |root, cx| root.show_settings(cx));
         run_out(cx);
@@ -1970,6 +1975,15 @@ mod tests {
         run_out(cx);
         let pages = |cx: &mut VisualTestContext| root.read_with(cx, |root, _| root.pages.clone());
         assert_eq!(pages(cx), [Page::Settings, Page::Switch]);
+        root.update(cx, |root, cx| root.alert("Another network", "x".into(), cx));
+        root.update(cx, |root, cx| root.back(cx));
+        let alert = root.read_with(cx, |root, _| root.alert.is_some());
+        assert_eq!(
+            (alert, pages(cx)),
+            (false, vec![Page::Settings, Page::Switch]),
+            "Back did not close the alert alone"
+        );
+        run_out(cx);
         root.update(cx, |root, cx| root.back(cx));
         assert_eq!(
             pages(cx),
@@ -1983,29 +1997,18 @@ mod tests {
         assert_eq!(page, Page::Root(Tab::Home));
     }
 
-    /// Runs the window's work until `done` holds: a reach answers on the
-    /// host's runtime, off the test's thread.
-    fn until(cx: &mut VisualTestContext, done: impl Fn(&mut VisualTestContext) -> bool) {
-        for _ in 0..500 {
-            cx.run_until_parked();
-            if done(cx) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        panic!("it never got there");
-    }
-
-    /// On a network, a switch whose node does not answer says why under
-    /// Switch network's field, not in a notice over it, and the page stays;
-    /// one the chain in hand answers pops the page back where the reader
-    /// was.
+    /// On a network, Continue on the node in hand (the field holds it) pops
+    /// Switch network at once; a switch whose node does not answer says why
+    /// under the field, not in a notice over it, and the page stays; one
+    /// the chain in hand answers pops the page back where the reader was.
     #[gpui_kit::test]
-    fn a_failed_switch_says_why_under_the_field_and_a_landed_one_pops_the_page(
+    fn a_switch_that_stays_or_lands_pops_the_page_and_a_failed_one_says_why_under_the_field(
         cx: &mut TestAppContext,
     ) {
+        use ducktape_host::backend::RecentEndpoint;
         use ducktape_host::session::SessionState;
         use ducktape_host::session::tests::{source, status};
+        use join::tests::until;
         const ORIGIN: &str = "http://127.0.0.1:1";
         let _seat = ducktape_host::backend::seat_serial();
         let (root, _, cx) = phone(cx);
@@ -2017,13 +2020,27 @@ mod tests {
             connected: true,
             connected_rpc: ORIGIN.into(),
             network: "testkit".into(),
+            recent_endpoints: vec![RecentEndpoint {
+                url: ORIGIN.into(),
+                network: "testkit".into(),
+                ..RecentEndpoint::default()
+            }],
             ..SessionState::default()
         };
         shared
             .session
             .update(cx, |session, cx| session.seed(connected, cx));
-        cx.update(|window, cx| root.update(cx, |root, cx| root.show_switch(window, cx)));
-        run_out(cx);
+        let switch = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| root.update(cx, |root, cx| root.show_switch(window, cx)));
+            run_out(cx);
+        };
+        switch(cx);
+        let at = cx.debug_bounds("join/connect").expect("Continue drawn");
+        cx.simulate_click(at.center(), gpui_kit::Modifiers::none());
+        cx.run_until_parked();
+        let pages = root.read_with(cx, |root, _| root.pages.clone());
+        assert_eq!(pages, [], "Continue on the node in hand stayed on the page");
+        switch(cx);
 
         let (silent, _) =
             source(|_| Err("error sending request for url (http://127.0.0.1:9/v1/status)".into()));

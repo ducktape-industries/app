@@ -66,7 +66,7 @@ fn wants_code(screen: Screen, account: &AccountState) -> bool {
 }
 
 /// `origin` without its scheme, as the screens name a node.
-fn host_of(origin: &str) -> &str {
+pub(super) fn host_of(origin: &str) -> &str {
     origin
         .strip_prefix("https://")
         .or_else(|| origin.strip_prefix("http://"))
@@ -573,49 +573,24 @@ impl Join {
         let fingerprint = noded_client::hex::hex_decode(&account.signer_key)
             .map(|key| noded_client::join::fingerprint(&key))
             .unwrap_or_default();
-        let header = div()
-            .h(px(look::HEADER))
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(px(4.))
-            .px(px(look::gap::SM))
-            .border_b_1()
-            .border_color(palette.border())
-            .child(
-                div()
-                    .id("back")
-                    .control(Role::Button, "Back")
-                    .size(px(look::HIT))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        svg()
-                            .path("icons/arrow-left.svg")
-                            .size(px(look::ICON_HIT))
-                            .text_color(palette.foreground()),
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| this.leave(cx))),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        look::text(look::TITLE, FontWeight::MEDIUM, palette.foreground())
-                            .truncate()
-                            .child(session.network.clone()),
-                    )
-                    .child(
-                        look::text(look::CAPTION, FontWeight::NORMAL, palette.muted())
-                            .truncate()
-                            .child(host_of(&session.connected_rpc).to_owned()),
-                    ),
-            );
+        let back = cx.listener(|this, _, _, cx| this.leave(cx));
+        let header = look::header("back", back, palette).child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(
+                    look::text(look::TITLE, FontWeight::MEDIUM, palette.foreground())
+                        .truncate()
+                        .child(session.network.clone()),
+                )
+                .child(
+                    look::text(look::CAPTION, FontWeight::NORMAL, palette.muted())
+                        .truncate()
+                        .child(host_of(&session.connected_rpc).to_owned()),
+                ),
+        );
         let said = "Open the account menu there, choose Add a device…, type this code, and \
                     approve only if both screens show the same fingerprint.";
         let named = said.find("Add a device…").unwrap_or(0);
@@ -860,6 +835,7 @@ fn button(
     div()
         .id(id)
         .control(Role::Button, label)
+        .debug_selector(move || id.to_owned())
         .min_h(px(look::HIT))
         .flex()
         .items_center()
@@ -887,7 +863,7 @@ fn keyboard(window: &mut Window, up: bool) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use gpui_kit::{Modifiers, TestAppContext, VisualTestContext};
 
@@ -942,8 +918,12 @@ mod tests {
     const ORIGIN: &str = "http://127.0.0.1:1";
 
     /// Runs the window's work until `done` holds: the key and the account
-    /// are found on the host's runtime, off the test's thread.
-    fn until(cx: &mut VisualTestContext, done: impl Fn(&mut VisualTestContext) -> bool) {
+    /// are found (a node answers) on the host's runtime, off the test's
+    /// thread.
+    pub(in crate::shell) fn until(
+        cx: &mut VisualTestContext,
+        done: impl Fn(&mut VisualTestContext) -> bool,
+    ) {
         for _ in 0..500 {
             cx.run_until_parked();
             if done(cx) {
