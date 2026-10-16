@@ -11,11 +11,12 @@
 //!   the API 33+ default (`res/v33/anim-v33/rns_default_*.xml`): 450 ms on
 //!   `fast_out_extra_slow_in`, both screens 10 %, the top one fading in its
 //!   first 83 ms.
-//! - A sheet ([`SHEET_IN`], [`SHEET_OUT`], [`SCRIM`]): `@gorhom/bottom-sheet`
+//! - A sheet ([`SHEET_IN`], [`SHEET_OUT`]): `@gorhom/bottom-sheet`
 //!   5.2.14's `ANIMATION_CONFIGS` (`src/constants.ts`): on iOS the spring
 //!   mass 3, stiffness 1000, damping 500 (UIKit's default spring again,
 //!   damping ratio 4.56), on Android 250 ms `Easing.out(Easing.exp)`; its
-//!   backdrop's opacity follows the panel's position.
+//!   backdrop's opacity follows the panel's position, so the scrim fades at
+//!   the panel's own progress.
 //! - An alert ([`ALERT_IN`], [`ALERT_OUT`]): the kit `Dialog` is a React
 //!   Native `Modal` with `animationType="fade"`: Android's
 //!   `catalyst_fade_in`/`_out`, 200 ms on `accelerate_interpolator`; iOS's
@@ -199,10 +200,6 @@ pub const SHEET_IN: Motion = Motion {
 };
 /// A sheet going down.
 pub const SHEET_OUT: Motion = SHEET_IN;
-/// The scrim under a sheet: it fades at the panel's own progress
-/// (`BottomSheetBackdrop` interpolates the panel's position), so it is the
-/// sheet's motion, and under Reduce Motion the sheet's fade.
-pub const SCRIM: Motion = SHEET_IN;
 
 /// An alert (and its scrim) fading in.
 pub const ALERT_IN: Motion = Motion {

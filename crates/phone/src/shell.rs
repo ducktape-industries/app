@@ -536,9 +536,10 @@ impl Root {
 
     /// The stack went from `from` to the screen it shows now, by a push, or
     /// a pop when `pop`: the new screen slides in over the old, or the old
-    /// one off the new. A move under way ends where it was going; a pop
-    /// the finger let go of goes on from where it let go. Tab switches do
-    /// not move.
+    /// one off the new. A move under way ends where it was going, unless
+    /// this one undoes it (Back during a push): that turns back from where
+    /// it is. A pop the finger let go of goes on from where it let go. Tab
+    /// switches do not move.
     fn moved(&mut self, from: Page, pop: bool, cx: &mut Context<Self>) {
         let dragged = self.dragged.take();
         let to = self.page(cx);
@@ -546,8 +547,9 @@ impl Root {
             return;
         }
         let (motion, slide) = motion::stack(pop, cx);
-        let start = match dragged {
-            Some(x) if pop && self.width > 0. => (x / self.width).clamp(0., 1.),
+        let start = match (dragged, self.moving) {
+            (Some(x), _) if pop && self.width > 0. => (x / self.width).clamp(0., 1.),
+            (None, Some(m)) if m.left == to && m.pop != pop => 1. - m.tween.at(motion::now(cx)),
             _ => 0.,
         };
         self.moving = Some(Move {
@@ -563,10 +565,14 @@ impl Root {
     /// finger while a Back would pop it (a program's page, or a program on
     /// top whose view does not hear Back itself) and nothing is over it.
     /// Under Reduce Motion nothing follows; the release is Back as before.
+    /// A swipe begun while the stack moves does not follow either.
     fn drag(&mut self, x: f32, cx: &mut Context<Self>) {
-        if self.dragged.is_none() && !self.can_drag(cx) {
+        let now = motion::now(cx);
+        let busy = self.moving.is_some_and(|moving| !moving.tween.done(now));
+        if self.dragged.is_none() && (busy || !self.can_drag(cx)) {
             return;
         }
+        // a move that has ended may not be cleared yet: it is over
         self.moving = None;
         self.dragged = Some(x.max(0.));
         cx.notify();
@@ -591,6 +597,10 @@ impl Root {
             return;
         };
         cx.notify();
+        // no travel: already in place, nothing to spring back
+        if x <= 0. {
+            return;
+        }
         let Some(under) = self.under(cx) else {
             return;
         };
@@ -685,7 +695,8 @@ impl Root {
     }
 
     /// Back (Android's button, iOS's edge): on the join, the code goes back
-    /// to the address and the address is the OS's own; else the consent
+    /// to the address on Android (iOS's swipe does nothing there) and the
+    /// address is the OS's own; else the consent
     /// sheet's ask is refused, an alert dismissed, a sheet closed, a
     /// program's page closed, each first; else the view on top goes back
     /// inside itself when its last frame's root asks to hear it; else the
@@ -700,6 +711,10 @@ impl Root {
 
     fn walk_back(&mut self, cx: &mut Context<Self>) {
         match join::step(*self.shared.screen.read(cx).get()) {
+            // iOS's Back is only the edge swipe, which the code refuses as
+            // Expo's does (`gestureEnabled: false`): its way out is its own
+            // Back button
+            Some(join::Step::Code) if cfg!(target_os = "ios") => return,
             Some(join::Step::Code) => return self.join.update(cx, |join, cx| join.leave(cx)),
             Some(join::Step::Node) => return crate::os::back_at_root(),
             None => {}
@@ -1388,13 +1403,15 @@ impl Render for Root {
         self.width = f32::from(viewport.width);
         let page = self.page(cx);
         let (layer, toast_bottom) = self.layer(page, edges, window, palette, cx);
-        // the stack moving: the page it left drawn too, and taking no press
+        // the stack moving: the page it left drawn too, and taking no press;
+        // `left_over` when that page is the one on top (a pop sliding it
+        // off), not under a push or under the finger
         let under_finger = self.dragged.zip(self.under(cx));
         let moving = match (under_finger, self.moving) {
             (Some((x, under)), _) => {
                 let progress = (x / self.width.max(1.)).clamp(0., 1.);
                 let (_, slide) = motion::stack(true, cx);
-                Some((under, true, slide.at(progress, progress, true)))
+                Some((under, false, slide.at(progress, progress, true)))
             }
             (None, Some(moving)) => {
                 let progress = moving.tween.frame(window, cx);
@@ -1406,10 +1423,10 @@ impl Render for Root {
         };
         root = match moving {
             None => root.child(layer),
-            Some((left, pop, placed)) => {
+            Some((left, left_over, placed)) => {
                 let (other, _) = self.layer(left, edges, window, palette, cx);
                 let other = other.child(div().absolute().inset_0().occlude());
-                let (over, under) = match pop {
+                let (over, under) = match left_over {
                     true => (other, layer),
                     false => (layer, other),
                 };
@@ -1664,6 +1681,10 @@ mod tests {
             0,
             "a drag asks for no frame: the finger moves it"
         );
+        assert!(
+            home(cx).expect("Home under the finger").left() < still.left(),
+            "Home is not under the program, to the left"
+        );
         root.update(cx, |root, cx| root.drag_cancelled(cx));
         cx.run_until_parked();
         let back = root.read_with(cx, |root, _| {
@@ -1689,6 +1710,36 @@ mod tests {
             "Back from a drag"
         );
         assert_eq!(top(&stack, cx), None);
+        run_out(cx);
+        assert_eq!(frames(cx), 0);
+
+        // a swipe begun during a push leaves it be; Back during it turns it
+        // back from where it is
+        root.update(cx, |root, cx| root.open(PROGRAM, cx));
+        cx.run_until_parked();
+        cx.executor().advance_clock(motion::PUSH.duration / 8);
+        frames(cx);
+        root.update(cx, |root, cx| root.drag(10., cx));
+        assert_eq!(
+            root.read_with(cx, |root, _| (root.dragged, root.moving.is_some())),
+            (None, true),
+            "a swipe took over a push"
+        );
+        let pushed = root.read_with(cx, |root, cx| {
+            root.moving.map(|it| it.tween.at(motion::now(cx)))
+        });
+        let pushed = pushed.expect("a push under way");
+        assert!(0. < pushed && pushed < 1., "{pushed}");
+        root.update(cx, |root, cx| root.back(cx));
+        cx.run_until_parked();
+        let back = root.read_with(cx, |root, _| {
+            root.moving.map(|it| (it.left, it.pop, it.tween.from))
+        });
+        assert_eq!(
+            back,
+            Some((Page::Program(PROGRAM), true, 1. - pushed)),
+            "Back during a push jumped"
+        );
         run_out(cx);
         assert_eq!(frames(cx), 0);
     }
@@ -1723,6 +1774,29 @@ mod tests {
         run_out(cx);
         assert_eq!(sheet(cx), None, "a sheet gone is still drawn");
         assert_eq!(frames(cx), 0, "a frame asked for after the sheet went");
+
+        // Back while a sheet still comes up turns it back from where it is
+        root.update(cx, |root, cx| root.account_sheet(cx));
+        cx.run_until_parked();
+        cx.executor().advance_clock(motion::SHEET_IN.duration / 8);
+        frames(cx);
+        let coming = root.read_with(cx, |root, cx| {
+            root.drawn_sheet
+                .as_ref()
+                .map(|it| it.tween.at(motion::now(cx)))
+        });
+        let coming = coming.expect("a sheet coming");
+        assert!(0. < coming && coming < 1., "{coming}");
+        root.update(cx, |root, cx| root.back(cx));
+        cx.run_until_parked();
+        let going = root.read_with(cx, |root, _| {
+            root.drawn_sheet
+                .as_ref()
+                .map(|it| (it.leaving, it.tween.from))
+        });
+        assert_eq!(going, Some((true, coming)), "Back made the sheet jump");
+        run_out(cx);
+        assert_eq!(sheet(cx), None);
 
         root.update(cx, |root, cx| root.alert("Another network", "x".into(), cx));
         cx.run_until_parked();

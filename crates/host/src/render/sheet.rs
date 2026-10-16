@@ -46,7 +46,8 @@ pub(super) struct SheetState {
 pub(super) struct Leaving {
     node: wire::Node,
     styles: wire::Styles,
-    path: AuthoredPath,
+    /// Its scrolls and lists are kept while it goes (`ViewTree::replace`).
+    pub(super) path: AuthoredPath,
     height: Pixels,
     tween: Tween,
 }
@@ -132,6 +133,12 @@ impl ViewTree {
         // under touch a docked sheet moves; a pointer's never does
         let moves = compact && crate::contract::os().facts().touch_first;
         let now = motion::now(cx);
+        // a sheet opened again as it goes down comes up from where it is
+        let from = self
+            .leaving
+            .as_ref()
+            .filter(|leaving| leaving.path == path)
+            .map_or(0., |leaving| leaving.tween.at(now));
         // a sheet the view dropped, walked once more as it goes down
         // (`leaving_sheet`): its height as last drawn, no state of its own
         let leaving = self.leaving_at;
@@ -141,7 +148,7 @@ impl ViewTree {
             None => self.sheets.entry(path.clone()).or_default(),
         };
         if moves && leaving.is_none() && state.drawn.is_none() && state.came.is_none() {
-            state.came = Some(Tween::start(motion::SHEET_IN, cx));
+            state.came = Some(Tween::between(from, 1., motion::SHEET_IN, cx));
         }
         // sanitize keeps at most eight ascending fractions in (0, 1]; with
         // none the panel is laid out as tall as its child, and only a drag
@@ -289,8 +296,9 @@ impl ViewTree {
                                 Some(rest) => {
                                     state.rest = rest;
                                     // under touch it settles there from where
-                                    // it was let go
-                                    if moves {
+                                    // it was let go; under Reduce Motion it
+                                    // is there at once
+                                    if moves && !motion::reduced(cx) {
                                         let settle = Tween::start(motion::SHEET_IN, cx);
                                         state.settle = Some((drag.now, settle));
                                     }
