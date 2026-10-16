@@ -1,23 +1,20 @@
-mod a11y;
-mod ui;
-
+// the host core, shared with the phone: `crate::render`, `crate::runtime`,
+// ... name its modules, so the shell reads as it did when they were here
 // the AX test door: in a build with the `ax-door` feature only (kit and qa),
 // and in the tests, which read the trees it reads
 #[cfg(any(test, feature = "ax-door"))]
-mod ax;
+use ducktape_host::ax;
+use ducktape_host::{a11y, fonts, perf, render, runtime};
 mod backend;
-mod fonts;
-mod perf;
-mod render;
-mod runtime;
+mod os;
 mod shell;
 mod tray;
+mod ui;
 mod update;
 
 fn main() {
     // a CEF child process (feature `web`) is this binary with `--type=...`
     render::web::subprocess();
-    perf::start();
     #[cfg(debug_assertions)]
     if std::env::args().nth(1).as_deref() == Some("--render-tree") {
         shell::render_tree_fixture();
@@ -36,6 +33,7 @@ fn main() {
         // the test door's client: talks to a running app, opens nothing
         #[cfg(feature = "ax-door")]
         Some("ax") => {
+            let _ = install_os();
             let args: Vec<String> = std::env::args().skip(2).collect();
             std::process::exit(ax::cli(&args));
         }
@@ -67,24 +65,42 @@ fn main() {
         }
         _ => {}
     }
+    let os = install_os();
+    // the sampler reads the OS facts: after them
+    perf::start();
     install_log();
     perf::mark("log");
     // the self-update's boot step: flip to a staged release, or back from
     // one that never came up, and exec the release that should run
     update::boot();
     raise_open_file_limit();
-    // no view ships with the app: every one comes off the connected node.
-    // A view developer's DUCKTAPE_VIEWS_DIR supplies files in their place,
-    // and app.log says so for each one it supplies
-    runtime::override_views_from(std::env::var_os("DUCKTAPE_VIEWS_DIR").map(Into::into));
     #[cfg(debug_assertions)]
     if let Some(live) = live {
-        shell::run_live(live);
+        shell::run_live(live, os.clone());
         render::web::shutdown();
         return;
     }
-    shell::run();
+    shell::run(os);
     render::web::shutdown();
+}
+
+/// The desktop's OS services into the host core, before anything reads a
+/// directory (the host's `start` takes the same services again, as its
+/// `Boot`). No home to put them in is a refusal with the sentence that
+/// names the variable to set, not a GUI that starts and finds nothing.
+fn install_os() -> std::sync::Arc<dyn ducktape_host::contract::OsServices> {
+    match os::DesktopOs::new() {
+        Ok(os) => {
+            let os: std::sync::Arc<dyn ducktape_host::contract::OsServices> =
+                std::sync::Arc::new(os);
+            ducktape_host::contract::install(os.clone());
+            os
+        }
+        Err(error) => {
+            eprintln!("ducktape-app: {error}");
+            std::process::exit(2);
+        }
+    }
 }
 
 /// macOS launches a GUI with a 256-fd soft limit; the app's stores and
@@ -110,8 +126,9 @@ fn raise_open_file_limit() {
 }
 
 /// The app's sink is `app.log` in its platform state directory, plus a
-/// panic hook that lands in it. `RUST_LOG` ADDS to `info`; no home, no
-/// file: the events go nowhere rather than a GUI refusing to start.
+/// panic hook that lands in it. `RUST_LOG` ADDS to `info`. The GUI has a
+/// home by now (`install_os` refused without one); the restart waiter, which
+/// has no OS services, logs nowhere when it has none.
 fn install_log() {
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::util::SubscriberInitExt as _;

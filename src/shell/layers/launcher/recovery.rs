@@ -54,7 +54,7 @@ impl LauncherLayer {
                     false => "Add this device",
                 },
                 Kind::Primary,
-                self.with_field(&self.fields.restore, Account::recover_submit),
+                self.with_field(&self.fields.restore, crate::shell::sign_in::recover_submit),
                 Press::busy(account.busy),
                 &ink,
             )]));

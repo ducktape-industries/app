@@ -31,7 +31,7 @@ Three things cross between a view and the app, and only three:
   controls.
   Events go back the other way as `wire::Event` values carrying the view's
   own handler ids.
-- **The kernel contract** (`src/runtime/kernel.rs`): the fixed set of
+- **The kernel contract** (`crates/host/src/runtime/kernel.rs`): the fixed set of
   methods every view may call, named `<capability>.<operation>`, request
   and reply types borsh in `wire::methods`. A view reaches only the
   capabilities its manifest declares (`wire::methods::Capability`, typed
@@ -66,17 +66,30 @@ crates; the wire's `Interactivity`, `Role` and `Aria` are view-wire's own
 types (`style.rs`, `node.rs`, `aria.rs` upstream) shaped after GPUI's, so a
 view's tree lowers onto GPUI elements one to one.
 
-## 2. Map of `src/`
+## 2. Map of `src/` and `crates/host/src/`
+
+The host core (`render`, `runtime`, the shared half of `backend`, `a11y`,
+`ax`, `fonts`, `perf`, `theme`) is the crate `crates/host`, shared with the
+phone shell; the rows below name its modules by their path inside
+`crates/host/src/`. The desktop shell (`main.rs`, `shell/`, `ui/`, `tray.rs`,
+`update/`, `os.rs`, the desktop-only `backend/`) stays in `src/`, and reaches
+the core's modules as `crate::render`, `crate::runtime`, … through `use`s at
+its root. What a shell gives the core is ONE file,
+`crates/host/src/contract.rs` (`OsServices`: directories, the reader key,
+banners, OS facts, invite minting; the view runner and the rest of the seam
+follow); `src/os.rs` is the desktop's impl, and `tools/dep-gate.sh` keeps
+the core free of every shell, OS and key crate.
 
 | Module | Owns | Runs on |
 |---|---|---|
-| `main.rs` | CLI flags (`--version`, `ax`, debug `--render-tree`), `app.log` + panic hook, fd limit, `DUCKTAPE_VIEWS_DIR`, then `shell::run` | process start |
+| `main.rs` | CLI flags (`--version`, `ax`, debug `--render-tree`), the desktop's `OsServices` installed (`DUCKTAPE_VIEWS_DIR` is one of its directories), `app.log` + panic hook, fd limit, then `shell::run` | process start |
 | `shell.rs`, `shell/` | the native chrome. `shell.rs` is the module root (`run`, `WindowKind`, `chord_label`); `shell/launch.rs` starts the app and wires what arrives from outside to the entity it moves. The entities (`shell/entities/`: `Session`, `Account`, `Chain`, `Screen`, `Windows` and each window's `Desk`, `Overlays`, `Spotlight`, `Front`, `DotSlot`; `Toast`, `Prefs`, `Notifications`, `Rail`, `Seats`), `layers::WindowRoot` (one per OS window, laying its layers out: `LauncherLayer`, `Chrome`, `PaneLayer`, `OverlayLayer`, `StatusDot`, `ToastView`), launcher, desk, menu bar, panes, overlays, keys, theme, fonts glue | window thread |
 | `ui.rs`, `ui/` | the pure pane geometry (`ui/layout.rs`: `Layout`, `Pane`, `PaneMessage`), which each window's `Desk` holds | window thread |
 | `runtime.rs`, `runtime/` | seats, views (wasmtime), the kernel relay, replies, notify, store, clipboard, roster, `Seat` | ticks on the window thread, off the draw path; loads on loader threads; node calls on `views-kernel` |
 | `render.rs`, `render/` | `ViewTree`: one wire tree drawn as GPUI elements, retained native state keyed by `AuthoredPath`, `wire::Event` out, accessibility mapping | window thread |
 | `render/web.rs`, `crates/web` | the web piece. With feature `web`, a page per `Node::Web` through CEF off-screen rendering (`crates/web` holds every CEF name; `render/web.rs` maps the piece onto it and picks the view that declares `web` for an https link); without it the piece draws a line and links go to the system browser | window thread (CEF's pump turns there) |
-| `backend/` | everything that crosses the process boundary: `noded` client and signed `Frame`, `session` (seated key, prefs, recent nodes), `live` (the live session with the node's relay over core's `live-wire`: QUIC on the node's live port, or the websocket `/v1/live`; one per connection, on `Connection.live`, closed at quit), `device_key`, `passkey`, `join`, `views`, `app_dirs` | async, polled where the caller polls (see below) |
+| `backend/` (core) | what crosses the process boundary on every host: `noded` client and signed `Frame`, `session` (the seated key, any `noded_client::Signer`), `views`, `prefs`, recent nodes, `identity`, `join` (another device), `live` (the live session with the node's relay over core's `live-wire`: QUIC on the node's live port, or the websocket `/v1/live`; one per connection, on `Connection.live`, closed at quit) | async, polled where the caller polls (see below) |
+| `src/os.rs`, `src/backend/` (desktop) | the desktop's `OsServices` (`app_dirs`, the freedesktop / macOS banners, `invite`), `device_key`, `key_dir`, `passkey` through `auth_page` and `loopback`, `recovery` | same |
 | `a11y.rs` | role/name/keyboard/state helpers for shell and renderer, plus the class markers the AX door reads | window thread |
 | `ax.rs`, `ax/` | the AX test door: loopback HTTP over the AccessKit tree, its CLI client; built with the `ax-door` feature only | `ax-door` accept thread; answers on the window thread |
 | `fonts.rs`, `tray.rs` | bundled faces and fallback chains; the macOS status item (`Tray`, an entity observing `Session`, `Chain` and `Prefs`) | window thread |
@@ -84,7 +97,7 @@ view's tree lowers onto GPUI elements one to one.
 Dependencies, top down (an arrow means "calls into"):
 
 ```
-main
+main ──► os (the desktop's OsServices, installed into host::contract)
  └─ shell ──────────► ui (layout geometry)
      │  ├─► shell::entities ──► backend (connect, keys, prefs)
      │  │                   └──► runtime (Roster, connected, notify)
@@ -93,6 +106,10 @@ main
      │          └─► runtime::kernel ──► noded_client / backend::session / views
      ├─► a11y, fonts, tray, ax
      └─► ax ──► (reads the GPUI a11y tree of every window)
+
+crates/host never calls up: a directory, a banner, an OS fact, the reader
+key or an invite comes through `contract::OsServices` (the one the shell
+installed), and no `cfg(target_os)` lives in its source.
 ```
 
 `ui/` never touches GPUI: `ui/layout.rs` is pure geometry. The native
@@ -146,8 +163,9 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
 3. **Compile.** `View::load` on the loader thread: `DUCKTAPE_VIEWS_DIR`
    override first (`seat::view_override`, unverified, logged), else the
    network's bytes. Either way `View::compile` reads the manifest
-   (upstream `view_wire::manifest::read_manifest`), checks its `wire_id`
-   against `view_wire::WIRE_ID`, then `compiled_view` compiles through the one
+   (upstream `view_wire::manifest::read_manifest`), logs `view_wire_differs`
+   when its `wire_id` is not `view_wire::WIRE_ID` (the view runs all the
+   same, and a failure of it says so: `View::failure`), then `compiled_view` compiles through the one
    `Engine` (`view::engine`: `consume_fuel(true)`, opt level Speed, a
    wasmtime disk cache under `cache_dir()/view-code`); `runtime::manifest_of`
    reads the same manifest again for the tab's name and icon and the
@@ -647,13 +665,13 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
 
 ## 7. Accessibility and the AX test door
 
-- **Helpers** (`src/a11y.rs`): `Control::control(role, name)` (a role never
+- **Helpers** (`crates/host/src/a11y.rs`): `Control::control(role, name)` (a role never
   without a name), `keyboard` (Tab stop, Enter/Space press, focus ring,
   pointer press does not steal focus), `focus_shown`, `Aria` (reach the
   accessibility setters of any interactive element), `text_field`,
   `disabled`, `modal`, and the class markers `AX_PRIVATE` (`private`: the
   door masks it) and `AX_WHOLE` (`whole`: the door does not truncate it).
-- **Renderer mapping** (`src/render/accessibility.rs`): `Accessible` is what
+- **Renderer mapping** (`crates/host/src/render/accessibility.rs`): `Accessible` is what
   one wire node is to assistive technology (role, name, description,
   placeholder, value, disabled, and a field's invalid, required and
   read-only);
@@ -670,7 +688,7 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   `with_presentation` (the `NativePresentation` copy across view
   instances) also live in this file for now; the struct itself is in
   `render.rs`.
-- **The door** (`src/ax.rs`, `src/ax/{http,tree,actions}.rs`). Built only
+- **The door** (`crates/host/src/ax.rs`, `crates/host/src/ax/{http,tree,actions}.rs`). Built only
   with the `ax-door` cargo feature (the kit and qa builds); a default build
   has no door and no `ax` client. Off unless
   `DUCKTAPE_AX_DOOR=<port|0>` is set (0 picks a port). `ax::open`
@@ -746,7 +764,7 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   key opening are off the window thread (§2).
 - **Measured.** A `view_load` info line per network load
   (`seat::LoadTiming`) and the fuel debug line, both on `ducktape::perf`.
-  With `DUCKTAPE_PERF=1`, `src/perf.rs` also times and counts the shell,
+  With `DUCKTAPE_PERF=1`, `crates/host/src/perf.rs` also times and counts the shell,
   each window and each view's load, tick and render stages, served at
   `GET /perf` and logged as a `perf_summary` line every 10 minutes and at
   quit ([docs/perf.md](docs/perf.md)).
@@ -820,7 +838,7 @@ House words, and where one word means several things.
 - **widget command** — a `host.widget` request acting on a native control
   (focus, next/previous, scroll, cursor, a field's edit); its **target** is
   a whole authored path, as the view SDK names it from the frame it
-  lowered (`ViewTree::input_command`, `src/render/commands.rs`).
+  lowered (`ViewTree::input_command`, `crates/host/src/render/commands.rs`).
 - **method / capability / operation** — a request kind is
   `<capability>.<operation>`; `Capability` is the typed part before the dot
   that a manifest must declare; `wire::methods` holds every request and
@@ -974,9 +992,11 @@ House words, and where one word means several things.
   `Failure`. Check in order: is the program in
   the roster (`NotListed`); does the node hold the blob (`Unreachable`);
   does the section exist (`Slot::Empty`); do the bytes hash
-  (`HashMismatch`); does the manifest parse and name this app's `WIRE_ID`
-  (`Refused`, `Wire`); did `init` or the first tick
-  trap (`Trapped` — a panic message is in the sentence). To bypass the
+  (`HashMismatch`); does the manifest parse (`Refused`); did `init` or a
+  tick trap or send a frame the host refuses (`Trapped` — a panic message,
+  or the node, `node at [1, 1]: …` or `Field `search` at [0, 2]: …`, is in
+  the sentence; `Wire` when the view was built against another wire, and
+  then the sentence names both). To bypass the
   node, point `DUCKTAPE_VIEWS_DIR` at a directory of `<program>_view.wasm`.
   `RUST_LOG=ducktape::perf=debug` shows per-tick fuel.
 - **Run against a node.** Start a node from `ducktape-industries/ducktape`

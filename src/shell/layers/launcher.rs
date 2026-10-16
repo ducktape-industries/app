@@ -160,9 +160,9 @@ impl LauncherLayer {
                 typed,
                 |this: &mut Self, cx| {
                     let answers = this.answers(cx);
-                    this.account
-                        .entity()
-                        .update(cx, |account, cx| account.phrase_check(answers, cx));
+                    this.account.entity().update(cx, |account, cx| {
+                        crate::shell::sign_in::phrase_check(account, answers, cx)
+                    });
                 },
                 window,
                 cx,
@@ -190,7 +190,7 @@ impl LauncherLayer {
                 "",
                 true,
                 typed,
-                enter(|fields| &fields.password, Account::unlock),
+                enter(|fields| &fields.password, crate::shell::sign_in::unlock),
                 window,
                 cx,
             ),
@@ -198,7 +198,10 @@ impl LauncherLayer {
                 "24 words, separated by spaces",
                 false,
                 typed,
-                enter(|fields| &fields.restore, Account::recover_submit),
+                enter(
+                    |fields| &fields.restore,
+                    crate::shell::sign_in::recover_submit,
+                ),
                 window,
                 cx,
             ),
@@ -285,7 +288,9 @@ impl LauncherLayer {
         let words: [_; 3] = std::array::from_fn(|nth| self.fields.words[nth].state.clone());
         move |cx| {
             let answers = std::array::from_fn(|nth| words[nth].read(cx).value().to_string());
-            account.update(cx, |account, cx| account.phrase_check(answers, cx))
+            account.update(cx, |account, cx| {
+                crate::shell::sign_in::phrase_check(account, answers, cx)
+            })
         }
     }
 

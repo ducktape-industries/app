@@ -2,13 +2,15 @@
 //! own entities: `Desk`, `Front`, `Overlays`, `Spotlight`, `DotSlot`),
 //! which is the console, which is in front, and the program in front
 //! (`active`: the one an untouched console desk opens). Its methods open,
-//! raise and close windows, move a pane between two desks (pop-out, pop-in),
-//! open links and programs on the console's desk (a program in a pop-out
-//! comes forward there), and resize the console as the launcher gives way
-//! to the desk and back. Notifies when the list, the front or the active
-//! program moved; a window's own entities notify on their own, and
-//! `Popped` (the pop-outs' windows, as the console's chrome lists them)
-//! when it moved.
+//! raise and close windows, keep one above other apps' windows (Keep on
+//! Top), move a pane between two desks (pop-out, pop-in), open links and
+//! programs on the console's desk (a program in a pop-out comes forward
+//! there), and resize the console as the launcher gives way to the desk
+//! and back. Notifies when the list, the front or the active program
+//! moved; a window's own entities notify on their own, and `Popped` (the
+//! pop-outs' windows, as the console's chrome lists them) when it moved.
+//! Keep on Top moves only the macOS menu bar's check (`sync_menu`); Search
+//! reads it as it draws.
 //!
 //! What it hears: the session leaving its network (every desk cleared),
 //! a node answering (the console comes forward), a device approved (its
@@ -18,8 +20,8 @@
 //! told). A link a banner's click or the passkey page asks for off the
 //! window thread comes over the `Posted` channel (`posted`).
 use super::{
-    AccountEvent, Entities, Front, Listed, Overlay, Overlays, Popped, Screen, SessionEvent,
-    SettingsPage, Shared, Slice, Spotlight, WindowEntities,
+    AccountEvent, Desk, DeskSeats, Entities, Front, Listed, Overlay, Overlays, Popped, Screen,
+    SessionEvent, SettingsPage, Shared, Slice, Spotlight, WindowEntities,
 };
 use crate::runtime::notify::{CenterHandle, Entry};
 use crate::runtime::{Link, WindowKey};
@@ -33,7 +35,7 @@ use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, AsyncApp, Bounds, Context, Entity, Pixels, Subscription,
     WeakEntity, Window, WindowBounds, WindowId, px, size,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, OnceLock};
 
 /// Timed as `reducer.desk`, the name qa's hang rule reads (docs/perf.md).
@@ -55,6 +57,12 @@ pub(crate) struct Windows {
     console: Option<WindowKey>,
     /// The OS window in front, when it is one of ours.
     front: Option<WindowKey>,
+    /// The windows kept above other apps' windows, once the platform took
+    /// it (`set_on_top`). Not saved: every window opens among the others.
+    on_top: BTreeSet<WindowKey>,
+    /// The macOS Window menu's Keep on Top check, as last set: the front
+    /// window's state (`sync_menu`).
+    menu_on_top: bool,
     /// The pop-outs' windows, derived (`popped_moved`): the console's
     /// chrome lists them.
     popped: Entity<Slice<Popped>>,
@@ -69,6 +77,8 @@ pub(crate) struct Windows {
     /// The appearance the theme was last synced to.
     appearance: crate::backend::Appearance,
     subscriptions: Vec<Subscription>,
+    /// Follows this list and every desk into the shared seats.
+    desk_seats: Option<Entity<DeskSeats>>,
 }
 
 impl Windows {
@@ -132,12 +142,15 @@ impl Windows {
             by_window: BTreeMap::new(),
             console: None,
             front: None,
+            on_top: BTreeSet::new(),
+            menu_on_top: false,
             popped: cx.new(|_| Slice::new(Popped::default())),
             active: None,
             desk_bounds: None,
             launcher,
             appearance,
             subscriptions,
+            desk_seats: None,
         }
     }
 
@@ -147,6 +160,12 @@ impl Windows {
             shared: self.shared.clone(),
             windows: cx.entity(),
         }
+    }
+
+    /// The seats follow this window list from now on (`DeskSeats` lives
+    /// as long as the windows do).
+    pub(crate) fn followed_by(&mut self, desk_seats: Entity<DeskSeats>) {
+        self.desk_seats = Some(desk_seats);
     }
 
     pub(crate) fn console(&self) -> Option<WindowKey> {
@@ -243,13 +262,13 @@ impl Windows {
     /// anything opening over the desk lets go of the keyboard's hold, and
     /// "Add a device…" closing, however it did, forgets what it found.
     fn make_own(&mut self, key: WindowKey, kind: WindowKind, cx: &mut Context<Self>) {
-        let desk = cx.new(|_| Slice::new(Layout::default()));
+        let desk = cx.new(|_| Desk::new(Layout::default()));
         let session = self.shared.session.clone();
         let own = WindowEntities {
             kind,
             front: Front::of_desk(&desk, cx),
             overlays: cx.new(|cx| Overlays::new(&session, cx)),
-            spotlight: cx.new(|_| Slice::new(Spotlight::default())),
+            spotlight: cx.new(|_| Spotlight::default()),
             dot: cx.new(|_| Slice::new(None)),
             desk,
         };
@@ -429,6 +448,7 @@ impl Windows {
         if front != self.front {
             self.front = front;
             self.popped_moved(cx);
+            self.sync_menu(cx);
             cx.notify();
         }
         if !active && let Some(own) = self.by_window.get(&key) {
@@ -487,6 +507,67 @@ impl Windows {
         }
         if let Some(handle) = self.handles.get(&key) {
             let _ = handle.update(cx, |_, window, _| window.activate_window());
+        }
+    }
+
+    /// Window `key` is kept above other apps' windows.
+    pub(crate) fn on_top(&self, key: WindowKey) -> bool {
+        self.on_top.contains(&key)
+    }
+
+    /// Keep on Top (the Window menu, ⌘⇧T, Search) on window `key`: on if
+    /// it was off, off if it was on.
+    pub(crate) fn toggle_on_top(&mut self, key: WindowKey, cx: &mut Context<Self>) {
+        let on = !self.on_top(key);
+        self.set_on_top(key, on, cx);
+    }
+
+    /// Window `key` kept above other apps' windows (`on`), or let back
+    /// among them. The platform is told a step later (the caller is most
+    /// often inside that very window's update), and the state is kept only
+    /// once it took it: where it can't (Wayland), nothing changes and the
+    /// log says why. Raising the window, its activation and its panes
+    /// moving leave it as it is; closing it forgets it.
+    pub(crate) fn set_on_top(&mut self, key: WindowKey, on: bool, cx: &mut Context<Self>) {
+        let Some(handle) = self.handles.get(&key).copied() else {
+            return;
+        };
+        let this = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let told = handle.update(cx, |_, window, _| windows::keep_above(window, on));
+            match told {
+                Ok(Ok(())) => {
+                    let _ = this.update(cx, |this, cx| this.kept_on_top(key, on, cx));
+                }
+                Ok(Err(error)) => {
+                    tracing::error!(target: "ducktape::app", reason = "keep_on_top_failed", %error, on, "the window could not be kept on top");
+                }
+                // the window closed first
+                Err(_) => {}
+            }
+        });
+    }
+
+    /// The platform took window `key`'s Keep on Top.
+    fn kept_on_top(&mut self, key: WindowKey, on: bool, cx: &mut Context<Self>) {
+        if !self.handles.contains_key(&key) {
+            return;
+        }
+        match on {
+            true => self.on_top.insert(key),
+            false => self.on_top.remove(&key),
+        };
+        self.sync_menu(cx);
+    }
+
+    /// The macOS Window menu's Keep on Top shows the front window's state:
+    /// the menu bar is made again when that moved (gpui sets a whole menu
+    /// bar, not one item).
+    fn sync_menu(&mut self, cx: &mut App) {
+        let on = self.front.is_some_and(|front| self.on_top.contains(&front));
+        if on != self.menu_on_top {
+            self.menu_on_top = on;
+            crate::shell::keys::menus(on, cx);
         }
     }
 
@@ -569,6 +650,7 @@ impl Windows {
         self.handles.remove(&key);
         self.views.remove(&key);
         self.by_window.remove(&key);
+        self.on_top.remove(&key);
         if self.console == Some(key) {
             self.console = None;
         }
@@ -576,6 +658,7 @@ impl Windows {
             self.front = None;
         }
         self.popped_moved(cx);
+        self.sync_menu(cx);
         cx.notify();
     }
 
@@ -1010,6 +1093,12 @@ impl Windows {
     #[cfg(test)]
     pub(in crate::shell) fn views(&self) -> &BTreeMap<WindowKey, WeakEntity<WindowRoot>> {
         &self.views
+    }
+
+    /// The macOS Window menu's Keep on Top check, as last set.
+    #[cfg(test)]
+    pub(in crate::shell) fn menu_on_top(&self) -> bool {
+        self.menu_on_top
     }
 }
 

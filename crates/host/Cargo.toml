@@ -1,0 +1,98 @@
+# ducktape-host — the blind host core the desktop shell and the phone shell
+# share: the renderer (`render`: one wire tree drawn as GPUI elements), the
+# runtime (`runtime`: seats, views, the kernel relay, replies, notify,
+# store, clipboard, roster), the backend's shared half (`backend`: the
+# node client and the frames it signs, the roster's views, prefs, the app's
+# own directories), fonts, the product theme, the a11y helpers and the AX
+# door (feature `ax-door`).
+#
+# It names no shell, no window manager and no user program. What a shell
+# must provide arrives through its interface file (`src/contract.rs`);
+# `tools/dep-gate.sh` keeps the dependency direction.
+
+[package]
+name = "ducktape-host"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+[features]
+# the AX test door (`src/ax`): kit and qa builds, and every test
+ax-door = []
+# gpui's own frame and input histograms into `GET /perf` (docs/perf.md §3.5)
+perf-deep = ["gpui-kit/profiler"]
+# the web piece draws pages through CEF (`render/web.rs`, `crates/web`)
+web = ["dep:ducktape-web", "ducktape-web/cef"]
+# the test helpers the desktop shell's tests reach (`*_for_test`,
+# `test_style`, ...): on for every test build, never for a shipped one
+test-support = ["gpui-kit/test-support"]
+
+[dependencies]
+gpui-kit = "=0.7.3"
+gpui-base = "=0.7.3"
+unicode-segmentation = "1"
+futures.workspace = true
+async-channel = "2"
+zeroize.workspace = true
+design.workspace = true
+describe = { workspace = true, features = ["host"] }
+sha2.workspace = true
+identity.workspace = true
+# The roster's full query surface: its programs and its view-only entries.
+blob.workspace = true
+programs = { git = "https://github.com/ducktape-industries/programs", rev = "d2494837b133fc2b84eae5fbf6f15c35a547e2c9", package = "programs" }
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+# A view SVG's own size, which sets the height gpui rasterises it at
+# (`render/svg_limits.rs`): gpui's own parser, already in the graph.
+usvg = { version = "0.46.0", default-features = false }
+tokio = { version = "1", features = ["fs", "macros", "net", "rt", "sync", "time"] }
+tokio-tungstenite.workspace = true
+# The live lane (`backend/live.rs`): QUIC to the UDP port the node's
+# `/v1/live/port` names, the node's key pinned by reading it out of its
+# certificate (rustls-webpki, already rustls's own), the websocket beside
+# it, and the wire's types from core's leaf crate.
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["alloc", "ring"] }
+live-wire.workspace = true
+# the node address's host, which the QUIC dial resolves: reqwest's own parser, already in the graph
+url = "2"
+tracing.workspace = true
+view-wire = { workspace = true, features = ["manifest"] }
+program.workspace = true
+abi.workspace = true
+ducklink.workspace = true
+wasmtime.workspace = true
+wasmparser = "0.251"
+libc.workspace = true
+sha1 = "0.10"
+# the node's client, shared with the phone; a signer is whatever the shell
+# seats (`noded_client::Signer`), so no key crate is named here
+noded-client = { path = "../noded-client" }
+# feature `web` only: CEF and everything that names it
+ducktape-web = { path = "../web", optional = true }
+
+[dev-dependencies]
+# paused time for the live session's keep-alive and idle tests
+tokio = { version = "1", features = ["test-util"] }
+# `backend/live.rs`'s test node: a self-signed certificate of an ed25519 key, as halo makes its own
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+# the tests' keys: commonware's ed25519, through noded-client's impl
+commonware-cryptography.workspace = true
+commonware-codec.workspace = true
+noded-client = { path = "../noded-client", features = ["commonware"] }
+# hand-written wasm for the describe method's hostile-section tests
+wat = "1"
+gpui-kit = { version = "=0.7.3", features = ["test-support"] }
+tempfile.workspace = true
+# a fake node's changes socket (`runtime/kernel/node/tests.rs`)
+tokio-tungstenite.workspace = true
+blobs = { git = "https://github.com/ducktape-industries/programs", rev = "d2494837b133fc2b84eae5fbf6f15c35a547e2c9", package = "blobs" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# test-support: its headless renderer, which `render/tests/picture_pixels.rs`
+# reads pixels back from.
+gpui-wgpu = { package = "gpui-pre-wgpu", version = "=0.3.9", features = ["test-support"] }
