@@ -4,6 +4,36 @@ use super::*;
 use crate::render::native_id;
 
 impl ViewTree {
+    /// A sheet at a desktop body is a centred modal, as an overlay's second
+    /// child, over nothing of its own (the view's body is behind it in the
+    /// tree); its detents are the phone's.
+    pub(super) fn sheet(
+        &mut self,
+        node: &wire::Node,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let wire::Node::Sheet {
+            id,
+            label,
+            style,
+            on_dismiss,
+            child,
+            detents: _,
+        } = node
+        else {
+            unreachable!()
+        };
+        let modal = wire::Node::Overlay {
+            id: id.clone(),
+            label: label.clone(),
+            style: *style,
+            on_dismiss: *on_dismiss,
+            children: vec![wire::Node::Space, (**child).clone()],
+        };
+        self.overlay(&modal, window, cx)
+    }
+
     pub(super) fn overlay(
         &mut self,
         node: &wire::Node,

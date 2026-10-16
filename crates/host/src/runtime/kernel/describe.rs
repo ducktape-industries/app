@@ -1,7 +1,7 @@
 //! `program.describe`: an op as its program says a person reads it. The
 //! program's CURRENT code blob (the roster the app already holds) carries a
 //! wasm module in its `ducktape.describe` section; it is read out once per
-//! code id (`::describe::host::section`, written so since this module
+//! code id (`::describe::section`, written so since this module
 //! shadows the crate's name) and run by the view runner
 //! (`ViewRunner::describe`: a fresh, import-free, fuel- and memory-bounded
 //! instance), its answers kept per (code id, op hash).
@@ -97,7 +97,7 @@ async fn module(node: &Node, code: abi::BlobId) -> Result<Module, wire::Error> {
                 Err(_) => return Err(None),
             };
             Ok(tokio::task::spawn_blocking(move || {
-                ::describe::host::section(&bytes).map(|section| {
+                ::describe::section(&bytes).map(|section| {
                     let hash: [u8; 32] = sha2::Sha256::digest(section).into();
                     (hash, Arc::from(section))
                 })

@@ -13,6 +13,7 @@
 mod endpoints;
 pub mod identity;
 pub mod join;
+pub mod live;
 mod prefs;
 mod session;
 pub mod views;

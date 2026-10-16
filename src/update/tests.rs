@@ -14,7 +14,7 @@ use ducktape_updater::layout::Channel;
 use ducktape_updater::release::signing_key_from_hex;
 use ducktape_updater::{
     Artifact, Manifest, Platform, PublicKey, Refusal as ManifestRefusal, Release, SCHEMA, Sha,
-    Signature, SignedManifest, TrustedKeys, layout,
+    Signature, SignedManifest, Take, TrustedKeys, layout,
 };
 
 use super::channel::{client, download, fetch};
@@ -328,6 +328,21 @@ fn the_kept_channel_reads_back_and_anything_else_is_stable() {
     assert_eq!(read_channel(&layout), Channel::Stable);
 }
 
+/// "Update automatically" kept in `<updates>/automatic` reads back as set;
+/// no file, or anything but `off` in it, reads as on.
+#[test]
+fn the_automatic_switch_reads_back_and_is_on_unless_it_says_off() {
+    use super::channel::{keep_automatic, read_automatic};
+    let (_root, layout) = rig();
+    assert!(read_automatic(&layout), "no file is on");
+    keep_automatic(&layout, false).unwrap();
+    assert!(!read_automatic(&layout));
+    keep_automatic(&layout, true).unwrap();
+    assert!(read_automatic(&layout));
+    std::fs::write(layout.updates.join("automatic"), "maybe\n").unwrap();
+    assert!(read_automatic(&layout));
+}
+
 /// A large channel file is read whole and judged by what it holds.
 #[test]
 fn a_large_manifest_is_read_whole() {
@@ -495,7 +510,7 @@ fn a_manifest_below_the_highest_its_channel_showed_is_refused() {
         &[Item::File("README", b"no app".to_vec(), 0o644)],
     );
     let mut first = updater(Channel::Stable);
-    block(first.check(&client()));
+    block(first.check(&client(), Take::Automatic));
     assert_eq!(
         first.shown().status,
         "Verification refused: release_incomplete"
@@ -503,7 +518,7 @@ fn a_manifest_below_the_highest_its_channel_showed_is_refused() {
     // then an older signed release, still newer than what runs
     let older = publish(&bucket, Channel::Stable, 1005, &release_of(script("o")));
     for mut checking in [first, updater(Channel::Stable)] {
-        block(checking.check(&client()));
+        block(checking.check(&client(), Take::Automatic));
         assert_eq!(
             checking.shown().status,
             "Last check refused: sequence_replayed"
@@ -518,7 +533,7 @@ fn a_manifest_below_the_highest_its_channel_showed_is_refused() {
     publish(&bucket, Channel::Nightly, 1005, &release_of(script("n")));
     super::channel::keep_channel(&layout, Channel::Nightly).unwrap();
     let mut nightly = updater(Channel::Nightly);
-    block(nightly.check(&client()));
+    block(nightly.check(&client(), Take::Automatic));
     assert_ne!(
         nightly.shown().status,
         "Last check refused: sequence_replayed"
@@ -531,7 +546,7 @@ fn a_manifest_below_the_highest_its_channel_showed_is_refused() {
 mod linux {
     use std::path::{Path, PathBuf};
 
-    use ducktape_updater::{Idle, Phase};
+    use ducktape_updater::{Event, Idle, Phase};
 
     use super::*;
     use crate::update::channel::Updater;
@@ -572,7 +587,7 @@ mod linux {
         let b = publish(&bucket, Channel::Stable, pin + 1, &release_of(script("b")));
         let mut updater = updater(&layout, &bucket, Channel::Stable);
         updater.start();
-        block(updater.check(&client()));
+        block(updater.check(&client(), Take::Automatic));
         let Phase::Staged(staged) = state(&layout) else {
             panic!("not staged: {:?}", state(&layout));
         };
@@ -620,7 +635,7 @@ mod linux {
             &[Item::File("README", b"no app".to_vec(), 0o644)],
         );
         let mut updater = updater(&layout, &bucket, Channel::Stable);
-        block(updater.check(&client()));
+        block(updater.check(&client(), Take::Automatic));
         assert_eq!(state(&layout), installed);
         assert!(!layout.release_dir(b).exists());
         assert_eq!(
@@ -660,7 +675,7 @@ mod linux {
         };
         crate::update::channel::keep_channel(&layout, Channel::Nightly).unwrap();
         let mut updater = updater(&layout, &bucket, Channel::Nightly);
-        block(updater.check(&client()));
+        block(updater.check(&client(), Take::Automatic));
         assert!(matches!(state(&layout), Phase::Staged(ref staged) if staged.staged == nightly));
 
         pick(&mut updater, Channel::Stable);
@@ -674,7 +689,7 @@ mod linux {
             "the nightly staged before the switch is dropped"
         );
         assert!(!layout.release_dir(nightly).exists());
-        block(updater.check(&client()));
+        block(updater.check(&client(), Take::Automatic));
         assert!(matches!(state(&layout), Phase::Idle(ref idle) if idle.current == a));
         let archive = layout::archive_name(&behind, &Platform::HOST.key());
         assert_eq!(
@@ -692,7 +707,7 @@ mod linux {
             pin + 200,
             &release_of(script("s2")),
         );
-        block(updater.check(&client()));
+        block(updater.check(&client(), Take::Automatic));
         assert!(matches!(state(&layout), Phase::Staged(ref staged) if staged.staged == stable));
 
         pick(&mut updater, Channel::Nightly);
@@ -702,8 +717,149 @@ mod linux {
             pin + 300,
             &release_of(script("n2")),
         );
-        block(updater.check(&client()));
+        block(updater.check(&client(), Take::Automatic));
         assert!(matches!(state(&layout), Phase::Staged(ref staged) if staged.staged == newest));
+    }
+
+    /// Updating automatically off: a check that finds a newer release names
+    /// it, downloads nothing, raises no notice, and the next start runs what
+    /// it ran. "Update now" then downloads, verifies and stages it, a check
+    /// while it waits leaves it be, and the next start flips to it as
+    /// updating automatically would.
+    #[test]
+    fn with_updating_automatically_off_a_check_names_what_update_now_stages() {
+        use crate::update::boot::{Boot, boot_at};
+        use crate::update::channel::{keep_automatic, noticed_here};
+        let bucket = Bucket::new();
+        let (root, layout) = rig();
+        let (a, installed) = install(root.path(), &layout, &script("a"));
+        let b = publish(
+            &bucket,
+            Channel::Stable,
+            installed.pinned_sequence() + 1,
+            &release_of(script("b")),
+        );
+        keep_automatic(&layout, false).unwrap();
+        noticed_here();
+
+        let mut running = updater(&layout, &bucket, Channel::Stable);
+        block(running.check(&client(), Take::Nothing));
+        let archive = layout::archive_name(&b, &Platform::HOST.key());
+        assert_eq!(bucket.asked_for(&archive), 0, "nothing downloaded");
+        assert_eq!(state(&layout), installed);
+        assert!(!layout.release_dir(b).exists());
+        assert_eq!(noticed_here(), Vec::<String>::new(), "no notice");
+        let shown = running.shown();
+        assert_eq!(
+            shown.status,
+            format!("0.1.0+{} is available: it is not installed", b.short())
+        );
+        assert!(!shown.automatic && shown.update_now && !shown.restart);
+        assert_eq!(
+            boot_at(&layout, &layout.release_exe(a)).unwrap(),
+            Boot::Run(installed.clone())
+        );
+
+        // "Update now"
+        block(running.check(&client(), Take::Asked));
+        let Phase::Staged(staged) = state(&layout) else {
+            panic!("not staged: {:?}", state(&layout));
+        };
+        assert_eq!((staged.staged, staged.asked), (b, true));
+        let shown = running.shown();
+        assert!(shown.restart && !shown.update_now);
+        assert!(
+            shown
+                .status
+                .ends_with("is ready: it takes over at the next start"),
+            "{}",
+            shown.status
+        );
+        assert_eq!(noticed_here(), [format!("ready 0.1.0+{}", b.short())]);
+        let newer = publish(
+            &bucket,
+            Channel::Stable,
+            installed.pinned_sequence() + 2,
+            &release_of(script("c")),
+        );
+        running.apply(Event::AutomaticOff);
+        block(running.check(&client(), Take::Nothing));
+        assert!(matches!(state(&layout), Phase::Staged(ref waiting) if waiting.staged == b));
+        let archive = layout::archive_name(&newer, &Platform::HOST.key());
+        assert_eq!(bucket.asked_for(&archive), 0, "nothing newer downloaded");
+
+        assert_eq!(
+            boot_at(&layout, &layout.release_exe(a)).unwrap(),
+            Boot::Exec(layout.app_exe())
+        );
+        assert_eq!(current(&layout), Layout::link_target(b));
+    }
+
+    /// A release the updater staged on its own, then the switch went off:
+    /// a start that comes before the running app's next turn drops it, and
+    /// so does that turn; neither flips to it, and the next check names it
+    /// as available, not installed.
+    #[test]
+    fn a_release_staged_before_the_switch_went_off_is_never_applied_unasked() {
+        use crate::update::boot::{Boot, boot_at};
+        use crate::update::channel::keep_automatic;
+        let bucket = Bucket::new();
+        let (root, layout) = rig();
+        let (a, installed) = install(root.path(), &layout, &script("a"));
+        let sequence = installed.pinned_sequence() + 1;
+        let b = stage(&layout, &bucket, sequence, script("b"));
+        keep_automatic(&layout, false).unwrap();
+        assert_eq!(
+            boot_at(&layout, &layout.release_exe(a)).unwrap(),
+            Boot::Run(installed.clone())
+        );
+        assert_eq!(current(&layout), Layout::link_target(a));
+        assert!(!layout.release_dir(b).exists(), "the staged release went");
+
+        keep_automatic(&layout, true).unwrap();
+        let b = stage(&layout, &bucket, sequence, script("b"));
+        keep_automatic(&layout, false).unwrap();
+        let mut running = updater(&layout, &bucket, Channel::Stable);
+        assert!(!running.shown().restart, "no restart offered");
+        running.apply(Event::AutomaticOff);
+        assert_eq!(state(&layout), installed);
+        assert!(!layout.release_dir(b).exists());
+        block(running.check(&client(), Take::Nothing));
+        assert_eq!(
+            running.shown().status,
+            format!("0.1.0+{} is available: it is not installed", b.short())
+        );
+    }
+
+    /// The switch goes off while a check updating automatically downloads:
+    /// the download's answer is dropped, never staged, and the next turn's
+    /// `AutomaticOff` collects what it left.
+    #[test]
+    fn the_switch_going_off_during_a_check_drops_what_it_was_downloading() {
+        let bucket = Bucket::new();
+        let (root, layout) = rig();
+        let (_, installed) = install(root.path(), &layout, &script("a"));
+        let b = publish(
+            &bucket,
+            Channel::Stable,
+            installed.pinned_sequence() + 1,
+            &release_of(script("b")),
+        );
+        let off = layout.clone();
+        bucket.when_asked(
+            &layout::archive_name(&b, &Platform::HOST.key()),
+            move || crate::update::channel::keep_automatic(&off, false).unwrap(),
+        );
+        let mut running = updater(&layout, &bucket, Channel::Stable);
+        block(running.check(&client(), Take::Automatic));
+        assert!(
+            !matches!(state(&layout), Phase::Staged(_)),
+            "{:?}",
+            state(&layout)
+        );
+        running.apply(Event::AutomaticOff);
+        assert_eq!(state(&layout), installed);
+        assert!(!layout.release_dir(b).exists());
     }
 
     // ---- the boot step, on a Linux install --------------------------------------
@@ -712,7 +868,7 @@ mod linux {
     fn stage(layout: &Layout, bucket: &Bucket, sequence: u64, exe: Vec<u8>) -> Sha {
         let sha = publish(bucket, Channel::Stable, sequence, &release_of(exe));
         let mut updater = updater(layout, bucket, Channel::Stable);
-        block(updater.check(&client()));
+        block(updater.check(&client(), Take::Automatic));
         assert!(matches!(state(layout), Phase::Staged(_)));
         sha
     }
@@ -832,6 +988,7 @@ mod linux {
             display: "0.1.0+b".into(),
             channel: "stable".into(),
             refused: None,
+            asked: false,
         });
         crate::update::persist_phase(&layout, &staged).unwrap();
         // the other process's hold, through an open file of its own
@@ -876,7 +1033,7 @@ mod linux {
         );
         let mut updater = updater(&layout, &bucket, Channel::Stable);
         updater.start();
-        block(updater.check(&client()));
+        block(updater.check(&client(), Take::Automatic));
         assert!(
             !matches!(state(&layout), Phase::Staged(_)),
             "{:?}",
@@ -1119,7 +1276,7 @@ mod linux {
 
         let mut running = updater(&layout, &bucket, Channel::Stable);
         running.start();
-        block(running.check(&client()));
+        block(running.check(&client(), Take::Automatic));
         assert_eq!(noticed_here(), ["withdrawn", ready.as_str()]);
 
         crate::update::channel::keep_channel(&layout, Channel::Nightly).unwrap();
@@ -1128,7 +1285,7 @@ mod linux {
 
         crate::update::channel::keep_channel(&layout, Channel::Stable).unwrap();
         let mut running = updater(&layout, &bucket, Channel::Stable);
-        block(running.check(&client()));
+        block(running.check(&client(), Take::Automatic));
         assert_eq!(noticed_here(), [ready.as_str()]);
         updater(&layout, &bucket, Channel::Stable).start();
         assert_eq!(noticed_here(), Vec::<String>::new(), "still staged");
@@ -1164,7 +1321,7 @@ mod linux {
         let b = publish(&bucket, Channel::Stable, pin + 1, &release_of(script("b")));
         let mut running = updater(&layout, &bucket, Channel::Stable);
         running.start();
-        block(running.check(&client()));
+        block(running.check(&client(), Take::Automatic));
         assert!(matches!(state(&layout), Phase::Staged(ref staged) if staged.staged == b));
 
         // start 2: the session starts the install path's A; its boot step
@@ -1212,7 +1369,7 @@ mod linux {
             running.shown().status,
             format!("Went back from 0.1.0+{}: it never came up", b.short())
         );
-        block(running.check(&client()));
+        block(running.check(&client(), Take::Automatic));
         assert_eq!(
             state(&layout),
             Phase::Idle(Idle {
@@ -1386,6 +1543,7 @@ mod macos {
             display: "0.1.0+older".into(),
             channel: "stable".into(),
             refused: None,
+            asked: false,
         });
         crate::update::persist_phase(&layout, &staged).unwrap();
         bundle(&layout.install, "n");
@@ -1421,7 +1579,7 @@ mod macos {
             |phase| Updater::new(layout.clone(), phase, keys(), Channel::Stable, &bucket.base);
         let mut running = updater(state(&layout));
         running.start();
-        block(running.check(&client()));
+        block(running.check(&client(), Take::Automatic));
         let own = layout.app_exe();
         assert_eq!(boot_at(&layout, &own).unwrap(), Boot::Exec(own.clone()));
         let booted = boot_at(&layout, &own).unwrap();
@@ -1550,7 +1708,7 @@ mod macos {
             &bucket.base,
         );
         running.start();
-        block(running.check(&client()));
+        block(running.check(&client(), Take::Automatic));
         assert!(
             matches!(state(&layout), Phase::Staged(ref staged) if staged.staged == b && staged.refused.is_none()),
             "{:?}",
@@ -1604,7 +1762,7 @@ mod macos {
         let mut running =
             Updater::new(layout.clone(), phase, keys(), Channel::Stable, &bucket.base);
         running.start();
-        block(running.check(&client()));
+        block(running.check(&client(), Take::Automatic));
         assert_eq!(
             state(&layout),
             Phase::Idle(Idle {
