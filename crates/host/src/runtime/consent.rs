@@ -264,7 +264,7 @@ pub(super) fn needed(
             | identity::Op::SetName { .. }
             | identity::Op::SetProfile { .. }
             | identity::Op::Resume { .. }
-            | identity::Op::SetAudience { .. }
+            | identity::Op::SetOwnership { .. }
             | identity::Op::SetScript {
                 script: Some(_), ..
             } => None,

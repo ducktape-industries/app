@@ -107,7 +107,7 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 
 ## Dependency line
 
-`ducktape-industries/programs` (rev `7327a481c1291176de20757956e33562fa2127a0`): `abi`, `view-wire`, `program`, `ducklink`, `design`, `describe`, `identity`, `valset`, `programs`, `blobs`, and the `abi` patch over ducktape's.
+`ducktape-industries/programs` (rev `aa6380d1ef62732bf5f6261d2da13a256b61140b`): `abi`, `view-wire`, `program`, `ducklink`, `design`, `describe`, `identity`, `valset`, `programs`, `blobs`, and the `abi` patch over ducktape's.
 `ducktape-industries/ducktape` (rev `8a0151a411c3558453c34bb8272b93dfc428cb74`, the rev that programs rev pins): `blob`, `keyscheme`, `ducktape-home`, `keystore`, `live-wire`.
 `ducktape-industries/gpui-pre` (rev `1026d7a2bac0a21cc73cd9f31a2a56b23f973cea`, the rev that programs rev pins): `gpui-pre` and the crates it patches.
 
