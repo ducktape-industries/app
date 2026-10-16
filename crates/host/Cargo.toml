@@ -93,6 +93,8 @@ ducktape-web = { path = "../web", optional = true }
 ducktape-av = { path = "../av", optional = true }
 
 [dev-dependencies]
+# what the media pieces' tests read off a piece (empty without `av`)
+ducktape-av = { path = "../av", features = ["test-support"] }
 # paused time for the live session's keep-alive and idle tests
 tokio = { version = "1", features = ["test-util"] }
 # `backend/live.rs`'s test node: a self-signed certificate of an ed25519 key, as halo makes its own

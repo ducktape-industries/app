@@ -796,9 +796,7 @@ impl Seat {
         let tooltips = std::mem::take(&mut view.tooltip_responses);
         // the frame came with the person's press or key: a sound it starts
         // (a microphone's monitor, a recording) may start
-        let pressed = view
-            .activation
-            .is_some_and(|at| at.elapsed() <= super::super::view::ACTIVATION_EXPIRY);
+        let pressed = view.pressed();
         let min_width = self.layout_min(view);
         let body = view.viewport_sent;
         let first_tree = ticks == 0 && view.ticks == 1;

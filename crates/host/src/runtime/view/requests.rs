@@ -184,12 +184,19 @@ impl View {
         self.fault.is_none() && (self.frame.busy || !self.pending.is_empty())
     }
 
+    /// Whether this view's activation is fresh: a press or key within
+    /// [`super::ACTIVATION_EXPIRY`], not taken yet.
+    pub fn pressed(&self) -> bool {
+        self.activation
+            .is_some_and(|at| at.elapsed() <= super::ACTIVATION_EXPIRY)
+    }
+
     /// Whether this view's activation is fresh, taking it: the gated call
     /// that asks first is the one the person's input admits.
     pub fn take_activation(&mut self) -> bool {
-        self.activation
-            .take()
-            .is_some_and(|at| at.elapsed() <= super::ACTIVATION_EXPIRY)
+        let pressed = self.pressed();
+        self.activation = None;
+        pressed
     }
 
     /// Routes one request: the manifest's capability gate,

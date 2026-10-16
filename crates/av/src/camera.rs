@@ -88,6 +88,7 @@ impl Camera {
     }
 
     /// Whether this camera was let go: its device closes, or never opens.
+    #[cfg(feature = "test-support")]
     pub fn let_go(&self) -> bool {
         self.feed.stop.load(Ordering::Relaxed)
     }

@@ -48,8 +48,10 @@ use mac as platform;
 #[cfg(target_os = "linux")]
 use v4l2 as platform;
 
+#[cfg(feature = "test-support")]
+pub use backend::Ask;
 pub use backend::{
-    Ask, AudioDevice, AudioKind, CameraDevice, Device, Facing, Playback, Release, Status,
+    AudioDevice, AudioKind, CameraDevice, Device, Facing, Playback, Release, Status,
 };
 pub use camera::Camera;
 pub use meter::Meter;

@@ -35,6 +35,11 @@ capture = [
     "dep:objc2-core-media", "dep:objc2-core-video", "dep:dispatch2", "dep:objc2-core-audio",
 ]
 
+# what a test reads off a piece (`Camera::let_go`, `Meter::monitor`,
+# `Meter::asked`, `Meter::let_go`): the host's tests turn it on, nothing
+# shipped does
+test-support = []
+
 [dependencies]
 gpui-kit = { version = "=0.7.3", optional = true }
 # microphones and speakers: ALSA on Linux, Core Audio on macOS

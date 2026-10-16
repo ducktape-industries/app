@@ -68,6 +68,7 @@ impl Meter {
     }
 
     /// Whether the monitor is on, as last set.
+    #[cfg(feature = "test-support")]
     pub fn monitor(&self) -> bool {
         self.feed.monitor.load(Ordering::Relaxed)
     }
@@ -91,6 +92,7 @@ impl Meter {
     }
 
     /// What this piece asked its microphone last, not yet taken up.
+    #[cfg(feature = "test-support")]
     pub fn asked(&self) -> Option<Ask> {
         *self.feed.ask.lock().expect("feed ask")
     }
@@ -103,6 +105,7 @@ impl Meter {
 
     /// Whether this microphone was let go: its device closes, or never
     /// opens.
+    #[cfg(feature = "test-support")]
     pub fn let_go(&self) -> bool {
         self.feed.stop.load(Ordering::Relaxed)
     }
