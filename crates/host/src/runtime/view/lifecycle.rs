@@ -408,15 +408,17 @@ impl View {
     /// nothing in flight, and the last kept one older than the host's
     /// `Limits::snapshot_every` (SPEC §6.5).
     pub fn keep_due(&self) -> bool {
-        let every = crate::contract::os().limits().snapshot_every;
+        // no replay kept (the desktop): nothing read, every turn
+        let Some(kept) = &self.kept else {
+            return false;
+        };
         self.ticks > 0
             && !self.ticking
             && self.settled()
-            && self
-                .kept
-                .as_ref()
-                .zip(every)
-                .is_some_and(|(kept, every)| kept.at.elapsed() >= every)
+            && crate::contract::os()
+                .limits()
+                .snapshot_every
+                .is_some_and(|every| kept.at.elapsed() >= every)
     }
 
     /// Asks for the snapshot a kept replay starts from from now on: the

@@ -662,6 +662,10 @@ pub(super) async fn swap_in(mounted: Arc<Mutex<Mounted>>, program: &'static str)
         let Some(pending) = locked.swap.take() else {
             return;
         };
+        // a later load moved the seat on: this swap would install nowhere
+        if pending.generation != locked.generation {
+            return;
+        }
         let Slot::Ready(old) = &locked.slot else {
             return;
         };
@@ -728,6 +732,11 @@ pub(super) async fn swap_in(mounted: Arc<Mutex<Mounted>>, program: &'static str)
             program,
             instance: locked.instance,
         };
+        crate::perf::record(
+            key,
+            "install.lock_wait",
+            timing.lock_wait.as_micros() as u64,
+        );
         crate::perf::record(key, "install", timing.install.as_micros() as u64);
         timing.log(program);
     }
