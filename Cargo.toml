@@ -21,6 +21,10 @@ authors = ["Ducktape contributors"]
 
 [workspace]
 resolver = "2"
+# Crates no other member depends on yet (path dependencies are members
+# already): the meter pass (`crates/view-meter`), which the iOS view runner
+# will call.
+members = ["crates/view-meter"]
 
 [workspace.package]
 edition = "2024"
