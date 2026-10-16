@@ -634,6 +634,27 @@ fn the_chime_needs_a_press() {
     );
 }
 
+/// The device lists are taken on a blocking thread (each camera's node
+/// opened to ask what it is), never on the window's: the request is a
+/// task of the view's, answered when the listing is done.
+#[cfg(feature = "av")]
+#[test]
+fn the_device_lists_are_answered_off_the_window_thread() {
+    for (id, kind) in [(1, "camera.devices"), (2, "microphone.devices")] {
+        let mut view = view();
+        view.answer(
+            wire::Request {
+                id,
+                kind: kind.into(),
+                payload: Vec::new(),
+            },
+            &None,
+        );
+        assert!(view.pending.is_empty(), "{kind} answered on this thread");
+        assert!(view.tasks.iter().any(|(task, _)| *task == id), "{kind}");
+    }
+}
+
 fn float_request(id: u64, float: methods::Float) -> wire::Request {
     wire::Request {
         id,

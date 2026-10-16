@@ -31,10 +31,10 @@
 //!   `https://` one for the system browser; `clock.ticks` — a periodic
 //!   empty item, at most one per redraw ([`ticked`]).
 //! - `camera.devices`, `microphone.devices` — the devices the system lists
-//!   now (`render/av.rs`); `microphone.chime` — the test chime on a
-//!   speaker, at a press or key, answered once it has sounded (on a blocking
-//!   thread). A build without feature `av` knows none of the three
-//!   (`unknown_request`).
+//!   now (`render/av.rs`), listed on a blocking thread; `microphone.chime`
+//!   — the test chime on a speaker, at a press or key, answered once it
+//!   has sounded (on a blocking thread). A build without feature `av`
+//!   knows none of the three (`unknown_request`).
 //!
 //! On the node, as a task on [`handle`] (`node`), each answer waiting in
 //! [`Replies`] for the view's next redraw; each asked once, a transport
@@ -451,13 +451,18 @@ pub(super) fn answer(
                 Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
             }
         }
-        // the cameras, microphones and speakers (`render/av.rs`). A build
-        // without av captures nothing: it has none of the three (`_ =>
-        // return false`, an unknown request)
+        // the cameras, microphones and speakers (`render/av.rs`), listed
+        // on a blocking thread and answered when they are. A build without
+        // av captures nothing: it has none of the three (`_ => return
+        // false`, an unknown request)
         #[cfg(feature = "av")]
-        (Capability::Camera, "devices") => view.reply(id, crate::render::av::cameras()),
+        (Capability::Camera, "devices") => {
+            node::spawn_reply(view, id, crate::render::av::cameras())
+        }
         #[cfg(feature = "av")]
-        (Capability::Microphone, "devices") => view.reply(id, crate::render::av::microphones()),
+        (Capability::Microphone, "devices") => {
+            node::spawn_reply(view, id, crate::render::av::microphones())
+        }
         // the speaker test: a sound, so only at the person's press or key
         // (a view on a clock never chimes), answered once it has sounded
         #[cfg(feature = "av")]

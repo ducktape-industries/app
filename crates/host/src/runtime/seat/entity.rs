@@ -778,6 +778,11 @@ impl Seat {
             .collect();
         let intents = std::mem::take(&mut view.intents);
         let tooltips = std::mem::take(&mut view.tooltip_responses);
+        // the frame came with the person's press or key: a sound it starts
+        // (a microphone's monitor, a recording) may start
+        let pressed = view
+            .activation
+            .is_some_and(|at| at.elapsed() <= super::super::view::ACTIVATION_EXPIRY);
         let min_width = self.layout_min(view);
         let body = view.viewport_sent;
         let first_tree = ticks == 0 && view.ticks == 1;
@@ -801,10 +806,14 @@ impl Seat {
                 // pane reads off the seat moved
                 (Some(tree), None) => tree.update(cx, |tree, cx| {
                     tree.set_pictures(pictures);
+                    tree.set_pressed(pressed);
                     tree.replace(root, &asked, cx)
                 }),
                 (_, adopt) => {
                     self.mount(root, pictures, generation, key, adopt, cx);
+                    if let Some(tree) = &self.tree {
+                        tree.update(cx, |tree, _| tree.set_pressed(pressed));
+                    }
                     cx.notify();
                 }
             }

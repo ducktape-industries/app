@@ -351,9 +351,11 @@ impl ViewTree {
     }
 
     /// The seat is dropping this tree: its rasters leave every window's
-    /// atlas. Never on a hot swap, whose next tree carries them.
+    /// atlas (never on a hot swap, whose next tree carries them), and its
+    /// cameras and microphones close now, not when gpui gets round to it.
     pub fn release(&mut self, cx: &mut App) {
         self.images.borrow_mut().release(cx);
+        self.release_media();
     }
 
     pub(super) fn picture(
