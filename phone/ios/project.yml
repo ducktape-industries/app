@@ -1,8 +1,9 @@
 # The phone's iOS launcher (XcodeGen): `App.swift`, the Expo build's
 # `DeviceKeyStore.swift` as it is, and the Rust library `phone/Makefile`
 # builds into `build/rust/<platform>` with the link flags rustc prints
-# (`build/rust/<platform>/link.xcconfig`). Simulator builds sign ad hoc;
-# signing for a phone is the owner's (SPEC §14).
+# (`build/rust/<platform>/link.xcconfig`). Simulator builds sign ad hoc; the
+# App Store archive is unsigned and signed on export by the TestFlight
+# workflow (`phone/README.md`).
 name: Ducktape
 options:
   deploymentTarget:
@@ -18,11 +19,17 @@ targets:
       - App.swift
       - DeviceKeyStore.swift
       - Phone.h
+      - Assets.xcassets
+      - path: PrivacyInfo.xcprivacy
+        buildPhase: resources
     settings:
       base:
         PRODUCT_NAME: Ducktape
         PRODUCT_BUNDLE_IDENTIFIER: industries.ducktape.mobile
         INFOPLIST_FILE: Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # CFBundleVersion; the TestFlight workflow passes its own (the commit's time)
+        CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.0"
         SWIFT_OBJC_BRIDGING_HEADER: Phone.h
         TARGETED_DEVICE_FAMILY: "1"
