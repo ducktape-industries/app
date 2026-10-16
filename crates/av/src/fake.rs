@@ -12,7 +12,9 @@ use std::path::PathBuf;
 use std::sync::{OnceLock, Weak};
 use std::time::{Duration, Instant};
 
-use crate::backend::{Got, Picture, Source, Status};
+use std::sync::atomic::Ordering;
+
+use crate::backend::{Got, Held as _, MicFeed, Picture, Source, Status};
 use crate::codec::{FRAME, SAMPLE_RATE};
 use crate::voice::{self, Io};
 
@@ -138,6 +140,18 @@ pub fn tone(n: u64) -> [f32; FRAME] {
 
 /// The fake voice I/O: the tone to every capture, the mixer's frames to
 /// the tap, every 20 ms, until the last holder lets go.
+/// A preview microphone (no call): Live from the start, the tone's level,
+/// until its piece lets it go.
+pub(crate) fn run_microphone(feed: &MicFeed) {
+    *feed.status.lock().expect("feed status") = (Status::Live, "Fake microphone".into());
+    while !feed.let_go() && feed.take_ended().is_none() {
+        feed.level
+            .store(crate::mixer::level(&tone(0)).to_bits(), Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    feed.level.store(0f32.to_bits(), Ordering::Relaxed);
+}
+
 pub(crate) fn run_voice(io: Weak<Io>) {
     let mut tap = tap_dir().and_then(|dir| std::fs::File::create(dir.join("audio.f32")).ok());
     let started = Instant::now();

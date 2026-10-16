@@ -572,6 +572,10 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
     if feed.let_go() {
         return;
     }
+    #[cfg(feature = "call")]
+    if crate::fake::on() {
+        return crate::fake::run_microphone(feed);
+    }
     let host = cpal::default_host();
     let Some(input) = platform::find(&host, device.as_deref(), true) else {
         return set(&feed.status, Status::NoDevice);
