@@ -125,7 +125,7 @@ impl Asking {
                 .await
                 .ok()
                 .flatten();
-            words.shown = Some(consent::shown(described.as_ref(), len));
+            words.describe(described.as_ref(), len);
         }
         let refused = |message: &str| wire::Error::new(refusal::CONSENT_REFUSED, message);
         let Some(mut told) = consent::queue_in(waiting, program, instance, words) else {

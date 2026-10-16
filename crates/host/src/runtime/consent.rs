@@ -42,6 +42,102 @@ pub struct Words {
     pub id: Option<Range<usize>>,
     pub shown: Option<String>,
     pub described: bool,
+    /// The same ask as a touch-first device draws it.
+    pub card: Card,
+}
+
+/// The ask as the phone's confirm sheet words it (mobile
+/// `src/kit/Confirm.tsx`, its `Ask`, and `src/network/consent.ts`): under
+/// [`Words::title`] as its eyebrow, "<verb>: <target>", the op's facts
+/// (its program, what it names, who signs), the line on what it takes
+/// away, and its verb on the button beside Cancel, in danger for one that
+/// takes something away. The host knows the op, its target's description
+/// and the seated account's number, nothing more: where the phone names an
+/// agent by its name, this names it by its number.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Card {
+    pub title: String,
+    pub facts: Vec<Fact>,
+    pub warning: String,
+    pub verb: &'static str,
+    pub danger: bool,
+}
+
+/// One row of the card: a label, its value, the value in mono or not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fact {
+    pub label: String,
+    pub value: String,
+    pub mono: bool,
+}
+
+impl Fact {
+    fn new(label: &str, value: impl Into<String>, mono: bool) -> Self {
+        Self {
+            label: label.into(),
+            value: value.into(),
+            mono,
+        }
+    }
+}
+
+/// What the phone's card says when an op asks a role's program and the
+/// host knows no verb for it: its button, and the title's verb.
+const APPROVE: &str = "Approve";
+
+impl Words {
+    /// The target's description of the op read in (`described`): the
+    /// desktop's box ([`shown`]), and the card's title and its Operation
+    /// row and fields, before who signs; the op's size where it describes
+    /// nothing.
+    pub fn describe(&mut self, description: Option<&describe::Description>, len: usize) {
+        self.shown = Some(shown(description, len));
+        let (operation, fields) = match description {
+            Some(described) => (
+                clip(&described.title),
+                described
+                    .fields
+                    .iter()
+                    .map(|field| Fact::new(&clip(&field.label), clip(&value(&field.value)), false))
+                    .collect(),
+            ),
+            None => (format!("{len} bytes this app cannot read"), Vec::new()),
+        };
+        self.card.title = ask_title(
+            self.card.verb,
+            match description {
+                Some(_) => &operation,
+                None => "an operation this app cannot read",
+            },
+        );
+        // after the program, before who signs
+        let at = self.card.facts.len().min(1);
+        let rows = std::iter::once(Fact::new("Operation", operation, false)).chain(fields);
+        self.card.facts.splice(at..at, rows);
+    }
+}
+
+/// "<verb>: <what>", where `what` is a described title ("Schedule · chat")
+/// that a verb already saying its head drops it ("Schedule: chat"), as the
+/// phone's `askTitle` does (mobile `src/network/words.ts`).
+fn ask_title(verb: &str, what: &str) -> String {
+    let said = what
+        .split_once(" · ")
+        .filter(|(head, _)| verb.to_lowercase().ends_with(&head.to_lowercase()));
+    match said {
+        Some((_, rest)) => format!("{verb}: {rest}"),
+        None => format!("{verb}: {what}"),
+    }
+}
+
+/// The card's last row: the seated account, or the device where none is
+/// resolved yet (mobile `src/network/consent.ts`, `signer`).
+fn signs(own: Option<u64>) -> Fact {
+    Fact::new(
+        "Signs",
+        own.map_or_else(|| "this phone".to_owned(), |own| format!("account {own}")),
+        false,
+    )
 }
 
 /// The request's end of its ask: what its task waits on for the person's
@@ -184,7 +280,7 @@ pub fn refuse_all() {
 /// requesting program is bound to no role, in a sentence that names the
 /// role and the target's own description of the op (`described`, read by
 /// the request's task).
-pub(super) fn needed(
+pub fn needed(
     program: &str,
     roles: Option<&abi::Roles>,
     target: &str,
@@ -201,12 +297,30 @@ pub(super) fn needed(
         ),
     };
     // every sentence begins with `by`, so `id` is where the id is in it
-    let words = |said: String, shown: Option<String>| Words {
+    let words = |said: String, shown: Option<String>, card: Card| Words {
         title: ACCOUNT,
         said,
         id: id.clone(),
         shown,
         described: false,
+        card,
+    };
+    let target_row = Fact::new("Program", target, true);
+    // the phone's account card (mobile `src/network/consent.ts`,
+    // `accountAsk`), the agent by its number
+    let agent = |verb: &'static str, account: u64, warning: String, named: Vec<Fact>| Card {
+        title: format!("{verb}: agent #{account}"),
+        facts: [vec![target_row.clone()], named, vec![signs(own)]].concat(),
+        warning,
+        verb,
+        danger: true,
+    };
+    let described = |warning: String| Card {
+        title: String::new(),
+        facts: vec![target_row.clone(), signs(own)],
+        warning,
+        verb: APPROVE,
+        danger: false,
     };
     if target == identity::PROGRAM {
         let Ok(op) = abi::decode::<identity::Op>(body) else {
@@ -218,34 +332,77 @@ pub(super) fn needed(
                         "{by} asks your key to sign an identity operation this app cannot read."
                     ),
                     None,
+                    described(
+                        "This phone's key signs an identity operation this app cannot read. \
+                         Approve only if you meant to."
+                            .into(),
+                    ),
                 )
             });
         };
         let asked = match op {
-            identity::Op::RemoveKey { account, key } if own == Some(account) => Some(words(
-                format!(
-                    "{by} asks to remove a key from your account. Approve only if you meant to."
-                ),
-                Some(noded_client::join::fingerprint(&key)),
-            )),
-            identity::Op::RemoveKey { account, key } => Some(words(
-                format!(
-                    "{by} asks to remove a key from agent #{account}. Approve only if you meant to."
-                ),
-                Some(format!(
-                    "#{account} · {}",
-                    noded_client::join::fingerprint(&key)
-                )),
-            )),
+            identity::Op::RemoveKey { account, key } if own == Some(account) => {
+                let fingerprint = noded_client::join::fingerprint(&key);
+                Some(words(
+                    format!(
+                        "{by} asks to remove a key from your account. Approve only if you meant to."
+                    ),
+                    Some(fingerprint.clone()),
+                    Card {
+                        title: format!("Remove key: {fingerprint}"),
+                        facts: vec![
+                            target_row.clone(),
+                            Fact::new("Key", fingerprint, true),
+                            signs(own),
+                        ],
+                        warning: "This key stops signing for your account.".into(),
+                        verb: "Remove",
+                        danger: true,
+                    },
+                ))
+            }
+            identity::Op::RemoveKey { account, key } => {
+                let fingerprint = noded_client::join::fingerprint(&key);
+                Some(words(
+                    format!(
+                        "{by} asks to remove a key from agent #{account}. Approve only if you meant to."
+                    ),
+                    Some(format!("#{account} · {fingerprint}")),
+                    Card {
+                        title: format!("Remove key: {fingerprint}"),
+                        facts: vec![
+                            target_row.clone(),
+                            Fact::new("Agent", format!("#{account}"), false),
+                            Fact::new("Key", fingerprint, true),
+                            signs(own),
+                        ],
+                        warning: format!("This key stops signing for agent #{account}."),
+                        verb: "Remove",
+                        danger: true,
+                    },
+                ))
+            }
             identity::Op::Revoke { account } => Some(words(
                 format!("{by} asks to revoke agent #{account}. Its keys stop working for good."),
                 Some(format!("#{account}")),
+                agent(
+                    "Revoke",
+                    account,
+                    format!("Revoking agent #{account} is final: its keys stop working for good."),
+                    vec![Fact::new("Agent", format!("#{account}"), false)],
+                ),
             )),
             identity::Op::Suspend { account } => Some(words(
                 format!(
                     "{by} asks to suspend agent #{account}. It stops acting until it is resumed."
                 ),
                 Some(format!("#{account}")),
+                agent(
+                    "Suspend",
+                    account,
+                    format!("Agent #{account} stops acting until it is resumed."),
+                    vec![Fact::new("Agent", format!("#{account}"), false)],
+                ),
             )),
             identity::Op::RegisterProgram { .. }
             | identity::Op::Create { .. }
@@ -264,10 +421,22 @@ pub(super) fn needed(
     // a view no vote reviewed, writing to a role
     let roles = roles.filter(|_| !bound(program))?;
     let (role, _) = roles.iter().find(|(_, bound)| *bound == target)?;
-    let (title, what) = match role {
-        abi::role::VALIDATORS => (NETWORK, "vote in the validators' program".to_owned()),
-        abi::role::IDENTITY => (ACCOUNT, "sign an identity operation".to_owned()),
-        other => (NETWORK, format!("sign an op on the {other} role")),
+    let (title, what, phone) = match role {
+        abi::role::VALIDATORS => (
+            NETWORK,
+            "vote in the validators' program".to_owned(),
+            "votes in the validators' program".to_owned(),
+        ),
+        abi::role::IDENTITY => (
+            ACCOUNT,
+            "sign an identity operation".to_owned(),
+            "signs an identity operation".to_owned(),
+        ),
+        other => (
+            NETWORK,
+            format!("sign an op on the {other} role"),
+            format!("signs an op on the {other} role"),
+        ),
     };
     Some(Words {
         title,
@@ -275,6 +444,9 @@ pub(super) fn needed(
         id,
         shown: None,
         described: true,
+        card: described(format!(
+            "This phone's key {phone}. Approve only if you meant to."
+        )),
     })
 }
 
@@ -606,6 +778,9 @@ mod tests {
             ("egress", &op[..], NETWORK, "sign an op on the egress role"),
         ] {
             let words = asked("chat", target, body).expect(target);
+            let phone = what
+                .replacen("vote", "votes", 1)
+                .replacen("sign ", "signs ", 1);
             assert_eq!(
                 words,
                 Words {
@@ -616,6 +791,16 @@ mod tests {
                     id: Some(8..12),
                     shown: None,
                     described: true,
+                    card: Card {
+                        title: String::new(),
+                        facts: vec![
+                            Fact::new("Program", target, true),
+                            Fact::new("Signs", "account 7", false),
+                        ],
+                        warning: format!("This phone's key {phone}. Approve only if you meant to."),
+                        verb: APPROVE,
+                        danger: false,
+                    },
                 },
                 "{target}"
             );
@@ -709,6 +894,84 @@ mod tests {
         assert_eq!(shown(Some(&forged), 9), "Set name · abc\nabc abc");
     }
 
+    /// Claim: under touch the card is the phone's (mobile
+    /// `src/network/consent.ts`): "Suspend: agent #12", the agent by its
+    /// number (the host has no name for it), the program, the agent, who
+    /// signs, what it takes away, and the verb in danger; an op a role's
+    /// program describes is titled and listed in that program's words.
+    #[test]
+    fn the_phones_card_words_the_op_as_the_phone_does() {
+        use describe::{Value, field};
+        let card = |op: identity::Op, own: Option<u64>| {
+            needed("chat", None, identity::PROGRAM, &abi::encode(&op), own)
+                .unwrap()
+                .card
+        };
+        let program = Fact::new("Program", identity::PROGRAM, true);
+        let agent = Fact::new("Agent", "#12", false);
+        assert_eq!(
+            card(identity::Op::Suspend { account: 12 }, Some(7)),
+            Card {
+                title: "Suspend: agent #12".into(),
+                facts: vec![
+                    program.clone(),
+                    agent.clone(),
+                    Fact::new("Signs", "account 7", false)
+                ],
+                warning: "Agent #12 stops acting until it is resumed.".into(),
+                verb: "Suspend",
+                danger: true,
+            }
+        );
+        assert_eq!(
+            card(identity::Op::Revoke { account: 12 }, None),
+            Card {
+                title: "Revoke: agent #12".into(),
+                facts: vec![
+                    program.clone(),
+                    agent,
+                    Fact::new("Signs", "this phone", false)
+                ],
+                warning: "Revoking agent #12 is final: its keys stop working for good.".into(),
+                verb: "Revoke",
+                danger: true,
+            }
+        );
+        let roles = abi::Roles::from_iter([(abi::role::PROGRAMS, "programs")]);
+        let ask = || needed("explorer", Some(&roles), "programs", &[1, 2, 3], None).unwrap();
+        let mut words = ask();
+        words.describe(
+            Some(&describe::Description {
+                title: "Schedule · chat".into(),
+                fields: vec![field("height", Value::count(2442))],
+            }),
+            3,
+        );
+        assert_eq!(words.card.title, "Approve: Schedule · chat");
+        assert_eq!(
+            words.card.facts,
+            [
+                Fact::new("Program", "programs", true),
+                Fact::new("Operation", "Schedule · chat", false),
+                Fact::new("height", "2442", false),
+                Fact::new("Signs", "this phone", false),
+            ]
+        );
+        assert_eq!((words.card.verb, words.card.danger), (APPROVE, false));
+        let mut words = ask();
+        words.describe(None, 3);
+        assert_eq!(
+            words.card.title,
+            "Approve: an operation this app cannot read"
+        );
+        assert_eq!(
+            words.card.facts[1],
+            Fact::new("Operation", "3 bytes this app cannot read", false)
+        );
+        // a verb that says the title's head drops it, as the phone's does
+        assert_eq!(ask_title("Schedule", "Schedule · chat"), "Schedule: chat");
+    }
+
     /// Claim: an ask is in the queue exactly as long as its request holds
     /// its `Told`; let go of unanswered, it is gone from the front, it no
     /// longer blocks the view's next ask, and the shell is woken to sync.
@@ -721,6 +984,7 @@ mod tests {
             id: None,
             shown: None,
             described: false,
+            card: Card::default(),
         };
         let told = queue("t", 1, words.clone()).expect("queued");
         let (id, _) = front().expect("waits");
