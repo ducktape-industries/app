@@ -137,11 +137,13 @@ pub(super) struct View {
     /// What a death replay starts from, where the host keeps one
     /// (`Limits::snapshot_every`; none on the desktop).
     pub(super) kept: Option<Kept>,
-    /// The tick in flight's death, taken off its landing where it could
-    /// not be taken up again (`View::revive` begins calls): in the
-    /// background, or in `Seat::hide`'s last update. The tick stays in
-    /// flight; the turn that next takes the view up (in front again)
-    /// starts its wait from this.
+    /// A page's death, taken off its landing where it could not be taken up
+    /// again at once (`View::revive` begins calls). The tick in flight's,
+    /// in the background or in `Seat::hide`'s last update: the tick stays
+    /// in flight, and the turn that next takes the view up (in front again)
+    /// starts its wait from this. One outside a tick, under a kept
+    /// snapshot or a swap's handover: the seat's next turn in front takes
+    /// it up before anything else begins a call (`seat::take_up`).
     pub(super) parked: Option<Landed>,
     /// The view's events for its next tick.
     pub pending: Vec<wire::Event>,
@@ -310,10 +312,12 @@ pub fn prepared_on_for_test(
     static HELD: Mutex<Vec<Arc<dyn std::any::Any + Send + Sync>>> = Mutex::new(Vec::new());
     let code = code.as_ref();
     let hash = sha2::Sha256::digest(code).into();
+    // the tests write their views as text; a runner takes wasm
+    let code = wat::parse_bytes(code).expect("the test's view parses");
     let view_bytes =
         usize::try_from(crate::backend::memory_bounds().view_bytes).unwrap_or(usize::MAX);
     let prepared = runner
-        .prepare(hash, code, view_bytes)
+        .prepare(hash, &code, view_bytes)
         .expect("the test's code compiles");
     HELD.lock().unwrap().push(prepared.hold);
     hash

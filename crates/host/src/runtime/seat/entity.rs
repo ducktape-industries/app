@@ -472,6 +472,21 @@ impl Seat {
             let parked = view.parked.take();
             return self.wait(view, ticks, shown, parked, cx);
         }
+        // a page that died outside a tick (a kept snapshot's, a swap's) is
+        // taken up again before anything else begins a call: in a task the
+        // seat does not own, which wakes the seat when done
+        if view.parked.is_some() {
+            drop(locked);
+            cx.spawn(async move |_, cx| {
+                // backgrounded before the task ran: the turn in front again
+                // spawns it again
+                if !cx.update(|cx| backgrounded(cx)) {
+                    take_up(mounted).await;
+                }
+            })
+            .detach();
+            return;
+        }
         // a replacement the loader prepared runs on this thread once the
         // view owes nothing (its handover would refuse): a task the seat
         // does not own, so letting the seat go mid-swap stops nothing

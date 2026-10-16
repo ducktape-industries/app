@@ -709,8 +709,9 @@ pub(super) async fn swap_in(mounted: Arc<Mutex<Mounted>>, program: &'static str)
         };
         // a tick in flight, or a kept snapshot (`keep_in`), has the
         // instance: the swap waits for it, and the turn after asks again
-        // (`Seat::after_turn`)
-        if old.ticking() || locked.owned {
+        // (`Seat::after_turn`); so does a death the turn has to take up
+        // first (`take_up`), which wakes the seat when done
+        if old.ticking() || locked.owned || old.parked.is_some() {
             locked.swap = Some(pending);
             return;
         }
@@ -866,8 +867,9 @@ pub(super) async fn start_in(mounted: Arc<Mutex<Mounted>>, program: &'static str
 /// The drawn view's kept replay started again from a new snapshot (SPEC
 /// §6.5), on the seat's thread, the view owned meanwhile so no tick
 /// crosses it; the seat is woken when it lands. A page that died under the
-/// snapshot is taken up right here (`View::died`): an idle view begins no
-/// tick that would find it.
+/// snapshot is parked on the view (`View::parked`) for the turn that wake
+/// runs to take up ([`take_up`]): an idle view begins no tick that would
+/// find it, and in the background no call is begun.
 pub(super) async fn keep_in(mounted: Arc<Mutex<Mounted>>) {
     let (landing, alive) = {
         let mut locked = lock(&mounted);
@@ -884,16 +886,45 @@ pub(super) async fn keep_in(mounted: Arc<Mutex<Mounted>>) {
         locked.owned = true;
         asked
     };
-    match super::view::next(&landing).await {
-        Landed::Fault(Fault::Runner(death)) => View::died(&mounted, &alive, &death).await,
-        landed => {
-            if let Slot::Ready(view) = &mut lock(&mounted).slot
-                && Arc::ptr_eq(&view.alive, &alive)
-            {
-                view.kept_landed(landed);
-            }
+    let landed = super::view::next(&landing).await;
+    let mut locked = lock(&mounted);
+    if let Slot::Ready(view) = &mut locked.slot
+        && Arc::ptr_eq(&view.alive, &alive)
+    {
+        match landed {
+            death @ Landed::Fault(Fault::Runner(_)) => view.parked = Some(death),
+            landed => view.kept_landed(landed),
         }
     }
+    locked.owned = false;
+    locked.wake.send_replace(());
+}
+
+/// A death parked on the drawn view outside a tick (`View::parked`: under a
+/// kept snapshot or a swap's handover), taken up on the seat's thread in
+/// front (the turn spawns this only there): the view revived with nothing
+/// in flight, or stopped on it (`View::died`), owned meanwhile so no tick
+/// or swap crosses it; the seat is woken when it is done.
+pub(super) async fn take_up(mounted: Arc<Mutex<Mounted>>) {
+    let (alive, death) = {
+        let mut locked = lock(&mounted);
+        if locked.owned {
+            return;
+        }
+        let Slot::Ready(view) = &mut locked.slot else {
+            return;
+        };
+        if view.ticking() {
+            return;
+        }
+        let Some(Landed::Fault(Fault::Runner(death))) = view.parked.take() else {
+            return;
+        };
+        let alive = view.alive.clone();
+        locked.owned = true;
+        (alive, death)
+    };
+    View::died(&mounted, &alive, &death).await;
     let mut locked = lock(&mounted);
     locked.owned = false;
     locked.wake.send_replace(());
