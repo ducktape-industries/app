@@ -93,6 +93,8 @@ pub(super) enum Mode {
     Close,
     /// `307 Temporary Redirect` to the URL: a node sending the request on.
     Redirect(String),
+    /// `400 Bad Request` with the body: the node's refusal.
+    Refuse(Vec<u8>),
 }
 
 /// A node on a local socket whose routes each answer one [`Mode`], one
@@ -141,6 +143,7 @@ fn serve(mut stream: std::net::TcpStream, routes: &[(&'static str, Mode)]) {
         }
         Mode::Stall => hung_up(&mut stream),
         Mode::Close => drop(stream),
+        Mode::Refuse(body) => respond(&mut stream, "400 Bad Request", body),
         Mode::Redirect(to) => write!(
             stream,
             "HTTP/1.1 307 Temporary Redirect\r\nLocation: {to}\r\nContent-Length: 0\r\n\r\n"
@@ -512,6 +515,48 @@ fn link_open_needs_an_activation_and_takes_it() {
     assert_eq!(view.intents.len(), 1);
 }
 
+/// `host.show` brings up the reader's account on the view's activation,
+/// as `link.open` opens a link: none refuses it `needs_gesture`, and one
+/// press brings up one place. A reader with no account (the props name
+/// none) is refused `unknown_request`; a place this host does not know
+/// does not decode.
+#[test]
+fn host_show_brings_up_the_readers_account_on_a_press() {
+    let show = |id, payload: Vec<u8>| wire::Request {
+        id,
+        kind: "host.show".into(),
+        payload,
+    };
+    let account = methods::encode(&methods::Place::Account);
+    let reader = |account| {
+        Some(methods::encode(&methods::Session {
+            account,
+            ..Default::default()
+        }))
+    };
+    let mut view = view();
+    view.answer(show(1, account.clone()), &reader(Some(5)));
+    assert_eq!(refusal_code(&mut view).as_deref(), Some("needs_gesture"));
+    view.activation = Some(Instant::now());
+    view.answer(show(2, account.clone()), &reader(None));
+    assert_eq!(refusal_code(&mut view).as_deref(), Some("unknown_request"));
+    view.answer(show(3, vec![1]), &reader(Some(5)));
+    assert_eq!(
+        refusal_code(&mut view).as_deref(),
+        Some("malformed_request")
+    );
+    assert!(view.intents.is_empty(), "nothing shown yet");
+    view.answer(show(4, account.clone()), &reader(Some(5)));
+    assert_eq!(refusal_code(&mut view), None);
+    assert_eq!(view.intents, [Intent::Show(methods::Place::Account)]);
+    view.answer(show(5, account), &reader(Some(5)));
+    assert_eq!(
+        refusal_code(&mut view).as_deref(),
+        Some("needs_gesture"),
+        "a second place on the same press"
+    );
+}
+
 /// A screen reader's press on a view's link is one gesture: AccessKit's
 /// Click (what the AX door's `press` sends) is the link's own click, once,
 /// with the one activation the host stamps for it, and the view's
@@ -699,8 +744,9 @@ fn host_session_is_program_independent_and_tracks_updates() {
 }
 
 /// The host's facts reach the view as events, each once until it moves:
-/// the reader's UTC offset (a DST change moves it) and the body the view
-/// is laid out in. The latest of each wins the tick.
+/// the reader's UTC offset (a DST change moves it), the body the view is
+/// laid out in, and whether the device's pointer is a finger. The latest
+/// of each wins the tick.
 #[test]
 fn the_hosts_facts_cross_once_and_again_when_they_move() {
     let mut view = view();
@@ -709,19 +755,23 @@ fn the_hosts_facts_cross_once_and_again_when_they_move() {
     assert!((-14 * 60..=14 * 60).contains(&minutes));
     view.sync_offset(minutes);
     view.sync_viewport(766., 501.);
+    view.sync_pointer(false);
     let told = vec![
         wire::Event::Offset { minutes },
         wire::Event::Viewport {
             width: 766.,
             height: 501.,
         },
+        wire::Event::Pointer { touch: false },
     ];
     assert_eq!(view.pending, told);
     view.sync_offset(minutes);
     view.sync_viewport(766., 501.);
+    view.sync_pointer(false);
     assert_eq!(view.pending, told, "the same facts are not sent twice");
     view.sync_offset(minutes + 60);
     view.sync_viewport(800., 501.);
+    view.sync_pointer(true);
     assert_eq!(
         view.pending,
         [
@@ -732,6 +782,7 @@ fn the_hosts_facts_cross_once_and_again_when_they_move() {
                 width: 800.,
                 height: 501.,
             },
+            wire::Event::Pointer { touch: true },
         ],
         "a moved fact replaces the one waiting"
     );

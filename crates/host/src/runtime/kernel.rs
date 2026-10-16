@@ -117,10 +117,10 @@ mod replies;
 pub(super) use node::{NodeTask, reconnected, spawn_reply};
 use node::{
     blob_get, blob_manifest, block, blocks, changes, heads, invite, network, query, spawn_asked,
-    status, submit, tx,
+    spawn_submit, status, tx,
 };
-use replies::InFlight;
 pub(super) use replies::Replies;
+use replies::{Claim, InFlight};
 
 /// The one current-thread tokio runtime every async I/O in the app runs
 /// on — node HTTP and websockets here, the shell's task stream, the loader
@@ -303,7 +303,7 @@ pub(super) fn answer(
                 &call.body,
                 own,
             ) {
-                None => spawn_asked(view, id, payload, submit, "host_call.op.submit"),
+                None => spawn_submit(view, id, payload),
                 Some(words) => node::spawn_consented(view, id, payload, call, words),
             }
         }
@@ -342,6 +342,38 @@ pub(super) fn answer(
                 refusal::MALFORMED_REQUEST,
                 "`link.open` opens a duck:// or https:// link",
             ),
+            Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
+        },
+        // one of the host's own places, as a link: only the person's press
+        // or key brings one up. The reader's account is shown only where
+        // there is one (`roster::props`); a place this host does not know
+        // does not decode
+        (Capability::Host, "show") => match methods::decode::<methods::Place>(payload) {
+            Ok(methods::Place::Account)
+                if props
+                    .as_deref()
+                    .and_then(|props| methods::decode::<methods::Session>(props).ok())
+                    .and_then(|session| session.account)
+                    .is_none() =>
+            {
+                view.refuse(
+                    id,
+                    refusal::UNKNOWN_REQUEST,
+                    "there is no reader's account to show",
+                )
+            }
+            Ok(place) => {
+                if !view.take_activation() {
+                    view.refuse(
+                        id,
+                        refusal::NEEDS_GESTURE,
+                        "`host.show` needs a press or key",
+                    );
+                    return true;
+                }
+                view.intents.push(Intent::Show(place));
+                view.reply(id, Ok(Vec::new()));
+            }
             Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
         },
         (Capability::Host, "badge") => match methods::decode::<i64>(payload).ok() {

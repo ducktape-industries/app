@@ -70,5 +70,5 @@ pub async fn submit_seated(client: &RpcClient, network: &str, op: &Op) -> Result
     let frame = seated_frame(client, network, identity::PROGRAM, abi::encode(op))
         .await
         .map_err(|refusal| refusal.message)?;
-    submit(client, frame).await
+    submit(client, frame.encode()).await
 }

@@ -106,12 +106,14 @@ pub fn seated_signer() -> Result<Seated, Error> {
     })
 }
 
+/// `payload` for `target` in a frame the seated key signs, anchored at the
+/// node's tip.
 pub async fn seated_frame(
     client: &RpcClient,
     network: &str,
     target: &str,
     payload: Vec<u8>,
-) -> Result<Vec<u8>, Error> {
+) -> Result<Frame, Error> {
     let key = seat()
         .as_ref()
         .map(|signer| signer.key.clone())
@@ -125,9 +127,7 @@ pub async fn seated_frame(
         target,
         payload,
     );
-    Ok(frame
-        .map_err(|refusal| Error::new(refusal::SESSION_LOCKED, refusal.0))?
-        .encode())
+    frame.map_err(|refusal| Error::new(refusal::SESSION_LOCKED, refusal.0))
 }
 
 pub async fn anchor(client: &RpcClient) -> Result<Tip, Error> {
