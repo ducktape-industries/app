@@ -194,3 +194,72 @@ fn a_centred_sheet_under_touch_keeps_the_handle_band(cx: &mut gpui_kit::TestAppC
         "a desktop sheet is the view's own"
     );
 }
+
+/// A page with a sheet that names no detents over it, holding rows
+/// `rows` tall.
+fn fitted(rows: f32) -> wire::Node {
+    let sheet = wire::Node::Sheet {
+        id: named_id("actions"),
+        label: Some("Agent".into()),
+        style: crate::render::plain_style(),
+        detents: Vec::new(),
+        on_dismiss: Some(DISMISS),
+        child: Box::new(sized(
+            "rows",
+            button("rename", "Rename"),
+            Some(fill()),
+            Some(fixed(rows)),
+        )),
+    };
+    sized(
+        "root",
+        container(
+            "page",
+            [container("base", [button("open", "Agents")]), sheet],
+        ),
+        Some(fill()),
+        Some(fill()),
+    )
+}
+
+/// A sheet that names no detents is as tall as what it holds (the Expo
+/// kit's `Sheet` without snaps), at most the body. Its handle drags it,
+/// a short drag snaps it back to that height, and a release near the
+/// bottom asks the view to close it.
+#[gpui_kit::test]
+fn a_sheet_with_no_detents_is_as_tall_as_its_child(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(390.), px(844.)), |_, _| {
+        ViewTree::new(fitted(300.)).with_keys_grant(true)
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let (events, _subscription) = emitted(&tree, &mut native);
+    native.update(|window, cx| window.render_frame(cx));
+    native.update(|window, cx| window.render_frame(cx));
+    let top = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, _| f32::from(window.find("rows").bounds().top()))
+    };
+    let band = crate::render::sheet::HANDLE_BAND;
+    // the rows sit on the bottom edge, the handle's band over them
+    assert!((top(&mut native) - (844. - 300.)).abs() < 1., "fitted");
+    let handle = 844. - 300. - band / 2.;
+    drag(&mut native, 195., handle, handle + 60.);
+    native.update(|window, cx| window.render_frame(cx));
+    assert!(
+        (top(&mut native) - (844. - 300.)).abs() < 1.,
+        "a short drag snaps back to the fitted height"
+    );
+    assert_eq!(dismissals(&events), 0);
+    drag(&mut native, 195., handle, 830.);
+    assert_eq!(dismissals(&events), 1, "near the bottom it asks to close");
+    // what outgrows the body is held to it: the panel's top at the body's,
+    // the rows under its hairline and the handle's band
+    tree.update(&mut native, |tree, cx| tree.replace(fitted(2000.), &[], cx));
+    native.update(|window, cx| window.render_frame(cx));
+    let capped = top(&mut native);
+    assert!(
+        (capped - (1. + band)).abs() < 1.,
+        "capped at the body: {capped}"
+    );
+}
