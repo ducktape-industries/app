@@ -616,14 +616,40 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
     if let Err(error) = stream.play() {
         return set(&feed.status, audio_fault(&error, false));
     }
-    set(&feed.status, Status::Live);
+    serve(stream, &host, rate, &recording, &heard, feed);
+    feed.level.store(0f32.to_bits(), Ordering::Relaxed);
+}
+
+/// Serves an open microphone, `input` its stream, until its piece lets it
+/// go or the device ends: Live from the start, unless something ended it
+/// already (an interruption told before), and over the moment its status
+/// is anything but Live (Gone, Busy, a failure), as a camera's [`stream`]
+/// is: a microphone the system took never comes back on by itself. What
+/// its piece asks (a recording played back, the monitor) plays on its
+/// speaker meanwhile. Every stream, `input` and the speaker's, is closed
+/// when this returns: the device let go.
+fn serve<S>(
+    input: S,
+    host: &cpal::Host,
+    rate: u32,
+    recording: &Recording,
+    heard: &Queue,
+    feed: &MicFeed,
+) {
+    {
+        let mut status = feed.status.lock().expect("feed status");
+        if status.0 == Status::Starting {
+            status.0 = Status::Live;
+        }
+    }
+    let live = || feed.status.lock().expect("feed status").0 == Status::Live;
     // the speaker's streams: a recording's playback, the monitor (with
     // the output it plays on)
     let mut playing: Option<(cpal::Stream, Queue)> = None;
     let mut monitoring: Option<(cpal::Stream, Option<String>)> = None;
     let output = || feed.output.lock().expect("feed output").clone();
     let playback = |to: Playback| *feed.playback.lock().expect("feed playback") = to;
-    while !feed.stop.load(Ordering::Relaxed) {
+    while !feed.stop.load(Ordering::Relaxed) && live() {
         std::thread::sleep(Duration::from_millis(10));
         let asked = feed.ask.lock().expect("feed ask").take();
         if let Some(ask) = asked {
@@ -648,7 +674,7 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
         };
         if let Some(samples) = recorded {
             let queue = Queue::new(Mutex::new(VecDeque::from(samples)));
-            match speaker(&host, output().as_deref(), rate, queue.clone()) {
+            match speaker(host, output().as_deref(), rate, queue.clone()) {
                 Ok(stream) => {
                     playing = Some((stream, queue));
                     playback(Playback::Playing);
@@ -678,7 +704,7 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
             && monitoring.is_none()
         {
             heard.lock().expect("heard").clear();
-            match speaker(&host, on.as_deref(), rate, heard.clone()) {
+            match speaker(host, on.as_deref(), rate, heard.clone()) {
                 Ok(stream) => monitoring = Some((stream, on)),
                 Err(status) => {
                     set(&feed.status, status);
@@ -687,8 +713,7 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
             }
         }
     }
-    drop((stream, playing, monitoring));
-    feed.level.store(0f32.to_bits(), Ordering::Relaxed);
+    drop((input, playing, monitoring));
 }
 
 /// `config` with a 20 ms buffer where the device takes one: a live loop
@@ -1184,6 +1209,47 @@ mod tests {
             assert!(Instant::now() < failsafe, "never {what}");
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    /// THE CONSENT RULE: a microphone whose status goes anything but Live
+    /// (Gone: a call took it) lets its device go though its piece still
+    /// holds it, as a camera does: nothing that restarts the device under
+    /// it (iOS resumes its audio unit after a call) records again. One
+    /// ended before it is served never comes on.
+    #[test]
+    fn a_microphone_no_longer_live_lets_its_device_go() {
+        struct Stream(Arc<AtomicBool>);
+        impl Drop for Stream {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let serving = |feed: Arc<MicFeed>, closed: Arc<AtomicBool>| {
+            std::thread::spawn(move || {
+                let host = cpal::default_host();
+                let (recording, heard) = (Recording::default(), Queue::default());
+                serve(Stream(closed), &host, 48_000, &recording, &heard, &feed)
+            })
+        };
+        let status = |feed: &MicFeed| feed.status.lock().unwrap().0.clone();
+        let feed = Arc::new(MicFeed::default());
+        let closed = Arc::new(AtomicBool::new(false));
+        let served = serving(feed.clone(), closed.clone());
+        until("live", || status(&feed) == Status::Live);
+        assert!(!closed.load(Ordering::SeqCst));
+        let took = Status::Gone("A call took the microphone.".into());
+        set(&feed.status, took.clone());
+        until("let go", || closed.load(Ordering::SeqCst));
+        served.join().unwrap();
+        assert_eq!(status(&feed), took);
+        assert!(!feed.let_go(), "its piece still holds it");
+
+        let ended = Arc::new(MicFeed::default());
+        set(&ended.status, took.clone());
+        let closed = Arc::new(AtomicBool::new(false));
+        serving(ended.clone(), closed.clone()).join().unwrap();
+        assert!(closed.load(Ordering::SeqCst));
+        assert_eq!(status(&ended), took);
     }
 
     /// THE HEADLINE: a live camera that stops delivering is told Gone no
