@@ -22,6 +22,14 @@ ANDROID_OUT := $(ROOT)/phone/android/app/build/rust
 APK := $(ROOT)/phone/android/app/build/outputs/apk/debug/app-debug.apk
 
 IOS_OUT := $(ROOT)/phone/ios/build/rust
+# rustc's `note: native-static-libs:` line, as the xcconfig the project
+# reads. The cargo line asks for plain text (`--color never`): CI sets
+# CARGO_TERM_COLOR=always, the coloured note matched nothing, and the app
+# linked only what clang and Swift name themselves: no WebKit, which objc2
+# looks up at run time, so it crashed at launch. No line stops the build.
+LINK_XCCONFIG = libs="$$(sed -n 's/^note: native-static-libs: //p' $(IOS_OUT)/rustc.log | tail -1)"; \
+	[ -n "$$libs" ] || { echo "no native-static-libs line in $(IOS_OUT)/rustc.log"; exit 1; }; \
+	printf 'RUST_NATIVE_LIBS = %s\n' "$$libs" > $(IOS_OUT)/link.xcconfig
 IOS_APP := $(ROOT)/phone/ios/build/derived/Build/Products/Debug-iphonesimulator/Ducktape.app
 IOS_ARCHIVE := $(ROOT)/phone/ios/build/Ducktape.xcarchive
 BUILD ?= 1
@@ -45,10 +53,10 @@ android-run: android
 # XcodeGen project reads), the project, the app. On the shared Mac: four jobs.
 ios-sim:
 	mkdir -p $(IOS_OUT)/iphonesimulator
-	cd $(ROOT) && IPHONEOS_DEPLOYMENT_TARGET=15.0 cargo rustc -p ducktape-phone --lib --profile phone \
+	cd $(ROOT) && IPHONEOS_DEPLOYMENT_TARGET=15.0 cargo rustc --color never -p ducktape-phone --lib --profile phone \
 		--target aarch64-apple-ios-sim $(CARGO_FEATURES) --crate-type staticlib -- --print native-static-libs \
 		2> $(IOS_OUT)/rustc.log || { cat $(IOS_OUT)/rustc.log; exit 1; }
-	printf 'RUST_NATIVE_LIBS = %s\n' "$$(sed -n 's/^note: native-static-libs: //p' $(IOS_OUT)/rustc.log | tail -1)" > $(IOS_OUT)/link.xcconfig
+	$(LINK_XCCONFIG)
 	cp $(CARGO_TARGET_DIR)/aarch64-apple-ios-sim/phone/libducktape_phone.a $(IOS_OUT)/iphonesimulator/
 	cd $(ROOT)/phone/ios && xcodegen generate --quiet
 	cd $(ROOT)/phone/ios && xcodebuild -project Ducktape.xcodeproj -scheme Ducktape -sdk iphonesimulator \
@@ -60,10 +68,10 @@ ios-sim:
 # workflow signs it on export.
 ios-archive:
 	mkdir -p $(IOS_OUT)/iphoneos
-	cd $(ROOT) && IPHONEOS_DEPLOYMENT_TARGET=15.0 cargo rustc -p ducktape-phone --lib --profile phone \
+	cd $(ROOT) && IPHONEOS_DEPLOYMENT_TARGET=15.0 cargo rustc --color never -p ducktape-phone --lib --profile phone \
 		--target aarch64-apple-ios --crate-type staticlib -- --print native-static-libs \
 		2> $(IOS_OUT)/rustc.log || { cat $(IOS_OUT)/rustc.log; exit 1; }
-	printf 'RUST_NATIVE_LIBS = %s\n' "$$(sed -n 's/^note: native-static-libs: //p' $(IOS_OUT)/rustc.log | tail -1)" > $(IOS_OUT)/link.xcconfig
+	$(LINK_XCCONFIG)
 	cp $(CARGO_TARGET_DIR)/aarch64-apple-ios/phone/libducktape_phone.a $(IOS_OUT)/iphoneos/
 	cd $(ROOT)/phone/ios && xcodegen generate --quiet
 	cd $(ROOT)/phone/ios && xcodebuild -project Ducktape.xcodeproj -scheme Ducktape -sdk iphoneos \
