@@ -22,7 +22,8 @@ use super::{
     SessionEvent, SettingsPage, Shared, Slice, Spotlight, WindowEntities,
 };
 use crate::runtime::notify::{CenterHandle, Entry};
-use crate::runtime::{Link, WindowKey};
+use crate::runtime::WindowKey;
+use ducktape_host::session::Opening;
 use crate::shell::layers::{self, WindowRoot};
 use crate::shell::windows::{release_window_input, remove};
 use crate::shell::{WindowKind, theme, windows};
@@ -751,42 +752,20 @@ impl Windows {
         cx: &mut Context<Self>,
     ) {
         let _timed = timed();
-        let parsed = self.shared.rail.read(cx).parse_link(link);
-        match parsed {
-            Link::View { program, route } => self.open_seat(program, route, from, cx),
-            Link::Chain(parsed) if !self.shared.rail.read(cx).lists(&parsed.program) => {
-                self.notice(format!("No view here opens {} links.", parsed.program), cx);
-            }
-            Link::Chain(parsed) => {
-                let program = crate::runtime::intern(&parsed.program);
-                let route = parsed.tail.join("/");
-                let chain = self.shared.session.read(cx).get().chain.clone();
-                if parsed.chain.to_string() != chain {
-                    // another chain's page is not this chain's to show
-                    self.open_seat(program, None, from, cx);
-                    self.notice(
-                        format!(
-                            "That link is to {}, not this network; opened {program}.",
-                            parsed.chain.label
-                        ),
-                        cx,
-                    );
-                } else if route.is_empty() || crate::runtime::valid_route(&route) {
-                    self.open_seat(program, (!route.is_empty()).then_some(route), from, cx);
-                } else {
-                    self.open_seat(program, None, from, cx);
-                    self.notice(format!("{program} can't open that part of the link."), cx);
+        let chain = self.shared.session.read(cx).get().chain.clone();
+        match self.shared.rail.read(cx).opening(link, &chain) {
+            Opening::Seat {
+                program,
+                route,
+                notice,
+            } => {
+                self.open_seat(program, route, from, cx);
+                if let Some(said) = notice {
+                    self.notice(said, cx);
                 }
             }
-            // to the view that declares `web`, if one is listed and this
-            // build has a web view; else the system browser
-            Link::Web(url) => match crate::render::web::view_for(&url)
-                .filter(|program| self.shared.rail.read(cx).lists(program))
-            {
-                Some(program) => self.open_seat(program, Some(url), from, cx),
-                None => cx.open_url(&url),
-            },
-            Link::Unknown => self.notice("This link is not one this app opens.".into(), cx),
+            Opening::Browser(url) => cx.open_url(&url),
+            Opening::Nothing(said) => self.notice(said, cx),
         }
     }
 
