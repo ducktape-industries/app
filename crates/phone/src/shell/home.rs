@@ -292,7 +292,9 @@ pub fn home(
                     .truncate()
                     .child(name),
             )
-            .on_click(cx.listener(move |root, _, _, cx| root.open(program, cx)));
+            .on_click(cx.listener(move |root, _, _, cx| {
+                root.open(program, cx);
+            }));
         if let Some(stage) = row.note {
             tile = tile.child(
                 look::text(look::TINY, FontWeight::NORMAL, palette.muted())
@@ -437,7 +439,9 @@ pub fn open(
                             .child(caption),
                     ),
             )
-            .on_click(cx.listener(move |root, _, _, cx| root.open(program, cx)));
+            .on_click(cx.listener(move |root, _, _, cx| {
+                root.open(program, cx);
+            }));
         if badges.get(program).is_some_and(|count| *count > 0) {
             line = line.child(dot(palette));
         }

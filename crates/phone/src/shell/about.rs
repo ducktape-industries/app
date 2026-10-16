@@ -11,8 +11,8 @@ use super::{Root, home};
 use ducktape_host::a11y::Control as _;
 use ducktape_host::runtime::{self, Listing, RailRow};
 use gpui_kit::{
-    Context, Div, FontWeight, InteractiveElement as _, IntoElement as _, ParentElement as _, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, div, px, svg,
+    Context, Div, FontWeight, InteractiveElement as _, ParentElement as _, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, div, px, svg,
 };
 
 /// The page of `row`'s program, its manifest `listing` once its seat has
