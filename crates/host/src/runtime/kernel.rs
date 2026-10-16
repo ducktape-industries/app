@@ -344,6 +344,38 @@ pub(super) fn answer(
             ),
             Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
         },
+        // one of the host's own places, as a link: only the person's press
+        // or key brings one up. The reader's account is shown only where
+        // there is one (`roster::props`); a place this host does not know
+        // does not decode
+        (Capability::Host, "show") => match methods::decode::<methods::Place>(payload) {
+            Ok(methods::Place::Account)
+                if props
+                    .as_deref()
+                    .and_then(|props| methods::decode::<methods::Session>(props).ok())
+                    .and_then(|session| session.account)
+                    .is_none() =>
+            {
+                view.refuse(
+                    id,
+                    refusal::UNKNOWN_REQUEST,
+                    "there is no reader's account to show",
+                )
+            }
+            Ok(place) => {
+                if !view.take_activation() {
+                    view.refuse(
+                        id,
+                        refusal::NEEDS_GESTURE,
+                        "`host.show` needs a press or key",
+                    );
+                    return true;
+                }
+                view.intents.push(Intent::Show(place));
+                view.reply(id, Ok(Vec::new()));
+            }
+            Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
+        },
         (Capability::Host, "badge") => match methods::decode::<i64>(payload).ok() {
             Some(count) => {
                 view.intents.push(Intent::Badge(count));

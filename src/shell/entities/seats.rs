@@ -155,6 +155,10 @@ impl DeskSeats {
                     windows.open_link(link, Some((program, *instance)), cx)
                 });
             }
+            // the reader's account: the console bar's account menu
+            SeatsEvent::Show(_, _, view_wire::methods::Place::Account) => {
+                windows.update(cx, |windows, cx| windows.show_account(cx));
+            }
         }
     }
 }

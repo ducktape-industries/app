@@ -38,6 +38,9 @@ pub enum SeatsEvent {
     Seated(&'static str),
     /// From the pane (`program`, `instance`): a link to open.
     OpenLink(&'static str, u64, String),
+    /// From the pane (`program`, `instance`): one of the host's places to
+    /// bring up (`host.show`).
+    Show(&'static str, u64, view_wire::methods::Place),
 }
 
 pub struct Seats {
@@ -187,6 +190,7 @@ impl Seats {
                 .update(cx, |notifications, cx| _ = notifications.refresh(cx)),
             Intent::Seated => cx.emit(SeatsEvent::Seated(program)),
             Intent::OpenLink(link) => cx.emit(SeatsEvent::OpenLink(program, instance, link)),
+            Intent::Show(place) => cx.emit(SeatsEvent::Show(program, instance, place)),
         }
     }
 

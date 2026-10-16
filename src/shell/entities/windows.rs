@@ -586,6 +586,17 @@ impl Windows {
         }
     }
 
+    /// The reader's account (`host.show`): the console bar's account menu,
+    /// over the console, raised.
+    pub(crate) fn show_account(&mut self, cx: &mut Context<Self>) {
+        self.raise_console(cx);
+        if let Some(own) = self.console_own() {
+            own.overlays.update(cx, |overlays, cx| {
+                overlays.open(Overlay::Menu(super::Popover::Account), cx)
+            });
+        }
+    }
+
     pub(crate) fn raise_console(&mut self, cx: &mut Context<Self>) {
         match self.console {
             Some(key) => self.raise(key, cx),
