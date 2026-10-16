@@ -40,7 +40,7 @@ sha2.workspace = true
 identity.workspace = true
 # The roster's full query surface: its programs and its view-only entries.
 blob.workspace = true
-programs = { git = "https://github.com/ducktape-industries/programs", rev = "618e25ecf9b4ec324d3467cd8047fc1c806945e0", package = "programs" }
+programs = { git = "https://github.com/ducktape-industries/programs", rev = "8fdcc29ae6f64a46025f8f5d20fc0eb019f3e9b5", package = "programs" }
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -75,7 +75,7 @@ gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tempfile.workspace = true
 # a fake node's changes socket (`runtime/kernel/node/tests.rs`)
 tokio-tungstenite.workspace = true
-blobs = { git = "https://github.com/ducktape-industries/programs", rev = "618e25ecf9b4ec324d3467cd8047fc1c806945e0", package = "blobs" }
+blobs = { git = "https://github.com/ducktape-industries/programs", rev = "8fdcc29ae6f64a46025f8f5d20fc0eb019f3e9b5", package = "blobs" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # test-support: its headless renderer, which `render/tests/picture_pixels.rs`

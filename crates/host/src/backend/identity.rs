@@ -42,14 +42,14 @@ pub async fn create_seated(client: &RpcClient, network: &str, name: &str) -> Res
 pub fn person(account: &identity::Account) -> Result<(), String> {
     let name = &account.card.name;
     match &account.control {
-        Control::Person { .. } => Ok(()),
-        Control::Managed { manager, .. } => Err(format!(
+        Control::User { .. } => Ok(()),
+        Control::Program { manager, .. } => Err(format!(
             "This key belongs to {name} (account {}), an agent managed by account {manager}. \
              Passkeys and recovery keys are for a person's own account: sign in with a \
              person's key.",
             account.number
         )),
-        Control::Program { program } => Err(format!(
+        Control::System { program } => Err(format!(
             "This key belongs to the account of the program {program}, which takes no passkey or \
              recovery key."
         )),

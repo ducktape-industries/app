@@ -255,7 +255,7 @@ pub(super) fn needed(
             | identity::Op::SetProfile { .. }
             | identity::Op::Resume { .. }
             | identity::Op::SetAudience { .. }
-            | identity::Op::SetRunner { .. } => None,
+            | identity::Op::SetScript { .. } => None,
         };
         if asked.is_some() {
             return asked;
