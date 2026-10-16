@@ -156,6 +156,123 @@ fn the_host_holds_a_trees_styles_and_refuses_a_style_it_does_not_hold() {
     );
 }
 
+/// The Sheet `id` holding `child`, opened at `detents`.
+fn sheet(id: &str, detents: Vec<f32>, child: wire::Node) -> wire::Node {
+    wire::Node::Sheet {
+        id: wire::ElementIdWire::Name(id.into()),
+        label: Some("Actions".into()),
+        style: crate::render::plain_style(),
+        detents,
+        on_dismiss: Some(1),
+        child: Box::new(child),
+    }
+}
+
+/// A container whose `on_back` is `handler`.
+fn backed(handler: u32, children: Vec<wire::Node>) -> wire::Node {
+    wire::Node::Container(view_wire::ContainerNode {
+        id: None,
+        style: crate::render::plain_style(),
+        interactivity: Some(Box::new(wire::Interactivity {
+            on_back: Some(handler),
+            ..Default::default()
+        })),
+        children,
+    })
+}
+
+/// The phone wire's shapes, as a view may break them: one sheet layer per
+/// frame, its detents fractions of the body ascending, `on_back` on the
+/// root alone. A whole tree that breaks one is refused and ends the view; a
+/// patch that would make one is refused, the tree shown stays, and the view
+/// is asked for a whole tree.
+#[test]
+fn a_hostile_sheet_or_back_is_refused() {
+    let empty = || wire::Node::empty();
+    let refused = |root: wire::Node| {
+        let mut view = scripted_view();
+        answer(
+            &mut view,
+            &crate::render::sent(wire::Frame {
+                root: Some(root),
+                ..Default::default()
+            }),
+        );
+        view.fault.clone()
+    };
+    let holds = |children| backed(2, vec![sheet("s1", vec![0.6, 1.], children)]);
+    assert_eq!(
+        refused(holds(empty())),
+        None,
+        "a root with Back and one sheet"
+    );
+    for (root, why) in [
+        (
+            backed(
+                2,
+                vec![sheet("s2", vec![0.6], sheet("s3", vec![1.], empty()))],
+            ),
+            "a sheet inside a sheet",
+        ),
+        (
+            backed(
+                2,
+                vec![
+                    sheet("s4", vec![0.6], empty()),
+                    sheet("s5", vec![1.], empty()),
+                ],
+            ),
+            "a second sheet in one frame",
+        ),
+        (
+            backed(2, vec![sheet("s6", vec![1., 0.6], empty())]),
+            "sheet detents ascend",
+        ),
+        (
+            backed(2, vec![sheet("s7", vec![0.], empty())]),
+            "a sheet detent is a fraction of the body",
+        ),
+        (
+            backed(2, vec![sheet("s8", vec![1.5], empty())]),
+            "a sheet detent is a fraction of the body",
+        ),
+        (
+            backed(2, vec![sheet("s0", Vec::new(), empty())]),
+            "a sheet has one to eight detents",
+        ),
+        (
+            backed(2, vec![backed(3, Vec::new())]),
+            "on_back below the root",
+        ),
+    ] {
+        let fault = refused(root).unwrap_or_else(|| panic!("{why}: taken"));
+        assert!(fault.contains(why), "{why}: {fault}");
+    }
+
+    // the same, brought as a patch onto a tree the host already holds
+    let mut view = scripted_view();
+    draw(&mut view, vec![sheet("s9", vec![0.6], empty())]);
+    let shown = view.frame.root.clone();
+    view.pending.clear();
+    answer(
+        &mut view,
+        &crate::render::sent(wire::Frame {
+            patches: vec![wire::Patch::Insert {
+                path: Vec::new(),
+                index: 1,
+                node: sheet("s10", vec![1.], empty()),
+            }],
+            ..Default::default()
+        }),
+    );
+    assert_eq!(view.fault, None);
+    assert_eq!(
+        view.frame.root, shown,
+        "a second sheet by a patch is refused"
+    );
+    assert_eq!(view.pending, [wire::Event::Resync]);
+}
+
 /// An Image under `hash`, bringing `bytes` of picture or naming it alone.
 fn image(hash: u64, bytes: Option<usize>) -> wire::Node {
     wire::Node::Image {
