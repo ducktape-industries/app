@@ -18,11 +18,14 @@
 //! so every private `use` below (`View`, `Connection`, `Mounted`, `Slot`,
 //! `Instant`, `wire`, the wasmtime types...) and every constant is theirs
 //! too. A name a child uses without importing it comes from here. `kernel`,
-//! `clipboard`, `notify` and `store` import what they need by name.
+//! `clipboard`, `notify` and `store` import what they need by name. Each
+//! program's notifier (`notifier`) is a view with no tree, run off the
+//! window thread.
 
 mod clipboard;
 pub mod consent;
 mod kernel;
+pub(crate) mod notifier;
 pub mod notify;
 mod roster;
 mod seat;

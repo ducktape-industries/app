@@ -340,14 +340,30 @@ pub(crate) fn start(documents: PathBuf, caches: PathBuf, cx: &mut App) {
 /// Follows the app's place on screen into the host: iOS's own phases and
 /// memory warnings; Android's window activation, which gm drives from the
 /// Activity's resume and pause (its memory warning comes from the Activity,
-/// [`android`]).
+/// [`android`]). On iOS it also keeps the status bar's clock readable over
+/// the system's appearance, light content on dark (Expo `app/_layout.tsx`
+/// `<StatusBar style={dark ? 'light' : 'dark'} />`); Android's theme flips
+/// it itself (`values-night/themes.xml`).
 pub fn follow<T: 'static>(window: &mut Window, cx: &mut Context<T>) -> Vec<Subscription> {
     let _ = &window;
     #[cfg(target_os = "ios")]
     {
+        fn status_bar(window: &Window) {
+            use gpui_ios::StatusBarContentStyle as Style;
+            gpui_ios::ios::set_status_bar_style(match window.appearance() {
+                gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::VibrantDark => {
+                    Style::Light
+                }
+                gpui_kit::WindowAppearance::Light | gpui_kit::WindowAppearance::VibrantLight => {
+                    Style::Dark
+                }
+            });
+        }
+        status_bar(window);
         vec![
             cx.on_app_lifecycle(|phase, _| send(Signal::Lifecycle(phase))),
             cx.on_memory_warning(|_| send(Signal::MemoryWarning)),
+            cx.observe_window_appearance(window, |_, window, _| status_bar(window)),
         ]
     }
     #[cfg(target_os = "android")]

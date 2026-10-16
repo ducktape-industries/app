@@ -169,6 +169,12 @@ impl MicFeed {
         self.monitor.load(Ordering::Relaxed) && !self.silenced.load(Ordering::Relaxed)
     }
 
+    /// Whether the monitor was turned off under its piece
+    /// ([`MicFeed::silence`]): held off until the piece asks it off.
+    pub fn monitor_stopped(&self) -> bool {
+        self.silenced.load(Ordering::Relaxed)
+    }
+
     /// Turns the monitor off under its piece: its sound fell to the
     /// loudspeaker, where it would howl, or its speaker failed.
     pub(crate) fn silence(&self) {
@@ -937,11 +943,12 @@ mod tests {
         );
         feed.ask_monitor(true);
         moved(&feed, None, to("built-in", "Built-in", true));
-        assert!(!feed.monitoring());
+        assert!(!feed.monitoring() && feed.monitor_stopped());
         assert_eq!(feed.status.lock().unwrap().1, "Built-in");
         feed.ask_monitor(true);
         assert!(!feed.monitoring(), "asked on again, it stays off");
         feed.ask_monitor(false);
+        assert!(!feed.monitor_stopped(), "asked off, it is no longer held");
         feed.ask_monitor(true);
         assert!(feed.monitoring());
         let feed = live();
