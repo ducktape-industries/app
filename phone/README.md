@@ -15,7 +15,7 @@ the head of `Makefile`.
    library for `aarch64-apple-ios` without the AX door and archives the app unsigned; `ios/privacy-scan.sh` fails the
    run if the binary reaches a required-reason API that `ios/PrivacyInfo.xcprivacy` does not declare. The only job
    that runs the commit's code; it sees no secret.
-3. **upload** (the same runner, environment `testflight`, which admits `dev` and `main` only): no checkout; `xcodebuild
+3. **upload** (the same runner, environment `release`, which admits `dev` and `main` only): no checkout; `xcodebuild
    -exportArchive` signs the archive with a cloud-managed distribution certificate through the App Store Connect API
    key (`-allowProvisioningUpdates`) and uploads it, then tags the commit `testflight-<build>`. App Store Connect
    processes the build (minutes) and offers it to the internal testers.

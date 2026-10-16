@@ -2,7 +2,7 @@
 # to dev that changes what the phone is built from, and on demand. Archived
 # unsigned on the self-hosted runner mac-byeongsu (a tart VM set up by
 # ops/runner-ios-setup.sh), checked by the privacy gate, then signed and
-# uploaded by Apple's own tools in the `testflight` environment, which admits
+# uploaded by Apple's own tools in the `release` environment, which admits
 # dev and main only. Signing is cloud-managed through the App Store Connect
 # API key: no certificate or profile is kept anywhere. phone/README.md.
 #
@@ -113,7 +113,7 @@ jobs:
     needs: [plan, archive]
     runs-on: [self-hosted, mac-byeongsu]
     timeout-minutes: 60
-    environment: testflight
+    environment: release
     # an upload in flight is never cancelled; a newer one waits for it
     concurrency:
       group: testflight-upload
