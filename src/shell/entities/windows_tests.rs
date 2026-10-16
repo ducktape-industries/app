@@ -395,8 +395,9 @@ fn a_repeated_link_notice_does_not_restart_the_toast(cx: &mut TestAppContext) {
 
 /// A pick and a link both land in the console's desk at once, each of
 /// them; leaving the network empties every window, keeping its measure,
-/// closes what is open over it, and takes the badges and the active
-/// program with it.
+/// closes what is open over it, and takes the badges, the active program
+/// and the program list with it: a link then opens nothing, never a
+/// program of the network left.
 #[gpui_kit::test]
 fn spotlight_and_links_both_land_in_the_desk_and_leaving_clears_it(cx: &mut TestAppContext) {
     // leaving locks the signer: the seat is one for the process
@@ -424,6 +425,20 @@ fn spotlight_and_links_both_land_in_the_desk_and_leaving_clears_it(cx: &mut Test
     assert_eq!(active(&app, cx), None);
     assert_eq!(overlays.read_with(cx, |it, _| *it.get()), None);
     assert!(app.rail.read_with(cx, |rail, _| rail.badges().is_empty()));
+    assert!(
+        app.rail.read_with(cx, |rail, _| rail.rows().is_empty()),
+        "the left network's programs are still listed"
+    );
+    app.windows.update(cx, |windows, cx| {
+        windows.open_link("duck://pane-link/x", None, cx)
+    });
+    assert_eq!(
+        active(&app, cx),
+        None,
+        "a link opened a program of the network left"
+    );
+    assert!(programs(&app, key, cx).is_empty());
+    assert!(!app.toast.read_with(cx, |toast, _| toast.get().is_empty()));
 }
 
 /// A badge set before its view opens stays until the view clears it.

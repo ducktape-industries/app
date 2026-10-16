@@ -23,7 +23,8 @@ use view_wire::methods::{self, refusal};
 
 /// The system's page `host.show` brings up for a refused camera's or
 /// microphone's settings place, where this host has one (macOS's privacy
-/// panes, `ducktape_av::settings_page`), as a refused device's state says
+/// panes, iOS's page of the app: `ducktape_av::settings_page`), as a
+/// refused device's state says
 /// (`MediaState::opens_settings`). The shell hands it to the system. The
 /// reader's account is the shell's own place, no page of the system's.
 pub fn settings_page(place: view_wire::methods::Place) -> Option<&'static str> {
@@ -528,7 +529,7 @@ fn told(state: &ducktape_av::State, kind: ducktape_av::Kind) -> wire::MediaState
             )
         }
         Status::Busy => (wire::MediaStatus::Busy, String::new()),
-        Status::Gone => (wire::MediaStatus::Gone, String::new()),
+        Status::Gone(why) => (wire::MediaStatus::Gone, why.clone()),
         Status::NoDevice => (wire::MediaStatus::NoDevice, String::new()),
         Status::Failed(why) => (wire::MediaStatus::Failed, why.clone()),
     };
@@ -818,7 +819,8 @@ mod tests {
     }
 
     /// Each settings place brings up its own device's page, where the
-    /// system has one, and the reader's account none.
+    /// system has one (iOS has one page of the app for both), and the
+    /// reader's account none.
     #[cfg(feature = "av")]
     #[test]
     fn a_settings_place_is_its_own_devices_page() {
@@ -828,13 +830,16 @@ mod tests {
         let microphone = settings_page(Place::MicrophoneSettings);
         assert_eq!(camera, ducktape_av::settings_page(Kind::Camera));
         assert_eq!(microphone, ducktape_av::settings_page(Kind::Microphone));
-        assert!(camera.is_none() || camera != microphone);
+        // macOS has a privacy pane for each
+        #[cfg(target_os = "macos")]
+        assert_ne!(camera, microphone);
         assert_eq!(settings_page(Place::Account), None);
     }
 
     /// A device's state reaches its view in the wire's words, bounded;
-    /// a refusal says how to allow the device here, and only macOS offers
-    /// its settings page.
+    /// a refusal says how to allow the device here, and its settings page
+    /// opens where the system has one; a device gone says why, where the
+    /// system said.
     #[cfg(feature = "av")]
     #[test]
     fn a_device_state_is_told_in_the_wires_words() {
@@ -866,5 +871,14 @@ mod tests {
         );
         assert_eq!(denied.detail, ducktape_av::allow(ducktape_av::Kind::Camera));
         assert!(denied.detail.len() <= 200 && denied.detail.ends_with("then try again."));
+        let gone = told(
+            &ducktape_av::State {
+                status: ducktape_av::Status::Gone("A call took the microphone.".into()),
+                ..Default::default()
+            },
+            ducktape_av::Kind::Microphone,
+        );
+        assert_eq!(gone.status, wire::MediaStatus::Gone);
+        assert_eq!(gone.detail, "A call took the microphone.");
     }
 }

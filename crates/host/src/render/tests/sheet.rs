@@ -382,3 +382,44 @@ fn under_touch_a_release_settles_at_its_detent(cx: &mut gpui_kit::TestAppContext
     show(&tree, &mut native, true);
     assert_eq!(top(&mut native), settled, "it settled off its detent");
 }
+
+/// Under touch a sheet the view drops while it is still coming up goes
+/// down from where it is, not from its rest; opened again as it goes, it
+/// comes back up from there, not from the bottom.
+#[gpui_kit::test]
+fn under_touch_a_sheet_turns_back_from_where_it_is(cx: &mut gpui_kit::TestAppContext) {
+    crate::contract::testing::touch_first_for_test(true);
+    let (tree, mut native, _events, _subscription) = open(cx, 390., 844.);
+    let rows = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            f32::from(window.find("rows").bounds().top())
+        })
+    };
+    let bottom = rows(&mut native);
+    native
+        .executor()
+        .advance_clock(crate::motion::SHEET_IN.duration / 8);
+    let coming = rows(&mut native);
+    assert!(coming < bottom, "it did not start up: {bottom} -> {coming}");
+
+    show(&tree, &mut native, false);
+    let going = rows(&mut native);
+    assert!(
+        (going - coming).abs() < 1.,
+        "it jumped as it went: {coming} -> {going}"
+    );
+    native
+        .executor()
+        .advance_clock(crate::motion::SHEET_OUT.duration / 8);
+    let lower = rows(&mut native);
+    assert!(lower > going, "it did not go down: {going} -> {lower}");
+
+    show(&tree, &mut native, true);
+    let again = rows(&mut native);
+    crate::contract::testing::touch_first_for_test(false);
+    assert!(
+        (again - lower).abs() < 1.,
+        "opened again from elsewhere: {lower} -> {again}"
+    );
+}

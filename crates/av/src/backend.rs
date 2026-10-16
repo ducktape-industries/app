@@ -1,17 +1,18 @@
 //! THE SEAM: every call into a capture or playback library, and nothing of
 //! gpui. Cameras through our own capture (V4L2 on Linux in `v4l2.rs`,
-//! AVFoundation on macOS in `mac.rs`) driven by one stream loop here,
+//! AVFoundation on macOS in `apple.rs`) driven by one stream loop here,
 //! microphones and speakers through cpal, each piece on a thread of its
 //! own that leaves what it has in a feed ([`CameraFeed`], [`MicFeed`]) for
 //! the gpui side to read. Another backend replaces this file and those
-//! two: the feeds, [`Device`], [`Status`] and the five functions are the
-//! whole surface.
+//! two: the feeds, [`Device`], [`Status`] and the four functions are the
+//! whole surface (each OS lists its own microphones and speakers:
+//! `platform::audio_devices`).
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use cpal::traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _};
+use cpal::traits::{DeviceTrait as _, StreamTrait as _};
 
 use crate::platform;
 
@@ -73,7 +74,9 @@ pub enum Status {
     Live,
     Denied,
     Busy,
-    Gone,
+    /// It went away while open: why, in a line, where the system says
+    /// (a call took it), else empty.
+    Gone(String),
     NoDevice,
     Failed(String),
 }
@@ -119,7 +122,10 @@ pub struct MicFeed {
     /// The level, 0 to 1 (-60 to 0 dBFS), as `f32` bits.
     pub level: AtomicU32,
     pub playback: Mutex<Playback>,
-    pub monitor: AtomicBool,
+    /// The monitor as its piece asks it ([`MicFeed::ask_monitor`]).
+    monitor: AtomicBool,
+    /// The monitor turned off under its piece ([`MicFeed::silence`]).
+    silenced: AtomicBool,
     /// The speaker a recording and the monitor play on (an id this crate
     /// listed; `None`: the default), read each time one starts: another
     /// moves them without the microphone closing.
@@ -141,6 +147,59 @@ pub enum Ask {
 impl MicFeed {
     pub fn level(&self) -> f32 {
         f32::from_bits(self.level.load(Ordering::Relaxed))
+    }
+
+    /// The piece's monitor, on or off, asked as often as it likes: on
+    /// plays what the microphone hears straight back, unless it was
+    /// turned off under the piece ([`MicFeed::silence`]), which holds
+    /// until the piece asks it off.
+    pub fn ask_monitor(&self, on: bool) {
+        if !on {
+            self.silenced.store(false, Ordering::Relaxed);
+        }
+        self.monitor.store(on, Ordering::Relaxed);
+    }
+
+    /// Whether the monitor plays: asked on, and not turned off since.
+    pub fn monitoring(&self) -> bool {
+        self.monitor.load(Ordering::Relaxed) && !self.silenced.load(Ordering::Relaxed)
+    }
+
+    /// Turns the monitor off under its piece: its sound fell to the
+    /// loudspeaker, where it would howl, or its speaker failed.
+    fn silence(&self) {
+        self.silenced.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Where a microphone's route moved under it, as the system tells it
+/// ([`moved`]).
+pub(crate) struct Moved {
+    /// The microphone heard now, as listed.
+    pub(crate) heard: Option<Device>,
+    /// Whether its sound fell to the device's own loudspeaker from
+    /// elsewhere (the headphones gone, the loudspeaker picked).
+    pub(crate) to_loudspeaker: bool,
+}
+
+/// A microphone's route moved under it: a piece that named its
+/// microphone (`named`) and hears another now ends Gone, saying so (the
+/// system never swaps it silently); one on the default takes the new
+/// one's name. A monitor playing when the sound fell to the loudspeaker
+/// stops, until its piece turns it off and on.
+pub(crate) fn moved(feed: &MicFeed, named: Option<&str>, moved: Moved) {
+    if moved.to_loudspeaker && feed.monitoring() {
+        feed.silence();
+    }
+    let mut status = feed.status.lock().expect("feed status");
+    match (named, moved.heard) {
+        (Some(named), heard) if heard.as_ref().is_none_or(|heard| heard.id != named) => {
+            if matches!(status.0, Status::Starting | Status::Live) {
+                status.0 = Status::Gone("The microphone you picked is no longer in use.".into());
+            }
+        }
+        (None, Some(heard)) => status.1 = heard.name,
+        _ => {}
     }
 }
 
@@ -261,7 +320,7 @@ const MAX_ID_BYTES: usize = 256;
 
 /// Whether a piece can name `device` back: its id at most
 /// [`MAX_ID_BYTES`].
-fn nameable(device: &Device) -> bool {
+pub(crate) fn nameable(device: &Device) -> bool {
     device.id.len() <= MAX_ID_BYTES
 }
 
@@ -363,7 +422,7 @@ pub(crate) fn stream(mut camera: impl Source, feed: &CameraFeed) {
         match got {
             Err(status) => break Some(status),
             Ok(Got::Nothing) => match last {
-                Some(at) if at.elapsed() > QUIET => break Some(Status::Gone),
+                Some(at) if at.elapsed() > QUIET => break Some(Status::Gone(String::new())),
                 None if opened.elapsed() > FIRST => {
                     break Some(Status::Failed("the camera sent no picture".into()));
                 }
@@ -387,93 +446,6 @@ pub(crate) fn stream(mut camera: impl Source, feed: &CameraFeed) {
 }
 
 // ---------- microphones and speakers ----------
-
-/// The microphones and the speakers the system lists now.
-pub fn audio_devices() -> Result<(Vec<AudioDevice>, Vec<AudioDevice>), String> {
-    let host = cpal::default_host();
-    let kinds = |input: bool| {
-        listed(&host, input).map(|listed| {
-            listed
-                .into_iter()
-                .map(|(device, _)| AudioDevice {
-                    kind: platform::audio_kind(&device, input),
-                    device,
-                })
-                .collect()
-        })
-    };
-    Ok((kinds(true)?, kinds(false)?))
-}
-
-/// The microphones (`input`) or the speakers the system lists now, as this
-/// crate names them, each with the device it is: the one list
-/// [`audio_devices`] answers from and a piece opens from ([`find`]).
-fn listed(host: &cpal::Host, input: bool) -> Result<Vec<(Device, cpal::Device)>, String> {
-    let id = |device: &cpal::Device| device.id().map(|id| id.to_string()).ok();
-    let (devices, default): (Vec<cpal::Device>, _) = match input {
-        true => (
-            host.input_devices()
-                .map_err(|error| error.to_string())?
-                .collect(),
-            host.default_input_device(),
-        ),
-        false => (
-            host.output_devices()
-                .map_err(|error| error.to_string())?
-                .collect(),
-            host.default_output_device(),
-        ),
-    };
-    let default = default.as_ref().and_then(id);
-    let rows = devices
-        .into_iter()
-        .filter_map(|device| {
-            let id = id(&device)?;
-            let row = Device {
-                name: device
-                    .description()
-                    .map(|d| d.name().to_owned())
-                    .unwrap_or_else(|_| id.clone()),
-                default: default.as_ref() == Some(&id),
-                id,
-            };
-            nameable(&row).then_some((row, device))
-        })
-        .collect();
-    Ok(recognizable(rows))
-}
-
-/// The devices a person recognizes, one entry per device. cpal's ALSA host
-/// lists every PCM name the configuration defines, each a way to one card
-/// (`hw`, `plughw`, `sysdefault`, `front`, `surround51`, `dmix`, `dsnoop`,
-/// their numbered twins) or a plugin (`null`, `pulse`, `pipewire`): one
-/// loopback card was twenty rows. Kept: ALSA's `default` (the system's own
-/// choice, a desktop's sound server where one runs), shown as "System
-/// default", and one `plughw` per card and device (the device with the
-/// rate and format conversions an app needs), the card's own name first,
-/// so its numbered twin is dropped. Elsewhere the system lists devices.
-#[cfg(target_os = "linux")]
-fn recognizable<T>(devices: Vec<(Device, T)>) -> Vec<(Device, T)> {
-    let mut seen = std::collections::HashSet::new();
-    devices
-        .into_iter()
-        .filter_map(|(mut device, found)| {
-            let pcm = device.id.strip_prefix("alsa:").unwrap_or(&device.id);
-            if pcm == "default" {
-                device.name = "System default".into();
-                return Some((device, found));
-            }
-            let dev = pcm.strip_prefix("plughw:")?.split("DEV=").nth(1)?;
-            seen.insert((device.name.clone(), dev.to_owned()))
-                .then_some((device, found))
-        })
-        .collect()
-}
-
-#[cfg(not(target_os = "linux"))]
-fn recognizable<T>(devices: Vec<(Device, T)>) -> Vec<(Device, T)> {
-    devices
-}
 
 /// Opens `device` (the default microphone when `None`) on a thread of its
 /// own: its level into `feed`, a recording asked through `feed.ask`
@@ -504,33 +476,15 @@ fn recorded(rate: u32, seconds: u8) -> usize {
 /// Mono samples on their way to a speaker.
 type Queue = Arc<Mutex<VecDeque<f32>>>;
 
-/// The microphone (`input`) or speaker a piece names: `None` the system's
-/// default, else only one this crate listed ([`listed`]), its id compared
-/// whole. A view's string never reaches the system: on Linux an id is an
-/// ALSA PCM name, and such a name can name a plugin that writes a file or
-/// runs a program.
-fn find(host: &cpal::Host, id: Option<&str>, input: bool) -> Option<cpal::Device> {
-    match id {
-        Some(id) => picked(listed(host, input).ok()?, id),
-        None if input => host.default_input_device(),
-        None => host.default_output_device(),
-    }
-}
-
-/// What `listed` holds for the device with id `id`, if it lists one.
-fn picked<T>(listed: Vec<(Device, T)>, id: &str) -> Option<T> {
-    listed
-        .into_iter()
-        .find(|(device, _)| device.id == id)
-        .map(|(_, found)| found)
-}
-
 fn audio_fault(error: &cpal::Error, open: bool) -> Status {
     match error.kind() {
         cpal::ErrorKind::DeviceBusy => Status::Busy,
         cpal::ErrorKind::PermissionDenied => Status::Denied,
-        cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::StreamInvalidated if open => {
-            Status::Gone
+        cpal::ErrorKind::DeviceNotAvailable if open => {
+            Status::Gone("The microphone was disconnected.".into())
+        }
+        cpal::ErrorKind::StreamInvalidated if open => {
+            Status::Gone("The system stopped the microphone.".into())
         }
         cpal::ErrorKind::DeviceNotAvailable => Status::NoDevice,
         _ => Status::Failed(error.to_string().chars().take(200).collect()),
@@ -545,7 +499,7 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
         return;
     }
     let host = cpal::default_host();
-    let Some(input) = find(&host, device.as_deref(), true) else {
+    let Some(input) = platform::find(&host, device.as_deref(), true) else {
         return set(&feed.status, Status::NoDevice);
     };
     if !platform::microphone_allowed() {
@@ -556,11 +510,13 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
     if feed.let_go() {
         return;
     }
-    let name = input
-        .description()
-        .map(|d| d.name().to_owned())
-        .unwrap_or_default();
-    feed.status.lock().expect("feed status").1 = name;
+    // the system's audio session (a phone's) held while the microphone is
+    // open, its ends told to the feed
+    let _session = match platform::activate(Some((feed, device.as_deref()))) {
+        Ok(session) => session,
+        Err(status) => return set(&feed.status, status),
+    };
+    feed.status.lock().expect("feed status").1 = platform::input_name(&input);
     let config = match input.default_input_config() {
         Ok(config) => config,
         Err(error) => return set(&feed.status, audio_fault(&error, false)),
@@ -571,6 +527,7 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
     let heard = Queue::default();
     let stream = match capture(
         &input,
+        device.as_deref(),
         &config,
         feed.clone(),
         recording.clone(),
@@ -582,14 +539,45 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
     if let Err(error) = stream.play() {
         return set(&feed.status, audio_fault(&error, false));
     }
-    set(&feed.status, Status::Live);
+    serve(stream, &host, rate, &recording, &heard, feed);
+    feed.level.store(0f32.to_bits(), Ordering::Relaxed);
+}
+
+/// Serves an open microphone, `input` its stream, until its piece lets it
+/// go or the device ends: Live from the start, unless something ended it
+/// already (an interruption told before), and over the moment its status
+/// is anything but Live (Gone, Busy, a failure), as a camera's [`stream`]
+/// is: a microphone the system took never comes back on by itself. What
+/// its piece asks (a recording played back, the monitor) plays on its
+/// speaker meanwhile. Every stream, `input` and the speaker's, is closed
+/// when this returns: the device let go.
+fn serve<S>(
+    input: S,
+    host: &cpal::Host,
+    rate: u32,
+    recording: &Recording,
+    heard: &Queue,
+    feed: &MicFeed,
+) {
+    {
+        let mut status = feed.status.lock().expect("feed status");
+        if status.0 == Status::Starting {
+            status.0 = Status::Live;
+        }
+    }
+    let live = || feed.status.lock().expect("feed status").0 == Status::Live;
     // the speaker's streams: a recording's playback, the monitor (with
     // the output it plays on)
     let mut playing: Option<(cpal::Stream, Queue)> = None;
     let mut monitoring: Option<(cpal::Stream, Option<String>)> = None;
     let output = || feed.output.lock().expect("feed output").clone();
     let playback = |to: Playback| *feed.playback.lock().expect("feed playback") = to;
-    while !feed.stop.load(Ordering::Relaxed) {
+    // a speaker stream on the output `on` names, found as it starts
+    let play = |on: Option<&str>, queue: Queue| {
+        let device = platform::find(host, on, false).ok_or(Status::Failed("no speaker".into()))?;
+        speaker(&device, rate, queue)
+    };
+    while !feed.stop.load(Ordering::Relaxed) && live() {
         std::thread::sleep(Duration::from_millis(10));
         let asked = feed.ask.lock().expect("feed ask").take();
         if let Some(ask) = asked {
@@ -614,7 +602,7 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
         };
         if let Some(samples) = recorded {
             let queue = Queue::new(Mutex::new(VecDeque::from(samples)));
-            match speaker(&host, output().as_deref(), rate, queue.clone()) {
+            match play(output().as_deref(), queue.clone()) {
                 Ok(stream) => {
                     playing = Some((stream, queue));
                     playback(Playback::Playing);
@@ -636,7 +624,7 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
             playback(Playback::Idle);
         }
         // the monitor follows the output: another speaker picked moves it
-        let monitor = feed.monitor.load(Ordering::Relaxed).then(output);
+        let monitor = feed.monitoring().then(output);
         if monitoring.as_ref().map(|(_, on)| on) != monitor.as_ref() {
             monitoring = None;
         }
@@ -644,17 +632,16 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
             && monitoring.is_none()
         {
             heard.lock().expect("heard").clear();
-            match speaker(&host, on.as_deref(), rate, heard.clone()) {
+            match play(on.as_deref(), heard.clone()) {
                 Ok(stream) => monitoring = Some((stream, on)),
                 Err(status) => {
                     set(&feed.status, status);
-                    feed.monitor.store(false, Ordering::Relaxed);
+                    feed.silence();
                 }
             }
         }
     }
-    drop((stream, playing, monitoring));
-    feed.level.store(0f32.to_bits(), Ordering::Relaxed);
+    drop((input, playing, monitoring));
 }
 
 /// `config` with a 20 ms buffer where the device takes one: a live loop
@@ -668,10 +655,12 @@ fn short(config: &cpal::SupportedStreamConfig) -> cpal::StreamConfig {
     short
 }
 
-/// The microphone's stream: its level into `feed`, its samples (mono)
-/// into the recording being made and, while the monitor runs, `heard`.
+/// The microphone's stream (`input`, the one its piece `named`, or the
+/// default): its level into `feed`, its samples (mono) into the
+/// recording being made and, while the monitor runs, `heard`.
 fn capture(
     input: &cpal::Device,
+    named: Option<&str>,
     config: &cpal::SupportedStreamConfig,
     feed: Arc<MicFeed>,
     recording: Recording,
@@ -692,7 +681,7 @@ fn capture(
             let room = wanted.saturating_sub(samples.len());
             samples.extend(mono.iter().take(room));
         }
-        if feed.monitor.load(Ordering::Relaxed) {
+        if feed.monitoring() {
             // ponytail: at most a fifth of a second behind; drift between
             // the two clocks is dropped here, not resampled
             let mut heard = heard.lock().expect("heard");
@@ -701,15 +690,26 @@ fn capture(
             heard.drain(..over);
         }
     };
-    let on_error = move |error: cpal::Error| {
-        if matches!(
-            error.kind(),
-            cpal::ErrorKind::DeviceNotAvailable
-                | cpal::ErrorKind::StreamInvalidated
-                | cpal::ErrorKind::BackendError
-        ) {
-            set(&errors.status, audio_fault(&error, true));
+    let named = named.map(str::to_owned);
+    let on_error = move |error: cpal::Error| match error.kind() {
+        // a phone's session routes the stream in place and tells a route
+        // change (another speaker picked, a headset in or out) as a
+        // changed or invalidated stream, though it plays on: it tells
+        // its moves and ends itself (`platform::activate`)
+        cpal::ErrorKind::DeviceChanged | cpal::ErrorKind::StreamInvalidated
+            if platform::ROUTED_IN_PLACE => {}
+        // the stream followed the system's default to another microphone
+        cpal::ErrorKind::DeviceChanged => {
+            let to = Moved {
+                heard: platform::heard(),
+                to_loudspeaker: false,
+            };
+            moved(&errors, named.as_deref(), to);
         }
+        cpal::ErrorKind::DeviceNotAvailable
+        | cpal::ErrorKind::BackendError
+        | cpal::ErrorKind::StreamInvalidated => set(&errors.status, audio_fault(&error, true)),
+        _ => {}
     };
     macro_rules! typed {
         ($t:ty) => {
@@ -745,21 +745,28 @@ fn capture(
 /// out. Bounded: a speaker that takes no samples for 2 s past the chime's
 /// length is an error, not a wait forever.
 pub fn play_chime(output: Option<&str>) -> Result<(), String> {
+    let said = |status| match status {
+        Status::Failed(why) => why,
+        Status::Denied => "the system refused the speaker".into(),
+        Status::Busy => "another app is using the speaker".into(),
+        _ => "the speaker is gone".into(),
+    };
     let host = cpal::default_host();
-    let rate = find(&host, output, false)
-        .ok_or("no such speaker")?
+    let found = platform::find(&host, output, false).ok_or("no such speaker")?;
+    // the system's audio session (a phone's) held while the chime plays,
+    // once the speaker is known: an id that names none activates nothing
+    let _session = platform::activate(None).map_err(said)?;
+    let rate = found
         .default_output_config()
         .map_err(|error| error.to_string())?
         .sample_rate();
     let samples = chime(rate);
     let length = Duration::from_secs_f32(samples.len() as f32 / rate.max(1) as f32);
     let queue = Queue::new(Mutex::new(VecDeque::from(samples)));
-    let stream = speaker(&host, output, rate, queue.clone()).map_err(|status| match status {
-        Status::Failed(why) => why,
-        Status::Denied => "the system refused the speaker".into(),
-        Status::Busy => "another app is using the speaker".into(),
-        _ => "the speaker is gone".into(),
-    })?;
+    // on the speaker found above: found again, the id could name none
+    // once the session left recording (a Bluetooth headset's hands-free
+    // id, listed among the inputs)
+    let stream = speaker(&found, rate, queue.clone()).map_err(said)?;
     let deadline = std::time::Instant::now() + length + Duration::from_secs(2);
     while !queue.lock().expect("chime").is_empty() {
         if std::time::Instant::now() > deadline {
@@ -793,15 +800,9 @@ pub(crate) fn chime(rate: u32) -> Vec<f32> {
         .collect()
 }
 
-/// A speaker stream playing `queue` (mono at `rate`) on every channel,
-/// silent once it is empty.
-fn speaker(
-    host: &cpal::Host,
-    output: Option<&str>,
-    rate: u32,
-    queue: Queue,
-) -> Result<cpal::Stream, Status> {
-    let speaker = find(host, output, false).ok_or(Status::Failed("no speaker".into()))?;
+/// A stream on `speaker` playing `queue` (mono at `rate`) on every
+/// channel, silent once it is empty.
+fn speaker(speaker: &cpal::Device, rate: u32, queue: Queue) -> Result<cpal::Stream, Status> {
     let config = speaker
         .default_output_config()
         .map_err(|error| audio_fault(&error, false))?;
@@ -865,56 +866,57 @@ fn tracing_error(what: &str, error: &dyn std::fmt::Display) {
 mod tests {
     use super::*;
 
-    /// One loopback card's ALSA names come down to the default and one
-    /// row per card and device.
-    #[cfg(target_os = "linux")]
+    /// A microphone's route moved under it: a piece that named its
+    /// microphone and hears another ends Gone, saying so; one on the
+    /// default takes the new one's name. A monitor playing when the sound
+    /// fell to the loudspeaker stops, and asked on again stays off until
+    /// its piece asks it off; one off is not held off.
     #[test]
-    fn alsa_names_come_down_to_one_row_a_device() {
-        let device = |id: &str, name: &str| Device {
-            id: format!("alsa:{id}"),
-            name: name.into(),
-            default: id == "default",
+    fn a_moved_microphone_is_told_and_its_monitor_stops_on_the_loudspeaker() {
+        let live = || {
+            let feed = MicFeed::default();
+            feed.status.lock().unwrap().0 = Status::Live;
+            feed
         };
-        let card = "Loopback, Loopback PCM";
-        let listed = vec![
-            device(
-                "null",
-                "Discard all samples (playback) or generate zero samples (capture)",
-            ),
-            device("default", "default"),
-            device("pipewire", "PipeWire Sound Server"),
-            device("sysdefault:CARD=Loopback", card),
-            device("front:CARD=Loopback,DEV=0", card),
-            device("surround51:CARD=Loopback,DEV=0", card),
-            device("dmix:CARD=Loopback,DEV=0", card),
-            device("dsnoop:CARD=Loopback,DEV=1", card),
-            device("hw:CARD=Loopback,DEV=0", card),
-            device("plughw:CARD=Loopback,DEV=0", card),
-            device("hw:CARD=Loopback,DEV=1", card),
-            device("plughw:CARD=Loopback,DEV=1", card),
-            device("hw:CARD=0,DEV=0", card),
-            device("plughw:CARD=0,DEV=0", card),
-            device("plughw:CARD=0,DEV=1", card),
-            device("plughw:CARD=1,DEV=0", "USB Audio, USB Audio"),
-        ];
-        let listed = listed.into_iter().map(|device| (device, ())).collect();
-        let kept: Vec<_> = recognizable(listed)
-            .into_iter()
-            .map(|(device, ())| (device.id, device.name, device.default))
-            .collect();
+        let to = |id: &str, name: &str, to_loudspeaker| Moved {
+            heard: Some(Device {
+                id: id.into(),
+                name: name.into(),
+                default: true,
+            }),
+            to_loudspeaker,
+        };
+        let feed = live();
+        moved(&feed, Some("headset"), to("headset", "Headset", false));
+        assert_eq!(feed.status.lock().unwrap().0, Status::Live);
+        moved(&feed, Some("headset"), to("built-in", "Built-in", false));
+        assert!(matches!(&feed.status.lock().unwrap().0, Status::Gone(why) if !why.is_empty()));
+        let feed = live();
+        let none = Moved {
+            heard: None,
+            to_loudspeaker: false,
+        };
+        moved(&feed, Some("headset"), none);
+        assert!(matches!(feed.status.lock().unwrap().0, Status::Gone(_)));
+        let feed = live();
+        moved(&feed, None, to("headset", "Headset", false));
         assert_eq!(
-            kept,
-            [
-                ("alsa:default".into(), "System default".into(), true),
-                ("alsa:plughw:CARD=Loopback,DEV=0".into(), card.into(), false),
-                ("alsa:plughw:CARD=Loopback,DEV=1".into(), card.into(), false),
-                (
-                    "alsa:plughw:CARD=1,DEV=0".into(),
-                    "USB Audio, USB Audio".into(),
-                    false
-                ),
-            ]
+            *feed.status.lock().unwrap(),
+            (Status::Live, "Headset".into())
         );
+        feed.ask_monitor(true);
+        moved(&feed, None, to("built-in", "Built-in", true));
+        assert!(!feed.monitoring());
+        assert_eq!(feed.status.lock().unwrap().1, "Built-in");
+        feed.ask_monitor(true);
+        assert!(!feed.monitoring(), "asked on again, it stays off");
+        feed.ask_monitor(false);
+        feed.ask_monitor(true);
+        assert!(feed.monitoring());
+        let feed = live();
+        moved(&feed, None, to("built-in", "Built-in", true));
+        feed.ask_monitor(true);
+        assert!(feed.monitoring(), "a monitor off is not held off");
     }
 
     /// A recording holds one to ten seconds, whatever its piece asks.
@@ -923,36 +925,6 @@ mod tests {
         assert_eq!(recorded(48_000, 0), 48_000);
         assert_eq!(recorded(48_000, 4), 4 * 48_000);
         assert_eq!(recorded(48_000, u8::MAX), 10 * 48_000);
-    }
-
-    /// A piece opens only a device this crate listed, by its whole id: a
-    /// name it did not list (an ALSA plugin that writes a file or pipes
-    /// into a program, a card it left out, a listed id with more after it)
-    /// opens nothing.
-    #[test]
-    fn a_device_opens_only_by_an_id_this_crate_listed() {
-        let row = |id: &str| {
-            let device = Device {
-                id: id.into(),
-                name: "Card".into(),
-                default: false,
-            };
-            (device, id.to_owned())
-        };
-        let listed = || vec![row("alsa:default"), row("alsa:plughw:CARD=PCH,DEV=0")];
-        let card = "alsa:plughw:CARD=PCH,DEV=0";
-        assert_eq!(picked(listed(), card).as_deref(), Some(card));
-        for id in [
-            "alsa:file:'/tmp/x',raw",
-            "alsa:file:'|touch /tmp/x',raw",
-            "alsa:plughw:CARD=X,DEV=0",
-            "alsa:hw:CARD=PCH,DEV=0",
-            "alsa:plughw:CARD=PCH,DEV=0 ",
-            "plughw:CARD=PCH,DEV=0",
-            "",
-        ] {
-            assert_eq!(picked(listed(), id), None, "{id:?}");
-        }
     }
 
     /// Against the system's own audio devices: ALSA's `null` plugin, which
@@ -971,8 +943,8 @@ mod tests {
             format!("alsa:file:'|touch {path}',raw"),
         ];
         for name in &names {
-            assert!(find(&host, Some(name), true).is_none(), "{name}");
-            assert!(find(&host, Some(name), false).is_none(), "{name}");
+            assert!(platform::find(&host, Some(name), true).is_none(), "{name}");
+            assert!(platform::find(&host, Some(name), false).is_none(), "{name}");
             let feed = Arc::new(MicFeed::default());
             *feed.output.lock().unwrap() = Some(name.clone());
             run_microphone(Some(name.clone()), &feed);
@@ -1143,13 +1115,54 @@ mod tests {
         }
     }
 
+    /// THE CONSENT RULE: a microphone whose status goes anything but Live
+    /// (Gone: a call took it) lets its device go though its piece still
+    /// holds it, as a camera does: nothing that restarts the device under
+    /// it (iOS resumes its audio unit after a call) records again. One
+    /// ended before it is served never comes on.
+    #[test]
+    fn a_microphone_no_longer_live_lets_its_device_go() {
+        struct Stream(Arc<AtomicBool>);
+        impl Drop for Stream {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let serving = |feed: Arc<MicFeed>, closed: Arc<AtomicBool>| {
+            std::thread::spawn(move || {
+                let host = cpal::default_host();
+                let (recording, heard) = (Recording::default(), Queue::default());
+                serve(Stream(closed), &host, 48_000, &recording, &heard, &feed)
+            })
+        };
+        let status = |feed: &MicFeed| feed.status.lock().unwrap().0.clone();
+        let feed = Arc::new(MicFeed::default());
+        let closed = Arc::new(AtomicBool::new(false));
+        let served = serving(feed.clone(), closed.clone());
+        until("live", || status(&feed) == Status::Live);
+        assert!(!closed.load(Ordering::SeqCst));
+        let took = Status::Gone("A call took the microphone.".into());
+        set(&feed.status, took.clone());
+        until("let go", || closed.load(Ordering::SeqCst));
+        served.join().unwrap();
+        assert_eq!(status(&feed), took);
+        assert!(!feed.let_go(), "its piece still holds it");
+
+        let ended = Arc::new(MicFeed::default());
+        set(&ended.status, took.clone());
+        let closed = Arc::new(AtomicBool::new(false));
+        serving(ended.clone(), closed.clone()).join().unwrap();
+        assert!(closed.load(Ordering::SeqCst));
+        assert_eq!(status(&ended), took);
+    }
+
     /// THE HEADLINE: a live camera that stops delivering is told Gone no
     /// sooner than [`QUIET`] after its last frame, and only once released.
     #[test]
     fn a_camera_that_stops_delivering_is_gone_and_released() {
         let run = streaming(3, true);
         until("live", || status(&run.feed) == Status::Live);
-        let gone = until("gone", || status(&run.feed) == Status::Gone);
+        let gone = until("gone", || status(&run.feed) == Status::Gone(String::new()));
         assert!(
             run.released.load(Ordering::SeqCst),
             "told Gone before release"

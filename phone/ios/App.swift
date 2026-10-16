@@ -37,7 +37,8 @@ final class EdgeBack: NSObject {
     }
   }
 
-  /// A swipe that ends at least a touch target (44) in, or still moving right, is Back; one dragged back is not.
+  /// A swipe let go past half the width, its speed counted for 0.3 s of travel, is Back; one short of it is not
+  /// (react-native-screens' own rule, `RNSScreenStack.mm`).
   @objc private func swiped(_ pan: UIScreenEdgePanGestureRecognizer) {
     // a presented controller (a link's Safari view) takes its own edge swipe; the stack behind stays
     let presented = pan.view?.window?.rootViewController?.presentedViewController != nil
@@ -46,7 +47,8 @@ final class EdgeBack: NSObject {
     case .began, .changed:
       if !presented { ducktape_phone_back_drag(Double(max(x, 0))) }
     case .ended:
-      if !presented && (x >= 44 || pan.velocity(in: pan.view).x > 0) {
+      let width = pan.view?.bounds.width ?? 0
+      if !presented && x + 0.3 * pan.velocity(in: pan.view).x > width / 2 {
         ducktape_phone_back()
       } else {
         ducktape_phone_back_cancel()

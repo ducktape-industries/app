@@ -77,6 +77,7 @@ pub fn open() -> Option<(futures::channel::mpsc::UnboundedReceiver<Call>, Writte
 
 /// Opens the door on `port`, whatever the environment says: for a shell
 /// whose launch takes no environment (a phone, wasm-mobile SPEC §11.1).
+#[cfg_attr(not(feature = "ax-door"), allow(dead_code))]
 pub fn open_at(port: u16) -> Option<(futures::channel::mpsc::UnboundedReceiver<Call>, Written)> {
     open_env(Some(&port.to_string()), None, Ok(door_file()))
 }
