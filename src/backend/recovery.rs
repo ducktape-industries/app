@@ -11,7 +11,7 @@ use identity::{CONSENT_NAMESPACE, Consent, Op, Query, Reply};
 use noded_client::identity::{account_by_number, admission, ask, submit};
 use noded_client::wire::{Frame, salt};
 
-use super::identity::{person, submit_seated};
+use super::identity::{submit_seated, user};
 use super::{RpcClient, anchor, query_signer, seated_key, seated_sign};
 
 /// 24 fresh words: a recovery key not yet on any account.
@@ -51,7 +51,7 @@ pub(crate) async fn add_recovery_key(
     let account = account_of(client, network, device)
         .await?
         .ok_or("This device's key holds no account yet.")?;
-    person(&account_by_number(client, network, account, &*query_signer()).await?)?;
+    user(&account_by_number(client, network, account, &*query_signer()).await?)?;
     let admission = admission(
         client,
         network,
@@ -98,7 +98,7 @@ pub(crate) async fn join_with_recovery_key(
     let account = account_of(client, network, recovery.public_key().as_ref().to_vec())
         .await?
         .ok_or_else(|| format!("That recovery key isn't on an account on {network}."))?;
-    person(&account_by_number(client, network, account, &*query_signer()).await?)?;
+    user(&account_by_number(client, network, account, &*query_signer()).await?)?;
     let device = seated_key().await.map_err(|refusal| refusal.message)?;
     let admission = admission(
         client,
