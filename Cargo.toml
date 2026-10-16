@@ -33,21 +33,23 @@ version = "0.1.0"
 [workspace.dependencies]
 
 # --- sdk-line: crates/sdk of ducktape-industries/programs (abi, view-wire, program, ducklink, design, describe). Every crate of that repo here and below sits on ONE rev, and the views this app seats are built at that rev. One whose manifest's wire_id is not `view_wire::WIRE_ID` runs all the same, and a failure of it names both wires and the node (`View::failure`). Which rev and why is in `git log -- Cargo.toml`. ---
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "c0eebb0e761669e9442f8d0c203cd37b0b8c9165", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "c0eebb0e761669e9442f8d0c203cd37b0b8c9165", package = "view-wire" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "7327a481c1291176de20757956e33562fa2127a0", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "7327a481c1291176de20757956e33562fa2127a0", package = "view-wire" }
 # `program::is_name`: the one spelling of a program id
-program = { git = "https://github.com/ducktape-industries/programs", rev = "c0eebb0e761669e9442f8d0c203cd37b0b8c9165", package = "program" }
-ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "c0eebb0e761669e9442f8d0c203cd37b0b8c9165", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/programs", rev = "c0eebb0e761669e9442f8d0c203cd37b0b8c9165", package = "design" }
+program = { git = "https://github.com/ducktape-industries/programs", rev = "7327a481c1291176de20757956e33562fa2127a0", package = "program" }
+ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "7327a481c1291176de20757956e33562fa2127a0", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/programs", rev = "7327a481c1291176de20757956e33562fa2127a0", package = "design" }
 # `program.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/programs", rev = "c0eebb0e761669e9442f8d0c203cd37b0b8c9165", package = "describe" }
+describe = { git = "https://github.com/ducktape-industries/programs", rev = "7327a481c1291176de20757956e33562fa2127a0", package = "describe" }
 # the identity program's own types: the app's passkey lane and `crates/noded-client`'s flows
-identity = { git = "https://github.com/ducktape-industries/programs", rev = "c0eebb0e761669e9442f8d0c203cd37b0b8c9165", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/programs", rev = "7327a481c1291176de20757956e33562fa2127a0", package = "identity" }
 
-# --- node-side: ducktape-industries/ducktape on the kernel branch ---
-ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
-keystore = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "keystore" }
-blob = { git = "https://github.com/ducktape-industries/ducktape", rev = "a4360f6d6ac3b807df95e3fda24d8d8a8b130049", package = "blob" }
+# --- node-side: ducktape-industries/ducktape at the rev the programs rev above pins ---
+ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a0151a411c3558453c34bb8272b93dfc428cb74", package = "ducktape-home" }
+keystore = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a0151a411c3558453c34bb8272b93dfc428cb74", package = "keystore" }
+blob = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a0151a411c3558453c34bb8272b93dfc428cb74", package = "blob" }
+# the live lane's wire (`crates/host/src/backend/live.rs`): core's leaf crate, at the one core rev
+live-wire = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a0151a411c3558453c34bb8272b93dfc428cb74", package = "live-wire" }
 
 # --- external ---
 borsh = { version = "1", default-features = false, features = ["derive", "std"] }
@@ -101,9 +103,9 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # The passkey lane (`backend/passkey.rs`): the verifier the node runs (to
 # pick which passkey signed and to frame its assertion), and the identity
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
-keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b", package = "keyscheme" }
+keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a0151a411c3558453c34bb8272b93dfc428cb74", package = "keyscheme" }
 identity.workspace = true
-valset = { git = "https://github.com/ducktape-industries/programs", rev = "c0eebb0e761669e9442f8d0c203cd37b0b8c9165", package = "valset" }
+valset = { git = "https://github.com/ducktape-industries/programs", rev = "7327a481c1291176de20757956e33562fa2127a0", package = "valset" }
 base64.workspace = true
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -157,24 +159,24 @@ x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
 ducktape-host = { path = "crates/host", features = ["test-support", "ax-door"] }
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tempfile.workspace = true
-keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "9dfffb0662bd8a16293df8c75de8817a79b0810b", package = "keyscheme", features = ["testkit"] }
+keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a0151a411c3558453c34bb8272b93dfc428cb74", package = "keyscheme", features = ["testkit"] }
 p256 = "0.13"
 
 [patch."https://github.com/ducktape-industries/ducktape"]
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "c0eebb0e761669e9442f8d0c203cd37b0b8c9165", package = "abi" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "7327a481c1291176de20757956e33562fa2127a0", package = "abi" }
 
 [patch.crates-io]
-gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "2693d02b570f0d3dabdc69b2c5e72b1dc19db83a" }
-rmp-serde = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "2693d02b570f0d3dabdc69b2c5e72b1dc19db83a" }
-gpui-pre-scheduler = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "2693d02b570f0d3dabdc69b2c5e72b1dc19db83a" }
-gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "2693d02b570f0d3dabdc69b2c5e72b1dc19db83a" }
+gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }
+rmp-serde = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }
+gpui-pre-scheduler = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }
+gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }
 # Window::set_bounds (X11, macOS) and the Linux clipboard reads' wait hook
 # (`crates/web`): the backends, vendored in the fork
-gpui-pre-linux = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "2693d02b570f0d3dabdc69b2c5e72b1dc19db83a" }
-gpui-pre-macos = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "2693d02b570f0d3dabdc69b2c5e72b1dc19db83a" }
+gpui-pre-linux = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }
+gpui-pre-macos = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }
 # the X11 input-method client gpui-pre-linux uses, vendored in the fork: it decodes
 # Hangul and Chinese from ibus and drops (does not panic on) text it cannot decode
-zed-xim = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "2693d02b570f0d3dabdc69b2c5e72b1dc19db83a" }
+zed-xim = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "1026d7a2bac0a21cc73cd9f31a2a56b23f973cea" }
 
 # Symbols are a fifth of the binary and nothing at run time reads them.
 [profile.release]

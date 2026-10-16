@@ -1,6 +1,7 @@
 //! The person's native yes before the device key signs an op a view asks
 //! for, in two cases. An identity op that removes or suspends a key or an
-//! agent: `RemoveKey`, `Revoke`, `Suspend`, and any `identity` op this app
+//! agent, or stops a program running an agent: `RemoveKey`, `Revoke`,
+//! `Suspend`, `SetScript` with no script, and any `identity` op this app
 //! cannot read (the deployed program may know one this build does not).
 //! And every op to a program bound to a role (the programs role, the
 //! validators, identity) from a view whose own program is not: an account
@@ -179,8 +180,8 @@ pub fn refuse_all() {
 /// resolved it, `None` until it has: a `RemoveKey` names the account it
 /// strips, which a manager may make an agent's, and the card says which.
 ///
-/// The identity ops that remove or suspend are asked in this app's own
-/// words, whoever asks. Any other op to a role's program is asked when the
+/// The identity ops that remove, suspend or stop running are asked in
+/// this app's own words, whoever asks. Any other op to a role's program is asked when the
 /// requesting program is bound to no role, in a sentence that names the
 /// role and the target's own description of the op (`described`, read by
 /// the request's task).
@@ -247,6 +248,15 @@ pub(super) fn needed(
                 ),
                 Some(format!("#{account}")),
             )),
+            identity::Op::SetScript {
+                account,
+                script: None,
+            } => Some(words(
+                format!(
+                    "{by} asks to stop the program running agent #{account}. It acts for no program until it is given a script again."
+                ),
+                Some(format!("#{account}")),
+            )),
             identity::Op::RegisterProgram { .. }
             | identity::Op::Create { .. }
             | identity::Op::CreateAgent { .. }
@@ -255,7 +265,9 @@ pub(super) fn needed(
             | identity::Op::SetProfile { .. }
             | identity::Op::Resume { .. }
             | identity::Op::SetAudience { .. }
-            | identity::Op::SetRunner { .. } => None,
+            | identity::Op::SetScript {
+                script: Some(_), ..
+            } => None,
         };
         if asked.is_some() {
             return asked;
@@ -446,6 +458,18 @@ mod tests {
             suspended.said.contains("suspend agent #12"),
             "{suspended:?}"
         );
+        let stopped = asked(&identity::Op::SetScript {
+            account: 12,
+            script: None,
+        })
+        .unwrap();
+        assert!(
+            stopped
+                .said
+                .starts_with("Program chat asks to stop the program running agent #12."),
+            "{stopped:?}"
+        );
+        assert_eq!(stopped.shown.as_deref(), Some("#12"));
         for op in [
             identity::Op::Resume { account: 12 },
             identity::Op::SetName {
@@ -453,6 +477,13 @@ mod tests {
                 name: "x".into(),
             },
             identity::Op::CreateAgent { name: "x".into() },
+            identity::Op::SetScript {
+                account: 12,
+                script: Some(identity::Script {
+                    calls: "harness".into(),
+                    config: "agents/ada.md".into(),
+                }),
+            },
             identity::Op::Create {
                 name: "x".into(),
                 scheme: abi::Scheme::Ed25519,
@@ -552,8 +583,8 @@ mod tests {
     }
 
     /// Claim: a view whose program is bound to no role asks for every op to
-    /// a role's program, the network's title for the programs role and the
-    /// validators, the account's for identity, and leaves the words to the
+    /// a bound role's program (egress among them), the account's title for
+    /// identity and the network's for every other, and leaves the words to the
     /// target's description; its op to any other program, any op from a
     /// role's own program, and every op while no bindings are known ask
     /// nothing new. The identity ops that remove or suspend keep their own
@@ -652,6 +683,33 @@ mod tests {
             );
             assert_eq!((words.title, words.described), (ACCOUNT, false));
         }
+    }
+
+    /// Claim: a vote on a role's op reads on the card in that program's own
+    /// words (halo's here), through the validators' program's description;
+    /// a vote on the roles table names the role and the program it binds.
+    #[test]
+    fn a_role_vote_reads_in_its_programs_words_and_a_bind_names_both() {
+        let open = abi::role::halo::Op::Open {
+            name: "ducktape/live".into(),
+            cap: abi::role::halo::Class::Client,
+        };
+        let vote = valset::Op::Vote(valset::Motion::Role {
+            role: abi::role::HALO.into(),
+            op: abi::encode(&open),
+        });
+        assert_eq!(
+            shown(Some(&valset::describe(&vote)), 0),
+            "Vote · Open lane · ducktape/live\ncap Client"
+        );
+        let bind = valset::Op::Vote(valset::Motion::Bind {
+            role: abi::role::EGRESS.into(),
+            program: Some("gateway".into()),
+        });
+        assert_eq!(
+            shown(Some(&valset::describe(&bind)), 0),
+            "Vote · bind egress to gateway\nrole egress · program gateway"
+        );
     }
 
     /// Claim: the card shows a description as the program's title, then
