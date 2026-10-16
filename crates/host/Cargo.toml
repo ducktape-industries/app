@@ -23,6 +23,9 @@ ax-door = []
 perf-deep = ["gpui-kit/profiler"]
 # the web piece draws pages through CEF (`render/web.rs`, `crates/web`)
 web = ["dep:ducktape-web", "ducktape-web/cef"]
+# the camera and microphone pieces open real devices (`render/av.rs`,
+# `crates/av`)
+av = ["dep:ducktape-av", "ducktape-av/capture"]
 # the test helpers the desktop shell's tests reach (`*_for_test`,
 # `test_style`, ...): on for every test build, never for a shipped one;
 # `wat` turns the test views' text into the wasm a runner takes
@@ -81,6 +84,8 @@ sha1 = "0.10"
 noded-client = { path = "../noded-client" }
 # feature `web` only: CEF and everything that names it
 ducktape-web = { path = "../web", optional = true }
+# feature `av` only: V4L2, AVFoundation, cpal and everything that names them
+ducktape-av = { path = "../av", optional = true }
 
 [dev-dependencies]
 # paused time for the live session's keep-alive and idle tests

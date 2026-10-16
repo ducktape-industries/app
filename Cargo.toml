@@ -91,6 +91,15 @@ ax-door = ["ducktape-host/ax-door"]
 # libcef: the web piece says the build has no web view, and https links go
 # to the system browser.
 web = ["ducktape-host/web"]
+# The camera and the microphone: a view whose manifest declares `camera`
+# or `microphone` draws its pieces with a real device
+# (`crates/host/src/render/av.rs`, `crates/av`: V4L2 or AVFoundation, and
+# cpal). On by default: the app's own build has them. A build without it
+# (`--no-default-features`, a system `crates/av` does not capture on)
+# compiles none of it: the pieces say the build has no camera or
+# microphone and their methods are refused `unknown_request`.
+av = ["ducktape-host/av"]
+default = ["av"]
 
 [dependencies]
 # the blind host core, shared with the phone
