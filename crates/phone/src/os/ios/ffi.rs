@@ -8,6 +8,8 @@
 //!   UTF-8 paths the caller owns, read before anything else runs.
 //! - `ducktape_phone_back()`: the left edge's swipe the launcher follows,
 //!   as Back.
+//! - `ducktape_phone_back_drag(x)`: that swipe under way, `x` points in;
+//!   `ducktape_phone_back_cancel()`: let go without going back.
 //!
 //! No `catch_unwind`: the phone profile builds with `panic = "abort"`
 //! (gpui_ios's ObjC entries have no unwind guard, `README.ducktape.md`).
@@ -50,6 +52,21 @@ pub unsafe extern "C" fn ducktape_phone_main(documents: *const c_char, caches: *
 #[unsafe(no_mangle)]
 pub extern "C" fn ducktape_phone_back() {
     crate::os::send(ducktape_host::contract::Signal::Back);
+}
+
+/// The left edge's swipe under way (`App.swift`), `x` points in from where
+/// it started: the screen on top follows the finger. Its release is
+/// [`ducktape_phone_back`] or [`ducktape_phone_back_cancel`].
+#[unsafe(no_mangle)]
+pub extern "C" fn ducktape_phone_back_drag(x: f64) {
+    crate::os::send(ducktape_host::contract::Signal::BackDrag(x as f32));
+}
+
+/// The left edge's swipe let go short of Back: the screen on top goes back
+/// into place.
+#[unsafe(no_mangle)]
+pub extern "C" fn ducktape_phone_back_cancel() {
+    crate::os::send(ducktape_host::contract::Signal::BackDragCancelled);
 }
 
 /// A path from the launcher; `None` for null or one that is not UTF-8.

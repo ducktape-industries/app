@@ -292,3 +292,93 @@ fn a_sheet_with_no_detents_is_as_tall_as_its_child(cx: &mut gpui_kit::TestAppCon
         "capped at the body: {capped}"
     );
 }
+
+/// Under touch a docked sheet slides up by its own height as it first
+/// draws, asking for frames only while it moves, and lands on the very
+/// layout a pointer's sheet has (which never moves); one the view drops
+/// goes down as it was drawn, taking no press, and is gone at the end with
+/// no frame asked for after.
+#[gpui_kit::test]
+fn under_touch_a_sheet_slides_up_and_down_and_then_stays_still(cx: &mut gpui_kit::TestAppContext) {
+    crate::contract::testing::touch_first_for_test(true);
+    let (tree, mut native, events, _subscription) = open(cx, 390., 844.);
+    let rows = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, _| {
+            window
+                .try_find("rows")
+                .map(|rows| f32::from(rows.bounds().top()))
+        })
+    };
+    // the frames the last draw asked for, delivered: how many
+    let frames = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| window.simulate_next_frame(cx))
+    };
+    let coming = rows(&mut native).expect("drawn");
+    assert!(frames(&mut native) > 0, "a sheet coming asked for no frame");
+    native
+        .executor()
+        .advance_clock(crate::motion::SHEET_IN.duration);
+    native.update(|window, cx| window.render_frame(cx));
+    let up = rows(&mut native).expect("drawn");
+    assert!(coming > up + 100., "it did not come up: {coming} -> {up}");
+    // the frame asked for before the end, drawn after it, asks for none
+    frames(&mut native);
+    assert_eq!(frames(&mut native), 0, "a sheet at rest asked for a frame");
+
+    // the view drops it: it goes down as it was, and a press goes through
+    show(&tree, &mut native, false);
+    let going = rows(&mut native).expect("a sheet going is drawn");
+    assert!(frames(&mut native) > 0, "a sheet going asked for no frame");
+    press(&mut native, 195., 100.);
+    assert_eq!(dismissals(&events), 0, "a sheet going took a press");
+    native
+        .executor()
+        .advance_clock(crate::motion::SHEET_OUT.duration);
+    native.update(|window, cx| window.render_frame(cx));
+    assert_eq!(rows(&mut native), None, "a sheet gone is still drawn");
+    assert!(going >= up, "it went up as it went");
+    frames(&mut native);
+    assert_eq!(frames(&mut native), 0, "a frame asked for after it went");
+
+    // a pointer's sheet: drawn at rest at once, where the touch one landed
+    crate::contract::testing::touch_first_for_test(false);
+    show(&tree, &mut native, true);
+    assert_eq!(
+        rows(&mut native),
+        Some(up),
+        "the touch sheet landed elsewhere"
+    );
+    assert_eq!(frames(&mut native), 0, "a pointer's sheet moved");
+}
+
+/// Under touch a release between detents settles at the nearest from where
+/// it was let go, and at the end the panel rests exactly there.
+#[gpui_kit::test]
+fn under_touch_a_release_settles_at_its_detent(cx: &mut gpui_kit::TestAppContext) {
+    crate::contract::testing::touch_first_for_test(true);
+    let (tree, mut native, _events, _subscription) = open(cx, 390., 844.);
+    native
+        .executor()
+        .advance_clock(crate::motion::SHEET_IN.duration);
+    native.update(|window, cx| window.render_frame(cx));
+    let top = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, _| f32::from(window.find("rows").bounds().top()))
+    };
+    let half = top(&mut native);
+    // up past the middle of the two detents: it settles at the second
+    drag(&mut native, 195., 432., 150.);
+    assert_eq!(rest(&tree, &native), Some(1));
+    let let_go = top(&mut native);
+    native
+        .executor()
+        .advance_clock(crate::motion::SHEET_IN.duration);
+    native.update(|window, cx| window.render_frame(cx));
+    let settled = top(&mut native);
+    crate::contract::testing::touch_first_for_test(false);
+    assert!(
+        settled < let_go && let_go < half,
+        "{half} {let_go} {settled}"
+    );
+    show(&tree, &mut native, true);
+    assert_eq!(top(&mut native), settled, "it settled off its detent");
+}

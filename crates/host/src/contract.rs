@@ -290,6 +290,13 @@ pub enum Signal {
     /// Android BACK from the Activity's dispatcher; iOS from the capsule
     /// or the edge pan.
     Back,
+    /// iOS's left-edge pan under way, its finger this many points in from
+    /// where it started: the shell lets the screen on top follow it. A
+    /// release that goes back is `Back`; one that does not,
+    /// `BackDragCancelled`.
+    BackDrag(f32),
+    /// The edge pan let go without going back.
+    BackDragCancelled,
     /// The insets changed: re-read `OsServices::insets`, re-place.
     InsetsChanged,
     /// A banner the host raised was clicked: the centre opens what it

@@ -65,6 +65,11 @@ impl Stack {
         self.pushed.last().copied()
     }
 
+    /// The program under the top one, `None` when the top one is on a root.
+    pub fn under(&self) -> Option<&'static str> {
+        self.pushed.iter().rev().nth(1).copied()
+    }
+
     /// Every program opened, the latest first.
     pub fn open(&self) -> &[Opened] {
         &self.open
