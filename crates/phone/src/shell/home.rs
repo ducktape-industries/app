@@ -36,17 +36,24 @@ pub fn name_of(row: &RailRow) -> String {
     }
 }
 
-/// The rows Home lists: every program the network lists that is known to
-/// ship a view, in the roster's order (the desktop rail's), none privileged.
+/// Every program the network lists with a view, or still on its way, in
+/// the roster's order (the desktop rail's), none privileged: what opens
+/// (Home's grid leaves out the ones still on their way).
 pub fn listed(shared: &Shared, cx: &App) -> Vec<RailRow> {
     shared
         .rail
         .read(cx)
         .rows()
         .iter()
-        .filter(|row| !row.empty && !row.pending)
+        .filter(|row| !row.empty)
         .cloned()
         .collect()
+}
+
+/// Every program the network lists has had its code read: whether each
+/// ships a view is known.
+pub fn all_read(rows: &[RailRow]) -> bool {
+    !rows.is_empty() && rows.iter().all(|row| !row.pending)
 }
 
 /// `program`'s row, while the network lists it.
@@ -258,9 +265,10 @@ pub fn home(
     cx: &mut Context<Root>,
 ) -> Div {
     let query = field.read(cx).value().trim().to_lowercase();
+    // a program still on its way may ship no view: not a tile until known
     let rows: Vec<RailRow> = listed(shared, cx)
         .into_iter()
-        .filter(|row| answers(row, &query))
+        .filter(|row| !row.pending && answers(row, &query))
         .collect();
     let badges: BTreeMap<&'static str, i64> = shared.rail.read(cx).badges().clone();
     let tiles = rows.iter().map(|row| {

@@ -70,6 +70,14 @@ impl Global for Phone {}
 /// the node this phone used last, and the loops that hand the shell what
 /// the host and the OS send.
 pub fn launch(os: Arc<dyn OsServices>, cx: &mut App) {
+    // first, as the desktop's `main` has it: `DUCKTAPE_PERF=1` in the
+    // launch's environment turns the counters on (iOS:
+    // `SIMCTL_CHILD_DUCKTAPE_PERF=1 xcrun simctl launch`; Android has no
+    // launch environment, so `MainActivity` makes one of the
+    // `-e DUCKTAPE_PERF 1` extra), and the sampler reads the OS facts, so
+    // they are installed first (the instance `start` installs again)
+    ducktape_host::contract::install(os.clone());
+    ducktape_host::perf::start();
     gpui_kit::init(cx);
     let faces = ducktape_host::fonts::BUNDLED_FACES
         .iter()
@@ -95,12 +103,6 @@ pub fn launch(os: Arc<dyn OsServices>, cx: &mut App) {
         open: banner_opened,
     };
     let (host, inbound) = ducktape_host::start::start(boot, cx);
-    // `DUCKTAPE_PERF=1` in the launch's environment turns the counters on
-    // (iOS: `SIMCTL_CHILD_DUCKTAPE_PERF=1 xcrun simctl launch`; Android has
-    // no launch environment, so `MainActivity` makes one of the
-    // `-e DUCKTAPE_PERF 1` extra); the sampler reads the OS facts, which
-    // `start` installed
-    ducktape_host::perf::start();
     crate::os::install_inbound(inbound);
     if let Some(target) = Session::boot_target() {
         host.shared
@@ -343,6 +345,8 @@ impl Root {
         ];
         subscriptions.extend(crate::os::follow(window, cx));
         gpui_kit::component::Theme::sync_system_appearance(Some(window), cx);
+        // an Activity made again finds the rail already read
+        let known = home::all_read(shared.rail.read(cx).rows());
         Self {
             shared,
             stack,
@@ -351,7 +355,7 @@ impl Root {
             titles: BTreeMap::new(),
             placed: Default::default(),
             waiting: None,
-            known: false,
+            known,
             search,
             watched: BTreeMap::new(),
             _subscriptions: subscriptions,
@@ -526,10 +530,7 @@ impl Root {
     /// The rail moved: Home redraws, and a link kept until the network
     /// listed its programs opens now.
     fn rail_moved(&mut self, cx: &mut Context<Self>) {
-        if !self.known {
-            let rows = self.shared.rail.read(cx).rows();
-            self.known = !rows.is_empty() && rows.iter().all(|row| !row.pending);
-        }
+        self.known = self.known || home::all_read(self.shared.rail.read(cx).rows());
         if self.known
             && let Some(link) = self.waiting.take()
         {
