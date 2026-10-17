@@ -2097,10 +2097,11 @@ mod tests {
     }
 
     /// A Home tile is drawn pressed (`look::PRESSED`) while a touch is
-    /// held on it: Home scrolls, so the look waits the content-touch hold
-    /// (a scroll begun on a tile never flashes it), then dims under the
-    /// finger until it lifts; a touch that is cancelled lifts the look and
-    /// opens nothing, a tap opens the program at lift.
+    /// held on it, from touch-down (Home scrolls, and the look shows all
+    /// the same, as Expo's `Pressable`s do); a touch that is cancelled
+    /// lifts the look at once and opens nothing; a tap opens the program
+    /// at lift. (The 130 ms the look outlasts a quick tap is gpui's, proven
+    /// there: the tile slides away under the opening program here.)
     #[gpui_kit::test]
     fn a_tile_is_drawn_pressed_while_a_touch_is_held_on_it(cx: &mut TestAppContext) {
         let _seat = ducktape_host::backend::seat_serial();
@@ -2143,20 +2144,10 @@ mod tests {
                 force: None,
             });
         };
-        let hold = |cx: &mut VisualTestContext| {
-            cx.executor()
-                .advance_clock(std::time::Duration::from_millis(150));
-            cx.run_until_parked();
-        };
         assert_eq!(glyph_alpha(cx), 1., "dimmed before any touch");
 
         touch(1, gpui_kit::TouchPhase::Started, cx);
-        assert!(
-            !pressed(cx),
-            "pressed at touch-down inside the scrolling Home"
-        );
-        hold(cx);
-        assert!(pressed(cx), "not drawn pressed under the held finger");
+        assert!(pressed(cx), "not drawn pressed under the finger");
         assert_eq!(top(&stack, cx), None, "opened at touch-down");
         touch(1, gpui_kit::TouchPhase::Cancelled, cx);
         assert_eq!(
@@ -2171,8 +2162,6 @@ mod tests {
         );
 
         touch(2, gpui_kit::TouchPhase::Started, cx);
-        hold(cx);
-        assert!(pressed(cx), "not drawn pressed under the second finger");
         touch(2, gpui_kit::TouchPhase::Ended, cx);
         cx.run_until_parked();
         assert_eq!(
