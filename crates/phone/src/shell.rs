@@ -795,23 +795,29 @@ impl Root {
                 .is_some_and(|tree| tree.read(cx).can_drag_page(cx))
     }
 
-    /// What this draw shows a swipe back's start ([`swipe::publish`]), from
-    /// a mark laid out last: by then the view on top is laid out, and its
-    /// tree knows what takes a sideways drag in it. The shell's own pages
-    /// take none.
-    fn swipe_shown(&self, cx: &App) -> impl IntoElement + use<> {
-        let open = self.swipe_opens(cx);
-        let tree = match self.pages.is_empty() {
-            true => self.top_seat(cx).and_then(|seat| seat.read(cx).tree()),
-            false => None,
-        };
+    /// What this draw shows a swipe back's start ([`swipe::publish`]), read
+    /// by a mark laid out last, not at this render: the view on top draws
+    /// after it (a cached view renders in its prepaint), and a page motion
+    /// of its that ends in that draw asks for no frame after it, so read
+    /// here it would publish a swipe shut that no frame comes to open. By
+    /// the mark, the view has drawn, and its tree knows what takes a
+    /// sideways drag in it. The shell's own pages take none.
+    fn swipe_shown(cx: &Context<Self>) -> impl IntoElement + use<> {
+        let root = cx.weak_entity();
         canvas(
             move |_, _, cx| {
-                let claimed = tree.map(|tree| tree.read(cx).sideways());
-                swipe::publish(swipe::Shown {
-                    open,
-                    claimed: claimed.unwrap_or_default(),
+                let shown = root.upgrade().map(|root| {
+                    let root = root.read(cx);
+                    let tree = match root.pages.is_empty() {
+                        true => root.top_seat(cx).and_then(|seat| seat.read(cx).tree()),
+                        false => None,
+                    };
+                    swipe::Shown {
+                        open: root.swipe_opens(cx),
+                        claimed: tree.map_or_else(Vec::new, |tree| tree.read(cx).sideways()),
+                    }
                 });
+                swipe::publish(shown.unwrap_or_default());
             },
             |_, _, _, _| {},
         )
@@ -1834,7 +1840,7 @@ impl Render for Root {
             let at = at(shown.at(), &self.consent_height);
             root = root.child(self.consent_sheet(shown.what, at, palette, cx));
         }
-        root.child(self.swipe_shown(cx))
+        root.child(Self::swipe_shown(cx))
     }
 }
 
@@ -2749,7 +2755,7 @@ mod tests {
     /// sideways (one whose content fits takes no sideways drag): a swipe
     /// that starts there is the scroller's, and only the left edge's drags
     /// the page from there. None begins at Home, while a finger holds the
-    /// page or it slides, or under a sheet.
+    /// page or it slides, or under an alert (one of what covers the screen).
     #[gpui_kit::test]
     fn a_swipe_from_anywhere_begins_over_plain_content_not_a_sideways_scroller(
         cx: &mut TestAppContext,
@@ -2821,9 +2827,11 @@ mod tests {
         run_out(cx);
         assert!(swipe::published().open);
 
-        root.update(cx, |root, cx| root.account_sheet(cx));
+        root.update(cx, |root, cx| {
+            root.alert("Alert", "Over the view".into(), cx)
+        });
         run_out(cx);
-        assert!(!swipe::published().open, "a swipe began under a sheet");
+        assert!(!swipe::published().open, "a swipe began under an alert");
         ducktape_host::contract::testing::touch_first_for_test(false);
     }
 
