@@ -621,9 +621,9 @@ fn a_wire_call_rings_as_a_call_and_is_over_at_its_until() {
 }
 
 /// A call rings past the burst, never as "N more"; before the person said
-/// anything about its view it rings once, with the permission bar.
+/// anything about its view every call rings, with the permission bar.
 #[test]
-fn a_call_rings_past_the_burst_and_once_before_the_persons_word() {
+fn a_call_rings_past_the_burst_and_every_time_before_the_persons_word() {
     let now = Instant::now();
     let mut center = Center::default();
     let allowed = settings(Some(Permission::Allow));
@@ -654,14 +654,19 @@ fn a_call_rings_past_the_burst_and_once_before_the_persons_word() {
         (Delivery::Banner, Some(NoticeKind::Call))
     );
     assert!(center.asking.contains("chat"), "the bar asks too");
-    let (posted, banner) = center.post(&unasked, "chat", "Chat", call("call/2", 100), now, 1);
+    // the first call is over: the next one rings too, the bar still asking
+    let (posted, banner) = center.post(&unasked, "chat", "Chat", call("call/2", 200), now, 101);
     assert_eq!(
-        (posted, banner),
-        (Delivery::Logged, None),
+        (posted, banner.map(|notice| notice.tag)),
+        (Delivery::Banner, Some("chat/call/2".to_owned())),
         "a second call rang unasked"
     );
+    assert!(center.asking.contains("chat"));
+    // a plain notice of a view not yet asked about stays in the list
+    let (posted, banner) = center.post(&unasked, "chat", "Chat", post("m", ""), now, 102);
+    assert_eq!((posted, banner), (Delivery::Logged, None));
     let (posted, banner) = center.post(&unasked, "forge", "Forge", call("call/3", 100), now, 2);
-    assert_eq!(posted, Delivery::Banner, "another view rings its own once");
+    assert_eq!(posted, Delivery::Banner, "another view rings its own");
     assert!(banner.is_some());
     // the person's word still decides: Silent logs, Block drops
     let silent = settings(Some(Permission::Silent));

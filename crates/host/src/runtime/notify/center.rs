@@ -80,9 +80,6 @@ pub struct Center {
     pub(crate) sharing: BTreeSet<String>,
     /// Views whose live line the person put away this run.
     told: BTreeSet<String>,
-    /// Views whose call rang before the person said anything about them:
-    /// one does, once a run.
-    rang_unasked: BTreeSet<String>,
     /// The `until` of each banner standing under a tag that has one.
     until: HashMap<String, u64>,
     /// Each program's last call rung, by its tag: it stands while its tag
@@ -174,7 +171,9 @@ impl Center {
                 if !self.not_now.contains(program) {
                     self.asking.insert(program.to_owned());
                 }
-                if !(call && self.rang_unasked.insert(program.to_owned())) {
+                // a call rings while the person has not said: a missed call
+                // is not one they chose to miss
+                if !call {
                     return (Delivery::Logged, None);
                 }
             }
