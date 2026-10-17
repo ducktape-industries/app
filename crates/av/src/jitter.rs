@@ -10,6 +10,9 @@ use std::collections::BTreeMap;
 pub const DEPTH: usize = 3;
 /// The most held, after losses: 200 ms.
 pub const MAX_DEPTH: usize = 10;
+/// A packet this far behind the next is a sender numbering again from
+/// the start (one audio group), not a late one: play starts over.
+pub const RESTART: u64 = 50;
 
 /// What the speaker gets for one frame.
 #[derive(Debug, PartialEq, Eq)]
@@ -48,8 +51,16 @@ impl Jitter {
     /// `packet` numbered `seq` by its sender; one that is late (its place
     /// already played) is dropped.
     pub fn push(&mut self, seq: u64, packet: Vec<u8>) {
-        if self.next.is_some_and(|next| seq < next) {
-            return;
+        if let Some(next) = self.next
+            && seq < next
+        {
+            if seq + RESTART >= next {
+                return;
+            }
+            // the sender started over: so does play
+            self.held.clear();
+            self.next = None;
+            self.primed = false;
         }
         self.held.insert(seq, packet);
     }
@@ -76,6 +87,15 @@ impl Jitter {
             // ran dry: silence until it fills again
             self.primed = false;
             return Pop::Empty;
+        }
+        if self.held.len() > self.depth {
+            // a burst after a stall: what is held is where the sender is,
+            // play jumps to its oldest rather than losing its way there
+            let oldest = *self.held.keys().next().expect("held");
+            self.next = Some(oldest);
+            return Pop::Lost {
+                next: self.held.get(&oldest).cloned(),
+            };
         }
         // ponytail: the depth only grows; shrinking it back once the path
         // is clean again is the upgrade if the lag is ever heard
@@ -134,5 +154,47 @@ mod tests {
         }
         jitter.push(9, packet(9));
         assert_eq!(jitter.pop(), Pop::Packet(packet(6)));
+    }
+
+    /// A burst that comes after a stall, more than the depth held past a
+    /// gap, is played from its oldest packet after one loss, not one loss
+    /// per missing packet.
+    #[test]
+    fn a_burst_after_a_stall_jumps_to_its_oldest() {
+        let mut jitter = Jitter::default();
+        for seq in 0..3 {
+            jitter.push(seq, packet(seq));
+        }
+        for seq in 0..3 {
+            assert_eq!(jitter.pop(), Pop::Packet(packet(seq)));
+        }
+        for seq in 10..20 {
+            jitter.push(seq, packet(seq));
+        }
+        assert_eq!(
+            jitter.pop(),
+            Pop::Lost {
+                next: Some(packet(10))
+            }
+        );
+        assert_eq!(jitter.pop(), Pop::Packet(packet(10)));
+        assert_eq!(jitter.depth, DEPTH, "no deeper for a jump");
+    }
+
+    /// A sender that numbers again from the start (a new session) is
+    /// played from its new start, not dropped as late forever.
+    #[test]
+    fn a_sender_starting_over_is_played_again() {
+        let mut jitter = Jitter::default();
+        for seq in 200..203 {
+            jitter.push(seq, packet(seq));
+        }
+        assert_eq!(jitter.pop(), Pop::Packet(packet(200)));
+        jitter.push(199, packet(199));
+        assert_eq!(jitter.pop(), Pop::Packet(packet(201)), "199 was late");
+        for seq in 0..3 {
+            jitter.push(seq, packet(seq));
+        }
+        assert_eq!(jitter.pop(), Pop::Packet(packet(0)));
     }
 }
