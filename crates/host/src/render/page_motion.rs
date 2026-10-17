@@ -167,20 +167,20 @@ impl ViewTree {
     /// else the swipe is the shell's own, and its release a Back as ever.
     pub fn drag_page(&mut self, progress: f32, cx: &mut Context<Self>) -> bool {
         let progress = progress.clamp(0., 1.);
-        match &mut self.finger {
+        match self.finger {
             // let go already, waiting for the view's answer
             Some(Finger { back: true, .. }) => return false,
-            Some(finger) => finger.progress = progress,
+            Some(_) => {}
             None if self.can_follow(cx) => {
                 // a motion that has ended may not be cleared yet: it is over
                 self.page_motion = None;
-                self.finger = Some(Finger {
-                    progress,
-                    back: false,
-                });
             }
             None => return false,
         }
+        self.finger = Some(Finger {
+            progress,
+            back: false,
+        });
         cx.notify();
         true
     }
