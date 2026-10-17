@@ -80,9 +80,6 @@ pub struct Center {
     pub(crate) sharing: BTreeSet<String>,
     /// Views whose live line the person put away this run.
     told: BTreeSet<String>,
-    /// Views whose call rang before the person said anything about them:
-    /// one does, once a run.
-    rang_unasked: BTreeSet<String>,
     /// The `until` of each banner standing under a tag that has one.
     until: HashMap<String, u64>,
     /// Each program's last call rung, by its tag: it stands while its tag
@@ -127,7 +124,7 @@ impl Center {
     /// the view's "N more" once it is past its burst. A call is never held
     /// back by the burst nor folded into "N more" but rings only while no
     /// other call of its program stands, under any tag (a default the owner
-    /// may veto), and once before the person said anything about its view.
+    /// may veto), and also before the person said anything about its view.
     /// It stands until its `until`, `notify.seen` of its tag, or a decline
     /// on its banner ([`Center::declined`]); without a tag or an `until` it
     /// is a plain notice. A notice past its `until` is logged only.
@@ -174,7 +171,9 @@ impl Center {
                 if !self.not_now.contains(program) {
                     self.asking.insert(program.to_owned());
                 }
-                if !(call && self.rang_unasked.insert(program.to_owned())) {
+                // a call rings while the person has not said: a missed call
+                // is not one they chose to miss
+                if !call {
                     return (Delivery::Logged, None);
                 }
             }
