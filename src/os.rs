@@ -8,8 +8,8 @@
 //! desktop's too.
 
 use ducktape_host::contract::{
-    Banners, Dirs, Inbound, KeyLevel, KeyRefusal, KeyStorage, Limits, MintInvite, OsFacts,
-    OsServices, Preload, Signal, SoftKeyboard,
+    Banners, Dirs, Inbound, KeyRefusal, KeyStorage, Limits, MintInvite, OsFacts, OsServices,
+    Preload, Signal, SoftKeyboard,
 };
 use ducktape_host::runtime::Answered;
 use ducktape_host::runtime::notify::{Click, Notice, Settings};
@@ -138,11 +138,12 @@ impl OsServices for DesktopOs {
         &self.dirs
     }
 
-    /// The OS keyring's entry for `keyring` (`backend::device_key`), or the
-    /// file it falls back to; a password-locked key from before keys moved
-    /// into the OS is `None`, which `shell::sign_in` opens with its
-    /// password once. The store's refusal sentences are one string today,
-    /// so each reads as `Denied`.
+    /// The OS store's key for `keyring` (`backend::device_key`: on macOS
+    /// the data protection keychain, read with Touch ID), or the file it
+    /// falls back to; a password-locked key from before keys moved into
+    /// the OS is `None`, which `shell::sign_in` opens with its password
+    /// once. The store's refusal sentences are one string today, so each
+    /// reads as `Denied`.
     fn device_key(
         &self,
         keyring: &str,
@@ -154,13 +155,11 @@ impl OsServices for DesktopOs {
         }
     }
 
-    fn key_storage(&self, _: &str) -> Result<KeyStorage, KeyRefusal> {
+    /// Asked without Touch ID (`backend::device_key::level`).
+    fn key_storage(&self, keyring: &str) -> Result<KeyStorage, KeyRefusal> {
         Ok(KeyStorage {
             sealed: false,
-            level: match crate::backend::device_key::file_only() {
-                true => KeyLevel::File,
-                false => KeyLevel::OsKeyring,
-            },
+            level: crate::backend::device_key::level(keyring).map_err(KeyRefusal::Denied)?,
         })
     }
 
