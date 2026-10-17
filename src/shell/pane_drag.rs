@@ -1,6 +1,7 @@
 //! A pane held by the pointer: the title bar moves it, the grips around it
 //! size it, and a press anywhere raises it. The pointer is followed
-//! window-wide, so a fast hand cannot slip off what it holds. The hold is
+//! window-wide, so a fast hand cannot slip off what it holds (Settings'
+//! title strip is followed the same way, `follow_pointer`). The hold is
 //! the `PaneLayer`'s; the grips are drawn by the `PaneView` they size.
 use super::layers::{PaneLayer, PaneView};
 use super::*;
@@ -294,34 +295,49 @@ pub(super) fn raise(
 /// the frame on the `Desk` (compared: a pointer that stays put moves
 /// nothing).
 pub(super) fn follow(this: gpui_kit::Entity<PaneLayer>, window: &mut Window) {
-    use gpui_kit::*;
-    let held = this.clone();
-    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-        if phase != DispatchPhase::Bubble {
+    follow_pointer(this, window, |this, to, _, cx| {
+        let Some(drag) = this.drag else {
             return;
-        }
-        held.update(cx, |this, cx| {
-            let Some(drag) = this.drag else {
-                return;
-            };
-            if event.pressed_button != Some(MouseButton::Left) {
-                this.drag = None;
-                cx.notify();
-            } else {
-                let to = (event.position.x.into(), event.position.y.into());
+        };
+        match to {
+            Some(to) => {
                 let frame = drag.frame(to);
                 this.desk
                     .update(cx, |desk, cx| desk.set_frame(drag.index, frame, cx));
             }
-        });
+            None => {
+                this.drag = None;
+                cx.notify();
+            }
+        }
     });
-    window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+}
+
+/// The pointer, window-wide, for whatever `this` holds by it (a desk
+/// window here, Settings by its title strip): `held` hears each move with
+/// the left button down, where the pointer is now, and `None` once the
+/// hand lets go (a move with the button up, or its release, a release that
+/// comes before the next frame too). Called on every frame, not only once
+/// a hold is drawn: the moves after a press may come before the next frame.
+pub(super) fn follow_pointer<T: 'static>(
+    this: gpui_kit::Entity<T>,
+    window: &mut Window,
+    held: impl Fn(&mut T, Option<(f32, f32)>, &mut Window, &mut Context<T>) + 'static,
+) {
+    use gpui_kit::*;
+    let held = std::rc::Rc::new(held);
+    let (moving, moved) = (this.clone(), held.clone());
+    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+        if phase != DispatchPhase::Bubble {
+            return;
+        }
+        let to = (event.pressed_button == Some(MouseButton::Left))
+            .then(|| (event.position.x.into(), event.position.y.into()));
+        moving.update(cx, |this, cx| moved(this, to, window, cx));
+    });
+    window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
         if phase == DispatchPhase::Bubble && event.button == MouseButton::Left {
-            this.update(cx, |this, cx| {
-                if this.drag.take().is_some() {
-                    cx.notify();
-                }
-            });
+            this.update(cx, |this, cx| held(this, None, window, cx));
         }
     });
 }

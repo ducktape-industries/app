@@ -334,6 +334,7 @@ mod tests {
         WasmtimeRunner::new(RunnerConfig {
             signals_based_traps: true,
             cache_dir: None,
+            compile_apart: None,
         })
     }
 

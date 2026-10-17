@@ -88,6 +88,7 @@ mod app {
         let runner = match JscRunner::new(RunnerConfig {
             signals_based_traps: false,
             cache_dir: Some(caches),
+            compile_apart: None,
         }) {
             Ok(runner) => runner,
             Err(failure) => {

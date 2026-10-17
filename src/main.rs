@@ -45,6 +45,11 @@ fn main() {
         }
         // lay down a self-updating install of this binary
         Some("install") => std::process::exit(update::install_cli()),
+        // a view's compile, in a child so its memory leaves with it
+        Some(ducktape_host::runner::COMPILE_APART) => {
+            let args: Vec<std::ffi::OsString> = std::env::args_os().skip(2).collect();
+            std::process::exit(ducktape_host::runner::compile_child(&args));
+        }
         // "Restart to update"'s waiter: starts the app once this one is gone
         Some(update::RESTART_WAITER) => {
             install_log();

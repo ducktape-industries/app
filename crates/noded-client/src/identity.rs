@@ -46,8 +46,9 @@ pub async fn account_by_number(
 
 /// The account `key` belongs to on `network` — its number and name — or
 /// `None` while the key acts as no account there: it holds none, or identity
-/// refuses it (a suspended account). Only a node that did not answer is an
-/// `Err`.
+/// refuses it as `unauthorized` (a suspended account, the one way `OfKey`
+/// refuses a key). Any other refusal (a body cut short, a trap) says nothing
+/// of the key: it is an `Err`, as a node that did not answer is.
 pub async fn account_of_key(
     client: &Client,
     network: &str,
@@ -62,7 +63,9 @@ pub async fn account_of_key(
     )
     .map_err(|refused| refused.to_string())?;
     let reply = match client.query(Layer::Preconfirmed, frame.encode()).await {
-        Err(Error::Refused(_)) => return Ok(None),
+        Err(Error::Refused(refusal)) if refusal.reason == abi::reason::UNAUTHORIZED => {
+            return Ok(None);
+        }
         reply => reply.map_err(|error| node_error(error.to_string()))?,
     };
     let number = match abi::decode(&reply).map_err(|refusal| refusal.sentence)? {
@@ -234,13 +237,18 @@ mod tests {
     }
 
     /// A suspended account's key is refused by identity: that is an answer
-    /// (no account), where a node that failed is not one.
+    /// (no account), where a node that failed, or refused the query for
+    /// another reason, is not one.
     #[tokio::test]
     async fn a_refused_key_holds_no_account_and_a_failed_node_is_no_answer() {
         let refused = abi::Refusal::new(abi::reason::UNAUTHORIZED, "account 7 is suspended");
         let client = fake_node("400 Bad Request", BYTES, abi::encode(&refused)).await;
         let lookup = account_of_key(&client, "testkit", vec![1], &FixedSigner).await;
         assert_eq!(lookup, Ok(None));
+        let trapped = abi::Refusal::new(abi::reason::TRAP, "out of fuel");
+        let client = fake_node("400 Bad Request", BYTES, abi::encode(&trapped)).await;
+        let lookup = account_of_key(&client, "testkit", vec![1], &FixedSigner).await;
+        assert_eq!(lookup, Err("trap: out of fuel".into()));
         let client = fake_node("503 Service Unavailable", PLAIN, b"down".to_vec()).await;
         let lookup = account_of_key(&client, "testkit", vec![1], &FixedSigner).await;
         assert!(lookup.is_err());
