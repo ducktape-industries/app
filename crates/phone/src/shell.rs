@@ -2016,9 +2016,9 @@ mod tests {
 
     /// The Account tab is a tab: picked, it is the root on screen with no
     /// sheet over it; its App settings and Switch network push their pages
-    /// over it and Back comes back to it. A view asking for
-    /// the reader's account (a header's avatar) picks it too, the program
-    /// left open where it was.
+    /// over it and Back comes back to it. A view asking for the reader's
+    /// account (a header's avatar) picks it too, the program left open
+    /// where it was.
     #[gpui_kit::test]
     fn the_account_tab_is_a_root_its_rows_push_over_it(cx: &mut TestAppContext) {
         let (root, stack, cx) = phone(cx);

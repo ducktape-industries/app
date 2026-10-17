@@ -58,9 +58,13 @@ pub fn listed(shared: &Shared, cx: &App) -> Vec<RailRow> {
 
 /// `program`'s row, while the network lists it.
 pub fn row_of(shared: &Shared, program: &str, cx: &App) -> Option<RailRow> {
-    listed(shared, cx)
-        .into_iter()
-        .find(|row| row.program == program)
+    shared
+        .rail
+        .read(cx)
+        .rows()
+        .iter()
+        .find(|row| !row.empty && row.program == program)
+        .cloned()
 }
 
 /// The person's name and account number, once the account is found.
@@ -612,9 +616,9 @@ pub fn open(
 /// dot; a press reads it and opens what it is about as a tapped system
 /// notice does ([`Root::open_notice`]). "Mark all read" at the header's
 /// right while any is unread, "Clear read" under the rows while any is
-/// read. Which notices there are, their words, their
-/// grouping and their links are each program's own; this list carries
-/// them and decides none of it.
+/// read. Which notices there are, their words, their grouping and their
+/// links are each program's own; this list carries them and decides none
+/// of it.
 pub fn notifications(shared: &Shared, palette: Palette, cx: &mut Context<Root>) -> Div {
     let (entries, unread) = {
         let notifications = shared.notifications.read(cx);
