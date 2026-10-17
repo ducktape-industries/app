@@ -70,6 +70,9 @@
 			</array>
 		</dict>
 	</dict>
+	<!-- ProMotion: without it an iPhone caps a third-party app at 60 Hz; gpui_ios's display link asks for no range, so it runs at the screen's rate -->
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 	<!-- export compliance: TLS (rustls/ring) and Ed25519 only, as the Expo build answered (mobile #27) -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
