@@ -142,7 +142,6 @@ mod inner {
     /// its track and its mute again.
     const MIC_WAIT: Duration = Duration::from_millis(100);
     const LESS_PICTURE: &str = "sending less picture";
-    const NO_PICTURE: &str = "this build sends no picture";
 
     /// What a piece's thread says of its track (and, a remote piece's, of
     /// its playback).
@@ -590,10 +589,12 @@ mod inner {
         let mut ladder = Ladder::new(started);
         let mut encoder = match encoder_at(ladder.rung()) {
             Ok(encoder) => Some(encoder),
-            Err(_) => {
+            Err(why) => {
+                // the codec's own reason: turned off in Settings, not
+                // fetched, no encoder on this device
                 let mut word = lock(&standing);
                 word.unsupported = true;
-                word.detail = NO_PICTURE.into();
+                word.detail = format!("no picture sent: {why}");
                 None
             }
         };
