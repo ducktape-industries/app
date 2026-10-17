@@ -43,7 +43,9 @@ use ducktape_host::backend;
 use ducktape_host::contract::{
     self, Banners, Dirs, KeyRefusal, KeyStorage, Limits, MintInvite, OsFacts, OsServices, Preload,
 };
-use ducktape_host::runtime::notify::{CenterHandle, Click, Notice, Permission, Settings};
+use ducktape_host::runtime::notify::{
+    CenterHandle, Click, Notice, NoticeKind, Permission, Settings,
+};
 use ducktape_host::runtime::{self, Answered, Intent, Recipient};
 
 mod push;
@@ -210,7 +212,7 @@ fn run(network: &Network, config: &Config, data: &Path) -> Result<(), String> {
         .map(Fcm::load)
         .transpose()?
         .map(Arc::new);
-    let http: Arc<dyn push::Http> = Arc::new(push::Client::new());
+    let http: Arc<dyn push::Http> = Arc::new(push::Client::new()?);
     let home = data.join(&network.name);
     contract::install(Arc::new(Headless::new(&home)?));
     // the notifiers run on wasmtime, their compiled code kept across runs
@@ -315,15 +317,18 @@ impl Banners for Log {
     }
 }
 
-/// One notice as the `log` channel writes it.
+/// One notice as the `log` channel writes it: whose and which, never its
+/// words (the journal is not the person's to read).
 fn line(network: &str, account: u64, notice: &Notice) -> String {
     serde_json::json!({
         "channel": "log",
         "network": network,
         "account": account,
         "program": notice.program,
-        "title": notice.title,
-        "body": notice.body,
+        "kind": match notice.kind {
+            NoticeKind::Notice => "notice",
+            NoticeKind::Call => "call",
+        },
         "tag": notice.tag,
         "link": notice.link,
     })
@@ -471,9 +476,10 @@ mod tests {
     use super::*;
 
     /// A notice on the `log` channel is one line of JSON naming the network,
-    /// the account, the program and the notice's own words, tag and link.
+    /// the account, the program and the notice's kind, tag and link, never
+    /// its words.
     #[test]
-    fn a_log_line_names_whose_notice_it_is_and_its_words() {
+    fn a_log_line_names_whose_notice_it_is_not_its_words() {
         let notice = Notice {
             title: "ada mentioned you".into(),
             body: "look at this".into(),
@@ -492,8 +498,7 @@ mod tests {
                 "network": "testkit",
                 "account": 2,
                 "program": "chat",
-                "title": "ada mentioned you",
-                "body": "look at this",
+                "kind": "notice",
                 "tag": "chat/#general",
                 "link": "duck://testkit-0a1b2c3d/chat/general/7",
             })

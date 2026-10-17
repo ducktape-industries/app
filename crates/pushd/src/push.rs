@@ -7,7 +7,7 @@
 //! `until`. Taken down before then (the program's `notify.seen` of its
 //! tag), it is withdrawn: a background push to an iPhone's APNs token (never
 //! a second VoIP push, which iOS would ring), `kind: withdraw` to an Android
-//! phone. Past its `until` it is dropped: a phone stops ringing then on its
+//! phone at normal priority. Past its `until` it is dropped: a phone stops ringing then on its
 //! own, and pushd sends no call already past it. Every other notice goes on
 //! to the `log` channel.
 //!
@@ -72,12 +72,29 @@ pub trait Http: Send + Sync {
     fn send(&self, request: &Request) -> Result<(u16, String), String>;
 }
 
-/// The internet: HTTP/2, which APNs requires, through reqwest.
+/// The internet: HTTP/2, which APNs requires, through reqwest. Every
+/// request gives up in bounded time: the channel's sends run one after
+/// another in the program's queue, and one stuck connection would hold
+/// every later ring past its `until`. Idle HTTP/2 connections are pinged,
+/// so a dead one is found before a ring waits on it.
 pub struct Client(reqwest::Client);
 
 impl Client {
-    pub fn new() -> Self {
-        Self(reqwest::Client::new())
+    pub fn new() -> Result<Self, String> {
+        Self::timed(Duration::from_secs(10))
+    }
+
+    /// Each request given up after `timeout`, a connect after half of it.
+    fn timed(timeout: Duration) -> Result<Self, String> {
+        reqwest::Client::builder()
+            .timeout(timeout)
+            .connect_timeout(timeout / 2)
+            .http2_keep_alive_interval(Duration::from_secs(30))
+            .http2_keep_alive_timeout(Duration::from_secs(10))
+            .http2_keep_alive_while_idle(true)
+            .build()
+            .map(Self)
+            .map_err(|error| format!("no HTTP client: {error}"))
     }
 }
 
@@ -383,7 +400,7 @@ impl Push {
                 (key.clone(), serde_json::Value::String(text))
             })
             .collect();
-        requests.extend(self.fcm(&data, &call.tag, call.until, now));
+        requests.extend(self.fcm(&data, &call.tag, call.until, now, "high"));
         requests
     }
 
@@ -420,11 +437,13 @@ impl Push {
         }
         let data = serde_json::json!({ "kind": "withdraw", "tag": tag });
         let data = data.as_object().cloned().unwrap_or_default();
-        requests.extend(self.fcm(&data, tag, until, now));
+        // normal: it shows nothing, and FCM deprioritises an app whose
+        // high-priority messages show nothing
+        requests.extend(self.fcm(&data, tag, until, now, "normal"));
         requests
     }
 
-    /// One high-priority FCM data message of `data` per Android token,
+    /// One FCM data message of `data` at `priority` per Android token,
     /// living until `until`.
     fn fcm(
         &self,
@@ -432,6 +451,7 @@ impl Push {
         tag: &str,
         until: u64,
         now: u64,
+        priority: &str,
     ) -> Vec<Request> {
         let Some(fcm) = self
             .fcm
@@ -462,7 +482,7 @@ impl Push {
                         "token": token,
                         "data": data,
                         "android": {
-                            "priority": "high",
+                            "priority": priority,
                             "ttl": format!("{}s", until.saturating_sub(now)),
                             "collapse_key": tag,
                         },
@@ -482,14 +502,28 @@ impl Push {
                 // ponytail: a token APNs or FCM says is gone stays listed
                 // until M2's registry drops it
                 Ok((status, body)) => {
-                    tracing::warn!(target: "pushd", url = request.url, status, body, "push refused")
+                    let to = shown(&request.url);
+                    tracing::warn!(target: "pushd", to, status, body, "push refused")
                 }
                 Err(error) => {
-                    tracing::warn!(target: "pushd", url = request.url, %error, "push not sent")
+                    let to = shown(&request.url);
+                    tracing::warn!(target: "pushd", to, %error, "push not sent")
                 }
             }
         }
         taken
+    }
+}
+
+/// Where a request went, for the log: an APNs device token in its URL cut
+/// to its last four characters (FCM's token is in the body, never logged).
+fn shown(url: &str) -> String {
+    match url.rsplit_once("/device/") {
+        Some((host, token)) => {
+            let tail = token.get(token.len().saturating_sub(4)..).unwrap_or("");
+            format!("{host}/device/…{tail}")
+        }
+        None => url.to_owned(),
     }
 }
 
@@ -734,6 +768,7 @@ mod tests {
             fcm["message"]["data"],
             serde_json::json!({ "kind": "withdraw", "tag": "huddle/call/c1" })
         );
+        assert_eq!(fcm["message"]["android"]["priority"], "normal");
         assert!(
             sent.iter()
                 .all(|request| header(request, "apns-push-type") != "voip")
@@ -748,6 +783,50 @@ mod tests {
             http.0.lock().unwrap().is_empty(),
             "a call past its until rung or withdrawn"
         );
+    }
+
+    /// An endpoint that takes the connection and never answers is given up
+    /// at the client's timeout, and the next request goes out: one stuck
+    /// device never holds the program's queue past a call's `until`.
+    #[test]
+    fn a_hung_endpoint_times_out_and_the_next_request_goes() {
+        use std::io::{Read as _, Write as _};
+        // the kernel takes the connection into the backlog; nobody answers
+        let hung = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let answers = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let (hung_at, answers_at) = (hung.local_addr().unwrap(), answers.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut connection, _) = answers.accept().unwrap();
+            let _ = connection.read(&mut [0; 4096]);
+            let _ = connection.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok");
+        });
+        let client = Client::timed(Duration::from_millis(300)).unwrap();
+        let to = |at: std::net::SocketAddr| Request {
+            url: format!("http://{at}/"),
+            headers: Vec::new(),
+            body: "{}".into(),
+        };
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send((client.send(&to(hung_at)), client.send(&to(answers_at))));
+        });
+        let (first, second) = finished
+            .recv_timeout(Duration::from_secs(10))
+            .expect("a hung endpoint held the next request");
+        assert!(first.is_err(), "the hung endpoint answered: {first:?}");
+        assert_eq!(second, Ok((200, "ok".to_owned())));
+        drop(hung);
+    }
+
+    /// A logged URL shows the last four characters of an APNs token.
+    #[test]
+    fn a_logged_url_cuts_the_device_token() {
+        assert_eq!(
+            shown("https://api.push.apple.com/3/device/ab12cd34"),
+            "https://api.push.apple.com/3/device/…cd34"
+        );
+        let fcm = "https://fcm.googleapis.com/v1/projects/p/messages:send";
+        assert_eq!(shown(fcm), fcm);
     }
 
     /// A notice that is not a call sends nothing: it goes to the log.
