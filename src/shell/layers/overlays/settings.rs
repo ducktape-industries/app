@@ -43,16 +43,16 @@ pub(super) struct Moved {
 
 /// Settings' card in a window `size` big, under the chrome's `inset`:
 /// where its top hangs and the height it may take (`dialog_fit`), and the
-/// offset `by` held so its title strip stays inside the window, whole
-/// across and between the chrome and the bottom edge (the body may hang
-/// past the bottom): `(top, tall, by)`.
+/// offset `by` held so the whole card stays inside the scrim's 12px
+/// margins (`dialog_fit` sizes it to fit where it hangs, so it always
+/// can): `(top, tall, by)`.
 fn placed(size: (f32, f32), inset: Inset, by: (f32, f32)) -> (f32, f32, (f32, f32)) {
     let (top, tall) = dialog_fit(size.1, inset, TALL, HANG);
     // centred across the scrim, inside its 12px sides
     let room = size.0 - inset.left - 2. * DIALOG_EDGE;
     let side = ((room - WIDE.min(room)) / 2.).max(0.);
-    let up = DIALOG_EDGE - top;
-    let down = (size.1 - inset.top - DIALOG_EDGE - STRIP - top).max(up);
+    // up to the top margin, down by what the card leaves of its fit
+    let (up, down) = (DIALOG_EDGE - top, tall - TALL.min(tall));
     (top, tall, (by.0.clamp(-side, side), by.1.clamp(up, down)))
 }
 
@@ -110,8 +110,8 @@ impl OverlayLayer {
     /// The dialog on `shown`: `760 × 680; border: 1.5px solid ink` (the
     /// board's 540, taller so every view's row fits), a 34px title strip
     /// with its close, on a scrim below the bar. A click on the scrim, or
-    /// Escape, closes it. Its strip moves it (`Moved`), never past where
-    /// the strip would leave the window (`placed`).
+    /// Escape, closes it. Its strip moves it (`Moved`), never out of the
+    /// window (`placed`).
     pub(super) fn settings(
         &mut self,
         shown: SettingsPage,
