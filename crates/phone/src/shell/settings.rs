@@ -1,5 +1,5 @@
 //! App settings (Expo `app/settings.tsx`, board 120), pushed from the
-//! account sheet: the network in hand and the way to another (Switch
+//! Account tab: the network in hand and the way to another (Switch
 //! network, which keeps this phone's key), this phone and where its key is
 //! kept, the appearance, the app's version. The Expo dev build's Relay
 //! section is not here: a phone build is never one.
@@ -301,7 +301,7 @@ fn toggle(on: bool, palette: Palette) -> Div {
 }
 
 /// A row's chevron (Expo `Row`'s `chevron`): the row pushes a page.
-fn chevron(palette: Palette) -> gpui_kit::Svg {
+pub(super) fn chevron(palette: Palette) -> gpui_kit::Svg {
     svg()
         .path("icons/chevron-right.svg")
         .size(px(look::ICON_ROW))
@@ -355,7 +355,7 @@ pub(super) fn row(
 }
 
 /// A row's caption: 12 muted, one line.
-fn caption(text: impl Into<SharedString>, palette: Palette) -> Div {
+pub(super) fn caption(text: impl Into<SharedString>, palette: Palette) -> Div {
     look::text(look::CAPTION, FontWeight::NORMAL, palette.muted())
         .truncate()
         .child(text.into())

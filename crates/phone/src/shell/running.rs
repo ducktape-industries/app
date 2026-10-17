@@ -8,6 +8,7 @@
 //! zoomed for it (the seat sends it the body as it is under touch).
 
 use super::look::{self, Palette};
+use super::stack::Tab;
 use super::{Root, home};
 use ducktape_host::a11y::Control as _;
 use ducktape_host::runtime::{RailRow, Seat};
@@ -138,7 +139,7 @@ pub fn capsule(
         )
         .child(
             press("capsule/close", "Close", look::HIT)
-                .on_click(cx.listener(|root, _, _, cx| root.go_home(cx))),
+                .on_click(cx.listener(|root, _, _, cx| root.go_to(Tab::Home, cx))),
         )
         .into_any_element()
 }

@@ -1,8 +1,8 @@
 //! Where the person is (wasm-mobile SPEC §7.1), and what they have open:
-//! one of two tab roots (Home, Open; the Account tab is the account sheet,
-//! never a root), the programs pushed over it, and every program opened
-//! since, each in its one seat, kept warm where it was left. Tabs show on
-//! the roots only; a pushed program fills the screen under its capsule.
+//! one of four tab roots (Home, Open, Notifications, Account), the
+//! programs pushed over it, and every program opened since, each in its
+//! one seat, kept warm where it was left. Tabs show on the roots only; a
+//! pushed program fills the screen under its capsule.
 //! The shape is gpui-mobile's example router (`is_tab_root`, a history
 //! pushed by `navigate_to`, `example/src/screens/mod.rs:132,191,288`).
 //!
@@ -19,6 +19,11 @@ pub enum Tab {
     Home,
     /// The programs already open, where they were left.
     Open,
+    /// The notices the programs posted, newest first.
+    Notifications,
+    /// Who is reading, and the way to the account, App settings and
+    /// Switch network.
+    Account,
 }
 
 /// A program opened, in its one seat.
@@ -140,11 +145,6 @@ impl Stack {
         false
     }
 
-    /// The capsule's ×: Home, every program pushed left where it is.
-    pub fn home(&mut self, now: Instant) {
-        self.pick(Tab::Home, now);
-    }
-
     /// `program` closed from Open: its seat goes, and it stays on Home.
     pub fn close(&mut self, program: &str) {
         self.open.retain(|opened| opened.program != program);
@@ -190,11 +190,17 @@ mod tests {
     use super::*;
 
     /// Back pops a program (its seat kept, marked left), then leaves a
-    /// non-Home tab for Home, then is refused at Home.
+    /// non-Home tab (any of the other three) for Home, then is refused at
+    /// Home.
     #[test]
     fn back_pops_then_goes_home_then_stops() {
         let now = Instant::now();
         let mut stack = Stack::default();
+        for tab in [Tab::Notifications, Tab::Account] {
+            stack.pick(tab, now);
+            assert!(stack.back(now), "Back at {tab:?} was refused");
+            assert_eq!(stack.tab(), Tab::Home, "Back at {tab:?}");
+        }
         stack.pick(Tab::Open, now);
         let chat = stack.push("chat");
         assert_eq!(stack.push("chat"), chat, "one seat per program");
@@ -214,7 +220,7 @@ mod tests {
         let mut stack = Stack::default();
         let chat = stack.push("chat");
         let forge = stack.push("forge");
-        stack.home(now);
+        stack.pick(Tab::Home, now);
         assert_eq!((stack.tab(), stack.top()), (Tab::Home, None));
         let open: Vec<_> = stack.open().iter().map(|it| it.program).collect();
         assert_eq!(open, ["forge", "chat"]);
@@ -230,7 +236,7 @@ mod tests {
         let now = Instant::now();
         let mut stack = Stack::default();
         stack.push("chat");
-        stack.home(now);
+        stack.pick(Tab::Home, now);
         stack.push("forge");
         stack.push("explorer");
         stack.trim();

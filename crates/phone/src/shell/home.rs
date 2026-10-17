@@ -1,15 +1,18 @@
 //! The tab roots: Home (the network's programs, IA B, wasm-mobile SPEC
 //! §7.2: a tinted grid, four across, the ones with news first), Open (the
-//! programs open, where they were left), and the tab bar under them. Drawn
+//! programs open, where they were left), Notifications (the notices the
+//! programs posted, as the host's centre logs them), Account (who is
+//! reading, and the account's rows), and the tab bar under them. Drawn
 //! in the Expo kit's measures ([`look`]); the words are the shell boards'
 //! (`design/canvas/shell`), English as the Expo app's.
 
-use super::Root;
 use super::debug::Readout;
 use super::look::{self, Palette};
 use super::stack::{Opened, Tab};
+use super::{ACCOUNT_PROGRAM, Root, settings};
 use ducktape_host::a11y::Control as _;
 use ducktape_host::runtime::RailRow;
+use ducktape_host::runtime::notify::{Entry, wall};
 use ducktape_host::session::Shared;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::{
@@ -98,7 +101,7 @@ pub fn avatar(name: &str, side: f32, palette: Palette) -> Div {
 
 /// The 56 header of a tab root (Expo `Header` with `root`): the 22 title,
 /// a 12 caption under it; what the root adds (Home's filter) at the right.
-/// No avatar: the Account tab opens the account sheet.
+/// No avatar: who is reading is the Account tab's.
 fn root_header(title: String, caption: String, palette: Palette) -> Div {
     let words = div()
         .flex_1()
@@ -603,6 +606,262 @@ pub fn open(
         )
 }
 
+/// Notifications: the notices the programs posted, as the host's centre
+/// logs them (the desktop bell's list), newest first, each under its
+/// program's name and how long ago it came, an unread one in medium with a
+/// dot; a press reads it and opens what it is about as a tapped system
+/// notice does ([`Root::open_notice`]). "Mark all read" at the header's
+/// right while any is unread. Which notices there are, their words, their
+/// grouping and their links are each program's own; this list carries
+/// them and decides none of it.
+pub fn notifications(shared: &Shared, palette: Palette, cx: &mut Context<Root>) -> Div {
+    let (entries, unread) = {
+        let notifications = shared.notifications.read(cx);
+        (notifications.entries(), notifications.unread())
+    };
+    let on = {
+        let network = shared.session.read(cx).get().network.clone();
+        match unread {
+            0 => network,
+            unread => format!("{network} · {unread} unread"),
+        }
+    };
+    let mut header = root_header("Notifications".into(), caption(shared, on, cx), palette);
+    if unread > 0 {
+        // Expo `HitText`: 44 tall, the words in medium
+        header = header.child(
+            div()
+                .id("notifications/mark-all")
+                .control(Role::Button, "Mark all read")
+                .debug_selector(|| "notifications/mark-all".to_owned())
+                .h(px(look::HIT))
+                .flex_none()
+                .px(px(look::gap::SM))
+                .flex()
+                .items_center()
+                .active(|style| style.opacity(look::PRESSED))
+                .child(
+                    look::text(look::BODY, FontWeight::MEDIUM, palette.foreground())
+                        .child("Mark all read"),
+                )
+                .on_click(cx.listener(|root, _, _, cx| {
+                    root.shared
+                        .notifications
+                        .update(cx, |notifications, cx| notifications.mark_all_read(cx));
+                })),
+        );
+    }
+    let screen = div().flex_1().min_h_0().flex().flex_col().child(header);
+    if entries.is_empty() {
+        return screen.child(empty(
+            "icons/bell.svg",
+            "You\u{2019}re all caught up",
+            "Notices from your programs land here.",
+            palette,
+        ));
+    }
+    let now = wall();
+    let rows: Vec<_> = entries
+        .into_iter()
+        .map(|entry| notice(shared, entry, now, palette, cx))
+        .collect();
+    screen.child(
+        div()
+            .id("notifications")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .children(rows),
+    )
+}
+
+/// One notice's row (Expo `Row`, 56 and up): its program's glyph, the
+/// program's name and how long ago over the notice's title and its words
+/// (two lines at most); unread, the title in medium and a dot at the right.
+fn notice(
+    shared: &Shared,
+    entry: Entry,
+    now: i64,
+    palette: Palette,
+    cx: &mut Context<Root>,
+) -> Stateful<Div> {
+    let row = row_of(shared, &entry.program, cx);
+    let name = row.as_ref().map_or_else(|| entry.program.clone(), name_of);
+    let lead = match &row {
+        Some(row) => glyph(row, 32., look::ICON_ROW, palette),
+        None => avatar(&name, 32., palette),
+    };
+    let when = ago(Duration::from_secs(
+        u64::try_from(now - entry.at).unwrap_or(0),
+    ));
+    let (weight, ink) = match entry.read {
+        true => (FontWeight::NORMAL, palette.muted()),
+        false => (FontWeight::MEDIUM, palette.foreground()),
+    };
+    let said = format!(
+        "{}{name}: {}",
+        if entry.read { "" } else { "Unread. " },
+        entry.title
+    );
+    let body = entry.body.replace('\n', " ");
+    let id = entry.id;
+    let selector = format!("notifications/{id}");
+    let words = div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(px(1.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(look::gap::SM))
+                .child(
+                    look::text(look::CAPTION, FontWeight::MEDIUM, palette.muted())
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(name),
+                )
+                .child(
+                    look::text(look::CAPTION, FontWeight::NORMAL, palette.muted())
+                        .flex_none()
+                        .child(when),
+                ),
+        )
+        .child(
+            look::text(look::BODY, weight, ink)
+                .truncate()
+                .child(entry.title),
+        )
+        .children((!body.is_empty()).then(|| {
+            look::text(look::SECONDARY, FontWeight::NORMAL, palette.muted())
+                .line_clamp(2)
+                .child(body)
+        }));
+    div()
+        .id(SharedString::from(selector.clone()))
+        .control(Role::Button, said)
+        .debug_selector(move || selector.clone())
+        .min_h(px(look::ROW_TALL))
+        .flex()
+        .items_center()
+        .gap(px(look::gap::LG))
+        .py(px(look::gap::MD))
+        .px(px(look::GUTTER))
+        .border_b_1()
+        .border_color(palette.border())
+        .active(|style| style.opacity(look::PRESSED))
+        .child(lead)
+        .child(words)
+        .children((!entry.read).then(|| dot(palette)))
+        .on_click(cx.listener(move |root, _, window, cx| {
+            window.blur(cx);
+            root.open_notice(id, cx);
+        }))
+}
+
+/// Account (the shell boards' 40, Expo `you.tsx`; the Account tab's root):
+/// who is reading on which network, then the account's own program (the
+/// `programs` view, opened by name, while the network lists it), App
+/// settings and Switch network, each pushed over the tab.
+pub fn account(shared: &Shared, palette: Palette, cx: &mut Context<Root>) -> Div {
+    let network = shared.session.read(cx).get().network.clone();
+    // Expo `you.tsx`: the account's name, else "No account yet"; the
+    // avatar draws the name's initial, or none
+    let (face, name, about) = match me(shared, cx) {
+        Some((number, name)) => (name.clone(), name, format!("account {number} · {network}")),
+        None => (String::new(), "No account yet".to_owned(), network.clone()),
+    };
+    let card = div()
+        .flex()
+        .items_center()
+        .gap(px(look::gap::LG))
+        .px(px(look::GUTTER))
+        .py(px(look::gap::LG))
+        .border_b_1()
+        .border_color(palette.border())
+        .child(avatar(&face, 40., palette))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(
+                    look::text(look::BODY, FontWeight::MEDIUM, palette.foreground())
+                        .truncate()
+                        .child(name),
+                )
+                .child(
+                    look::text(look::CAPTION, FontWeight::NORMAL, palette.muted())
+                        .font_family(ducktape_host::fonts::FAMILY_MONO)
+                        .truncate()
+                        .child(about),
+                ),
+        );
+    let push = |id: &'static str, icon, title: &'static str, hint: Option<&'static str>| {
+        settings::row(
+            id,
+            icon,
+            title,
+            hint.map(|hint| settings::caption(hint, palette)),
+            palette,
+        )
+        .control(Role::Button, title)
+        .debug_selector(move || id.to_owned())
+        .active(|style| style.opacity(look::PRESSED))
+        .child(settings::chevron(palette))
+    };
+    let program = row_of(shared, ACCOUNT_PROGRAM, cx).map(|_| {
+        push(
+            "account/program",
+            "icons/circle-user.svg",
+            "Account",
+            Some("keys · agents · invites"),
+        )
+        .on_click(cx.listener(|root, _, _, cx| {
+            root.open(ACCOUNT_PROGRAM, cx);
+        }))
+    });
+    let settings = push(
+        "account/settings",
+        "icons/settings.svg",
+        "App settings",
+        Some("node · this phone · about"),
+    )
+    .on_click(cx.listener(|root, _, _, cx| root.show_settings(cx)));
+    let switch = push(
+        "account/switch",
+        "icons/refresh-cw.svg",
+        "Switch network",
+        None,
+    )
+    .on_click(cx.listener(|root, _, window, cx| root.show_switch(window, cx)));
+    div()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .child(root_header(
+            "Account".into(),
+            caption(shared, network, cx),
+            palette,
+        ))
+        .child(
+            div()
+                .id("account")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(card)
+                .children(program)
+                .child(settings)
+                .child(switch),
+        )
+}
+
 /// Nothing to show yet (Expo `EmptyState`): a 28 faint icon, what is
 /// missing (15 medium), what would fill it (13 muted).
 fn empty(icon: &'static str, title: &str, body: &str, palette: Palette) -> Div {
@@ -660,24 +919,58 @@ pub fn opening(row: &RailRow, palette: Palette) -> Div {
 }
 
 /// The tab bar (Expo `TabBar`): 56 over the bottom inset, icon 22 over an 11
-/// label; the chosen tab in the foreground with a 2 rule over it. Account
-/// opens the account sheet over the tab in hand; it is never a root.
-pub fn tab_bar(on: Tab, inset: Pixels, palette: Palette, cx: &mut Context<Root>) -> Div {
-    let item = |id: &'static str, label: &'static str, icon: &'static str, chosen: bool| {
-        let tone = if chosen {
-            palette.foreground()
-        } else {
-            palette.muted()
+/// label; the chosen tab in the foreground with a 2 rule over it. Each item
+/// picks its tab's root. Notifications carries a dot while a notice is
+/// unread (Expo's tab dot: 8 in a 2 ring of the ground, never a count).
+pub fn tab_bar(
+    on: Tab,
+    unread: bool,
+    inset: Pixels,
+    palette: Palette,
+    cx: &mut Context<Root>,
+) -> Div {
+    let tabs = [
+        (Tab::Home, "tab/home", "Home", "icons/house.svg"),
+        (Tab::Open, "tab/open", "Open", "icons/archive.svg"),
+        (
+            Tab::Notifications,
+            "tab/notifications",
+            "Notifications",
+            "icons/bell.svg",
+        ),
+        (
+            Tab::Account,
+            "tab/account",
+            "Account",
+            "icons/circle-user.svg",
+        ),
+    ];
+    let items = tabs.map(|(tab, id, label, icon)| {
+        let chosen = on == tab;
+        let (tone, weight) = match chosen {
+            true => (palette.foreground(), FontWeight::MEDIUM),
+            false => (palette.muted(), FontWeight::NORMAL),
         };
-        let weight = if chosen {
-            FontWeight::MEDIUM
-        } else {
-            FontWeight::NORMAL
-        };
+        let mut glyph = div()
+            .relative()
+            .child(svg().path(icon).size(px(look::ICON_HIT)).text_color(tone));
+        if unread && tab == Tab::Notifications {
+            glyph = glyph.child(
+                dot(palette)
+                    .debug_selector(|| "tab/notifications/dot".to_owned())
+                    .size(px(12.))
+                    .border_2()
+                    .border_color(palette.background())
+                    .absolute()
+                    .top(px(-2.))
+                    .right(px(-6.)),
+            );
+        }
         let mut item = div()
             .id(id)
             .control(Role::Tab, label)
             .aria_selected(chosen)
+            .debug_selector(move || id.to_owned())
             .flex_1()
             .relative()
             .flex()
@@ -685,8 +978,12 @@ pub fn tab_bar(on: Tab, inset: Pixels, palette: Palette, cx: &mut Context<Root>)
             .items_center()
             .justify_center()
             .gap(px(3.))
-            .child(svg().path(icon).size(px(look::ICON_HIT)).text_color(tone))
-            .child(look::text(look::TINY, weight, tone).child(label));
+            .child(glyph)
+            .child(look::text(look::TINY, weight, tone).child(label))
+            .on_click(cx.listener(move |root, _, window, cx| {
+                window.blur(cx);
+                root.pick(tab, cx);
+            }));
         if chosen {
             item = item.child(
                 div()
@@ -699,7 +996,7 @@ pub fn tab_bar(on: Tab, inset: Pixels, palette: Palette, cx: &mut Context<Root>)
             );
         }
         item
-    };
+    });
     div()
         .flex_none()
         .h(px(look::TAB_BAR) + inset)
@@ -708,30 +1005,7 @@ pub fn tab_bar(on: Tab, inset: Pixels, palette: Palette, cx: &mut Context<Root>)
         .border_t_1()
         .border_color(palette.border())
         .bg(palette.background())
-        .child(
-            item("tab/home", "Home", "icons/house.svg", on == Tab::Home).on_click(cx.listener(
-                |root, _, window, cx| {
-                    window.blur(cx);
-                    root.pick(Tab::Home, cx);
-                },
-            )),
-        )
-        .child(
-            item("tab/open", "Open", "icons/archive.svg", on == Tab::Open).on_click(cx.listener(
-                |root, _, window, cx| {
-                    window.blur(cx);
-                    root.pick(Tab::Open, cx);
-                },
-            )),
-        )
-        .child(
-            item("tab/account", "Account", "icons/circle-user.svg", false).on_click(cx.listener(
-                |root, _, window, cx| {
-                    window.blur(cx);
-                    root.account_sheet(cx);
-                },
-            )),
-        )
+        .children(items)
 }
 
 #[cfg(test)]

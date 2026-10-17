@@ -10,7 +10,7 @@
 //! up, a failed join's included, until its Back.
 //!
 //! On a network, the address screen is Switch network (the same Expo
-//! screen in its connected form), pushed from the account sheet or App
+//! screen in its connected form), pushed from the Account tab or App
 //! settings: the node is reached through `Session::switch`, which leaves
 //! the network in hand only once the other answers.
 
