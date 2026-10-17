@@ -3,13 +3,14 @@
 //! caller can catch, the process dies. `cargo test`, `cargo run` and any
 //! bare binary are exactly that process, so the identifier is read first.
 
-use ducktape_host::runtime::notify::{Click, Notice};
+use ducktape_host::runtime::notify::{Click, Notice, NoticeKind};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{ClassType, DeclaredClass, declare_class, msg_send_id, mutability};
-use objc2_foundation::{NSArray, NSBundle, NSDictionary, NSError, NSString};
+use objc2_foundation::{NSArray, NSBundle, NSDictionary, NSError, NSSet, NSString};
 use objc2_user_notifications::{
-    UNAuthorizationOptions, UNMutableNotificationContent, UNNotification,
+    UNAuthorizationOptions, UNMutableNotificationContent, UNNotification, UNNotificationAction,
+    UNNotificationActionOptions, UNNotificationCategory, UNNotificationCategoryOptions,
     UNNotificationDefaultActionIdentifier, UNNotificationPresentationOptions,
     UNNotificationRequest, UNNotificationResponse, UNNotificationSound, UNUserNotificationCenter,
     UNUserNotificationCenterDelegate,
@@ -21,6 +22,12 @@ use objc2_user_notifications::{
 const ROW: &str = "row";
 /// The `ROW` of the host's update notice.
 const UPDATES: &str = "updates";
+/// A call's category, and its two actions: Answer opens the row as a
+/// click does; Decline takes the banner down, on this device alone (SPEC
+/// D11).
+const CALL: &str = "call";
+const ANSWER: &str = "answer";
+const DECLINE: &str = "decline";
 
 fn bundled() -> bool {
     // SAFETY: reading the main bundle's identifier is valid on any thread.
@@ -64,14 +71,15 @@ declare_class!(
             done: &block2::Block<dyn Fn()>,
         ) {
             // SAFETY: reads off the response the framework hands in.
-            let (action, row) = unsafe {
-                let info = response.notification().request().content().userInfo();
+            let (action, row, tag) = unsafe {
+                let content = response.notification().request().content();
+                let info = content.userInfo();
                 let key = NSString::from_str(ROW);
                 // the row is only ever written as a string (`post`)
                 let row = info
                     .objectForKey(AsRef::<AnyObject>::as_ref(&*key))
                     .map(|row| Retained::cast::<NSString>(row).to_string());
-                (response.actionIdentifier(), row)
+                (response.actionIdentifier(), row, content.threadIdentifier().to_string())
             };
             // SAFETY: a framework constant.
             let default = &*action == unsafe { UNNotificationDefaultActionIdentifier };
@@ -79,7 +87,11 @@ declare_class!(
                 UPDATES => Some(Click::Updates),
                 row => row.parse::<u64>().ok().map(Click::Row),
             });
-            if let Some(click) = click.filter(|_| default) {
+            let action = action.to_string();
+            if action == DECLINE {
+                withdraw(&tag);
+                ducktape_host::runtime::notify::declined(&tag);
+            } else if let Some(click) = click.filter(|_| default || action == ANSWER) {
                 super::clicked(click);
             }
             done.call(());
@@ -88,16 +100,50 @@ declare_class!(
 );
 
 /// The centre holds its delegate weakly: this one is kept for the life
-/// of the process.
+/// of the process. A call's category goes in with it.
 fn listen(centre: &UNUserNotificationCenter) {
     static LISTENING: std::sync::Once = std::sync::Once::new();
     LISTENING.call_once(|| {
         let clicks: Retained<Clicks> =
             unsafe { msg_send_id![super(Clicks::alloc().set_ivars(())), init] };
-        // SAFETY: the delegate outlives the centre's use of it (leaked).
-        unsafe { centre.setDelegate(Some(ProtocolObject::from_ref(&*clicks))) };
+        // SAFETY: the delegate outlives the centre's use of it (leaked);
+        // the category and its actions are copied by the centre.
+        unsafe {
+            centre.setDelegate(Some(ProtocolObject::from_ref(&*clicks)));
+            let answer = UNNotificationAction::actionWithIdentifier_title_options(
+                &NSString::from_str(ANSWER),
+                &NSString::from_str("Answer"),
+                UNNotificationActionOptions::UNNotificationActionOptionForeground,
+            );
+            let decline = UNNotificationAction::actionWithIdentifier_title_options(
+                &NSString::from_str(DECLINE),
+                &NSString::from_str("Decline"),
+                UNNotificationActionOptions::UNNotificationActionOptionDestructive,
+            );
+            let call =
+                UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
+                    &NSString::from_str(CALL),
+                    &NSArray::from_vec(vec![answer, decline]),
+                    &NSArray::from_vec(Vec::<Retained<NSString>>::new()),
+                    UNNotificationCategoryOptions(0),
+                );
+            // `NSSet::from_vec` takes only classes whose hash cannot change
+            let calls: Retained<NSSet<UNNotificationCategory>> =
+                msg_send_id![NSSet::<UNNotificationCategory>::class(), setWithObject: &*call];
+            centre.setNotificationCategories(&calls);
+        }
         std::mem::forget(clicks);
     });
+}
+
+/// The delegate and the call category in place at the host's start: the
+/// centre takes categories in on its own time, so a call's first banner
+/// raised right after them could show no Answer and Decline.
+pub(super) fn start() {
+    if bundled() {
+        // SAFETY: as in `post`.
+        unsafe { listen(&UNUserNotificationCenter::currentNotificationCenter()) };
+    }
 }
 
 pub(super) fn post(notice: &Notice, click: Option<Click>) -> bool {
@@ -134,6 +180,9 @@ pub(super) fn post(notice: &Notice, click: Option<Click>) -> bool {
             content.setUserInfo(&Retained::cast::<NSDictionary>(row));
         }
         content.setSound(Some(&UNNotificationSound::defaultSound()));
+        if notice.kind == NoticeKind::Call {
+            content.setCategoryIdentifier(&NSString::from_str(CALL));
+        }
         // A tag REPLACES: the banner standing under it goes, and this one
         // takes its place. Not by reusing its identifier: two requests
         // under one identifier added a moment apart cancel each other in

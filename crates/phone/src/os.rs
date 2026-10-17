@@ -69,6 +69,35 @@ pub fn link(url: String) {
     }
 }
 
+/// This device's push tokens by kind (`voip`: PushKit's, as hex; `fcm`:
+/// Firebase's), as the OS last handed them over, for the device registry
+/// that hands them to the push server (pushd M2, not built: until then
+/// they are only logged).
+static PUSH_TOKENS: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Keeps `token` as this device's push token of `kind`; an empty one is
+/// withdrawn.
+pub fn push_token(kind: &str, token: String) {
+    // the token addresses this device: kept out of the log
+    tracing::debug!(target: "ducktape::phone", kind, "this device's push token");
+    let mut tokens = PUSH_TOKENS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match token.is_empty() {
+        true => tokens.remove(kind),
+        false => tokens.insert(kind.to_owned(), token),
+    };
+}
+
+/// This device's push tokens by kind ([`push_token`]).
+pub fn push_tokens() -> std::collections::BTreeMap<String, String> {
+    PUSH_TOKENS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
 /// The links to open, in the order they came.
 pub(crate) fn links_to_open() -> async_channel::Receiver<String> {
     links().1.clone()
@@ -451,6 +480,22 @@ pub fn back_at_root() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A push token is kept by its kind, the next one in its place, and an
+    /// empty one withdraws it.
+    #[test]
+    fn push_tokens_are_kept_by_kind() {
+        push_token("test-voip", "aa".into());
+        push_token("test-voip", "bb".into());
+        push_token("test-fcm", "f".into());
+        assert_eq!(
+            push_tokens().get("test-voip").map(String::as_str),
+            Some("bb")
+        );
+        push_token("test-voip", String::new());
+        assert!(!push_tokens().contains_key("test-voip"));
+        assert!(push_tokens().contains_key("test-fcm"));
+    }
 
     /// An app build keeps its code in a folder of its own, and the other
     /// builds' folders go: no build reads another build's metered code.

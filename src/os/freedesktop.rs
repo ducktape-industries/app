@@ -3,7 +3,7 @@
 //! each desktop answers through its own daemon. Pure Rust, and no new
 //! dependency — zbus is already in this binary's graph.
 
-use ducktape_host::runtime::notify::{Click, Notice};
+use ducktape_host::runtime::notify::{Click, Notice, NoticeKind};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -83,8 +83,12 @@ fn listen(bus: &'static zbus::blocking::Connection) {
                         .expect("banner clicks")
                         .get(&banner)
                         .copied();
-                    if let Some(click) = click.filter(|_| action == "default") {
-                        super::clicked(click);
+                    match (click, action.as_str()) {
+                        // a call's Answer opens it as a click does
+                        (Some(click), "default" | "answer") => super::clicked(click),
+                        // a call's Decline is this device's alone (SPEC D11)
+                        (Some(_), "decline") => declined(banner),
+                        _ => {}
                     }
                 }
             });
@@ -135,6 +139,21 @@ pub(super) fn post(notice: &Notice, click: Option<Click>) -> bool {
             );
             false
         }
+    }
+}
+
+/// A call's banner declined: no longer standing, and closed (a daemon
+/// that keeps a banner after its action would leave it up).
+fn declined(banner: u32) {
+    let tag = standing()
+        .lock()
+        .expect("standing notices")
+        .iter()
+        .find(|(_, raised)| **raised == banner)
+        .map(|(tag, _)| tag.clone());
+    if let Some(tag) = tag {
+        withdraw(&tag);
+        ducktape_host::runtime::notify::declined(&tag);
     }
 }
 
@@ -216,22 +235,50 @@ fn keep_host_banner(banner: Option<u32>) {
     };
 }
 
+/// What a `Notify` request carries besides its words: the actions, the
+/// hints, and how long it stays. A banner that opens something declares
+/// the default action, a click on it. A call's has Answer and Decline,
+/// rings with the theme's incoming-call sound and stays until the host
+/// takes it down (its `until`, or the view's `notify.seen`).
+fn request(
+    notice: &Notice,
+    clickable: bool,
+) -> (
+    Vec<&'static str>,
+    HashMap<&'static str, zbus::zvariant::Value<'static>>,
+    i32,
+) {
+    let mut hints = HashMap::from([("desktop-entry", zbus::zvariant::Value::from(DESKTOP_ENTRY))]);
+    let call = notice.kind == NoticeKind::Call;
+    if call {
+        // critical: the daemon keeps it up, over a do-not-disturb
+        hints.insert("urgency", zbus::zvariant::Value::U8(2));
+        hints.insert("category", zbus::zvariant::Value::from("call.incoming"));
+        hints.insert(
+            "sound-name",
+            zbus::zvariant::Value::from("phone-incoming-call"),
+        );
+    }
+    let actions = match (clickable, call) {
+        (true, true) => vec![
+            "default", "Answer", "answer", "Answer", "decline", "Decline",
+        ],
+        (true, false) => vec!["default", "Open"],
+        (false, _) => Vec::new(),
+    };
+    (actions, hints, if call { 0 } else { -1 })
+}
+
 /// One `Notify` request: `(app_name, replaces_id, app_icon, summary,
-/// body, actions, hints, expire_timeout)` → the banner's id. A banner
-/// that opens something declares the default action, a click on it.
+/// body, actions, hints, expire_timeout)` → the banner's id.
 fn notify(
     bus: &zbus::blocking::Connection,
     notice: &Notice,
     replaces: u32,
     clickable: bool,
 ) -> zbus::Result<u32> {
-    let actions = match clickable {
-        true => vec!["default", "Open"],
-        false => Vec::new(),
-    };
+    let (actions, hints, timeout) = request(notice, clickable);
     let body = markup_escaped(&notice.body);
-    let hints: HashMap<&str, zbus::zvariant::Value<'_>> =
-        HashMap::from([("desktop-entry", zbus::zvariant::Value::from(DESKTOP_ENTRY))]);
     let reply = bus.call_method(
         Some("org.freedesktop.Notifications"),
         "/org/freedesktop/Notifications",
@@ -245,7 +292,7 @@ fn notify(
             body.as_str(),
             actions,
             hints,
-            -1i32,
+            timeout,
         ),
     )?;
     reply.body().deserialize::<u32>()
@@ -257,4 +304,37 @@ fn notify(
 #[test]
 fn the_freedesktop_body_escapes_the_notices_markup() {
     assert_eq!(markup_escaped("a <b> & c"), "a &lt;b&gt; &amp; c");
+}
+
+#[cfg(test)]
+/// A call's banner offers Answer and Decline, rings as an incoming call and
+/// stays; a plain notice's opens on a click and expires as the daemon says.
+#[test]
+fn a_calls_banner_answers_declines_and_stays() {
+    let call = Notice {
+        title: "Ada is calling".into(),
+        kind: NoticeKind::Call,
+        until: 1,
+        ..Notice::default()
+    };
+    let (actions, hints, timeout) = request(&call, true);
+    assert_eq!(
+        actions,
+        [
+            "default", "Answer", "answer", "Answer", "decline", "Decline"
+        ]
+    );
+    assert_eq!(
+        hints["category"],
+        zbus::zvariant::Value::from("call.incoming")
+    );
+    assert_eq!(hints["urgency"], zbus::zvariant::Value::U8(2));
+    assert_eq!(timeout, 0);
+    let plain = Notice::default();
+    let (actions, hints, timeout) = request(&plain, true);
+    assert_eq!(
+        (actions, hints.len(), timeout),
+        (vec!["default", "Open"], 1, -1)
+    );
+    assert!(request(&plain, false).0.is_empty());
 }

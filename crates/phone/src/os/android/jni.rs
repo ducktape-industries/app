@@ -22,6 +22,8 @@
 //!   (gm's `GpuiInputActivity` contract, gm `android/host.rs` `ime_event`).
 //! - `memoryWarning()`: `onTrimMemory` at a level that is memory pressure.
 //! - `link(url)`: a `duck://` or `ducktape://` intent's data.
+//! - `pushToken(kind, token)`: this device's push token (`fcm`), for the
+//!   device registry; empty when withdrawn.
 //!
 //! - `android_main(app)`: the entry gm's NativeActivity glue (android-activity,
 //!   which gm links whatever path a host takes) names; never called, since
@@ -271,6 +273,21 @@ pub extern "system" fn Java_industries_ducktape_mobile_Native_link<'caller>(
 ) {
     env.with_env(|_: &mut Env| -> jni::errors::Result<()> {
         crate::os::link(url.to_string());
+        Ok(())
+    })
+    .resolve::<Policy>();
+}
+
+/// `Native.pushToken`: this device's push token of `kind` (`Ring.kt`).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_pushToken<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _: JClass<'caller>,
+    kind: JString<'caller>,
+    token: JString<'caller>,
+) {
+    env.with_env(|_: &mut Env| -> jni::errors::Result<()> {
+        crate::os::push_token(&kind.to_string(), token.to_string());
         Ok(())
     })
     .resolve::<Policy>();
