@@ -40,14 +40,14 @@ use objc2_avf_audio::{
     AVAudioSessionInterruptionType, AVAudioSessionInterruptionTypeKey,
     AVAudioSessionMediaServicesWereLostNotification,
     AVAudioSessionMediaServicesWereResetNotification, AVAudioSessionModeDefault,
-    AVAudioSessionPort, AVAudioSessionPortAirPlay, AVAudioSessionPortBluetoothHFP,
-    AVAudioSessionPortBluetoothLE, AVAudioSessionPortBuiltInReceiver,
-    AVAudioSessionPortBuiltInSpeaker, AVAudioSessionPortCarAudio, AVAudioSessionPortDescription,
-    AVAudioSessionPortHDMI, AVAudioSessionPortHeadphones, AVAudioSessionPortHeadsetMic,
-    AVAudioSessionPortOverride, AVAudioSessionRouteChangeNotification,
-    AVAudioSessionRouteChangePreviousRouteKey, AVAudioSessionRouteChangeReason,
-    AVAudioSessionRouteChangeReasonKey, AVAudioSessionRouteDescription,
-    AVAudioSessionSetActiveOptions,
+    AVAudioSessionModeVideoChat, AVAudioSessionPort, AVAudioSessionPortAirPlay,
+    AVAudioSessionPortBluetoothHFP, AVAudioSessionPortBluetoothLE,
+    AVAudioSessionPortBuiltInReceiver, AVAudioSessionPortBuiltInSpeaker,
+    AVAudioSessionPortCarAudio, AVAudioSessionPortDescription, AVAudioSessionPortHDMI,
+    AVAudioSessionPortHeadphones, AVAudioSessionPortHeadsetMic, AVAudioSessionPortOverride,
+    AVAudioSessionRouteChangeNotification, AVAudioSessionRouteChangePreviousRouteKey,
+    AVAudioSessionRouteChangeReason, AVAudioSessionRouteChangeReasonKey,
+    AVAudioSessionRouteDescription, AVAudioSessionSetActiveOptions,
 };
 use objc2_foundation::{
     NSArray, NSError, NSNotification, NSNotificationCenter, NSNotificationName, NSNumber, NSString,
@@ -244,9 +244,13 @@ fn configured(record: bool) -> Result<Retained<AVAudioSession>, String> {
             true => AVAudioSessionCategoryPlayAndRecord,
             false => AVAudioSessionCategoryPlayback,
         };
+        let mode = match record && CALL.load(std::sync::atomic::Ordering::Relaxed) {
+            true => AVAudioSessionModeVideoChat,
+            false => AVAudioSessionModeDefault,
+        };
         (
             category.ok_or("iOS lacks the audio category")?,
-            AVAudioSessionModeDefault.ok_or("iOS has no default audio mode")?,
+            mode.ok_or("iOS has no default audio mode")?,
         )
     };
     let options = match record {
@@ -271,6 +275,18 @@ fn configured(record: bool) -> Result<Retained<AVAudioSession>, String> {
         Ok(session)
     }
 }
+
+/// A call's voice I/O is coming (`on`) or went: the hint the next
+/// recording session is configured with (video chat mode: the system
+/// routes and ducks as for a call; the echo cancelling is the app's own,
+/// `crate::voice`).
+#[cfg(feature = "call")]
+pub(crate) fn call(on: bool) {
+    CALL.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether a call's voice I/O is up ([`call`]).
+static CALL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The id of the phone's loudspeaker among the speakers: always there,
 /// whatever the route (an override reaches it).

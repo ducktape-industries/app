@@ -34,16 +34,16 @@ version = "0.1.0"
 [workspace.dependencies]
 
 # --- sdk-line: crates/sdk of ducktape-industries/programs (abi, view-wire, program, ducklink, design, describe). Every crate of that repo here and below sits on ONE rev, and the views this app seats are built at that rev. One whose manifest's wire_id is not `view_wire::WIRE_ID` runs all the same, and a failure of it names both wires and the node (`View::failure`). Which rev and why is in `git log -- Cargo.toml`. ---
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "a58e1c3ccbe0e9a0a76de6baed33da56638d25f0", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "a58e1c3ccbe0e9a0a76de6baed33da56638d25f0", package = "view-wire" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "1a7b76effbaf0e26a066387599c1a1d5520ae325", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "1a7b76effbaf0e26a066387599c1a1d5520ae325", package = "view-wire" }
 # `program::is_name`: the one spelling of a program id
-program = { git = "https://github.com/ducktape-industries/programs", rev = "a58e1c3ccbe0e9a0a76de6baed33da56638d25f0", package = "program" }
-ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "a58e1c3ccbe0e9a0a76de6baed33da56638d25f0", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/programs", rev = "a58e1c3ccbe0e9a0a76de6baed33da56638d25f0", package = "design" }
+program = { git = "https://github.com/ducktape-industries/programs", rev = "1a7b76effbaf0e26a066387599c1a1d5520ae325", package = "program" }
+ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "1a7b76effbaf0e26a066387599c1a1d5520ae325", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/programs", rev = "1a7b76effbaf0e26a066387599c1a1d5520ae325", package = "design" }
 # `program.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/programs", rev = "a58e1c3ccbe0e9a0a76de6baed33da56638d25f0", package = "describe" }
+describe = { git = "https://github.com/ducktape-industries/programs", rev = "1a7b76effbaf0e26a066387599c1a1d5520ae325", package = "describe" }
 # the identity program's own types: the app's passkey lane and `crates/noded-client`'s flows
-identity = { git = "https://github.com/ducktape-industries/programs", rev = "a58e1c3ccbe0e9a0a76de6baed33da56638d25f0", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/programs", rev = "1a7b76effbaf0e26a066387599c1a1d5520ae325", package = "identity" }
 
 # --- node-side: ducktape-industries/ducktape at the rev the programs rev above pins ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a0151a411c3558453c34bb8272b93dfc428cb74", package = "ducktape-home" }
@@ -100,7 +100,12 @@ web = ["ducktape-host/web"]
 # compiles none of it: the pieces say the build has no camera or
 # microphone and their methods are refused `unknown_request`.
 av = ["ducktape-host/av"]
-default = ["av"]
+# Calls: the pieces above publish into and play from live tracks
+# (`crates/host/src/render/call.rs`, `crates/av` with `call`). On by
+# default: the app's own build makes and takes calls. It builds OpenH264
+# from source (C++, `cc`) and libopus as Rust.
+call = ["av", "ducktape-host/call"]
+default = ["av", "call"]
 
 [dependencies]
 # the blind host core, shared with the phone
@@ -120,7 +125,7 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a0151a411c3558453c34bb8272b93dfc428cb74", package = "keyscheme" }
 identity.workspace = true
-valset = { git = "https://github.com/ducktape-industries/programs", rev = "a58e1c3ccbe0e9a0a76de6baed33da56638d25f0", package = "valset" }
+valset = { git = "https://github.com/ducktape-industries/programs", rev = "1a7b76effbaf0e26a066387599c1a1d5520ae325", package = "valset" }
 base64.workspace = true
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -178,7 +183,7 @@ keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a
 p256 = "0.13"
 
 [patch."https://github.com/ducktape-industries/ducktape"]
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "a58e1c3ccbe0e9a0a76de6baed33da56638d25f0", package = "abi" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "1a7b76effbaf0e26a066387599c1a1d5520ae325", package = "abi" }
 
 [patch.crates-io]
 gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "ef025a323b35dae1f64b9de0304f15aff020ad46" }
@@ -342,3 +347,16 @@ opt-level = 3
 [profile.dev.package.argon2]
 opt-level = 3
 
+# A call's codecs (ducktape-av's `call`) optimized in a dev build too:
+# unoptimized, OpenH264 (C++ built by `cc`, which reads this), its picture
+# conversions and ducktape-av's own scaling take tens to hundreds of ms a
+# picture (a 720p picture scaled to 360p: 565 ms, 10.8 ms optimized).
+# libopus sets its own, in crates/av/build.rs.
+[profile.dev.package.openh264-sys2]
+opt-level = 3
+
+[profile.dev.package.openh264]
+opt-level = 3
+
+[profile.dev.package.ducktape-av]
+opt-level = 3

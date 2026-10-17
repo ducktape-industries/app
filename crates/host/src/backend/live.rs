@@ -21,7 +21,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
@@ -280,15 +280,30 @@ impl PartialEq for Outbox {
     }
 }
 
-/// The newest datagram-mode object a subscription has not read. A newer
-/// one replaces it, which is the datagram's own rule (the newest wins), and
-/// is counted: the drop-oldest park of a view that is behind. An older one
-/// (datagrams reorder on the path) is nothing.
-#[derive(Default)]
+/// The datagram-mode objects a subscription has not read: the newest one
+/// for a view, which is the datagram's own rule (the newest wins), a
+/// newer one replacing it; up to a queue's worth for a reader that keeps
+/// up on its own thread ([`Latest::queue`]), the oldest going when it is
+/// full. What goes unread is counted: the drop-oldest park of a reader
+/// that is behind. An older one than the last kept (datagrams reorder on
+/// the path) is nothing.
 pub(crate) struct Latest {
-    slot: Mutex<Option<Data>>,
+    slot: Mutex<VecDeque<Data>>,
+    /// How many are held at most: 1 for a view.
+    holds: AtomicUsize,
     ready: Notify,
     dropped: AtomicU64,
+}
+
+impl Default for Latest {
+    fn default() -> Self {
+        Self {
+            slot: Mutex::new(VecDeque::with_capacity(1)),
+            holds: AtomicUsize::new(1),
+            ready: Notify::new(),
+            dropped: AtomicU64::new(0),
+        }
+    }
 }
 
 /// A datagram's place in its track: the publisher's numbering, exact.
@@ -300,22 +315,31 @@ fn numbered(data: &Data) -> (u64, u32) {
 }
 
 impl Latest {
+    /// Holds up to `depth` unread objects from now, in order, instead of
+    /// the newest one.
+    pub(crate) fn queue(&self, depth: usize) {
+        self.holds.store(depth.max(1), Ordering::Relaxed);
+    }
+
     pub(crate) fn put(&self, data: Data) {
         let mut slot = lock(&self.slot);
-        if let Some(held) = slot.as_ref() {
-            if numbered(held) >= numbered(&data) {
-                return;
-            }
+        if let Some(last) = slot.back()
+            && numbered(last) >= numbered(&data)
+        {
+            return;
+        }
+        if slot.len() >= self.holds.load(Ordering::Relaxed) {
+            slot.pop_front();
             self.dropped.fetch_add(1, Ordering::Relaxed);
         }
-        *slot = Some(data);
+        slot.push_back(data);
         drop(slot);
         self.ready.notify_one();
     }
 
     pub(crate) async fn take(&self) -> Data {
         loop {
-            if let Some(data) = lock(&self.slot).take() {
+            if let Some(data) = lock(&self.slot).pop_front() {
                 return data;
             }
             self.ready.notified().await;
@@ -2115,6 +2139,10 @@ impl ServerCertVerifier for Pinned {
         vec![rustls::SignatureScheme::ED25519]
     }
 }
+
+#[cfg(any(feature = "call", test))]
+#[cfg_attr(not(feature = "call"), allow(dead_code))]
+pub(crate) mod media;
 
 #[cfg(test)]
 mod tests;

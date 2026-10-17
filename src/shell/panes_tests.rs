@@ -1055,6 +1055,7 @@ fn a_bell_row_opens_the_notices_program(cx: &mut TestAppContext) {
             body: "From the bell".into(),
             tag: String::new(),
             link: String::new(),
+            ..Default::default()
         };
         let _ = notifications.center().lock().post(
             &settings,

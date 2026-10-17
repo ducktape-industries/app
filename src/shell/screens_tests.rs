@@ -712,6 +712,7 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
         body: "@grace look".into(),
         tag: tag.into(),
         link: "duck://chat/design".into(),
+        ..Default::default()
     };
     {
         let mut center = center.lock();

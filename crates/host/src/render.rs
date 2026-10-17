@@ -27,6 +27,7 @@ pub const GRAB: f32 = 5.;
 mod accessibility;
 mod anchored;
 pub mod av;
+pub mod call;
 mod canvas;
 mod commands;
 pub mod deferred;
@@ -227,6 +228,10 @@ pub struct ViewTree {
     webs: web::Pages,
     /// The camera and microphone pieces' devices (`av.rs`).
     media: av::Media,
+    /// The pieces that publish or play a live track (`call.rs`), and the
+    /// live session they open tracks on (none for a tree no view seats).
+    calls: call::Calls,
+    live: Option<crate::runtime::HostLive>,
     /// A resize handle's press position while its drag lasts.
     drags: HashMap<AuthoredPath, Point<Pixels>>,
     /// The page the frame shows on top of the view's stack, and the change
@@ -353,6 +358,8 @@ impl ViewTree {
             sensors: HashMap::new(),
             webs: Default::default(),
             media: Default::default(),
+            calls: Default::default(),
+            live: None,
             pictures: Default::default(),
             images: Default::default(),
             tooltips: HashMap::new(),
@@ -381,6 +388,13 @@ impl ViewTree {
     /// The perf key this tree's renders count under.
     pub fn with_perf_key(mut self, key: crate::perf::Key) -> Self {
         self.perf_key = Some(key);
+        self
+    }
+
+    /// The live session the tree's publishing and remote pieces open their
+    /// tracks on (`call.rs`).
+    pub fn with_live(mut self, live: crate::runtime::HostLive) -> Self {
+        self.live = Some(live);
         self
     }
 
@@ -453,6 +467,7 @@ impl ViewTree {
             Node::Web { .. } => self.web(node, window, cx),
             Node::Camera { .. } => self.camera(node, cx),
             Node::Microphone { .. } => self.microphone(node, window, cx),
+            Node::Remote { .. } => self.remote(node, cx),
         };
         if entered_scope {
             self.authored_path.pop();

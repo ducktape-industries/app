@@ -649,3 +649,261 @@ fn a_first_live_request_puts_the_line_on_the_window() {
     );
     assert!(matches!(opened(&opens).0, Ask::Watch { .. }));
 }
+
+// ---------- the tracks the host runs for a view's pieces ----------
+
+/// A [`HostLive`] on a fake session for program `huddle` on chain `net#1`:
+/// it, and each request it opens as the fake sees it.
+fn host_live() -> (HostLive, std_mpsc::Receiver<(Ask, Ends)>) {
+    host_live_refusing(Vec::new())
+}
+
+/// [`host_live`], its fake refusing the first opens with `refusing`.
+fn host_live_refusing(refusing: Vec<wire::Error>) -> (HostLive, std_mpsc::Receiver<(Ask, Ends)>) {
+    let (opened, opens) = std_mpsc::channel();
+    let session: Arc<dyn Session> = Arc::new(Fake(Mutex::new(opened), Mutex::new(refusing)));
+    (HostLive::on(session, "net#1", "huddle"), opens)
+}
+
+/// A publication refused `duplicate_track` (the piece's last one still
+/// closing) is asked again within a moment, and nothing is told of it.
+#[test]
+fn a_duplicate_track_refusal_is_asked_again_soon_and_not_told() {
+    let (live, opens) = host_live_refusing(vec![wire::Error::new(
+        refusal::DUPLICATE_TRACK,
+        "still held",
+    )]);
+    let mut publication = live.publish(&track("mic/7"), Mode::Datagram, 64);
+    let (asked, ends) = opens
+        .recv_timeout(REOPEN * 5)
+        .expect("published again within a moment");
+    assert!(matches!(asked, Ask::Publish { .. }));
+    ends.heard.send(Heard::Published).unwrap();
+    assert_eq!(
+        heard_soon(&mut publication),
+        TrackHeard::Up { subscribers: 0 },
+        "the refusal was not told as an ending"
+    );
+}
+
+/// The session going under a publication is told as `not_connected` (the
+/// piece starts over with a keyframe on the next one), which opens at
+/// once on the session the app has.
+#[test]
+fn a_publication_losing_its_session_is_told_and_opened_again() {
+    let (live, opens) = host_live();
+    let mut publication = live.publish(&track("cam/7"), Mode::Stream, 128);
+    let (_, ends) = opened(&opens);
+    ends.heard.send(Heard::Published).unwrap();
+    assert_eq!(
+        heard_soon(&mut publication),
+        TrackHeard::Up { subscribers: 0 }
+    );
+    drop(ends);
+    assert_eq!(
+        heard_soon(&mut publication),
+        TrackHeard::Ended {
+            code: refusal::NOT_CONNECTED.into()
+        }
+    );
+    let (again, _ends) = opens
+        .recv_timeout(std::time::Duration::from_secs(3))
+        .expect("published again");
+    assert!(matches!(again, Ask::Publish { .. }));
+}
+
+/// The session going under a subscription is told as `not_connected`,
+/// and the track is subscribed again at once on the session the app has.
+#[test]
+fn a_subscription_losing_its_session_is_told_and_opened_again() {
+    let (live, opens) = host_live();
+    let mut subscription = live.subscribe(&track("cam/7"), Start::Latest);
+    let (_, ends) = opened(&opens);
+    drop(ends);
+    assert_eq!(
+        subscription.recv(),
+        Some(Subscribed::Heard(TrackHeard::Ended {
+            code: refusal::NOT_CONNECTED.into()
+        }))
+    );
+    let (again, _ends) = opens
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("subscribed again at once");
+    assert!(matches!(again, Ask::Subscribe { .. }));
+}
+
+/// A host-run subscription reads datagrams on its own thread: a burst
+/// of them reaches it whole and in order, not thinned to the newest as a
+/// view's slot is.
+#[test]
+fn a_host_subscription_queues_a_datagram_burst() {
+    let (live, opens) = host_live();
+    let mut subscription = live.subscribe(&track("mic/7"), Start::Next);
+    let (_, ends) = opened(&opens);
+    ends.heard
+        .send(Heard::Subscribed {
+            by: 9,
+            mode: Mode::Datagram,
+            latest: None,
+        })
+        .unwrap();
+    assert_eq!(
+        subscription.recv(),
+        Some(Subscribed::Heard(TrackHeard::Up { subscribers: 0 }))
+    );
+    let object = |object: u32| Data::Object {
+        group: 0,
+        object,
+        body: vec![object as u8],
+    };
+    for n in 0..3 {
+        ends.latest.put(object(n));
+    }
+    for n in 0..3 {
+        assert_eq!(subscription.recv(), Some(Subscribed::Data(object(n))));
+    }
+}
+
+fn heard_soon(publication: &mut HostPublication) -> TrackHeard {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if let Some(heard) = publication.heard() {
+            return heard;
+        }
+        assert!(std::time::Instant::now() < deadline, "nothing heard");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// A host-run publication is stamped as a view's, in the mode and at the
+/// priority the host picks; its objects go into the ask's queue; what the
+/// node says reaches the piece as its track's state (`Published` is `Up`
+/// with no subscribers); the node's refusal ends it, and it is published
+/// again after the hold.
+#[test]
+fn a_host_publication_is_stamped_fed_and_published_again_after_a_refusal() {
+    let (live, opens) = host_live();
+    let mut publication = live.publish(&track("cam/7"), Mode::Stream, 128);
+    let (asked, ends) = opened(&opens);
+    let Ask::Publish {
+        track: stamped,
+        mode,
+        priority,
+        objects,
+    } = asked
+    else {
+        panic!("a publication")
+    };
+    assert_eq!(stamped.namespace, "net#1/huddle/lobby");
+    assert_eq!(stamped.name, "cam/7");
+    assert_eq!((mode, priority), (Mode::Stream, 128));
+    let pushed = publication.push(Object {
+        group: 0,
+        object: 0,
+        body: vec![1, 2, 3],
+        end: false,
+    });
+    assert_eq!(pushed, Pushed::Queued);
+    let Some(Out::Object(out)) = handle().block_on(objects.take()) else {
+        panic!("the object queued")
+    };
+    assert_eq!(out.body, vec![1, 2, 3]);
+    ends.heard.send(Heard::Waiting).unwrap();
+    assert_eq!(heard_soon(&mut publication), TrackHeard::Waiting);
+    ends.heard.send(Heard::Published).unwrap();
+    assert_eq!(
+        heard_soon(&mut publication),
+        TrackHeard::Up { subscribers: 0 }
+    );
+    ends.heard.send(Heard::Subscribers(3)).unwrap();
+    assert_eq!(
+        heard_soon(&mut publication),
+        TrackHeard::Up { subscribers: 3 }
+    );
+    ends.heard
+        .send(Heard::Closed(wire::Error::new(
+            refusal::NOT_GRANTED,
+            "no row",
+        )))
+        .unwrap();
+    assert_eq!(
+        heard_soon(&mut publication),
+        TrackHeard::Ended {
+            code: refusal::NOT_GRANTED.into()
+        }
+    );
+    // published again, on the same queue, after the hold
+    let (again, _ends) = opens
+        .recv_timeout(HOLD + std::time::Duration::from_secs(3))
+        .expect("published again");
+    assert!(matches!(again, Ask::Publish { objects: same, .. } if Arc::ptr_eq(&same, &objects)));
+    drop(publication);
+    assert!(
+        handle().block_on(objects.take()).is_none(),
+        "dropped: the queue closes"
+    );
+}
+
+/// A host-run subscription is stamped as a view's and starts from the
+/// group the node holds; what it hears and its objects come as one
+/// stream; ended by the node for the track unknown, it watches the room
+/// and subscribes again on the node's announce of the track.
+#[test]
+fn a_host_subscription_streams_items_and_subscribes_again_on_the_announce() {
+    let (live, opens) = host_live();
+    let mut subscription = live.subscribe(&track("cam/7"), Start::Latest);
+    let (asked, ends) = opened(&opens);
+    let Ask::Subscribe {
+        track: stamped,
+        from,
+    } = asked
+    else {
+        panic!("a subscription")
+    };
+    assert_eq!(stamped.namespace, "net#1/huddle/lobby");
+    assert_eq!(from, Start::Latest);
+    ends.heard
+        .send(Heard::Subscribed {
+            by: 9,
+            mode: Mode::Stream,
+            latest: None,
+        })
+        .unwrap();
+    assert_eq!(
+        subscription.recv(),
+        Some(Subscribed::Heard(TrackHeard::Up { subscribers: 0 }))
+    );
+    let object = Data::Object {
+        group: 0,
+        object: 0,
+        body: vec![7],
+    };
+    handle().block_on(ends.data.send(object.clone())).unwrap();
+    assert_eq!(subscription.recv(), Some(Subscribed::Data(object)));
+    ends.heard
+        .send(Heard::Closed(wire::Error::new(
+            refusal::UNKNOWN_TRACK,
+            "no such track",
+        )))
+        .unwrap();
+    assert_eq!(
+        subscription.recv(),
+        Some(Subscribed::Heard(TrackHeard::Ended {
+            code: refusal::UNKNOWN_TRACK.into()
+        }))
+    );
+    let (watch, watch_ends) = opened(&opens);
+    assert!(matches!(watch, Ask::Watch { namespace } if namespace == "net#1/huddle/lobby"));
+    watch_ends
+        .heard
+        .send(Heard::Announce {
+            track: stamped,
+            by: 9,
+            mode: Mode::Stream,
+            up: true,
+        })
+        .unwrap();
+    let (again, _ends) = opened(&opens);
+    assert!(matches!(again, Ask::Subscribe { .. }));
+    drop(subscription);
+}

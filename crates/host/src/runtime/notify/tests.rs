@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use std::path::Path;
 
-use super::center::{Center, CenterHandle, Notice, NoticeKind, Posted, read_log};
+use super::center::{Center, CenterHandle, Notice, NoticeKind, read_log};
 use super::settings::{BURST_PREF, FRONT_PREF, NOTIFY_PREF, Permission, Settings, VIEWS_PREF};
 use super::{checked, in_order};
 use crate::runtime::WindowKey;
@@ -14,6 +14,7 @@ fn post(title: &str, tag: &str) -> Notification {
         body: "b".into(),
         tag: tag.into(),
         link: String::new(),
+        ..Default::default()
     }
 }
 
@@ -293,6 +294,7 @@ fn a_post_is_words_a_tag_and_a_duck_link() {
         body: "b".into(),
         tag: "t".into(),
         link: "duck://chat/room".into(),
+        ..Default::default()
     };
     let mut bytes = methods::encode(&full);
     assert_eq!(methods::decode::<Notification>(&bytes).unwrap(), full);
@@ -587,12 +589,35 @@ fn a_views_live_line_shows_once_a_run() {
 }
 
 /// A call from `chat` under `tag`, standing until `until`.
-fn call(tag: &str, until: u64) -> Posted {
-    Posted {
-        notification: post("Ada is calling", tag),
+fn call(tag: &str, until: u64) -> Notification {
+    Notification {
         kind: NoticeKind::Call,
         until,
+        ..post("Ada is calling", tag)
     }
+}
+
+/// A view's `notify.post` payload is what the centre judges: a wire call
+/// with a tag and an `until` rings past the burst as a call, and is over
+/// at its `until`.
+#[test]
+fn a_wire_call_rings_as_a_call_and_is_over_at_its_until() {
+    let now = Instant::now();
+    let mut center = Center::default();
+    let allowed = settings(Some(Permission::Allow));
+    for nth in 0..3 {
+        center.post(&allowed, "chat", "Chat", post("m", ""), now, nth);
+    }
+    let payload = methods::encode(&call("call/1", 100));
+    let wire = methods::decode::<Notification>(&payload).unwrap();
+    let (posted, banner) = center.post(&allowed, "chat", "Chat", wire, now, 3);
+    let banner = banner.unwrap();
+    assert_eq!(posted, Delivery::Banner);
+    assert_eq!(
+        (banner.kind, banner.until, banner.tag.as_str()),
+        (NoticeKind::Call, 100, "chat/call/1")
+    );
+    assert!(center.ring_over("chat/call/1", 100));
 }
 
 /// A call rings past the burst, never as "N more"; before the person said
