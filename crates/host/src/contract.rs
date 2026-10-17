@@ -139,12 +139,14 @@ pub struct KeyStorage {
 }
 
 /// The store a device key is kept in (the mobile `DeviceKeyStore`'s
-/// `storage` levels, plus the desktop's two).
+/// `storage` levels, `Keychain` shared with the Mac, plus the desktop's
+/// two).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyLevel {
     /// iOS: a seed sealed by the Secure Enclave.
     SecureEnclave,
-    /// iOS: a this-device-only Keychain item.
+    /// Apple: a this-device-only item in the data protection Keychain (on
+    /// macOS read only after Touch ID or the login password).
     Keychain,
     /// Android Keystore backed by StrongBox.
     KeystoreStrongBox,
@@ -152,7 +154,9 @@ pub enum KeyLevel {
     KeystoreTee,
     /// Android Keystore in software.
     KeystoreSoftware,
-    /// The desktop OS keyring (Secret Service, macOS Keychain).
+    /// The desktop OS keyring (Secret Service, Credential Manager; on
+    /// macOS the file keychain, for a build without the keychain
+    /// entitlement).
     OsKeyring,
     /// A file, where no keyring is reachable.
     File,

@@ -238,6 +238,11 @@ pub struct ViewTree {
     /// from the page before it while that moves (`page_motion.rs`).
     page: Option<page_motion::Shown>,
     page_motion: Option<page_motion::PageMotion>,
+    /// Under touch, each page a deeper one was pushed over, by its own
+    /// depth, as it was last drawn: what the edge swipe uncovers under the
+    /// page on top; and the swipe dragging that page off.
+    kept: std::collections::BTreeMap<u32, Entity<ViewTree>>,
+    finger: Option<page_motion::Finger>,
     /// A drawn sheet's detent and drag.
     sheets: HashMap<AuthoredPath, sheet::SheetState>,
     /// The sheet this render built, laid over the root (`sheet.rs`).
@@ -349,6 +354,8 @@ impl ViewTree {
             sheet_layer: None,
             page,
             page_motion: None,
+            kept: Default::default(),
+            finger: None,
             leaving: None,
             leaving_at: None,
             body: None,

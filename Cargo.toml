@@ -166,6 +166,12 @@ block2 = "0.5"
 objc2 = "0.5"
 objc2-foundation = { version = "0.2", default-features = false, features = ["std", "NSBundle", "NSString", "NSError", "NSDictionary", "NSObject", "NSSet"] }
 objc2-user-notifications = { version = "0.2", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationSound", "UNNotificationTrigger", "UNNotification", "UNNotificationResponse", "UNNotificationAction", "UNNotificationCategory"] }
+# This device's key in the data protection keychain, locked by Touch ID
+# (`backend/device_key.rs`): the Security framework's item calls, which
+# `keyring`'s file keychain does not make. Both already in the graph under
+# keyring.
+core-foundation = "0.10"
+security-framework-sys = { version = "2.17", features = ["OSX_10_15"] }
 
 # Everywhere else the notifier is the freedesktop notifications service, one
 # `Notify` call on the session bus. zbus is already in this binary's graph

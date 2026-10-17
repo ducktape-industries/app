@@ -4,7 +4,8 @@
 //! whether a banner reaches the screen:
 //!
 //! - the person's word on the view: none yet → logged, its newest few
-//!   rows only, and the view's window asks them (the permission bar);
+//!   rows only, and the view's window asks them (the permission bar); a
+//!   call still rings;
 //!   Block → dropped, not even logged; Silent → logged only; Allow → on
 //!   to the rest;
 //! - banners off for the device (`desktop_notifications`) → logged only;

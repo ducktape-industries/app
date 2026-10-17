@@ -2,13 +2,13 @@
 //! which every view's tracks and subscriptions ride, off consensus. QUIC on
 //! the node's UDP socket (the port `/v1/live/port` names, ALPN
 //! `ducktape-live`, the node's key from `/v1/status` pinned as its
-//! certificate's), or the websocket `/v1/live` on its HTTP port where it
-//! names none or no UDP answers in [`QUIC_ANSWER`] (both then run, and the
-//! first handshake done is the session). A node that answers the port's
-//! route 404 serves no live tracks: the request is refused
-//! `live_unavailable`, and nothing is dialed. A lost session ends what rode
-//! on it: each request's channels close, and the next request dials a new
-//! session.
+//! certificate's), or the websocket `/v1/live` on its HTTP port: the one
+//! path where it names no port, else dialed with QUIC from the start, the
+//! first handshake done being the session, QUIC once its UDP answered
+//! unless its handshake then fails ([`dial`]). A node that answers the port's route 404 serves no live
+//! tracks: the request is refused `live_unavailable`, and nothing is
+//! dialed. A lost session ends what rode on it: each request's channels
+//! close, and the next request dials a new session.
 //!
 //! The wire is core's `live-wire`, borsh throughout: a length-prefixed
 //! `Control` on the first bidirectional stream (the handshake, then requests
@@ -21,7 +21,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
@@ -40,8 +40,9 @@ use view_wire::methods::refusal;
 
 use super::RpcClient;
 
-/// How long a dial waits for the node's QUIC answer before it starts the
-/// websocket beside it.
+/// How long a QUIC dial waits for the node's answer before it gives the
+/// UDP path up as silent, and how long a welcomed websocket waits for an
+/// answered QUIC's handshake; the websocket runs beside it all along.
 const QUIC_ANSWER: Duration = Duration::from_secs(2);
 /// Stream-mode objects one subscription holds for its view. Past it the
 /// group's QUIC stream waits, which holds the node back by flow control;
@@ -1315,12 +1316,17 @@ fn undecoded(kind: &str, bytes: &[u8], error: impl std::fmt::Display) -> String 
 }
 
 /// A session with the node `rpc` reaches: its status for the key and the
-/// chain, its live port, then the handshake over QUIC where it names a
-/// port, over the websocket where it names none. A QUIC dial that has not
-/// answered in [`QUIC_ANSWER`] keeps running while the websocket starts
-/// beside it, and the first handshake done is the session; the other is
-/// dropped. Nothing is remembered between dials: a node whose UDP comes
-/// back is on QUIC at the next one.
+/// chain, its live port, then the handshake: over the websocket where it
+/// names no port, else over QUIC and the websocket started at once, the
+/// first handshake done being the session and the other dropped. QUIC
+/// carries datagrams, so once the node's UDP has answered it is waited
+/// for, a round trip or two from done, should the websocket finish first:
+/// up to [`QUIC_ANSWER`], after which, or on its failing, the welcomed
+/// websocket is the session. Behind a tunnel that carries only TCP the UDP
+/// never answers, and the websocket waits on nothing. A QUIC refusal
+/// before any welcome is the node's word; a websocket failing waits on
+/// QUIC, and QUIC silent waits on the websocket. Nothing is remembered
+/// between dials: a node whose UDP comes back is on QUIC at the next one.
 async fn dial(rpc: &RpcClient, client: Weak<Inner>) -> Result<Arc<Conn>, Error> {
     let status = rpc.status().await.map_err(super::refused)?;
     let port = match rpc.live_port().await {
@@ -1342,30 +1348,29 @@ async fn dial(rpc: &RpcClient, client: Weak<Inner>) -> Result<Arc<Conn>, Error> 
     let Some(port) = port else {
         return over_ws().await.map(opened);
     };
-    let mut quic = std::pin::pin!(over_quic(&endpoint, port, &hello, node, &client));
-    let silent = |error: &str| {
-        tracing::info!(target: "ducktape::app", reason = "udp_silent", error, "the node's live UDP did not answer; the websocket instead");
-    };
-    match tokio::time::timeout(QUIC_ANSWER, &mut quic).await {
-        Ok(Quic::Session(session)) => return Ok(opened(session)),
-        Ok(Quic::Refused(refusal)) => return Err(refusal),
-        Ok(Quic::Silent(error)) => {
-            silent(&error);
-            return over_ws().await.map(opened);
-        }
-        Err(_) => {}
-    }
+    let answered = AtomicBool::new(false);
+    let mut quic = std::pin::pin!(over_quic(&endpoint, port, &hello, node, &client, &answered));
     let mut ws = std::pin::pin!(over_ws());
     tokio::select! {
+        // both done in one poll: QUIC, the path that carries datagrams
+        biased;
         quic = &mut quic => match quic {
             Quic::Session(session) => Ok(opened(session)),
             Quic::Refused(refusal) => Err(refusal),
             Quic::Silent(error) => {
-                silent(&error);
+                tracing::info!(target: "ducktape::app", reason = "udp_silent", error, "the node's live UDP did not answer; the websocket goes on");
                 ws.await.map(opened)
             }
         },
         ws = &mut ws => match ws {
+            // UDP answered: QUIC is its live handshake from done; failing or
+            // late, the node's welcome on the websocket stands
+            Ok(session) if answered.load(Ordering::Relaxed) => {
+                match tokio::time::timeout(QUIC_ANSWER, quic).await {
+                    Ok(Quic::Session(quic)) => Ok(opened(quic)),
+                    Ok(Quic::Refused(_) | Quic::Silent(_)) | Err(_) => Ok(opened(session)),
+                }
+            }
             Ok(session) => Ok(opened(session)),
             Err(refusal) => match quic.await {
                 Quic::Session(session) => Ok(opened(session)),
@@ -1405,25 +1410,30 @@ fn opened(session: Handshaken) -> Arc<Conn> {
 /// How a QUIC dial ended.
 enum Quic {
     Session(Handshaken),
-    /// The node answered and refused the handshake: its word, and no
-    /// other path would do better.
+    /// The handshake over the node's answered UDP failed: the node refused
+    /// it, or the link closed or timed out. Final unless the websocket was
+    /// already welcomed ([`dial`]).
     Refused(Error),
-    /// No QUIC session: the UDP path did not answer, or the certificate
-    /// was not the node's.
+    /// No QUIC session: the UDP path did not answer, the certificate was
+    /// not the node's, or no control stream opened.
     Silent(String),
 }
 
+/// The handshake over QUIC; `answered` is set once the node's UDP answered
+/// with its own certificate.
 async fn over_quic(
     endpoint: &str,
     port: u16,
     hello: &Hello,
     node: &[u8],
     client: &Weak<Inner>,
+    answered: &AtomicBool,
 ) -> Quic {
     let (udp, connection) = match quic(endpoint, port, node).await {
         Ok(dialed) => dialed,
         Err(error) => return Quic::Silent(error),
     };
+    answered.store(true, Ordering::Relaxed);
     let (send, recv) = match connection.open_bi().await {
         Ok(streams) => streams,
         Err(error) => return Quic::Silent(format!("no control stream: {error}")),
