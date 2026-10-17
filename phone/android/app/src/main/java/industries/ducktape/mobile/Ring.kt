@@ -29,6 +29,9 @@ import com.google.firebase.messaging.RemoteMessage
  * it is answered, declined, withdrawn or past its `until`. The payload is the carrier's (pushd): `tag` names the call,
  * `title` is who calls, `link` is what Answer opens (an `ACTION_VIEW` intent to [MainActivity], the link path any
  * `duck://` link takes), `until` is Unix seconds. Decline is this phone's alone (SPEC D11): nothing is sent.
+ * Any other notice (`kind: notice`, the same payload) is an ordinary notification under its tag ([notice]), replaced
+ * in place by the next under that tag (quietly when the carrier says `quiet`), opened to its link, taken down by the
+ * same withdraw a call is. What is a notice, its words and when it goes are the program's; this only shows them.
  * Firebase is the owner's project: without its `google-services.json` the build has no Firebase app, and nothing here
  * asks it for anything.
  */
@@ -36,7 +39,8 @@ object Ring {
     /** The intent extra naming the call an Answer came from, so the app takes its ring down. */
     const val TAG = "industries.ducktape.mobile.RING_TAG"
     private const val CHANNEL = "calls"
-    /** Every call's notification is this id under its own tag. */
+    private const val NOTICES = "notices"
+    /** Every call's and notice's notification is this id under its own tag. */
     private const val ID = 1
     /** [MainActivity]'s request code for the notification permission, apart from a view's asks. */
     const val ASK_NOTIFY = 2
@@ -97,7 +101,36 @@ object Ring {
         manager.notify(tag, ID, notification)
     }
 
-    /** The call under [tag] stops ringing, and its screen goes. */
+    /** `notice` shown under its tag; one already there is replaced, without a second sound when it is `quiet`. */
+    fun notice(context: Context, notice: Map<String, String>) {
+        val tag = notice["tag"] ?: return
+        val until = notice["until"]?.toLongOrNull() ?: 0
+        val left = until * 1000 - System.currentTimeMillis()
+        if (until != 0L && left <= 0) return
+        val manager = context.getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(NotificationChannel(NOTICES, "Notices", NotificationManager.IMPORTANCE_DEFAULT))
+        val link = notice["link"].orEmpty()
+        val opened = PendingIntent.getActivity(
+            context, tag.hashCode(),
+            if (link.isEmpty()) Intent(context, MainActivity::class.java)
+            else Intent(Intent.ACTION_VIEW, Uri.parse(link), context, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val notification = Notification.Builder(context, NOTICES)
+            .setSmallIcon(android.R.drawable.ic_dialog_email)
+            .setContentTitle(notice["title"].orEmpty())
+            .setContentText(notice["body"].orEmpty())
+            .setStyle(Notification.BigTextStyle().bigText(notice["body"].orEmpty()))
+            .setGroup(notice["program"].orEmpty())
+            .setContentIntent(opened)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(notice["quiet"] == "1")
+            .apply { if (until != 0L) setTimeoutAfter(left) }
+            .build()
+        manager.notify(tag, ID, notification)
+    }
+
+    /** The call or notice under [tag] goes; a call's screen with it. */
     fun withdraw(context: Context, tag: String) {
         context.getSystemService(NotificationManager::class.java).cancel(tag, ID)
         RingActivity.over(tag)
@@ -193,6 +226,7 @@ object Ring {
         override fun onMessageReceived(message: RemoteMessage) {
             when (message.data["kind"]) {
                 "call" -> ring(this, message.data)
+                "notice" -> notice(this, message.data)
                 "withdraw" -> message.data["tag"]?.let { withdraw(this, it) }
             }
         }
