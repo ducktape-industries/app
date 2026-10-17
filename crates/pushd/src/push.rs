@@ -106,11 +106,13 @@ impl Http for Client {
             post = post.header(*name, value);
         }
         ducktape_host::runtime::handle().block_on(async move {
+            // reqwest names the URL in its error, and an APNs URL ends in
+            // the device's token: the log line names it cut (`shown`)
             let answer = post
                 .body(request.body.clone())
                 .send()
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| error.without_url().to_string())?;
             let status = answer.status().as_u16();
             Ok((status, answer.text().await.unwrap_or_default()))
         })
@@ -977,7 +979,8 @@ mod tests {
 
     /// An endpoint that takes the connection and never answers is given up
     /// at the client's timeout, and the next request goes out: one stuck
-    /// device never holds the program's queue past a call's `until`.
+    /// device never holds the program's queue past a call's `until`. The
+    /// error names no device token (it is logged).
     #[test]
     fn a_hung_endpoint_times_out_and_the_next_request_goes() {
         use std::io::{Read as _, Write as _};
@@ -992,7 +995,7 @@ mod tests {
         });
         let client = Client::timed(Duration::from_millis(300)).unwrap();
         let to = |at: std::net::SocketAddr| Request {
-            url: format!("http://{at}/"),
+            url: format!("http://{at}/3/device/ab12cd34"),
             headers: Vec::new(),
             body: "{}".into(),
         };
@@ -1003,7 +1006,11 @@ mod tests {
         let (first, second) = finished
             .recv_timeout(Duration::from_secs(10))
             .expect("a hung endpoint held the next request");
-        assert!(first.is_err(), "the hung endpoint answered: {first:?}");
+        let error = first.expect_err("the hung endpoint answered");
+        assert!(
+            !error.contains("ab12cd34"),
+            "the token in an error: {error}"
+        );
         assert_eq!(second, Ok((200, "ok".to_owned())));
         drop(hung);
     }
