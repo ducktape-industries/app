@@ -161,13 +161,16 @@ impl Devices {
     }
 
     /// The rows as the file holds them, written whole and renamed into place.
+    /// The rows stay held throughout: two saves at once (two registrations,
+    /// or one and the recheck) would write one temporary file together and
+    /// rename a torn one into place.
     fn save(&self, file: &Path) -> std::io::Result<()> {
-        let rows = lock(&self.rows).clone();
+        let rows = lock(&self.rows);
         if let Some(dir) = file.parent() {
             std::fs::create_dir_all(dir)?;
         }
         let tmp = file.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(&rows)?)?;
+        std::fs::write(&tmp, serde_json::to_vec_pretty(&*rows)?)?;
         std::fs::rename(&tmp, file)
     }
 }
@@ -586,5 +589,32 @@ mod tests {
         devices.save(&file).unwrap();
         assert!(follower.follow(&file));
         assert_eq!(follower.accounts().len(), 2);
+    }
+
+    /// Registrations saved at once leave the file whole, with every row.
+    #[test]
+    fn saves_at_once_leave_the_file_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("testkit").join("devices.json");
+        let devices = Devices::load(&file).unwrap();
+        std::thread::scope(|scope| {
+            for account in 0..8 {
+                let (devices, file) = (&devices, &file);
+                scope.spawn(move || {
+                    for at in 1..=20 {
+                        devices.put(Row {
+                            account,
+                            key: format!("key{account}"),
+                            kind: "fcm".into(),
+                            token: "t".repeat(200),
+                            env: String::new(),
+                            at,
+                        });
+                        devices.save(file).unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(Devices::load(&file).unwrap().accounts().len(), 8);
     }
 }
