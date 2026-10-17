@@ -2690,10 +2690,12 @@ dependencies = [
  "base64 0.22.1",
  "block2 0.5.1",
  "borsh",
+ "bzip2",
  "commonware-codec",
  "commonware-cryptography",
  "design",
  "ducklink",
+ "ducktape-av",
  "ducktape-home",
  "ducktape-host",
  "ducktape-updater",
@@ -2755,6 +2757,7 @@ dependencies = [
  "objc2-core-media",
  "objc2-core-video",
  "objc2-foundation 0.3.2",
+ "objc2-video-toolbox",
  "openh264",
  "openh264-sys2",
  "tracing",
@@ -6377,15 +6380,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nasm-rs"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "706bf8a5e8c8ddb99128c3291d31bd21f4bcde17f0f4c20ec678d85c74faa149"
-dependencies = [
- "log",
-]
-
-[[package]]
 name = "ndk"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7135,6 +7129,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-video-toolbox"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05bf9a3c14831a7d9641b0d81d87dd913ee238a012b2fde27db5a84b56f5df3e"
+dependencies = [
+ "bitflags 2.13.2",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-media",
+ "objc2-core-video",
+]
+
+[[package]]
 name = "objc2-web-kit"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7273,9 +7281,8 @@ version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "414f5bd53da84e126dc9449eb6f0003bb6994b2de63c48119b0c9b7a8b28086a"
 dependencies = [
- "cc",
- "nasm-rs",
- "walkdir",
+ "libloading 0.8.9",
+ "sha2 0.10.9",
 ]
 
 [[package]]
