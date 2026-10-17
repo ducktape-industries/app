@@ -74,7 +74,7 @@ fn main() {
     install_log();
     perf::mark("log");
     // the self-update's boot step: flip to a staged release, or back from
-    // one that never came up, and exec the release that should run
+    // one that never came up, and run the release that should run
     update::boot();
     raise_open_file_limit();
     #[cfg(debug_assertions)]
