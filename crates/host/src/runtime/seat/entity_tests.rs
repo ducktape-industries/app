@@ -2743,7 +2743,9 @@ fn a_swipe_let_go_during_a_tick_waits_for_the_backs_own_answer(cx: &mut TestAppC
         "a frame the Back was not in let the page go"
     );
 
+    // the Back's own tick, begun and held, lands
     pump.at_once();
+    pump.release_all();
     draw_now(&mut native);
     draw_now(&mut native);
     assert_eq!(ticks_of(&seat, &native), 4, "the Back's tick did not land");
