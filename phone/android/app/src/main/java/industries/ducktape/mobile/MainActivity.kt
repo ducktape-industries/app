@@ -67,6 +67,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         // the launching link once: not again when the Activity is made again (a font or locale change) or the app is
         // relaunched from Recents, which hands the old intent back
         if (state == null && (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0) handOn(intent)
+        if (state == null) {
+            Ring.askOnce(this)
+            intent?.getStringExtra("DUCKTAPE_RING_TEST")?.let { Ring.test(applicationContext, it) }
+        }
+        Ring.token(applicationContext)
     }
 
     /** `singleTask`: a link while the app runs comes here, not to a new instance. */
@@ -78,6 +83,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun handOn(intent: Intent?) {
+        // a call's Answer, or a tap on its notification: its ring goes
+        intent?.getStringExtra(Ring.TAG)?.let {
+            Log.i("ducktape", "a call's ring taken down: $it")
+            Ring.withdraw(this, it)
+        }
         val url = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.dataString ?: return
         Native.link(url)
     }
@@ -170,6 +180,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     /** The person's answer, to the instance on screen then (one made again since the ask hears it too). */
     override fun onRequestPermissionsResult(code: Int, permissions: Array<out String>, results: IntArray) {
         if (code == ASK) asked?.offer(results.firstOrNull() == PackageManager.PERMISSION_GRANTED)
+        if (code == Ring.ASK_NOTIFY && results.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            Ring.askFullScreenOnce(this)
+        }
     }
 
     /** The app's own page in Settings, [page] its `package:` URI: where a refused camera or microphone is allowed. */
