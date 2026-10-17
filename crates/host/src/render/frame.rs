@@ -79,6 +79,7 @@ impl ViewTree {
         // every field, with the view's revision this frame carries
         let mut fields = HashMap::new();
         let mut scrolls = std::collections::HashSet::new();
+        let mut sideways = std::collections::HashSet::new();
         let mut uniform_lists = std::collections::HashSet::new();
         let mut variable_lists = std::collections::HashSet::new();
         let mut drags = std::collections::HashSet::new();
@@ -98,6 +99,13 @@ impl ViewTree {
                 && styles[*style].overflow.y == Some(gpui_kit::Overflow::Scroll)
             {
                 scrolls.insert(path.clone());
+            }
+            if let wire::Node::Container(view_wire::ContainerNode {
+                id: Some(_), style, ..
+            }) = node
+                && super::sideways::scrolls_only_sideways(&styles[*style])
+            {
+                sideways.insert(path.clone());
             }
             if matches!(
                 node,
@@ -217,6 +225,8 @@ impl ViewTree {
         let kept = |key: &AuthoredPath| leaving.is_some_and(|path| key.starts_with(path));
         self.scrolls
             .retain(|key, _| scrolls.contains(key) || kept(key));
+        self.sideways
+            .retain(|key| sideways.contains(key) || kept(key));
         self.uniform_lists
             .retain(|key, _| uniform_lists.contains(key) || kept(key));
         self.variable_lists

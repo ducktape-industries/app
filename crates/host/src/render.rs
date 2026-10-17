@@ -40,6 +40,7 @@ mod picture_resources;
 mod pictures;
 mod sensors;
 mod sheet;
+mod sideways;
 mod style;
 mod surfaces;
 mod svg_limits;
@@ -260,6 +261,8 @@ pub struct ViewTree {
     // Scrolling.
     /// Identified containers with `overflow.y: scroll`; the scroll widget commands' targets.
     scrolls: HashMap<AuthoredPath, ScrollHandle>,
+    /// Under touch, what takes a sideways drag itself (`sideways.rs`).
+    sideways: sideways::Sideways,
     /// The identified nodes this render claims as a composite's active
     /// descendant, and those already scrolled into view: a claim that moves
     /// onto a node scrolls the plain scroller around it to it, once.
@@ -345,6 +348,7 @@ impl ViewTree {
             links: HashMap::new(),
             authored_path: Vec::new(),
             scrolls: HashMap::new(),
+            sideways: Default::default(),
             claiming: Default::default(),
             revealed: Default::default(),
             uniform_lists: HashMap::new(),
@@ -571,6 +575,7 @@ impl Render for ViewTree {
         });
         self.authored_path.clear();
         self.render_index = 0;
+        self.sideways.clear();
         cx.emit(Drawn);
         // a linked text the last render did not draw is gone
         self.links
