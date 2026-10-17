@@ -585,6 +585,11 @@ mod tests {
         drop(first);
         assert_eq!(TOLD.load(Ordering::Relaxed), 0x01);
         drop(second);
+        // the I/O's thread may hold the last reference for one of its ticks
+        let until = Instant::now() + Duration::from_secs(2);
+        while TOLD.load(Ordering::Relaxed) != 0x11 && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         assert_eq!(TOLD.load(Ordering::Relaxed), 0x11);
     }
 }
