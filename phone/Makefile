@@ -36,13 +36,8 @@ BUILD ?= 1
 
 .PHONY: android android-run ios-sim ios-archive
 
-# OpenH264 (a call's picture, `crates/av` with `call`) is C++: the NDK's
-# C++ runtime goes in statically, since no libc++_shared.so ships in the APK.
-ANDROID_CXX_ENV = CXXSTDLIB_$(shell echo $(ANDROID_TRIPLE_$(ANDROID_ABI)) | tr '-' '_')=c++_static \
-	CARGO_TARGET_$(shell echo $(ANDROID_TRIPLE_$(ANDROID_ABI)) | tr 'a-z-' 'A-Z_')_RUSTFLAGS="-C link-arg=-lc++abi"
-
 android:
-	cd $(ROOT) && $(ANDROID_CXX_ENV) cargo ndk -t $(ANDROID_ABI) -P 26 rustc -p ducktape-phone --lib --profile phone $(CARGO_FEATURES) --crate-type cdylib
+	cd $(ROOT) && cargo ndk -t $(ANDROID_ABI) -P 26 rustc -p ducktape-phone --lib --profile phone $(CARGO_FEATURES) --crate-type cdylib
 	mkdir -p $(ANDROID_OUT)/jniLibs/$(ANDROID_ABI) $(ANDROID_OUT)/assets/fonts
 	cp $(CARGO_TARGET_DIR)/$(ANDROID_TRIPLE_$(ANDROID_ABI))/phone/libducktape_phone.so $(ANDROID_OUT)/jniLibs/$(ANDROID_ABI)/
 	# gm reads the colour emoji face from the APK's assets

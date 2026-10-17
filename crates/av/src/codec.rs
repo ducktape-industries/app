@@ -10,28 +10,70 @@
 //!   a lost packet is rebuilt from the one after it, and concealed from
 //!   what came before when that has not come either
 //!   ([`AudioDecoder::lost`]).
-//! - picture: a camera's BGRA picture is scaled to the encoded size and
-//!   turned into I420 once, in [`VideoEncoder::encode`]. A keyframe comes
-//!   first, after a size change, when asked ([`VideoEncoder::keyframe`])
-//!   and where OpenH264 sees a scene cut; never on a timer of its own: a
-//!   receiver that joins, or lost a packet, asks, and a periodic one (the
-//!   host's bound on how long a receiver waits) is the host's timer asking.
-//!
-//! ponytail: software codecs on every OS (libopus and OpenH264 built from
-//! source). The hardware H.264 of the phones and macOS (VideoToolbox,
-//! MediaCodec) is the upgrade when a phone's battery or heat says so; it
-//! also brings the OS vendor's patent licence, which a source build of
-//! OpenH264 lacks.
+//! - picture: a camera's BGRA picture is scaled to the encoded size once,
+//!   in [`VideoEncoder::encode`], and handed to the OS's own H.264, the one
+//!   its vendor licenses: VideoToolbox on macOS and iOS
+//!   (`videotoolbox.rs`), MediaCodec on Android (`mediacodec.rs`), and on
+//!   Linux Cisco's prebuilt OpenH264, fetched onto the device by the app
+//!   ([`cisco`]) and loaded at run time (`openh264.rs`). Nothing here
+//!   compiles H.264 code. One stream shape on every OS, so each decodes
+//!   the others': Constrained Baseline, no frame reordering, Annex B
+//!   start codes, the parameter sets in front of every keyframe. A
+//!   keyframe comes first, after a size change and when asked
+//!   ([`VideoEncoder::keyframe`]); a receiver that joins, or lost a
+//!   packet, asks, and a periodic one (the host's bound on how long a
+//!   receiver waits) is the host's timer asking. A backend may add its own
+//!   at that same bound (MediaCodec takes no "never").
 use std::time::Duration;
 
-use openh264::encoder::{BitRate, Encoder, EncoderConfig, FrameRate, FrameType, RateControlMode};
-use openh264::formats::{BgraSliceU8, YUVBuffer, YUVSource};
-use openh264::{OpenH264API, Timestamp, decoder::Decoder};
-use openh264_sys2::{
-    ENCODER_OPTION_BITRATE, ENCODER_OPTION_MAX_BITRATE, SBitrateInfo, SPATIAL_LAYER_0,
-};
-
 use crate::Picture;
+
+#[cfg(target_os = "android")]
+mod mediacodec;
+#[cfg(target_os = "linux")]
+mod openh264;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod videotoolbox;
+
+#[cfg(target_os = "android")]
+use mediacodec as h264;
+#[cfg(target_os = "linux")]
+use openh264 as h264;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+use videotoolbox as h264;
+
+/// Where Cisco's OpenH264 binary is, on an OS whose H.264 it is (Linux;
+/// [`WANTED`]). Cisco's patent licence covers only the build Cisco made,
+/// fetched by the user's own device, which the user can turn off: the app
+/// owns that (the download, the switch) and [`supply`]s the path; an
+/// encoder or decoder asks for it when made, so a switch turned off holds
+/// from the next one on. Nothing supplied, or an error, is a build that
+/// sends and shows no picture: the call goes on by voice.
+pub mod cisco {
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
+
+    /// This OS's H.264 is Cisco's binary.
+    pub const WANTED: bool = cfg!(target_os = "linux");
+
+    type Provider = dyn Fn() -> Result<PathBuf, String> + Send + Sync;
+
+    static PROVIDER: OnceLock<Box<Provider>> = OnceLock::new();
+
+    /// Where the library is, or why it is not (turned off, not fetched):
+    /// asked on every encoder's or decoder's making. The first supplier
+    /// holds.
+    pub fn supply(provider: impl Fn() -> Result<PathBuf, String> + Send + Sync + 'static) {
+        let _ = PROVIDER.set(Box::new(provider));
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn library() -> Result<PathBuf, String> {
+        PROVIDER
+            .get()
+            .ok_or_else(|| "no OpenH264 library was supplied".to_string())?()
+    }
+}
 
 /// The part of libopus (vendored in `opus/`, built by `build.rs`) this
 /// file calls, as `include/opus.h` and `opus_defines.h` declare it.
@@ -271,17 +313,13 @@ pub struct VideoPacket {
 
 /// A camera's pictures into packets.
 pub struct VideoEncoder {
-    encoder: Encoder,
+    encoder: h264::Encoder,
     width: u32,
     height: u32,
     bitrate: u32,
     /// The pictures a second the camera gives: what the rate control
     /// spreads the bitrate over.
     fps: u32,
-    /// Nothing encoded since `encoder` was made: OpenH264 starts on its
-    /// first picture and takes no option before.
-    fresh: bool,
-    yuv: YUVBuffer,
     /// A picture scaled to the encoded size, kept for the next.
     scaled: Vec<u8>,
 }
@@ -289,51 +327,26 @@ pub struct VideoEncoder {
 impl VideoEncoder {
     /// Encodes pictures at `width` by `height` (each rounded down to
     /// even) and `bitrate` bits a second, from a camera giving `fps`
-    /// pictures a second.
+    /// pictures a second. An error is a build, or a device, that encodes
+    /// no picture: the caller goes on by voice.
     pub fn new(width: u32, height: u32, bitrate: u32, fps: u32) -> Result<Self, String> {
         let (width, height) = even(width, height)?;
+        if fps == 0 {
+            return Err("a camera giving no pictures a second".into());
+        }
         Ok(Self {
-            encoder: encoder(bitrate, fps)?,
+            encoder: h264::Encoder::new(width, height, bitrate, fps)?,
             width,
             height,
             bitrate,
             fps,
-            fresh: true,
-            yuv: YUVBuffer::new(width as usize, height as usize),
             scaled: Vec::new(),
         })
     }
 
     /// From the next picture on.
     pub fn set_bitrate(&mut self, bitrate: u32) -> Result<(), String> {
-        if self.fresh {
-            self.encoder = encoder(bitrate, self.fps)?;
-            self.bitrate = bitrate;
-            return Ok(());
-        }
-        let bps = i32::try_from(bitrate).unwrap_or(i32::MAX);
-        // OpenH264 refuses a cap under the target: the cap moves first up,
-        // last down
-        let order = match bitrate > self.bitrate {
-            true => [ENCODER_OPTION_MAX_BITRATE, ENCODER_OPTION_BITRATE],
-            false => [ENCODER_OPTION_BITRATE, ENCODER_OPTION_MAX_BITRATE],
-        };
-        for option in order {
-            let mut info = SBitrateInfo {
-                iLayer: SPATIAL_LAYER_0,
-                iBitrate: bps,
-            };
-            // SAFETY: the encoder has started (not `fresh`); both options
-            // read one `SBitrateInfo`, live for the call
-            let code = unsafe {
-                self.encoder
-                    .raw_api()
-                    .set_option(option, (&raw mut info).cast())
-            };
-            if code != 0 {
-                return Err(format!("openh264 refused the bitrate {bitrate} ({code})"));
-            }
-        }
+        self.encoder.set_bitrate(bitrate)?;
         self.bitrate = bitrate;
         Ok(())
     }
@@ -345,8 +358,7 @@ impl VideoEncoder {
     pub fn set_size(&mut self, width: u32, height: u32, fps: u32) -> Result<(), String> {
         let (width, height) = even(width, height)?;
         if (width, height, fps) != (self.width, self.height, self.fps) {
-            // a new encoder: OpenH264's own resize would drop a bitrate
-            // set since it started
+            // a new encoder: a session is made at one size
             *self = Self::new(width, height, self.bitrate, fps)?;
         }
         Ok(())
@@ -354,17 +366,14 @@ impl VideoEncoder {
 
     /// The next picture is a keyframe.
     pub fn keyframe(&mut self) {
-        // a fresh encoder's first picture is one anyway
-        if !self.fresh {
-            self.encoder.force_intra_frame();
-        }
+        self.encoder.keyframe();
     }
 
     /// `picture` (any size; scaled to the encoded one) taken `at` (from
     /// the call's first picture on: the rate control's clock). A camera's
     /// picture of a person facing it may be mirrored for them: the one
     /// sent should not be. `None`: the rate control skipped the picture
-    /// to keep to the bitrate.
+    /// to keep to the bitrate, or the encoder holds it for the next call.
     pub fn encode(
         &mut self,
         picture: &Picture,
@@ -387,36 +396,8 @@ impl VideoEncoder {
                 &self.scaled[..]
             }
         };
-        self.yuv.read_bgra8(BgraSliceU8::new(bgra, to));
-        let at = Timestamp::from_millis(u64::try_from(at.as_millis()).unwrap_or(u64::MAX));
-        let stream = self
-            .encoder
-            .encode_at(&self.yuv, at)
-            .map_err(|error| format!("openh264: {error}"))?;
-        self.fresh = false;
-        match stream.frame_type() {
-            FrameType::Skip | FrameType::Invalid => Ok(None),
-            kind => Ok(Some(VideoPacket {
-                data: stream.to_vec(),
-                keyframe: kind == FrameType::IDR,
-            })),
-        }
+        self.encoder.encode(bgra, at)
     }
-}
-
-/// An OpenH264 encoder for a call: the bitrate kept (frames skipped when
-/// over it), spread over `fps` pictures a second (each picture's share is
-/// `bitrate / fps`).
-fn encoder(bitrate: u32, fps: u32) -> Result<Encoder, String> {
-    if fps == 0 {
-        return Err("a camera giving no pictures a second".into());
-    }
-    let config = EncoderConfig::new()
-        .bitrate(BitRate::from_bps(bitrate))
-        .rate_control_mode(RateControlMode::Bitrate)
-        .max_frame_rate(FrameRate::from_hz(fps as f32));
-    Encoder::with_api_config(OpenH264API::from_source(), config)
-        .map_err(|error| format!("openh264: {error}"))
 }
 
 /// I420's sizes are even.
@@ -460,39 +441,68 @@ fn covered(at: usize, to: usize, from: usize) -> std::ops::Range<usize> {
 }
 
 /// Packets back into pictures.
-pub struct VideoDecoder(Decoder);
+pub struct VideoDecoder(h264::Decoder);
 
 impl VideoDecoder {
     pub fn new() -> Result<Self, String> {
-        Decoder::new()
-            .map(Self)
-            .map_err(|error| format!("openh264: {error}"))
+        h264::Decoder::new().map(Self)
     }
 
     /// A packet's picture, BGRA as a camera's. `None`: the packet ended no
-    /// picture. The pictures after a lost packet are wrong until the next
-    /// keyframe: the sender is asked for one ([`VideoEncoder::keyframe`]).
+    /// picture (or the decoder holds it for the next call). The pictures
+    /// after a lost packet are wrong until the next keyframe: the sender
+    /// is asked for one ([`VideoEncoder::keyframe`]).
     pub fn decode(&mut self, packet: &[u8]) -> Result<Option<Picture>, String> {
-        let Some(yuv) = self
-            .0
-            .decode(packet)
-            .map_err(|error| format!("openh264: {error}"))?
-        else {
-            return Ok(None);
-        };
-        let (width, height) = yuv.dimensions();
-        let mut bgra = vec![0; width * height * 4];
-        yuv.write_rgba8(&mut bgra);
-        for pixel in bgra.chunks_exact_mut(4) {
-            pixel.swap(0, 2);
-        }
-        Ok(Some(Picture {
-            width: width as u32,
-            height: height as u32,
-            bgra,
-        }))
+        self.0.decode(packet)
     }
 }
+
+/// The NAL units of an Annex B stream, each without its start code, in
+/// order. A peer chose the bytes: anything is read, nothing panics.
+/// (OpenH264 reads its own: unused on Linux.)
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+pub(crate) fn nal_units(stream: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let mut starts = Vec::new();
+    let mut i = 0;
+    while i + 3 <= stream.len() {
+        if stream[i] == 0 && stream[i + 1] == 0 && stream[i + 2] == 1 {
+            starts.push(i + 3);
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    let ends: Vec<usize> = starts
+        .iter()
+        .skip(1)
+        .map(|&next| {
+            // the start code's own zeros (and a 4-byte code's leading one)
+            // belong to no unit
+            let mut end = next - 3;
+            while end > 0 && stream[end - 1] == 0 {
+                end -= 1;
+            }
+            end
+        })
+        .chain(std::iter::once(stream.len()))
+        .collect();
+    starts
+        .into_iter()
+        .zip(ends)
+        .filter(|(start, end)| end > start)
+        .map(move |(start, end)| &stream[start..end])
+}
+
+/// A NAL unit's type (its first byte's low five bits).
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+pub(crate) fn nal_type(unit: &[u8]) -> u8 {
+    unit.first().map_or(0, |byte| byte & 0x1f)
+}
+
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+pub(crate) const NAL_SPS: u8 = 7;
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+pub(crate) const NAL_PPS: u8 = 8;
 
 #[cfg(test)]
 mod tests {
@@ -733,8 +743,55 @@ mod tests {
         Duration::from_millis(n * 33)
     }
 
+    /// The H.264 backend ready to be made. On Linux that is Cisco's binary:
+    /// the one `DUCKTAPE_OPENH264` names, else the one for this machine
+    /// fetched once from Cisco into the temp dir (curl and bzip2, as the
+    /// app does in Rust).
+    fn ready() {
+        #[cfg(target_os = "linux")]
+        super::cisco::supply(|| {
+            use std::path::PathBuf;
+            use std::process::Command;
+            if let Some(path) = std::env::var_os("DUCKTAPE_OPENH264") {
+                return Ok(PathBuf::from(path));
+            }
+            let name = match std::env::consts::ARCH {
+                "x86_64" => "libopenh264-2.6.0-linux64.8.so",
+                "aarch64" => "libopenh264-2.6.0-linux-arm64.8.so",
+                other => return Err(format!("no Cisco build for {other}")),
+            };
+            // one fetch, however many tests ask at once
+            static FETCH: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let _one = FETCH
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let dir = std::env::temp_dir().join("ducktape-openh264");
+            let path = dir.join(name);
+            if path.exists() {
+                return Ok(path);
+            }
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let packed = dir.join(format!("{name}.part.bz2"));
+            let url = format!("http://ciscobinary.openh264.org/{name}.bz2");
+            let run = |program: &str, args: &[&str]| -> Result<(), String> {
+                let status = Command::new(program)
+                    .args(args)
+                    .status()
+                    .map_err(|e| format!("{program}: {e}"))?;
+                status.success().then_some(()).ok_or(format!(
+                    "{program} failed ({status}); set DUCKTAPE_OPENH264 to Cisco's libopenh264"
+                ))
+            };
+            run("curl", &["-sSfo", &packed.display().to_string(), &url])?;
+            run("bzip2", &["-df", &packed.display().to_string()])?;
+            std::fs::rename(dir.join(format!("{name}.part")), &path).map_err(|e| e.to_string())?;
+            Ok(path)
+        });
+    }
+
     #[test]
     fn a_picture_comes_back_through_h264() {
+        ready();
         let mut encoder = VideoEncoder::new(320, 240, 1_000_000, 30).unwrap();
         let mut decoder = VideoDecoder::new().unwrap();
         let sent = pattern(320, 240, 0);
@@ -751,10 +808,15 @@ mod tests {
         assert!(psnr(&pattern(320, 240, 8), &back) < 25.);
     }
 
+    /// The first packet is a keyframe, and the one asked for at the
+    /// seventh picture comes then (or one call later, on a codec that
+    /// holds a picture), and no other.
     #[test]
     fn a_keyframe_comes_first_and_when_asked() {
+        ready();
         let mut encoder = VideoEncoder::new(160, 120, 500_000, 30).unwrap();
-        let mut kinds = Vec::new();
+        let mut keys = Vec::new();
+        let mut first = None;
         for n in 0..12 {
             if n == 6 {
                 encoder.keyframe();
@@ -762,20 +824,27 @@ mod tests {
             let packet = encoder
                 .encode(&pattern(160, 120, n as u32), frame(n))
                 .unwrap();
-            kinds.push(packet.expect("no picture skipped at this bitrate").keyframe);
+            if let Some(packet) = packet {
+                first.get_or_insert(n);
+                if packet.keyframe {
+                    keys.push(n);
+                }
+            }
         }
-        let expected: Vec<bool> = (0..12).map(|n| n == 0 || n == 6).collect();
-        assert_eq!(kinds, expected);
+        assert_eq!(keys.len(), 2, "keyframes at {keys:?}");
+        assert_eq!(Some(keys[0]), first, "the first packet is a keyframe");
+        assert!(keys[1] == 6 || keys[1] == 7, "keyframes at {keys:?}");
     }
 
     #[test]
     fn a_video_bitrate_change_takes_effect_down_and_up() {
+        ready();
         let mut encoder = VideoEncoder::new(160, 120, 1_000_000, 30).unwrap();
         let mut sizes = Vec::new();
-        for n in 0..90u64 {
+        for n in 0..180u64 {
             match n {
-                30 => encoder.set_bitrate(100_000).unwrap(),
-                60 => encoder.set_bitrate(1_000_000).unwrap(),
+                60 => encoder.set_bitrate(100_000).unwrap(),
+                120 => encoder.set_bitrate(1_000_000).unwrap(),
                 _ => {}
             }
             let packet = encoder
@@ -783,22 +852,24 @@ mod tests {
                 .unwrap();
             sizes.push(packet.map_or(0, |packet| packet.data.len()));
         }
-        // two thirds of a second of each, past a third's settling
-        let spent = |from: usize| -> usize { sizes[from..from + 20].iter().sum() };
-        let (high, low, again) = (spent(10), spent(40), spent(70));
+        // the last second of each two, past the first's settling (a
+        // hardware rate control moves over a second or so)
+        let spent = |from: usize| -> usize { sizes[from..from + 30].iter().sum() };
+        let (high, low, again) = (spent(30), spent(90), spent(150));
         assert!(low * 4 < high, "{high} bytes at 1 Mb/s, {low} at 100 kb/s");
         assert!(
             low * 4 < again,
             "{low} bytes at 100 kb/s, {again} at 1 Mb/s again"
         );
-        // and near 100 kb/s: 2/3 s of it is 8.3 kB
-        assert!(low < 16_000, "{low} bytes in 2/3 s at 100 kb/s");
+        // and near 100 kb/s: a second of it is 12.5 kB
+        assert!(low < 24_000, "{low} bytes in 1 s at 100 kb/s");
     }
 
     /// A camera giving 15 pictures a second gets its whole bitrate: each
     /// picture's share is the bitrate over 15, not over 30.
     #[test]
     fn a_slower_camera_lands_near_the_bitrate() {
+        ready();
         let bitrate = 300_000;
         for fps in [15u64, 30] {
             let mut encoder = VideoEncoder::new(160, 120, bitrate, fps as u32).unwrap();
@@ -813,7 +884,14 @@ mod tests {
             }
             let rate = bytes * 8 / 2;
             assert!(
-                rate > bitrate as usize * 4 / 5 && rate < bitrate as usize * 6 / 5,
+                rate < bitrate as usize * 6 / 5,
+                "{rate} b/s at {fps} pictures a second, for {bitrate}"
+            );
+            // OpenH264 spends what it is given; a hardware encoder may
+            // stop short of it on a small, easy picture
+            #[cfg(target_os = "linux")]
+            assert!(
+                rate > bitrate as usize * 4 / 5,
                 "{rate} b/s at {fps} pictures a second, for {bitrate}"
             );
         }
@@ -821,6 +899,7 @@ mod tests {
 
     #[test]
     fn a_picture_is_scaled_to_the_size_set_then() {
+        ready();
         let mut encoder = VideoEncoder::new(161, 121, 500_000, 30).unwrap();
         let mut decoder = VideoDecoder::new().unwrap();
         let camera = pattern(320, 240, 0);
@@ -863,8 +942,114 @@ mod tests {
         assert_eq!(&out[..8], &[0, 0, 0, 255, 0, 0, 0, 255]);
     }
 
+    /// Each backend's stream, as its encoder wrote it (`write_golden`):
+    /// 8 pictures of `pattern(160, 120, n)` at 2 Mb/s from a keyframe,
+    /// each packet after its length. What every other backend's decoder
+    /// must read.
+    const GOLDENS: [(&str, &[u8]); 3] = [
+        ("openh264", include_bytes!("codec/golden/openh264.h264")),
+        (
+            "videotoolbox",
+            include_bytes!("codec/golden/videotoolbox.h264"),
+        ),
+        ("mediacodec", include_bytes!("codec/golden/mediacodec.h264")),
+    ];
+    const GOLDEN_PICTURES: u32 = 8;
+
+    fn golden_packets(stream: &[u8]) -> Vec<&[u8]> {
+        let mut packets = Vec::new();
+        let mut rest = stream;
+        while rest.len() >= 4 {
+            let len = u32::from_be_bytes([rest[0], rest[1], rest[2], rest[3]]) as usize;
+            packets.push(&rest[4..4 + len]);
+            rest = &rest[4 + len..];
+        }
+        packets
+    }
+
+    /// This backend's golden stream to the file `DUCKTAPE_H264_GOLDEN`
+    /// names: run on each OS when the encoder's output changes.
+    #[test]
+    #[ignore]
+    fn write_golden() {
+        ready();
+        let path = std::env::var("DUCKTAPE_H264_GOLDEN").expect("DUCKTAPE_H264_GOLDEN");
+        let mut encoder = VideoEncoder::new(160, 120, 2_000_000, 30).unwrap();
+        let mut stream = Vec::new();
+        for n in 0..GOLDEN_PICTURES {
+            let packet = encoder
+                .encode(&pattern(160, 120, n), frame(n.into()))
+                .unwrap();
+            if let Some(packet) = packet {
+                stream.extend((packet.data.len() as u32).to_be_bytes());
+                stream.extend(packet.data);
+            }
+        }
+        std::fs::write(path, stream).unwrap();
+    }
+
+    /// Every backend's stream decodes here: at least six of its eight
+    /// pictures come back (a codec may hold the last), each one of the
+    /// pictures sent, the first the first.
+    #[test]
+    fn every_backends_stream_decodes_here() {
+        ready();
+        for (name, stream) in GOLDENS {
+            let mut decoder = VideoDecoder::new().unwrap();
+            let mut decoded = Vec::new();
+            for packet in golden_packets(stream) {
+                if let Some(picture) = decoder.decode(packet).unwrap() {
+                    decoded.push(picture);
+                }
+            }
+            assert!(
+                decoded.len() >= 6,
+                "{name}: {} pictures decoded",
+                decoded.len()
+            );
+            for (i, picture) in decoded.iter().enumerate() {
+                assert_eq!(
+                    (picture.width, picture.height),
+                    (160, 120),
+                    "{name}: picture {i}"
+                );
+                let best = (0..GOLDEN_PICTURES)
+                    .map(|n| psnr(&pattern(160, 120, n), picture))
+                    .fold(f64::MIN, f64::max);
+                assert!(
+                    best > 28.,
+                    "{name}: picture {i} is none sent (PSNR {best:.1} dB)"
+                );
+            }
+            let first = psnr(&pattern(160, 120, 0), &decoded[0]);
+            assert!(
+                first > 28.,
+                "{name}: the first picture (PSNR {first:.1} dB)"
+            );
+        }
+    }
+
+    /// Start codes of 3 and 4 bytes, a unit's trailing zeros kept out of
+    /// the next, nothing before the first code, nothing for garbage.
+    #[test]
+    fn annex_b_units_are_split_at_their_start_codes() {
+        let stream = [
+            9, 0, 0, 0, 1, 0x67, 1, 2, 0, 0, 1, 0x68, 3, 0, 0, 0, 0, 1, 0x65, 4, 5,
+        ];
+        let units: Vec<&[u8]> = nal_units(&stream).collect();
+        assert_eq!(units, [&[0x67, 1, 2][..], &[0x68, 3], &[0x65, 4, 5]]);
+        assert_eq!(
+            units.iter().map(|u| nal_type(u)).collect::<Vec<_>>(),
+            [7, 8, 5]
+        );
+        assert_eq!(nal_units(&[0, 0, 1]).count(), 0);
+        assert_eq!(nal_units(&[1, 2, 3]).count(), 0);
+        assert_eq!(nal_type(&[]), 0);
+    }
+
     #[test]
     fn no_garbage_breaks_the_video_decoder() {
+        ready();
         let mut decoder = VideoDecoder::new().unwrap();
         for seed in 0..64 {
             let mut bytes = noise(16, 16, seed).bgra;
