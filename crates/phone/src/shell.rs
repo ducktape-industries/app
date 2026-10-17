@@ -34,6 +34,7 @@ mod sheet;
 pub mod stack;
 
 use ducktape_host::a11y::Control as _;
+use ducktape_host::backend::Appearance;
 use ducktape_host::contract::{Boot, KeyStorage, OsServices, Signal, SoftKeyboard};
 use ducktape_host::motion::{self, Shown, Slide, Tween};
 use ducktape_host::render::ViewTree;
@@ -259,6 +260,21 @@ fn let_go_closed(stack: &Entity<Stack>, seats: &Entity<Seats>, cx: &mut App) {
     seats.update(cx, |seats, cx| seats.place(kept, cx));
 }
 
+/// `appearance` (App settings › Appearance) onto the kit theme, which the
+/// phone's palette (`look::palette`), every view's theme and the host's own
+/// chrome read; under System, the window's own; then the system bars over
+/// it. Called as the window opens, when the choice moves and when the
+/// system's does.
+fn sync_appearance(appearance: Appearance, window: &mut Window, cx: &mut App) {
+    use gpui_kit::component::{Theme, ThemeMode};
+    match appearance {
+        Appearance::Light => Theme::change(ThemeMode::Light, Some(window), cx),
+        Appearance::Dark => Theme::change(ThemeMode::Dark, Some(window), cx),
+        Appearance::System => Theme::sync_system_appearance(Some(window), cx),
+    }
+    crate::os::system_bars(Theme::global(cx).is_dark());
+}
+
 /// The AX door over the phone's window, on [`DOOR_PORT`]; the door file in
 /// `Dirs::runtime` for the walk to read its token from.
 #[cfg(feature = "ax-door")]
@@ -308,13 +324,14 @@ fn open_door(cx: &mut App) {
 
 /// What the stack shows full screen: a tab root, the program on top, or
 /// one of the shell's own pages pushed over them (a program's page, App
-/// settings, Switch network).
+/// settings, its Appearance, Switch network).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Page {
     Root(Tab),
     Program(&'static str),
     About(&'static str),
     Settings,
+    Appearance,
     Switch,
 }
 
@@ -328,6 +345,7 @@ impl Page {
             Page::Program(program) => format!("screen::program/{program}").into(),
             Page::About(program) => format!("screen::about/{program}").into(),
             Page::Settings => "screen::settings".into(),
+            Page::Appearance => "screen::appearance".into(),
             Page::Switch => "screen::switch".into(),
         }
     }
@@ -336,13 +354,18 @@ impl Page {
     fn program(self) -> Option<&'static str> {
         match self {
             Page::Program(program) => Some(program),
-            Page::Root(_) | Page::About(_) | Page::Settings | Page::Switch => None,
+            Page::Root(_) | Page::About(_) | Page::Settings | Page::Appearance | Page::Switch => {
+                None
+            }
         }
     }
 
     /// One of the shell's own pages, pushed over the stack.
     fn pushed(self) -> bool {
-        matches!(self, Page::About(_) | Page::Settings | Page::Switch)
+        matches!(
+            self,
+            Page::About(_) | Page::Settings | Page::Appearance | Page::Switch
+        )
     }
 }
 
@@ -384,6 +407,8 @@ pub struct Root {
     placed: (BTreeMap<u64, Place>, Option<u64>),
     /// Links that came before the network's program list did, in order.
     waiting: Vec<String>,
+    /// The appearance last put on the theme (`sync_appearance`).
+    appearance: Appearance,
     /// Home's filter, and whether it is open (its magnifier pressed).
     search: Entity<InputState>,
     filtering: bool,
@@ -425,7 +450,14 @@ impl Root {
             cx.observe(&shared.screen, |_, _, cx| cx.notify()),
             cx.observe(&shared.account, |_, _, cx| cx.notify()),
             cx.observe(&shared.toast, |_, _, cx| cx.notify()),
-            cx.observe(&shared.prefs, |_, _, cx| cx.notify()),
+            cx.observe_in(&shared.prefs, window, |root, prefs, window, cx| {
+                let appearance = prefs.read(cx).get().appearance;
+                if appearance != root.appearance {
+                    root.appearance = appearance;
+                    sync_appearance(appearance, window, cx);
+                }
+                cx.notify();
+            }),
             cx.observe(&stack, |_, _, cx| cx.notify()),
             cx.observe(&shared.seats, |root, _, cx| root.watch_seats(cx)),
             cx.subscribe(&shared.seats, |root, _, event: &SeatsEvent, cx| {
@@ -462,13 +494,14 @@ impl Root {
             }),
             // in front only while the window is
             cx.observe_window_activation(window, |_, _, cx| cx.notify()),
-            cx.observe_window_appearance(window, |_, window, cx| {
-                gpui_kit::component::Theme::sync_system_appearance(Some(window), cx);
+            cx.observe_window_appearance(window, |root, window, cx| {
+                sync_appearance(root.appearance, window, cx);
                 cx.notify();
             }),
         ];
         subscriptions.extend(crate::os::follow(window, cx));
-        gpui_kit::component::Theme::sync_system_appearance(Some(window), cx);
+        let appearance = shared.prefs.read(cx).get().appearance;
+        sync_appearance(appearance, window, cx);
         let join = cx.new(|cx| join::Join::new(shared.clone(), window, cx));
         subscriptions.push(cx.subscribe(&join, |root, _, _: &join::Stayed, cx| root.switched(cx)));
         Self {
@@ -483,6 +516,7 @@ impl Root {
             titles: BTreeMap::new(),
             placed: Default::default(),
             waiting: Vec::new(),
+            appearance,
             search,
             filtering: false,
             watched: BTreeMap::new(),
@@ -1494,6 +1528,11 @@ impl Root {
                 let body = safe().flex().flex_col().pb(edges.bottom).child(page);
                 (layer.child(body), edges.bottom + px(look::gap::LG))
             }
+            Page::Appearance => {
+                let page = settings::appearance(&self.shared, palette, cx);
+                let body = safe().flex().flex_col().pb(edges.bottom).child(page);
+                (layer.child(body), edges.bottom + px(look::gap::LG))
+            }
             Page::Switch => {
                 let back = cx.listener(|root, _, _, cx| root.pop_page(cx));
                 let header = look::header("switch/back", back, palette);
@@ -1550,7 +1589,7 @@ impl Root {
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let edges = ducktape_host::contract::os().insets(window).effective();
-        let palette = look::palette(window);
+        let palette = look::palette(cx);
         let viewport = window.viewport_size();
         // the safe body every seat is laid out in: the screen less its
         // insets (the keyboard's among them), at its own width whatever a
@@ -2029,6 +2068,43 @@ mod tests {
             run_out(cx);
             root.update(cx, |root, cx| root.back(cx));
             run_out(cx);
+        }
+    }
+
+    /// App settings' Light and dark row opens Appearance; the palette (and
+    /// the kit theme every view reads) follows the choice made there, not
+    /// the system's, and System hands it back to the window's own.
+    #[gpui_kit::test]
+    fn the_palette_follows_the_appearance_chosen_not_the_system(cx: &mut TestAppContext) {
+        let (root, _, cx) = phone(cx);
+        let click = |id: &'static str, cx: &mut VisualTestContext| {
+            let at = cx.debug_bounds(id).expect(id);
+            cx.simulate_click(at.center(), gpui_kit::Modifiers::none());
+            run_out(cx);
+        };
+        root.update(cx, |root, cx| root.show_settings(cx));
+        run_out(cx);
+        click("settings/appearance", cx);
+        assert_eq!(
+            root.read_with(cx, |root, cx| root.page(cx)),
+            Page::Appearance
+        );
+        let system = cx.update(|window, _| {
+            gpui_kit::component::ThemeMode::from(window.appearance()).is_dark()
+        });
+        let dark = |cx: &mut VisualTestContext| {
+            cx.update(|_, cx| {
+                let theme = gpui_kit::component::Theme::global(cx).is_dark();
+                (look::palette(cx).dark(), theme)
+            })
+        };
+        for (choice, chosen) in [
+            ("appearance/dark", true),
+            ("appearance/light", false),
+            ("appearance/system", system),
+        ] {
+            click(choice, cx);
+            assert_eq!(dark(cx), (chosen, chosen), "{choice}");
         }
     }
 

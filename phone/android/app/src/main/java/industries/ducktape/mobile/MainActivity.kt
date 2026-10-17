@@ -23,6 +23,7 @@ import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
@@ -114,6 +115,24 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         window.navigationBarColor = Color.TRANSPARENT
         if (Build.VERSION.SDK_INT >= 28) {
             window.attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
+    }
+
+    /**
+     * The system bars' icons over the app's appearance (Rust `os::system_bars`, from App settings › Appearance or
+     * the system's): light icons over a [dark] app, dark ones over a light one. The theme's `values-night` sets them
+     * at launch from the system alone.
+     */
+    @Suppress("DEPRECATION")
+    fun systemBars(dark: Boolean) = runOnUiThread {
+        if (Build.VERSION.SDK_INT >= 30) {
+            val light = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+            window.insetsController?.setSystemBarsAppearance(if (dark) 0 else light, light)
+        } else {
+            val light = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            val shown = window.decorView.systemUiVisibility
+            window.decorView.systemUiVisibility = if (dark) shown and light.inv() else shown or light
         }
     }
 

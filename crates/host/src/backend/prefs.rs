@@ -178,6 +178,20 @@ mod tests {
         );
     }
 
+    /// No `appearance` key is System; Light and Dark read back as saved,
+    /// and System takes the key away again.
+    #[test]
+    fn the_appearance_reads_back_as_saved_and_system_is_no_key() {
+        assert_eq!(load_appearance(), Appearance::System);
+        for mode in [Appearance::Dark, Appearance::Light] {
+            assert!(save_appearance(mode));
+            assert_eq!(load_appearance(), mode);
+        }
+        assert!(save_appearance(Appearance::System));
+        assert_eq!(load_appearance(), Appearance::System);
+        assert!(read_prefs().unwrap().get("appearance").is_none());
+    }
+
     /// No `layout` key is "not chosen yet"; each choice reads back as
     /// saved, under its own word.
     #[test]

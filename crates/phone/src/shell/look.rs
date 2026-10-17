@@ -9,7 +9,7 @@ use ducktape_host::a11y::Control as _;
 use ducktape_host::fonts::FAMILY_UI;
 use gpui_kit::{
     App, ClickEvent, Div, FontWeight, Hsla, InteractiveElement as _, ParentElement as _, Rgba,
-    StatefulInteractiveElement as _, Styled as _, Window, WindowAppearance, div, px, rgb, svg,
+    StatefulInteractiveElement as _, Styled as _, Window, div, px, rgb, svg,
 };
 use view_wire::manifest::Tint;
 
@@ -179,15 +179,16 @@ pub fn header(
         .child(back)
 }
 
-/// The palette of the system's appearance: no in-app toggle (Expo
-/// Settings → Appearance "Follows the system").
-pub fn palette(window: &Window) -> Palette {
-    match window.appearance() {
-        WindowAppearance::Dark | WindowAppearance::VibrantDark => Palette {
+/// The palette of the kit theme's mode: the appearance App settings chose,
+/// or under System the system's (`shell::sync_appearance` sets the theme,
+/// which the views and the host's own chrome read too).
+pub fn palette(cx: &App) -> Palette {
+    match gpui_kit::component::Theme::global(cx).is_dark() {
+        true => Palette {
             colours: &design::DARK,
             dark: true,
         },
-        WindowAppearance::Light | WindowAppearance::VibrantLight => Palette {
+        false => Palette {
             colours: &design::LIGHT,
             dark: false,
         },
