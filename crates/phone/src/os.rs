@@ -340,14 +340,30 @@ pub(crate) fn start(documents: PathBuf, caches: PathBuf, cx: &mut App) {
 /// Follows the app's place on screen into the host: iOS's own phases and
 /// memory warnings; Android's window activation, which gm drives from the
 /// Activity's resume and pause (its memory warning comes from the Activity,
-/// [`android`]).
+/// [`android`]). On iOS it also keeps the status bar's clock readable over
+/// the system's appearance, light content on dark (Expo `app/_layout.tsx`
+/// `<StatusBar style={dark ? 'light' : 'dark'} />`); Android's theme flips
+/// it itself (`values-night/themes.xml`).
 pub fn follow<T: 'static>(window: &mut Window, cx: &mut Context<T>) -> Vec<Subscription> {
     let _ = &window;
     #[cfg(target_os = "ios")]
     {
+        fn status_bar(window: &Window) {
+            use gpui_ios::StatusBarContentStyle as Style;
+            gpui_ios::ios::set_status_bar_style(match window.appearance() {
+                gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::VibrantDark => {
+                    Style::Light
+                }
+                gpui_kit::WindowAppearance::Light | gpui_kit::WindowAppearance::VibrantLight => {
+                    Style::Dark
+                }
+            });
+        }
+        status_bar(window);
         vec![
             cx.on_app_lifecycle(|phase, _| send(Signal::Lifecycle(phase))),
             cx.on_memory_warning(|_| send(Signal::MemoryWarning)),
+            cx.observe_window_appearance(window, |_, window, _| status_bar(window)),
         ]
     }
     #[cfg(target_os = "android")]
@@ -366,6 +382,48 @@ pub fn follow<T: 'static>(window: &mut Window, cx: &mut Context<T>) -> Vec<Subsc
     {
         let _ = cx;
         Vec::new()
+    }
+}
+
+/// The system, as a sentence names it ("Light and dark come from iOS's
+/// setting."): Expo `platform.system`.
+pub const SYSTEM: &str = if cfg!(target_os = "android") {
+    "Android"
+} else {
+    "iOS"
+};
+
+/// The key store, named where it does not say how it keeps the key: Expo
+/// `platform.keyStore`.
+pub const KEY_STORE: &str = if cfg!(target_os = "android") {
+    "Android Keystore"
+} else {
+    "iOS Keychain"
+};
+
+/// This phone, as App settings names it (Expo `platform.phone`): the model
+/// and the system's version on Android; on iOS, where the Expo build read
+/// no model name, "iPhone" and the system's version (UIKit's
+/// `systemVersion`: major.minor, and the patch when there is one).
+pub fn phone() -> String {
+    #[cfg(target_os = "android")]
+    {
+        android::phone()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        #[cfg(target_os = "ios")]
+        let version = {
+            let version = objc2_foundation::NSProcessInfo::processInfo().operatingSystemVersion();
+            match version.patchVersion {
+                0 => format!("{}.{}", version.majorVersion, version.minorVersion),
+                patch => format!("{}.{}.{patch}", version.majorVersion, version.minorVersion),
+            }
+        };
+        // a build for no phone (the workspace's checks) has no version
+        #[cfg(not(target_os = "ios"))]
+        let version = "";
+        format!("iPhone · iOS {version}")
     }
 }
 

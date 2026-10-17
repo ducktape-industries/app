@@ -989,6 +989,62 @@ fn one_activation_admits_one_gated_call_and_a_stale_one_none() {
     assert!(view.activation.is_none(), "a stale activation is gone");
 }
 
+/// `file.pick` opens the system's picker only on a press or key, and
+/// takes the activation: a view on a clock picks nothing.
+#[test]
+fn file_pick_needs_an_activation_and_takes_it() {
+    let pick = |id| wire::Request {
+        id,
+        kind: "file.pick".into(),
+        payload: methods::encode(&methods::Pick { multiple: true }),
+    };
+    let mut view = view();
+    view.answer(pick(1), &None);
+    assert_eq!(refusal_code(&mut view).as_deref(), Some("needs_gesture"));
+    view.activation = Some(Instant::now());
+    view.answer(pick(2), &None);
+    assert_eq!(
+        refusal_code(&mut view),
+        None,
+        "the pick waits for the picker"
+    );
+    view.answer(pick(3), &None);
+    assert_eq!(
+        refusal_code(&mut view).as_deref(),
+        Some("needs_gesture"),
+        "the first pick took the activation"
+    );
+    view.answer(
+        wire::Request {
+            id: 4,
+            kind: "file.pick".into(),
+            payload: vec![9],
+        },
+        &None,
+    );
+    assert_eq!(
+        refusal_code(&mut view).as_deref(),
+        Some("malformed_request")
+    );
+    // a file is read only by a handle of the latest pick
+    view.answer(
+        wire::Request {
+            id: 5,
+            kind: "file.read".into(),
+            payload: methods::encode(&methods::ReadFile {
+                file: 1,
+                offset: 0,
+                len: 1,
+            }),
+        },
+        &None,
+    );
+    assert_eq!(
+        refusal_code(&mut view).as_deref(),
+        Some("malformed_request")
+    );
+}
+
 #[test]
 fn host_session_is_program_independent_and_tracks_updates() {
     let mut view = view();

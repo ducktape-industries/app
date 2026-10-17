@@ -767,6 +767,7 @@ impl Seat {
             return;
         };
         clipboard::mount(view, cx);
+        picker::mount(view, cx);
         // a clipboard answer lands after `redraw` judged the frame: it is
         // still a reason to turn again
         let again = again || !view.pending.is_empty();

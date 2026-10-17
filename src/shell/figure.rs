@@ -2,22 +2,23 @@
 //! cloud of points on its surface, sampled once; a frame turns them,
 //! projects them onto the grid of cells, keeps the nearest in each, and
 //! shades it by how its surface faces the light (donut.c's way). A frame
-//! is some ten thousand points turned: far under a millisecond.
+//! is some forty thousand points turned: well under a millisecond.
 
 use std::f32::consts::TAU;
 use std::sync::OnceLock;
 
 /// Dark to light, in twelve steps: a drawn cell is an index into it.
 pub(super) const RAMP: [char; 12] = [' ', '.', '·', ':', ';', '-', '=', '+', '*', '#', '%', '@'];
-pub(super) const COLS: usize = 46;
-pub(super) const ROWS: usize = 30;
+pub(super) const COLS: usize = 69;
+pub(super) const ROWS: usize = 45;
 /// The glyph box: the mono face's advance at `SIZE`, and a line exactly
 /// `SIZE` tall. A cell is taller than wide; the projection squares it up.
-pub(super) const SIZE: f32 = 11.;
+/// Two thirds of the canvas's cell: half again its grid in the same box.
+pub(super) const SIZE: f32 = 11. / 1.5;
 /// The canvas sets 11px with `letter-spacing: 0.5px`: a 7.1px cell. gpui
 /// has no letter spacing, so the glyphs are drawn a touch larger instead
 /// (`GLYPH`, whose advance is the cell).
-pub(super) const ADVANCE: f32 = 7.1;
+pub(super) const ADVANCE: f32 = 7.1 / 1.5;
 pub(super) const GLYPH: f32 = ADVANCE / 0.6;
 /// Frames a second.
 pub(super) const FPS: u64 = 30;
@@ -25,7 +26,7 @@ pub(super) const FPS: u64 = 30;
 const LIGHT: [f32; 3] = [-0.55, -0.6, -0.58];
 /// The points' spacing on a surface: under a cell at any turn, so a
 /// surface never shows holes.
-const STEP: f32 = 0.024;
+const STEP: f32 = 0.016;
 /// Half the grid's width, in the figures' units.
 const SPAN: f32 = 1.25;
 

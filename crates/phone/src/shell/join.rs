@@ -6,6 +6,11 @@
 //! yet, a code shown for a computer on the account to approve
 //! (`Account::link_start`). A phone joins an account the person already
 //! has: no account is made here, as in the Expo build.
+//!
+//! On a network, the address screen is Switch network (the same Expo
+//! screen in its connected form), pushed from the account sheet or App
+//! settings: the node is reached through `Session::switch`, which leaves
+//! the network in hand only once the other answers.
 
 use super::look::{self, Palette};
 use ducktape_host::a11y::Control as _;
@@ -15,10 +20,10 @@ use ducktape_host::session::{AccountState, AccountStep, Screen, Shared};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Sizable as _, spinner::Spinner};
 use gpui_kit::{
-    AnyElement, AppContext as _, ClipboardItem, Context, Div, Entity, Focusable as _, FontWeight,
-    HighlightStyle, InteractiveElement as _, IntoElement, ParentElement as _, Render, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, StyledText, Subscription, Task,
-    TextInputConfiguration, VirtualKeyboard, Window, div, px, svg,
+    AnyElement, AppContext as _, ClipboardItem, Context, Div, Entity, EventEmitter, Focusable as _,
+    FontWeight, HighlightStyle, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    Role, SharedString, StatefulInteractiveElement as _, Styled as _, StyledText, Subscription,
+    Task, TextInputConfiguration, VirtualKeyboard, Window, div, px, svg,
 };
 use std::time::{Duration, SystemTime};
 
@@ -61,17 +66,26 @@ fn wants_code(screen: Screen, account: &AccountState) -> bool {
 }
 
 /// `origin` without its scheme, as the screens name a node.
-fn host_of(origin: &str) -> &str {
+pub(super) fn host_of(origin: &str) -> &str {
     origin
         .strip_prefix("https://")
         .or_else(|| origin.strip_prefix("http://"))
         .unwrap_or(origin)
 }
 
+/// Switch network asked for the node in hand: there is nothing to reach,
+/// and the screen goes back where the reader was (Expo: the chain in hand
+/// answered).
+pub struct Stayed;
+
 /// The join's screens.
 pub struct Join {
     shared: Shared,
     node: Entity<InputState>,
+    /// Why the switch did not happen, under the field on Switch network:
+    /// the address refused, or the host's words for a node that did not
+    /// answer (which the window hands here, [`Join::switch_failed`]).
+    pub(super) refused: Option<String>,
     /// The last code made and when (the wall clock, which runs on while the
     /// phone sleeps, as the relay's does): the countdown's start, and what a
     /// failed join shows faded.
@@ -104,6 +118,7 @@ impl Join {
                     // a new address makes the last failure stale
                     InputEvent::Change => {
                         let typed = this.node.read(cx).value().to_string();
+                        this.refused = None;
                         this.shared
                             .session
                             .update(cx, |session, cx| session.set_endpoint(typed, cx));
@@ -122,6 +137,7 @@ impl Join {
         let mut join = Self {
             shared,
             node,
+            refused: None,
             code: None,
             tick: None,
             _subscriptions: subscriptions,
@@ -135,13 +151,67 @@ impl Join {
         join
     }
 
-    /// Continue: the typed address reached, or refused as no address.
+    /// Continue: the typed address reached, or refused as no address; on a
+    /// network, switched to.
     fn go(&mut self, cx: &mut Context<Self>) {
         let typed = self.node.read(cx).value().trim().to_owned();
+        if self.switching(cx) {
+            return self.switch_to(&typed, cx);
+        }
         self.shared.session.update(cx, |session, cx| {
             session.set_endpoint(typed, cx);
             session.submit(cx);
         });
+    }
+
+    /// Whether the address screen is Switch network: drawn on a network
+    /// (the desk under it), not before one.
+    fn switching(&self, cx: &Context<Self>) -> bool {
+        step(*self.shared.screen.read(cx).get()).is_none()
+    }
+
+    /// Switch network opened (Expo mounts it afresh): the last node reached
+    /// in the field, nothing refused.
+    pub fn open_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refused = None;
+        let last = self
+            .shared
+            .session
+            .read(cx)
+            .get()
+            .recent_endpoints
+            .first()
+            .map(|entry| entry.url.clone())
+            .unwrap_or_default();
+        self.node
+            .update(cx, |node, cx| node.set_value(last, window, cx));
+        cx.notify();
+    }
+
+    /// The node at `text` switched to: refused when it is no address; the
+    /// node in hand needs no reach ([`Stayed`]); any other is reached first
+    /// and taken only once it answers (`Session::switch`).
+    fn switch_to(&mut self, text: &str, cx: &mut Context<Self>) {
+        let Some(origin) = noded_client::endpoint::endpoint_origin(text.trim()) else {
+            self.refused = Some(noded_client::endpoint::ENDPOINT_REFUSAL.to_owned());
+            return cx.notify();
+        };
+        self.refused = None;
+        let session = self.shared.session.read(cx).get();
+        if origin == session.connected_rpc && !session.connecting {
+            cx.emit(Stayed);
+        } else {
+            self.shared
+                .session
+                .update(cx, |session, cx| session.switch(origin, cx));
+        }
+        cx.notify();
+    }
+
+    /// The switch did not land: the host's words, under the field.
+    pub fn switch_failed(&mut self, said: String, cx: &mut Context<Self>) {
+        self.refused = Some(said);
+        cx.notify();
     }
 
     /// Back on the code screen: the network is left, and with it the wait;
@@ -203,19 +273,24 @@ impl Join {
         cx.notify();
     }
 
-    /// Join a network (board 02).
+    /// Join a network (board 02), or on a network Switch network (Expo
+    /// `join/node.tsx` connected, under the window's Back header).
     fn node_step(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let palette = look::palette(window);
         let session = self.shared.session.read(cx).get().clone();
         let account = self.shared.account.read(cx).get();
+        let switching = self.switching(cx);
         let unlocking = matches!(self.shared.screen.read(cx).get(), Screen::Unlock { .. });
         // the address refused, the node not reached, or the key or account
-        // not found on the node reached
-        let problem = [&session.endpoint_error, &session.error]
-            .into_iter()
-            .chain(unlocking.then_some(&account.error))
-            .find(|said| !said.is_empty())
-            .cloned();
+        // not found on the node reached; a switch's own
+        let problem = match switching {
+            true => self.refused.clone(),
+            false => [&session.endpoint_error, &session.error]
+                .into_iter()
+                .chain(unlocking.then_some(&account.error))
+                .find(|said| !said.is_empty())
+                .cloned(),
+        };
         let reaching = if session.connecting {
             Some(host_of(&session.reaching).to_owned())
         } else if unlocking && problem.is_none() {
@@ -224,6 +299,24 @@ impl Join {
             None
         };
         let focused = self.node.read(cx).focus_handle(cx).is_focused(window);
+        let (title, said, above) = match switching {
+            true => (
+                "Switch network",
+                format!(
+                    "This phone stays on {} until the switch is done. On a network it has no \
+                     account on yet, you approve it from a computer that is signed in.",
+                    session.network
+                ),
+                0.,
+            ),
+            false => (
+                "Join a network",
+                "This phone joins an account you already have. You will approve it from a \
+                 computer that is signed in."
+                    .to_owned(),
+                look::gap::XL,
+            ),
+        };
         let mut top = div()
             .p(px(look::GUTTER))
             .flex()
@@ -231,15 +324,10 @@ impl Join {
             .gap(px(look::gap::LG))
             .child(
                 look::text(look::BIG_TITLE, FontWeight::MEDIUM, palette.foreground())
-                    .mt(px(look::gap::XL))
-                    .child("Join a network"),
+                    .mt(px(above))
+                    .child(title),
             )
-            .child(
-                look::text(look::SECONDARY, FontWeight::NORMAL, palette.muted()).child(
-                    "This phone joins an account you already have. You will approve it from a \
-                     computer that is signed in.",
-                ),
-            )
+            .child(look::text(look::SECONDARY, FontWeight::NORMAL, palette.muted()).child(said))
             .child(self.field(focused, problem, palette));
         let label = match &reaching {
             Some(host) => format!("Reaching {host}…"),
@@ -251,8 +339,9 @@ impl Join {
             connect = connect.on_click(cx.listener(|this, _, _, cx| this.go(cx)));
         }
         top = top.child(connect.w_full());
-        // nothing times a reach out: the person can always stop it
-        if busy {
+        // nothing times a reach out: the person can always stop it; a
+        // switch's leaves the network in hand as it is, and Back leaves it
+        if busy && !switching {
             top = top.child(
                 div().flex().justify_center().child(
                     button(
@@ -442,6 +531,9 @@ impl Join {
                     ),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
+                if this.switching(cx) {
+                    return this.switch_to(&url, cx);
+                }
                 let url = url.clone();
                 this.shared
                     .session
@@ -481,49 +573,24 @@ impl Join {
         let fingerprint = noded_client::hex::hex_decode(&account.signer_key)
             .map(|key| noded_client::join::fingerprint(&key))
             .unwrap_or_default();
-        let header = div()
-            .h(px(look::HEADER))
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(px(4.))
-            .px(px(look::gap::SM))
-            .border_b_1()
-            .border_color(palette.border())
-            .child(
-                div()
-                    .id("back")
-                    .control(Role::Button, "Back")
-                    .size(px(look::HIT))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        svg()
-                            .path("icons/arrow-left.svg")
-                            .size(px(look::ICON_HIT))
-                            .text_color(palette.foreground()),
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| this.leave(cx))),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        look::text(look::TITLE, FontWeight::MEDIUM, palette.foreground())
-                            .truncate()
-                            .child(session.network.clone()),
-                    )
-                    .child(
-                        look::text(look::CAPTION, FontWeight::NORMAL, palette.muted())
-                            .truncate()
-                            .child(host_of(&session.connected_rpc).to_owned()),
-                    ),
-            );
+        let back = cx.listener(|this, _, _, cx| this.leave(cx));
+        let header = look::header("back", back, palette).child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(
+                    look::text(look::TITLE, FontWeight::MEDIUM, palette.foreground())
+                        .truncate()
+                        .child(session.network.clone()),
+                )
+                .child(
+                    look::text(look::CAPTION, FontWeight::NORMAL, palette.muted())
+                        .truncate()
+                        .child(host_of(&session.connected_rpc).to_owned()),
+                ),
+        );
         let said = "Open the account menu there, choose Add a device…, type this code, and \
                     approve only if both screens show the same fingerprint.";
         let named = said.find("Add a device…").unwrap_or(0);
@@ -678,6 +745,8 @@ impl Join {
     }
 }
 
+impl EventEmitter<Stayed> for Join {}
+
 impl Render for Join {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         match step(*self.shared.screen.read(cx).get()) {
@@ -766,6 +835,7 @@ fn button(
     div()
         .id(id)
         .control(Role::Button, label)
+        .debug_selector(move || id.to_owned())
         .min_h(px(look::HIT))
         .flex()
         .items_center()
@@ -793,7 +863,7 @@ fn keyboard(window: &mut Window, up: bool) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use gpui_kit::{Modifiers, TestAppContext, VisualTestContext};
 
@@ -848,8 +918,12 @@ mod tests {
     const ORIGIN: &str = "http://127.0.0.1:1";
 
     /// Runs the window's work until `done` holds: the key and the account
-    /// are found on the host's runtime, off the test's thread.
-    fn until(cx: &mut VisualTestContext, done: impl Fn(&mut VisualTestContext) -> bool) {
+    /// are found (a node answers) on the host's runtime, off the test's
+    /// thread.
+    pub(in crate::shell) fn until(
+        cx: &mut VisualTestContext,
+        done: impl Fn(&mut VisualTestContext) -> bool,
+    ) {
         for _ in 0..500 {
             cx.run_until_parked();
             if done(cx) {
