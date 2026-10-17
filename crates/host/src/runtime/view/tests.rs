@@ -469,7 +469,7 @@ fn a_view_on_another_wire_runs_and_its_failure_names_the_node_and_both_wires() {
     // [`scripted_view`], its manifest naming wire 0
     let bytes = wat::parse_str(format!(
         r#"(module
-            (@custom "{}" "ducktape.view.manifest\nForeign\n\n\n320\n0\n\n")
+            (@custom "{}" "ducktape.view.manifest\nForeign\n\n\n320\n0\n\n\nnone")
             (memory (export "memory") 40)
             (func (export "alloc") (param i32) (result i32) i32.const 64)
             (func (export "init"))

@@ -384,8 +384,9 @@ pub struct Root {
     placed: (BTreeMap<u64, Place>, Option<u64>),
     /// Links that came before the network's program list did, in order.
     waiting: Vec<String>,
-    /// Home's filter.
+    /// Home's filter, and whether it is open (its magnifier pressed).
     search: Entity<InputState>,
+    filtering: bool,
     /// Each placed seat, observed: a tree, a standin or a fault that moved
     /// draws the window again.
     watched: BTreeMap<u64, Subscription>,
@@ -483,6 +484,7 @@ impl Root {
             placed: Default::default(),
             waiting: Vec::new(),
             search,
+            filtering: false,
             watched: BTreeMap::new(),
             moving: None,
             dragged: None,
@@ -500,6 +502,20 @@ impl Root {
 
     fn now(cx: &App) -> std::time::Instant {
         cx.background_executor().now()
+    }
+
+    /// Home's filter opened, the keys in its field; or closed, its words
+    /// gone and every program back.
+    fn filter(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.filtering = open;
+        self.search.update(cx, |field, cx| match open {
+            true => field.focus(window, cx),
+            false => field.set_value("", window, cx),
+        });
+        if !open {
+            window.blur(cx);
+        }
+        cx.notify();
     }
 
     fn pick(&mut self, tab: Tab, cx: &mut Context<Self>) {
@@ -1504,7 +1520,14 @@ impl Root {
                 let screen = match tab {
                     Tab::Home => {
                         let searching = self.search.read(cx).focus_handle(cx).is_focused(window);
-                        home::home(&self.shared, &self.search, searching, palette, cx)
+                        home::home(
+                            &self.shared,
+                            &self.search,
+                            self.filtering,
+                            searching,
+                            palette,
+                            cx,
+                        )
                     }
                     Tab::Open => {
                         let opened = self.stack.read(cx).open().to_vec();
@@ -1746,8 +1769,9 @@ mod tests {
         let (root, stack, cx) = phone(cx);
         assert_eq!(frames(cx), 0, "a still window asked for a frame");
 
-        // where Home is drawn, if it is: its filter field, the one element
-        // the kit's test support observes there
+        // where Home is drawn, if it is: its filter field (opened here), the
+        // one element the kit's test support observes there
+        root.update(cx, |root, _| root.filtering = true);
         let search = root.read_with(cx, |root, _| root.search.entity_id().as_u64());
         let home = |cx: &mut VisualTestContext| {
             cx.update(|window, cx| {

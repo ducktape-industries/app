@@ -757,6 +757,7 @@ mod tests {
             link: "duck://testkit-0a1b2c3d/huddle/call/c1".into(),
             kind: NoticeKind::Call,
             until,
+            end_link: String::new(),
         };
         let center = ducktape_host::runtime::notify::CenterHandle::default();
         let wall = i64::try_from(now()).unwrap();
