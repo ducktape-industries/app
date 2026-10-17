@@ -844,13 +844,14 @@ impl Render for Join {
 }
 
 /// The account step's header (Expo `Header` with back): the network over
-/// its node; Back is [`Join::back`].
+/// its node, 8 in from the back hit; Back is [`Join::back`].
 fn header(session: &SessionState, palette: Palette, cx: &Context<Join>) -> Div {
     let back = cx.listener(|this, _, _, cx| this.back(cx));
     look::header("back", back, palette).child(
         div()
             .flex_1()
             .min_w_0()
+            .px(px(look::gap::SM))
             .flex()
             .flex_col()
             .child(
