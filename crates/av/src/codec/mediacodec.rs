@@ -22,27 +22,15 @@ use ndk_sys::{AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG, AMEDIACODEC_BUFFER_FLAG_KEY_
 
 use super::{NAL_PPS, NAL_SPS, VideoPacket, nal_type, nal_units};
 use crate::Picture;
+use crate::android_rules::{I420, Input, NV12, bgra_to_yuv};
 
 const MIME: &str = "video/avc";
-/// COLOR_FormatYUV420Planar, COLOR_FormatYUV420SemiPlanar.
-const I420: i32 = 19;
-const NV12: i32 = 21;
 /// AVCProfileBaseline.
 const BASELINE: i32 = 1;
 /// BITRATE_MODE_CBR.
 const CBR: i32 = 2;
 /// How long one call waits on a buffer.
 const WAIT: Duration = Duration::from_millis(100);
-
-/// How an encoder wants its input laid out: the colour format it took
-/// (semi-planar, or planar for one without), rows `stride` apart, the
-/// chroma after `slice` rows.
-#[derive(Clone, Copy)]
-struct Input {
-    color: i32,
-    stride: usize,
-    slice: usize,
-}
 
 pub(super) struct Encoder {
     codec: Raw,
@@ -344,52 +332,6 @@ impl Drop for Raw {
         unsafe {
             ndk_sys::AMediaCodec_stop(self.0.as_ptr());
             ndk_sys::AMediaCodec_delete(self.0.as_ptr());
-        }
-    }
-}
-
-/// BGRA into the encoder's 4:2:0 layout (BT.601, studio range): `width`
-/// by `height` (even) of picture in rows `input.stride` apart, the chroma
-/// after `input.slice` rows, as one semi-planar plane (NV12) or two
-/// planar ones (I420, each half the stride).
-fn bgra_to_yuv(bgra: &[u8], width: usize, height: usize, input: Input, out: &mut Vec<u8>) {
-    let (stride, slice) = (input.stride, input.slice);
-    out.clear();
-    out.resize(stride * slice * 3 / 2, 0);
-    let (y_plane, chroma) = out.split_at_mut(stride * slice);
-    let half = stride / 2;
-    let (u_plane, v_plane) = chroma.split_at_mut(half * (slice / 2));
-    for (y, row) in bgra.chunks_exact(width * 4).take(height).enumerate() {
-        for (x, pixel) in row.chunks_exact(4).enumerate() {
-            let (b, g, r) = (
-                i32::from(pixel[0]),
-                i32::from(pixel[1]),
-                i32::from(pixel[2]),
-            );
-            y_plane[y * stride + x] = (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16) as u8;
-            if y % 2 == 0 && x % 2 == 0 {
-                let u = (((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128) as u8;
-                let v = (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128) as u8;
-                match input.color {
-                    I420 => {
-                        u_plane[(y / 2) * half + x / 2] = u;
-                        v_plane[(y / 2) * half + x / 2] = v;
-                    }
-                    _ => {
-                        // one plane, U then V a pixel: the split above is
-                        // just an offset here
-                        let at = (y / 2) * stride + x;
-                        if at + 1 < u_plane.len() {
-                            u_plane[at] = u;
-                            u_plane[at + 1] = v;
-                        } else {
-                            let at = at - u_plane.len();
-                            v_plane[at] = u;
-                            v_plane[at + 1] = v;
-                        }
-                    }
-                }
-            }
         }
     }
 }

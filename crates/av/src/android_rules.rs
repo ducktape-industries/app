@@ -1,9 +1,10 @@
 //! Android's rules, apart from Android: how a camera's YUV picture turns
 //! into an upright BGRA one, which size a camera is asked for and what its
 //! cameras are called, and which of the audio devices Android lists a
-//! person picks, by what Android says of them. Nothing here calls the
-//! system, so every OS builds it for its tests (they run on Linux);
-//! `android` hands it what Camera2 and cpal's AAudio host say.
+//! person picks, by what Android says of them, and how a picture is laid
+//! out for MediaCodec's H.264 encoder. Nothing here calls the system, so
+//! every OS builds it for its tests (they run on Linux); `android` hands
+//! it what Camera2 and cpal's AAudio host say.
 use crate::backend::{AudioDevice, AudioKind, Device, Facing, Picture, nameable};
 
 // ---------- the cameras ----------
@@ -148,6 +149,75 @@ pub(crate) fn full_range(y: u8, u: u8, v: u8) -> (u8, u8, u8) {
         clamp(y - 22_554 * d - 46_802 * e),
         clamp(y + 91_881 * e),
     )
+}
+
+// ---------- the H.264 encoder's input ----------
+
+/// MediaCodec's COLOR_FormatYUV420Planar, COLOR_FormatYUV420SemiPlanar.
+#[cfg(feature = "call")]
+pub(crate) const I420: i32 = 19;
+#[cfg(feature = "call")]
+pub(crate) const NV12: i32 = 21;
+
+/// How an encoder wants its input laid out: the colour format it took
+/// (semi-planar, or planar for one without), rows `stride` apart, the
+/// chroma after `slice` rows.
+#[cfg(feature = "call")]
+#[derive(Clone, Copy)]
+pub(crate) struct Input {
+    pub color: i32,
+    pub stride: usize,
+    pub slice: usize,
+}
+
+/// BGRA into the encoder's 4:2:0 layout (BT.601, studio range): `width`
+/// by `height` (even) of picture in rows `input.stride` apart, the chroma
+/// after `input.slice` rows, as one semi-planar plane (NV12) or two
+/// planar ones (I420, each half the stride).
+#[cfg(feature = "call")]
+pub(crate) fn bgra_to_yuv(
+    bgra: &[u8],
+    width: usize,
+    height: usize,
+    input: Input,
+    out: &mut Vec<u8>,
+) {
+    let (stride, slice) = (input.stride, input.slice);
+    out.clear();
+    out.resize(stride * slice * 3 / 2, 0);
+    let (y_plane, chroma) = out.split_at_mut(stride * slice);
+    let half = stride / 2;
+    // planar: U's plane, then V's; semi-planar: the one chroma plane
+    let (u_plane, v_plane) = match input.color {
+        I420 => chroma.split_at_mut(half * (slice / 2)),
+        _ => (chroma, &mut [][..]),
+    };
+    for (y, row) in bgra.chunks_exact(width * 4).take(height).enumerate() {
+        for (x, pixel) in row.chunks_exact(4).enumerate() {
+            let (b, g, r) = (
+                i32::from(pixel[0]),
+                i32::from(pixel[1]),
+                i32::from(pixel[2]),
+            );
+            y_plane[y * stride + x] = (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16) as u8;
+            if y % 2 == 0 && x % 2 == 0 {
+                let u = (((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128) as u8;
+                let v = (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128) as u8;
+                match input.color {
+                    I420 => {
+                        u_plane[(y / 2) * half + x / 2] = u;
+                        v_plane[(y / 2) * half + x / 2] = v;
+                    }
+                    _ => {
+                        // U then V a pixel, rows the stride apart
+                        let at = (y / 2) * stride + x;
+                        u_plane[at] = u;
+                        u_plane[at + 1] = v;
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ---------- microphones and speakers ----------
@@ -340,6 +410,50 @@ mod tests {
             &picture.bgra[..4]
         );
         assert!(yuv420_to_bgra(planes(&luma[..3], vu), 2, 2, 0, false).is_none());
+    }
+
+    /// A picture fills an encoder's input at any stride and slice height
+    /// the encoder names, ladder size or not (330 x 270), odd ones too:
+    /// the luma, then U and V each where MediaCodec reads them.
+    #[cfg(feature = "call")]
+    #[test]
+    fn a_picture_fills_the_encoders_input_at_any_stride() {
+        // blue, BT.601 studio range: Y 41, U 240, V 110
+        let (width, height) = (330, 270);
+        let bgra = [255, 0, 0, 255].repeat(width * height);
+        for color in [NV12, I420] {
+            for (stride, slice) in [(330, 270), (334, 270), (331, 271), (333, 275), (352, 272)] {
+                let mut out = Vec::new();
+                let input = Input {
+                    color,
+                    stride,
+                    slice,
+                };
+                bgra_to_yuv(&bgra, width, height, input, &mut out);
+                assert_eq!(out.len(), stride * slice * 3 / 2);
+                let (luma, chroma) = out.split_at(stride * slice);
+                let half = stride / 2;
+                for y in (0..height).step_by(2) {
+                    for x in (0..width).step_by(2) {
+                        let place = || format!("{color} at {stride} x {slice}, ({x}, {y})");
+                        assert_eq!(luma[y * stride + x], 41, "{}", place());
+                        let (u, v) = match color {
+                            // U's plane, then V's, rows half the stride apart
+                            I420 => {
+                                let at = (y / 2) * half + x / 2;
+                                (chroma[at], chroma[half * (slice / 2) + at])
+                            }
+                            // U then V a pixel, rows the stride apart
+                            _ => {
+                                let at = (y / 2) * stride + x;
+                                (chroma[at], chroma[at + 1])
+                            }
+                        };
+                        assert_eq!((u, v), (240, 110), "{}", place());
+                    }
+                }
+            }
+        }
     }
 
     /// A camera's picture is turned by its sensor's turn, less the
