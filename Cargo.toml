@@ -111,8 +111,6 @@ default = ["av"]
 ducktape-host = { path = "crates/host" }
 # feature `call`: where Cisco's OpenH264 binary is (`codec::cisco`)
 ducktape-av = { path = "crates/av", optional = true }
-# feature `call`: Cisco serves that binary bzip2-packed (pure Rust, libbz2-rs-sys)
-bzip2 = { version = "0.6", optional = true }
 gpui-kit = "=0.7.3"
 gpui-base = "=0.7.3"
 futures.workspace = true
@@ -176,6 +174,9 @@ zbus = "5"
 # XCB connection. Already in the graph under gpui-pre-linux, with this feature.
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
+# feature `call`: Cisco serves its OpenH264 binary bzip2-packed (pure
+# Rust, libbz2-rs-sys)
+bzip2 = { version = "0.6", optional = true }
 
 [dev-dependencies]
 # the host core's test helpers (`*_for_test`, `test_style`, the door)
