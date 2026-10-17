@@ -89,8 +89,16 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             Log.i("ducktape", "a call's ring taken down: $it")
             Ring.withdraw(this, it)
         }
-        // a program's notice opened from the shade: its row read, before its link opens
-        intent?.getStringExtra(Ring.PAYLOAD)?.let { Native.notice(it, intent.getLongExtra(Ring.AT, 0), false, true) }
+        // a program's notice opened from the shade: its row read, before its link opens; only by the entry no other
+        // app can start, so no other app writes a row
+        intent?.getStringExtra(Ring.PAYLOAD)?.let {
+            if (intent.component?.className == Ring.NOTICE_OPENED) {
+                Log.i("ducktape", "a notice opened from the shade: its row read")
+                Native.notice(it, intent.getLongExtra(Ring.AT, 0), false, true)
+            } else {
+                Log.w("ducktape", "a notice's payload on an intent this app did not make: not read")
+            }
+        }
         val url = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.dataString ?: return
         Native.link(url)
     }

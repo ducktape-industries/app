@@ -45,6 +45,13 @@
             </intent-filter>
         </activity>
 
+        <!-- a program's notice opened from the shade (Ring.kt): the one way its payload reaches the Notifications tab
+             (MainActivity reads it from no other intent), and no other app can start it, so none writes a row -->
+        <activity-alias
+            android:name=".NoticeOpened"
+            android:exported="false"
+            android:targetActivity=".MainActivity" />
+
         <!-- the ring (Ring.kt): a call's screen over a locked phone (its own task, out of Recents), its Decline, and
              the owner's Firebase project's messages -->
         <activity
