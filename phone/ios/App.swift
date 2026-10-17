@@ -264,7 +264,8 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
     let tag = "call/ring-test"
     let payload: [AnyHashable: Any] = [
       "kind": "call", "chain": "test", "program": "huddle", "tag": tag, "title": "Ring test", "body": "",
-      "link": "duck://test/huddle/call/ring-test", "end": "duck://test/huddle/call/ring-test/leave", "until": Date().timeIntervalSince1970 + 30,
+      "link": "duck://test/huddle/call/ring-test", "end": "duck://test/huddle/call/ring-test/leave",
+      "until": Date().timeIntervalSince1970 + 30,
     ]
     let id = Ring.id(tag)
     let action: CXAction? =

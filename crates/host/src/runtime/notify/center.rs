@@ -33,7 +33,7 @@ pub struct Notice {
     /// For a call: the `duck://` link a carrier opens when the person ends
     /// the call they answered from the system's own call screen, as the
     /// program gave it; empty for none. Never for a decline, nor for an
-    /// end made in the app.
+    /// end made in the app or by the program.
     pub end_link: String,
 }
 

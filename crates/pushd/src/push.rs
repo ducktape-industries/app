@@ -12,8 +12,8 @@
 //! to the `log` channel.
 //!
 //! Both carry one payload, `{kind, chain, program, tag, title, body, link,
-//! until}` (FCM's data values are strings). pushd names no program: a call
-//! is a call whoever posts it.
+//! until, end}` (`end`: the notice's `end_link`; FCM's data values are
+//! strings). pushd names no program: a call is a call whoever posts it.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
