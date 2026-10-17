@@ -223,13 +223,19 @@ fn search(field: &Entity<InputState>, focused: bool, palette: Palette) -> Div {
     )
 }
 
-/// The programs of `rows` with news (a view asked about it: a dot), in
-/// `rows`' order: Home's New section, which repeats their tiles above the
-/// grid of every program; empty while no program has news.
-fn with_news<'a>(rows: &'a [RailRow], badges: &BTreeMap<&'static str, i64>) -> Vec<&'a RailRow> {
-    rows.iter()
+/// Home's two sections of `rows`: New, the programs with news (a view
+/// asked about it: a dot) in `rows`' order, empty while none has news; and
+/// the grid, every program of `rows` in its order, those with news too:
+/// New repeats a tile above the grid, never moves it.
+fn sections<'a>(
+    rows: &'a [RailRow],
+    badges: &BTreeMap<&'static str, i64>,
+) -> (Vec<&'a RailRow>, Vec<&'a RailRow>) {
+    let new = rows
+        .iter()
         .filter(|row| badges.get(row.program).is_some_and(|count| *count > 0))
-        .collect()
+        .collect();
+    (new, rows.iter().collect())
 }
 
 /// One program's tile in Home's grid, four across: its glyph on its tint's
@@ -334,7 +340,7 @@ pub fn home(
             .py(px(look::gap::LG))
             .children(tiles)
     };
-    let new = with_news(&rows, &badges);
+    let (new, every) = sections(&rows, &badges);
     let mut body = div().id("home").flex_1().min_h_0().overflow_y_scroll();
     if filtering {
         body = body.child(search(field, searching, palette));
@@ -346,7 +352,6 @@ pub fn home(
     }
     body = body.child(section_head(ON_THIS_NETWORK, palette));
     let body = if !rows.is_empty() || !loading {
-        let every: Vec<&RailRow> = rows.iter().collect();
         body.child(grid(&every, "home", cx))
     } else {
         body.child(
@@ -729,14 +734,12 @@ mod tests {
             })
             .collect();
         let programs = |rows: Vec<&RailRow>| rows.iter().map(|row| row.program).collect::<Vec<_>>();
-        assert!(with_news(&rows, &BTreeMap::new()).is_empty());
-        assert!(with_news(&rows, &BTreeMap::from([("chat", 0)])).is_empty());
+        assert!(sections(&rows, &BTreeMap::new()).0.is_empty());
+        assert!(sections(&rows, &BTreeMap::from([("chat", 0)])).0.is_empty());
         let badges = BTreeMap::from([("forge", 2), ("chat", 1)]);
-        assert_eq!(programs(with_news(&rows, &badges)), ["chat", "forge"]);
-        assert_eq!(
-            programs(rows.iter().collect()),
-            ["arcade", "chat", "files", "forge"]
-        );
+        let (new, grid) = sections(&rows, &badges);
+        assert_eq!(programs(new), ["chat", "forge"]);
+        assert_eq!(programs(grid), ["arcade", "chat", "files", "forge"]);
     }
 
     /// The filter reads a name or an id, in any case.
