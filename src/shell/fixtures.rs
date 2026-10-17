@@ -1,7 +1,7 @@
 //! Debug builds only: `ducktape-app --render-tree <frame.json> [--size WxH]
 //! [--theme dark]` draws one whole view_wire frame (a tree and its style
 //! table) in a window, with no node, model or runtime behind it.
-//! dev/screens and the modules' view tests use it.
+//! dev/screens and the programs repo's view tests use it.
 
 use super::launch::initialize_rendering;
 use crate::fonts::fallback_chain;

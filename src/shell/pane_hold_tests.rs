@@ -387,7 +387,7 @@ fn shift_return_on_a_bar_tab_shows_it_in_this_window(cx: &mut TestAppContext) {
     let front = |native: &mut VisualTestContext| {
         native.update(|_, cx| {
             let layout = view.read(cx).layout(cx);
-            (layout.panes.len(), layout.panes[layout.focused].module)
+            (layout.panes.len(), layout.panes[layout.focused].program)
         })
     };
     assert_eq!(front(&mut native), (3, "hold-tab-a"));

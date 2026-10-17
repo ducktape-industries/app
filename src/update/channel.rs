@@ -2,12 +2,16 @@
 //! ([`arm`]); the first frame starts it ([`rendered`]): that frame is the
 //! healthy signal that settles a flip, and from then on a thread of its own
 //! checks the channel now, every [`CHECK_INTERVAL`], and at once when the
-//! person picks the other channel in Settings ([`choose`]).
+//! person picks the other channel in Settings ([`choose`]), flips "Update
+//! automatically" ([`automate`]) or presses "Update now" ([`update_now`]).
+//! With updating automatically off a check only names a newer release
+//! (`Take::Nothing`), and a release the updater took on its own before the
+//! switch went off is dropped (`AutomaticOff`); "Update now" is one check
+//! that takes, as asked (`Take::Asked`).
 //!
 //! What runs here:
 //! - `Fetch`: the chosen channel's one file over HTTPS, its manifest and the
-//!   signature over it (at most [`MAX_MANIFEST_BYTES`]), verified under the
-//!   pinned key and its
+//!   signature over it, verified under the pinned key and its
 //!   successor, and against the highest sequence the channel has shown this
 //!   install ([`Updater::against_seen`]), answering `ManifestFetched`.
 //!   Unreachable or unpublished is not a refusal: the check did not happen,
@@ -37,7 +41,7 @@ use std::time::Duration;
 use ducktape_updater::layout::Channel;
 use ducktape_updater::{
     Command, Event, Phase, Platform, RELEASE_KEY, Refusal as ManifestRefusal, RolledBack, Sha,
-    SignedManifest, SuccessorKey, TrustedKeys, UpdateBanner, VerifiedManifest, layout, step,
+    SignedManifest, SuccessorKey, Take, TrustedKeys, UpdateBanner, VerifiedManifest, layout, step,
     verify_manifest,
 };
 use tracing::{debug, info, warn};
@@ -46,8 +50,6 @@ use super::{Layout, TARGET, stage};
 
 /// How often the running app asks the channel.
 pub(super) const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
-/// A channel file larger than this is not one.
-const MAX_MANIFEST_BYTES: usize = 256 * 1024;
 /// The tag the update notice stands under: a newer staged release replaces it.
 const NOTICE_TAG: &str = "ducktape/update";
 
@@ -58,6 +60,11 @@ static HOME: OnceLock<Layout> = OnceLock::new();
 /// The channel the person picked; `None` while the updater is off.
 /// Settings writes it, the check loop follows it at its next turn.
 static CHOSEN: Mutex<Option<Channel>> = Mutex::new(None);
+/// Whether updates download on their own (`<updates>/automatic`). Settings
+/// writes it, the check loop follows it at its next turn.
+static AUTOMATIC: AtomicBool = AtomicBool::new(true);
+/// "Update now" was pressed: the next turn's check takes what is newer.
+static ASKED: AtomicBool = AtomicBool::new(false);
 /// Wakes the check loop: a pick is checked now, not an hour from now.
 static WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 /// What Settings reads; `None` while the updater is off.
@@ -89,6 +96,7 @@ pub(super) fn arm(layout: Layout, phase: Phase) {
     let channel = read_channel(&layout);
     let keys = trusted_keys(&layout);
     *lock(&CHOSEN) = Some(channel);
+    AUTOMATIC.store(read_automatic(&layout), Ordering::SeqCst);
     let _ = HOME.set(layout.clone());
     let mut updater = Updater::new(layout, phase, keys, channel, layout::BASE_URL);
     updater.published = true;
@@ -110,6 +118,21 @@ pub(super) fn keep_channel(layout: &Layout, channel: Channel) -> Result<(), supe
         &layout.channel_path(),
         format!("{}\n", channel.name()).as_bytes(),
     )
+}
+
+/// Whether updates download on their own: `<updates>/automatic`, on unless
+/// it says `off`.
+pub(super) fn read_automatic(layout: &Layout) -> bool {
+    !std::fs::read_to_string(layout.automatic_path()).is_ok_and(|said| said.trim() == "off")
+}
+
+/// What [`read_automatic`] reads back.
+pub(super) fn keep_automatic(layout: &Layout, automatic: bool) -> Result<(), super::Refusal> {
+    let said = match automatic {
+        true => "on\n",
+        false => "off\n",
+    };
+    super::persist(&layout.automatic_path(), said.as_bytes())
 }
 
 /// The boot step found the install's updater running in another of its
@@ -145,7 +168,17 @@ pub(crate) fn rendered() {
                     if let Some(chosen) = *lock(&CHOSEN) {
                         updater.switch(chosen);
                     }
-                    updater.check(&client).await;
+                    let automatic = AUTOMATIC.load(Ordering::SeqCst);
+                    if !automatic {
+                        // what it took on its own before the switch went off
+                        updater.apply(Event::AutomaticOff);
+                    }
+                    let take = match (ASKED.swap(false, Ordering::SeqCst), automatic) {
+                        (true, _) => Take::Asked,
+                        (false, true) => Take::Automatic,
+                        (false, false) => Take::Nothing,
+                    };
+                    updater.check(&client, take).await;
                     tokio::select! {
                         () = tokio::time::sleep(CHECK_INTERVAL) => {}
                         () = WAKE.notified() => {}
@@ -183,6 +216,34 @@ pub(crate) fn choose(channel: Channel) {
     *lock(&CHOSEN) = Some(channel);
     WAKE.notify_one();
     moved();
+}
+
+/// Settings' "Update automatically": kept in `<updates>/automatic`, and
+/// followed now. Nothing while the updater is off.
+pub(crate) fn automate(automatic: bool) {
+    let Some(layout) = HOME.get() else {
+        return;
+    };
+    if let Err(refusal) = keep_automatic(layout, automatic) {
+        warn!(target: TARGET, event = "app_update_persist_failed", reason = refusal.reason, detail = %refusal.detail);
+        return;
+    }
+    info!(target: TARGET, event = "app_update_automatic", automatic);
+    AUTOMATIC.store(automatic, Ordering::SeqCst);
+    WAKE.notify_one();
+    moved();
+}
+
+/// Settings' "Update now": one check now that downloads, verifies and stages
+/// what is newer, as updating automatically would, for the next start.
+/// Nothing while the updater is off.
+pub(crate) fn update_now() {
+    if HOME.get().is_none() {
+        return;
+    }
+    info!(target: TARGET, event = "app_update_asked");
+    ASKED.store(true, Ordering::SeqCst);
+    WAKE.notify_one();
 }
 
 /// "Restart to update": this app quits (the caller's part) and the install
@@ -241,26 +302,13 @@ pub(crate) fn restart_waiter() -> i32 {
         return 1;
     }
     if cfg!(target_os = "macos") {
-        // a new instance: LaunchServices lists the app that just exited for
-        // a few ms more, and a plain `open` reopens that one (-600,
-        // procNotFound) instead of launching
-        let opened = Process::new("/usr/bin/open")
-            .arg("-n")
-            .arg(layout.installed_bundle())
-            .stdin(Stdio::null())
-            .output();
-        return match opened {
-            Ok(output) if output.status.success() => {
+        return match super::macos::open_new(&layout.installed_bundle(), &[]) {
+            Ok(()) => {
                 info!(target: TARGET, event = "app_update_restart_opened");
                 0
             }
-            Ok(output) => {
-                let said = String::from_utf8_lossy(&output.stderr);
-                warn!(target: TARGET, event = "app_update_restart_failed", reason = "open_failed", status = %output.status, said = said.trim());
-                1
-            }
-            Err(error) => {
-                warn!(target: TARGET, event = "app_update_restart_failed", reason = "open_failed", %error);
+            Err(said) => {
+                warn!(target: TARGET, event = "app_update_restart_failed", reason = "open_failed", said);
                 1
             }
         };
@@ -271,14 +319,9 @@ pub(crate) fn restart_waiter() -> i32 {
     1
 }
 
-/// connect fast, never hang on a stalled read; no total cap, an archive
-/// takes as long as the line does.
+/// An archive takes as long as the line does.
 pub(super) fn client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .read_timeout(Duration::from_secs(60))
-        .build()
-        .expect("the HTTP client")
+    reqwest::Client::builder().build().expect("the HTTP client")
 }
 
 /// The async work one step asks for; each answers with one [`Event`].
@@ -392,21 +435,27 @@ impl Updater {
         self.apply(Event::ChannelChanged);
     }
 
-    /// One check: `Tick`, then every job it leads to, in turn.
+    /// One check: `Tick`, then every job it leads to, in turn; `take` says
+    /// what it does with a newer release.
     /// Each job's answer is for the channel the check asked: picked away
     /// from while it ran (`<updates>/channel` moved), the answer is dropped,
     /// never staged, and the next turn's [`Updater::switch`] drops what it
-    /// was downloading.
-    pub(super) async fn check(&mut self, client: &reqwest::Client) {
+    /// was downloading. Likewise a check updating automatically stops once
+    /// the switch is off, and the next turn's `AutomaticOff` drops the rest.
+    pub(super) async fn check(&mut self, client: &reqwest::Client, take: Take) {
         let asked = self.channel;
         let mut job = self.apply(Event::Tick);
         while let Some(next) = job.take() {
-            let Some(event) = self.run(client, next).await else {
+            let Some(event) = self.run(client, next, take).await else {
                 return;
             };
             let now = read_channel(&self.layout);
             if now != asked {
                 info!(target: TARGET, event = "app_update_dropped", asked = asked.name(), now = now.name(), "the channel moved while this check ran");
+                return;
+            }
+            if take == Take::Automatic && !read_automatic(&self.layout) {
+                info!(target: TARGET, event = "app_update_dropped", "updating automatically went off while this check ran");
                 return;
             }
             job = self.apply(event);
@@ -478,7 +527,7 @@ impl Updater {
         match ready {
             Some(display) => notify_ready(display),
             None => {
-                crate::runtime::notify::withdraw_host();
+                crate::os::withdraw_host();
                 debug!(target: TARGET, event = "app_update_notice_withdrawn");
             }
         }
@@ -486,13 +535,14 @@ impl Updater {
 
     /// One job; `None` is a check that did not happen (unreachable, nothing
     /// published), which is not a refusal.
-    async fn run(&mut self, client: &reqwest::Client, job: Job) -> Option<Event> {
+    async fn run(&mut self, client: &reqwest::Client, job: Job, take: Take) -> Option<Event> {
         match job {
             Job::Fetch => {
                 let fetched = fetch(client, &self.base, self.channel, &self.keys).await?;
-                Some(Event::ManifestFetched(
-                    fetched.and_then(|verified| self.against_seen(verified)),
-                ))
+                Some(Event::ManifestFetched {
+                    result: fetched.and_then(|verified| self.against_seen(verified)),
+                    take,
+                })
             }
             Job::Download { sha, size } => Some(
                 match download(client, &self.base, &self.layout, sha, size).await {
@@ -541,7 +591,7 @@ impl Updater {
     /// What Settings would show of this updater.
     #[cfg(test)]
     pub(super) fn shown(&self) -> Shown {
-        Shown::of(self.channel, &self.reading())
+        Shown::of(self.channel, read_automatic(&self.layout), &self.reading())
     }
 
     fn publish(&self) {
@@ -566,8 +616,10 @@ fn notify_ready(display: &str) {
         title: format!("Ducktape {display} is ready."),
         body: "Restart to update.".into(),
         tag: NOTICE_TAG.into(),
+        // the host's own: no program's, and a click opens Settings › Updates
+        ..Default::default()
     };
-    let raised = crate::runtime::notify::post_host(&notice);
+    let raised = crate::os::post_host(&notice);
     debug!(target: TARGET, event = "app_update_notice", raised);
 }
 
@@ -578,7 +630,7 @@ pub(super) async fn fetch(
     channel: Channel,
     keys: &TrustedKeys,
 ) -> Option<Result<VerifiedManifest, ManifestRefusal>> {
-    let file = match get_small(client, &format!("{base}{}", channel.file())).await {
+    let file = match get_whole(client, &format!("{base}{}", channel.file())).await {
         Ok(file) => file,
         Err(error) => {
             debug!(target: TARGET, event = "app_update_manifest_unavailable", %error);
@@ -591,24 +643,16 @@ pub(super) async fn fetch(
     )
 }
 
-/// A whole small file, refused past [`MAX_MANIFEST_BYTES`] whatever the
-/// server claims its length is.
-async fn get_small(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
-    let mut response = client
+/// A whole file.
+async fn get_whole(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
+    let response = client
         .get(url)
-        .timeout(Duration::from_secs(30))
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
         .map_err(|error| error.to_string())?;
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
-        bytes.extend_from_slice(&chunk);
-        if bytes.len() > MAX_MANIFEST_BYTES {
-            return Err(format!("{url} is larger than a manifest"));
-        }
-    }
-    Ok(bytes)
+    let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+    Ok(bytes.to_vec())
 }
 
 /// `Download`: the archive into `releases/<sha>.partial`, resuming from what
@@ -726,6 +770,10 @@ pub(super) fn note_banner(banner: &UpdateBanner) {
         } => {
             info!(target: TARGET, event = "app_update_staged", %staged, %release)
         }
+        UpdateBanner::Available {
+            offered,
+            display: release,
+        } => info!(target: TARGET, event = "app_update_available", %offered, %release),
         UpdateBanner::UpToDate => debug!(target: TARGET, event = "app_update_up_to_date"),
         // the channel's release is older than what runs: after a switch,
         // the wait until it passes; otherwise a replay, refused all the same
@@ -763,10 +811,15 @@ pub(crate) enum Updates {
 pub(crate) struct Shown {
     /// The channel the person picked.
     pub(crate) channel: Channel,
+    /// "Update automatically", as the person set it.
+    pub(crate) automatic: bool,
     /// Where the updater is, in words.
     pub(crate) status: String,
     /// A staged release waits for the next start: "Restart to update".
     pub(crate) restart: bool,
+    /// Updating automatically is off and the channel offers a newer
+    /// release: "Update now".
+    pub(crate) update_now: bool,
 }
 
 #[cfg(test)]
@@ -804,19 +857,31 @@ pub(crate) fn updates() -> Updates {
         return updates;
     }
     match (*lock(&CHOSEN), lock(&READING).clone()) {
-        (Some(chosen), Some(reading)) => Updates::Here(Shown::of(chosen, &reading)),
+        (Some(chosen), Some(reading)) => Updates::Here(Shown::of(
+            chosen,
+            AUTOMATIC.load(Ordering::SeqCst),
+            &reading,
+        )),
         _ if ELSEWHERE.load(Ordering::SeqCst) => Updates::Elsewhere,
         _ => Updates::Off,
     }
 }
 
 impl Shown {
-    fn of(chosen: Channel, reading: &Reading) -> Shown {
-        let restart = matches!(&reading.phase, Phase::Staged(staged) if staged.refused.is_none());
+    fn of(chosen: Channel, automatic: bool, reading: &Reading) -> Shown {
+        // a release taken on its own goes with the switch, at the loop's turn
+        let restart = matches!(&reading.phase, Phase::Staged(staged) if staged.refused.is_none() && (automatic || staged.asked));
+        let update_now = !automatic
+            && matches!(
+                (&reading.phase, &reading.banner),
+                (Phase::Idle(_), Some(UpdateBanner::Available { .. }))
+            );
         Shown {
             channel: chosen,
+            automatic,
             status: status(chosen, reading),
             restart,
+            update_now,
         }
     }
 }
@@ -863,6 +928,9 @@ fn status(chosen: Channel, reading: &Reading) -> String {
     match &reading.banner {
         None => "Not checked yet".into(),
         Some(UpdateBanner::UpToDate | UpdateBanner::Ready { .. }) => "Up to date".into(),
+        Some(UpdateBanner::Available { display, .. }) => {
+            format!("{display} is available: it is not installed")
+        }
         Some(UpdateBanner::Refused(ManifestRefusal::SequenceNotNewer)) => format!(
             "{} has nothing newer than this version yet: this one stays until it does",
             title(reading.channel)

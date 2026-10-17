@@ -4,7 +4,7 @@
 
 /// A raw program id read as a tab label before its manifest arrives, or
 /// after it failed to: hyphens to spaces, first letter capitalised —
-/// "module-registry" reads "Module registry" instead of flashing the kebab
+/// "chat-bridge" reads "Chat bridge" instead of flashing the kebab
 /// id and then the manifest name.
 pub(super) fn prettify(id: &str) -> String {
     let spaced = id.replace('-', " ");

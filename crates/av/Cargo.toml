@@ -1,0 +1,139 @@
+# ducktape-av — the camera and the microphone in a gpui window.
+#
+# Everything that touches a capture or playback device is here and nowhere
+# else: the cameras and microphones listed, a camera's pictures painted as
+# gpui images, a microphone's level drawn as a meter, a recording played
+# back, the live monitor, and what the system wants of a person before it
+# lets one open. It knows nothing of views or the wire: the host (feature
+# `av`) maps its camera and microphone pieces onto a `Camera` and a `Meter`.
+# Removing it is removing this crate and its callers
+# (`crates/host/src/render/av.rs` says which).
+#
+# The device code is `src/backend.rs` (the seam: the camera's stream loop,
+# cpal for audio) over the camera capture we own: V4L2 on Linux
+# (`src/v4l2.rs`), AVFoundation on macOS and iOS (`src/apple.rs`, with
+# `src/mac.rs` and `src/ios.rs` for what each has of its own: on iOS the
+# app's audio session and its routes), Camera2 on Android
+# (`src/android.rs`). Another backend replaces those. The gpui side
+# (`camera.rs`, `meter.rs`) reads only what they leave in a feed. Other
+# systems (Windows) are not built with `capture`: a build there is a
+# `--no-default-features` one, without av.
+#
+# Without feature `capture` it is empty and has no dependencies. The host's
+# `av` feature turns `capture` on, and the app's default build turns that
+# on. Feature `call` adds a call's codecs (`src/codec.rs`): Opus for the
+# voice (libopus vendored in `opus/`, built by `build.rs`), H.264 for the
+# picture from each OS's own licensed source (`src/codec/videotoolbox.rs`
+# on macOS and iOS, `src/codec/mediacodec.rs` on Android, Cisco's prebuilt
+# OpenH264 loaded at run time on Linux, `src/codec/openh264.rs`): nothing
+# here compiles H.264 code, so no build of this crate carries it without
+# its patent licence.
+# From the workspace root:
+#   cargo test --locked -p ducktape-av --features capture
+#   cargo test --locked -p ducktape-av --features call
+# Linux needs ALSA's headers (libasound2-dev).
+
+[package]
+name = "ducktape-av"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+[features]
+capture = [
+    "dep:gpui-kit", "dep:cpal", "dep:image", "dep:libc", "dep:tracing",
+    "dep:objc2", "dep:block2", "dep:objc2-foundation", "dep:objc2-av-foundation",
+    "dep:objc2-core-media", "dep:objc2-core-video", "dep:dispatch2", "dep:objc2-core-audio",
+    "dep:objc2-avf-audio",
+    "dep:jni", "dep:ndk", "dep:ndk-context", "dep:ndk-sys",
+]
+
+# a call: the codecs over the pictures and samples the capture side gives
+# (`codec`: Opus and each OS's H.264), the voice I/O with echo cancellation
+# (`voice`, sonora's AEC3, noise suppression and AGC2, pure Rust on every
+# OS), the remote voices mixed (`mixer`, `jitter`), and the fake devices a
+# proof runs on (`fake`, `DUCKTAPE_AV_FAKE=1`)
+call = [
+    "capture", "dep:sonora", "dep:cc",
+    "dep:openh264", "dep:openh264-sys2",
+    "dep:objc2-video-toolbox", "dep:objc2-core-foundation",
+    "objc2-core-media?/CMBlockBuffer", "objc2-core-media?/CMFormatDescription",
+    "objc2-core-media?/CMTime", "objc2-core-media?/CMBase",
+]
+
+# what a test reads off a piece (`Camera::let_go`, `Meter::monitor`,
+# `Meter::asked`, `Meter::let_go`): the host's tests turn it on, nothing
+# shipped does
+test-support = []
+
+[dependencies]
+gpui-kit = { version = "=0.7.3", optional = true }
+# microphones and speakers: ALSA on Linux, Core Audio on macOS and iOS,
+# AAudio on Android
+cpal = { version = "=0.18.2", optional = true }
+# the pictures gpui draws; on Linux also a MJPEG camera's frames, by its
+# pure-Rust JPEG decoder
+image = { version = "0.25", default-features = false, features = ["jpeg"], optional = true }
+# a device thread that could not start, into the app's log
+tracing = { workspace = true, optional = true }
+# a call's echo cancellation, noise suppression and gain: WebRTC's audio
+# processing as pure Rust, so one path on every OS (BSD-3-Clause)
+sonora = { version = "=0.2.0", optional = true }
+
+# Linux: the V4L2 calls (open, ioctl, mmap, poll), with our own few structs
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true, optional = true }
+# a call's picture: Cisco's prebuilt OpenH264 (the one build Cisco's
+# AVC/H.264 patent licence covers), fetched by the app onto this device
+# and loaded here (`libloading`; the crate checks its sha256 against the
+# builds it knows). Never `source`: that compiles OpenH264 in, unlicensed.
+openh264 = { version = "0.9.9", default-features = false, features = ["libloading"], optional = true }
+# its raw options: the bitrate changed while it runs
+openh264-sys2 = { version = "0.9.9", default-features = false, optional = true }
+
+# macOS and iOS: the camera and microphone permission, and the camera
+# through AVFoundation (a capture session, its frames as BGRA pixel buffers
+# on a dispatch queue of ours, the disconnect and interruption
+# notifications)
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+objc2 = { version = "0.6", optional = true }
+block2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSString", "NSArray", "NSDictionary", "NSError", "NSNotification", "NSObject", "NSOperation", "NSValue"], optional = true }
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "dispatch2", "objc2-core-media", "AVCaptureDevice", "AVCaptureInput", "AVCaptureOutputBase", "AVCaptureSession", "AVCaptureSessionPreset", "AVCaptureVideoDataOutput", "AVError", "AVMediaFormat"], optional = true }
+objc2-core-media = { version = "0.3", default-features = false, features = ["std", "objc2-core-video", "CMSampleBuffer"], optional = true }
+objc2-core-video = { version = "0.3", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"], optional = true }
+dispatch2 = { version = "0.3", default-features = false, features = ["std", "objc2"], optional = true }
+# a call's picture: VideoToolbox's H.264 (Apple's licence), the frames as
+# CoreMedia sample buffers, their settings as CoreFoundation values
+objc2-video-toolbox = { version = "0.3", default-features = false, features = ["std", "VTBase", "VTSession", "VTErrors", "VTCompressionSession", "VTCompressionProperties", "VTDecompressionSession", "VTDecompressionProperties", "objc2", "objc2-core-media", "objc2-core-video"], optional = true }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFDictionary", "CFNumber", "CFString"], optional = true }
+
+# macOS: what a microphone or speaker is, its transport and data source
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware"], optional = true }
+
+# iOS: the app's audio session (a call's category, its routes, its
+# interruptions), which cpal's one audio unit plays through
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2-avf-audio = { version = "0.3", default-features = false, features = ["std", "AVAudioSession", "AVAudioSessionRoute", "AVAudioSessionTypes"], optional = true }
+
+# Android: the camera through the NDK's Camera2 (`ndk-sys`, its
+# `libcamera2ndk`) into an image reader (`ndk`'s); the permission, the
+# audio routes and the settings page through the app's Context over JNI
+# (`ndk-context`, which the phone's glue sets, as cpal's AAudio host needs)
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { version = "0.22", optional = true }
+ndk = { version = "0.9", default-features = false, features = ["media", "api-level-26"], optional = true }
+ndk-context = { version = "0.1", optional = true }
+ndk-sys = { version = "0.6", optional = true }
+
+# a call's libopus, compiled from `opus/` (`build.rs`)
+[build-dependencies]
+cc = { version = "1.4", optional = true }
+
+[dev-dependencies]
+gpui-kit = { version = "=0.7.3", features = ["test-support"] }
+
+# a test's own pixel buffer, released
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dev-dependencies]
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std"] }

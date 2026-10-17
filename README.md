@@ -7,11 +7,58 @@ inside its chrome is a wasm view a program ships; the app's own screens are
 two — reach a node, unlock a key.
 
 ```bash
-# a node (ducktape-industries/ducktape, branch feat/capable-sandbox) is a
+# a node (ducktape-industries/ducktape, rev 8a0151a41) is a
 # separate process this app talks to over /v1; run one, then:
 cargo run -p ducktape-app
 DUCKTAPE_RPC=http://127.0.0.1:8844 cargo run -p ducktape-app   # skip the connect screen
 DUCKTAPE_VIEWS_DIR=/path/to/views cargo run -p ducktape-app     # a view developer's override
+```
+
+## Install
+
+Releases are published to `https://dl.ducktape.industries/app/`: one
+channel file per channel (`stable.json` is `main`, `nightly.json` is `dev`
+once a day) naming each platform's archive by its sha256. An installed app
+keeps itself up to date from there; Settings › Updates picks the channel.
+Its "Update automatically" switch (on unless turned off) stops that: off,
+the app still checks and says what is newer, but downloads and installs
+nothing until you press Update now there.
+For nightly, read `nightly.json` instead of `stable.json` below.
+
+**macOS (Apple silicon).** Needs `jq`. The archive is `Ducktape.app`,
+Developer ID signed and notarized, with a Developer ID provisioning profile
+embedded: it authorizes the app's application identifier and keychain access
+group, which a key locked by Touch ID needs (macOS keeps those in the data
+protection keychain). At its first start from `/Applications` it adopts
+itself as the install the updater owns.
+
+```bash
+sha=$(curl -fsS https://dl.ducktape.industries/app/stable.json \
+  | jq -r .manifest | jq -r '.artifacts["macos-aarch64"].sha256')
+curl -fLo /tmp/ducktape.tar.gz "https://dl.ducktape.industries/app/Ducktape-$sha-macos-aarch64.tar.gz"
+echo "$sha  /tmp/ducktape.tar.gz" | shasum -a 256 -c
+tar xzf /tmp/ducktape.tar.gz -C /Applications
+open /Applications/Ducktape.app
+```
+
+The DMG on a commit's GitHub prerelease (`bin-<commit>`) works too, but a
+browser download is quarantined: after dragging it to `/Applications`, run
+`xattr -dr com.apple.quarantine /Applications/Ducktape.app` once.
+
+**Linux (x86_64).** Needs `jq`, and at runtime `libxcb1`,
+`libxkbcommon-x11-0`, ALSA's library for the microphone and speakers
+(`libasound2`; `libasound2t64` from Ubuntu 24.04 on) and a Vulkan driver
+(`libvulkan1` and `mesa-vulkan-drivers` on Ubuntu). `ducktape-app install`
+puts the binary under `~/.local/share/ducktape/` and registers a desktop
+entry; the extracted copy can be deleted after.
+
+```bash
+sha=$(curl -fsS https://dl.ducktape.industries/app/stable.json \
+  | jq -r .manifest | jq -r '.artifacts["linux-x86_64"].sha256')
+curl -fLo /tmp/ducktape.tar.gz "https://dl.ducktape.industries/app/Ducktape-$sha-linux-x86_64.tar.gz"
+echo "$sha  /tmp/ducktape.tar.gz" | sha256sum -c
+tar xzf /tmp/ducktape.tar.gz -C /tmp
+/tmp/ducktape-app install
 ```
 
 ## What the app does
@@ -23,16 +70,18 @@ DUCKTAPE_VIEWS_DIR=/path/to/views cargo run -p ducktape-app     # a view develop
   `ducktape.view` custom section; the app reads it out, compiles it and
   seats it. The roster's order is the rail's order; a view's manifest names
   its tab. A program without the section is left off the rail.
-- **Relay.** A view asks through the kernel contract (`src/runtime/kernel.rs`),
+- **Relay.** A view asks through the kernel contract (`crates/host/src/runtime/kernel.rs`),
   every method a borsh type in `view_wire::methods`, named `<capability>.<op>`:
-  `module.query`/`op.submit` `Call{target, body}`, `module.changes <program>`,
-  `module.describe`, `chain.status`/`block`/`blocks`/`heads`, `invite.create`,
-  `blob.get`, `link.open`, `host.widget` (the one MessagePack method: a tree
-  command), and the app's own (`host.*`, `clock.ticks`, `clipboard.*`,
-  `notify.*`, `store.*`). A view reaches only the capabilities its manifest
-  declares. The app forwards the bytes to the
-  program the view names and signs writes with the seated key; it never
-  reads a payload.
+  `program.query`/`op.submit` `Call{target, body}`, `program.changes <program>`,
+  `program.describe`, `chain.status`/`block`/`blocks`/`heads`, `invite.create`,
+  `blob.get`, `blob.manifest`, `link.open`, `host.widget` (the one MessagePack method: a tree
+  command), `live.*` (`publish`/`send`/`subscribe`/`tracks`: a view's live
+  tracks through the node's relay, off consensus, on one QUIC or websocket
+  session per connection, `src/backend/live.rs`), and the app's own
+  (`host.*`, `clock.ticks`, `clipboard.*`, `notify.*`, `store.*`). A view
+  reaches only the capabilities its manifest declares. The app forwards the
+  bytes to the program the view names and signs writes with the seated key;
+  it never reads a payload.
 - **Sign in.** The key file under `$DUCKTAPE_USER_KEY`, else the network's
   active wallet under `<ducktape home>/remotes/<network>/`. A write is a frame
   anchored at the tip `/v1/status` reports and salted with a random number,
@@ -48,18 +97,22 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 
 | Path | What |
 |---|---|
-| `src/backend/noded.rs` | the node's `/v1` wire and the signed frame, mirrored from the kernel branch |
-| `src/backend/views.rs` | roster → blob → `ducktape.view` section |
-| `src/backend/session.rs` | the seated key, its frames, preferences |
-| `src/runtime.rs`, `runtime/` | the wasm view runtime: seats, loads, swaps, the kernel relay |
-| `src/render.rs`, `render/` | the wire tree presenter, its text fields the kit's engine holds (IME, caret, clipboard, undo) |
+| `crates/noded-client` | the node's `/v1` wire and the signed frame, mirrored from the kernel branch, and the flows onto an account; shared with the phone |
+| `crates/host` | the blind host core the desktop shell and the phone shell share; `src/contract.rs` is the one interface a shell implements (directories, the reader key, banners, OS facts, invite minting) |
+| `crates/host/src/backend/views.rs` | roster → blob → `ducktape.view` section |
+| `crates/host/src/backend/session.rs` | the seated key (any `noded_client::Signer`), its frames, preferences |
+| `crates/host/src/backend/live.rs`, `crates/host/src/runtime/kernel/live.rs` | the live session with the node's relay (core's `live-wire`: QUIC, or the websocket) and the `live.*` methods over it |
+| `crates/host/src/runtime.rs`, `runtime/` | the wasm view runtime: seats, loads, swaps, the kernel relay |
+| `crates/host/src/render.rs`, `render/` | the wire tree presenter, its text fields the kit's engine holds (IME, caret, clipboard, undo) |
+| `src/os.rs`, `src/backend/` | the desktop's `OsServices` impl (its directories, the freedesktop / macOS banners, invites with the node this machine runs) and what only the desktop runs: the device key, passkeys, recovery keys |
 | `src/shell.rs`, `shell/` | the native chrome: the app's state as entities (`shell/entities/`, each written by its own methods) and each window's root with its layers (`shell/layers/`: launcher, menu bar, panes, dialogs, footer) |
 | `src/ui/layout.rs`, `src/shell/entities/{desk,windows}.rs` | panes floating on the desk, popped out into their own windows and back |
 
 ## Dependency line
 
-`ducktape-industries/modules` (`crates/sdk`; pinned by rev to modules `dev` until the next `dev` → `main` promotion): `abi`, `view-wire`, `ducklink`, `design`.
-`ducktape` (`feat/capable-sandbox`): `ducktape-home`, `keystore`.
+`ducktape-industries/programs` (rev `d5482a037d9026fae49d5d99b1b0cbc065a747cf`): `abi`, `view-wire`, `program`, `ducklink`, `design`, `describe`, `identity`, `valset`, `programs`, `blobs`, and the `abi` patch over ducktape's.
+`ducktape-industries/ducktape` (rev `8a0151a411c3558453c34bb8272b93dfc428cb74`, the rev that programs rev pins): `blob`, `keyscheme`, `ducktape-home`, `keystore`, `live-wire`.
+`ducktape-industries/gpui-pre` (rev `eb488ba7fb40ae38cd56c4289f97360c37b2469d`, the rev that programs rev pins): `gpui-pre` and the crates it patches.
 
 ## Building
 
@@ -83,6 +136,8 @@ needs.
 with `--features ax-door`) and `cargo test --locked --workspace --no-fail-fast`
 are what CI runs.
 
-Each commit on `main` also has a built app: the prerelease `bin-<commit>`
-carries `ducktape-app-x86_64-unknown-linux-gnu.tar.gz` and an ad-hoc signed
-`ducktape-app-aarch64-apple-darwin.dmg` (`.github/workflows/release.yml`).
+Each commit on `main` and `dev` also has a built app: the prerelease
+`bin-<commit>` carries `ducktape-app-x86_64-unknown-linux-gnu.tar.gz` and a
+Developer ID signed, notarized `ducktape-app-aarch64-apple-darwin.dmg`
+(`.github/workflows/release.yml`); the same build is what the stable (`main`)
+or nightly (`dev`) channel publishes (see [Install](#install)).

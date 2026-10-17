@@ -8,16 +8,16 @@ use super::*;
 use gpui_kit::{Context, Window};
 
 /// A pane's name: its program's, as the rail lists it (`Rail`).
-pub(in crate::shell) fn label(rail: &[crate::runtime::RailRow], module: &str) -> String {
-    if module == layout::EMPTY {
+pub(in crate::shell) fn label(rail: &[crate::runtime::RailRow], program: &str) -> String {
+    if program == layout::EMPTY {
         return "Empty".to_owned();
     }
-    if module == layout::HELP {
+    if program == layout::HELP {
         return "Help".to_owned();
     }
     rail.iter()
-        .find(|row| row.module == module)
-        .map_or_else(|| module.to_owned(), |row| row.label.clone())
+        .find(|row| row.program == program)
+        .map_or_else(|| program.to_owned(), |row| row.label.clone())
 }
 
 impl WindowRoot {
@@ -52,15 +52,17 @@ impl WindowRoot {
                         pane.and_then(|pane| pane.frame),
                         window.display(cx).map(|display| display.bounds()),
                         pane.map_or(super::windows::POPOUT_MIN, |pane| {
-                            super::windows::popout_min(pane.module)
+                            super::windows::popout_min(pane.program)
                         }),
                     ))
                 });
-                windows.update(cx, |windows, cx| windows.pop_out(key, index, at, cx))
+                windows.update(cx, |windows, cx| {
+                    _ = windows.pop_out(key, index, at, None, cx)
+                })
             }
             PaneMessage::PopIn => windows.update(cx, |windows, cx| windows.pop_in(key, cx)),
-            PaneMessage::Open(module) => {
-                _ = windows.update(cx, |windows, cx| windows.open_program(key, module, cx))
+            PaneMessage::Open(program) => {
+                _ = windows.update(cx, |windows, cx| windows.open_program(key, program, cx))
             }
             message => self.desk.update(cx, |desk, cx| desk.moved_by(message, cx)),
         }
@@ -76,21 +78,21 @@ impl WindowRoot {
     pub(super) fn open_here(
         &mut self,
         index: usize,
-        module: &'static str,
+        program: &'static str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.pane_message(PaneMessage::Focus(index), window, cx);
-        self.open_view(module, window, cx);
+        self.open_view(program, window, cx);
     }
 
     /// A menu bar click, or a pick in an empty window: see `Layout::open`.
     pub(super) fn open_view(
         &mut self,
-        module: &'static str,
+        program: &'static str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.pane_message(PaneMessage::Open(module), window, cx);
+        self.pane_message(PaneMessage::Open(program), window, cx);
     }
 }

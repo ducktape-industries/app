@@ -1,0 +1,50 @@
+# view-meter — the meter pass (wasm-mobile SPEC §6.2): a view's wasm
+# rewritten so it carries its own bounds. JavaScriptCore, the iOS view
+# runner's engine, has no fuel and enforces no view memory setting, and a
+# page stuck in a wasm loop cannot be stopped from outside; so the fuel count
+# wasmtime keeps on the desktop and the `memory.view_bytes` budget are
+# compiled into the module here, with the same numbers and the same answers.
+#
+# A library (`meter`, `FEATURES`, `stop`) for the runner's `prepare`, and one
+# command (`view-meter <in.wasm> <out.wasm> <view_bytes>`) for the bundled
+# views' build. No gpui, no OS, no runtime: it builds for every target.
+
+[package]
+name = "view-meter"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+# the IR the S0-native pass was proven on: its output equalled wasmtime's
+# fuel tick for tick and was byte-identical run to run
+walrus = "=0.23.3"
+# the validator wasmtime 46 itself runs: `FEATURES` is the very type its
+# `Config::wasm_features` takes
+wasmparser = "0.251"
+
+[dev-dependencies]
+# the reference the gate compares against (dev only: the pass runs where
+# wasmtime is not linked)
+wasmtime.workspace = true
+wat = "1"
+# the recorded sessions are committed gzipped (`tests/sessions`)
+flate2 = "1"
+sha2.workspace = true
+
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "deny"
+
+[lints.clippy]
+allow_attributes_without_reason = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+let_underscore_must_use = "deny"
+disallowed_methods = "deny"

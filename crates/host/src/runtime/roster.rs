@@ -1,0 +1,934 @@
+//! The node in hand and what it runs: the global [`Connection`], the roster
+//! (the node's program list and each one's code; the app keeps one, reached
+//! through [`roster`], and a test builds its own), the rail rows the shell
+//! draws from it, the loads a connect or a new block starts, and the reading
+//! of a `duck://` link against the views this connection lists.
+use super::*;
+
+/// The session facts every view is handed as its props: the signing key
+/// unlocked in this session as `signer` (hex) and the `account` it holds,
+/// `None` until one is resolved.
+pub fn props(
+    connected: bool,
+    network: &str,
+    key: &str,
+    account: Option<u64>,
+    endpoint: &str,
+) -> Vec<u8> {
+    wire::methods::encode(&wire::methods::Session {
+        connected,
+        chain_id: network.into(),
+        signer: key.into(),
+        account,
+        endpoint: endpoint.into(),
+    })
+}
+
+/// The node the views are asked of, and the network its frames name;
+/// `rev` moves on every (re)connect so a load or a request from before it
+/// is refused rather than landed on the wrong node.
+#[derive(Clone, Default)]
+pub(super) struct Connection {
+    pub(super) client: Option<crate::backend::RpcClient>,
+    pub(super) network: String,
+    /// The chain id (`<network>#<salt>`) a view's `store` is kept under.
+    pub(super) chain: String,
+    pub(super) rev: u64,
+    /// The node's live session (`backend::live`), one per connection: the
+    /// one before closes when its last holder lets go.
+    pub(super) live: Option<Arc<dyn crate::backend::live::Session>>,
+}
+
+pub(super) fn connection() -> &'static Mutex<Connection> {
+    static CONNECTION: OnceLock<Mutex<Connection>> = OnceLock::new();
+    CONNECTION.get_or_init(Mutex::default)
+}
+
+/// A roster as a node last listed it, every program and its code, and
+/// which of them fill the roles the kernel calls; shared by whoever holds
+/// a clone: the app's one ([`roster`]), which the node's reads fill, its
+/// views load from and its windows draw, or a test's own. A change tells
+/// the rail ([`changes_channel`]), never a window.
+#[derive(Clone, Default)]
+pub struct Roster {
+    programs: Arc<Mutex<Vec<crate::backend::views::Program>>>,
+    bound: Arc<Mutex<Bound>>,
+}
+
+/// The roles as the programs role answered them, and the connection (`rev`)
+/// that was asked: they are asked once per connection, and again when the
+/// roster moved (a programs upgrade is a move), never each block; no
+/// bindings answered pins nothing, and the next read asks again.
+#[derive(Default)]
+struct Bound {
+    asked_of: Option<u64>,
+    roles: Option<abi::Roles>,
+}
+
+impl Roster {
+    pub(super) fn lock(&self) -> std::sync::MutexGuard<'_, Vec<crate::backend::views::Program>> {
+        self.programs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn bound(&self) -> std::sync::MutexGuard<'_, Bound> {
+        self.bound
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The programs genesis bound to the roles the kernel calls (the
+    /// programs role, the validators, identity), as the node's programs role
+    /// answers them: `None` until read.
+    pub fn roles(&self) -> Option<abi::Roles> {
+        self.bound().roles.clone()
+    }
+
+    /// The role bindings as if the programs role had answered `roles`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn bind(&self, roles: Option<abi::Roles>) {
+        self.bound().roles = roles;
+    }
+
+    /// A roster of its own that lists `programs`, for a test to draw or
+    /// open.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn listing(programs: &[&str]) -> Self {
+        let roster = Self::default();
+        roster.lock().extend(
+            programs
+                .iter()
+                .map(|program| crate::backend::views::Program {
+                    name: (*program).into(),
+                    code: abi::BlobId::Sha256([0; 32]),
+                    bare: false,
+                }),
+        );
+        roster
+    }
+
+    /// Lists what `listed` lists, as a node's read would: a test's.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn relist_from(&self, listed: &Roster) {
+        let programs = listed.lock().clone();
+        relist(self, programs);
+    }
+
+    /// Lists nothing until the next network's programs are read: the
+    /// network these were read off was left, and nothing (the rail, a link)
+    /// may be read against its programs any more.
+    pub(crate) fn clear(&self) {
+        relist(self, Vec::new());
+    }
+
+    /// The blob a listed program's view comes from, and whether that blob is
+    /// the view itself (a view-only entry) rather than a program carrying it.
+    pub(super) fn code(&self, program: &str) -> Option<(abi::BlobId, bool)> {
+        self.lock()
+            .iter()
+            .find(|entry| entry.name == program)
+            .map(|entry| (entry.code, entry.bare))
+    }
+
+    /// Whether it lists `program`: a link to anything else names nothing.
+    pub fn lists(&self, program: &str) -> bool {
+        self.code(program).is_some()
+    }
+
+    /// Whether it lists `code`: a listed program's, or a view-only entry's.
+    pub(super) fn names_code(&self, code: &abi::BlobId) -> bool {
+        self.lock().iter().any(|entry| entry.code == *code)
+    }
+}
+
+/// The app's one roster.
+pub fn roster() -> &'static Roster {
+    static ROSTER: OnceLock<Roster> = OnceLock::new();
+    ROSTER.get_or_init(Roster::default)
+}
+
+type Changes = futures::channel::mpsc::UnboundedSender<()>;
+
+fn changes() -> &'static Mutex<Option<Changes>> {
+    static CHANGES: OnceLock<Mutex<Option<Changes>>> = OnceLock::new();
+    CHANGES.get_or_init(Mutex::default)
+}
+
+/// The rail's wake: one message each time the roster or a seat moved in a
+/// way [`Roster::rail`] reads, from whichever thread moved it. Installing
+/// it replaces the one before; the app installs one; of the tests only
+/// `a_seat_claimed_or_dropped_wakes_the_rail` does (the others' rails are
+/// refreshed by hand, and no loader thread wakes their scheduler).
+pub fn changes_channel() -> futures::channel::mpsc::UnboundedReceiver<()> {
+    let (send, receive) = futures::channel::mpsc::unbounded();
+    *changes().lock().expect("roster changes") = Some(send);
+    receive
+}
+
+/// `programs` in place of what `roster` listed, the one before handed
+/// back. A list that moved wakes the rail: a program that left starts no
+/// load, so this is the only word the rail gets of it.
+pub(super) fn relist(
+    roster: &Roster,
+    programs: Vec<crate::backend::views::Program>,
+) -> Vec<crate::backend::views::Program> {
+    let mut listed = roster.lock();
+    let previous = std::mem::replace(&mut *listed, programs);
+    let moved = previous != *listed;
+    drop(listed);
+    if moved {
+        rail_moved();
+    }
+    previous
+}
+
+/// The rows [`Roster::rail`] reads may have moved: the rail is told.
+pub(super) fn rail_moved() {
+    if let Some(send) = &*changes().lock().expect("roster changes") {
+        let _ = send.unbounded_send(());
+    }
+}
+
+/// A code id as the 32-byte hash a seat records: sha256 as is, sha1 padded.
+pub(super) fn code_digest(code: &abi::BlobId) -> [u8; 32] {
+    let mut digest = [0; 32];
+    let bytes = code.digest();
+    digest[..bytes.len()].copy_from_slice(bytes);
+    digest
+}
+
+/// The programs the rail lists, in roster order, with the name each one's
+/// view gives itself (its program name until the manifest is read) and
+/// whether it has a view at all.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RailRow {
+    pub program: &'static str,
+    pub label: String,
+    /// The icon its view's manifest declares (`icons/hammer.svg`); empty
+    /// until the manifest is read, and for a view that declares none.
+    pub icon: String,
+    /// The tint its view's manifest declares: the colour of its tile on a
+    /// phone's Home (the desktop rail draws none). `Tint::None` until the
+    /// manifest is read, and for a view that declares none.
+    pub tint: Tint,
+    /// The manifest's description (Home's tile and product page); empty
+    /// until the manifest is read.
+    pub description: String,
+    /// `Some` while the seat is on its way or failed; `None` once drawn.
+    pub note: Option<&'static str>,
+    /// The program ships no view: the rail leaves it out.
+    pub empty: bool,
+    /// Its code not read yet (no seat, or the bytes still coming): whether
+    /// it ships a view is not known, so `empty` is `false` meanwhile and
+    /// the row says `Loading`. Home lists no program before this is known.
+    pub pending: bool,
+}
+
+/// How far a seat's view has come, readiest first: the rail names a
+/// program by its readiest seat.
+fn readiness(slot: &Slot) -> u8 {
+    match slot {
+        Slot::Ready(view) if !view.name.is_empty() => 0,
+        Slot::Compiled(view) if !view.name.is_empty() => 1,
+        Slot::Ready(_) | Slot::Compiled(_) => 2,
+        Slot::Empty => 3,
+        Slot::Failed(_) => 4,
+        Slot::Loading | Slot::Fetching { .. } | Slot::Listed(_) | Slot::Compiling(_) => 5,
+    }
+}
+
+impl Roster {
+    pub fn rail(&self) -> Vec<RailRow> {
+        let _timed = crate::perf::time(crate::perf::Key::Shell, "rail");
+        crate::perf::count(crate::perf::Key::Shell, "rail.calls", 1);
+        // the names first, and the roster let go before the seats are
+        // locked: a roster read locks the seats, then the roster
+        let programs: Vec<&'static str> = self
+            .lock()
+            .iter()
+            .map(|program| intern(&program.name))
+            .collect();
+        let registry = lock(registry());
+        programs
+            .into_iter()
+            .map(|program| {
+                // one seat a pane: the row is the readiest one's, so two
+                // panes of a program, one still loading, never flip the row
+                // between their names as the map's order happens to fall
+                let seat = registry
+                    .iter()
+                    .filter(|((name, _), _)| *name == program)
+                    .min_by_key(|((_, instance), seat)| (readiness(&lock(seat).slot), *instance))
+                    .map(|(_, seat)| lock(seat));
+                let (label, note, empty) = match seat.as_ref().map(|seat| &seat.slot) {
+                    Some(Slot::Ready(view)) if !view.name.is_empty() => {
+                        (view.name.clone(), None, false)
+                    }
+                    // compiled, not started: as ready to open as a drawn view
+                    Some(Slot::Compiled(view)) if !view.name.is_empty() => {
+                        (view.name.clone(), None, false)
+                    }
+                    Some(Slot::Ready(_) | Slot::Compiled(_)) => (program.to_owned(), None, false),
+                    // the bytes are here, the code not started: listed by
+                    // its manifest, still loading
+                    Some(Slot::Listed(listing) | Slot::Compiling(listing))
+                        if !listing.name.is_empty() =>
+                    {
+                        (listing.name.clone(), Some("Loading"), false)
+                    }
+                    Some(Slot::Empty) => (program.to_owned(), None, true),
+                    Some(Slot::Failed(_)) => (program.to_owned(), Some("Failed"), false),
+                    // No seat yet (a pane just let go of it, the roster hasn't
+                    // remounted it) is loading too, not a final unnamed view —
+                    // else the raw program id flashes in the rail/pane title.
+                    Some(_) | None => (program.to_owned(), Some("Loading"), false),
+                };
+                let pending = matches!(
+                    seat.as_ref().map(|seat| &seat.slot),
+                    None | Some(Slot::Loading | Slot::Fetching { .. })
+                );
+                // the manifest's, as the name is: none before it is read
+                let (icon, tint, description) = match seat.as_ref().map(|seat| &seat.slot) {
+                    Some(Slot::Ready(view)) => {
+                        (view.icon.clone(), view.tint, view.description.clone())
+                    }
+                    Some(Slot::Compiled(view)) => {
+                        (view.icon.clone(), view.tint, view.description.clone())
+                    }
+                    Some(Slot::Listed(listing) | Slot::Compiling(listing)) => (
+                        listing.icon.clone(),
+                        listing.tint,
+                        listing.description.clone(),
+                    ),
+                    _ => Default::default(),
+                };
+                RailRow {
+                    program,
+                    label,
+                    icon,
+                    tint,
+                    description,
+                    note,
+                    empty,
+                    pending,
+                }
+            })
+            .collect()
+    }
+
+    /// The one reading of a link, against the views this roster lists.
+    pub fn parse_link(&self, link: &str) -> Link {
+        parse_link_among(link, &self.rail())
+    }
+}
+
+/// A node was connected: every seat is asked again of it, and the roster
+/// is read so the rail lists what the network runs.
+pub fn connected(client: &crate::backend::RpcClient, network: &str, chain: &str) {
+    // the last connection's notifiers end; the read below starts each again
+    super::notifier::stop_every();
+    let snapshot = {
+        let mut connection = connection().lock().expect("views rpc");
+        connection.rev += 1;
+        connection.client = Some(client.clone());
+        connection.network = network.to_owned();
+        connection.chain = chain.to_owned();
+        connection.live = Some(Arc::new(crate::backend::live::Client::new(client.clone())));
+        connection.clone()
+    };
+    spawn_roster_read(snapshot, || {});
+}
+
+/// The node in hand was let go (its network left): a read, a load or a
+/// request still out to it is refused from now on (`rev` moves), so none
+/// lands its answers after it, and the views are asked of no node until
+/// the next connect. Nothing to let go when no node was connected.
+pub fn disconnected() {
+    let mut connection = connection().lock().expect("views rpc");
+    if connection.client.is_some() {
+        *connection = Connection {
+            rev: connection.rev + 1,
+            ..Connection::default()
+        };
+    }
+}
+
+/// The node moved (a block landed): the roster is read again, and a
+/// program whose code changed is loaded again, under a new generation, and
+/// swapped in place when ready. One read in flight at a time; a block that
+/// lands during one is covered by the next. The read alone holds that
+/// latch: the loads it queues land on their own. Cheap when nothing moved.
+pub fn deployments_checked() {
+    static IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    use std::sync::atomic::Ordering;
+    if IN_FLIGHT.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let snapshot = connection().lock().expect("views rpc").clone();
+    if snapshot.client.is_none()
+        || !spawn_roster_read(snapshot, || IN_FLIGHT.store(false, Ordering::SeqCst))
+    {
+        IN_FLIGHT.store(false, Ordering::SeqCst);
+    }
+}
+
+/// [`read_roster`] of the app's roster and seats on a thread of its own,
+/// then `then`, even after a read that panicked (the panic hook logs it);
+/// `false`, said in app.log, when the OS gives no thread.
+fn spawn_roster_read(asked_of: Connection, then: impl FnOnce() + Send + 'static) -> bool {
+    let spawned = std::thread::Builder::new()
+        .name("roster".into())
+        .spawn(move || {
+            let read = std::panic::AssertUnwindSafe(|| {
+                if let Some(programs) = read_roster(asked_of.clone(), roster(), registry()) {
+                    super::notifier::reconcile_all(&asked_of, &programs);
+                }
+            });
+            let _ = std::panic::catch_unwind(read);
+            then();
+        });
+    if let Err(error) = &spawned {
+        tracing::warn!(
+            target: "ducktape::app",
+            reason = "roster_unread",
+            error = %error,
+            "no thread to read the node's programs on"
+        );
+    }
+    spawned.is_ok()
+}
+
+/// One read of the node's programs into `roster`, and of `registry`'s
+/// seats against it: a program that left gives up its seat, a new one is
+/// seated (instance 0), and every seat whose code moved, or that was never
+/// asked of this node, is queued a load. The read is over once they are
+/// queued: nothing waits on a load, which lands in its seat on its own.
+/// What it listed, unless the node did not answer or was left meanwhile.
+pub(super) fn read_roster(
+    asked_of: Connection,
+    roster: &Roster,
+    registry: &Registry,
+) -> Option<Vec<crate::backend::views::Program>> {
+    let client = asked_of.client.as_ref()?;
+    let read = crate::perf::time(crate::perf::Key::Shell, "roster");
+    let programs = handle().block_on(crate::backend::views::programs(client, &asked_of.network));
+    drop(read);
+    let programs = match programs {
+        Ok(programs) => programs,
+        Err(error) => {
+            tracing::warn!(
+                target: "ducktape::app",
+                reason = "roster_unreadable",
+                error = %error,
+                "the node's programs were not listed"
+            );
+            return None;
+        }
+    };
+    let roles_due = roster.bound().asked_of != Some(asked_of.rev) || *roster.lock() != programs;
+    let roles = if roles_due {
+        match handle().block_on(crate::backend::views::roles(client, &asked_of.network)) {
+            Ok(roles) => Some(roles),
+            // nothing listed either: the next block reads both again
+            Err(error) => {
+                tracing::warn!(
+                    target: "ducktape::app",
+                    reason = "roles_unreadable",
+                    error = %error,
+                    "the node's role bindings were not read"
+                );
+                return None;
+            }
+        }
+    } else {
+        None
+    };
+    let loads = {
+        let node_since_left = connection().lock().expect("views rpc").rev != asked_of.rev;
+        if node_since_left {
+            return None;
+        }
+        if let Some(roles) = roles {
+            *roster.bound() = Bound {
+                asked_of: Some(asked_of.rev),
+                roles: Some(roles),
+            };
+        }
+        // a host with no screen seats nothing: its notifiers are all it runs
+        if crate::contract::os().limits().preload == crate::contract::Preload::Headless {
+            relist(roster, programs.clone());
+            return Some(programs);
+        }
+        let mut registry = lock(registry);
+        let names: Vec<&'static str> = programs.iter().map(|p| intern(&p.name)).collect();
+        // a program the roster no longer lists gives up its seat
+        for gone in registry
+            .keys()
+            .copied()
+            .filter(|(program, _)| !names.contains(program))
+            .collect::<Vec<_>>()
+        {
+            if let Some(retired) = registry.get(&gone) {
+                lock(retired).retire();
+            }
+            if gone.1 == 0 {
+                registry.remove(&gone);
+            }
+        }
+        // the revision asked again under the roster's lock (registry, then
+        // roster, then connection): a leave that moved it since
+        // (`disconnected`, then `Roster::clear`) is never listed over
+        let previous = {
+            let mut listed = roster.lock();
+            if connection().lock().expect("views rpc").rev != asked_of.rev {
+                return None;
+            }
+            std::mem::replace(&mut *listed, programs.clone())
+        };
+        if previous != programs {
+            rail_moved();
+        }
+        let mut loads = Vec::new();
+        for program in &names {
+            if !registry.keys().any(|(name, _)| name == program) {
+                registry.insert((*program, 0), Mounted::seat());
+            }
+        }
+        for ((program, _), seat) in registry.iter() {
+            let Some(listed) = programs.iter().find(|listed| listed.name == *program) else {
+                continue;
+            };
+            let mut locked = lock(seat);
+            let same_code = previous
+                .iter()
+                .any(|old| old.name == listed.name && old.code == listed.code);
+            let asked_of_this_node = locked.generation > 0 && locked.rev == asked_of.rev;
+            let code = code_digest(&listed.code);
+            if !locked.reload_due(same_code, asked_of_this_node, code) {
+                continue;
+            }
+            locked.rev = asked_of.rev;
+            loads.push(Load {
+                program,
+                seat: seat.clone(),
+                generation: locked.start(),
+                asked_of: asked_of.clone(),
+                code: Some((listed.code, listed.bare)),
+            });
+        }
+        loads
+    };
+    // the registry let go first: a load that cannot get a thread installs
+    // its failure under the seat's lock
+    for load in loads {
+        queue(load);
+    }
+    Some(programs)
+}
+
+/// What a link names, as far as the app can tell without the chain in
+/// hand. The `duck://` grammar is shared with the programs repo: this reads it,
+/// it does not change it.
+#[derive(Debug, PartialEq)]
+pub enum Link {
+    /// A view on this connection by its short name (`duck://<view>`, or
+    /// `duck://<view>/<route>` with the route its view reads).
+    View {
+        program: &'static str,
+        route: Option<String>,
+    },
+    /// `duck://<chain>/<program>/<tail>`: which chain is for the caller.
+    Chain(ducklink::Link),
+    /// An `http(s)` page, for the system browser.
+    Web(String),
+    /// Nothing this app opens.
+    Unknown,
+}
+
+fn parse_link_among(link: &str, rows: &[RailRow]) -> Link {
+    // a short name first: `duck://chat` is also a well-formed chain link
+    if let Some(program) = local_seat(link, rows) {
+        return Link::View {
+            program,
+            route: None,
+        };
+    }
+    match ducklink::Link::parse(link) {
+        Ok(parsed) => Link::Chain(parsed),
+        Err(_) if link.starts_with("http://") || link.starts_with("https://") => {
+            Link::Web(link.to_owned())
+        }
+        Err(_) => match local_seat_route(link, rows) {
+            Some((program, route)) => Link::View {
+                program,
+                route: Some(route),
+            },
+            None => Link::Unknown,
+        },
+    }
+}
+
+fn local_seat_route(link: &str, rows: &[RailRow]) -> Option<(&'static str, String)> {
+    let (seat, route) = link.strip_prefix("duck://")?.split_once('/')?;
+    let program = local_seat(&format!("duck://{seat}"), rows)?;
+    let route = ducklink::tail(route).ok()?.join("/");
+    valid_route(&route).then_some((program, route))
+}
+
+/// A DECODED route a link may hand a view (`host.route`): at most 256 bytes
+/// of `/`-separated segments, each nonempty, not `.` or `..`, and free of
+/// control characters. The link spelled it percent-encoded; `ducklink`
+/// decoded it.
+pub fn valid_route(route: &str) -> bool {
+    !route.is_empty()
+        && route.len() <= 256
+        && !route.contains(char::is_control)
+        && route
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
+
+fn local_seat(link: &str, rows: &[RailRow]) -> Option<&'static str> {
+    let name = link.strip_prefix("duck://")?;
+    if name.is_empty()
+        || !name.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
+    {
+        return None;
+    }
+    if let Some(row) = rows.iter().find(|row| row.program == name && !row.empty) {
+        return Some(row.program);
+    }
+    let mut matches = rows
+        .iter()
+        .filter(|row| !row.empty && row.note.is_none() && row.label.to_lowercase() == name);
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first.program)
+}
+
+#[cfg(test)]
+mod local_link_tests {
+    use super::*;
+
+    #[test]
+    fn short_links_resolve_ids_and_unique_ready_labels() {
+        let mut rows = vec![RailRow {
+            program: "catalog",
+            label: "Preferences".into(),
+            icon: String::new(),
+            tint: Tint::None,
+            description: String::new(),
+            note: None,
+            empty: false,
+            pending: false,
+        }];
+        assert_eq!(local_seat("duck://catalog", &rows), Some("catalog"));
+        assert_eq!(local_seat("duck://preferences", &rows), Some("catalog"));
+        for link in [
+            "duck://",
+            "duck://Preferences",
+            "duck://network-abcd1234/preferences",
+            "duck://preferences?x",
+            "https://preferences",
+        ] {
+            assert_eq!(local_seat(link, &rows), None);
+        }
+        assert_eq!(
+            local_seat_route("duck://catalog/tx/00ff", &rows),
+            Some(("catalog", "tx/00ff".into()))
+        );
+        assert_eq!(
+            local_seat_route("duck://preferences/a.b_c-D", &rows),
+            Some(("catalog", "a.b_c-D".into()))
+        );
+        for link in [
+            "duck://catalog/",
+            "duck://catalog/tx//00ff",
+            "duck://catalog/../x",
+            "duck://catalog/tx?x",
+            "duck://unknown/tx/00ff",
+        ] {
+            assert_eq!(local_seat_route(link, &rows), None, "{link}");
+        }
+        assert!(valid_route(&"a".repeat(256)));
+        assert!(!valid_route(&"a".repeat(257)));
+        rows.push(RailRow {
+            program: "other",
+            label: "Preferences".into(),
+            icon: String::new(),
+            tint: Tint::None,
+            description: String::new(),
+            note: None,
+            empty: false,
+            pending: false,
+        });
+        assert_eq!(local_seat("duck://preferences", &rows), None);
+        rows[1].empty = true;
+        assert_eq!(local_seat("duck://preferences", &rows), Some("catalog"));
+        rows[0].note = Some("Loading");
+        assert_eq!(local_seat("duck://preferences", &rows), None);
+    }
+
+    #[test]
+    fn a_link_reads_as_one_thing() {
+        let rows = [RailRow {
+            program: "catalog",
+            label: "Preferences".into(),
+            icon: String::new(),
+            tint: Tint::None,
+            description: String::new(),
+            note: None,
+            empty: false,
+            pending: false,
+        }];
+        let view = |route: Option<&str>| Link::View {
+            program: "catalog",
+            route: route.map(str::to_owned),
+        };
+        assert_eq!(parse_link_among("duck://catalog", &rows), view(None));
+        assert_eq!(parse_link_among("duck://preferences", &rows), view(None));
+        assert_eq!(
+            parse_link_among("duck://catalog/tx/00ff", &rows),
+            view(Some("tx/00ff"))
+        );
+        assert!(matches!(
+            parse_link_among("duck://testkit-0a1b2c3d/chat/tx/00ff", &rows),
+            Link::Chain(link) if link.program == "chat"
+        ));
+        assert_eq!(
+            parse_link_among("https://ducktape.dev/x", &rows),
+            Link::Web("https://ducktape.dev/x".into())
+        );
+        for link in ["ftp://x", "duck://unknown/../x", "catalog"] {
+            assert_eq!(parse_link_among(link, &rows), Link::Unknown, "{link}");
+        }
+    }
+
+    /// A route is percent-encoded in the link and handed to the view
+    /// decoded, whatever it names: a forge room's `:`, a space, Hangul.
+    #[test]
+    fn a_route_is_delivered_decoded() {
+        let rows = [RailRow {
+            program: "catalog",
+            label: "Preferences".into(),
+            icon: String::new(),
+            tint: Tint::None,
+            description: String::new(),
+            note: None,
+            empty: false,
+            pending: false,
+        }];
+        for name in ["forge:web:3", "보고서 #1", "a b"] {
+            let link = ducklink::mint("testkit#0a1b2c3d", "chat", &[name, "42"]).unwrap();
+            let Link::Chain(parsed) = parse_link_among(&link, &rows) else {
+                panic!("{link}");
+            };
+            let route = parsed.tail.join("/");
+            assert_eq!(route, format!("{name}/42"));
+            assert!(valid_route(&route), "{route}");
+            let short = link.replacen("testkit-0a1b2c3d/chat", "catalog", 1);
+            assert_eq!(
+                parse_link_among(&short, &rows),
+                Link::View {
+                    program: "catalog",
+                    route: Some(route)
+                },
+                "{short}"
+            );
+        }
+        assert!(link_to_catalog("duck://catalog/forge%3Aweb%3A3", &rows));
+        for broken in [
+            "duck://catalog/forge%3aweb",
+            "duck://catalog/forge%3",
+            "duck://catalog/%ZZ",
+            "duck://catalog/a%2Fb",
+            "duck://catalog/a%0Ab",
+            "duck://catalog/forge:web",
+        ] {
+            assert!(!link_to_catalog(broken, &rows), "{broken}");
+        }
+        assert!(!valid_route("a\u{7f}b"), "a control character");
+        assert!(!valid_route(&"보".repeat(86)), "258 decoded bytes");
+    }
+
+    fn link_to_catalog(link: &str, rows: &[RailRow]) -> bool {
+        matches!(
+            parse_link_among(link, rows),
+            Link::View { route: Some(_), .. }
+        )
+    }
+}
+
+#[cfg(test)]
+mod rail_tests {
+    use super::*;
+
+    /// A program the roster lists but whose seat hasn't been (re)mounted yet
+    /// — the gap right after a pane lets go of it and before the next
+    /// preload — must not draw as a final, unnamed view: that flashed the
+    /// raw program id ("rail-tests-unmounted") in the rail and any popped-out
+    /// pane's window title instead of a "Loading" row.
+    #[test]
+    fn unmounted_program_is_loading_not_a_bare_id() {
+        let program = "rail-tests-unmounted";
+        // No entry for `program` is inserted into registry(): this is the
+        // `None` seat case rail() must treat as loading.
+        let row = Roster::listing(&[program])
+            .rail()
+            .into_iter()
+            .find(|row| row.program == program)
+            .expect("listed program appears in the rail");
+        assert_eq!(row.label, program);
+        assert_eq!(row.note, Some("Loading"));
+        assert!(!row.empty);
+        assert!(row.pending, "whether it ships a view is not known yet");
+    }
+
+    /// A seat preloaded only as far as compiled is a row ready to open,
+    /// named as its manifest names it, as a drawn view's is: the census
+    /// opens a view by that name.
+    #[test]
+    fn a_compiled_seat_is_listed_by_its_manifest_name() {
+        let program = "rail-tests-compiled";
+        let seat = Mounted::seat();
+        lock(&seat).slot = Slot::Compiled(ViewCode::for_test("Compiled view", "", 320));
+        lock(registry()).insert((program, 0), seat);
+        let row = Roster::listing(&[program])
+            .rail()
+            .into_iter()
+            .find(|row| row.program == program)
+            .expect("listed program appears in the rail");
+        lock(registry()).remove(&(program, 0));
+        assert_eq!((row.label.as_str(), row.note), ("Compiled view", None));
+        assert!(!row.empty && !row.pending);
+    }
+
+    /// A program whose bytes are still coming is pending; once read and
+    /// found to ship no view it is empty, and no longer pending.
+    #[test]
+    fn a_program_is_pending_until_its_code_is_read() {
+        let program = "rail-tests-pending";
+        let seat = Mounted::seat();
+        let row = |seat: &Arc<Mutex<Mounted>>, slot| {
+            lock(seat).slot = slot;
+            lock(registry()).insert((program, 0), seat.clone());
+            let row = Roster::listing(&[program]).rail().remove(0);
+            lock(registry()).remove(&(program, 0));
+            (row.empty, row.pending)
+        };
+        let fetching = Slot::Fetching {
+            received: 1,
+            total: Some(2),
+        };
+        assert_eq!(row(&seat, fetching), (false, true));
+        assert_eq!(row(&seat, Slot::Empty), (true, false));
+    }
+
+    /// A seat whose bytes are here and whose manifest is read, its code not
+    /// yet compiled or compiling, is listed by its manifest (name, icon,
+    /// tint, description: what Home's tile draws) and still loading; the row
+    /// keeps the name from the listing through the compile.
+    #[test]
+    fn a_listed_seat_is_named_by_its_manifest_and_still_loading() {
+        let program = "rail-tests-listed";
+        let listing = || {
+            Box::new(Listing {
+                name: "Listed view".into(),
+                icon: "icons/hammer.svg".into(),
+                tint: Tint::Orange,
+                description: "What it does".into(),
+                ..Default::default()
+            })
+        };
+        let seat = Mounted::seat();
+        lock(registry()).insert((program, 0), seat.clone());
+        let row = |slot: Slot| {
+            lock(&seat).slot = slot;
+            Roster::listing(&[program])
+                .rail()
+                .into_iter()
+                .find(|row| row.program == program)
+                .expect("listed program appears in the rail")
+        };
+        let rows = [
+            row(Slot::Listed(listing())),
+            row(Slot::Compiling(listing())),
+        ];
+        lock(registry()).remove(&(program, 0));
+        for row in rows {
+            assert_eq!(
+                (
+                    row.label.as_str(),
+                    row.icon.as_str(),
+                    row.tint,
+                    row.description.as_str()
+                ),
+                (
+                    "Listed view",
+                    "icons/hammer.svg",
+                    Tint::Orange,
+                    "What it does"
+                )
+            );
+            assert_eq!(row.note, Some("Loading"));
+        }
+    }
+
+    /// Two panes of one program hold a seat each; while one is still on
+    /// its way the row keeps the name the other's view gives itself, on
+    /// every read, whatever order the seats are kept in: it flipped
+    /// between "Nodes" and "Valset · Loading" as the map's order fell.
+    #[test]
+    fn a_program_with_two_seats_is_named_by_its_readiest() {
+        let program = "rail-tests-two-seats";
+        let named = Mounted::seat();
+        lock(&named).slot = Slot::Compiled(ViewCode::for_test("Nodes", "", 320));
+        let instances = 1..=16u64;
+        {
+            let mut registry = lock(registry());
+            for instance in instances.clone() {
+                registry.insert((program, instance), Mounted::seat());
+            }
+            registry.insert((program, 9), named);
+        }
+        let roster = Roster::listing(&[program]);
+        let rows: Vec<RailRow> = (0..8)
+            .flat_map(|_| roster.rail())
+            .filter(|row| row.program == program)
+            .collect();
+        {
+            let mut registry = lock(registry());
+            for instance in instances {
+                registry.remove(&(program, instance));
+            }
+        }
+        assert_eq!(rows.len(), 8);
+        for row in rows {
+            assert_eq!((row.label.as_str(), row.note), ("Nodes", None));
+        }
+    }
+
+    /// A view-only entry (no program behind it) is a rail row like any
+    /// program's view, keyed and linked by its own name.
+    #[test]
+    fn a_view_only_entry_is_a_rail_row_and_a_short_link() {
+        let view = abi::BlobId::Sha256([7; 32]);
+        let roster = Roster::default();
+        roster.lock().push(crate::backend::views::Program {
+            name: "explorer".into(),
+            code: view,
+            bare: true,
+        });
+        assert!(roster.rail().iter().any(|row| row.program == "explorer"));
+        assert_eq!(
+            roster.parse_link("duck://explorer"),
+            Link::View {
+                program: "explorer",
+                route: None
+            }
+        );
+        assert_eq!(roster.code("explorer"), Some((view, true)));
+    }
+}

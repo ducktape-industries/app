@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>ducktape</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>ducktape</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<!-- links: the chain's own scheme, and the Expo build's (wasm-mobile SPEC §7.6); gpui_ios hands a scene's
+	     URL contexts to the app's open-URL callback (crates/phone os/ios/ffi.rs) -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>industries.ducktape.mobile</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>duck</string>
+				<string>ducktape</string>
+			</array>
+		</dict>
+	</array>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>MinimumOSVersion</key>
+	<string>15.0</string>
+	<!-- the camera and microphone pieces (crates/av): the system's prompt shows these, and a capture without them
+	     ends the app -->
+	<key>NSCameraUsageDescription</key>
+	<string>Ducktape shows your camera in the views you open that use it.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Ducktape listens to your microphone in the views you open that use it.</string>
+	<!-- the ring (App.swift `Ring`): PushKit's VoIP pushes launch the app for CallKit, and an answered call's voice
+	     plays on with the screen locked -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>remote-notification</string>
+		<string>voip</string>
+	</array>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+		<key>UISceneConfigurations</key>
+		<dict>
+			<key>UIWindowSceneSessionRoleApplication</key>
+			<array>
+				<dict>
+					<key>UISceneConfigurationName</key>
+					<string>Default Configuration</string>
+					<!-- gpui_ios's scene delegate: restored sessions may skip the app delegate's configuration callback -->
+					<key>UISceneDelegateClassName</key>
+					<string>GPUIIosSceneDelegate</string>
+				</dict>
+			</array>
+		</dict>
+	</dict>
+	<!-- export compliance: TLS (rustls/ring) and Ed25519 only, as the Expo build answered (mobile #27) -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UIRequiresFullScreen</key>
+	<true/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+</dict>
+</plist>

@@ -8,13 +8,15 @@ use super::*;
 
 /// The controls Help lists with a chord, each with the key the platform's
 /// modifier goes with (⇧ leading it: with Shift): each reports its chord
-/// (AX-114). "Fill window" and "Move or size window" are Search's rows.
-const CHORDED: [(&str, &str); 5] = [
+/// (AX-114). "Fill window", "Move or size window" and "Keep on top" are
+/// Search's rows.
+const CHORDED: [(&str, &str); 6] = [
     ("New window", "N"),
     ("Search", "K"),
     ("Help", "/"),
     ("Fill window", "⇧↩"),
     ("Move or size window", "⇧M"),
+    ("Keep on top", "⇧T"),
 ];
 
 /// `(control name, chord)` for each control Help lists with a chord, as
@@ -28,8 +30,14 @@ pub(crate) fn chords() -> Vec<(String, String)> {
 
 /// Help's page: greeted (`welcome`, a new account's first sight of the
 /// desk) or titled "Ducktape help", in the dark or light ink, the programs
-/// listed across the top or down the side (`side`).
-pub(super) fn help_view(welcome: bool, dark: bool, side: bool) -> gpui_kit::AnyElement {
+/// listed across the top or down the side (`side`), Keep on Top's key
+/// listed where the platform can keep a window on top (`on_top`).
+pub(super) fn help_view(
+    welcome: bool,
+    dark: bool,
+    side: bool,
+    on_top: bool,
+) -> gpui_kit::AnyElement {
     use super::ink::*;
     use gpui_kit::*;
     let ink = Ink::of(dark);
@@ -80,7 +88,7 @@ pub(super) fn help_view(welcome: bool, dark: bool, side: bool) -> gpui_kit::AnyE
             "{n} opens an empty window: type part of a program's name, pick it \
                  with ↑↓ and open it with ↵.{}",
             match super::layers::CHAT_READY {
-                true => " Tab switches what the field searches, Module or Chat.",
+                true => " Tab switches what the field searches, Program or Chat.",
                 false => "",
             }
         ),
@@ -153,22 +161,24 @@ pub(super) fn help_view(welcome: bool, dark: bool, side: bool) -> gpui_kit::AnyE
             .to_owned(),
     ];
     let keys = [
-        (n, "An empty window: type to find a program for it"),
-        (k, "Search programs, networks and actions"),
-        (w, "Close the window"),
-        (chord_label("`"), "The next window"),
-        (chord_label("1–9"), "A window by its place"),
-        (chord_label("⇧↩"), "Fill the desk with this window"),
-        (chord_label("⇧M"), "Move this window with the arrows"),
-        (chord_label("/"), "This help"),
-        ("Esc".to_owned(), "Close search, a menu or settings"),
-        (
+        Some((n, "An empty window: type to find a program for it")),
+        Some((k, "Search programs, networks and actions")),
+        Some((w, "Close the window")),
+        Some((chord_label("`"), "The next window")),
+        Some((chord_label("1–9"), "A window by its place")),
+        Some((chord_label("⇧↩"), "Fill the desk with this window")),
+        Some((chord_label("⇧M"), "Move this window with the arrows")),
+        on_top.then(|| (chord_label("⇧T"), "Keep this window above other apps")),
+        Some((chord_label("/"), "This help")),
+        Some(("Esc".to_owned(), "Close search, a menu or settings")),
+        Some((
             "Esc, then Tab".to_owned(),
             "In a text editor, move on (Tab alone indents)",
-        ),
-        (chord_label("Q"), "Quit"),
+        )),
+        Some((chord_label("Q"), "Quit")),
     ]
     .into_iter()
+    .flatten()
     .enumerate()
     .map(|(n, (chord, what))| {
         div()

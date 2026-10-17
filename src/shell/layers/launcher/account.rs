@@ -77,7 +77,7 @@ impl LauncherLayer {
                         "passkey-create",
                         "Create with a passkey",
                         Kind::Secondary,
-                        self.with_field(&self.fields.name, Account::passkey_create),
+                        self.with_field(&self.fields.name, crate::shell::sign_in::passkey_create),
                         busy,
                         &ink,
                     ),
@@ -119,7 +119,7 @@ impl LauncherLayer {
                     .child(link_running(
                         "passkey-sign-in",
                         "a passkey",
-                        self.on_account(Account::passkey_sign_in),
+                        self.on_account(crate::shell::sign_in::passkey_sign_in),
                         true,
                         &ink,
                     ))
@@ -194,8 +194,8 @@ impl LauncherLayer {
     fn link_waiting(&self, window: &mut Window, cx: &App) -> AnyElement {
         let account = self.account.read(cx).get();
         let ink = Ink::of(self.prefs.read(cx).get().dark());
-        let fingerprint = crate::backend::hex_decode(&account.signer_key)
-            .map(|key| crate::backend::join::fingerprint(&key))
+        let fingerprint = noded_client::hex::hex_decode(&account.signer_key)
+            .map(|key| noded_client::join::fingerprint(&key))
             .unwrap_or_default();
         let big = |id: &'static str, name: &'static str, text: String| {
             div()

@@ -14,8 +14,8 @@ pub(super) fn sidebar(programs: &[&str], windows: &[(&'static str, Option<&str>)
     seed.prefs.layout = Some(crate::backend::Layout::Sidebar);
     seed.roster = crate::runtime::Roster::listing(programs);
     let mut layout = crate::ui::layout::Layout::default();
-    for (module, title) in windows {
-        layout.split(module);
+    for (program, title) in windows {
+        layout.split(program);
         let instance = layout.panes[layout.focused].instance;
         layout.set_title(instance, title.map(Into::into));
     }
@@ -336,15 +336,15 @@ fn a_popped_out_window_stays_listed_and_its_row_brings_it_forward(cx: &mut TestA
     );
     native.run_until_parked();
     assert!(in_front(&mut native), "its program brought it forward");
-    let modules: Vec<&str> = view.read_with(&native, |view, cx| {
+    let programs: Vec<&str> = view.read_with(&native, |view, cx| {
         view.layout(cx)
             .panes
             .iter()
-            .map(|pane| pane.module)
+            .map(|pane| pane.program)
             .collect()
     });
     assert_eq!(
-        modules,
+        programs,
         ["side-stay"],
         "the program opened on the desk again"
     );
@@ -378,14 +378,14 @@ fn the_plus_on_a_program_row_opens_another_window_of_it(cx: &mut TestAppContext)
     }
     let nodes = native.update(drawn);
     native.simulate_click(middle(&nodes, plus), gpui_kit::Modifiers::none());
-    let modules: Vec<&str> = view.read_with(&native, |view, cx| {
+    let programs: Vec<&str> = view.read_with(&native, |view, cx| {
         view.layout(cx)
             .panes
             .iter()
-            .map(|pane| pane.module)
+            .map(|pane| pane.program)
             .collect()
     });
-    assert_eq!(modules, ["side-plus", "side-plus"]);
+    assert_eq!(programs, ["side-plus", "side-plus"]);
     let at = instances(&view, &mut native);
     assert_eq!(front(&view, &mut native), at[1], "the new window in front");
     // the pointer on another row: this one's + goes

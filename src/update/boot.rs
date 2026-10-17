@@ -1,12 +1,18 @@
 //! The boot step, at the very top of `main` before gpui starts: read
 //! `state.json`, run [`step`] on [`Event::Boot`], perform the qualify, flip or
 //! rollback it is told, and make sure the image that goes on is the release
-//! the install path names, `exec`ing it if not. Same PID, argv passed through
-//! untouched (a `duck://` URL rides there), so the process the session
-//! started IS the app, and on macOS it stays the one executable the bundle
-//! is signed with.
+//! the install path names, running it if not. On Linux it is `exec`ed: same
+//! PID, argv passed through untouched (a `duck://` URL rides there), so the
+//! process the session started IS the app. On macOS it starts as a new
+//! launch of the installed bundle and this process exits
+//! ([`super::macos::open_new`]): an `exec`ed image would be judged by the
+//! bundle this process was launched as, the release before. What goes with
+//! this process: a `duck://` link that started an app with a flip pending
+//! (its Apple Event is read only once AppKit runs, after this step), and a
+//! terminal launch's terminal and environment (the new launch is
+//! LaunchServices', with launchd's, as from the Dock).
 //!
-//! The image a flip `exec`s runs this same step first: it finds
+//! The image a flip starts runs this same step first: it finds
 //! `PendingHealthy{boots: 0}`, counts itself (`boots: 1`) and goes on. If it
 //! never renders a frame, the next start finds `boots: 1` and flips back.
 //!
@@ -14,9 +20,9 @@
 //! ([`super::install::rebuild`]), as an install would have written it.
 //!
 //! When the update machinery cannot be trusted (a link where a file should
-//! be, a flip that refused, an `exec` that failed) the process goes on as the
-//! app with the updater off and says why under `ducktape::update`: the boot
-//! step's one job is to never strand the user.
+//! be, a flip that refused, an `exec` or launch that failed) the process
+//! goes on as the app with the updater off and says why under
+//! `ducktape::update`: the boot step's one job is to never strand the user.
 
 use std::io::Read as _;
 use std::os::fd::AsRawFd as _;
@@ -45,12 +51,12 @@ pub(super) enum Boot {
     /// This image is the release that should run: the app goes on, its
     /// updater armed with this phase.
     Run(Phase),
-    /// The install path names another image: `exec` it.
+    /// The install path names another image: run it in this one's place.
     Exec(PathBuf),
 }
 
-/// Decide, then `exec` or arm the updater. Returns when this process goes
-/// on as the app.
+/// Decide, then run the release the install path names in this process's
+/// place or arm the updater. Returns when this process goes on as the app.
 pub(crate) fn boot() {
     let (Some(layout), Ok(own)) = (Layout::host(), std::env::current_exe()) else {
         return;
@@ -64,6 +70,18 @@ pub(crate) fn boot() {
             super::channel::elsewhere();
         }
         Ok(Boot::Run(phase)) => super::channel::arm(layout, phase),
+        Ok(Boot::Exec(_)) if cfg!(target_os = "macos") => {
+            let bundle = layout.installed_bundle();
+            info!(target: TARGET, event = "app_update_launch", bundle = %bundle.display());
+            super::let_go_install(&layout);
+            let args: Vec<_> = std::env::args_os().skip(1).collect();
+            match super::macos::open_new(&bundle, &args) {
+                Ok(()) => std::process::exit(0),
+                Err(said) => {
+                    warn!(target: TARGET, event = "app_update_refused", reason = "launch_failed", said, "going on as this image with the updater off")
+                }
+            }
+        }
         Ok(Boot::Exec(exe)) => {
             info!(target: TARGET, event = "app_update_exec", exe = %exe.display());
             let error = Process::new(&exe).args(std::env::args_os().skip(1)).exec();
@@ -117,11 +135,17 @@ pub(super) fn boot_at(layout: &Layout, own: &Path) -> Result<Boot, Refusal> {
         }
     };
     // a release staged for a channel the device has since left is that
-    // channel's offer: dropped, never flipped to
+    // channel's offer, and one the updater staged on its own before
+    // updating automatically went off was never asked for: dropped, never
+    // flipped to
     let first = match &phase {
         Phase::Staged(staged) if staged.channel != super::channel::read_channel(layout).name() => {
             warn!(target: TARGET, event = "app_update_refused", reason = "other_channel", staged = %staged.staged, channel = %staged.channel, "the device follows another channel now; not flipped");
             Event::ChannelChanged
+        }
+        Phase::Staged(staged) if !staged.asked && !super::channel::read_automatic(layout) => {
+            info!(target: TARGET, event = "app_update_dropped", reason = "not_automatic", staged = %staged.staged, "updating automatically is off and nobody asked for it; not flipped");
+            Event::AutomaticOff
         }
         _ => Event::Boot,
     };
@@ -148,10 +172,11 @@ pub(super) fn boot_at(layout: &Layout, own: &Path) -> Result<Boot, Refusal> {
     }
 }
 
-/// Step the machine from `event` (`Boot`, or `ChannelChanged` for a release
-/// another channel staged), performing each command in order and feeding
-/// the answers (`SwapResolved`, `QualifyPassed`/`Failed`) back in, until a
-/// list asks for nothing more. Returns the phase it settled on. `Exec`
+/// Step the machine from `event` (`Boot`, `ChannelChanged` for a release
+/// another channel staged, or `AutomaticOff` for one staged unasked while
+/// updating automatically is off), performing each command in order and
+/// feeding the answers (`SwapResolved`, `QualifyPassed`/`Failed`) back in,
+/// until a list asks for nothing more. Returns the phase it settled on. `Exec`
 /// needs nothing here: [`boot_at`] runs whatever the install path names
 /// once the machine is done with it.
 fn drive(layout: &Layout, mut phase: Phase, mut event: Event) -> Result<Phase, Refusal> {

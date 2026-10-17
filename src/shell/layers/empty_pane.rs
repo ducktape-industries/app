@@ -3,7 +3,7 @@
 //! one: the desk itself while no window is on it (a figure, and either why
 //! the network has nothing to open or the ways to open something), and an
 //! empty window on the desk (one field that finds a program to open in it,
-//! with a switch beside it for what the field searches, Module | Chat;
+//! with a switch beside it for what the field searches, Program | Chat;
 //! until agent chat is built, [`CHAT_READY`], Tab there moves focus).
 
 use super::super::entities::{Desk, Entities, Overlays, Prefs, Rail, Slice};
@@ -31,7 +31,7 @@ pub(in crate::shell) const CHAT_READY: bool = false;
 #[derive(Clone, Copy, Default, PartialEq)]
 enum Mode {
     #[default]
-    Module,
+    Program,
     Chat,
 }
 
@@ -39,8 +39,8 @@ impl Mode {
     /// Tab: the other side, while it is there to go to.
     fn toggled(self) -> Self {
         match self {
-            Mode::Module if CHAT_READY => Mode::Chat,
-            _ => Mode::Module,
+            Mode::Program if CHAT_READY => Mode::Chat,
+            _ => Mode::Program,
         }
     }
 }
@@ -326,8 +326,8 @@ impl EmptyPane {
 
     /// A press on a row of empty window `index`: that window takes the keys
     /// first, so the program opens there (`WindowRoot::open_here`).
-    fn open_here(&self, index: usize, module: &'static str, window: &mut Window, cx: &mut App) {
-        self.on_desk(cx, |desk, cx| desk.open_here(index, module, window, cx));
+    fn open_here(&self, index: usize, program: &'static str, window: &mut Window, cx: &mut App) {
+        self.on_desk(cx, |desk, cx| desk.open_here(index, program, window, cx));
     }
 
     /// The desk while no window is on it: the figure, and either the reason
@@ -425,17 +425,17 @@ impl EmptyPane {
             )
             .child(mode_switch(index, mode, focused, ink, cx));
         let bar = crate::a11y::around_field(bar, typing, ink.ring(false));
-        let modules: Vec<&'static str> = rows.iter().map(|row| row.module).collect();
+        let programs: Vec<&'static str> = rows.iter().map(|row| row.program).collect();
         let list = rows.iter().enumerate().map(|(nth, row)| {
-            let module = row.module;
+            let program = row.program;
             let picked = focused && nth == pick;
             let name = super::tab_label(row);
-            let note = match badges.get(module).copied().unwrap_or(0) {
+            let note = match badges.get(program).copied().unwrap_or(0) {
                 0 => String::new(),
                 count => format!("{count} unread"),
             };
             sans(400, 15.)
-                .id(SharedString::from(format!("empty/{module}")))
+                .id(SharedString::from(format!("empty/{program}")))
                 // in a window without the keys too: the keyboard reaches it
                 // by the chord that moves to that window (`PaneView`)
                 .control(Role::ListBoxOption, SharedString::from(name.clone()))
@@ -453,7 +453,7 @@ impl EmptyPane {
                 // runs it on this window's row, not on whatever window
                 // covers its middle)
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_here(index, module, window, cx);
+                    this.open_here(index, program, window, cx);
                 }))
                 .child(div().text_color(ink.ink).child(name))
                 .child(
@@ -470,7 +470,7 @@ impl EmptyPane {
                         .child(if picked { "↵" } else { "" }),
                 )
         });
-        let found = !modules.is_empty();
+        let found = !programs.is_empty();
         let hints = [
             "↑↓ pick".to_owned(),
             "↵ open".to_owned(),
@@ -539,13 +539,13 @@ impl EmptyPane {
                     let Some(command) = this.command() else {
                         return;
                     };
-                    let last = modules.len().saturating_sub(1);
+                    let last = programs.len().saturating_sub(1);
                     match event.keystroke.key.as_str() {
                         "up" => command.pick = command.pick.saturating_sub(1),
                         "down" => command.pick = (command.pick + 1).min(last),
-                        "enter" => match modules.get(command.pick.min(last)) {
-                            Some(&module) => {
-                                this.on_desk(cx, |desk, cx| desk.open_view(module, window, cx))
+                        "enter" => match programs.get(command.pick.min(last)) {
+                            Some(&program) => {
+                                this.on_desk(cx, |desk, cx| desk.open_view(program, window, cx))
                             }
                             None => return,
                         },
@@ -662,7 +662,7 @@ fn command_field(field: &Entity<InputState>, cx: &mut App) -> AnyElement {
     .into_any_element()
 }
 
-/// Module | Chat, Tab between them. Chat is blocked until agent chat is
+/// Program | Chat, Tab between them. Chat is blocked until agent chat is
 /// built, and says so on hover. A press gives window `index` the keys
 /// first, as a row's does.
 fn mode_switch(
@@ -693,11 +693,11 @@ fn mode_switch(
             });
         }
         if let Some(command) = this.command() {
-            command.mode = Mode::Module;
+            command.mode = Mode::Program;
         }
         cx.notify();
     };
-    let module = side("empty-window/module", "Module", mode == Mode::Module)
+    let program = side("empty-window/program", "Program", mode == Mode::Program)
         .on_click(cx.listener(move |this, _, window, cx| pick(this, window, cx)));
     let chat = side("empty-window/chat", "Chat", mode == Mode::Chat)
         .opacity(0.3)
@@ -709,7 +709,7 @@ fn mode_switch(
         .flex()
         .border_1()
         .border_color(ink.ink)
-        .child(module)
+        .child(program)
         .child(chat.aria_disabled(true))
         .into_any_element()
 }
@@ -719,13 +719,16 @@ mod tests {
     use super::{empty_panes_message, matching};
     use crate::runtime::RailRow;
 
-    fn row(module: &'static str, label: &str, empty: bool) -> RailRow {
+    fn row(program: &'static str, label: &str, empty: bool) -> RailRow {
         RailRow {
-            module,
+            program,
             label: label.into(),
             icon: String::new(),
+            tint: view_wire::manifest::Tint::None,
+            description: String::new(),
             note: None,
             empty,
+            pending: false,
         }
     }
 
@@ -738,17 +741,17 @@ mod tests {
                 row("members", "Members", false),
             ]
         };
-        let modules = |query| -> Vec<_> {
+        let programs = |query| -> Vec<_> {
             matching(rows(), query)
                 .into_iter()
-                .map(|row| row.module)
+                .map(|row| row.program)
                 .collect()
         };
-        assert_eq!(modules(""), ["chat", "forge", "members"]);
-        assert_eq!(modules("  "), ["chat", "forge", "members"]);
-        assert_eq!(modules("OR"), ["forge"]);
-        assert_eq!(modules("e"), ["forge", "members"]);
-        assert!(modules("zz").is_empty());
+        assert_eq!(programs(""), ["chat", "forge", "members"]);
+        assert_eq!(programs("  "), ["chat", "forge", "members"]);
+        assert_eq!(programs("OR"), ["forge"]);
+        assert_eq!(programs("e"), ["forge", "members"]);
+        assert!(programs("zz").is_empty());
     }
 
     #[test]

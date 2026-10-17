@@ -7,8 +7,10 @@
 //! (`Windows::quit`). Fonts and the theme are registered here too.
 
 use super::*;
+use ducktape_host::contract::OsServices;
 use futures::StreamExt as _;
 use gpui_kit::AsyncApp;
+use std::sync::Arc;
 
 /// What the first window is: the console (the launcher, then the desk),
 /// or, in a debug build's `--live`, one view on a node already named.
@@ -18,18 +20,18 @@ enum Boot {
     Live(super::Live),
 }
 
-pub(crate) fn run() {
-    start(Boot::Console)
+pub(crate) fn run(os: Arc<dyn OsServices>) {
+    start(Boot::Console, os)
 }
 
 /// `ducktape-app --live`: the app as [`run`] starts it, with the one
 /// view's window in place of the console.
 #[cfg(debug_assertions)]
-pub(crate) fn run_live(live: super::Live) {
-    start(Boot::Live(live))
+pub(crate) fn run_live(live: super::Live, os: Arc<dyn OsServices>) {
+    start(Boot::Live(live), os)
 }
 
-fn start(boot: Boot) {
+fn start(boot: Boot, os: Arc<dyn OsServices>) {
     let application = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
     let (url_sender, mut urls) = futures::channel::mpsc::unbounded::<Vec<String>>();
     application.on_open_urls(move |urls| {
@@ -39,17 +41,30 @@ fn start(boot: Boot) {
         crate::perf::mark("gpui");
         gpui_kit::init(cx);
         keys::bind(cx);
-        keys::menus(cx);
+        keys::menus(false, cx);
         initialize_rendering(cx);
         crate::perf::mark("fonts");
         let mut posted = entities::posted();
-        // the app's two stores: the notification centre (its log read
-        // off disk) and the roster the node's reads fill
-        let center = crate::runtime::notify::center().clone();
-        let roster = crate::runtime::roster().clone();
-        crate::perf::mark("boot");
-        let changes = crate::runtime::changes_channel();
-        let entities = entities::Entities::new(roster, center, changes, cx);
+        // the host's stores and the shared entities; what the OS feeds in
+        // after this goes through `inbound` (the desktop: banner clicks)
+        let (host, inbound) = ducktape_host::start::start(
+            ducktape_host::contract::Boot {
+                os: os.clone(),
+                // Cranelift, signal-based traps, compiled code kept across
+                // launches under the cache
+                runner: Arc::new(ducktape_host::runner::WasmtimeRunner::new(
+                    ducktape_host::contract::RunnerConfig {
+                        signals_based_traps: true,
+                        cache_dir: Some(os.dirs().cache.join("view-code")),
+                    },
+                )),
+                open: entities::open_banner,
+            },
+            cx,
+        );
+        crate::os::install_inbound(inbound);
+        let mut consent = host.consent;
+        let entities = entities::Entities::new(host.shared, cx);
         let (tray, mut tray_events) = crate::tray::init(&entities, cx);
         let windows = entities.windows.clone();
         windows.update(cx, |windows, cx| windows.sync_appearance(cx));
@@ -72,7 +87,6 @@ fn start(boot: Boot) {
         })
         .detach();
         // an ask's request gone: the card follows it off the console
-        let mut consent = crate::runtime::consent::changes_channel();
         let consent_windows = windows.downgrade();
         cx.spawn(async move |cx: &mut AsyncApp| {
             while consent.next().await.is_some() {
@@ -126,7 +140,7 @@ fn start(boot: Boot) {
                 // the first window is the console; it draws the connect
                 // screen until a node answers
                 windows.update(cx, |windows, cx| {
-                    windows.open(WindowKind::Console, None, cx);
+                    windows.open(WindowKind::Console, None, None, cx);
                 });
                 // the first thing to do: reach the node last used, if there
                 // was one
@@ -159,11 +173,16 @@ fn start(boot: Boot) {
                         .unwrap_or_default()
                 };
                 let settle = move |cx: &mut gpui_kit::App| {
-                    let _ = door_seats.update(cx, |seats, cx| seats.settle(cx));
+                    door_seats
+                        .update(cx, |seats, cx| seats.settle(cx))
+                        .unwrap_or(true)
                 };
+                let keep = super::kept_restore;
                 let door = crate::ax::Door {
                     windows: &windows,
                     settle: &settle,
+                    keep: &keep,
+                    chords: &chords,
                 };
                 crate::ax::serve(calls, door, cx).await;
             })

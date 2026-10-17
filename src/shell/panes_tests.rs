@@ -87,7 +87,8 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
             "missing {id}: {nodes}"
         );
     }
-    for expected in 2..=layout::MAX_PANES {
+    const MANY: usize = 12;
+    for expected in 2..=MANY {
         native.update(|window, cx| press("pane/0/split", window, cx));
         native.update(|window, cx| {
             draw(window, cx);
@@ -103,14 +104,14 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
             .find(|node| node["id"] == "console:pane/0/split")
             .unwrap();
         assert!(
-            split["state"]
+            !split["state"]
                 .as_array()
-                .unwrap()
-                .iter()
+                .into_iter()
+                .flatten()
                 .any(|state| state == "disabled")
         );
         press("pane/0/split", window, cx);
-        assert_eq!(view.read(cx).layout(cx).panes.len(), layout::MAX_PANES);
+        assert_eq!(view.read(cx).layout(cx).panes.len(), MANY + 1);
     });
     let instance = native.update(|_, cx| view.read(cx).layout(cx).panes[0].instance);
     // the pane leaves for a window of its own, which `Windows` opens
@@ -118,7 +119,7 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
     native.run_until_parked();
     let (popped_key, popped_handle, popped) = popped(&app, key, &mut native);
     native.update(|_, cx| {
-        assert_eq!(view.read(cx).layout(cx).panes.len(), layout::MAX_PANES - 1);
+        assert_eq!(view.read(cx).layout(cx).panes.len(), MANY);
         assert_eq!(popped.read(cx).layout(cx).panes[0].instance, instance);
     });
     native.update(|_, cx| {
@@ -129,11 +130,8 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
     native.run_until_parked();
     native.update(|window, cx| {
         draw(window, cx);
-        assert_eq!(view.read(cx).layout(cx).panes.len(), layout::MAX_PANES);
-        assert_eq!(
-            view.read(cx).layout(cx).panes[layout::MAX_PANES - 1].instance,
-            instance
-        );
+        assert_eq!(view.read(cx).layout(cx).panes.len(), MANY + 1);
+        assert_eq!(view.read(cx).layout(cx).panes[MANY].instance, instance);
         assert!(popped.read(cx).layout(cx).panes.is_empty());
         // its window went with it, and `Windows` heard so
         assert!(
@@ -141,7 +139,7 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
             "the pop-out's window is still listed"
         );
     });
-    for remaining in (0..layout::MAX_PANES).rev() {
+    for remaining in (0..=MANY).rev() {
         native.update(|window, cx| press("pane/0/close", window, cx));
         native.update(|window, cx| {
             draw(window, cx);
@@ -756,7 +754,7 @@ fn an_empty_window_opens_what_its_field_finds(cx: &mut TestAppContext) {
     native.update(|window, cx| {
         draw(window, cx);
         let layout = view.read(cx).layout(cx);
-        assert_eq!(layout.panes[1].module, "cmdtest-beta");
+        assert_eq!(layout.panes[1].program, "cmdtest-beta");
     });
 }
 
@@ -775,7 +773,7 @@ fn help_opens_in_a_window_the_app_draws(cx: &mut TestAppContext) {
         let index = layout
             .panes
             .iter()
-            .position(|pane| pane.module == layout::HELP)
+            .position(|pane| pane.program == layout::HELP)
             .expect("help opened");
         let instance = layout.panes[index].instance;
         assert!(app.seats.read(cx).seat(instance).is_none());
@@ -813,7 +811,7 @@ fn a_narrow_help_window_scrolls_rather_than_squeezes(cx: &mut TestAppContext) {
             .layout(cx)
             .panes
             .iter()
-            .position(|pane| pane.module == layout::HELP)
+            .position(|pane| pane.program == layout::HELP)
             .unwrap()
     });
     pane(&view, PaneMessage::Frame(index, narrow), &mut native);
@@ -840,12 +838,12 @@ fn a_narrow_help_window_scrolls_rather_than_squeezes(cx: &mut TestAppContext) {
 /// to the view's minimum and its border.
 #[gpui_kit::test]
 fn a_view_that_draws_widens_the_window_it_came_to(cx: &mut TestAppContext) {
-    const MODULE: &str = "pane-seated-view";
+    const PROGRAM: &str = "pane-seated-view";
     let (app, _, view, mut native) = console(cx);
     native.update(|window, cx| {
         draw(window, cx);
     });
-    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    pane(&view, PaneMessage::Select(PROGRAM), &mut native);
     let width = |native: &mut VisualTestContext| {
         native.update(|_, cx| view.read(cx).layout(cx).panes[0].frame.unwrap().w)
     };
@@ -864,7 +862,7 @@ fn a_view_that_draws_widens_the_window_it_came_to(cx: &mut TestAppContext) {
             said.borrow_mut().push(intent.clone())
         })
     });
-    crate::runtime::seat_for_test(MODULE, 1000);
+    crate::runtime::seat_for_test(PROGRAM, 1000);
     native.update(|window, cx| {
         draw(window, cx);
     });
@@ -884,16 +882,16 @@ fn a_view_that_draws_widens_the_window_it_came_to(cx: &mut TestAppContext) {
 /// the window: every cache misses once). Times are flaky under the test scheduler; counts are not.
 #[gpui_kit::test]
 fn a_desk_redraw_with_nothing_changed_renders_no_view_tree(cx: &mut TestAppContext) {
-    const MODULE: &str = "pane-desk-redraw-view";
+    const PROGRAM: &str = "pane-desk-redraw-view";
     let _on = crate::perf::on_for_test();
     let (_, key, view, mut native) = console(cx);
     frame(&mut native);
-    pane(&view, PaneMessage::Select(MODULE), &mut native);
-    crate::runtime::seat_drawing_for_test(MODULE, 400, line("a line"));
+    pane(&view, PaneMessage::Select(PROGRAM), &mut native);
+    crate::runtime::seat_drawing_for_test(PROGRAM, 400, line("a line"));
     for _ in 0..8 {
         frame(&mut native);
     }
-    let settled = tree_renders(MODULE);
+    let settled = tree_renders(PROGRAM);
     assert!(settled > 0, "the view drew its tree once");
     let desk = window_count(key, "renders");
     for _ in 0..3 {
@@ -907,7 +905,7 @@ fn a_desk_redraw_with_nothing_changed_renders_no_view_tree(cx: &mut TestAppConte
         "the desk drew again"
     );
     assert_eq!(
-        tree_renders(MODULE),
+        tree_renders(PROGRAM),
         settled,
         "a redraw of the desk rendered the view's tree again"
     );
@@ -955,7 +953,7 @@ fn a_help_window_in_front_keeps_the_keys_in_its_box(cx: &mut TestAppContext) {
         layout
             .panes
             .iter()
-            .position(|pane| pane.module == layout::HELP)
+            .position(|pane| pane.program == layout::HELP)
             .expect("help opened")
     });
     // brought to the front by a desk key, as the other windows are
@@ -1044,9 +1042,9 @@ fn help_follows_moves_that_come_before_a_frame(cx: &mut TestAppContext) {
 /// notice is about: its program's seat on the console (`Windows::open_notice`).
 #[gpui_kit::test]
 fn a_bell_row_opens_the_notices_program(cx: &mut TestAppContext) {
-    const MODULE: &str = "pane-bell-row-view";
+    const PROGRAM: &str = "pane-bell-row-view";
     let (app, _, view, mut native) = console(cx);
-    let roster = crate::runtime::Roster::listing(&[MODULE]);
+    let roster = crate::runtime::Roster::listing(&[PROGRAM]);
     app.rail
         .update(&mut native, |rail, cx| rail.read_off(roster, cx));
     let id = native.update(|_, cx| {
@@ -1057,10 +1055,11 @@ fn a_bell_row_opens_the_notices_program(cx: &mut TestAppContext) {
             body: "From the bell".into(),
             tag: String::new(),
             link: String::new(),
+            ..Default::default()
         };
         let _ = notifications.center().lock().post(
             &settings,
-            MODULE,
+            PROGRAM,
             "Bell",
             post,
             std::time::Instant::now(),
@@ -1084,7 +1083,7 @@ fn a_bell_row_opens_the_notices_program(cx: &mut TestAppContext) {
         "the bell stayed open"
     );
     assert!(
-        native.update(|_, cx| view.read(cx).desk.read(cx).holds(MODULE)),
+        native.update(|_, cx| view.read(cx).desk.read(cx).holds(PROGRAM)),
         "the notice's program never opened"
     );
 }
@@ -1095,25 +1094,25 @@ fn a_bell_row_opens_the_notices_program(cx: &mut TestAppContext) {
 /// same update.
 #[gpui_kit::test]
 fn a_hidden_seats_intents_still_arrive(cx: &mut TestAppContext) {
-    const MODULE: &str = "pane-hidden-intent-view";
+    const PROGRAM: &str = "pane-hidden-intent-view";
     let (app, _, view, mut native) = console(cx);
-    crate::runtime::seat_for_test(MODULE, 400);
-    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    crate::runtime::seat_for_test(PROGRAM, 400);
+    pane(&view, PaneMessage::Select(PROGRAM), &mut native);
     let (index, instance) = native.update(|_, cx| {
         let layout = view.read(cx).layout(cx);
         let index = layout
             .panes
             .iter()
-            .position(|pane| pane.module == MODULE)
+            .position(|pane| pane.program == PROGRAM)
             .expect("the pane opened");
         let instance = layout.panes[index].instance;
         let seat = app.seats.read(cx).seat(instance).expect("seated");
         (index, seat.read(cx).instance())
     });
-    crate::runtime::intent_for_test(MODULE, instance, crate::runtime::Intent::Badge(3));
+    crate::runtime::intent_for_test(PROGRAM, instance, crate::runtime::Intent::Badge(3));
     pane(&view, PaneMessage::Close(index), &mut native);
     assert_eq!(
-        native.update(|_, cx| app.rail.read(cx).badge(MODULE)),
+        native.update(|_, cx| app.rail.read(cx).badge(PROGRAM)),
         3,
         "the badge the hidden seat handed over reached the rail"
     );
@@ -1124,11 +1123,11 @@ fn a_hidden_seats_intents_still_arrive(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_closed_panes_pictures_leave_the_atlas(cx: &mut TestAppContext) {
     use gpui_kit::Styled as _;
-    const MODULE: &str = "pane-closed-picture-view";
+    const PROGRAM: &str = "pane-closed-picture-view";
     const HASH: u64 = 31;
     let (app, _, view, mut native) = console(cx);
     crate::runtime::seat_drawing_for_test(
-        MODULE,
+        PROGRAM,
         400,
         view_wire::Node::Image {
             id: Some(view_wire::ElementIdWire::Name("picture".into())),
@@ -1150,7 +1149,7 @@ fn a_closed_panes_pictures_leave_the_atlas(cx: &mut TestAppContext) {
             interactivity: Default::default(),
         },
     );
-    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    pane(&view, PaneMessage::Select(PROGRAM), &mut native);
     for _ in 0..8 {
         frame(&mut native);
     }
@@ -1159,7 +1158,7 @@ fn a_closed_panes_pictures_leave_the_atlas(cx: &mut TestAppContext) {
         let index = layout
             .panes
             .iter()
-            .position(|pane| pane.module == MODULE)
+            .position(|pane| pane.program == PROGRAM)
             .expect("the pane opened");
         let seat = app.seats.read(cx).seat(layout.panes[index].instance);
         let tree = seat
@@ -1197,13 +1196,13 @@ fn a_seats_keys_are_free_only_in_front_with_nothing_over_the_desk(cx: &mut TestA
     crate::runtime::seat_for_test(FRONT, 400);
     pane(&view, PaneMessage::Select(BACK), &mut native);
     pane(&view, PaneMessage::Split(FRONT), &mut native);
-    let keys_free = |module: &str, native: &mut VisualTestContext| {
+    let keys_free = |program: &str, native: &mut VisualTestContext| {
         native.update(|_, cx| {
             let layout = view.read(cx).layout(cx);
             let pane = layout
                 .panes
                 .iter()
-                .find(|pane| pane.module == module)
+                .find(|pane| pane.program == program)
                 .expect("the pane opened");
             let seat = app.seats.read(cx).seat(pane.instance).expect("seated");
             seat.read(cx).keys_free()
@@ -1244,26 +1243,26 @@ fn a_seats_keys_are_free_only_in_front_with_nothing_over_the_desk(cx: &mut TestA
 /// comes to the front, and the route waits for that new pane's seat.
 #[gpui_kit::test]
 fn a_views_link_opens_its_seat_on_the_console(cx: &mut TestAppContext) {
-    const MODULE: &str = "pane-link-intent-view";
+    const PROGRAM: &str = "pane-link-intent-view";
     const LINKED: &str = "pane-link-intent-target";
     let (app, _, view, mut native) = console(cx);
-    crate::runtime::seat_for_test(MODULE, 400);
-    let roster = crate::runtime::Roster::listing(&[MODULE, LINKED]);
+    crate::runtime::seat_for_test(PROGRAM, 400);
+    let roster = crate::runtime::Roster::listing(&[PROGRAM, LINKED]);
     app.rail
         .update(&mut native, |rail, cx| rail.read_off(roster, cx));
-    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    pane(&view, PaneMessage::Select(PROGRAM), &mut native);
     let instance = native.update(|_, cx| {
         let layout = view.read(cx).layout(cx);
         let pane = layout
             .panes
             .iter()
-            .find(|pane| pane.module == MODULE)
+            .find(|pane| pane.program == PROGRAM)
             .expect("the pane opened");
         let seat = app.seats.read(cx).seat(pane.instance).expect("seated");
         seat.read(cx).instance()
     });
     crate::runtime::intent_for_test(
-        MODULE,
+        PROGRAM,
         instance,
         crate::runtime::Intent::OpenLink(format!("duck://{LINKED}/room/7")),
     );
@@ -1275,7 +1274,7 @@ fn a_views_link_opens_its_seat_on_the_console(cx: &mut TestAppContext) {
         frame(&mut native);
     }
     let layout = native.update(|_, cx| view.read(cx).layout(cx).clone());
-    let opened = layout.panes.iter().find(|pane| pane.module == LINKED);
+    let opened = layout.panes.iter().find(|pane| pane.program == LINKED);
     let Some(opened) = opened else {
         panic!("the link opened nothing: {:?}", layout.panes);
     };
@@ -1295,16 +1294,16 @@ fn a_views_link_opens_its_seat_on_the_console(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_views_link_into_its_own_program_reaches_its_own_window_only(cx: &mut TestAppContext) {
     use crate::runtime::{Intent, intent_for_test, listen_for_routes_for_test, routes_for_test};
-    const MODULE: &str = "pane-own-link-view";
+    const PROGRAM: &str = "pane-own-link-view";
     let (app, _, view, mut native) = console(cx);
-    crate::runtime::seat_for_test(MODULE, 400);
-    let roster = crate::runtime::Roster::listing(&[MODULE]);
+    crate::runtime::seat_for_test(PROGRAM, 400);
+    let roster = crate::runtime::Roster::listing(&[PROGRAM]);
     app.rail
         .update(&mut native, |rail, cx| rail.read_off(roster, cx));
-    pane(&view, PaneMessage::Select(MODULE), &mut native);
-    pane(&view, PaneMessage::Split(MODULE), &mut native);
+    pane(&view, PaneMessage::Select(PROGRAM), &mut native);
+    pane(&view, PaneMessage::Split(PROGRAM), &mut native);
     // the second window's seat holds a view too
-    crate::runtime::seat_for_test(MODULE, 400);
+    crate::runtime::seat_for_test(PROGRAM, 400);
     let turn = |native: &mut VisualTestContext| {
         for _ in 0..2 {
             app.seats.update(native, |seats, cx| seats.settle(cx));
@@ -1327,27 +1326,27 @@ fn a_views_link_into_its_own_program_reaches_its_own_window_only(cx: &mut TestAp
             .collect()
     });
     let [other, own] = seats[..] else {
-        panic!("two windows of {MODULE}: {seats:?}");
+        panic!("two windows of {PROGRAM}: {seats:?}");
     };
     assert_eq!(focused(&mut native), 1, "the split window is in front");
     // the other window listens and the opener not yet: a route kept for
     // the program would reach the other, whichever seat turned first
-    listen_for_routes_for_test(MODULE, other);
+    listen_for_routes_for_test(PROGRAM, other);
     intent_for_test(
-        MODULE,
+        PROGRAM,
         own,
-        Intent::OpenLink(format!("duck://{MODULE}/room/7")),
+        Intent::OpenLink(format!("duck://{PROGRAM}/room/7")),
     );
     turn(&mut native);
     assert_eq!(
-        routes_for_test(MODULE, other),
+        routes_for_test(PROGRAM, other),
         Vec::<String>::new(),
         "the other window was handed the route"
     );
     assert_eq!(focused(&mut native), 1, "the link moved the desk");
-    listen_for_routes_for_test(MODULE, own);
+    listen_for_routes_for_test(PROGRAM, own);
     turn(&mut native);
-    assert_eq!(routes_for_test(MODULE, own), ["room/7"]);
+    assert_eq!(routes_for_test(PROGRAM, own), ["room/7"]);
 }
 
 /// Two windows of one program are named by their own views (`host.title`):
@@ -1357,13 +1356,13 @@ fn a_views_link_into_its_own_program_reaches_its_own_window_only(cx: &mut TestAp
 #[gpui_kit::test]
 fn each_window_takes_the_title_its_own_view_gave(cx: &mut TestAppContext) {
     use crate::runtime::{Intent, intent_for_test};
-    const MODULE: &str = "pane-title-view";
+    const PROGRAM: &str = "pane-title-view";
     let (app, _, view, mut native) = console(cx);
-    crate::runtime::seat_for_test(MODULE, 400);
-    pane(&view, PaneMessage::Select(MODULE), &mut native);
-    pane(&view, PaneMessage::Split(MODULE), &mut native);
+    crate::runtime::seat_for_test(PROGRAM, 400);
+    pane(&view, PaneMessage::Select(PROGRAM), &mut native);
+    pane(&view, PaneMessage::Split(PROGRAM), &mut native);
     // the second window's seat holds a view too
-    crate::runtime::seat_for_test(MODULE, 400);
+    crate::runtime::seat_for_test(PROGRAM, 400);
     let turn = |native: &mut VisualTestContext| {
         for _ in 0..2 {
             app.seats.update(native, |seats, cx| seats.settle(cx));
@@ -1384,7 +1383,7 @@ fn each_window_takes_the_title_its_own_view_gave(cx: &mut TestAppContext) {
             })
             .collect()
     });
-    assert_eq!(seats.len(), 2, "two windows of {MODULE}");
+    assert_eq!(seats.len(), 2, "two windows of {PROGRAM}");
     let titles = |native: &mut VisualTestContext| -> Vec<(u64, Option<String>)> {
         native.update(|_, cx| {
             view.read(cx)
@@ -1396,7 +1395,7 @@ fn each_window_takes_the_title_its_own_view_gave(cx: &mut TestAppContext) {
         })
     };
     for ((_, seat), title) in seats.iter().zip(["#general", "#random"]) {
-        intent_for_test(MODULE, *seat, Intent::Title(title.into()));
+        intent_for_test(PROGRAM, *seat, Intent::Title(title.into()));
     }
     turn(&mut native);
     assert_eq!(
@@ -1414,14 +1413,18 @@ fn each_window_takes_the_title_its_own_view_gave(cx: &mut TestAppContext) {
             .iter()
             .find(|node| node["id"] == format!("console:pane/{index}/view"))
             .expect("the window's box");
-        assert_eq!(node["name"], format!("{MODULE}, {title}"), "window {index}");
+        assert_eq!(
+            node["name"],
+            format!("{PROGRAM}, {title}"),
+            "window {index}"
+        );
     }
     let desk = native.update(|_, cx| view.read(cx).desk.clone());
     let (seen, _seen) = notifies(&desk, cx);
-    intent_for_test(MODULE, seats[0].1, Intent::Title("#general".into()));
+    intent_for_test(PROGRAM, seats[0].1, Intent::Title("#general".into()));
     turn(&mut native);
     assert_eq!(seen.get(), 0, "the same title again moved the desk");
-    intent_for_test(MODULE, seats[1].1, Intent::Title(String::new()));
+    intent_for_test(PROGRAM, seats[1].1, Intent::Title(String::new()));
     turn(&mut native);
     assert_eq!(titles(&mut native)[1], (seats[1].0, None), "empty clears");
     assert_eq!(seen.get(), 1);
@@ -1434,15 +1437,15 @@ fn each_window_takes_the_title_its_own_view_gave(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_popped_out_window_names_its_os_window(cx: &mut TestAppContext) {
     use crate::runtime::{Intent, Roster, intent_for_test, name_for_test};
-    const MODULE: &str = "popout-title-view";
+    const PROGRAM: &str = "popout-title-view";
     let (app, key, view, mut native) = console(cx);
-    crate::runtime::seat_for_test(MODULE, 400);
+    crate::runtime::seat_for_test(PROGRAM, 400);
     app.rail.update(&mut native, |rail, cx| {
-        rail.read_off(Roster::listing(&[MODULE]), cx)
+        rail.read_off(Roster::listing(&[PROGRAM]), cx)
     });
     // the console keeps a window of its own, so its title is in play too
     pane(&view, PaneMessage::Split(layout::EMPTY), &mut native);
-    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    pane(&view, PaneMessage::Select(PROGRAM), &mut native);
     let (_, handle, popped) = super::layers::tests::pop_out(&app, key, &view, &mut native);
     let mut out = VisualTestContext::from_window(handle, cx);
     let shown = |out: &mut VisualTestContext| {
@@ -1458,17 +1461,17 @@ fn a_popped_out_window_names_its_os_window(cx: &mut TestAppContext) {
         }
         out.window_title()
     };
-    assert_eq!(shown(&mut out).as_deref(), Some(MODULE), "unnamed: the id");
-    name_for_test(MODULE, "Chat");
+    assert_eq!(shown(&mut out).as_deref(), Some(PROGRAM), "unnamed: the id");
+    name_for_test(PROGRAM, "Chat");
     assert_eq!(shown(&mut out).as_deref(), Some("Chat"), "its view loaded");
     let seat = out.update(|_, cx| {
         let instance = popped.read(cx).layout(cx).panes[0].instance;
         let seat = app.seats.read(cx).seat(instance).expect("seated");
         seat.read(cx).instance()
     });
-    intent_for_test(MODULE, seat, Intent::Title("#general".into()));
+    intent_for_test(PROGRAM, seat, Intent::Title("#general".into()));
     assert_eq!(shown(&mut out).as_deref(), Some("Chat — #general"));
-    intent_for_test(MODULE, seat, Intent::Title(String::new()));
+    intent_for_test(PROGRAM, seat, Intent::Title(String::new()));
     assert_eq!(shown(&mut out).as_deref(), Some("Chat"), "cleared");
     native.update(|window, cx| {
         draw(window, cx);
@@ -1829,31 +1832,31 @@ fn the_window_takes_the_keys_when_its_last_pane_leaves(cx: &mut TestAppContext) 
 }
 
 /// A pane whose seat holds both a tree and a standin draws the standin: a
-/// guest that traps after its tree mounted shows "This view stopped" and
+/// view that traps after its tree mounted shows "This view stopped" and
 /// its Retry, not the frozen tree.
 #[gpui_kit::test]
 fn a_trapped_view_shows_its_standin(cx: &mut TestAppContext) {
-    const MODULE: &str = "pane-trapped-view";
+    const PROGRAM: &str = "pane-trapped-view";
     let (app, _, view, mut native) = console(cx);
-    crate::runtime::seat_for_test(MODULE, 400);
-    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    crate::runtime::seat_for_test(PROGRAM, 400);
+    pane(&view, PaneMessage::Select(PROGRAM), &mut native);
     let (instance, before) = native.update(|window, cx| {
         let nodes = draw(window, cx);
         let layout = view.read(cx).layout(cx);
         let pane = layout
             .panes
             .iter()
-            .find(|pane| pane.module == MODULE)
+            .find(|pane| pane.program == PROGRAM)
             .unwrap();
         let seat = app.seats.read(cx).seat(pane.instance).unwrap();
         (seat.read(cx).instance(), ids(&nodes))
     });
-    let unavailable = format!("console:{MODULE}/view-unavailable");
+    let unavailable = format!("console:{PROGRAM}/view-unavailable");
     assert!(
         !before.contains(&unavailable),
         "a live view shows no standin: {before:?}"
     );
-    crate::runtime::fault_for_test(MODULE, instance);
+    crate::runtime::fault_for_test(PROGRAM, instance);
     native.run_until_parked();
     let after = native.update(|window, cx| ids(&draw(window, cx)));
     assert!(
@@ -1861,26 +1864,26 @@ fn a_trapped_view_shows_its_standin(cx: &mut TestAppContext) {
         "the trapped view shows its standin over the tree it keeps: {after:?}"
     );
     assert!(
-        after.contains(&format!("console:{MODULE}/view-retry")),
+        after.contains(&format!("console:{PROGRAM}/view-retry")),
         "{after:?}"
     );
 }
 
 /// A popped-out pane's seat is placed in the new window as soon as that
-/// window opens, not at the next dispatch: a guest's Focus right after
+/// window opens, not at the next dispatch: a view's Focus right after
 /// the pop-out runs in the window the pane is in.
 #[gpui_kit::test]
 fn a_popped_out_seat_moves_into_its_window_when_it_opens(cx: &mut TestAppContext) {
-    const MODULE: &str = "pane-popout-place-view";
+    const PROGRAM: &str = "pane-popout-place-view";
     let (app, key, view, mut native) = console(cx);
-    crate::runtime::seat_for_test(MODULE, 400);
-    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    crate::runtime::seat_for_test(PROGRAM, 400);
+    pane(&view, PaneMessage::Select(PROGRAM), &mut native);
     let (index, instance) = native.update(|_, cx| {
         let layout = view.read(cx).layout(cx);
         let index = layout
             .panes
             .iter()
-            .position(|pane| pane.module == MODULE)
+            .position(|pane| pane.program == PROGRAM)
             .unwrap();
         (index, layout.panes[index].instance)
     });
@@ -1902,7 +1905,7 @@ fn a_popped_out_seat_moves_into_its_window_when_it_opens(cx: &mut TestAppContext
 }
 
 /// A pane picked in Spotlight hands the keys by its view's first frame, as
-/// the draw that showed that frame did while the guest ticked on the draw
+/// the draw that showed that frame did while the view ticked on the draw
 /// path: a view whose first frame has no control keeps them on the pane's
 /// box even though its second frame, ticked before that draw (props, a
 /// reply, a busy frame), has a field. The seat holds that second tick
@@ -1910,7 +1913,7 @@ fn a_popped_out_seat_moves_into_its_window_when_it_opens(cx: &mut TestAppContext
 #[gpui_kit::test]
 fn a_pane_picked_in_spotlight_hands_the_keys_by_its_first_frame(cx: &mut TestAppContext) {
     use gpui_kit::Styled as _;
-    const MODULE: &str = "pane-first-frame-view";
+    const PROGRAM: &str = "pane-first-frame-view";
     let field = view_wire::Node::Field {
         options: Box::new(view_wire::InputOptions {
             label: "Search".into(),
@@ -1935,8 +1938,8 @@ fn a_pane_picked_in_spotlight_hands_the_keys_by_its_first_frame(cx: &mut TestApp
     settle(&mut native);
     key(&mut native, "secondary-k");
     settle(&mut native);
-    crate::runtime::seat_frames_for_test(MODULE, 200, view_wire::Node::empty(), field);
-    run_spot(&view, Spot::Open(MODULE), &mut native);
+    crate::runtime::seat_frames_for_test(PROGRAM, 200, view_wire::Node::empty(), field);
+    run_spot(&view, Spot::Open(PROGRAM), &mut native);
     settle(&mut native);
     let nodes = native.update(draw);
     assert!(
@@ -1944,7 +1947,7 @@ fn a_pane_picked_in_spotlight_hands_the_keys_by_its_first_frame(cx: &mut TestApp
             .as_array()
             .unwrap()
             .iter()
-            .any(|node| node["id"] == format!("console:{MODULE}/search")),
+            .any(|node| node["id"] == format!("console:{PROGRAM}/search")),
         "the second frame's field is up: {nodes}"
     );
     native.update(|window, cx| {

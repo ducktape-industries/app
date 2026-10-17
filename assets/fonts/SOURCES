@@ -5,18 +5,19 @@ modified copy may not keep, and a vendor static is better hinted than anything
 an instancer cuts. Refreshing a family is therefore a download, a sha256 check,
 and a copy — there is no build step.
 
-The design canvas sets labels and buttons at 500, so each family ships its
-vendor Medium beside the four RIBBI faces (Pretendard's too, so a Hangul run in
-a 500 label finds a face at its own weight).
+The design canvas sets labels and buttons at 500 and headings and names at 600,
+so each family ships its vendor Medium and SemiBold beside the four RIBBI faces
+(Pretendard's too, so a Hangul run in a 500 or 600 run finds a face at its own
+weight). Without a 600 face the matcher (font-kit's CSS rule) looks heavier
+first, so every 600 heading and name drew in Bold. D2Coding ships Regular and
+Bold only.
 
 A variable font is deliberately NOT shipped: `gpui-pre-wgpu`'s
 `cosmic_text_system.rs` shapes with the matched face's own usWeightClass and
 rasterizes from a font built at `Weight::NORMAL` with no variation settings, so
-one variable face draws every weight at 400 and slants for nothing. The set is
-Regular, Bold, Italic and Bold Italic — the four RIBBI faces — and no Medium or
-SemiBold, because the matched face's weight is also the weight every fallback
-lookup runs at and no system font declares 500 or 600
-(app/src/tests/font_fallback.rs holds both lines).
+one variable face draws every weight at 400 and slants for nothing. The matched
+face's weight is also the weight every fallback lookup runs at, which is why the
+Hangul face ships the same weights (crates/host/src/tests/font_fallback.rs).
 
 Hangul has no italic in any open font. Pretendard and D2Coding ship upright
 only, so an italic run slants its Latin and leaves its Hangul upright.
@@ -26,6 +27,8 @@ Instrument Sans (repo @ 7fa22308a3d0c94ee2b3cd537a1196b65db34a3e) — https://gi
     69fd3f7c467c70c1f73b232812407f688f3d87dd7a801ea7281aa97d29cf53d5
   fonts/ttf/InstrumentSans-Medium.ttf     -> InstrumentSans-Medium.ttf
     56ba599d12b7cf2fff4eebf46d29253231b6f49bc5b6ce7733dfbf3d7940bfae
+  fonts/ttf/InstrumentSans-SemiBold.ttf   -> InstrumentSans-SemiBold.ttf
+    7151cf505f897e17b4e9b956293b5a60046ec39da3923a8feba29ce86fd14e12
   fonts/ttf/InstrumentSans-Bold.ttf       -> InstrumentSans-Bold.ttf
     735badeb8b2046cee6f5e1226412ab6c29db04accbca413af03d70e991dce10d
   fonts/ttf/InstrumentSans-Italic.ttf     -> InstrumentSans-Italic.ttf
@@ -40,6 +43,8 @@ IBM Plex Mono 2.5.0 — https://github.com/IBM/plex/releases/download/%40ibm%2Fp
     7c6fbddca4b700be918f5f6183d9bd4464fa427fe435f0b480d77fe2bb8c5a43
   ibm-plex-mono/fonts/complete/ttf/IBMPlexMono-Medium.ttf     -> IBMPlexMono-Medium.ttf
     98fbd727aae340b236955879dabed4d991aac9e8e90b3b2a67ce4a59221cc97c
+  ibm-plex-mono/fonts/complete/ttf/IBMPlexMono-SemiBold.ttf   -> IBMPlexMono-SemiBold.ttf
+    f04d7c488ddf7d1fa99f2574efc3406ea4cbe17bb1af3a1ab960f84d0c96a172
   ibm-plex-mono/fonts/complete/ttf/IBMPlexMono-Bold.ttf       -> IBMPlexMono-Bold.ttf
     74e5eedcfa4596497d34e19023cabdabd3a8c852b903007a5654a59591a72ffb
   ibm-plex-mono/fonts/complete/ttf/IBMPlexMono-Italic.ttf     -> IBMPlexMono-Italic.ttf
@@ -55,6 +60,8 @@ Pretendard 1.3.9 — https://github.com/orioncactus/pretendard/releases/download
     3ffbacde6ab8411f1d2db54bb9b1f0b3ee2a738932033722cf0388c06aed1c93
   public/static/Pretendard-Medium.otf  -> Pretendard-Medium.otf
     d39e50e4bb52b4993b6a4eeb821a171254745bd824446af01e1f616b89fface0
+  public/static/Pretendard-SemiBold.otf -> Pretendard-SemiBold.otf
+    c89bc43027dc7cde5726e96223376f8eec09302b2fc1f8147fd5b57cfc376118
   public/static/Pretendard-Bold.otf    -> Pretendard-Bold.otf
     2e91915fab54df71cc9598ebf608b2bdb54c6fe3c066ac61dff0bc44fca71cc7
   LICENSE.txt -> OFL-Pretendard.txt

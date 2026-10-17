@@ -30,7 +30,7 @@ pub(in crate::shell) struct Seed {
     /// A new recovery key's words, on the phrase screens.
     pub(in crate::shell) phrase: Option<Secret>,
     /// The request "Add a device…" found.
-    pub(in crate::shell) found: Option<crate::backend::join::Request>,
+    pub(in crate::shell) found: Option<noded_client::join::Request>,
     /// This device's prefs (a test's file starts empty: System, motion on,
     /// no layout picked).
     pub(in crate::shell) prefs: Prefs,
@@ -76,20 +76,20 @@ pub(in crate::shell) fn open_console(
 ) -> (Entities, WindowKey, Entity<WindowRoot>, VisualTestContext) {
     let at = Bounds::new(point(px(0.), px(0.)), size(px(WINDOW.0), px(WINDOW.1)));
     open_with(seed, cx, |windows, cx| {
-        windows.open(WindowKind::Console, Some(at), cx)
+        windows.open(WindowKind::Console, Some(at), None, cx)
     })
 }
 
-/// A `--live` window over `seed`: `module`'s view alone in a window of its
+/// A `--live` window over `seed`: `program`'s view alone in a window of its
 /// own, which is also the app's console (`Windows::open_live`), drawn once
 /// as [`open_console`] draws.
 pub(in crate::shell) fn open_live(
     seed: impl Into<Seed>,
-    module: &'static str,
+    program: &'static str,
     cx: &mut TestAppContext,
 ) -> (Entities, WindowKey, Entity<WindowRoot>, VisualTestContext) {
     open_with(seed, cx, |windows, cx| {
-        windows.open_live(module, cx);
+        windows.open_live(program, cx);
         windows.console().expect("the live window is the console")
     })
 }
@@ -253,11 +253,11 @@ pub(in crate::shell) fn pane(
 /// A program picked (Spotlight, a menu): `Windows::select_view`.
 pub(in crate::shell) fn select_view(
     app: &Entities,
-    module: &'static str,
+    program: &'static str,
     native: &mut VisualTestContext,
 ) {
     app.windows
-        .update(native, |windows, cx| windows.select_view(module, cx));
+        .update(native, |windows, cx| windows.select_view(program, cx));
     native.run_until_parked();
 }
 
@@ -292,7 +292,7 @@ pub(in crate::shell) fn pop_out(
 ) -> (WindowKey, AnyWindowHandle, Entity<WindowRoot>) {
     let index = native.update(|_, cx| view.read(cx).layout(cx).focused);
     app.windows.update(native, |windows, cx| {
-        windows.pop_out(console, index, None, cx)
+        windows.pop_out(console, index, None, None, cx)
     });
     native.run_until_parked();
     popped(app, console, native)
@@ -326,7 +326,7 @@ pub(in crate::shell) fn frame(native: &mut VisualTestContext) {
     native.run_until_parked();
 }
 
-/// A guest tree's one line of text, 20px tall.
+/// A view tree's one line of text, 20px tall.
 pub(in crate::shell) fn line(text: &str) -> wire::Node {
     wire::Node::RichText {
         id: Some(wire::ElementIdWire::Name("line".into())),
@@ -341,9 +341,9 @@ pub(in crate::shell) fn line(text: &str) -> wire::Node {
     }
 }
 
-/// How often `module`'s view tree has rendered (`/perf`'s `views`).
-pub(in crate::shell) fn tree_renders(module: &str) -> u64 {
-    crate::perf::snapshot(false)["views"][module]["renders"]
+/// How often `program`'s view tree has rendered (`/perf`'s `views`).
+pub(in crate::shell) fn tree_renders(program: &str) -> u64 {
+    crate::perf::snapshot(false)["views"][program]["renders"]
         .as_u64()
-        .unwrap_or_else(|| panic!("{module} counts its renders"))
+        .unwrap_or_else(|| panic!("{program} counts its renders"))
 }

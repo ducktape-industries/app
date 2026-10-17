@@ -3,9 +3,10 @@
 //! the desktop does on the account's events (a lock's toast, a new
 //! account's Help, a network left).
 use super::super::{WindowKey, WindowKind};
-use super::tests::{active, desk_of, modules, session};
+use super::tests::{active, desk_of, programs, session};
 use super::{Account, AccountStep, Entities, Screen, Slice};
 use crate::backend;
+use crate::shell::sign_in;
 use crate::ui::layout::{EMPTY, HELP};
 use gpui_kit::{Bounds, Entity, TestAppContext, point, px, size};
 
@@ -122,7 +123,7 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
     }
     fn phrase(cx: &mut TestAppContext) -> (Entity<Account>, Entity<Slice<Screen>>) {
         let (account, screen) = desk(cx);
-        account.update(cx, |account, cx| account.recovery_key_start(cx));
+        account.update(cx, sign_in::recovery_key_start);
         (account, screen)
     }
     fn quiz(cx: &mut TestAppContext) -> (Entity<Account>, Entity<Slice<Screen>>) {
@@ -145,8 +146,8 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
         account.update(cx, |account, cx| account.resolved(NODE, "cd", None, cx));
         (account, screen)
     }
-    fn testkit() -> backend::Keyring {
-        backend::Keyring {
+    fn testkit() -> noded_client::keyring::Keyring {
+        noded_client::keyring::Keyring {
             dir: "testkit".into(),
             other_chain: false,
         }
@@ -280,20 +281,20 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
         (
             "passkey unnamed",
             account_step,
-            |a, cx| a.passkey_create(" ".into(), cx),
+            |a, cx| sign_in::passkey_create(a, " ".into(), cx),
             "Account",
         ),
         (
             "passkey create",
             account_step,
-            |a, cx| a.passkey_create("ada".into(), cx),
+            |a, cx| sign_in::passkey_create(a, "ada".into(), cx),
             "Account/passkey",
         ),
         (
             "passkey done",
             account_step,
             |a, cx| {
-                a.passkey_create("ada".into(), cx);
+                sign_in::passkey_create(a, "ada".into(), cx);
                 a.passkey_done("ab".into(), cx)
             },
             "Desk",
@@ -308,7 +309,7 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
             "passkey failed",
             account_step,
             |a, cx| {
-                a.passkey_create("ada".into(), cx);
+                sign_in::passkey_create(a, "ada".into(), cx);
                 a.passkey_failed("no".into(), cx)
             },
             "Account",
@@ -317,7 +318,7 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
             "passkey cancelled",
             account_step,
             |a, cx| {
-                a.passkey_create("ada".into(), cx);
+                sign_in::passkey_create(a, "ada".into(), cx);
                 a.passkey_cancel(cx)
             },
             "Account",
@@ -373,7 +374,7 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
         (
             "not words",
             recover,
-            |a, cx| a.recover_submit("not a phrase".into(), cx),
+            |a, cx| sign_in::recover_submit(a, "not a phrase".into(), cx),
             "Recover",
         ),
         ("recovered", recover, |a, cx| a.joined(Ok(()), cx), "Desk"),
@@ -387,7 +388,7 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
         (
             "recovery key from the menu",
             desk,
-            |a, cx| a.recovery_key_start(cx),
+            |a, cx| sign_in::recovery_key_start(a, cx),
             "Phrase",
         ),
         (
@@ -406,7 +407,7 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
         (
             "wrong words",
             quiz,
-            |a, cx| a.phrase_check(["x".into(), "y".into(), "z".into()], cx),
+            |a, cx| sign_in::phrase_check(a, ["x".into(), "y".into(), "z".into()], cx),
             "Phrase/quiz",
         ),
         (
@@ -426,7 +427,7 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
         (
             "unlock",
             locked,
-            |a, cx| a.unlock(String::new(), cx),
+            |a, cx| sign_in::unlock(a, String::new(), cx),
             "Unlock",
         ),
         (
@@ -511,7 +512,7 @@ fn an_empty_password_or_name_is_not_sent(cx: &mut TestAppContext) {
         let mut state = account.get().clone();
         state.key_exists = true;
         account.seed(state, None, None, cx);
-        account.unlock(String::new(), cx);
+        sign_in::unlock(account, String::new(), cx);
     });
     let key = state(&account, cx);
     assert!(!key.busy, "an empty password is not sent");
@@ -579,14 +580,14 @@ fn the_approve_dialog_forgets_what_it_found_when_it_opens_or_closes(cx: &mut Tes
     let found = || {
         let key = vec![7; 32];
         let mut state = super::AccountState {
-            approve: Some(backend::join::fingerprint(&key)),
+            approve: Some(noded_client::join::fingerprint(&key)),
             error: "no".into(),
             ..Default::default()
         };
         state.signer_key = "ab".into();
         (
             state,
-            backend::join::Request {
+            noded_client::join::Request {
                 network: "testkit".into(),
                 key,
             },
@@ -632,7 +633,7 @@ fn leaving_a_step_drops_its_call_and_frees_the_next_try(cx: &mut TestAppContext)
     fn quiz(cx: &mut TestAppContext) -> (Entity<Account>, Entity<Slice<Screen>>) {
         let (account, screen) = desk(cx);
         account.update(cx, |account, cx| {
-            account.recovery_key_start(cx);
+            sign_in::recovery_key_start(account, cx);
             account.phrase_written_down(cx);
         });
         (account, screen)
@@ -695,7 +696,7 @@ fn taking_up_another_chain_resets_the_last_ones_state(cx: &mut TestAppContext) {
     layout_picked();
     let _seat = backend::seat_serial();
     let (account, screen) = desk(cx);
-    let keyring = |dir: &str, other_chain| backend::Keyring {
+    let keyring = |dir: &str, other_chain| noded_client::keyring::Keyring {
         dir: dir.into(),
         other_chain,
     };
@@ -775,7 +776,7 @@ fn desktop(cx: &mut TestAppContext) -> (Entities, WindowKey) {
     });
     let at = Bounds::new(point(px(0.), px(0.)), size(px(1280.), px(800.)));
     let key = entities.windows.update(cx, |windows, cx| {
-        windows.open(WindowKind::Console, Some(at), cx)
+        windows.open(WindowKind::Console, Some(at), None, cx)
     });
     cx.run_until_parked();
     desk_of(&entities, key, cx).update(cx, |desk, cx| {
@@ -825,13 +826,13 @@ fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
         account.layout_chosen(backend::Layout::MenuBar, cx)
     });
     assert_eq!(shown(&entities.screen, cx), "Desk");
-    assert_eq!(modules(&entities, key, cx), [HELP]);
+    assert_eq!(programs(&entities, key, cx), [HELP]);
     assert_eq!(active(&entities, cx), None, "help is no program");
     assert!(welcome(cx), "a new account is greeted");
     entities
         .windows
         .update(cx, |windows, cx| windows.help_asked(cx));
-    assert_eq!(modules(&entities, key, cx), [HELP], "not twice");
+    assert_eq!(programs(&entities, key, cx), [HELP], "not twice");
     assert!(!welcome(cx), "asked for, help is just help");
 
     let (entities, key) = desktop(cx);
@@ -841,7 +842,7 @@ fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
         account.create_later(cx);
     });
     assert_eq!(
-        modules(&entities, key, cx),
+        programs(&entities, key, cx),
         [EMPTY],
         "not now: the desk as it was"
     );
@@ -853,7 +854,7 @@ fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
     });
     assert_eq!(shown(&entities.screen, cx), "Desk");
     assert_eq!(
-        modules(&entities, key, cx),
+        programs(&entities, key, cx),
         [EMPTY],
         "a known account is not greeted"
     );

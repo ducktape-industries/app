@@ -3,13 +3,16 @@
 //! `state.json`:
 //! - [`boot`], at the very top of `main` before gpui starts: reads the state,
 //!   qualifies a staged release, flips to it (or back from one that never
-//!   came up) and `exec`s the release that should run, same PID, argv passed
-//!   through ([`boot`] module);
+//!   came up) and runs the release that should run: on Linux it `exec`s
+//!   it, same PID, argv passed through; on macOS it starts it as a new
+//!   launch of the installed bundle ([`boot`] module);
 //! - the running app ([`channel`]): its first frame is the healthy signal,
 //!   and from then on it checks the chosen channel (stable or nightly) at
 //!   [`ducktape_updater::layout::BASE_URL`] now and hourly, downloads, verifies
 //!   and stages the next release for the next start, says so in one desktop
-//!   notice, and shows where it is in Settings › Updates;
+//!   notice, and shows where it is in Settings › Updates. With "Update
+//!   automatically" off it checks all the same and only names what is newer;
+//!   "Update now" then downloads, verifies and stages it once;
 //! - `ducktape-app install` ([`install`]): lays down an install from the
 //!   binary that runs it.
 //!
@@ -39,6 +42,7 @@
 //! both   (<updates> = <config>/ducktape/updates, the app's config dir):
 //!   <updates>/state.json                          the machine's phase
 //!   <updates>/channel                             the channel picked (stable when absent)
+//!   <updates>/automatic                           `off` when updating automatically is off (on otherwise)
 //!   <updates>/lock                                held by the install's one updater
 //!   <updates>/seen.json                           the highest sequence each channel has shown
 //!   <updates>/keys/successor.json                 a key rotation this install saw
@@ -59,7 +63,8 @@ mod tests;
 
 pub(crate) use boot::boot;
 pub(crate) use channel::{
-    RESTART_WAITER, Updates, choose, on_moved, rendered, restart, restart_waiter, updates,
+    RESTART_WAITER, Updates, automate, choose, on_moved, rendered, restart, restart_waiter,
+    update_now, updates,
 };
 #[cfg(test)]
 pub(crate) use channel::{Shown, rendered_here, show_here};
@@ -137,6 +142,12 @@ impl Layout {
     /// update state: Settings writes it, nothing else does.
     fn channel_path(&self) -> PathBuf {
         self.updates.join("channel")
+    }
+
+    /// Whether updates download on their own, a device setting beside the
+    /// channel: Settings writes it, nothing else does.
+    fn automatic_path(&self) -> PathBuf {
+        self.updates.join("automatic")
     }
 
     /// The replay guard's marks ([`channel`]'s `against_seen`).
@@ -471,6 +482,9 @@ fn remove_leftover(path: &Path) -> Result<(), Refusal> {
     removed.map_err(|error| Refusal::io("leftover_not_removed", path, &error))
 }
 
+/// Each install's `<updates>/lock` this process holds ([`hold_install`]).
+static HELD: Mutex<Vec<(PathBuf, std::fs::File)>> = Mutex::new(Vec::new());
+
 /// One updater per install. Two processes of one install (on Linux every
 /// `duck://` link starts one) would each step the machine from what they
 /// read at their own start: the second flips while the first runs, and the
@@ -479,9 +493,8 @@ fn remove_leftover(path: &Path) -> Result<(), Refusal> {
 /// `<updates>/lock` is the install's one updater, and `install` its one
 /// writer; a start that finds it held runs with the updater off and touches
 /// nothing. `true` once this process holds it, for the rest of its life:
-/// exit and `exec` let it go.
+/// exit and `exec` let it go, and so does [`let_go_install`].
 fn hold_install(layout: &Layout) -> Result<bool, Refusal> {
-    static HELD: Mutex<Vec<(PathBuf, std::fs::File)>> = Mutex::new(Vec::new());
     let path = layout.updates.join("lock");
     let mut held = HELD.lock().unwrap_or_else(PoisonError::into_inner);
     if held.iter().any(|(at, _)| *at == path) {
@@ -506,6 +519,16 @@ fn hold_install(layout: &Layout) -> Result<bool, Refusal> {
     }
     held.push((path, file));
     Ok(true)
+}
+
+/// Let `<updates>/lock` go while this process still runs: the macOS boot
+/// step hands the install to the launch it starts before this process
+/// exits, and a start that finds the lock held runs with the updater off.
+fn let_go_install(layout: &Layout) {
+    let path = layout.updates.join("lock");
+    HELD.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .retain(|(at, _)| *at != path);
 }
 
 /// Wait until no process holds `<updates>/lock`, then let it go: the

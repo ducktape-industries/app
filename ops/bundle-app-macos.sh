@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Native macOS bundle: stage the executable, then — on the local signing
 # path — sign inside-out, image, optionally notarize. No view ships in the
-# bundle: every view the app draws comes off the connected node's registry.
+# bundle: every view the app draws comes off the connected node's programs role.
 #
 # ONE signing path per environment, chosen by DUCKTAPE_SIGN_VIA:
 #   unset    local: DUCKTAPE_CODESIGN_IDENTITY (ad-hoc by default) signs the
@@ -62,26 +62,8 @@ install -m 0644 "$repo/packaging/Info.plist" "$contents/Info.plist"
 swift "$repo/ops/macos-icon.swift" "$repo/assets/icon.svg" "$stage/Ducktape.iconset"
 iconutil -c icns "$stage/Ducktape.iconset" -o "$contents/Resources/Ducktape.icns"
 sign_locally() {
-  local sign=(--force --sign "$identity")
-  if [[ "$identity" != - ]]; then sign+=(--timestamp --options runtime); fi
-  local entitlements="$repo/packaging/entitlements.plist"
-  local bundle_id
-  bundle_id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$contents/Info.plist")
-  codesign "${sign[@]}" --identifier "$bundle_id" --entitlements "$entitlements" "$contents/MacOS/ducktape-app"
-  codesign "${sign[@]}" --entitlements "$entitlements" "$app"
-  codesign --verify --deep --strict "$app"
-  mkdir "$stage/image"
-  ditto "$app" "$stage/image/Ducktape.app"
-  ln -s /Applications "$stage/image/Applications"
   dmg="$repo/target/app-bundle/Ducktape-$version-$(uname -m).dmg"
-  hdiutil create -volname Ducktape -srcfolder "$stage/image" -ov -format UDZO "$dmg"
-  codesign "${sign[@]}" "$dmg"
-  if [[ "$notary_count" == 3 ]]; then
-    xcrun notarytool submit "$dmg" --key "$DUCKTAPE_NOTARY_KEY" \
-      --key-id "$DUCKTAPE_NOTARY_KEY_ID" --issuer "$DUCKTAPE_NOTARY_ISSUER" --wait
-    xcrun stapler staple "$dmg"
-    xcrun stapler staple "$app"
-  fi
+  "$repo/ops/sign-app-macos.sh" "$app" "$dmg"
 }
 dmg=""
 case "$sign_via" in

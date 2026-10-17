@@ -234,7 +234,7 @@ fn the_programs_rail_is_one_tab_stop_whose_arrows_move_the_keys(cx: &mut TestApp
             layout
                 .panes
                 .iter()
-                .map(|pane| pane.module)
+                .map(|pane| pane.program)
                 .collect::<Vec<_>>()
         })
     };
@@ -335,12 +335,15 @@ fn the_sidebar_is_one_tab_stop_whose_up_and_down_move_the_keys(cx: &mut TestAppC
         &[("down", &two, false), ("down", "shell:rail/rove-b", false)],
     );
     enter(&mut native);
-    let modules: Vec<&str> = view.read_with(&native, |view, cx| {
+    let programs: Vec<&str> = view.read_with(&native, |view, cx| {
         view.layout(cx)
             .panes
             .iter()
-            .map(|pane| pane.module)
+            .map(|pane| pane.program)
             .collect()
     });
-    assert!(modules.contains(&"rove-b"), "Return opened it: {modules:?}");
+    assert!(
+        programs.contains(&"rove-b"),
+        "Return opened it: {programs:?}"
+    );
 }

@@ -18,7 +18,7 @@
 use crate::sha::Sha;
 
 /// Where every app release file is published: the app's prefix in a
-/// bucket other repos (modules, modules-lab) publish into as well.
+/// bucket other repos (programs, modules-lab) publish into as well.
 pub const BASE_URL: &str = "https://dl.ducktape.industries/app/";
 
 /// A release channel: its own signed manifest under [`BASE_URL`], signed by

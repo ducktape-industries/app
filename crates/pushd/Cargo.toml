@@ -1,0 +1,50 @@
+# pushd: the app's host without a window. For each account it carries
+# notices for, it runs every program's notifier (the `ducktape.notify`
+# section of its code blob) as the desktop app runs it for the person at
+# the screen, and sends what the notifier posts to that account's devices.
+# It follows one node per network and trusts it, as the app does.
+#
+# What becomes a notice, for whom, its words, tag and link, and when it is
+# taken down are decided by each program in its own notifier; pushd, like
+# the app, carries them and names no program.
+[package]
+name = "pushd"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+# the runtime without its window half: no gpui-kit in this graph; the
+# notifiers run on wasmtime, as the desktop's views do
+ducktape-host = { path = "../host", default-features = false, features = ["wasmtime"] }
+# the throwaway key queries are signed with, as the desktop's reader, and
+# the identity query a registration is checked by
+noded-client = { path = "../noded-client", features = ["commonware"] }
+abi.workspace = true
+# a registration's Ed25519 signature checked (src/registry.rs)
+commonware-cryptography.workspace = true
+commonware-codec.workspace = true
+rand.workspace = true
+ducklink.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.8"
+tokio = { version = "1", features = ["net", "sync", "time"] }
+# the device registry's door (src/registry.rs): HTTP/1.1 served by the
+# hyper reqwest already brings, behind the tunnel's TLS
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+tracing.workspace = true
+# the push channel (src/push.rs): APNs speaks HTTP/2 only; the JWTs it and
+# Google's token endpoint take are signed with ring, already in the graph
+reqwest = { workspace = true, features = ["http2"] }
+ring = "0.17"
+base64.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+# a notifier's wire notice, through an account's centre to the push channel
+view-wire.workspace = true

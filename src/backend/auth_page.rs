@@ -5,23 +5,16 @@
 //! them. The page and its contract live in `ducktape-industries/auth` (its
 //! README).
 
-use std::time::Duration;
-
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use keyscheme::KeyScheme;
+use noded_client::relay::url_encode;
 
-use super::loopback::{Listener, url_encode};
+use super::loopback::Listener;
 
-/// The live page. Its host IS the RP ID every passkey is scoped to.
-const AUTH_PAGE: &str = "https://auth.ducktape.industries/";
-
-/// How long one touch may take before the app stops waiting.
-const CEREMONY_TIMEOUT: Duration = Duration::from_secs(300);
-
-pub(super) fn auth_page() -> String {
-    std::env::var("DUCKTAPE_AUTH_PAGE").unwrap_or_else(|_| AUTH_PAGE.to_owned())
-}
+#[cfg(test)]
+use ducktape_host::backend::AUTH_PAGE;
+use ducktape_host::backend::auth_page;
 
 pub(super) enum Request {
     /// `navigator.credentials.create()`; the challenge is pass-through.
@@ -137,16 +130,15 @@ pub(super) async fn asserted(challenge: [u8; 32], step: &'static str) -> Result<
 }
 
 /// One touch: open `request` in this device's browser and take the page's
-/// answer on loopback.
+/// answer on loopback, for as long as the page takes; the person's cancel
+/// drops the wait.
 async fn ceremony(request: Request) -> Result<Outcome, String> {
     let page = auth_page();
     let listener = Listener::bind(&page)
         .await
         .map_err(|error| format!("Couldn't listen for the browser: {error}"))?;
     open_browser(&request_url(&page, &request, &listener.callback_url()))?;
-    tokio::time::timeout(CEREMONY_TIMEOUT, listener.wait())
-        .await
-        .map_err(|_| "Nothing came back from the passkey. Try again.".to_string())?
+    listener.wait().await
 }
 
 /// The system browser, or `DUCKTAPE_BROWSER <url>` when set (a test's
@@ -182,10 +174,10 @@ pub(crate) fn on_open_url(open: fn(String)) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::noded::{FRAME_NAMESPACE, Tip};
     use super::super::passkey::{passkey_body, passkey_frame};
     use super::*;
     use keyscheme::testkit;
+    use noded_client::wire::{FRAME_NAMESPACE, Tip};
 
     const RP: &str = "auth.ducktape.industries";
 

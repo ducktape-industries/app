@@ -2,13 +2,16 @@
 //! own entities: `Desk`, `Front`, `Overlays`, `Spotlight`, `DotSlot`),
 //! which is the console, which is in front, and the program in front
 //! (`active`: the one an untouched console desk opens). Its methods open,
-//! raise and close windows, move a pane between two desks (pop-out, pop-in),
-//! open links and programs on the console's desk (a program in a pop-out
-//! comes forward there), and resize the console as the launcher gives way
-//! to the desk and back. Notifies when the list, the front or the active
-//! program moved; a window's own entities notify on their own, and
-//! `Popped` (the pop-outs' windows, as the console's chrome lists them)
-//! when it moved.
+//! raise and close windows, keep one above other apps' windows (Keep on
+//! Top), move a pane between two desks (pop-out, pop-in), float a view's
+//! pane at its view's ask (`float`, `unfloat`), open links and
+//! programs on the console's desk (a program in a pop-out comes forward
+//! there), and resize the console as the launcher gives way to the desk
+//! and back. Notifies when the list, the front or the active program
+//! moved; a window's own entities notify on their own, and `Popped` (the
+//! pop-outs' windows, as the console's chrome lists them) when it moved.
+//! Keep on Top moves only the macOS menu bar's check (`sync_menu`); Search
+//! reads it as it draws.
 //!
 //! What it hears: the session leaving its network (every desk cleared),
 //! a node answering (the console comes forward), a device approved (its
@@ -18,22 +21,23 @@
 //! told). A link a banner's click or the passkey page asks for off the
 //! window thread comes over the `Posted` channel (`posted`).
 use super::{
-    AccountEvent, Entities, Front, Listed, Overlay, Overlays, Popped, Screen, SessionEvent,
-    SettingsPage, Shared, Slice, Spotlight, WindowEntities,
+    AccountEvent, Desk, DeskSeats, Entities, Front, Listed, Overlay, Overlays, Popped, Screen,
+    SessionEvent, SettingsPage, Shared, Slice, Spotlight, WindowEntities,
 };
+use crate::runtime::WindowKey;
 use crate::runtime::notify::{CenterHandle, Entry};
-use crate::runtime::{Link, WindowKey};
 use crate::shell::layers::{self, WindowRoot};
 use crate::shell::windows::{release_window_input, remove};
 use crate::shell::{WindowKind, theme, windows};
 use crate::ui::layout::{self, Layout};
+use ducktape_host::session::Opening;
 use futures::StreamExt as _;
 use futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, AsyncApp, Bounds, Context, Entity, Pixels, Subscription,
-    WeakEntity, Window, WindowBounds, WindowId, px, size,
+    AnyWindowHandle, App, AppContext as _, AsyncApp, Bounds, Context, Entity, Pixels, Size,
+    Subscription, WeakEntity, Window, WindowBounds, WindowId, px, size,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, OnceLock};
 
 /// Timed as `reducer.desk`, the name qa's hang rule reads (docs/perf.md).
@@ -55,6 +59,19 @@ pub(crate) struct Windows {
     console: Option<WindowKey>,
     /// The OS window in front, when it is one of ours.
     front: Option<WindowKey>,
+    /// The windows kept above other apps' windows, once the platform took
+    /// it (`set_on_top`). Not saved: every window opens among the others.
+    on_top: BTreeSet<WindowKey>,
+    /// Keep on Top asked of a window still opening: told once it has.
+    pending_on_top: BTreeMap<WindowKey, bool>,
+    /// The windows a view floated its pane into (`float`).
+    floats: BTreeMap<WindowKey, Floated>,
+    /// Where each program's float was last, for its next float in this
+    /// run. Not saved, as Keep on Top is not.
+    left: BTreeMap<&'static str, Bounds<Pixels>>,
+    /// The macOS Window menu's Keep on Top check, as last set: the front
+    /// window's state (`sync_menu`).
+    menu_on_top: bool,
     /// The pop-outs' windows, derived (`popped_moved`): the console's
     /// chrome lists them.
     popped: Entity<Slice<Popped>>,
@@ -69,6 +86,19 @@ pub(crate) struct Windows {
     /// The appearance the theme was last synced to.
     appearance: crate::backend::Appearance,
     subscriptions: Vec<Subscription>,
+    /// Follows this list and every desk into the shared seats.
+    desk_seats: Option<Entity<DeskSeats>>,
+}
+
+/// A window a view floated its pane into: the program, whose next float
+/// opens where this one was left, and the float's minimum width, which its
+/// view is laid out down to.
+struct Floated {
+    program: &'static str,
+    min_width: f32,
+    /// Keeps where the window is, for the next float (`watch_float`);
+    /// it goes with the float.
+    moves: Option<Subscription>,
 }
 
 impl Windows {
@@ -132,12 +162,18 @@ impl Windows {
             by_window: BTreeMap::new(),
             console: None,
             front: None,
+            on_top: BTreeSet::new(),
+            pending_on_top: BTreeMap::new(),
+            floats: BTreeMap::new(),
+            left: BTreeMap::new(),
+            menu_on_top: false,
             popped: cx.new(|_| Slice::new(Popped::default())),
             active: None,
             desk_bounds: None,
             launcher,
             appearance,
             subscriptions,
+            desk_seats: None,
         }
     }
 
@@ -147,6 +183,12 @@ impl Windows {
             shared: self.shared.clone(),
             windows: cx.entity(),
         }
+    }
+
+    /// The seats follow this window list from now on (`DeskSeats` lives
+    /// as long as the windows do).
+    pub(crate) fn followed_by(&mut self, desk_seats: Entity<DeskSeats>) {
+        self.desk_seats = Some(desk_seats);
     }
 
     pub(crate) fn console(&self) -> Option<WindowKey> {
@@ -206,13 +248,15 @@ impl Windows {
 
     // ---------- opening, raising, closing ----------
 
-    /// A window of `kind`, opened at `at` (`None`: the display's centre).
+    /// A window of `kind`, opened at `at` (`None`: the display's centre),
+    /// never sized under `min` (`None`: its kind's own minimum).
     /// Its key and its own entities exist now; the OS window follows
     /// (deferred: the caller is most often mid-update).
     pub(crate) fn open(
         &mut self,
         kind: WindowKind,
         at: Option<Bounds<Pixels>>,
+        min: Option<Size<Pixels>>,
         cx: &mut Context<Self>,
     ) -> WindowKey {
         let _timed = timed();
@@ -221,21 +265,21 @@ impl Windows {
         if kind == WindowKind::Console {
             self.console = Some(key);
         }
-        self.open_window(key, kind, at, cx);
+        self.open_window(key, kind, at, min, cx);
         cx.notify();
         key
     }
 
-    /// `--live`: `module` in a window of its own, the only window, and so
+    /// `--live`: `program` in a window of its own, the only window, and so
     /// the one dialogs (a consent card) open in.
     #[cfg(debug_assertions)]
-    pub(crate) fn open_live(&mut self, module: &'static str, cx: &mut Context<Self>) {
-        let key = self.open(WindowKind::View { module }, None, cx);
+    pub(crate) fn open_live(&mut self, program: &'static str, cx: &mut Context<Self>) {
+        let key = self.open(WindowKind::View { program }, None, None, cx);
         self.console = Some(key);
-        self.active = Some(module);
+        self.active = Some(program);
         self.by_window[&key]
             .desk
-            .update(cx, |desk, cx| desk.seed(module, cx));
+            .update(cx, |desk, cx| desk.seed(program, cx));
     }
 
     /// Window `key`'s own entities, and what follows them here: the
@@ -243,13 +287,13 @@ impl Windows {
     /// anything opening over the desk lets go of the keyboard's hold, and
     /// "Add a device…" closing, however it did, forgets what it found.
     fn make_own(&mut self, key: WindowKey, kind: WindowKind, cx: &mut Context<Self>) {
-        let desk = cx.new(|_| Slice::new(Layout::default()));
+        let desk = cx.new(|_| Desk::new(Layout::default()));
         let session = self.shared.session.clone();
         let own = WindowEntities {
             kind,
             front: Front::of_desk(&desk, cx),
             overlays: cx.new(|cx| Overlays::new(&session, cx)),
-            spotlight: cx.new(|_| Slice::new(Spotlight::default())),
+            spotlight: cx.new(|_| Spotlight::default()),
             dot: cx.new(|_| Slice::new(None)),
             desk,
         };
@@ -257,10 +301,10 @@ impl Windows {
             .push(cx.observe(&own.desk, move |this, desk, cx| {
                 // the window in front is the active program, however it got
                 // there (a frame or a fill moves no front: `shown` stands)
-                if let Some(module) = desk.read(cx).get().shown()
-                    && this.active != Some(module)
+                if let Some(program) = desk.read(cx).get().shown()
+                    && this.active != Some(program)
                 {
-                    this.active = Some(module);
+                    this.active = Some(program);
                     cx.notify();
                 }
                 this.set_front(key, cx);
@@ -299,19 +343,22 @@ impl Windows {
 
     /// Opens the OS window for `key` (deferred: the caller is mid-update)
     /// and remembers its handle and view. On failure a pane on its way
-    /// there goes back to the desk and the window is forgotten.
+    /// there goes back to the desk and the window is forgotten. Opened, it
+    /// takes the Keep on Top asked of it meanwhile; a float's joins every
+    /// Space on macOS, and its close sends its pane back (`floated_closes`).
     fn open_window(
         &mut self,
         key: WindowKey,
         kind: WindowKind,
         at: Option<Bounds<Pixels>>,
+        min: Option<Size<Pixels>>,
         cx: &mut Context<Self>,
     ) {
         use gpui_kit::{TitlebarOptions, WindowOptions, point};
         let title = match kind {
             WindowKind::Console => "Ducktape".to_owned(),
-            WindowKind::View { module } => {
-                crate::shell::panes::label(self.shared.rail.read(cx).rows(), module)
+            WindowKind::View { program } => {
+                crate::shell::panes::label(self.shared.rail.read(cx).rows(), program)
             }
         };
         // the launcher is a small window of a fixed size; the desk grows
@@ -341,15 +388,18 @@ impl Windows {
                     }),
                 )),
             }),
-            // one window serves the launcher and the desk, so it resizes;
+            // the launcher is fixed at its size, the desk resizes
+            // (`swap_console` switches it as the screens cross)
+            is_resizable: !launcher,
             // a pop-out goes down to its view's minimum, as it stands when
-            // the window opens (there is no setting it later)
-            window_min_size: Some(match kind {
+            // the window opens (there is no setting it later), a float to
+            // its own
+            window_min_size: Some(min.unwrap_or_else(|| match kind {
                 WindowKind::Console => size(px(720.), px(480.)),
-                WindowKind::View { module } => {
-                    size(px(windows::popout_min(module)), px(windows::POPOUT_MIN))
+                WindowKind::View { program } => {
+                    size(px(windows::popout_min(program)), px(windows::POPOUT_MIN))
                 }
-            }),
+            })),
             app_id: Some("dev.ducktape.app".into()),
             kind: gpui_kit::WindowKind::Normal,
             icon: image::RgbaImage::from_raw(
@@ -365,11 +415,13 @@ impl Windows {
         cx.defer(move |cx| {
             let mut opened_view = None;
             let (root_entities, windows) = (entities.clone(), this.clone());
+            let closing = this.downgrade();
             let opened = cx.open_window(options, |window, cx| {
                 let view = cx.new(|cx| WindowRoot::new(root_entities, key, kind, window, cx));
                 opened_view = Some(view.downgrade());
                 windows.update(cx, |this, cx| this.watch_activation(key, window, cx));
                 window.on_window_should_close(cx, move |window, cx| {
+                    let _ = closing.update(cx, |this, cx| this.floated_closes(key, window, cx));
                     release_window_input(window, cx);
                     true
                 });
@@ -385,6 +437,12 @@ impl Windows {
                         this.handles.insert(key, handle.into());
                         if let Some(view) = opened_view {
                             this.views.insert(key, view);
+                        }
+                        if let Some(on) = this.pending_on_top.remove(&key) {
+                            this.set_on_top(key, on, cx);
+                        }
+                        if this.floats.contains_key(&key) {
+                            this.watch_float(key, handle.into(), cx);
                         }
                         // `Seats` hears the list move: a popped-out pane's
                         // seat moves into its window now
@@ -427,6 +485,7 @@ impl Windows {
         if front != self.front {
             self.front = front;
             self.popped_moved(cx);
+            self.sync_menu(cx);
             cx.notify();
         }
         if !active && let Some(own) = self.by_window.get(&key) {
@@ -446,7 +505,7 @@ impl Windows {
         let focused = layout
             .panes
             .get(layout.focused)
-            .map_or(layout::EMPTY, |pane| pane.module);
+            .map_or(layout::EMPTY, |pane| pane.program);
         self.center
             .lock()
             .set_front(key, self.front == Some(key), focused);
@@ -488,6 +547,74 @@ impl Windows {
         }
     }
 
+    /// Window `key` is kept above other apps' windows.
+    pub(crate) fn on_top(&self, key: WindowKey) -> bool {
+        self.on_top.contains(&key)
+    }
+
+    /// Keep on Top (the Window menu, ⌘⇧T, Search) on window `key`: on if
+    /// it was off, off if it was on.
+    pub(crate) fn toggle_on_top(&mut self, key: WindowKey, cx: &mut Context<Self>) {
+        let on = !self.on_top(key);
+        self.set_on_top(key, on, cx);
+    }
+
+    /// Window `key` kept above other apps' windows (`on`), or let back
+    /// among them. The platform is told a step later (the caller is most
+    /// often inside that very window's update), and the state is kept only
+    /// once it took it: where it can't (Wayland), nothing changes and the
+    /// log says why. A window still opening takes it as it opens. Raising
+    /// the window, its activation and its panes moving leave it as it is;
+    /// closing it forgets it.
+    pub(crate) fn set_on_top(&mut self, key: WindowKey, on: bool, cx: &mut Context<Self>) {
+        let Some(handle) = self.handles.get(&key).copied() else {
+            // a window still opening takes it once it has (`open_window`)
+            if self.by_window.contains_key(&key) {
+                self.pending_on_top.insert(key, on);
+            }
+            return;
+        };
+        let this = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let told = handle.update(cx, |_, window, _| windows::keep_above(window, on));
+            match told {
+                Ok(Ok(())) => {
+                    let _ = this.update(cx, |this, cx| this.kept_on_top(key, on, cx));
+                }
+                Ok(Err(error)) => {
+                    tracing::error!(target: "ducktape::app", reason = "keep_on_top_failed", %error, on, "the window could not be kept on top");
+                }
+                // the window closed first
+                Err(_) => {}
+            }
+        });
+    }
+
+    /// The platform took window `key`'s Keep on Top.
+    fn kept_on_top(&mut self, key: WindowKey, on: bool, cx: &mut Context<Self>) {
+        if !self.handles.contains_key(&key) {
+            return;
+        }
+        match on {
+            true => self.on_top.insert(key),
+            false => self.on_top.remove(&key),
+        };
+        self.sync_menu(cx);
+        // `DeskSeats` hears it: a floated view's pin follows
+        cx.notify();
+    }
+
+    /// The macOS Window menu's Keep on Top shows the front window's state:
+    /// the menu bar is made again when that moved (gpui sets a whole menu
+    /// bar, not one item).
+    fn sync_menu(&mut self, cx: &mut App) {
+        let on = self.front.is_some_and(|front| self.on_top.contains(&front));
+        if on != self.menu_on_top {
+            self.menu_on_top = on;
+            crate::shell::keys::menus(on, cx);
+        }
+    }
+
     /// The console brought forward, or opened if there is none (the tray's
     /// Open; a node answering).
     /// Settings, over the console, raised: on `page`, or where it was last
@@ -503,10 +630,21 @@ impl Windows {
         }
     }
 
+    /// The reader's account (`host.show`): the console bar's account menu,
+    /// over the console, raised.
+    pub(crate) fn show_account(&mut self, cx: &mut Context<Self>) {
+        self.raise_console(cx);
+        if let Some(own) = self.console_own() {
+            own.overlays.update(cx, |overlays, cx| {
+                overlays.open(Overlay::Menu(super::Popover::Account), cx)
+            });
+        }
+    }
+
     pub(crate) fn raise_console(&mut self, cx: &mut Context<Self>) {
         match self.console {
             Some(key) => self.raise(key, cx),
-            None => drop(self.open(WindowKind::Console, None, cx)),
+            None => drop(self.open(WindowKind::Console, None, None, cx)),
         }
     }
 
@@ -567,6 +705,9 @@ impl Windows {
         self.handles.remove(&key);
         self.views.remove(&key);
         self.by_window.remove(&key);
+        self.on_top.remove(&key);
+        self.pending_on_top.remove(&key);
+        self.floats.remove(&key);
         if self.console == Some(key) {
             self.console = None;
         }
@@ -574,6 +715,7 @@ impl Windows {
             self.front = None;
         }
         self.popped_moved(cx);
+        self.sync_menu(cx);
         cx.notify();
     }
 
@@ -604,18 +746,18 @@ impl Windows {
     }
 
     /// Pane `index` of window `from` into a window of its own, opened `at`
-    /// (where it sat). An empty or Help window has no view to carry out.
+    /// (where it sat), never sized under `min` (`None`: its view's): the
+    /// new window's key. An empty or Help window has no view to carry out.
     pub(crate) fn pop_out(
         &mut self,
         from: WindowKey,
         index: usize,
         at: Option<Bounds<Pixels>>,
+        min: Option<Size<Pixels>>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Option<WindowKey> {
         let _timed = timed();
-        let Some(own) = self.by_window.get(&from) else {
-            return;
-        };
+        let own = self.by_window.get(&from)?;
         if !own
             .desk
             .read(cx)
@@ -624,21 +766,151 @@ impl Windows {
             .get(index)
             .is_some_and(|pane| pane.is_view())
         {
-            return;
+            return None;
         }
-        let Some(pane) = own.desk.update(cx, |desk, cx| desk.close(index, cx)) else {
-            return;
-        };
+        let pane = own.desk.update(cx, |desk, cx| desk.close(index, cx))?;
         let kind = WindowKind::View {
-            module: pane.module,
+            program: pane.program,
         };
-        let key = self.open(kind, at, cx);
+        let key = self.open(kind, at, min, cx);
         self.by_window[&key]
             .desk
             .update(cx, |desk, cx| desk.popin(pane, cx));
+        Some(key)
     }
 
-    /// `module` asked for on window `key`'s desk (a tab, a pick in an empty
+    // ---------- a view's float ----------
+
+    /// The window, place and program of the view pane with this
+    /// `instance`, wherever it is.
+    fn pane_of(&self, instance: u64, cx: &App) -> Option<(WindowKey, usize, &'static str)> {
+        self.by_window.iter().find_map(|(key, own)| {
+            let layout = own.desk.read(cx).get();
+            let index = layout
+                .panes
+                .iter()
+                .position(|pane| pane.instance == instance && pane.is_view())?;
+            Some((*key, index, layout.panes[index].program))
+        })
+    }
+
+    /// The minimum width a view floated in window `key` is laid out down
+    /// to; none for a window no view floated.
+    pub(crate) fn float_min(&self, key: WindowKey) -> Option<f32> {
+        self.floats.get(&key).map(|floated| floated.min_width)
+    }
+
+    /// A view's float (`host.float`) of the pane with this `instance`: the
+    /// pane into a window of its own whose body is `body`, never under
+    /// `min`, kept above other windows when `on_top` and this platform
+    /// can; both fit the display the pane was on (a pane on no display
+    /// does not float). It opens where this program's float was last left
+    /// in this run, else at that display's bottom-right
+    /// (`windows::corner`). Floating already, Keep on Top alone follows
+    /// `on_top`. The shell knows nothing of what the view does in it.
+    pub(crate) fn float(
+        &mut self,
+        instance: u64,
+        body: Size<Pixels>,
+        min: Size<Pixels>,
+        on_top: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let _timed = timed();
+        let Some((from, index, program)) = self.pane_of(instance, cx) else {
+            return;
+        };
+        let above = windows::can_keep_above(cx);
+        if self.floats.contains_key(&from) {
+            if above {
+                self.set_on_top(from, on_top, cx);
+            }
+            return;
+        }
+        let display = self.handles.get(&from).and_then(|handle| {
+            handle
+                .update(cx, |_, window, cx| {
+                    window.display(cx).map(|display| display.visible_bounds())
+                })
+                .ok()
+                .flatten()
+        });
+        let Some(display) = display else {
+            return;
+        };
+        // the body is the float's: its window adds the strip above it, and
+        // the two fit the display (a view asks any size)
+        let room = size(display.size.width, display.size.height - px(layers::TITLE));
+        let body = size(body.width.min(room.width), body.height.min(room.height));
+        let min = size(min.width.min(body.width), min.height.min(body.height));
+        let window = |body: Size<Pixels>| size(body.width, body.height + px(layers::TITLE));
+        let at = self.left.get(program).copied();
+        let at = at.or_else(|| Some(windows::corner(window(body), display)));
+        let Some(key) = self.pop_out(from, index, at, Some(window(min)), cx) else {
+            return;
+        };
+        // a pop-out is its one pane: it goes with it
+        if self.console != Some(from) {
+            self.remove(from, cx);
+        }
+        let min_width = f32::from(min.width);
+        let floated = Floated {
+            program,
+            min_width,
+            moves: None,
+        };
+        self.floats.insert(key, floated);
+        if on_top && above {
+            self.set_on_top(key, true, cx);
+        }
+    }
+
+    /// A view's unfloat (`host.unfloat`) of the pane with this `instance`:
+    /// its float's pane back on the desk (`pop_in`). Nothing while it does
+    /// not float.
+    pub(crate) fn unfloat(&mut self, instance: u64, cx: &mut Context<Self>) {
+        if let Some((key, _, _)) = self.pane_of(instance, cx)
+            && self.floats.contains_key(&key)
+        {
+            self.pop_in(key, cx);
+        }
+    }
+
+    /// The OS closes window `key`: a float's pane goes back on the desk
+    /// first (a call does not end at a small window's close button; its
+    /// view's own Leave ends it), and its place is kept for the next. Any
+    /// other window closes with its pane.
+    fn floated_closes(&mut self, key: WindowKey, window: &Window, cx: &mut Context<Self>) {
+        let Some(program) = self.floats.get(&key).map(|floated| floated.program) else {
+            return;
+        };
+        self.left.insert(program, window.bounds());
+        self.send_home(key, cx);
+    }
+
+    /// Float `key`'s place, kept as it moves for the program's next float
+    /// in this run; on macOS the float is on every Space and over full
+    /// screen apps.
+    fn watch_float(&mut self, key: WindowKey, handle: AnyWindowHandle, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |_, window, cx| {
+                windows::join_all_spaces(window);
+                let _ = this.update(cx, |this, cx| {
+                    let moves = cx.observe_window_bounds(window, move |this, window, _| {
+                        if let Some(floated) = this.floats.get(&key) {
+                            this.left.insert(floated.program, window.bounds());
+                        }
+                    });
+                    if let Some(floated) = this.floats.get_mut(&key) {
+                        floated.moves = Some(moves);
+                    }
+                });
+            });
+        });
+    }
+
+    /// `program` asked for on window `key`'s desk (a tab, a pick in an empty
     /// window, Spotlight, a link): where `Layout::open` puts it, but a
     /// program that desk does not show and a pop-out does brings the
     /// pop-out forward rather than opening it again (the desk's focused
@@ -647,13 +919,13 @@ impl Windows {
     pub(crate) fn open_program(
         &mut self,
         key: WindowKey,
-        module: &'static str,
+        program: &'static str,
         cx: &mut Context<Self>,
     ) -> Option<u64> {
         let _timed = timed();
         let desk = self.by_window.get(&key).map(|own| own.desk.clone())?;
         let pane_of = |layout: &Layout| {
-            let pane = layout.panes.iter().find(|pane| pane.module == module);
+            let pane = layout.panes.iter().find(|pane| pane.program == program);
             pane.map(|pane| pane.instance)
         };
         let layout = desk.read(cx).get();
@@ -673,11 +945,11 @@ impl Windows {
                 Some(instance)
             }
             None => {
-                desk.update(cx, |desk, cx| desk.open(module, cx));
+                desk.update(cx, |desk, cx| desk.open(program, cx));
                 // `Layout::open` leaves the pane it opened or found focused
                 let layout = desk.read(cx).get();
                 let pane = layout.panes.get(layout.focused)?;
-                (pane.module == module).then_some(pane.instance)
+                (pane.program == program).then_some(pane.instance)
             }
         }
     }
@@ -685,17 +957,25 @@ impl Windows {
     /// Pop-out `key`'s pane back onto the console's desk; its window goes.
     pub(crate) fn pop_in(&mut self, key: WindowKey, cx: &mut Context<Self>) {
         let _timed = timed();
+        if self.send_home(key, cx) {
+            self.remove(key, cx);
+        }
+    }
+
+    /// Pop-out `key`'s pane onto the console's desk; false where there is
+    /// no console to go back to (or `key` is it).
+    fn send_home(&mut self, key: WindowKey, cx: &mut Context<Self>) -> bool {
         let Some(console) = self.console.filter(|console| *console != key) else {
-            return;
+            return false;
         };
         let (Some(own), Some(console)) = (self.by_window.get(&key), self.by_window.get(&console))
         else {
-            return;
+            return false;
         };
         if let Some(pane) = own.desk.update(cx, |desk, cx| desk.close(0, cx)) {
             console.desk.update(cx, |desk, cx| desk.popin(pane, cx));
         }
-        self.remove(key, cx);
+        true
     }
 
     // ---------- the console's desk ----------
@@ -703,9 +983,9 @@ impl Windows {
     /// Show a program on the desk (Spotlight, a menu), as the bar's click
     /// does: into an empty focused window, else the window it is in, else
     /// one of its own.
-    pub(crate) fn select_view(&mut self, module: &'static str, cx: &mut Context<Self>) {
+    pub(crate) fn select_view(&mut self, program: &'static str, cx: &mut Context<Self>) {
         let _timed = timed();
-        self.open_seat(module, None, None, cx);
+        self.open_seat(program, None, None, cx);
     }
 
     /// Help on the desk: into the focused window if it is empty, else
@@ -731,7 +1011,7 @@ impl Windows {
     /// `duck://<chain>/<program>/<tail>` on this chain, or the short
     /// `duck://<view>/<route>`: the seat opens and its view is handed the
     /// route. The window coming forward is the answer; a notice only says
-    /// what there is nothing to see of. `from` is the pane (its module and
+    /// what there is nothing to see of. `from` is the pane (its program and
     /// instance) whose view opened the link, `None` from anywhere else.
     pub(crate) fn open_link(
         &mut self,
@@ -740,42 +1020,28 @@ impl Windows {
         cx: &mut Context<Self>,
     ) {
         let _timed = timed();
-        let parsed = self.shared.rail.read(cx).parse_link(link);
-        match parsed {
-            Link::View { module, route } => self.open_seat(module, route, from, cx),
-            Link::Chain(parsed) if !self.shared.rail.read(cx).lists(&parsed.program) => {
-                self.notice(format!("No view here opens {} links.", parsed.program), cx);
-            }
-            Link::Chain(parsed) => {
-                let module = crate::runtime::intern(&parsed.program);
-                let route = parsed.tail.join("/");
-                let chain = self.shared.session.read(cx).get().chain.clone();
-                if parsed.chain.to_string() != chain {
-                    // another chain's page is not this chain's to show
-                    self.open_seat(module, None, from, cx);
-                    self.notice(
-                        format!(
-                            "That link is to {}, not this network; opened {module}.",
-                            parsed.chain.label
-                        ),
-                        cx,
-                    );
-                } else if route.is_empty() || crate::runtime::valid_route(&route) {
-                    self.open_seat(module, (!route.is_empty()).then_some(route), from, cx);
-                } else {
-                    self.open_seat(module, None, from, cx);
-                    self.notice(format!("{module} can't open that part of the link."), cx);
+        let chain = self.shared.session.read(cx).get().chain.clone();
+        match self.shared.rail.read(cx).opening(link, &chain) {
+            Opening::Seat {
+                program,
+                route,
+                notice,
+            } => {
+                self.open_seat(program, route, from, cx);
+                if let Some(said) = notice {
+                    self.notice(said, cx);
                 }
             }
-            // to the view that declares `web`, if one is listed and this
-            // build has a web view; else the system browser
-            Link::Web(url) => match crate::render::web::view_for(&url)
-                .filter(|module| self.shared.rail.read(cx).lists(module))
-            {
-                Some(module) => self.open_seat(module, Some(url), from, cx),
-                None => cx.open_url(&url),
-            },
-            Link::Unknown => self.notice("This link is not one this app opens.".into(), cx),
+            // another chain's page is not this chain's to show
+            Opening::Elsewhere { program, chain } => {
+                self.open_seat(program, None, from, cx);
+                self.notice(
+                    format!("That link is to {chain}, not this network; opened {program}."),
+                    cx,
+                );
+            }
+            Opening::Browser(url) => cx.open_url(&url),
+            Opening::Nothing(said) => self.notice(said, cx),
         }
     }
 
@@ -784,37 +1050,37 @@ impl Windows {
     pub(crate) fn open_notice(&mut self, entry: &Entry, cx: &mut Context<Self>) {
         if !entry.link.is_empty() {
             self.open_link(&entry.link, None, cx);
-        } else if self.shared.rail.read(cx).lists(&entry.module) {
-            self.open_seat(crate::runtime::intern(&entry.module), None, None, cx);
+        } else if self.shared.rail.read(cx).lists(&entry.program) {
+            self.open_seat(crate::runtime::intern(&entry.program), None, None, cx);
         }
     }
 
-    /// `module` beside the view in front on the console's desk, not in
+    /// `program` beside the view in front on the console's desk, not in
     /// place of it, or its pop-out forward (`open_program`), and that one
     /// seat handed `route`. A view's link into its own program (`from`)
     /// goes to its own seat, and nothing comes forward or moves.
     fn open_seat(
         &mut self,
-        module: &'static str,
+        program: &'static str,
         route: Option<String>,
         from: Option<(&'static str, u64)>,
         cx: &mut Context<Self>,
     ) {
-        if let Some((_, instance)) = from.filter(|(from, _)| *from == module) {
+        if let Some((_, instance)) = from.filter(|(from, _)| *from == program) {
             if let Some(route) = route {
-                crate::runtime::route_to(module, instance, route);
+                crate::runtime::route_to(program, instance, route);
             }
             return;
         }
-        if self.active != Some(module) {
-            self.active = Some(module);
+        if self.active != Some(program) {
+            self.active = Some(program);
             cx.notify();
         }
         let seat = self
             .console
-            .and_then(|console| self.open_program(console, module, cx));
+            .and_then(|console| self.open_program(console, program, cx));
         if let Some((route, instance)) = route.zip(seat) {
-            crate::runtime::route_to(module, instance, route);
+            crate::runtime::route_to(program, instance, route);
         }
     }
 
@@ -885,9 +1151,9 @@ impl Windows {
 
     /// The launcher and the desk are one window: crossing from one to
     /// the other resizes it in place rather than closing it and opening
-    /// another. The launcher comes up centred on the window's display; the
-    /// desk comes back where it was, at its size, maximized or fullscreen
-    /// again if it had been.
+    /// another. The launcher comes up centred on the window's display, at
+    /// its fixed size; the desk comes back where it was, at its size,
+    /// maximized or fullscreen again if it had been, and resizes again.
     fn swap_console(&mut self, cx: &mut Context<Self>) {
         let Some(key) = self.console else {
             return;
@@ -976,6 +1242,10 @@ impl Windows {
                         centred(size(px(windows::WINDOW_SIZE.0), px(windows::WINDOW_SIZE.1)))
                     }
                 };
+                // the launcher is fixed at its size, the desk resizes; set
+                // first: a fixed window still takes the new size, and the
+                // desk's zoom or full screen needs a resizable one
+                window.set_resizable(!launcher);
                 window.set_bounds(to);
                 match (launcher, desk) {
                     (false, Some(WindowBounds::Fullscreen(_))) => window.toggle_fullscreen(),
@@ -996,14 +1266,20 @@ impl Windows {
 
     /// The program in front, as a test seeds it.
     #[cfg(test)]
-    pub(in crate::shell) fn set_active(&mut self, module: Option<&'static str>) {
-        self.active = module;
+    pub(in crate::shell) fn set_active(&mut self, program: Option<&'static str>) {
+        self.active = program;
     }
 
     /// Each window's root view.
     #[cfg(test)]
     pub(in crate::shell) fn views(&self) -> &BTreeMap<WindowKey, WeakEntity<WindowRoot>> {
         &self.views
+    }
+
+    /// The macOS Window menu's Keep on Top check, as last set.
+    #[cfg(test)]
+    pub(in crate::shell) fn menu_on_top(&self) -> bool {
+        self.menu_on_top
     }
 }
 
@@ -1065,18 +1341,22 @@ pub(crate) fn posted() -> UnboundedReceiver<Posted> {
     let (send, receive) = mpsc::unbounded();
     let mut current = poster().lock().expect("the shell's posts");
     assert!(current.is_none(), "one native shell per process");
-    // runtime::notify and backend::auth_page cannot depend on shell: they
-    // call these hooks instead
-    crate::runtime::notify::on_open(|opened| {
-        post(match opened {
-            crate::runtime::notify::Opened::Link(url) => Posted::Link(url),
-            crate::runtime::notify::Opened::Updates => Posted::OpenUpdates,
-        })
-    });
+    // backend::auth_page and update cannot depend on shell: they call these
+    // hooks instead (the host's banner opener is `Boot::open`,
+    // `open_banner`)
     crate::backend::auth_page::on_open_url(|url| post(Posted::Url(url)));
     crate::update::on_moved(|| post(Posted::UpdatesMoved));
     *current = Some(send);
     receive
+}
+
+/// The desktop's `Boot::open`: what a banner click names, posted to
+/// `Windows::posted`.
+pub(crate) fn open_banner(opened: crate::runtime::notify::Opened) {
+    post(match opened {
+        crate::runtime::notify::Opened::Link(url) => Posted::Link(url),
+        crate::runtime::notify::Opened::Updates => Posted::OpenUpdates,
+    })
 }
 
 fn post(posted: Posted) {

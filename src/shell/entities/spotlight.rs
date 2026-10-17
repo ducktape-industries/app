@@ -6,16 +6,39 @@ use super::{AccountState, Rail, SessionState, Slice, Spot, SpotRow};
 use gpui_kit::Context;
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Spotlight {
+pub(crate) struct SpotlightState {
     pub(crate) query: String,
     pub(crate) pick: usize,
 }
 
-impl Slice<Spotlight> {
+/// One window's ⌘K, a compared write (`Slice`) with the moves below.
+pub(crate) struct Spotlight(Slice<SpotlightState>);
+
+impl Default for Spotlight {
+    fn default() -> Self {
+        Self(Slice::new(SpotlightState::default()))
+    }
+}
+
+impl std::ops::Deref for Spotlight {
+    type Target = Slice<SpotlightState>;
+
+    fn deref(&self) -> &Slice<SpotlightState> {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Spotlight {
+    fn deref_mut(&mut self) -> &mut Slice<SpotlightState> {
+        &mut self.0
+    }
+}
+
+impl Spotlight {
     /// The text as typed: the pick goes back to the first row.
     pub(crate) fn set_query(&mut self, query: String, cx: &mut Context<Self>) {
         let _timed = crate::perf::time(crate::perf::Key::Shell, "reducer.overlay");
-        self.set(Spotlight { query, pick: 0 }, cx);
+        self.set(SpotlightState { query, pick: 0 }, cx);
     }
 
     /// Up or down a row among `rows` shown, stopping at the ends.
@@ -34,18 +57,20 @@ impl Slice<Spotlight> {
     }
 }
 
-impl Spotlight {
+impl SpotlightState {
     /// What ⌘K offers for the text typed, in the order shown: the
     /// network's programs, the other networks this device reached, then
     /// things to do (the window rows while the desk's front window has a
-    /// frame, `framed`). A row matches when its title or detail holds the
-    /// text, ignoring case.
+    /// frame, `framed`; Keep on Top, saying whether the console is
+    /// (`on_top`), wherever the platform can keep a window on top). A row
+    /// matches when its title or detail holds the text, ignoring case.
     pub(crate) fn rows(
         &self,
         rail: &Rail,
         session: &SessionState,
         account: &AccountState,
         framed: bool,
+        on_top: Option<bool>,
     ) -> Vec<SpotRow> {
         let row = |group, title: String, meta: String, spot| SpotRow {
             group,
@@ -56,13 +81,13 @@ impl Spotlight {
         let mut rows: Vec<SpotRow> = rail
             .rows()
             .iter()
-            .filter(|program| !program.empty)
-            .map(|program| {
+            .filter(|listed| !listed.empty)
+            .map(|listed| {
                 row(
                     "Programs",
-                    program.label.clone(),
+                    listed.label.clone(),
                     "Open".into(),
-                    Spot::Open(program.module),
+                    Spot::Open(listed.program),
                 )
             })
             .collect();
@@ -116,6 +141,15 @@ impl Spotlight {
             ] {
                 rows.push(row("Actions", title.into(), "this desk".into(), spot));
             }
+        }
+        if let Some(on) = on_top {
+            let state = if on { "on" } else { "off" };
+            rows.push(row(
+                "Actions",
+                "Keep on top".into(),
+                format!("this window, {state}"),
+                Spot::KeepOnTop,
+            ));
         }
         for (title, mode) in [
             ("Light appearance", crate::backend::Appearance::Light),
