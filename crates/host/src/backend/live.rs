@@ -5,7 +5,7 @@
 //! certificate's), or the websocket `/v1/live` on its HTTP port: the one
 //! path where it names no port, else dialed with QUIC from the start, the
 //! first handshake done being the session, QUIC once its UDP answered
-//! ([`dial`]). A node that answers the port's route 404 serves no live
+//! unless its handshake then fails ([`dial`]). A node that answers the port's route 404 serves no live
 //! tracks: the request is refused `live_unavailable`, and nothing is
 //! dialed. A lost session ends what rode on it: each request's channels
 //! close, and the next request dials a new session.
@@ -41,7 +41,8 @@ use view_wire::methods::refusal;
 use super::RpcClient;
 
 /// How long a QUIC dial waits for the node's answer before it gives the
-/// UDP path up as silent; the websocket runs beside it all along.
+/// UDP path up as silent, and how long a welcomed websocket waits for an
+/// answered QUIC's handshake; the websocket runs beside it all along.
 const QUIC_ANSWER: Duration = Duration::from_secs(2);
 /// Stream-mode objects one subscription holds for its view. Past it the
 /// group's QUIC stream waits, which holds the node back by flow control;
@@ -1319,10 +1320,12 @@ fn undecoded(kind: &str, bytes: &[u8], error: impl std::fmt::Display) -> String 
 /// names no port, else over QUIC and the websocket started at once, the
 /// first handshake done being the session and the other dropped. QUIC
 /// carries datagrams, so once the node's UDP has answered it is waited
-/// for, a round trip or two from done, though the websocket finish first;
-/// behind a tunnel that carries only TCP the UDP never answers, and the
-/// websocket waits on nothing. A QUIC refusal before any welcome is the
-/// node's word; one path failing waits on the other. Nothing is remembered
+/// for, a round trip or two from done, should the websocket finish first:
+/// up to [`QUIC_ANSWER`], after which, or on its failing, the welcomed
+/// websocket is the session. Behind a tunnel that carries only TCP the UDP
+/// never answers, and the websocket waits on nothing. A QUIC refusal
+/// before any welcome is the node's word; a websocket failing waits on
+/// QUIC, and QUIC silent waits on the websocket. Nothing is remembered
 /// between dials: a node whose UDP comes back is on QUIC at the next one.
 async fn dial(rpc: &RpcClient, client: Weak<Inner>) -> Result<Arc<Conn>, Error> {
     let status = rpc.status().await.map_err(super::refused)?;
@@ -1360,12 +1363,14 @@ async fn dial(rpc: &RpcClient, client: Weak<Inner>) -> Result<Arc<Conn>, Error> 
             }
         },
         ws = &mut ws => match ws {
-            // UDP answered: QUIC is its live handshake from done; failing,
-            // the node's welcome on the websocket stands
-            Ok(session) if answered.load(Ordering::Relaxed) => match quic.await {
-                Quic::Session(quic) => Ok(opened(quic)),
-                Quic::Refused(_) | Quic::Silent(_) => Ok(opened(session)),
-            },
+            // UDP answered: QUIC is its live handshake from done; failing or
+            // late, the node's welcome on the websocket stands
+            Ok(session) if answered.load(Ordering::Relaxed) => {
+                match tokio::time::timeout(QUIC_ANSWER, quic).await {
+                    Ok(Quic::Session(quic)) => Ok(opened(quic)),
+                    Ok(Quic::Refused(_) | Quic::Silent(_)) | Err(_) => Ok(opened(session)),
+                }
+            }
             Ok(session) => Ok(opened(session)),
             Err(refusal) => match quic.await {
                 Quic::Session(session) => Ok(opened(session)),
@@ -1405,11 +1410,12 @@ fn opened(session: Handshaken) -> Arc<Conn> {
 /// How a QUIC dial ended.
 enum Quic {
     Session(Handshaken),
-    /// The node answered and refused the handshake: its word, and no
-    /// other path would do better.
+    /// The handshake over the node's answered UDP failed: the node refused
+    /// it, or the link closed or timed out. Final unless the websocket was
+    /// already welcomed ([`dial`]).
     Refused(Error),
-    /// No QUIC session: the UDP path did not answer, or the certificate
-    /// was not the node's.
+    /// No QUIC session: the UDP path did not answer, the certificate was
+    /// not the node's, or no control stream opened.
     Silent(String),
 }
 

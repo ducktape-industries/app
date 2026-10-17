@@ -26,6 +26,9 @@ enum Answer {
     /// Welcomes, then answers a subscription as a node of another wire
     /// would: a `Subscribed` without the publisher's account.
     Garble,
+    /// Never asks for one: answers UDP with its certificate, then never
+    /// speaks on QUIC.
+    Mute,
 }
 
 /// The node's own certificate, as halo makes it: self-signed by its key.
@@ -139,7 +142,11 @@ async fn node_serving(
                 let read = stream.peek(&mut asked).await.unwrap();
                 let upgrade = format!("GET {} ", live_wire::ROUTE);
                 if paths != Paths::Quic && asked[..read].starts_with(upgrade.as_bytes()) {
-                    let socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                    // a client that drops the socket mid-upgrade (QUIC was
+                    // the session) ends it
+                    let Ok(socket) = tokio_tungstenite::accept_async(stream).await else {
+                        return;
+                    };
                     return ws_relay(socket, node_key).await;
                 }
                 let read = stream.read(&mut asked).await.unwrap();
@@ -184,6 +191,10 @@ async fn write_control(send: &mut quinn::SendStream, control: Control) {
 /// its own key `node` in the preimage is refused `bad_proof`, as core's
 /// relay refuses it.
 async fn relay(connection: quinn::Connection, node: Vec<u8>, answer: Answer) {
+    if matches!(answer, Answer::Mute) {
+        connection.closed().await;
+        return;
+    }
     let (mut send, mut recv) = connection.accept_bi().await.unwrap();
     let Control::Hello(hello) = read(&mut recv).await else {
         panic!("a session opens with a hello")
@@ -614,6 +625,37 @@ async fn a_node_serving_both_paths_opens_over_quic() {
     let (rpc, _) = node_serving(&node_key, identity, Answer::Welcome, Paths::Both).await;
     let conn = dial(&rpc, Weak::new()).await.unwrap();
     assert!(matches!(conn.path, Path::Quic(_)), "QUIC is the session");
+}
+
+/// A node that refuses the key on QUIC after the websocket welcomed it:
+/// the welcome stands, and the websocket is the session.
+#[tokio::test]
+async fn a_quic_refusal_after_the_websocket_welcome_keeps_the_websocket() {
+    let _seat = seated().await;
+    let node_key = ed25519::PrivateKey::from_seed(43);
+    let identity = node_key.public_key().as_ref().to_vec();
+    let (rpc, _) = node_serving(&node_key, identity, Answer::Refuse, Paths::Both).await;
+    let conn = dial(&rpc, Weak::new()).await.unwrap();
+    assert!(matches!(conn.path, Path::Ws(_)), "the welcome stands");
+}
+
+/// A node whose UDP answers and whose QUIC then never speaks: the welcomed
+/// websocket waits for QUIC's handshake [`QUIC_ANSWER`] at most, not the
+/// handshake's own [`HANDSHAKE_WAIT`].
+#[tokio::test]
+async fn a_quic_handshake_that_stalls_after_tls_is_waited_for_no_longer_than_quic_answer() {
+    let _seat = seated().await;
+    let node_key = ed25519::PrivateKey::from_seed(44);
+    let identity = node_key.public_key().as_ref().to_vec();
+    let (rpc, _) = node_serving(&node_key, identity, Answer::Mute, Paths::Both).await;
+    let started = Instant::now();
+    let conn = dial(&rpc, Weak::new()).await.unwrap();
+    let took = started.elapsed();
+    assert!(matches!(conn.path, Path::Ws(_)), "the welcome stands");
+    assert!(
+        took < QUIC_ANSWER + QUIC_ANSWER / 2,
+        "the session took {took:?}"
+    );
 }
 
 /// A node that answers the port's route 404 serves no live tracks: the
