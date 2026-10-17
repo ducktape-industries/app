@@ -1088,6 +1088,52 @@ fn a_bell_row_opens_the_notices_program(cx: &mut TestAppContext) {
     );
 }
 
+/// The updater's own row in the bell, a program the roster does not list:
+/// named by its words and where it is from, never blank; clicked, the bell
+/// closes and Settings opens on its Updates page.
+#[gpui_kit::test]
+fn a_bell_row_of_the_updater_opens_settings_updates(cx: &mut TestAppContext) {
+    let (app, _, view, mut native) = console(cx);
+    let id = native.update(|_, cx| {
+        let notifications = app.notifications.read(cx);
+        let mut center = notifications.center().lock();
+        let at = crate::runtime::notify::wall();
+        center.post_host(
+            "Ducktape 0.2.0 is ready.",
+            "Restart to update.",
+            "update",
+            at,
+        );
+        center.entries().next().unwrap().id
+    });
+    app.notifications.update(&mut native, |notifications, cx| {
+        _ = notifications.refresh(cx)
+    });
+    show(
+        &view,
+        Some(Overlay::Menu(Popover::Notifications)),
+        &mut native,
+    );
+    let nodes = native.update(draw);
+    let row = nodes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["id"] == format!("console:notif/{id}"))
+        .unwrap_or_else(|| panic!("no row: {nodes}"));
+    assert_eq!(
+        row["name"],
+        "Unread. Ducktape 0.2.0 is ready.: Restart to update."
+    );
+    assert_eq!(row["description"], "now · ducktape · update");
+    native.update(|window, cx| press(&format!("notif/{id}"), window, cx));
+    settle(&mut native);
+    assert_eq!(
+        native.update(|_, cx| *view.read(cx).overlays().read(cx).get()),
+        Some(Overlay::Settings(SettingsPage::Updates))
+    );
+}
+
 /// A pane that leaves the desk with an intent still to hand over (a badge
 /// its last update set) gets it to the rail: `hide` returns them and the
 /// reconcile routes them, since the seat's own route is dropped in the

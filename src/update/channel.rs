@@ -3,7 +3,8 @@
 //! healthy signal that settles a flip, and from then on a thread of its own
 //! checks the channel now, every [`CHECK_INTERVAL`], and at once when the
 //! person picks the other channel in Settings ([`choose`]), flips "Update
-//! automatically" ([`automate`]) or presses "Update now" ([`update_now`]).
+//! automatically" ([`automate`]), presses "Update now" ([`update_now`]) or
+//! "Check now" ([`check_now`]).
 //! With updating automatically off a check only names a newer release
 //! (`Take::Nothing`), and a release the updater took on its own before the
 //! switch went off is dropped (`AutomaticOff`); "Update now" is one check
@@ -22,7 +23,8 @@
 //! - `Verify`: extract into `releases/<sha>/` ([`super::stage`]).
 //! - `Gc`, `Persist`, `PinSuccessor`, `Banner`: the local
 //!   writes, what Settings › Updates shows ([`shown`]), and one desktop
-//!   notice per staged release.
+//!   notice per staged release, with its row in the notification centre;
+//!   the first frame after a flip says what it installed, the same way.
 //!
 //! The flip is the next start's: nothing here qualifies, flips or `exec`s.
 //! "Restart to update" ([`restart`]) only quits into that next start.
@@ -47,11 +49,13 @@ use ducktape_updater::{
 use tracing::{debug, info, warn};
 
 use super::{Layout, TARGET, stage};
+use crate::runtime::notify::{CenterHandle, HOST};
 
 /// How often the running app asks the channel.
 pub(super) const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
-/// The tag the update notice stands under: a newer staged release replaces it.
-const NOTICE_TAG: &str = "ducktape/update";
+/// The tag the update notice stands under, its row in the centre too: a
+/// newer staged release replaces it, and "installed" replaces "ready".
+const NOTICE_TAG: &str = "update";
 
 /// The updater the boot step armed, until the first frame starts it.
 static ARMED: Mutex<Option<Updater>> = Mutex::new(None);
@@ -65,6 +69,8 @@ static CHOSEN: Mutex<Option<Channel>> = Mutex::new(None);
 static AUTOMATIC: AtomicBool = AtomicBool::new(true);
 /// "Update now" was pressed: the next turn's check takes what is newer.
 static ASKED: AtomicBool = AtomicBool::new(false);
+/// A check runs: Settings says so, and "Check now" queues none behind it.
+static CHECKING: AtomicBool = AtomicBool::new(false);
 /// Wakes the check loop: a pick is checked now, not an hour from now.
 static WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 /// What Settings reads; `None` while the updater is off.
@@ -89,6 +95,16 @@ struct Reading {
     banner: Option<UpdateBanner>,
     /// A rollback the boot step made, read at this start.
     rolled_back: Option<RolledBack>,
+    /// When the last check that asked the channel ended.
+    checked: Option<Checked>,
+}
+
+/// A check that asked the channel, ended: when, by the wall clock, and
+/// whether the channel answered (unreachable or unpublished, it did not).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Checked {
+    at: i64,
+    answered: bool,
 }
 
 /// The boot step found this image is the installed release.
@@ -100,6 +116,7 @@ pub(super) fn arm(layout: Layout, phase: Phase) {
     let _ = HOME.set(layout.clone());
     let mut updater = Updater::new(layout, phase, keys, channel, layout::BASE_URL);
     updater.published = true;
+    updater.center = crate::runtime::notify::center().clone();
     updater.publish();
     *lock(&ARMED) = Some(updater);
 }
@@ -178,7 +195,11 @@ pub(crate) fn rendered() {
                         (false, true) => Take::Automatic,
                         (false, false) => Take::Nothing,
                     };
+                    CHECKING.store(true, Ordering::SeqCst);
+                    moved();
                     updater.check(&client, take).await;
+                    CHECKING.store(false, Ordering::SeqCst);
+                    moved();
                     tokio::select! {
                         () = tokio::time::sleep(CHECK_INTERVAL) => {}
                         () = WAKE.notified() => {}
@@ -244,6 +265,18 @@ pub(crate) fn update_now() {
     info!(target: TARGET, event = "app_update_asked");
     ASKED.store(true, Ordering::SeqCst);
     WAKE.notify_one();
+}
+
+/// Settings' "Check now": the channel asked now, taking what the loop's
+/// turn would take, unless a check runs already (none queues behind it).
+/// Nothing while the updater is off.
+pub(crate) fn check_now() {
+    if HOME.get().is_none() || CHECKING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    info!(target: TARGET, event = "app_update_check_now");
+    WAKE.notify_one();
+    moved();
 }
 
 /// "Restart to update": this app quits (the caller's part) and the install
@@ -346,9 +379,14 @@ pub(super) struct Updater {
     /// The highest sequence each channel's verified manifest has carried,
     /// by channel name: `<updates>/seen.json`.
     seen: BTreeMap<String, u64>,
+    /// When the last check that asked the channel ended.
+    checked: Option<Checked>,
     /// The process's own updater ([`arm`]): it, and no test's, is what
     /// Settings reads and what raises the desktop notice.
     published: bool,
+    /// The centre its notices' rows go into: the app's for the process's
+    /// own ([`arm`]), a test's own otherwise.
+    center: CenterHandle,
 }
 
 /// The pinned key, and the successor a verified manifest announced.
@@ -394,8 +432,10 @@ impl Updater {
             base: base.to_string(),
             banner: None,
             rolled_back: None,
+            checked: None,
             seen,
             published: false,
+            center: CenterHandle::default(),
         }
     }
 
@@ -404,23 +444,38 @@ impl Updater {
         &self.phase
     }
 
+    /// Its notices' rows into `center`, as the app's next start's updater
+    /// puts them into the one centre the last start's did.
+    #[cfg(test)]
+    pub(super) fn with_center(mut self, center: CenterHandle) -> Self {
+        self.center = center;
+        self
+    }
+
     /// The first frame: a flip that came up settles, and a rollback the
     /// boot step made is read (logged, and kept for Settings this session).
     pub(super) fn start(&mut self) {
         let was_pending = matches!(self.phase, Phase::PendingHealthy(_));
         self.apply(Event::Rendered);
-        if was_pending && matches!(self.phase, Phase::Idle(_)) {
+        let settled = was_pending && matches!(self.phase, Phase::Idle(_));
+        if settled {
             info!(target: TARGET, event = "app_update_settled", release = %self.phase.current(), pinned_sequence = self.phase.pinned_sequence());
         }
+        let went_back = matches!(self.phase, Phase::RolledBack(_));
         if let Phase::RolledBack(rolled_back) = &self.phase {
             warn!(target: TARGET, event = "app_update_rolled_back", failed = %rolled_back.failed, current = %rolled_back.current, reason = %rolled_back.reason);
             self.rolled_back = Some(rolled_back.clone());
             self.apply(Event::DismissRollbackNotice);
         }
         // a flip, a rollback or a dropped release since the notice went up
-        // (by this process or the one before): nothing waits for a restart
-        if !matches!(self.phase, Phase::Staged(_)) {
-            self.notice(None);
+        // (by this process or the one before): nothing waits for a restart.
+        // A flip says what it installed in its place; a rollback says
+        // nothing new (Settings › Updates does), and its "ready" goes
+        match self.phase {
+            _ if settled => self.notice(Said::Installed(&super::version())),
+            _ if went_back => self.notice(Said::Dropped),
+            Phase::Staged(_) => {}
+            _ => self.notice(Said::Unstaged),
         }
     }
 
@@ -432,6 +487,7 @@ impl Updater {
         }
         self.channel = channel;
         self.banner = None;
+        self.checked = None;
         self.apply(Event::ChannelChanged);
     }
 
@@ -442,24 +498,45 @@ impl Updater {
     /// never staged, and the next turn's [`Updater::switch`] drops what it
     /// was downloading. Likewise a check updating automatically stops once
     /// the switch is off, and the next turn's `AutomaticOff` drops the rest.
+    /// Once it ends, when it did is kept for Settings, and whether the
+    /// channel answered, if it was asked.
     pub(super) async fn check(&mut self, client: &reqwest::Client, take: Take) {
+        if let Some(answered) = self.jobs(client, take).await {
+            self.checked = Some(Checked {
+                at: crate::runtime::notify::wall(),
+                answered,
+            });
+            self.publish();
+        }
+    }
+
+    /// [`Updater::check`]'s jobs, in turn: whether the channel answered,
+    /// none when the turn did not ask it.
+    async fn jobs(&mut self, client: &reqwest::Client, take: Take) -> Option<bool> {
         let asked = self.channel;
+        let mut answered = None;
         let mut job = self.apply(Event::Tick);
         while let Some(next) = job.take() {
-            let Some(event) = self.run(client, next, take).await else {
-                return;
+            let fetch = next == Job::Fetch;
+            let event = self.run(client, next, take).await;
+            if fetch {
+                answered = Some(event.is_some());
+            }
+            let Some(event) = event else {
+                return answered;
             };
             let now = read_channel(&self.layout);
             if now != asked {
                 info!(target: TARGET, event = "app_update_dropped", asked = asked.name(), now = now.name(), "the channel moved while this check ran");
-                return;
+                return None;
             }
             if take == Take::Automatic && !read_automatic(&self.layout) {
                 info!(target: TARGET, event = "app_update_dropped", "updating automatically went off while this check ran");
-                return;
+                return answered;
             }
             job = self.apply(event);
         }
+        answered
     }
 
     /// Feed one event through `step` and perform its local commands.
@@ -489,7 +566,7 @@ impl Updater {
                 Command::Banner(banner) => {
                     note_banner(&banner);
                     if let UpdateBanner::Ready { display, .. } = &banner {
-                        self.notice(Some(display));
+                        self.notice(Said::Ready(display));
                     }
                     self.banner = Some(banner);
                 }
@@ -506,30 +583,54 @@ impl Updater {
         let unstaged = matches!(self.phase, Phase::Staged(_)) && !matches!(phase, Phase::Staged(_));
         self.phase = phase;
         if unstaged {
-            self.notice(None);
+            self.notice(Said::Dropped);
         }
         self.publish();
         job
     }
 
-    /// The desktop notice follows the staged release: up as one is staged
-    /// (`ready`, its display), down whenever none is.
-    fn notice(&self, ready: Option<&str>) {
+    /// The desktop notice and its row in the centre follow the staged
+    /// release: up as one is staged, the banner down whenever none is, the
+    /// row out once what it said is dropped; and after a flip, what it
+    /// installed in their place.
+    fn notice(&self, said: Said) {
         #[cfg(test)]
         NOTICED_HERE.with(|noticed| {
-            noticed
-                .borrow_mut()
-                .push(ready.map_or("withdrawn".into(), |display| format!("ready {display}")));
+            noticed.borrow_mut().push(match said {
+                Said::Ready(display) => format!("ready {display}"),
+                Said::Installed(version) => format!("installed {version}"),
+                Said::Dropped | Said::Unstaged => "withdrawn".into(),
+            });
         });
-        if !self.published {
-            return;
-        }
-        match ready {
-            Some(display) => notify_ready(display),
-            None => {
-                crate::os::withdraw_host();
-                debug!(target: TARGET, event = "app_update_notice_withdrawn");
+        let (title, body) = match said {
+            Said::Ready(display) => (
+                format!("Ducktape {display} is ready."),
+                "Restart to update.",
+            ),
+            Said::Installed(version) => (
+                format!("Ducktape {version} is installed."),
+                "It runs from now on.",
+            ),
+            Said::Dropped => {
+                self.center.lock().withdraw_host(NOTICE_TAG);
+                return self.withdraw();
             }
+            Said::Unstaged => return self.withdraw(),
+        };
+        let wall = crate::runtime::notify::wall();
+        self.center.lock().post_host(&title, body, NOTICE_TAG, wall);
+        if self.published {
+            raise(title, body);
+            moved();
+        }
+    }
+
+    /// The update notice's banner down, whichever process raised it.
+    fn withdraw(&self) {
+        if self.published {
+            crate::os::withdraw_host();
+            debug!(target: TARGET, event = "app_update_notice_withdrawn");
+            moved();
         }
     }
 
@@ -585,6 +686,7 @@ impl Updater {
             channel: self.channel,
             banner: self.banner.clone(),
             rolled_back: self.rolled_back.clone(),
+            checked: self.checked,
         }
     }
 
@@ -608,14 +710,28 @@ fn moved() {
     }
 }
 
-/// The desktop notice for a staged release: one for the install, the next
-/// replacing it. The device's banners switch decides; a click opens
-/// Settings › Updates.
-fn notify_ready(display: &str) {
+/// What the update notice says ([`Updater::notice`]).
+#[derive(Clone, Copy)]
+enum Said<'a> {
+    /// A release is staged for the next start: its display.
+    Ready(&'a str),
+    /// The flip settled: the version that runs now ([`super::version`]).
+    Installed(&'a str),
+    /// What was ready is no more (dropped, superseded, rolled back): the
+    /// banner down, and its row out.
+    Dropped,
+    /// Nothing is staged as this process starts: a banner an earlier one
+    /// left goes; the row, which says what last happened, stays.
+    Unstaged,
+}
+
+/// The update notice's banner: one for the install, the next replacing it.
+/// The device's banners switch decides; a click opens Settings › Updates.
+fn raise(title: String, body: &str) {
     let notice = crate::runtime::notify::Notice {
-        title: format!("Ducktape {display} is ready."),
-        body: "Restart to update.".into(),
-        tag: NOTICE_TAG.into(),
+        title,
+        body: body.into(),
+        tag: format!("{HOST}/{NOTICE_TAG}"),
         // the host's own: no program's, and a click opens Settings › Updates
         ..Default::default()
     };
@@ -820,6 +936,10 @@ pub(crate) struct Shown {
     /// Updating automatically is off and the channel offers a newer
     /// release: "Update now".
     pub(crate) update_now: bool,
+    /// When the last check ended, in words, said after the status.
+    pub(crate) checked: Option<String>,
+    /// A check runs: "Check now" says so, and waits.
+    pub(crate) checking: bool,
 }
 
 #[cfg(test)]
@@ -882,6 +1002,8 @@ impl Shown {
             status: status(chosen, reading),
             restart,
             update_now,
+            checked: last_check(chosen, reading),
+            checking: CHECKING.load(Ordering::SeqCst),
         }
     }
 }
@@ -944,4 +1066,25 @@ fn status(chosen: Channel, reading: &Reading) -> String {
             format!("The new release did not start: {reason}")
         }
     }
+}
+
+/// When the last check that asked the channel ended, in words, for the end
+/// of the status: a check that finds nothing new leaves the status as it
+/// was, and this says it ran. None while the status moves on its own (a
+/// download, a pick the loop has not checked yet).
+fn last_check(chosen: Channel, reading: &Reading) -> Option<String> {
+    if matches!(reading.phase, Phase::Downloading(_)) || chosen != reading.channel {
+        return None;
+    }
+    let Checked { at, answered } = reading.checked?;
+    Some(match answered {
+        true => format!("checked at {}", clock(at)),
+        false => format!("{} did not answer at {}", title(reading.channel), clock(at)),
+    })
+}
+
+/// `wall` as this machine's clock reads it: `14:05`.
+pub(super) fn clock(wall: i64) -> String {
+    let local = (wall + crate::runtime::local_offset(wall)).rem_euclid(86_400);
+    format!("{:02}:{:02}", local / 3_600, local / 60 % 60)
 }

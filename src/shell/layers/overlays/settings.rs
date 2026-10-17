@@ -631,18 +631,17 @@ impl OverlayLayer {
     }
 
     /// Settings › Updates: what runs, the channel it follows, whether it
-    /// updates automatically, and where the updater is, with "Update now"
-    /// when that is off and something is newer, and "Restart to update" once
-    /// a release waits. A copy that is not an installed one updates nothing
-    /// and says so.
+    /// updates automatically, and where the updater is, with "Check now"
+    /// (saying so while a check runs), "Update now" when that is off and
+    /// something is newer, and "Restart to update" once a release waits. A
+    /// copy that is not an installed one updates nothing and says so.
     fn updates_page(&mut self, ink: &Ink, cx: &gpui_kit::App) -> Vec<gpui_kit::Div> {
         use crate::update::{Channel, Updates};
         use gpui_kit::*;
-        let version = match option_env!("DUCKTAPE_APP_BUILD") {
-            Some(build) => format!("{} ({build})", env!("CARGO_PKG_VERSION")),
-            None => env!("CARGO_PKG_VERSION").into(),
-        };
-        let mut rows = vec![heading("Updates", ink), line("Version", version, ink)];
+        let mut rows = vec![
+            heading("Updates", ink),
+            line("Version", crate::update::version(), ink),
+        ];
         // where the updater is, one row however it is
         let status = |said: String| {
             div()
@@ -710,7 +709,7 @@ impl OverlayLayer {
             }),
             ink,
         );
-        // the status row's one action, outlined in ink
+        // the status row's actions, outlined in ink
         let button = |id: &'static str, label: &'static str| {
             sans(500, 14.)
                 .id(id)
@@ -736,6 +735,24 @@ impl OverlayLayer {
             button("updates/now", "Update now").on_click(|_, _, _| crate::update::update_now()),
             ink.ink,
         );
+        // one check at a time: while one runs, the button says so and a
+        // press queues nothing
+        let check = match shown.checking {
+            true => crate::a11y::Patch::default()
+                .busy()
+                .on(crate::a11y::keyboard(
+                    button("updates/check", "Checking…").cursor_default(),
+                    ink.ink,
+                )
+                .aria_disabled(true)),
+            false => crate::a11y::keyboard(
+                button("updates/check", "Check now").on_click(|_, _, cx| {
+                    crate::update::check_now();
+                    cx.refresh_windows();
+                }),
+                ink.ink,
+            ),
+        };
         rows.push(setting(
             "Channel",
             "Stable follows each release; Nightly is the newest work, built once a day.",
@@ -748,8 +765,14 @@ impl OverlayLayer {
             automatic,
             ink,
         ));
+        // when the last check ended, after what it found
+        let said = match shown.checked {
+            Some(checked) => format!("{} · {checked}", shown.status),
+            None => shown.status,
+        };
         rows.push(
-            status(shown.status)
+            status(said)
+                .child(div().flex_shrink_0().child(check))
                 .when(shown.restart, |row| {
                     row.child(div().flex_shrink_0().child(restart))
                 })
