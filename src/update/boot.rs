@@ -1,12 +1,16 @@
 //! The boot step, at the very top of `main` before gpui starts: read
 //! `state.json`, run [`step`] on [`Event::Boot`], perform the qualify, flip or
 //! rollback it is told, and make sure the image that goes on is the release
-//! the install path names, `exec`ing it if not. Same PID, argv passed through
-//! untouched (a `duck://` URL rides there), so the process the session
-//! started IS the app, and on macOS it stays the one executable the bundle
-//! is signed with.
+//! the install path names, running it if not. On Linux it is `exec`ed: same
+//! PID, argv passed through untouched (a `duck://` URL rides there), so the
+//! process the session started IS the app. On macOS it starts as a new
+//! launch of the installed bundle and this process exits
+//! ([`super::macos::open_new`]): an `exec`ed image would be judged by the
+//! bundle this process was launched as, the release before. A `duck://`
+//! link that started an app with a flip pending goes with this process: its
+//! Apple Event is read only once AppKit runs, after this step.
 //!
-//! The image a flip `exec`s runs this same step first: it finds
+//! The image a flip starts runs this same step first: it finds
 //! `PendingHealthy{boots: 0}`, counts itself (`boots: 1`) and goes on. If it
 //! never renders a frame, the next start finds `boots: 1` and flips back.
 //!
@@ -14,7 +18,7 @@
 //! ([`super::install::rebuild`]), as an install would have written it.
 //!
 //! When the update machinery cannot be trusted (a link where a file should
-//! be, a flip that refused, an `exec` that failed) the process goes on as the
+//! be, a flip that refused, an `exec` or launch that failed) the process goes on as the
 //! app with the updater off and says why under `ducktape::update`: the boot
 //! step's one job is to never strand the user.
 
@@ -45,7 +49,7 @@ pub(super) enum Boot {
     /// This image is the release that should run: the app goes on, its
     /// updater armed with this phase.
     Run(Phase),
-    /// The install path names another image: `exec` it.
+    /// The install path names another image: run it in this one's place.
     Exec(PathBuf),
 }
 
@@ -64,6 +68,18 @@ pub(crate) fn boot() {
             super::channel::elsewhere();
         }
         Ok(Boot::Run(phase)) => super::channel::arm(layout, phase),
+        Ok(Boot::Exec(_)) if cfg!(target_os = "macos") => {
+            let bundle = layout.installed_bundle();
+            info!(target: TARGET, event = "app_update_launch", bundle = %bundle.display());
+            super::let_go_install(&layout);
+            let args: Vec<_> = std::env::args_os().skip(1).collect();
+            match super::macos::open_new(&bundle, &args) {
+                Ok(()) => std::process::exit(0),
+                Err(said) => {
+                    warn!(target: TARGET, event = "app_update_refused", reason = "launch_failed", said, "going on as this image with the updater off")
+                }
+            }
+        }
         Ok(Boot::Exec(exe)) => {
             info!(target: TARGET, event = "app_update_exec", exe = %exe.display());
             let error = Process::new(&exe).args(std::env::args_os().skip(1)).exec();

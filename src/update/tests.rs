@@ -274,6 +274,21 @@ fn the_restart_waiter_waits_until_the_install_is_let_go() {
     );
 }
 
+/// The macOS boot step lets the install go before it starts the new launch,
+/// which must take it: a start that finds it held runs with the updater off.
+#[test]
+fn a_new_launch_finds_the_install_let_go() {
+    use std::os::unix::io::AsRawFd as _;
+    let (_root, layout) = rig();
+    assert!(super::hold_install(&layout).unwrap());
+    let next = std::fs::File::open(layout.updates.join("lock")).unwrap();
+    // SAFETY: an open descriptor and flag constants.
+    let take = || unsafe { libc::flock(next.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    assert_ne!(take(), 0, "held by the process that flipped");
+    super::let_go_install(&layout);
+    assert_eq!(take(), 0, "the new launch takes it");
+}
+
 // ---- the channel: fetch and download ----------------------------------------
 
 /// Each channel is one file, its manifest and the signature over it, read
