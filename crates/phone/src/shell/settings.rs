@@ -163,7 +163,7 @@ pub fn page(
 /// title over its caption, then whatever the caller puts at the right; 56
 /// with a caption (48 without), 6 above and below, the gutter at the sides,
 /// a hairline under.
-fn row(
+pub(super) fn row(
     id: &'static str,
     icon: &'static str,
     title: impl Into<SharedString>,

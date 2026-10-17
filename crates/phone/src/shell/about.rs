@@ -136,7 +136,11 @@ pub fn page(
 
 /// A section's head (Expo `SectionHead`): 12 medium muted label, a count
 /// at the right.
-pub(super) fn section(label: &'static str, count: Option<String>, palette: Palette) -> Div {
+pub(super) fn section(
+    label: impl Into<SharedString>,
+    count: Option<String>,
+    palette: Palette,
+) -> Div {
     div()
         .min_h(px(40.))
         .flex()
@@ -145,7 +149,7 @@ pub(super) fn section(label: &'static str, count: Option<String>, palette: Palet
         .pt(px(look::gap::LG))
         .pb(px(look::gap::XXS))
         .px(px(look::GUTTER))
-        .child(look::text(look::CAPTION, FontWeight::MEDIUM, palette.muted()).child(label))
+        .child(look::text(look::CAPTION, FontWeight::MEDIUM, palette.muted()).child(label.into()))
         .children(count.map(|count| {
             look::text(look::CAPTION, FontWeight::NORMAL, palette.muted()).child(count)
         }))
