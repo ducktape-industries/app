@@ -48,3 +48,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile.workspace = true
 # a notifier's wire notice, through an account's centre to the push channel
 view-wire.workspace = true
+# the identity replies a fake node answers the door's recheck with
+identity.workspace = true

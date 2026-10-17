@@ -203,11 +203,7 @@ fn open_door(config: &Config, data: &Path) -> Result<(), String> {
         })
         .collect::<Result<Vec<_>, String>>()?;
     tracing::info!(target: "pushd", listen, networks = networks.len(), "the door is open");
-    Arc::new(Door {
-        networks,
-        reader: Arc::new(reader_key()),
-    })
-    .serve(listener)
+    Arc::new(Door::new(networks, Arc::new(reader_key()))).serve(listener)
 }
 
 /// One pushd per network, each this binary with `--network`: until the
