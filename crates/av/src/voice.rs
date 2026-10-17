@@ -97,6 +97,19 @@ pub struct Io {
 
 static IO: Mutex<Weak<Io>> = Mutex::new(Weak::new());
 
+/// Told `true` when the voice I/O is made and `false` when its last holder
+/// let go: the app's call, as what stands outside it sees it (the phone's
+/// call screen, iOS CallKit through the launcher, ends its call with it).
+/// One for the process, set before the first hold ([`on_life`]).
+static LIFE: std::sync::OnceLock<fn(bool)> = std::sync::OnceLock::new();
+
+/// Sets what is told the voice I/O's life ([`LIFE`]); the first set stands.
+pub fn on_life(told: fn(bool)) {
+    if LIFE.set(told).is_err() {
+        tracing::warn!(target: "ducktape::av", "the voice I/O's life is already followed");
+    }
+}
+
 /// The app's voice I/O, made on the first hold (its thread started, the
 /// microphone and speaker on `device` and `output`) and gone with the last
 /// holder.
@@ -134,6 +147,9 @@ pub fn hold(device: Option<String>, output: Option<String>) -> Arc<Io> {
     if let Err(error) = spawned {
         tracing::error!(target: "ducktape::av", %error, "voice thread did not start");
     }
+    if let Some(told) = LIFE.get() {
+        told(true);
+    }
     io
 }
 
@@ -155,6 +171,9 @@ fn apm() -> sonora::AudioProcessing {
 impl Drop for Io {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        if let Some(told) = LIFE.get() {
+            told(false);
+        }
     }
 }
 
@@ -547,5 +566,25 @@ mod tests {
         assert!(!retry.may(now + RETRY * 10));
         retry.reset();
         assert!(retry.may(now));
+    }
+
+    /// The I/O's life is told once each way: made with the first holder
+    /// (a second hold is the same I/O), gone with the last.
+    #[test]
+    fn the_voice_io_s_life_is_told_at_its_first_hold_and_its_last_let_go() {
+        use std::sync::atomic::AtomicU8;
+        static TOLD: AtomicU8 = AtomicU8::new(0);
+        fn told(alive: bool) {
+            TOLD.fetch_add(if alive { 1 } else { 0x10 }, Ordering::Relaxed);
+        }
+        on_life(told);
+        let first = hold(None, None);
+        let second = hold(None, None);
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(TOLD.load(Ordering::Relaxed), 0x01);
+        drop(first);
+        assert_eq!(TOLD.load(Ordering::Relaxed), 0x01);
+        drop(second);
+        assert_eq!(TOLD.load(Ordering::Relaxed), 0x11);
     }
 }

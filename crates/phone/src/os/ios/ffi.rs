@@ -14,12 +14,29 @@
 //! - `ducktape_phone_push_token(kind, token)`: PushKit's token, as hex.
 //! - `ducktape_phone_call_audio(active)`: CallKit's audio session up or down.
 //!
+//! Swift's entries called from here, on any thread (`App.swift`):
+//! - `ducktape_phone_call_voice(active)`: the call's voice I/O made or gone
+//!   (`ducktape_av::voice`): CallKit's answered call ends with it.
+//!
 //! No `catch_unwind`: the phone profile builds with `panic = "abort"`
 //! (gpui_ios's ObjC entries have no unwind guard, `README.ducktape.md`).
 #![allow(unsafe_code, reason = "the C ABI entry the Swift launcher calls")]
 
 use std::ffi::{CStr, c_char};
 use std::path::PathBuf;
+
+#[cfg(feature = "call")]
+unsafe extern "C" {
+    fn ducktape_phone_call_voice(active: u8);
+}
+
+/// The call's voice I/O made (`true`) or gone, told to the launcher's
+/// CallKit call.
+#[cfg(feature = "call")]
+fn call_voice(alive: bool) {
+    // SAFETY: a Swift `@_cdecl` entry taking one byte, any thread.
+    unsafe { ducktape_phone_call_voice(u8::from(alive)) }
+}
 
 /// Runs the phone: the host over `documents` and `caches`, its one window.
 ///
@@ -38,6 +55,8 @@ pub unsafe extern "C" fn ducktape_phone_main(documents: *const c_char, caches: *
         tracing::error!(target: "ducktape::phone", "the launcher passed no app container");
         std::process::abort();
     };
+    #[cfg(feature = "call")]
+    ducktape_av::voice::on_life(call_voice);
     let app = gpui_kit::Application::with_platform(gpui_ios::current_platform(false))
         .with_assets(crate::assets::PhoneAssets);
     // a scene's URL contexts, at launch and later (`duck://`, `ducktape://`,

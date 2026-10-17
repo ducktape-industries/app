@@ -72,9 +72,13 @@ final class EdgeBack: NSObject {
 /// (`ducktape_phone_link`, as an OS link), `until` (Unix seconds) is when it stops ringing unanswered. Decline is this
 /// phone's alone (SPEC D11): nothing is sent. PushKit's token goes to Rust (`ducktape_phone_push_token`) for the device
 /// registry. Made when UIKit finishes launching, which is also when a push that launched the app is delivered.
-/// Not yet: a withdraw (the call seen or answered elsewhere) takes no ring down here. It comes as a regular background
-/// push, and gpui_ios's app delegate hands the app neither that token nor that push (a gpui-pre hook to come), so a
-/// call rings on until its `until`. Ending an answered call when the person leaves it is the call host's.
+/// An answered call is CallKit's until the call's voice I/O goes (`ducktape_phone_call_voice`, the host's `av::voice`
+/// made with the first call piece and gone with the last: Leave, or the call over): then it is reported ended. The
+/// audio session is the host's own (it activates it for the voice and lets it go after); CallKit's activation of the
+/// same session (`didActivate`) is only logged, and a voice opened before CallKit's activation lands is retried by the
+/// host. Not yet: a withdraw (the call seen or answered elsewhere) takes no ring down here. It comes as a regular
+/// background push, and gpui_ios's app delegate hands the app neither that token nor that push (a gpui-pre hook to
+/// come), so a call rings on until its `until`. Hanging up from CallKit's own screen ends no call in the app.
 final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
   static let shared = Ring()
   /// The huddle program's ring, for a payload that carries no `until`: a call always carries one (SPEC §5).
@@ -93,6 +97,8 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
   }()
   /// The calls ringing, by CallKit's id: the link each one's Answer opens.
   private var ringing: [UUID: String] = [:]
+  /// The call answered here, CallKit's until the call's voice goes (`voice`).
+  private var answered: UUID?
   /// The debug entry's taps (`test`), made with the provider.
   private lazy var calls = CXCallController()
 
@@ -174,9 +180,18 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
     provider.reportCall(with: id, endedAt: nil, reason: .unanswered)
   }
 
+  /// The call's voice I/O made (`alive`) or gone: with it goes the call answered here, if one is CallKit's.
+  func voice(_ alive: Bool) {
+    guard !alive, let id = answered else { return }
+    answered = nil
+    NSLog("ducktape ring: \(id) over, its voice gone")
+    provider.reportCall(with: id, endedAt: nil, reason: .remoteEnded)
+  }
+
   func providerDidReset(_ provider: CXProvider) {
     NSLog("ducktape ring: CallKit reset, \(ringing.count) ringing calls dropped")
     ringing.removeAll()
+    answered = nil
   }
 
   /// Answered: the call's link opens, and it rings no more.
@@ -184,6 +199,7 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
     if let link = ringing.removeValue(forKey: action.callUUID), !link.isEmpty {
       ducktape_phone_link(link)
     }
+    answered = action.callUUID
     action.fulfill()
   }
 
@@ -191,6 +207,7 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
   func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
     NSLog("ducktape ring: \(action.callUUID) ended here")
     ringing.removeValue(forKey: action.callUUID)
+    if answered == action.callUUID { answered = nil }
     action.fulfill()
   }
 
@@ -238,6 +255,13 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
       }
     }
   }
+}
+
+/// The call's voice I/O made (1) or gone (0), from Rust (`crates/av`'s voice, any thread): the ring's answered call
+/// follows it.
+@_cdecl("ducktape_phone_call_voice")
+public func ducktapePhoneCallVoice(_ active: UInt8) {
+  DispatchQueue.main.async { Ring.shared.voice(active != 0) }
 }
 
 /// Where the key under `alias` is kept, for Rust (`crates/phone/src/key/ios.rs`): `sealed` set to 1 or 0, `level`
