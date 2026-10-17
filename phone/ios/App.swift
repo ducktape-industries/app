@@ -4,6 +4,7 @@ import CryptoKit
 import Foundation
 import PushKit
 import UIKit
+import UserNotifications
 
 /// The phone's entry. gpui (zed's `gpui_ios`) runs UIKit itself with its own app and scene delegates, so this only
 /// finds the app container's two folders and hands them to Rust (`crates/phone/src/os/ios/ffi.rs`), which never
@@ -125,9 +126,20 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
     registry.delegate = self
     registry.desiredPushTypes = [.voIP]
     self.registry = registry
-    // the regular token, which a withdraw is pushed to; silent pushes need no permission prompt
+    // the regular token, which a withdraw and a program's notices are pushed to; a withdraw (silent) needs no
+    // permission, a notice shows only once the person allows alerts (iOS asks once)
     UIApplication.shared.registerForRemoteNotifications()
+    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { allowed, error in
+      NSLog("ducktape ring: alerts \(allowed ? "allowed" : "not allowed")\(error.map { ": \($0)" } ?? "")")
+    }
     if let mode = ProcessInfo.processInfo.environment["DUCKTAPE_RING_TEST"] { test(mode) }
+  }
+
+  /// The delivered notice's id for `tag`: pushd's `apns-collapse-id` (`collapse_id` in crates/pushd/src/push.rs),
+  /// the tag itself up to 64 bytes, else its SHA-256 in hex.
+  static func collapse(_ tag: String) -> String {
+    guard tag.utf8.count > 64 else { return tag }
+    return SHA256.hash(data: Data(tag.utf8)).map { String(format: "%02x", $0) }.joined()
   }
 
   /// CallKit's id for the call under `tag`: the same tag, the same call, whichever push names it.
@@ -191,12 +203,14 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
     }
   }
 
-  /// A background push: a withdrawn call's ring under `tag` stops, if it still rings. Whether the push was taken.
+  /// A background push: a withdrawn call's ring under `tag` stops, if it still rings; a withdrawn notice under
+  /// `tag` leaves the notification list. Whether the push was taken.
   func remote(_ payload: [String: Any]) -> Bool {
     guard payload["kind"] as? String == "withdraw", let tag = payload["tag"] as? String else { return false }
     let id = Ring.id(tag)
     guard ringing.removeValue(forKey: id) != nil else {
       NSLog("ducktape ring: withdraw of \(tag), which does not ring here")
+      UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [Ring.collapse(tag)])
       return true
     }
     NSLog("ducktape ring: \(tag) withdrawn")
