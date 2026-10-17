@@ -3,9 +3,11 @@
 //! host's own steps, as the desktop's launcher drives them: the address
 //! reached (`Session::submit`), this phone's key opened or made for that
 //! network (`Account::open_device_key`), and, with no account on the key
-//! yet, a code shown for a computer on the account to approve
-//! (`Account::link_start`). A phone joins an account the person already
-//! has: no account is made here, as in the Expo build.
+//! yet, the account step: a new account named (`Account::create_submit`;
+//! the form of Expo's `CreateAccount`, mobile `app/account/index.tsx`), or,
+//! from its "Add this phone from another device", a code shown for a
+//! device on the account to approve (`Account::link_start`). The code stays
+//! up, a failed join's included, until its Back.
 //!
 //! On a network, the address screen is Switch network (the same Expo
 //! screen in its connected form), pushed from the account sheet or App
@@ -13,17 +15,19 @@
 //! the network in hand only once the other answers.
 
 use super::look::{self, Palette};
+use super::{about, settings};
 use ducktape_host::a11y::Control as _;
 use ducktape_host::backend::join::JOIN_WAIT;
 use ducktape_host::contract::SoftKeyboard;
-use ducktape_host::session::{AccountState, AccountStep, Screen, Shared};
+use ducktape_host::session::{AccountStep, Screen, SessionState, Shared};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Sizable as _, spinner::Spinner};
 use gpui_kit::{
-    AnyElement, AppContext as _, ClipboardItem, Context, Div, Entity, EventEmitter, Focusable as _,
-    FontWeight, HighlightStyle, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    Role, SharedString, StatefulInteractiveElement as _, Styled as _, StyledText, Subscription,
-    Task, TextInputConfiguration, VirtualKeyboard, Window, div, px, svg,
+    AnyElement, App, AppContext as _, Autocapitalize, ClipboardItem, Context, Div, Entity,
+    EventEmitter, Focusable as _, FontWeight, HighlightStyle, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, Role, SharedString, Stateful, StatefulInteractiveElement as _,
+    Styled as _, StyledText, Subscription, Task, TextInputConfiguration, VirtualKeyboard, Window,
+    div, px, svg,
 };
 use std::time::{Duration, SystemTime};
 
@@ -32,37 +36,29 @@ use std::time::{Duration, SystemTime};
 pub enum Step {
     /// Join a network: the node's address, and the nodes reached before.
     Node,
-    /// This phone's code, waiting for a computer on the account.
+    /// The account step: a name for a new account, or the way to the code.
+    Name,
+    /// This phone's code, waiting for a device on the account.
     Code,
 }
 
 /// The join step `screen` shows on a phone; `None` for the desk. The
 /// desktop's own steps (the layout question, which a phone's one layout
 /// never asks, and the recovery key's) never come up on a phone and draw as
-/// the address.
+/// the address; the passkey's, which a phone never begins, as the name.
 pub fn step(screen: Screen) -> Option<Step> {
     match screen {
         Screen::Desk => None,
-        Screen::Account { .. } => Some(Step::Code),
+        Screen::Account {
+            step: AccountStep::Link,
+        } => Some(Step::Code),
+        Screen::Account { .. } => Some(Step::Name),
         Screen::Connect
         | Screen::Unlock { .. }
         | Screen::Phrase { .. }
         | Screen::Recover
         | Screen::Layout => Some(Step::Node),
     }
-}
-
-/// The key has no account yet and nothing is out or failed: a code is made
-/// (the phone's one way onto an account). A failed join leaves its error,
-/// which the screen shows with New code, rather than a fresh code over it.
-fn wants_code(screen: Screen, account: &AccountState) -> bool {
-    screen
-        == (Screen::Account {
-            step: AccountStep::Name,
-        })
-        && account.link_code.is_empty()
-        && account.error.is_empty()
-        && !account.busy
 }
 
 /// `origin` without its scheme, as the screens name a node.
@@ -86,9 +82,13 @@ pub struct Join {
     /// the address refused, or the host's words for a node that did not
     /// answer (which the window hands here, [`Join::switch_failed`]).
     pub(super) refused: Option<String>,
+    /// The new account's name, on the name step.
+    name: Entity<InputState>,
     /// The last code made and when (the wall clock, which runs on while the
     /// phone sleeps, as the relay's does): the countdown's start, and what a
-    /// failed join shows faded.
+    /// failed join shows faded. While it is set the code step shows: a
+    /// failed join takes the host back to its name step, and the phone
+    /// keeps the code up until its Back.
     code: Option<(String, SystemTime)>,
     /// The countdown's redraw, once a second while a code shows.
     tick: Option<Task<()>>,
@@ -112,6 +112,11 @@ impl Join {
                 .default_value(last.clone().unwrap_or_default())
                 .text_input(url_keyboard())
         });
+        let name = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Name the new account")
+                .text_input(name_keyboard())
+        });
         let subscriptions = vec![
             cx.subscribe_in(&node, window, |this, _, event: &InputEvent, window, cx| {
                 match event {
@@ -124,8 +129,20 @@ impl Join {
                             .update(cx, |session, cx| session.set_endpoint(typed, cx));
                     }
                     InputEvent::PressEnter { .. } => this.go(cx),
-                    InputEvent::Focus => keyboard(window, true),
-                    InputEvent::Blur => keyboard(window, false),
+                    InputEvent::Focus => keyboard(window, Some(url_keyboard())),
+                    InputEvent::Blur => keyboard(window, None),
+                }
+            }),
+            cx.subscribe_in(&name, window, |this, _, event: &InputEvent, window, cx| {
+                match event {
+                    // the host's refusal goes with the next keystroke
+                    InputEvent::Change => this
+                        .shared
+                        .account
+                        .update(cx, |account, cx| account.clear_error(cx)),
+                    InputEvent::PressEnter { .. } => this.create(cx),
+                    InputEvent::Focus => keyboard(window, Some(name_keyboard())),
+                    InputEvent::Blur => keyboard(window, None),
                 }
             }),
             cx.observe_in(&shared.screen, window, |this, _, window, cx| {
@@ -138,6 +155,7 @@ impl Join {
             shared,
             node,
             refused: None,
+            name,
             code: None,
             tick: None,
             _subscriptions: subscriptions,
@@ -214,8 +232,33 @@ impl Join {
         cx.notify();
     }
 
-    /// Back on the code screen: the network is left, and with it the wait;
-    /// the address screen comes back, the node in Recent.
+    /// The step drawn: the host's ([`step`]), but the code while one is up
+    /// ([`Join::code`]).
+    fn shown(&self, cx: &App) -> Option<Step> {
+        match step(*self.shared.screen.read(cx).get()) {
+            Some(Step::Name) if self.code.is_some() => Some(Step::Code),
+            step => step,
+        }
+    }
+
+    /// Back on the account step: the code goes back to the name step, its
+    /// wait and any failure with it; the name step leaves the network
+    /// ([`Join::leave`]).
+    pub fn back(&mut self, cx: &mut Context<Self>) {
+        if self.shown(cx) != Some(Step::Code) {
+            return self.leave(cx);
+        }
+        self.code = None;
+        self.tick = None;
+        self.shared.account.update(cx, |account, cx| {
+            account.link_cancel(cx);
+            account.clear_error(cx);
+        });
+        cx.notify();
+    }
+
+    /// The network is left (the name step's Back, a reach's Cancel), and
+    /// with it any wait; the address screen comes back, the node in Recent.
     pub fn leave(&mut self, cx: &mut Context<Self>) {
         self.code = None;
         self.shared
@@ -231,15 +274,47 @@ impl Join {
         });
     }
 
+    /// Create account: the name typed, made by the host, which refuses an
+    /// empty one itself.
+    fn create(&mut self, cx: &mut Context<Self>) {
+        let name = self.name.read(cx).value().to_string();
+        self.shared
+            .account
+            .update(cx, |account, cx| account.create_submit(name, cx));
+    }
+
+    /// "Add this phone from another device": the code; not while a create
+    /// is out, whose answer would land on it.
+    fn add_phone(&mut self, cx: &mut Context<Self>) {
+        self.shared.account.update(cx, |account, cx| {
+            if !account.get().busy {
+                account.link_start(cx);
+            }
+        });
+    }
+
     fn screen_moved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let screen = *self.shared.screen.read(cx).get();
-        let step = step(screen);
-        // off the address screen the field goes, and the keyboard with it
-        if step != Some(Step::Node) && self.node.read(cx).focus_handle(cx).is_focused(window) {
-            window.blur(cx);
-            keyboard(window, false);
+        // off the account step (joined, made, the network left) its code
+        // goes, and the name typed for that network
+        if !matches!(
+            step(*self.shared.screen.read(cx).get()),
+            Some(Step::Name | Step::Code)
+        ) {
+            self.code = None;
+            if !self.name.read(cx).value().is_empty() {
+                self.name
+                    .update(cx, |name, cx| name.set_value("", window, cx));
+            }
         }
-        if step == Some(Step::Code) {
+        let shown = self.shown(cx);
+        // a field off its screen goes, and the keyboard with it
+        for (field, on) in [(&self.node, Step::Node), (&self.name, Step::Name)] {
+            if shown != Some(on) && field.read(cx).focus_handle(cx).is_focused(window) {
+                window.blur(cx);
+                keyboard(window, None);
+            }
+        }
+        if shown == Some(Step::Code) {
             if self.tick.is_none() {
                 self.tick = Some(cx.spawn(async move |this, cx| {
                     loop {
@@ -250,17 +325,8 @@ impl Join {
                     }
                 }));
             }
-            // read once the update that moved the screen is through: a
-            // failed join says why in that same update
-            let (screen, account) = (self.shared.screen.clone(), self.shared.account.clone());
-            cx.defer(move |cx| {
-                if wants_code(*screen.read(cx).get(), account.read(cx).get()) {
-                    account.update(cx, |account, cx| account.link_start(cx));
-                }
-            });
         } else {
             self.tick = None;
-            self.code = None;
         }
         cx.notify();
     }
@@ -303,16 +369,17 @@ impl Join {
             true => (
                 "Switch network",
                 format!(
-                    "This phone stays on {} until the switch is done. On a network it has no \
-                     account on yet, you approve it from a computer that is signed in.",
+                    "This phone stays on {} until the switch is done. If the other network has \
+                     no account for this phone yet, you can make a new one there, or approve this \
+                     phone from a computer that is signed in.",
                     session.network
                 ),
                 0.,
             ),
             false => (
                 "Join a network",
-                "This phone joins an account you already have. You will approve it from a \
-                 computer that is signed in."
+                "If the network has no account for this phone yet, you can make a new one here, \
+                 or approve this phone from a computer that is signed in."
                     .to_owned(),
                 look::gap::XL,
             ),
@@ -328,7 +395,18 @@ impl Join {
                     .child(title),
             )
             .child(look::text(look::SECONDARY, FontWeight::NORMAL, palette.muted()).child(said))
-            .child(self.field(focused, problem, palette));
+            .child(
+                field(
+                    &self.node,
+                    "join/node",
+                    "Node address",
+                    true,
+                    focused,
+                    problem.is_some(),
+                    palette,
+                )
+                .child(under(problem, palette)),
+            );
         let label = match &reaching {
             Some(host) => format!("Reaching {host}…"),
             None => "Continue".to_owned(),
@@ -386,58 +464,6 @@ impl Join {
             .flex()
             .flex_col()
             .child(body)
-    }
-
-    /// The address field (Expo `Field`): its label, the box (the edge 2 in
-    /// the foreground focused, in danger with a problem), then the problem
-    /// or the rule.
-    fn field(&self, focused: bool, problem: Option<String>, palette: Palette) -> Div {
-        let (edge, thick) = match (&problem, focused) {
-            (Some(_), _) => (palette.danger(), 2.),
-            (None, true) => (palette.foreground(), 2.),
-            (None, false) => (palette.border_strong(), 1.),
-        };
-        let node = self.node.clone();
-        let under = match problem {
-            Some(problem) => {
-                look::text(look::CAPTION, FontWeight::NORMAL, palette.danger()).child(problem)
-            }
-            None => look::text(look::CAPTION, FontWeight::NORMAL, palette.muted()).child(
-                "A domain, or a host and a port, with http:// or https:// in front if you like.",
-            ),
-        };
-        div()
-            .flex()
-            .flex_col()
-            .child(
-                look::text(look::CAPTION, FontWeight::NORMAL, palette.muted())
-                    .mb(px(look::gap::XS))
-                    .child("Node address"),
-            )
-            .child(
-                div()
-                    .id("join/node")
-                    .control(Role::Group, "Node address")
-                    .min_h(px(look::CONTROL))
-                    .flex()
-                    .items_center()
-                    .px(px(look::gap::LG - (thick - 1.)))
-                    .border(px(thick))
-                    .border_color(edge)
-                    .bg(palette.background())
-                    .on_click(move |_, window, cx| {
-                        node.update(cx, |node, cx| node.focus(window, cx));
-                    })
-                    .child(
-                        Input::new(&self.node)
-                            .appearance(false)
-                            .font_family(ducktape_host::fonts::FAMILY_MONO)
-                            .text_size(px(look::SECONDARY.size()))
-                            .py_0()
-                            .px_0(),
-                    ),
-            )
-            .child(under.mt(px(look::gap::XS)))
     }
 
     /// A node reached before (Expo `Row`): its network over its address;
@@ -552,6 +578,96 @@ impl Join {
             .into_any_element()
     }
 
+    /// The account step (the desktop's; the form of Expo's `CreateAccount`):
+    /// a name for a new account, which the host makes, its refusal (an
+    /// empty name's included) in a notice under the field; under the form,
+    /// for an account that exists, the way to this phone's code.
+    fn name_step(&self, window: &Window, cx: &mut Context<Self>) -> Div {
+        let palette = look::palette(window);
+        let session = self.shared.session.read(cx).get();
+        let account = self.shared.account.read(cx).get();
+        let busy = account.busy;
+        let problem = (!account.error.is_empty()).then(|| account.error.clone());
+        let focused = self.name.read(cx).focus_handle(cx).is_focused(window);
+        let header = header(session, palette, cx);
+        let joining = format!("Already have an account on {}?", session.network);
+        let mut create = button(
+            "join/create",
+            match busy {
+                true => "Creating…",
+                false => "Create account",
+            }
+            .to_owned(),
+            Kind::Primary,
+            None,
+            busy,
+            palette,
+        );
+        if !busy {
+            create = create.on_click(cx.listener(|this, _, _, cx| this.create(cx)));
+        }
+        let form = div()
+            .p(px(look::GUTTER))
+            .flex()
+            .flex_col()
+            .gap(px(look::gap::LG))
+            .child(
+                look::text(look::BIG_TITLE, FontWeight::MEDIUM, palette.foreground())
+                    .child("Create an account"),
+            )
+            .child(
+                look::text(look::SECONDARY, FontWeight::NORMAL, palette.muted()).child(
+                    "Your key isn't linked to an account yet. An account gives you a name \
+                     others see.",
+                ),
+            )
+            .child(field(
+                &self.name,
+                "join/name",
+                "Account name",
+                false,
+                focused,
+                false,
+                palette,
+            ))
+            .children(problem.map(|problem| notice("join/problem", problem, palette)))
+            .child(create.w_full());
+        let add = settings::row(
+            "join/add-phone",
+            "icons/smartphone.svg",
+            "Add this phone from another device",
+            None,
+            palette,
+        )
+        .control(Role::Button, "Add this phone from another device")
+        .debug_selector(|| "join/add-phone".to_owned())
+        .active(|style| style.opacity(look::PRESSED))
+        .child(
+            svg()
+                .path("icons/chevron-right.svg")
+                .size(px(look::ICON_ROW))
+                .flex_none()
+                .text_color(palette.faint()),
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.add_phone(cx)));
+        let body = div()
+            .id("join/account")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .child(form)
+            .child(about::section(joining, None, palette))
+            .child(add);
+        div()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .flex()
+            .flex_col()
+            .child(header)
+            .child(body)
+    }
+
     /// This phone's code, waiting for consent (board 03): the code the
     /// computer's "Add a device…" types, the key's fingerprint both screens
     /// show, the time left; a failure says why, and New code starts over
@@ -573,24 +689,7 @@ impl Join {
         let fingerprint = noded_client::hex::hex_decode(&account.signer_key)
             .map(|key| noded_client::join::fingerprint(&key))
             .unwrap_or_default();
-        let back = cx.listener(|this, _, _, cx| this.leave(cx));
-        let header = look::header("back", back, palette).child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .child(
-                    look::text(look::TITLE, FontWeight::MEDIUM, palette.foreground())
-                        .truncate()
-                        .child(session.network.clone()),
-                )
-                .child(
-                    look::text(look::CAPTION, FontWeight::NORMAL, palette.muted())
-                        .truncate()
-                        .child(host_of(&session.connected_rpc).to_owned()),
-                ),
-        );
+        let header = header(session, palette, cx);
         let said = "Open the account menu there, choose Add a device…, type this code, and \
                     approve only if both screens show the same fingerprint.";
         let named = said.find("Add a device…").unwrap_or(0);
@@ -677,31 +776,18 @@ impl Join {
             .child(boxed);
         let again = cx.listener(|this, _, _, cx| this.new_code(cx));
         body = match failure {
-            Some(failure) => body
-                .child(
-                    div()
-                        .id("join/failure")
-                        .control(Role::Alert, failure.clone())
-                        .py(px(look::gap::MD))
-                        .px(px(look::GUTTER))
-                        .bg(palette.danger_soft())
-                        .child(
-                            look::text(look::SECONDARY, FontWeight::NORMAL, palette.danger())
-                                .child(failure),
-                        ),
+            Some(failure) => body.child(notice("join/failure", failure, palette)).child(
+                button(
+                    "join/new-code",
+                    "New code".to_owned(),
+                    Kind::Primary,
+                    None,
+                    false,
+                    palette,
                 )
-                .child(
-                    button(
-                        "join/new-code",
-                        "New code".to_owned(),
-                        Kind::Primary,
-                        None,
-                        false,
-                        palette,
-                    )
-                    .w_full()
-                    .on_click(again),
-                ),
+                .w_full()
+                .on_click(again),
+            ),
             None => body
                 .child(
                     div()
@@ -749,11 +835,115 @@ impl EventEmitter<Stayed> for Join {}
 
 impl Render for Join {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        match step(*self.shared.screen.read(cx).get()) {
+        match self.shown(cx) {
             Some(Step::Code) => self.code_step(window, cx),
-            _ => self.node_step(window, cx),
+            Some(Step::Name) => self.name_step(window, cx),
+            Some(Step::Node) | None => self.node_step(window, cx),
         }
     }
+}
+
+/// The account step's header (Expo `Header` with back): the network over
+/// its node, 8 in from the back hit; Back is [`Join::back`].
+fn header(session: &SessionState, palette: Palette, cx: &Context<Join>) -> Div {
+    let back = cx.listener(|this, _, _, cx| this.back(cx));
+    look::header("back", back, palette).child(
+        div()
+            .flex_1()
+            .min_w_0()
+            .px(px(look::gap::SM))
+            .flex()
+            .flex_col()
+            .child(
+                look::text(look::TITLE, FontWeight::MEDIUM, palette.foreground())
+                    .truncate()
+                    .child(session.network.clone()),
+            )
+            .child(
+                look::text(look::CAPTION, FontWeight::NORMAL, palette.muted())
+                    .truncate()
+                    .child(host_of(&session.connected_rpc).to_owned()),
+            ),
+    )
+}
+
+/// A field (Expo `Field`): its label over the box (the edge 2 in the
+/// foreground focused, in danger with a problem), the text in the data
+/// face when `mono`; what goes under it is the caller's.
+fn field(
+    input: &Entity<InputState>,
+    id: &'static str,
+    label: &'static str,
+    mono: bool,
+    focused: bool,
+    problem: bool,
+    palette: Palette,
+) -> Div {
+    let (edge, thick) = match (problem, focused) {
+        (true, _) => (palette.danger(), 2.),
+        (false, true) => (palette.foreground(), 2.),
+        (false, false) => (palette.border_strong(), 1.),
+    };
+    let (face, role) = match mono {
+        true => (ducktape_host::fonts::FAMILY_MONO, look::SECONDARY),
+        false => (ducktape_host::fonts::FAMILY_UI, look::BODY),
+    };
+    let focus = input.clone();
+    div()
+        .flex()
+        .flex_col()
+        .child(
+            look::text(look::CAPTION, FontWeight::NORMAL, palette.muted())
+                .mb(px(look::gap::XS))
+                .child(label),
+        )
+        .child(
+            div()
+                .id(id)
+                .control(Role::Group, label)
+                .min_h(px(look::CONTROL))
+                .flex()
+                .items_center()
+                .px(px(look::gap::LG - (thick - 1.)))
+                .border(px(thick))
+                .border_color(edge)
+                .bg(palette.background())
+                .on_click(move |_, window, cx| {
+                    focus.update(cx, |input, cx| input.focus(window, cx));
+                })
+                .child(
+                    Input::new(input)
+                        .appearance(false)
+                        .font_family(face)
+                        .text_size(px(role.size()))
+                        .py_0()
+                        .px_0(),
+                ),
+        )
+}
+
+/// Under the address field: the problem in danger, else the rule.
+fn under(problem: Option<String>, palette: Palette) -> Div {
+    match problem {
+        Some(problem) => {
+            look::text(look::CAPTION, FontWeight::NORMAL, palette.danger()).child(problem)
+        }
+        None => look::text(look::CAPTION, FontWeight::NORMAL, palette.muted()).child(
+            "A domain, or a host and a port, with http:// or https:// in front if you like.",
+        ),
+    }
+    .mt(px(look::gap::XS))
+}
+
+/// A refusal (Expo `Notice`, danger): 13 in danger on `danger_soft`.
+fn notice(id: &'static str, said: String, palette: Palette) -> Stateful<Div> {
+    div()
+        .id(id)
+        .control(Role::Alert, said.clone())
+        .py(px(look::gap::MD))
+        .px(px(look::GUTTER))
+        .bg(palette.danger_soft())
+        .child(look::text(look::SECONDARY, FontWeight::NORMAL, palette.danger()).child(said))
 }
 
 /// A button's kind (Expo `Button`).
@@ -851,13 +1041,24 @@ fn url_keyboard() -> TextInputConfiguration {
     }
 }
 
-/// The keyboard for the address: gm is told (Android); gpui_ios raises its
-/// own with the focused field, from the field's `text_input`.
-fn keyboard(window: &mut Window, up: bool) {
-    let want = if up {
-        SoftKeyboard::Show(url_keyboard())
-    } else {
-        SoftKeyboard::Hide
+/// The name field's keyboard: React Native's default, which Expo's field
+/// keeps (sentences capitalized, corrections and suggestions on).
+fn name_keyboard() -> TextInputConfiguration {
+    TextInputConfiguration {
+        autocorrect: true,
+        autocapitalize: Autocapitalize::Sentences,
+        suggestions: true,
+        ..TextInputConfiguration::default()
+    }
+}
+
+/// A field's keyboard up as `want` says, or down: gm is told (Android);
+/// gpui_ios raises its own with the focused field, from the field's
+/// `text_input`.
+fn keyboard(window: &mut Window, want: Option<TextInputConfiguration>) {
+    let want = match want {
+        Some(config) => SoftKeyboard::Show(config),
+        None => SoftKeyboard::Hide,
     };
     ducktape_host::contract::os().soft_keyboard(window, want);
 }
@@ -867,52 +1068,29 @@ pub(super) mod tests {
     use super::*;
     use gpui_kit::{Modifiers, TestAppContext, VisualTestContext};
 
-    /// Every host screen has its place on a phone: the desk, the code for the
-    /// account steps, else the address (the layout question never comes up
-    /// on a phone, which has one layout).
+    /// Every host screen has its place on a phone: the desk; the name for
+    /// the account step, the code once it waits on one; else the address
+    /// (the layout question never comes up on a phone, which has one
+    /// layout).
     #[test]
-    fn each_screen_draws_as_the_desk_the_code_or_the_address() {
+    fn each_screen_draws_as_the_desk_the_name_the_code_or_the_address() {
         assert_eq!(step(Screen::Desk), None);
         assert_eq!(step(Screen::Layout), Some(Step::Node));
         assert_eq!(step(Screen::Connect), Some(Step::Node));
         assert_eq!(step(Screen::Unlock { awaiting: true }), Some(Step::Node));
-        let link = Screen::Account {
-            step: AccountStep::Link,
-        };
-        assert_eq!(step(link), Some(Step::Code));
-    }
-
-    /// A code is made once the key has no account, never over a failure,
-    /// a call out, or a code already shown.
-    #[test]
-    fn a_code_is_made_only_on_a_clear_account_step() {
-        let name = Screen::Account {
-            step: AccountStep::Name,
-        };
-        let clear = AccountState::default();
-        assert!(wants_code(name, &clear));
-        assert!(!wants_code(Screen::Connect, &clear));
-        for account in [
-            AccountState {
-                error: "The relay said no.".into(),
-                ..AccountState::default()
-            },
-            AccountState {
-                busy: true,
-                ..AccountState::default()
-            },
-            AccountState {
-                link_code: "KQ4M-9XPT".into(),
-                ..AccountState::default()
-            },
+        for (account, drawn) in [
+            (AccountStep::Name, Step::Name),
+            (AccountStep::Passkey, Step::Name),
+            (AccountStep::Link, Step::Code),
         ] {
-            assert!(!wants_code(name, &account));
+            assert_eq!(step(Screen::Account { step: account }), Some(drawn));
         }
         assert_eq!(
             host_of("https://garage.ducktape.industries"),
             "garage.ducktape.industries"
         );
     }
+
     /// The node the join reaches: its status is the test's own; anything
     /// else asked of it is refused at once, on this machine.
     const ORIGIN: &str = "http://127.0.0.1:1";
@@ -934,28 +1112,24 @@ pub(super) mod tests {
         panic!("the join never got there");
     }
 
-    /// The join as a phone walks it, over the host's own steps: a node
-    /// reached (its status the test's), this phone's key opened, no account
-    /// on it: a code shows; New code makes another; Back leaves for the
-    /// address with the node under Recent; × there forgets it and reaches
-    /// nothing.
-    #[gpui_kit::test]
-    fn a_code_shows_new_code_replaces_it_and_back_leaves_the_node_in_recent(
+    /// The join over the host's own steps, as a phone reaches the account
+    /// step: a node reached (its status the test's), this phone's key
+    /// opened, the node's word that no account holds it.
+    fn on_the_account_step(
         cx: &mut TestAppContext,
-    ) {
+    ) -> (Entity<Join>, Shared, &mut VisualTestContext) {
         use ducktape_host::session::tests::{source, status};
-        let _seat = ducktape_host::backend::seat_serial();
         cx.executor().allow_parking();
         cx.update(gpui_kit::init);
         let shared = cx.update(|cx| Shared::for_test(Default::default(), Default::default(), cx));
         let (join, cx) = cx.add_window_view(|window, cx| Join::new(shared.clone(), window, cx));
-        let screen = |cx: &mut VisualTestContext| shared.screen.read_with(cx, |s, _| *s.get());
-
         let (answers, _) = source(|_| Ok(status(1)));
         shared.session.update(cx, |session, cx| {
             session.connect_through(ORIGIN.into(), answers, cx)
         });
-        until(cx, |cx| screen(cx) == Screen::Unlock { awaiting: true });
+        until(cx, |cx| {
+            shared.screen.read_with(cx, |s, _| *s.get()) == Screen::Unlock { awaiting: true }
+        });
         // the key let go, so the join that follows asks no relay
         cx.update(|_, cx| {
             cx.background_spawn(ducktape_host::backend::lock_signer())
@@ -967,30 +1141,72 @@ pub(super) mod tests {
         shared
             .account
             .update(cx, |account, cx| account.resolved(ORIGIN, &key, None, cx));
-        until(cx, |cx| join.read_with(cx, |join, _| join.code.is_some()));
-        assert_eq!(step(screen(cx)), Some(Step::Code));
-        let first = join.read_with(cx, |join, _| join.code.clone().unwrap().0);
+        cx.run_until_parked();
+        (join, shared, cx)
+    }
 
+    fn press(cx: &mut VisualTestContext, id: &'static str) {
+        let at = cx
+            .debug_bounds(id)
+            .unwrap_or_else(|| panic!("{id} not drawn"));
+        cx.simulate_click(at.center(), Modifiers::none());
+        cx.run_until_parked();
+    }
+
+    /// The account step as a phone walks it: the name step, no code made
+    /// on its own; Create account with no name shows the host's refusal;
+    /// Add this phone… shows a code, New code another; Back goes to the
+    /// name step, Back again leaves for the address with the node under
+    /// Recent; × there forgets it and reaches nothing.
+    #[gpui_kit::test]
+    fn the_name_step_comes_first_the_code_on_a_tap_and_back_walks_to_the_address(
+        cx: &mut TestAppContext,
+    ) {
+        let _seat = ducktape_host::backend::seat_serial();
+        let (join, shared, cx) = on_the_account_step(cx);
+        let screen = |cx: &mut VisualTestContext| shared.screen.read_with(cx, |s, _| *s.get());
+        let account = |cx: &mut VisualTestContext| {
+            shared
+                .account
+                .read_with(cx, |account, _| account.get().clone())
+        };
+        let shown = |cx: &mut VisualTestContext| join.read_with(cx, |join, cx| join.shown(cx));
+        assert_eq!(shown(cx), Some(Step::Name));
+        assert!(account(cx).link_code.is_empty(), "a code came with no tap");
+
+        press(cx, "join/create");
+        assert_eq!(account(cx).error, "Type the name others will see first.");
+        assert_eq!(shown(cx), Some(Step::Name));
+
+        press(cx, "join/add-phone");
+        until(cx, |cx| join.read_with(cx, |join, _| join.code.is_some()));
+        assert_eq!(shown(cx), Some(Step::Code));
+        let first = join.read_with(cx, |join, _| join.code.clone().unwrap().0);
         join.update(cx, |join, cx| join.new_code(cx));
         cx.run_until_parked();
         let second = join.read_with(cx, |join, _| join.code.clone().unwrap().0);
         assert_ne!(first, second, "New code made no new code");
 
-        join.update(cx, |join, cx| join.leave(cx));
+        join.update(cx, |join, cx| join.back(cx));
+        cx.run_until_parked();
+        assert_eq!(
+            screen(cx),
+            Screen::Account {
+                step: AccountStep::Name
+            }
+        );
+        assert_eq!(shown(cx), Some(Step::Name));
+        assert!(account(cx).link_code.is_empty(), "Back left the wait out");
+
+        join.update(cx, |join, cx| join.back(cx));
         cx.run_until_parked();
         assert_eq!(screen(cx), Screen::Connect);
-        assert!(
-            join.read_with(cx, |join, _| join.code.is_none()),
-            "a code outlived its network"
-        );
         let recent = shared
             .session
             .read_with(cx, |session, _| session.get().recent_endpoints.clone());
         assert_eq!(recent.first().map(|node| node.url.as_str()), Some(ORIGIN));
 
-        let forget = cx.debug_bounds("join/forget/0").expect("a Recent row's ×");
-        cx.simulate_click(forget.center(), Modifiers::none());
-        cx.run_until_parked();
+        press(cx, "join/forget/0");
         let after = shared
             .session
             .read_with(cx, |session, _| session.get().clone());
@@ -1000,5 +1216,43 @@ pub(super) mod tests {
             "× reached the node it forgot"
         );
         assert_eq!(screen(cx), Screen::Connect);
+    }
+
+    /// A join that failed takes the host back to its name step; the phone
+    /// keeps the code up, its failure with it, until Back, which lands on
+    /// the name step with nothing under the field.
+    #[gpui_kit::test]
+    fn a_failed_join_stays_on_the_code_until_back_lands_on_a_clear_name_step(
+        cx: &mut TestAppContext,
+    ) {
+        let _seat = ducktape_host::backend::seat_serial();
+        let (join, shared, cx) = on_the_account_step(cx);
+        let error = |cx: &mut VisualTestContext| {
+            shared
+                .account
+                .read_with(cx, |account, _| account.get().error.clone())
+        };
+        let shown = |cx: &mut VisualTestContext| join.read_with(cx, |join, cx| join.shown(cx));
+        press(cx, "join/add-phone");
+        until(cx, |cx| join.read_with(cx, |join, _| join.code.is_some()));
+
+        shared.account.update(cx, |account, cx| {
+            account.joined(Err("This code ran out.".into()), cx)
+        });
+        cx.run_until_parked();
+        let screen = shared.screen.read_with(cx, |s, _| *s.get());
+        assert_eq!(
+            screen,
+            Screen::Account {
+                step: AccountStep::Name
+            }
+        );
+        assert_eq!(shown(cx), Some(Step::Code), "the failure left the code");
+        assert_eq!(error(cx), "This code ran out.");
+
+        join.update(cx, |join, cx| join.back(cx));
+        cx.run_until_parked();
+        assert_eq!(shown(cx), Some(Step::Name));
+        assert_eq!(error(cx), "", "the join's failure showed on the name step");
     }
 }

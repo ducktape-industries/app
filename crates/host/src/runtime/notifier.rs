@@ -25,9 +25,17 @@
 //!   again starts.
 //! - What it asks the app to move (a badge, a notice posted) reaches the
 //!   window thread over [`intents`], to `Seats`.
+//!
+//! A host with no screen (`crates/pushd`) runs the same notifiers for the
+//! accounts it carries notices for: each a [`Recipient`] ([`notify_for`]),
+//! whose notifiers have that account's session, store, centre and channel
+//! where the app's have the person's at this device. The program still
+//! decides every notice; the recipient only says whose they are and where
+//! they go.
 use super::*;
 use crate::backend::views::Program;
-use notify::{Permission, Settings};
+use crate::contract::Banners;
+use notify::{CenterHandle, Permission, Settings};
 
 /// The instance a notifier's requests and perf samples go under: no pane's.
 pub(crate) const INSTANCE: u64 = u64::MAX;
@@ -60,16 +68,85 @@ impl Drop for Running {
     }
 }
 
-/// The notifiers running, by program.
+/// Whom a set of notifiers runs for when it is not the person at this
+/// device: an account a host with no screen carries notices for
+/// (`crates/pushd`). Each field is what the app keeps once per process for
+/// the person in front of it; the kernel reads it off each of the set's
+/// notifiers ([`View::recipient`]).
+pub struct Recipient {
+    /// The session its notifiers are handed (`host.session`), as
+    /// [`props`](super::props) encodes it; the app's is the one `Seats`
+    /// hands every pane.
+    pub session: tokio::sync::watch::Sender<Option<Vec<u8>>>,
+    /// Where its notifiers' store files go, `<store>/<chain>/<program>.borsh`;
+    /// the app's are under `<config>/store`.
+    pub store: PathBuf,
+    /// Its notification centre: the fold by tag, the burst limit.
+    pub center: CenterHandle,
+    /// Its word on notices, as the prefs hold the person's.
+    pub settings: Settings,
+    /// Where a notice its centre lets through goes; the app's go to the OS.
+    pub banners: Arc<dyn Banners>,
+    /// What its notifiers ask the host to move (a badge), each with its
+    /// program; the app's go to `Seats` ([`intents`]).
+    pub said: Said,
+}
+
+/// The notifiers running for one recipient (`None`: the person at this
+/// device), by program.
 #[derive(Default)]
 pub(super) struct Notifiers {
     running: Mutex<HashMap<&'static str, Running>>,
+    recipient: Option<Arc<Recipient>>,
 }
 
-/// The app's notifiers.
+/// The app's notifiers: the person's at this device.
 pub(super) fn notifiers() -> &'static Notifiers {
     static NOTIFIERS: OnceLock<Notifiers> = OnceLock::new();
     NOTIFIERS.get_or_init(Notifiers::default)
+}
+
+/// The notifiers of each recipient a host carries notices for.
+fn recipients() -> std::sync::MutexGuard<'static, Vec<Arc<Notifiers>>> {
+    static RECIPIENTS: OnceLock<Mutex<Vec<Arc<Notifiers>>>> = OnceLock::new();
+    lock(RECIPIENTS.get_or_init(Mutex::default))
+}
+
+/// Every listed program's notifier runs for `recipient` too, as for the
+/// person at this device: started by each roster read (now, when the
+/// network in hand was read), stopped and started again with a connect.
+pub fn notify_for(recipient: Recipient) {
+    let notifiers = Arc::new(Notifiers {
+        running: Mutex::default(),
+        recipient: Some(Arc::new(recipient)),
+    });
+    recipients().push(notifiers.clone());
+    let asked_of = connection().lock().expect("views rpc").clone();
+    if asked_of.client.is_some() {
+        let programs = roster().lock().clone();
+        notifiers.reconcile(&asked_of, &programs);
+    }
+}
+
+/// After a roster read on `asked_of`: the person's notifiers, unless this
+/// host has no one at it (`Preload::Headless`), and every recipient's.
+pub(super) fn reconcile_all(asked_of: &Connection, programs: &[Program]) {
+    if crate::contract::os().limits().preload != crate::contract::Preload::Headless {
+        notifiers().reconcile(asked_of, programs);
+    }
+    let sets = recipients().clone();
+    for set in sets {
+        set.reconcile(asked_of, programs);
+    }
+}
+
+/// Every notifier stopped, the person's and every recipient's.
+pub(super) fn stop_every() {
+    notifiers().stop_all();
+    let sets = recipients().clone();
+    for set in sets {
+        set.stop_all();
+    }
 }
 
 impl Notifiers {
@@ -79,7 +156,10 @@ impl Notifiers {
     /// older connection stop theirs. A program that ships none has a thread
     /// that reads its blob and ends.
     pub(super) fn reconcile(&self, asked_of: &Connection, programs: &[Program]) {
-        let blocked = blocked();
+        let blocked = match &self.recipient {
+            Some(recipient) => blocked_in(&recipient.settings),
+            None => blocked(),
+        };
         let wanted: HashMap<&'static str, abi::BlobId> = programs
             .iter()
             .filter(|program| !program.bare && !blocked.contains(&program.name))
@@ -91,7 +171,8 @@ impl Notifiers {
         });
         for (program, code) in wanted {
             if !running.contains_key(program) {
-                running.insert(program, start(program, code, asked_of.clone()));
+                let recipient = self.recipient.clone();
+                running.insert(program, start(program, code, asked_of.clone(), recipient));
             }
         }
     }
@@ -116,17 +197,22 @@ impl Notifiers {
 
 /// The programs whose notices the person blocked.
 fn blocked() -> Vec<String> {
-    Settings::kept()
+    blocked_in(&Settings::kept())
+}
+
+/// The programs `settings` block.
+fn blocked_in(settings: &Settings) -> Vec<String> {
+    settings
         .views
-        .into_iter()
-        .filter(|(_, permission)| *permission == Permission::Block)
-        .map(|(program, _)| program)
+        .iter()
+        .filter(|(_, permission)| **permission == Permission::Block)
+        .map(|(program, _)| program.clone())
         .collect()
 }
 
 /// The app left the network: every notifier stops.
 pub(crate) fn disconnected() {
-    notifiers().stop_all();
+    stop_every();
 }
 
 /// The person's word on `program`'s notices: blocked stops its notifier,
@@ -142,9 +228,14 @@ pub(crate) fn permission_moved(program: &str, permission: Permission) {
     }
 }
 
-/// `program`'s notifier out of `code`, on a thread of its own, until its
-/// stop.
-fn start(program: &'static str, code: abi::BlobId, asked_of: Connection) -> Running {
+/// `program`'s notifier out of `code`, for `recipient` (none: the person at
+/// this device), on a thread of its own, until its stop.
+fn start(
+    program: &'static str,
+    code: abi::BlobId,
+    asked_of: Connection,
+    recipient: Option<Arc<Recipient>>,
+) -> Running {
     let (stop, stopped) = tokio::sync::watch::channel(false);
     let rev = asked_of.rev;
     // a test's prefs are its own thread's (`backend::prefs`): the notifier
@@ -156,10 +247,15 @@ fn start(program: &'static str, code: abi::BlobId, asked_of: Connection) -> Runn
         .spawn(move || {
             #[cfg(any(test, feature = "test-support"))]
             crate::backend::edit_prefs(|kept| *kept = prefs);
-            let Some(notifier) = load(program, &code, &asked_of) else {
+            let Some(mut notifier) = load(program, &code, &asked_of) else {
                 return;
             };
-            drive(notifier, stopped);
+            let session = match &recipient {
+                Some(recipient) => recipient.session.subscribe(),
+                None => props().subscribe(),
+            };
+            notifier.recipient = recipient;
+            drive(notifier, stopped, session);
         });
     if let Err(error) = spawned {
         tracing::warn!(target: "ducktape::app", program, %error, "no thread to run the notifier on");
@@ -168,9 +264,14 @@ fn start(program: &'static str, code: abi::BlobId, asked_of: Connection) -> Runn
 }
 
 /// The notifier `code`'s blob carries, started (`init`): none when the
-/// blob carries none, or it does not load, which app.log says.
+/// blob carries none, or it does not load, which app.log says. One code
+/// loads at a time ([`loading`]): started for many recipients at once, it
+/// is fetched and compiled once, and the rest take it from the caches
+/// (`backend::views::program_bytes`, `view::compiled_view`).
 fn load(program: &'static str, code: &abi::BlobId, asked_of: &Connection) -> Option<View> {
     let client = asked_of.client.as_ref()?;
+    let gate = loading(code);
+    let _loading = lock(&gate);
     let bytes = handle().block_on(crate::backend::views::notifier_of(client, code));
     let refused = |reason: String| {
         tracing::warn!(target: "ducktape::app", program, reason = %reason, "notifier not started");
@@ -188,6 +289,20 @@ fn load(program: &'static str, code: &abi::BlobId, asked_of: &Connection) -> Opt
         refused(reason.clone());
     }
     notifier.ok()
+}
+
+/// The load of `code`'s notifier, one at a time.
+fn loading(code: &abi::BlobId) -> Arc<Mutex<()>> {
+    type Gates = HashMap<abi::BlobId, std::sync::Weak<Mutex<()>>>;
+    static GATES: OnceLock<Mutex<Gates>> = OnceLock::new();
+    let mut gates = lock(GATES.get_or_init(Mutex::default));
+    if let Some(gate) = gates.get(code).and_then(std::sync::Weak::upgrade) {
+        return gate;
+    }
+    gates.retain(|_, gate| gate.strong_count() > 0);
+    let gate = Arc::new(Mutex::new(()));
+    gates.insert(*code, Arc::downgrade(&gate));
+    gate
 }
 
 impl View {
@@ -233,9 +348,12 @@ impl View {
 /// Turns `notifier` until its stop: on its first turn, each answer, each
 /// session move, each clock item due, and again soon while it says busy.
 /// A trap ends it, as one ends a view.
-fn drive(mut notifier: View, mut stopped: tokio::sync::watch::Receiver<bool>) {
+fn drive(
+    mut notifier: View,
+    mut stopped: tokio::sync::watch::Receiver<bool>,
+    mut session: tokio::sync::watch::Receiver<Option<Vec<u8>>>,
+) {
     let mut answered = notifier.replies.changes();
-    let mut session = props().subscribe();
     loop {
         if *stopped.borrow_and_update() {
             return;
@@ -244,7 +362,12 @@ fn drive(mut notifier: View, mut stopped: tokio::sync::watch::Receiver<bool>) {
         let current = session.borrow_and_update().clone();
         let again = redrawn(&mut notifier, &current);
         for intent in std::mem::take(&mut notifier.intents) {
-            said(notifier.program, intent);
+            match &notifier.recipient {
+                Some(recipient) => {
+                    let _ = recipient.said.unbounded_send((notifier.program, intent));
+                }
+                None => said(notifier.program, intent),
+            }
         }
         if let Some(fault) = &notifier.fault {
             tracing::warn!(target: "ducktape::app", program = notifier.program,
@@ -309,7 +432,8 @@ pub(crate) fn set_props(session: Vec<u8>) {
     });
 }
 
-type Said = futures::channel::mpsc::UnboundedSender<(&'static str, Intent)>;
+/// Where a set of notifiers' intents go, each with its program.
+pub type Said = futures::channel::mpsc::UnboundedSender<(&'static str, Intent)>;
 
 #[cfg(not(any(test, feature = "test-support")))]
 static HEARD: Mutex<Option<Said>> = Mutex::new(None);

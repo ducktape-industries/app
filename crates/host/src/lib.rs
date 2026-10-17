@@ -28,7 +28,17 @@
 //!
 //! `ARCHITECTURE.md` at the repository root is the guide; its map names
 //! these modules by their old `src/` paths until its phone section lands.
+//!
+//! Without the `ui` feature (default on) the crate is what a host with no
+//! screen runs (`crates/pushd`): [`runtime`] without its seats' entities or
+//! the clipboard, [`backend`], [`contract`] and [`perf`]; nothing that
+//! draws, and no gpui-kit in its graph.
 
+// without `ui`, what only the window half calls (a seat's entity, the
+// clipboard's mount, the shell's session wiring) is never called
+#![cfg_attr(not(feature = "ui"), allow(dead_code))]
+
+#[cfg(feature = "ui")]
 pub mod a11y;
 // the AX test door: in a build with the `ax-door` feature only (kit and qa),
 // and in the tests, which read the trees it reads
@@ -36,12 +46,17 @@ pub mod a11y;
 pub mod ax;
 pub mod backend;
 pub mod contract;
+#[cfg(feature = "ui")]
 pub mod fonts;
 pub mod motion;
 pub mod perf;
+#[cfg(feature = "ui")]
 pub mod render;
 pub mod runner;
 pub mod runtime;
+#[cfg(feature = "ui")]
 pub mod session;
+#[cfg(feature = "ui")]
 pub mod start;
+#[cfg(feature = "ui")]
 pub mod theme;

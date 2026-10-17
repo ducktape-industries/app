@@ -83,6 +83,29 @@ fn audio_manager<'local>(
     .l()
 }
 
+/// A call's voice I/O is coming (`on`) or went: the `AudioManager`'s mode
+/// set to in-communication (the system routes and tunes as for a call) and
+/// back to normal, a hint beside the app's own echo cancelling
+/// (`crate::voice`).
+#[cfg(feature = "call")]
+pub(crate) fn call(on: bool) {
+    // AudioManager.MODE_NORMAL, MODE_IN_COMMUNICATION
+    let mode = if on { 3 } else { 0 };
+    let set = java(|env, app| {
+        let manager = audio_manager(env, app)?;
+        env.call_method(
+            &manager,
+            jni::jni_str!("setMode"),
+            jni::jni_sig!("(I)V"),
+            &[JValue::Int(mode)],
+        )?;
+        Ok(())
+    });
+    if let Err(error) = set {
+        tracing::warn!(target: "ducktape::av", %error, "audio mode not set");
+    }
+}
+
 // ---------- the permission ----------
 
 /// How the app asks the person for an Android permission (by its manifest

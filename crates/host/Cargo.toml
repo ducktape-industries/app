@@ -17,28 +17,38 @@ version.workspace = true
 publish = false
 
 [features]
-default = ["wasmtime"]
+default = ["wasmtime", "ui"]
 # the wasmtime view runner (`runner::WasmtimeRunner`) and `program.describe`
 # on it: the desktop and Android. Off for iOS, where views run in
 # JavaScriptCore (`crates/host-jsc`) and no process of ours may JIT.
 wasmtime = ["dep:wasmtime", "describe/host"]
+# The window half: gpui-kit and everything drawn with it (`render`, the
+# seats' entities, `session`, `a11y`, `fonts`, `theme`, `start`, the
+# clipboard, the AX door). Without it the crate is the runtime a host with
+# no screen runs (`crates/pushd`): the roster, the kernel contract, the
+# notifiers, the store and the notification centre, the backend.
+ui = ["dep:gpui-kit", "dep:gpui-base", "dep:image", "dep:usvg"]
 # the AX test door (`src/ax`): kit and qa builds, and every test
-ax-door = []
+ax-door = ["ui"]
 # gpui's own frame and input histograms into `GET /perf` (docs/perf.md §3.5)
-perf-deep = ["gpui-kit/profiler"]
+perf-deep = ["ui", "gpui-kit/profiler"]
 # the web piece draws pages through CEF (`render/web.rs`, `crates/web`)
-web = ["dep:ducktape-web", "ducktape-web/cef"]
+web = ["ui", "dep:ducktape-web", "ducktape-web/cef"]
 # the camera and microphone pieces open real devices (`render/av.rs`,
 # `crates/av`)
-av = ["dep:ducktape-av", "ducktape-av/capture"]
+av = ["ui", "dep:ducktape-av", "ducktape-av/capture"]
+# calls: a camera or microphone piece that publishes into a live track,
+# and a remote piece that plays one (`render/call.rs`, `crates/av`'s
+# `call`: codecs, the echo-cancelled voice I/O, the mixer)
+call = ["av", "ducktape-av/call"]
 # the test helpers the desktop shell's tests reach (`*_for_test`,
 # `test_style`, ...): on for every test build, never for a shipped one;
 # `wat` turns the test views' text into the wasm a runner takes
-test-support = ["gpui-kit/test-support", "wasmtime", "dep:wat"]
+test-support = ["ui", "gpui-kit/test-support", "wasmtime", "dep:wat"]
 
 [dependencies]
-gpui-kit = "=0.7.3"
-gpui-base = "=0.7.3"
+gpui-kit = { version = "=0.7.3", optional = true }
+gpui-base = { version = "=0.7.3", optional = true }
 unicode-segmentation = "1"
 futures.workspace = true
 async-channel = "2"
@@ -51,14 +61,14 @@ identity.workspace = true
 blob.workspace = true
 # a notifier's answers and turn (`view_wire::notifier`); the tests' borsh too
 borsh.workspace = true
-programs = { git = "https://github.com/ducktape-industries/programs", rev = "a58e1c3ccbe0e9a0a76de6baed33da56638d25f0", package = "programs" }
+programs = { git = "https://github.com/ducktape-industries/programs", rev = "24217143f1cd826a65db34eb74b33a2bfd63846a", package = "programs" }
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"], optional = true }
 # A view SVG's own size, which sets the height gpui rasterises it at
 # (`render/svg_limits.rs`): gpui's own parser, already in the graph.
-usvg = { version = "0.46.0", default-features = false }
+usvg = { version = "0.46.0", default-features = false, optional = true }
 tokio = { version = "1", features = ["fs", "macros", "net", "rt", "sync", "time"] }
 tokio-tungstenite.workspace = true
 # The live lane (`backend/live.rs`): QUIC to the UDP port the node's
@@ -104,7 +114,7 @@ rcgen = { version = "0.14", default-features = false, features = ["crypto", "rin
 # the live tests' node: its key's verifier, as the handshake pins it
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a0151a411c3558453c34bb8272b93dfc428cb74", package = "keyscheme", features = ["testkit"] }
 # the consent card's words for a validators' vote
-valset = { git = "https://github.com/ducktape-industries/programs", rev = "a58e1c3ccbe0e9a0a76de6baed33da56638d25f0", package = "valset" }
+valset = { git = "https://github.com/ducktape-industries/programs", rev = "24217143f1cd826a65db34eb74b33a2bfd63846a", package = "valset" }
 # the tests' keys: commonware's ed25519, through noded-client's impl
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -115,7 +125,7 @@ gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tempfile.workspace = true
 # a fake node's changes socket (`runtime/kernel/node/tests.rs`)
 tokio-tungstenite.workspace = true
-blobs = { git = "https://github.com/ducktape-industries/programs", rev = "a58e1c3ccbe0e9a0a76de6baed33da56638d25f0", package = "blobs" }
+blobs = { git = "https://github.com/ducktape-industries/programs", rev = "24217143f1cd826a65db34eb74b33a2bfd63846a", package = "blobs" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # test-support: its headless renderer, which `render/tests/picture_pixels.rs`

@@ -941,6 +941,7 @@ impl Seat {
             crate::render::ViewTree::new(root)
                 .with_presentation(presentation)
                 .with_perf_key(key)
+                .with_live(crate::runtime::HostLive::new(self.program))
                 .with_keys_grant(self.keys_free)
         });
         tree.update(cx, |tree, _| tree.set_pictures(pictures));

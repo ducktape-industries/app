@@ -27,6 +27,7 @@ pub const GRAB: f32 = 5.;
 mod accessibility;
 mod anchored;
 pub mod av;
+pub mod call;
 mod canvas;
 mod commands;
 pub mod deferred;
@@ -68,12 +69,8 @@ use svg_limits::{SvgPaintSource, guarded_svg_paint, svg_data_allowed};
 use uniform::UniformListHostState;
 use variable_list::VariableList;
 
-/// The ids of a node and of its identified ancestors, root first: the key
-/// every piece of retained native state is stored under. Only a node with an
-/// id (`Node::identity`) adds a segment; one without shares its nearest
-/// identified ancestor's path, so only identified nodes may write a map
-/// keyed by it.
-pub type AuthoredPath = Vec<wire::ElementIdWire>;
+// the runtime's: a widget command names its target by it (`View::answer`)
+pub use crate::runtime::{AuthoredPath, enter_scope};
 
 /// The gpui id for a sanitized wire id. Sanitize refuses every id that
 /// cannot lower, so a frame that reached the renderer holds none.
@@ -101,19 +98,6 @@ pub fn is_host_id(id: &ElementId) -> bool {
 /// The name of the host id a seat draws around its view's tree, before the
 /// program (`Seat::ax_mark`): the AX door reads the program off it.
 pub const VIEW_MARK: &str = "view/";
-
-/// Pushes the id `node` is filed under onto `path` (`wire::identity`: its
-/// own, else, as row `row` of a list, its index); the caller pops on the
-/// way out when this answers `true`.
-pub fn enter_scope(node: &wire::Node, row: Option<usize>, path: &mut AuthoredPath) -> bool {
-    match wire::identity::segment(node.identity().cloned(), row) {
-        Some(id) => {
-            path.push(id);
-            true
-        }
-        None => false,
-    }
-}
 
 /// Whether a node of `role` is a control: what is pressed, toggled, picked
 /// or slid. Its words are its label, and a label is not text to read: as a
@@ -244,6 +228,10 @@ pub struct ViewTree {
     webs: web::Pages,
     /// The camera and microphone pieces' devices (`av.rs`).
     media: av::Media,
+    /// The pieces that publish or play a live track (`call.rs`), and the
+    /// live session they open tracks on (none for a tree no view seats).
+    calls: call::Calls,
+    live: Option<crate::runtime::HostLive>,
     /// A resize handle's press position while its drag lasts.
     drags: HashMap<AuthoredPath, Point<Pixels>>,
     /// The page the frame shows on top of the view's stack, and the change
@@ -370,6 +358,8 @@ impl ViewTree {
             sensors: HashMap::new(),
             webs: Default::default(),
             media: Default::default(),
+            calls: Default::default(),
+            live: None,
             pictures: Default::default(),
             images: Default::default(),
             tooltips: HashMap::new(),
@@ -398,6 +388,13 @@ impl ViewTree {
     /// The perf key this tree's renders count under.
     pub fn with_perf_key(mut self, key: crate::perf::Key) -> Self {
         self.perf_key = Some(key);
+        self
+    }
+
+    /// The live session the tree's publishing and remote pieces open their
+    /// tracks on (`call.rs`).
+    pub fn with_live(mut self, live: crate::runtime::HostLive) -> Self {
+        self.live = Some(live);
         self
     }
 
@@ -470,6 +467,7 @@ impl ViewTree {
             Node::Web { .. } => self.web(node, window, cx),
             Node::Camera { .. } => self.camera(node, cx),
             Node::Microphone { .. } => self.microphone(node, window, cx),
+            Node::Remote { .. } => self.remote(node, cx),
         };
         if entered_scope {
             self.authored_path.pop();

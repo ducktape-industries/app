@@ -29,7 +29,9 @@ use std::collections::VecDeque;
 use std::ops::Range;
 use std::sync::{Mutex, OnceLock};
 
+#[cfg(feature = "ui")]
 mod sheet;
+#[cfg(feature = "ui")]
 pub use sheet::sheet;
 
 /// How long Approve takes no press after the card opens: a second press

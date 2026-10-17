@@ -136,7 +136,7 @@ impl OverlayLayer {
             SettingsPage::Notifications => self.notifications_page(&ink, cx),
             SettingsPage::Networks => self.networks_page(&ink, cx),
             SettingsPage::Updates => self.updates_page(&ink, cx),
-            SettingsPage::About => about_page(&ink),
+            SettingsPage::About => self.about_page(&ink),
         };
         let page = &mut self.settings_rows;
         while page.rows.len() < rows.len() {
@@ -886,22 +886,59 @@ fn line(key: &'static str, value: String, ink: &Ink) -> gpui_kit::Div {
         )
 }
 
-fn about_page(ink: &Ink) -> Vec<gpui_kit::Div> {
-    use gpui_kit::*;
-    let log = crate::backend::app_log_path()
-        .map(|path| path.display().to_string())
-        .unwrap_or_default();
-    vec![
-        heading("About", ink),
-        sans(400, 22.)
-            .pb(px(12.))
-            .child(words("product", "Ducktape")),
-        line("Version", env!("CARGO_PKG_VERSION").into(), ink),
-        line(
-            "Node contract",
-            format!("v{}", noded_client::wire::NODE_CONTRACT),
-            ink,
-        ),
-        line("Log", log, ink),
-    ]
+impl OverlayLayer {
+    /// Settings › About: the product, its version and log; and on a
+    /// machine whose call picture is Cisco's OpenH264 binary, the switch
+    /// that fetches and uses it, with Cisco's line (its licence's terms).
+    fn about_page(&self, ink: &Ink) -> Vec<gpui_kit::Div> {
+        use gpui_kit::*;
+        let log = crate::backend::app_log_path()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+        let mut rows = vec![
+            heading("About", ink),
+            sans(400, 22.)
+                .pb(px(12.))
+                .child(words("product", "Ducktape")),
+            line("Version", env!("CARGO_PKG_VERSION").into(), ink),
+            line(
+                "Node contract",
+                format!("v{}", noded_client::wire::NODE_CONTRACT),
+                ink,
+            ),
+            line("Log", log, ink),
+        ];
+        #[cfg(all(feature = "call", target_os = "linux"))]
+        {
+            use crate::backend::openh264;
+            let on = openh264::enabled();
+            let switch = self.switch(
+                "about/openh264",
+                "Video calls with H.264",
+                on,
+                Rc::new(move |cx| {
+                    openh264::set_enabled(!on);
+                    cx.refresh_windows();
+                }),
+                ink,
+            );
+            rows.push(setting(
+                "Video calls with H.264",
+                openh264::ATTRIBUTION,
+                switch,
+                ink,
+            ));
+            rows.push(
+                sans(400, 13.)
+                    .pt(px(8.))
+                    .text_color(ink.muted)
+                    .child(words(
+                        "about/openh264/hint",
+                        "Fetched from Cisco onto this machine the first time a call sends or shows a picture; off, calls go on by voice.",
+                    )),
+            );
+            rows.push(line("H.264 licence", openh264::license_path(), ink));
+        }
+        rows
+    }
 }

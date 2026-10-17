@@ -35,10 +35,11 @@
 //! only the device's banners switch decides it, and a click on it opens
 //! Settings › Updates.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use super::kernel::{in_order, spawn_reply};
+use super::notifier::Recipient;
 use super::wire::methods::{self, Capability, Delivery, Notification, refusal};
 use super::{Intent, View};
 
@@ -47,7 +48,7 @@ mod settings;
 #[cfg(test)]
 mod tests;
 
-pub use center::{CenterHandle, Entry, Notice, NoticeKind, Posted, center, wall};
+pub use center::{CenterHandle, Entry, Notice, NoticeKind, center, wall};
 pub use settings::{
     BURSTS, Permission, Settings, not_now, save_banners, save_burst, save_in_front, set_permission,
 };
@@ -71,16 +72,20 @@ pub(super) fn answer(
     payload: &[u8],
 ) -> bool {
     match (capability, operation) {
-        (Capability::Notify, "post") => post(view, center(), id, payload),
+        (Capability::Notify, "post") => {
+            let center = view.center().clone();
+            post(view, &center, id, payload)
+        }
         (Capability::Notify, "seen") => seen(view, id, payload),
         _ => return false,
     }
     true
 }
 
-/// `notify.post` into `center`: judged by the settings as last read
-/// ([`Settings::kept`]), not a prefs read per post; the log is written at
-/// the end of the redraw ([`center::Center::flush`]).
+/// `notify.post` into `center` (the view's, [`View::center`]): judged by
+/// the settings as last read ([`Settings::kept`]), not a prefs read per
+/// post, or by its recipient's; the log is written at the end of the
+/// redraw ([`center::Center::flush`]).
 fn post(view: &mut View, center: &CenterHandle, id: u64, payload: &[u8]) {
     let post = methods::decode::<Notification>(payload)
         .and_then(|post| checked(post).map_err(str::to_owned));
@@ -91,10 +96,14 @@ fn post(view: &mut View, center: &CenterHandle, id: u64, payload: &[u8]) {
             return;
         }
     };
+    let settings = view
+        .recipient
+        .as_ref()
+        .map_or_else(Settings::kept, |recipient| recipient.settings.clone());
     let (posted, banner, entry) = {
         let mut center = center.lock();
         let (posted, banner) = center.post(
-            &Settings::kept(),
+            &settings,
             view.program,
             &view.name,
             post,
@@ -114,14 +123,20 @@ fn post(view: &mut View, center: &CenterHandle, id: u64, payload: &[u8]) {
         if notice.until != 0 {
             withdraw_at(
                 center.clone(),
+                view.recipient.clone(),
                 view.program,
                 notice.tag.clone(),
                 notice.until,
             );
         }
         let (tell, told) = tokio::sync::oneshot::channel();
+        let recipient = view.recipient.clone();
+        // ponytail: every recipient's banners queue under the program, one
+        // after another; a queue per recipient once a channel's post is slow
+        // (a call to APNs or FCM)
         in_order(view.program, move || {
-            let _ = tell.send(banners().post(&notice, entry.map(Click::Row)));
+            let banners = banners_of(recipient.as_deref());
+            let _ = tell.send(banners.post(&notice, entry.map(Click::Row)));
         });
         told
     });
@@ -148,13 +163,16 @@ fn seen(view: &mut View, id: u64, payload: &[u8]) {
             return;
         }
     };
-    if center().lock().read_tag(view.program, &tag) {
+    if view.center().lock().read_tag(view.program, &tag) {
         // the bell and the centre redraw
         view.intents.push(Intent::Notified);
     }
     if !tag.is_empty() {
         let tag = format!("{}/{tag}", view.program);
-        in_order(view.program, move || banners().withdraw(&tag));
+        let recipient = view.recipient.clone();
+        in_order(view.program, move || {
+            banners_of(recipient.as_deref()).withdraw(&tag)
+        });
     }
     view.reply(id, Ok(methods::encode(&())));
 }
@@ -167,11 +185,13 @@ pub fn declined(tag: &str) {
 }
 
 /// The banner raised under `tag` taken down at `until` (Unix seconds),
-/// queued behind `program`'s other banners, unless a later one stands
-/// there by then or it was taken down already ([`Center::ring_over`]).
-/// A banner with no tag has nothing to take it down by: it stays.
+/// from where it went (`recipient`'s channel, or the OS's), queued behind
+/// `program`'s other banners, unless a later one stands there by then or
+/// it was taken down already ([`Center::ring_over`]). A banner with no tag
+/// has nothing to take it down by: it stays.
 fn withdraw_at(
     center: CenterHandle,
+    recipient: Option<Arc<Recipient>>,
     program: &'static str,
     tag: String,
     until: u64,
@@ -187,7 +207,9 @@ fn withdraw_at(
             tokio::time::sleep(left).await;
         }
         if !tag.is_empty() && center.lock().ring_over(&tag, until) {
-            in_order(program, move || banners().withdraw(&tag));
+            in_order(program, move || {
+                banners_of(recipient.as_deref()).withdraw(&tag)
+            });
         }
     })
 }
@@ -247,6 +269,25 @@ pub(crate) fn clicked(click: Click) {
 /// The shell's banners (`OsServices::banners`).
 fn banners() -> &'static dyn crate::contract::Banners {
     crate::contract::os().banners()
+}
+
+/// Where a notice of `recipient`'s goes: its banners, or the shell's for
+/// the person at this device.
+fn banners_of(recipient: Option<&Recipient>) -> &dyn crate::contract::Banners {
+    match recipient {
+        Some(recipient) => &*recipient.banners,
+        None => banners(),
+    }
+}
+
+impl View {
+    /// The centre this view's notices go into: its recipient's, or the
+    /// app's ([`center`]).
+    pub(super) fn center(&self) -> &CenterHandle {
+        self.recipient
+            .as_ref()
+            .map_or(center(), |recipient| &recipient.center)
+    }
 }
 
 /// A banner request's identifier, new across processes and not only within

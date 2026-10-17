@@ -66,12 +66,15 @@ fn main() {
         _ => {}
     }
     let os = install_os();
+    // a call's picture codec on Linux is Cisco's binary: where it is
+    #[cfg(all(feature = "call", target_os = "linux"))]
+    backend::openh264::supply();
     // the sampler reads the OS facts: after them
     perf::start();
     install_log();
     perf::mark("log");
     // the self-update's boot step: flip to a staged release, or back from
-    // one that never came up, and exec the release that should run
+    // one that never came up, and run the release that should run
     update::boot();
     raise_open_file_limit();
     #[cfg(debug_assertions)]

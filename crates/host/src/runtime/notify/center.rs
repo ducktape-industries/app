@@ -11,6 +11,7 @@ use std::time::Instant;
 
 use super::settings::{Permission, Settings};
 use crate::runtime::WindowKey;
+pub use view_wire::methods::NoticeKind;
 use view_wire::methods::{Delivery, Notification};
 
 /// One banner as the host words it; a later one under the same non-empty
@@ -20,48 +21,15 @@ pub struct Notice {
     pub title: String,
     pub body: String,
     pub tag: String,
+    /// The program whose notice it is (or whose notices it counts).
+    pub program: String,
+    /// The `duck://` link the notice opens, as the program gave it; empty
+    /// for none.
+    pub link: String,
     pub kind: NoticeKind,
     /// Unix seconds past which the notice is stale: never raised past it,
     /// and taken down at it ([`Center::ring_over`]). 0: none.
     pub until: u64,
-}
-
-/// What a notice is to its carrier.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum NoticeKind {
-    /// Shown and logged.
-    #[default]
-    Notice,
-    /// Rings: a banner with Answer and Decline where the OS has actions,
-    /// standing until `notify.seen` of its tag or its `until`. Not held
-    /// back by the burst limit but one call stands per program: another
-    /// while it rings, under any tag, is logged only (a default the owner
-    /// may veto). It stops standing at its `until`, on `notify.seen` of
-    /// its tag, or declined on its banner ([`Center::declined`]). Raised
-    /// once before the person said anything about its view. A call needs a tag and an `until`: without either it is a
-    /// plain notice.
-    Call,
-}
-
-/// A view's notice and what it is to a carrier. The wire's `Notification`
-/// carries neither yet: until the SDK's `kind` and `until` reach this pin,
-/// a view's notice is a plain one ([`From<Notification>`]), and that `From`
-/// is where they map.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Posted {
-    pub notification: Notification,
-    pub kind: NoticeKind,
-    pub until: u64,
-}
-
-impl From<Notification> for Posted {
-    fn from(notification: Notification) -> Self {
-        Self {
-            notification,
-            kind: NoticeKind::Notice,
-            until: 0,
-        }
-    }
 }
 
 /// One row of the centre.
@@ -158,30 +126,28 @@ impl Center {
     /// for the view, and the banner to raise, if any — the notice's own, or
     /// the view's "N more" once it is past its burst. A call is never held
     /// back by the burst nor folded into "N more" but rings only while no
-    /// other call of its program stands ([`NoticeKind::Call`]), and once
-    /// before the person said anything about its view; a notice past its
-    /// `until` is logged only.
+    /// other call of its program stands, under any tag (a default the owner
+    /// may veto), and once before the person said anything about its view.
+    /// It stands until its `until`, `notify.seen` of its tag, or a decline
+    /// on its banner ([`Center::declined`]); without a tag or an `until` it
+    /// is a plain notice. A notice past its `until` is logged only.
     pub fn post(
         &mut self,
         settings: &Settings,
         program: &str,
         view: &str,
-        post: impl Into<Posted>,
+        post: Notification,
         now: Instant,
         wall: i64,
     ) -> (Delivery, Option<Notice>) {
-        let Posted {
-            notification: post,
-            kind,
-            until,
-        } = post.into();
+        let until = post.until;
         // a ring has an end and a tag to take it down by
         let kind = match until != 0 && !post.tag.is_empty() {
-            true => kind,
+            true => post.kind,
             false => NoticeKind::Notice,
         };
         let seconds = u64::try_from(wall).unwrap_or(0);
-        let permission = settings.views.get(program).copied();
+        let permission = settings.views.get(program).copied().or(settings.unasked);
         if permission == Some(Permission::Block) {
             return (Delivery::Blocked, None);
         }
@@ -193,6 +159,8 @@ impl Center {
                 true => String::new(),
                 false => format!("{program}/{}", post.tag),
             },
+            program: program.to_owned(),
+            link: post.link.clone(),
             kind,
             until,
         };
@@ -246,6 +214,8 @@ impl Center {
             title: format!("{more} more from {view}"),
             body: "They're waiting in Notifications.".into(),
             tag: format!("more/{program}"),
+            program: program.to_owned(),
+            link: String::new(),
             ..Notice::default()
         };
         (Delivery::Logged, Some(more))

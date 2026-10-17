@@ -183,12 +183,14 @@ mod tests {
             in_front: false,
             burst: 3,
             views: Default::default(),
+            unasked: None,
         };
         let post = view_wire::methods::Notification {
             title: "a".into(),
             body: "b".into(),
             tag: String::new(),
             link: String::new(),
+            ..Default::default()
         };
         let now = std::time::Instant::now();
         let _ = center.lock().post(&settings, "chat", "Chat", post, now, 0);

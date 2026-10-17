@@ -611,9 +611,12 @@ impl Load {
             timing.log(program);
         }
         drop(locked);
+        #[cfg(feature = "ui")]
         if parked {
             entity::begin_start(self.seat.clone(), program);
         }
+        #[cfg(not(feature = "ui"))]
+        let _ = (parked, &self.seat);
         if let Some(generation) = start {
             queue(Load { generation, ..self });
         }
@@ -1122,9 +1125,13 @@ pub(super) fn view_override(program: &str) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+// the seat's gpui entity and the stand-in it draws while its view comes
+#[cfg(feature = "ui")]
 mod entity;
+#[cfg(feature = "ui")]
 mod standin;
 
+#[cfg(feature = "ui")]
 pub use entity::{Backgrounded, Placed, Seat, serve_starts};
 
 /// What a Back the shell took came to at the seat in front

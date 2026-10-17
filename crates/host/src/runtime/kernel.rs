@@ -473,7 +473,7 @@ pub(super) fn answer(
                 }
                 Ok(
                     place @ (methods::Place::CameraSettings | methods::Place::MicrophoneSettings),
-                ) if crate::render::av::settings_page(place).is_none() => view.refuse(
+                ) if !settings_page(place) => view.refuse(
                     id,
                     refusal::UNKNOWN_REQUEST,
                     "this host has no settings page for the device",
@@ -689,3 +689,15 @@ pub(super) fn next_tick(clocks: &[Clock]) -> Option<std::time::Instant> {
 
 #[cfg(test)]
 pub(super) mod tests;
+
+/// Whether this host has a settings page for `place`'s device
+/// (`render::av`): a host with no screen has none.
+fn settings_page(place: methods::Place) -> bool {
+    #[cfg(feature = "ui")]
+    return crate::render::av::settings_page(place).is_some();
+    #[cfg(not(feature = "ui"))]
+    {
+        let _ = place;
+        false
+    }
+}

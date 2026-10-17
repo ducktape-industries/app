@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use std::path::Path;
 
-use super::center::{Center, CenterHandle, Notice, NoticeKind, Posted, read_log};
+use super::center::{Center, CenterHandle, Notice, NoticeKind, read_log};
 use super::settings::{BURST_PREF, FRONT_PREF, NOTIFY_PREF, Permission, Settings, VIEWS_PREF};
 use super::{checked, in_order};
 use crate::runtime::WindowKey;
@@ -14,6 +14,7 @@ fn post(title: &str, tag: &str) -> Notification {
         body: "b".into(),
         tag: tag.into(),
         link: String::new(),
+        ..Default::default()
     }
 }
 
@@ -26,6 +27,7 @@ fn settings(permission: Option<Permission>) -> Settings {
             .map(|permission| ("chat".to_owned(), permission))
             .into_iter()
             .collect(),
+        unasked: None,
     }
 }
 
@@ -106,6 +108,40 @@ fn the_focused_view_is_not_bannered_unless_show_is_set() {
             .0,
         Delivery::Banner
     );
+}
+
+/// A catch-up on a host with no one to ask (pushd's recipients: `unasked`
+/// Allow): twenty missed mentions in two rooms, posted in one instant,
+/// raise the burst limit's banners and then only the one standing "N more"
+/// banner, replaced under one tag, so a device holds two banners, not
+/// twenty; the centre folds them into one row per room, and asks no one.
+#[test]
+fn a_catch_up_burst_folds_by_room_and_stops_at_the_burst() {
+    let now = Instant::now();
+    let mut center = Center::default();
+    let unasked = Settings {
+        unasked: Some(Permission::Allow),
+        ..settings(None)
+    };
+    let raised: Vec<_> = (0..20)
+        .filter_map(|nth| {
+            let room = ["#general", "@ada"][nth as usize % 2];
+            let post = post(&format!("mention {nth}"), room);
+            center.post(&unasked, "chat", "Chat", post, now, nth).1
+        })
+        .collect();
+    let tags: std::collections::BTreeSet<_> = raised.iter().map(|it| it.tag.as_str()).collect();
+    assert_eq!(
+        tags,
+        ["chat/#general", "chat/@ada", "more/chat"].into(),
+        "the rooms' own and one more"
+    );
+    let rooms = raised.iter().filter(|it| it.tag != "more/chat").count();
+    assert_eq!(rooms, 3, "the burst limit's worth");
+    assert_eq!(raised.last().unwrap().title, "17 more from Chat");
+    assert_eq!(center.entries().count(), 2, "one row per room");
+    assert_eq!(center.entries().map(|row| row.count).sum::<u32>(), 20);
+    assert!(center.asking.is_empty(), "no one to ask");
 }
 
 /// A burst of three a minute: the fourth is logged and raises one "more"
@@ -258,6 +294,7 @@ fn a_post_is_words_a_tag_and_a_duck_link() {
         body: "b".into(),
         tag: "t".into(),
         link: "duck://chat/room".into(),
+        ..Default::default()
     };
     let mut bytes = methods::encode(&full);
     assert_eq!(methods::decode::<Notification>(&bytes).unwrap(), full);
@@ -552,12 +589,35 @@ fn a_views_live_line_shows_once_a_run() {
 }
 
 /// A call from `chat` under `tag`, standing until `until`.
-fn call(tag: &str, until: u64) -> Posted {
-    Posted {
-        notification: post("Ada is calling", tag),
+fn call(tag: &str, until: u64) -> Notification {
+    Notification {
         kind: NoticeKind::Call,
         until,
+        ..post("Ada is calling", tag)
     }
+}
+
+/// A view's `notify.post` payload is what the centre judges: a wire call
+/// with a tag and an `until` rings past the burst as a call, and is over
+/// at its `until`.
+#[test]
+fn a_wire_call_rings_as_a_call_and_is_over_at_its_until() {
+    let now = Instant::now();
+    let mut center = Center::default();
+    let allowed = settings(Some(Permission::Allow));
+    for nth in 0..3 {
+        center.post(&allowed, "chat", "Chat", post("m", ""), now, nth);
+    }
+    let payload = methods::encode(&call("call/1", 100));
+    let wire = methods::decode::<Notification>(&payload).unwrap();
+    let (posted, banner) = center.post(&allowed, "chat", "Chat", wire, now, 3);
+    let banner = banner.unwrap();
+    assert_eq!(posted, Delivery::Banner);
+    assert_eq!(
+        (banner.kind, banner.until, banner.tag.as_str()),
+        (NoticeKind::Call, 100, "chat/call/1")
+    );
+    assert!(center.ring_over("chat/call/1", 100));
 }
 
 /// A call rings past the burst, never as "N more"; before the person said
@@ -756,6 +816,7 @@ fn a_declined_call_lets_its_program_ring_again() {
 fn an_until_past_the_clock_sets_no_timer() {
     let timer = super::withdraw_at(
         CenterHandle::default(),
+        None,
         "chat",
         "chat/call/1".into(),
         u64::MAX,
@@ -782,7 +843,7 @@ fn a_calls_banner_is_withdrawn_at_its_until() {
         0,
     );
     let banner = banner.unwrap();
-    let timer = super::withdraw_at(center.clone(), "chat", banner.tag.clone(), until);
+    let timer = super::withdraw_at(center.clone(), None, "chat", banner.tag.clone(), until);
     let started = Instant::now();
     crate::runtime::kernel::handle().block_on(timer).unwrap();
     assert!(

@@ -40,6 +40,7 @@
 //! [`follow`] runs what comes and goes over the screen (a sheet, an alert,
 //! a toast) from the state that says whether it is up.
 
+#[cfg(feature = "ui")]
 use gpui_kit::{App, Window};
 use std::time::{Duration, Instant};
 
@@ -150,6 +151,7 @@ pub struct Motion {
 }
 
 impl Motion {
+    #[cfg(feature = "ui")]
     /// What Reduce Motion leaves of this motion: a slide becomes [`FADE`];
     /// a fade is kept.
     pub fn under(self, cx: &App) -> Self {
@@ -268,11 +270,13 @@ pub const TOAST_OUT: Motion = Motion {
     slides: false,
 };
 
+#[cfg(feature = "ui")]
 /// Whether the OS asks for reduced motion.
 pub fn reduced(cx: &App) -> bool {
     cx.reduce_motion()
 }
 
+#[cfg(feature = "ui")]
 /// The clock motions run on: the executor's, which a test moves.
 pub fn now(cx: &App) -> Instant {
     cx.background_executor().now()
@@ -341,6 +345,7 @@ const CROSS_FADE: Slide = Slide {
     fade: Some((0., 1.)),
 };
 
+#[cfg(feature = "ui")]
 /// A push (or a pop when `pop`): its motion and how its screens move.
 pub fn stack(pop: bool, cx: &App) -> (Motion, Slide) {
     let idiom = idiom();
@@ -367,11 +372,13 @@ pub struct Tween {
 }
 
 impl Tween {
+    #[cfg(feature = "ui")]
     /// `motion` (what Reduce Motion leaves of it) from 0 to 1, now.
     pub fn start(motion: Motion, cx: &App) -> Self {
         Self::between(0., 1., motion, cx)
     }
 
+    #[cfg(feature = "ui")]
     /// `motion` (what Reduce Motion leaves of it) from `from` to `to`, now:
     /// the rest of a drag let go of, a release settling at a detent.
     pub fn between(from: f32, to: f32, motion: Motion, cx: &App) -> Self {
@@ -406,6 +413,7 @@ impl Tween {
         self.time(now) >= 1.
     }
 
+    #[cfg(feature = "ui")]
     /// Its value now, from the render that draws it: the next frame asked
     /// for while it moves, none once it has ended.
     pub fn frame(&self, window: &Window, cx: &App) -> f32 {
@@ -450,6 +458,7 @@ impl<T> Showing<T> {
     }
 }
 
+#[cfg(feature = "ui")]
 /// `drawn` brought in line with `wanted` (what is up now, `None` when
 /// nothing is), from the render that draws it: what comes runs `come` from
 /// where it is, what goes runs `go` back to 0 and is dropped at its end,

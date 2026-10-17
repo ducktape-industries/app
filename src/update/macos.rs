@@ -25,6 +25,9 @@
 //! path again for the bundle now there, and a removal unregisters first
 //! ([`launch_services`]).
 //!
+//! The release a flip put in place starts as a new launch of the installed
+//! bundle ([`open_new`]), never by `exec` from the one that flipped.
+//!
 //! Everything here compiles on every platform so the Linux build type-checks
 //! it; only the swap call itself is macOS's, and the boot step reaches this
 //! module on macOS alone.
@@ -35,6 +38,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 
 use ducktape_updater::{Phase, Sha, SwapState};
 
@@ -190,6 +194,31 @@ pub(super) fn launch_services(bundle: &Path, registered: bool) {
         false => {
             tracing::debug!(target: super::TARGET, event = "app_update_launch_services_failed", flag, bundle = %bundle.display(), said)
         }
+    }
+}
+
+/// Start `bundle` as a new launch through LaunchServices (`open -n`), `args`
+/// its arguments. The system takes a process for the bundle it launched: an
+/// image `exec`ed in its place is still judged by that bundle's Info.plist,
+/// so a usage string only the new release carries is not there for it, and
+/// TCC ends the process at its first ask for the microphone. `-n`:
+/// LaunchServices lists an app that is exiting, or just exited, for a few
+/// ms more, and a plain `open` reopens that one (-600, procNotFound)
+/// instead of launching. What `open` said when it failed.
+pub(super) fn open_new(bundle: &Path, args: &[OsString]) -> Result<(), String> {
+    let mut open = Command::new("/usr/bin/open");
+    open.arg("-n").arg(bundle);
+    if !args.is_empty() {
+        open.arg("--args").args(args);
+    }
+    match open.stdin(Stdio::null()).output() {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => Err(format!(
+            "{}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+        Err(error) => Err(error.to_string()),
     }
 }
 

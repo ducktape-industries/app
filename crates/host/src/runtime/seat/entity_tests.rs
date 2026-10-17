@@ -918,6 +918,7 @@ fn a_view_that_traps_lets_its_camera_go(cx: &mut TestAppContext) {
         mirror: true,
         object_fit: wire::ImageObjectFit::Cover,
         on_state: None,
+        publish: None,
     };
     crate::runtime::seat_drawing_for_test(PROGRAM, 320, camera);
     crate::runtime::declare_for_test(PROGRAM, &[wire::methods::Capability::Camera]);

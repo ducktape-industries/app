@@ -245,6 +245,10 @@ pub(super) struct View {
     /// The route this view last named as the one it shows (`host.showing`),
     /// which `host.screen` lists while the view is on screen.
     pub(crate) showing: Option<String>,
+    /// Whom a notifier runs for when not the person at this device
+    /// (`notifier::Recipient`): its centre, store and banners are the
+    /// recipient's. `None` for every pane's view.
+    pub(crate) recipient: Option<Arc<notifier::Recipient>>,
 }
 
 impl View {
@@ -291,6 +295,7 @@ impl View {
     /// What the seat hands its tree to draw: the held tree with its style
     /// table, pictures named by hash alone, and the bytes those hashes
     /// resolve to, shared.
+    #[cfg(feature = "ui")]
     pub fn drawn(&self) -> (crate::render::Tree, Arc<crate::render::PictureBytes>) {
         let tree = crate::render::Tree {
             root: self.frame.root.clone().unwrap_or_else(wire::Node::empty),

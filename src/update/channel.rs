@@ -302,26 +302,13 @@ pub(crate) fn restart_waiter() -> i32 {
         return 1;
     }
     if cfg!(target_os = "macos") {
-        // a new instance: LaunchServices lists the app that just exited for
-        // a few ms more, and a plain `open` reopens that one (-600,
-        // procNotFound) instead of launching
-        let opened = Process::new("/usr/bin/open")
-            .arg("-n")
-            .arg(layout.installed_bundle())
-            .stdin(Stdio::null())
-            .output();
-        return match opened {
-            Ok(output) if output.status.success() => {
+        return match super::macos::open_new(&layout.installed_bundle(), &[]) {
+            Ok(()) => {
                 info!(target: TARGET, event = "app_update_restart_opened");
                 0
             }
-            Ok(output) => {
-                let said = String::from_utf8_lossy(&output.stderr);
-                warn!(target: TARGET, event = "app_update_restart_failed", reason = "open_failed", status = %output.status, said = said.trim());
-                1
-            }
-            Err(error) => {
-                warn!(target: TARGET, event = "app_update_restart_failed", reason = "open_failed", %error);
+            Err(said) => {
+                warn!(target: TARGET, event = "app_update_restart_failed", reason = "open_failed", said);
                 1
             }
         };
@@ -629,6 +616,7 @@ fn notify_ready(display: &str) {
         title: format!("Ducktape {display} is ready."),
         body: "Restart to update.".into(),
         tag: NOTICE_TAG.into(),
+        // the host's own: no program's, and a click opens Settings › Updates
         ..Default::default()
     };
     let raised = crate::os::post_host(&notice);

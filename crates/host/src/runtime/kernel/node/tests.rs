@@ -429,6 +429,17 @@ async fn two_identical_submits_in_flight_are_two_frames() {
 /// A node whose `/v1/changes/<program>` socket sends one change at each of
 /// `heights`, then stays open for as long as the client holds it.
 fn changes_node(heights: &'static [u64]) -> Node {
+    counted_changes_node(heights, std::time::Duration::ZERO).0
+}
+
+/// [`changes_node`], each socket waiting `after` before its first change,
+/// and the count of sockets it took.
+fn counted_changes_node(
+    heights: &'static [u64],
+    after: std::time::Duration,
+) -> (Node, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let sockets = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let taken = sockets.clone();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let node = Node {
@@ -439,11 +450,14 @@ fn changes_node(heights: &'static [u64]) -> Node {
         use futures::{SinkExt as _, StreamExt as _};
         let listener = tokio::net::TcpListener::from_std(listener).unwrap();
         while let Ok((stream, _)) = listener.accept().await {
+            let taken = taken.clone();
             tokio::spawn(async move {
                 // anything but the socket (a `chain.heads` status read) is dropped
                 let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
                     return;
                 };
+                taken.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::time::sleep(after).await;
                 for &height in heights {
                     // each block wrote one row, as a program's block does
                     let change = noded::Change {
@@ -459,7 +473,40 @@ fn changes_node(heights: &'static [u64]) -> Node {
             });
         }
     });
-    node
+    (node, sockets)
+}
+
+/// Two subscriptions to one program's changes on one node, as two
+/// accounts' notifiers of it on a host with no screen (or a program's pane
+/// and its notifier in the app): ONE socket to the node, and each hears
+/// every block it publishes.
+#[test]
+fn followers_of_one_programs_changes_share_one_socket() {
+    let (node, sockets) = counted_changes_node(&[5, 6], std::time::Duration::from_millis(200));
+    let mut first = view();
+    let mut second = view();
+    follow_changes(&mut first, 1, node.clone(), "chat".into());
+    follow_changes(&mut second, 1, node, "chat".into());
+    let block = |height: u64| wire::Event::Response {
+        id: 1,
+        result: Ok(methods::encode(&Some(methods::Change {
+            height,
+            keys: vec![format!("row/{height}").into_bytes()],
+        }))),
+        done: false,
+    };
+    for follower in [&mut first, &mut second] {
+        let mut items = Vec::new();
+        for _ in 0..500 {
+            follower.replies.drain_into(&mut items);
+            if items.len() >= 2 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(items, [block(5), block(6)]);
+    }
+    assert_eq!(sockets.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 /// A connect inside the network, under a view that kept its code: its

@@ -8,6 +8,16 @@ use wire::methods::Notification;
 /// `capabilities` (`notify,` and the like) and the target `chat`: its first
 /// turn posts `post`, every later one asks nothing.
 fn notifier_posting(name: &str, capabilities: &str, post: &Notification) -> Vec<u8> {
+    let posting = wire::Request {
+        id: 1,
+        kind: "notify.post".into(),
+        payload: wire::methods::encode(post),
+    };
+    notifier_asking(name, capabilities, vec![posting])
+}
+
+/// [`notifier_posting`], its first turn asking `requests`.
+fn notifier_asking(name: &str, capabilities: &str, requests: Vec<wire::Request>) -> Vec<u8> {
     let turn = |requests| {
         let turn = wire::notifier::Turn {
             requests,
@@ -24,11 +34,7 @@ fn notifier_posting(name: &str, capabilities: &str, post: &Notification) -> Vec<
             len,
         )
     };
-    let (first, first_len) = turn(vec![wire::Request {
-        id: 1,
-        kind: "notify.post".into(),
-        payload: wire::methods::encode(post),
-    }]);
+    let (first, first_len) = turn(requests);
     let (then, then_len) = turn(Vec::new());
     let manifest = format!(
         "ducktape.view.manifest\\n{name}\\n\\n{capabilities}\\n1\\n{}\\nchat,\\n",
@@ -85,6 +91,7 @@ fn mention() -> Notification {
         body: "look".into(),
         tag: "#general".into(),
         link: String::new(),
+        ..Default::default()
     }
 }
 
@@ -234,4 +241,105 @@ fn a_notifier_declaring_what_needs_a_person_is_refused() {
     let bytes = notifier_posting("Quiet", "notify,store,", &mention());
     let quiet = handle().block_on(View::notifier("notifier-tests-quiet", &bytes, &connection));
     assert!(quiet.is_ok(), "{:?}", quiet.err());
+}
+
+/// Banners a test reads back: each notice raised, as a channel sends it.
+#[derive(Default)]
+struct Raised(Mutex<Vec<notify::Notice>>);
+
+impl crate::contract::Banners for Raised {
+    fn post(&self, notice: &notify::Notice, _: Option<notify::Click>) -> bool {
+        self.0.lock().unwrap().push(notice.clone());
+        true
+    }
+
+    fn withdraw(&self, _: &str) {}
+}
+
+/// An account a host with no screen carries notices for, its store under
+/// `store` and its notices raised on `raised`: what pushd hands
+/// `notify_for`.
+fn recipient(account: u64, store: PathBuf, raised: Arc<Raised>) -> Recipient {
+    let session = super::super::props(true, "fake-network#0", "ab", Some(account), "");
+    Recipient {
+        session: tokio::sync::watch::channel(Some(session)).0,
+        store,
+        center: notify::CenterHandle::default(),
+        settings: Settings {
+            banners: true,
+            in_front: false,
+            burst: 6,
+            views: Default::default(),
+            unasked: Some(Permission::Allow),
+        },
+        banners: raised,
+        said: futures::channel::mpsc::unbounded().0,
+    }
+}
+
+/// A host with no screen runs a program's notifier once per account it
+/// carries notices for: each one's notice goes into its own account's
+/// centre and out its channel, with the program's words, tag and link,
+/// never into the app's centre; and each keeps its store under its own
+/// account's, so two accounts on one network and program never share a
+/// file (chat keeps what it announced there).
+#[test]
+fn each_recipient_has_its_own_notices_and_store() {
+    let program = "notifier-tests-recipients";
+    let post = Notification {
+        link: "duck://fake-network-00000000/chat/general/7".into(),
+        ..mention()
+    };
+    let posting = wire::Request {
+        id: 1,
+        kind: "notify.post".into(),
+        payload: wire::methods::encode(&post),
+    };
+    let keeping = wire::Request {
+        id: 2,
+        kind: "store.set".into(),
+        payload: wire::methods::encode(&("notified".to_owned(), Some(b"7".to_vec()))),
+    };
+    let blob = blob_carrying(&notifier_asking(
+        "Each",
+        "notify,store,",
+        vec![posting, keeping],
+    ));
+    let node = FakeNode::new(Vec::new(), Vec::new(), vec![blob.clone()]);
+    let stores = tempfile::tempdir().unwrap();
+    let accounts = [2u64, 3];
+    let sets: Vec<(Arc<Raised>, PathBuf, Notifiers)> = accounts
+        .iter()
+        .map(|account| {
+            let raised = Arc::new(Raised::default());
+            let store = stores.path().join(account.to_string());
+            let notifiers = Notifiers {
+                running: Mutex::default(),
+                recipient: Some(Arc::new(recipient(*account, store.clone(), raised.clone()))),
+            };
+            notifiers.reconcile(&node.asked_of, &[listed(program, &blob)]);
+            (raised, store, notifiers)
+        })
+        .collect();
+    for (raised, store, _) in &sets {
+        let file = store
+            .join("fake-network_230")
+            .join(format!("{program}.borsh"));
+        eventually("each account's notifier posted and kept", || {
+            !raised.0.lock().unwrap().is_empty() && file.exists()
+        });
+        let raised = raised.0.lock().unwrap();
+        assert_eq!(raised.len(), 1, "{raised:?}");
+        assert_eq!(
+            (
+                &raised[0].program[..],
+                &raised[0].tag[..],
+                &raised[0].link[..]
+            ),
+            (program, &format!("{program}/#general")[..], &post.link[..])
+        );
+    }
+    assert!(rows(program).is_empty(), "the app's centre heard of it");
+    let kept = std::fs::read_dir(stores.path()).unwrap().count();
+    assert_eq!(kept, 2, "one store per account");
 }

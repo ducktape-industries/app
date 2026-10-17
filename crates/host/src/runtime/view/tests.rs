@@ -1009,6 +1009,7 @@ fn a_piece_from_a_view_without_its_capability_ends_the_view() {
                 mirror: true,
                 object_fit: wire::ImageObjectFit::Cover,
                 on_state: None,
+                publish: None,
             },
         ),
         (
@@ -1022,6 +1023,8 @@ fn a_piece_from_a_view_without_its_capability_ends_the_view() {
                 revision: 0,
                 commands: Vec::new(),
                 on_state: None,
+                publish: None,
+                muted: false,
             },
         ),
     ];
