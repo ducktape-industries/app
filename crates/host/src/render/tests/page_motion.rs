@@ -500,3 +500,67 @@ fn a_sheet_over_the_page_or_reduce_motion_holds_it_still(cx: &mut gpui_kit::Test
     assert_eq!(finger(&tree, &native), None);
     crate::contract::testing::touch_first_for_test(false);
 }
+
+/// A page with a camera and a microphone, pushed over: its copy, drawn
+/// under the push and kept under the page after, holds neither, opens
+/// neither (a device it opened would stay open, unseen, while the page is
+/// kept), and keeps each one's place.
+#[gpui_kit::test]
+fn the_page_kept_under_opens_no_device(cx: &mut gpui_kit::TestAppContext) {
+    crate::contract::testing::touch_first_for_test(true);
+    let style = crate::render::test_style(div().w(px(40.)).h(px(40.)).style().clone());
+    // a device no system lists: nothing opens should the copy try
+    let camera = wire::Node::Camera {
+        id: named_id("camera"),
+        style,
+        device: Some("no-such".into()),
+        mirror: true,
+        object_fit: wire::ImageObjectFit::Cover,
+        on_state: None,
+        publish: None,
+    };
+    let microphone = wire::Node::Microphone {
+        id: named_id("mic"),
+        style,
+        device: Some("no-such".into()),
+        output: None,
+        monitor: false,
+        revision: 0,
+        commands: Vec::new(),
+        on_state: None,
+        publish: None,
+        muted: false,
+    };
+    let (tree, mut native) = open(cx, page_of("call", 0, vec![camera, microphone]));
+    show(&tree, &mut native, page("room", 1));
+    let kept = tree
+        .read_with(&native, |tree, _| tree.leaving_page())
+        .expect("the push moves");
+    let devices = kept.read_with(&native, |kept, _| {
+        let mut root = kept.root.clone();
+        let mut devices = 0;
+        root.for_each_mut(&mut |node| {
+            devices += matches!(
+                node,
+                wire::Node::Camera { .. } | wire::Node::Microphone { .. } | wire::Node::Web { .. }
+            ) as usize
+        });
+        devices
+    });
+    assert_eq!(devices, 0, "the copy holds a device");
+    later(&tree, &mut native, crate::motion::idiom().push.duration);
+    assert!(drag(&tree, &mut native, 0.5), "the page did not follow");
+    assert!(
+        drawn(&mut native, "camera") && drawn(&mut native, "mic"),
+        "the copy lost the pieces' places"
+    );
+    #[cfg(feature = "av")]
+    {
+        let (cameras, meters) = kept.read_with(&native, |kept, _| kept.media_for_test());
+        assert!(
+            cameras.is_empty() && meters.is_empty(),
+            "the copy opened a device"
+        );
+    }
+    crate::contract::testing::touch_first_for_test(false);
+}

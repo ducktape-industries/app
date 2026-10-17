@@ -394,6 +394,8 @@ pub struct Root {
     /// How far in (points) iOS's left-edge swipe has come while it drags
     /// the screen on top off.
     dragged: Option<f32>,
+    /// The view's tree whose page the swipe drags instead, until let go.
+    swiped: Option<WeakEntity<ViewTree>>,
     /// The window's width at the last draw: a drag's share of it.
     width: f32,
     /// The sheet, the consent sheet, the alert and the toast as drawn, each
@@ -484,6 +486,7 @@ impl Root {
             watched: BTreeMap::new(),
             moving: None,
             dragged: None,
+            swiped: None,
             width: 0.,
             drawn_sheet: None,
             drawn_consent: None,
@@ -647,16 +650,27 @@ impl Root {
     /// top whose view does not hear Back itself) and nothing is over it.
     /// When the view on top hears Back (a page above its root), its own
     /// page follows inside it instead, if its tree keeps the page under
-    /// (`ViewTree::drag_page`). Under Reduce Motion nothing follows; the
+    /// (`ViewTree::drag_page`), and that tree hears the release, whatever is
+    /// on top by then. Under Reduce Motion nothing follows; the
     /// release is Back as before. A swipe begun while the stack moves does
     /// not follow either.
     fn drag(&mut self, x: f32, cx: &mut Context<Self>) {
+        let progress = x / self.width.max(1.);
+        // the view's page the finger holds stays its, while it follows
+        if let Some(tree) = self.swiped.as_ref().and_then(WeakEntity::upgrade) {
+            if tree.update(cx, |tree, cx| tree.drag_page(progress, cx)) {
+                return;
+            }
+            self.swiped = None;
+        }
         let now = motion::now(cx);
         let busy = self.moving.is_some_and(|moving| !moving.tween.done(now));
         if self.dragged.is_none() && (busy || !self.can_drag(cx)) {
-            if !busy && let Some(tree) = self.view_swiped(cx) {
-                let progress = x / self.width.max(1.);
-                tree.update(cx, |tree, cx| tree.drag_page(progress, cx));
+            if !busy
+                && let Some(tree) = self.view_swiped(cx)
+                && tree.update(cx, |tree, cx| tree.drag_page(progress, cx))
+            {
+                self.swiped = Some(tree.downgrade());
             }
             return;
         }
@@ -694,15 +708,10 @@ impl Root {
         seat.hears_back().then(|| seat.tree()).flatten()
     }
 
-    /// The tree of the view on top.
-    fn top_tree(&self, cx: &App) -> Option<Entity<ViewTree>> {
-        self.top_seat(cx)?.read(cx).tree()
-    }
-
     /// The swipe let go short of Back: the screen on top slides back into
     /// place over the one under it, or the view's page inside it.
     fn drag_cancelled(&mut self, cx: &mut Context<Self>) {
-        if let Some(tree) = self.top_tree(cx) {
+        if let Some(tree) = self.swiped.take().and_then(|tree| tree.upgrade()) {
             tree.update(cx, |tree, cx| tree.drag_page_cancelled(cx));
         }
         let Some(x) = self.dragged.take() else {
@@ -817,9 +826,9 @@ impl Root {
     /// that this Back does not pop springs back; a view's page under the
     /// finger that the view does not hear it for slides back.
     fn back(&mut self, cx: &mut Context<Self>) {
-        let tree = self.top_tree(cx);
+        let swiped = self.swiped.take().and_then(|tree| tree.upgrade());
         self.walk_back(cx);
-        if let Some(tree) = tree {
+        if let Some(tree) = swiped {
             tree.update(cx, |tree, cx| tree.drag_page_cancelled(cx));
         }
         if self.dragged.take().is_some() {
@@ -2263,7 +2272,7 @@ mod tests {
     /// A view's frame root showing the page `key`, `depth` over its root,
     /// hearing Back when `back`.
     fn view_page(key: &str, depth: u32, back: bool) -> view_wire::Node {
-        let style = ducktape_host::render::plain_style();
+        let style = ducktape_host::render::test_style(div().size_full().style().clone());
         let page = view_wire::Node::Container(view_wire::ContainerNode {
             id: Some(view_wire::ElementIdWire::Name(key.into())),
             style,
@@ -2282,6 +2291,12 @@ mod tests {
             })),
             children: vec![page],
         })
+    }
+
+    /// The tree of the view on top.
+    fn view_tree(root: &Entity<Root>, cx: &mut VisualTestContext) -> Entity<ViewTree> {
+        root.read_with(cx, |root, cx| root.top_seat(cx)?.read(cx).tree())
+            .expect("the view's tree")
     }
 
     /// Inside a program above its root page, iOS's edge swipe drags the
@@ -2318,9 +2333,7 @@ mod tests {
         root.update(cx, |root, cx| root.open(SWIPED, cx));
         run_out(cx);
         run_out(cx);
-        let tree = root
-            .read_with(cx, |root, cx| root.top_tree(cx))
-            .expect("the view's tree");
+        let tree = view_tree(&root, cx);
         let finger = |cx: &mut VisualTestContext| tree.read_with(cx, |tree, _| tree.page_finger());
         let sliding = |cx: &mut VisualTestContext| tree.read_with(cx, |tree, _| tree.page_moving());
         let backs = || {
@@ -2381,6 +2394,69 @@ mod tests {
         });
         root.update(cx, |root, cx| root.drag(width / 4., cx));
         assert_eq!(finger(cx), None, "the view's page followed under an alert");
+        ducktape_host::contract::testing::touch_first_for_test(false);
+    }
+
+    /// Let go past the rule halfway in, the view answers its Back with the
+    /// page under: on the first frame after, the page going is still where
+    /// the finger left it, halfway across, and it slides off from there.
+    #[gpui_kit::test]
+    fn a_views_page_let_go_as_back_pops_from_the_finger(cx: &mut TestAppContext) {
+        const SWIPED: &str = "phone-swipe-pop-test";
+        let _seat = ducktape_host::backend::seat_serial();
+        ducktape_host::contract::testing::touch_first_for_test(true);
+        // the root page, the page pushed over it on the next tick, and the
+        // root page again on every tick after: the Back's answer
+        let frame = |root, busy| view_wire::Frame {
+            root: Some(root),
+            busy,
+            ..Default::default()
+        };
+        ducktape_host::runtime::seat_ticking_for_test(
+            SWIPED,
+            320,
+            &[
+                frame(view_page("rooms", 0, false), true),
+                frame(view_page("room", 1, true), false),
+                frame(view_page("rooms", 0, false), false),
+            ],
+        );
+        let (root, _stack, cx) = phone(cx);
+        root.update(cx, |root, cx| root.open(SWIPED, cx));
+        run_out(cx);
+        run_out(cx);
+        assert_eq!(
+            ducktape_host::runtime::ticks_for_test(SWIPED).len(),
+            2,
+            "the view ticked past its page before the swipe"
+        );
+        let tree = view_tree(&root, cx);
+        let left = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                window.render_frame(cx);
+                let page = ducktape_host::render::native_id(&view_wire::ElementIdWire::Name(
+                    "room".into(),
+                ));
+                window
+                    .try_find(page)
+                    .map(|it| f32::from(it.bounds().left()))
+            })
+        };
+        let width = root.read_with(cx, |root, _| root.width);
+        root.update(cx, |root, cx| root.drag(width / 2., cx));
+        root.update(cx, |root, cx| root.back(cx));
+        cx.run_until_parked();
+        assert_eq!(tree.read_with(cx, |tree, _| tree.page_finger()), None);
+        assert!(tree.read_with(cx, |tree, _| tree.page_moving()));
+        let going = left(cx).expect("the page going drawn");
+        assert!(
+            (going - width / 2.).abs() < 1.,
+            "the pop did not start at the finger: {going}, not {}",
+            width / 2.
+        );
+        run_out(cx);
+        assert_eq!(left(cx), None, "the page popped is still drawn");
+        assert_eq!(frames(cx), 0, "a frame asked for once still");
         ducktape_host::contract::testing::touch_first_for_test(false);
     }
 }

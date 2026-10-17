@@ -5,7 +5,8 @@
 //! shows another page at another depth, the host slides the new page in
 //! over the old (deeper: a push) or the old off the new (shallower: a pop),
 //! by the phone's own motion (`motion::stack`), while the old page is drawn
-//! from the frame that had it, in a tree of its own that nothing hears. A
+//! from the frame that had it, in a tree of its own that nothing hears and
+//! that opens no device (its camera, microphone and web pieces empty). A
 //! page at the same depth (a tab, a page put in place of another) is not
 //! moved. A pointer window never moves, and its frames carry no mark.
 //!
@@ -110,9 +111,25 @@ impl ViewTree {
                 leaving = Some(node.clone());
             }
         });
-        let Some(root) = leaving else {
+        let Some(mut root) = leaving else {
             return;
         };
+        // a copy drawn and never heard opens no device: a camera, a
+        // microphone or a web page it opened would stay open, unseen, as
+        // long as the page is kept. Each keeps its place, empty.
+        root.for_each_mut(&mut |node| {
+            if let wire::Node::Camera { id, style, .. }
+            | wire::Node::Microphone { id, style, .. }
+            | wire::Node::Web { id, style, .. } = node
+            {
+                *node = wire::Node::Container(view_wire::ContainerNode {
+                    id: Some(id.clone()),
+                    style: *style,
+                    interactivity: None,
+                    children: Vec::new(),
+                });
+            }
+        });
         // the old tree is rooted at the page: its paths start at the page's
         // own id
         let under = from.len().saturating_sub(1);

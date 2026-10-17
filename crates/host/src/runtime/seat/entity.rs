@@ -902,12 +902,15 @@ impl Seat {
         // the standin goes over the tree, whose draw would release the hold
         self.holding = false;
         // a view that stopped (a fault, a failed load, none to show) keeps
-        // no camera or microphone open under its standin; a load's leaves
-        // the tree as it is
+        // no camera or microphone open under its standin, and no page held
+        // for a Back it will not answer; a load's leaves the tree as it is
         if !standin.loading
             && let Some(tree) = &self.tree
         {
-            tree.update(cx, |tree, _| tree.release_media());
+            tree.update(cx, |tree, cx| {
+                tree.release_media();
+                tree.back_answered(cx);
+            });
         }
         if self.standin.as_ref() != Some(&standin) {
             self.standin = Some(standin);
