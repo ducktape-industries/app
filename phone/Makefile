@@ -38,7 +38,7 @@ BUILD ?= 1
 
 # OpenH264 (a call's picture, `crates/av` with `call`) is C++: the NDK's
 # C++ runtime goes in statically, since no libc++_shared.so ships in the APK.
-ANDROID_CXX_ENV = CXXSTDLIB_$(ANDROID_TRIPLE_$(ANDROID_ABI))=c++_static \
+ANDROID_CXX_ENV = CXXSTDLIB_$(shell echo $(ANDROID_TRIPLE_$(ANDROID_ABI)) | tr '-' '_')=c++_static \
 	CARGO_TARGET_$(shell echo $(ANDROID_TRIPLE_$(ANDROID_ABI)) | tr 'a-z-' 'A-Z_')_RUSTFLAGS="-C link-arg=-lc++abi"
 
 android:
