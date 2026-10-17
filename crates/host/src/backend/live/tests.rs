@@ -41,6 +41,17 @@ fn certified(key: &ed25519::PrivateKey) -> (CertificateDer<'static>, PrivateKeyD
     (cert.der().clone(), PrivateKeyDer::Pkcs8(der))
 }
 
+/// The live paths a test node serves.
+#[derive(Clone, Copy, PartialEq)]
+enum Paths {
+    /// QUIC on its UDP port, and no websocket.
+    Quic,
+    /// The websocket, and a UDP port that takes packets and never answers,
+    /// as a node behind a tunnel that carries only TCP.
+    Ws,
+    Both,
+}
+
 /// A node on loopback: `/v1/status` naming `identity` and `/v1/live/port`
 /// on HTTP, and on UDP a relay of one track, which it hands back to a
 /// subscriber on the same session: what the client publishes under
@@ -55,6 +66,17 @@ async fn node_hearing(
     identity: Vec<u8>,
     answer: Answer,
 ) -> (RpcClient, mpsc::UnboundedReceiver<quinn::ConnectionError>) {
+    node_serving(cert_key, identity, answer, Paths::Quic).await
+}
+
+/// [`node_hearing`] on the live `paths`: the websocket only welcomes, and
+/// relays nothing.
+async fn node_serving(
+    cert_key: &ed25519::PrivateKey,
+    identity: Vec<u8>,
+    answer: Answer,
+    paths: Paths,
+) -> (RpcClient, mpsc::UnboundedReceiver<quinn::ConnectionError>) {
     let (cert, key) = certified(cert_key);
     let node_key = cert_key.public_key().as_ref().to_vec();
     let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -67,19 +89,31 @@ async fn node_hearing(
     crypto.alpn_protocols = vec![live_wire::ALPN.to_vec()];
     let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(crypto).unwrap();
     let server = quinn::ServerConfig::with_crypto(Arc::new(crypto));
-    let endpoint = quinn::Endpoint::server(server, "127.0.0.1:0".parse().unwrap()).unwrap();
-    let port = endpoint.local_addr().unwrap().port();
     let (ended, ends) = mpsc::unbounded_channel();
-    tokio::spawn(async move {
-        while let Some(incoming) = endpoint.accept().await {
-            let connection = incoming.await.unwrap();
-            let (closing, ended) = (connection.clone(), ended.clone());
-            tokio::spawn(async move {
-                let _ = ended.send(closing.closed().await);
-            });
-            tokio::spawn(relay(connection, node_key.clone(), answer));
-        }
-    });
+    let port = if paths == Paths::Ws {
+        let silent = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = silent.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let mut packet = [0; 2048];
+            while silent.recv(&mut packet).await.is_ok() {}
+        });
+        port
+    } else {
+        let endpoint = quinn::Endpoint::server(server, "127.0.0.1:0".parse().unwrap()).unwrap();
+        let port = endpoint.local_addr().unwrap().port();
+        let node_key = node_key.clone();
+        tokio::spawn(async move {
+            while let Some(incoming) = endpoint.accept().await {
+                let connection = incoming.await.unwrap();
+                let (closing, ended) = (connection.clone(), ended.clone());
+                tokio::spawn(async move {
+                    let _ = ended.send(closing.closed().await);
+                });
+                tokio::spawn(relay(connection, node_key.clone(), answer));
+            }
+        });
+        port
+    };
     let status = Status {
         network: "loopback".into(),
         time: 1,
@@ -99,11 +133,18 @@ async fn node_hearing(
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = http.accept().await {
             let status = abi::encode(&status);
+            let node_key = node_key.clone();
             tokio::spawn(async move {
                 let mut asked = vec![0; 4096];
+                let read = stream.peek(&mut asked).await.unwrap();
+                let upgrade = format!("GET {} ", live_wire::ROUTE);
+                if paths != Paths::Quic && asked[..read].starts_with(upgrade.as_bytes()) {
+                    let socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                    return ws_relay(socket, node_key).await;
+                }
                 let read = stream.read(&mut asked).await.unwrap();
                 let line = String::from_utf8_lossy(&asked[..read]);
-                // the status and the port, and nothing else: no websocket here
+                // the status, the port and the websocket, and nothing else
                 let body = if line.starts_with("GET /v1/status ") {
                     Some(status)
                 } else if line.starts_with(&format!("GET {} ", live_wire::PORT_ROUTE)) {
@@ -152,15 +193,7 @@ async fn relay(connection: quinn::Connection, node: Vec<u8>, answer: Answer) {
     let Control::Proof(proof) = read(&mut recv).await else {
         panic!("the challenge is answered with a proof")
     };
-    let preimage = live_wire::proof_preimage(&hello.chain, &node, &nonce, &hello.key);
-    let signed = Verifier::Ed25519.verify(
-        &hello.key,
-        live_wire::NAMESPACE,
-        &preimage,
-        &proof.signature,
-    );
-    assert_eq!(hello.chain, [9; 32], "the hello names the genesis");
-    if !signed || matches!(answer, Answer::Refuse) {
+    if !proven(&hello, &node, &nonce, &proof) || matches!(answer, Answer::Refuse) {
         let code = Code::BadProof;
         write_control(&mut send, Control::Refused { request: 0, code }).await;
         // the refusal is read before the session goes: the client hangs up
@@ -316,6 +349,59 @@ async fn relay(connection: quinn::Connection, node: Vec<u8>, answer: Answer) {
             _ => continue,
         };
         write_control(&mut send, answer).await;
+    }
+}
+
+/// Whether `proof` signs the challenge `nonce` for the node `node` with the
+/// hello's key, the hello naming the test chain.
+fn proven(hello: &Hello, node: &[u8], nonce: &[u8; 32], proof: &Proof) -> bool {
+    assert_eq!(hello.chain, [9; 32], "the hello names the genesis");
+    let preimage = live_wire::proof_preimage(&hello.chain, node, nonce, &hello.key);
+    Verifier::Ed25519.verify(
+        &hello.key,
+        live_wire::NAMESPACE,
+        &preimage,
+        &proof.signature,
+    )
+}
+
+/// The node's side of one websocket session: the handshake, then the
+/// socket held open until the client goes; nothing is relayed. A client
+/// that drops the socket mid-handshake (QUIC was the session) ends it.
+async fn ws_relay(
+    mut socket: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    node: Vec<u8>,
+) {
+    async fn heard(
+        socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    ) -> Option<Control> {
+        let Message::Binary(bytes) = socket.next().await?.ok()? else {
+            return None;
+        };
+        let Ok(WsFrame::Control(control)) = abi::decode(&bytes) else {
+            panic!("the handshake is control frames")
+        };
+        Some(control)
+    }
+    let say = |control| Message::Binary(abi::encode(&WsFrame::Control(control)));
+    let Some(Control::Hello(hello)) = heard(&mut socket).await else {
+        return;
+    };
+    let nonce = [4; 32];
+    let challenge = Control::Challenge(Challenge { nonce });
+    if socket.send(say(challenge)).await.is_err() {
+        return;
+    }
+    let Some(Control::Proof(proof)) = heard(&mut socket).await else {
+        return;
+    };
+    assert!(proven(&hello, &node, &nonce, &proof));
+    let welcome = Welcome {
+        account: ACCOUNT,
+        datagrams: false,
+    };
+    if socket.send(say(Control::Welcome(welcome))).await.is_ok() {
+        while let Some(Ok(_)) = socket.next().await {}
     }
 }
 
@@ -476,7 +562,8 @@ async fn a_refused_proof_is_the_nodes_word() {
 }
 
 /// A certificate that holds another key than the status names is not the
-/// node: QUIC is refused, the websocket is tried, and this node has none.
+/// node: QUIC is refused, the websocket beside it is the one left, and
+/// this node has none.
 #[tokio::test]
 async fn a_certificate_of_another_key_is_not_the_node() {
     let _seat = seated().await;
@@ -494,6 +581,39 @@ async fn a_certificate_of_another_key_is_not_the_node() {
         .err()
         .unwrap();
     assert_eq!(refused.code, refusal::LIVE_UNAVAILABLE);
+}
+
+/// A node whose UDP never answers, as behind a tunnel that carries only
+/// TCP: the websocket starts with QUIC, not after it gives up, so the
+/// session opens well inside [`QUIC_ANSWER`].
+#[tokio::test]
+async fn a_node_whose_udp_is_silent_opens_over_the_websocket_at_once() {
+    let _seat = seated().await;
+    let node_key = ed25519::PrivateKey::from_seed(41);
+    let identity = node_key.public_key().as_ref().to_vec();
+    let (rpc, _) = node_serving(&node_key, identity, Answer::Welcome, Paths::Ws).await;
+    let started = Instant::now();
+    let conn = dial(&rpc, Weak::new()).await.unwrap();
+    let took = started.elapsed();
+    assert!(
+        matches!(conn.path, Path::Ws(_)),
+        "the websocket is the session"
+    );
+    assert!(took < QUIC_ANSWER / 4, "the session took {took:?}");
+}
+
+/// A node serving both paths: QUIC and the websocket start together. On
+/// loopback the websocket (no TLS, no round trip to speak of) finishes
+/// first, and QUIC, its UDP having answered, is still the session: the
+/// path that carries datagrams.
+#[tokio::test]
+async fn a_node_serving_both_paths_opens_over_quic() {
+    let _seat = seated().await;
+    let node_key = ed25519::PrivateKey::from_seed(42);
+    let identity = node_key.public_key().as_ref().to_vec();
+    let (rpc, _) = node_serving(&node_key, identity, Answer::Welcome, Paths::Both).await;
+    let conn = dial(&rpc, Weak::new()).await.unwrap();
+    assert!(matches!(conn.path, Path::Quic(_)), "QUIC is the session");
 }
 
 /// A node that answers the port's route 404 serves no live tracks: the
