@@ -50,10 +50,10 @@ object Ring {
     /** When the notice was shown (Unix seconds), in the intent opening it. */
     const val AT = "industries.ducktape.mobile.NOTICE_AT"
     /**
-     * The entry a notice opened from the shade comes in by (`AndroidManifest.xml`): [MainActivity] under an alias no
-     * other app can start, so a [PAYLOAD] it reads is one this app put in the shade.
+     * The entry this app's own intents to [MainActivity] come in by (`AndroidManifest.xml`): an alias no other app can
+     * start, so a [TAG] or [PAYLOAD] it reads is one this app sent.
      */
-    const val NOTICE_OPENED = "industries.ducktape.mobile.NoticeOpened"
+    const val OWN = "industries.ducktape.mobile.Own"
 
     /** [MainActivity] is in front (resumed): a notice is the app's own notifiers' to post then, not the shade's. */
     @Volatile
@@ -85,8 +85,7 @@ object Ring {
         val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         val answer = PendingIntent.getActivity(
             context, tag.hashCode(),
-            Intent(Intent.ACTION_VIEW, Uri.parse(call["link"].orEmpty()), context, MainActivity::class.java)
-                .putExtra(TAG, tag),
+            Intent(Intent.ACTION_VIEW, Uri.parse(call["link"].orEmpty())).setClassName(context, OWN).putExtra(TAG, tag),
             flags,
         )
         val decline = PendingIntent.getBroadcast(
@@ -94,7 +93,7 @@ object Ring {
         )
         // a tap on the notification: the app, and the ring goes (the call is still the person's to answer there)
         val tapped = PendingIntent.getActivity(
-            context, tag.hashCode(), Intent(context, MainActivity::class.java).putExtra(TAG, tag), flags,
+            context, tag.hashCode(), Intent().setClassName(context, OWN).putExtra(TAG, tag), flags,
         )
         // a locked or sleeping phone: the call's own screen over the lock, never the app
         val screen = PendingIntent.getActivity(
@@ -139,7 +138,7 @@ object Ring {
         val opened = PendingIntent.getActivity(
             context, tag.hashCode(),
             (if (link.isEmpty()) Intent() else Intent(Intent.ACTION_VIEW, Uri.parse(link)))
-                .setClassName(context, NOTICE_OPENED).putExtra(PAYLOAD, payload).putExtra(AT, now / 1000),
+                .setClassName(context, OWN).putExtra(PAYLOAD, payload).putExtra(AT, now / 1000),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val notification = Notification.Builder(context, NOTICES)
