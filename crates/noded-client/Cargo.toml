@@ -27,7 +27,8 @@ commonware = ["dep:commonware-cryptography"]
 abi.workspace = true
 identity.workspace = true
 borsh.workspace = true
-reqwest.workspace = true
+# `stream`: a blob upload streams its bytes, never held whole
+reqwest = { workspace = true, features = ["stream"] }
 tokio = { version = "1", features = ["time"] }
 tokio-tungstenite.workspace = true
 futures.workspace = true
