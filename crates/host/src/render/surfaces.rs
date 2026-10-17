@@ -49,7 +49,11 @@ impl ViewTree {
                 .absolute()
                 .inset_0()
                 .refine_style(&style)
-                .flex();
+                .flex()
+                // what the overlay covers takes no press, hover or wheel
+                // while it is open: a press outside what it shows is the
+                // layer's alone, as one outside an open native menu is
+                .occlude();
             if let Some(message) = on_dismiss {
                 let message = *message;
                 layer = layer.on_mouse_down(
