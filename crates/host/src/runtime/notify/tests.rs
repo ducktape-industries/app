@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use std::path::Path;
 
-use super::center::{Center, CenterHandle, Notice, NoticeKind, read_log};
+use super::center::{Center, CenterHandle, HOST, Notice, NoticeKind, read_log};
 use super::settings::{BURST_PREF, FRONT_PREF, NOTIFY_PREF, Permission, Settings, VIEWS_PREF};
 use super::{checked, in_order};
 use crate::runtime::WindowKey;
@@ -877,4 +877,90 @@ fn a_calls_banner_is_withdrawn_at_its_until() {
         !center.lock().ring_over(&banner.tag, until),
         "the timer left it standing"
     );
+}
+
+/// The host's own rows are the device's: there before any network is in
+/// hand and through a switch to another, merged into the chain's by when
+/// they came. A newer one under the tag takes the row's place, unread and
+/// counted once; a row is picked by an id no chain row has; they are saved
+/// to their own file, never the chain's, and read back off it; withdrawn,
+/// the row goes.
+#[test]
+fn the_hosts_rows_stand_beside_every_chains_in_a_file_of_their_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let (device, chain) = (dir.path().join("@device.json"), dir.path().join("dev.json"));
+    let _off = crate::perf::off_for_test();
+    let titles = |center: &Center| {
+        center
+            .entries()
+            .map(|entry| entry.title.clone())
+            .collect::<Vec<_>>()
+    };
+    let mut center = Center::default();
+    center.open_device_log(device.clone());
+    center.post_host("Ducktape 2 is ready.", "Restart to update.", "update", 10);
+    assert_eq!(
+        titles(&center),
+        ["Ducktape 2 is ready."],
+        "before any network"
+    );
+    let host = center.entries().next().unwrap().clone();
+    assert!(host.host());
+    assert_eq!((host.program.as_str(), host.tag.as_str()), (HOST, "update"));
+
+    center.open_log("dev", Some(chain.clone()));
+    let silent = settings(Some(Permission::Silent));
+    center.post(&silent, "chat", "Chat", post("hi", ""), Instant::now(), 20);
+    assert_eq!(titles(&center), ["hi", "Ducktape 2 is ready."]);
+    center.post_host(
+        "Ducktape 2 is installed.",
+        "It runs from now on.",
+        "update",
+        30,
+    );
+    assert_eq!(titles(&center), ["Ducktape 2 is installed.", "hi"]);
+    let rows: Vec<_> = center.entries().cloned().collect();
+    assert_eq!(
+        (rows[0].id, rows[0].count),
+        (host.id, 1),
+        "in the row's place"
+    );
+    assert_ne!(rows[0].id, rows[1].id);
+    assert!(!rows[1].host());
+    assert_eq!(center.unread(), 2);
+    assert_eq!(
+        center.open(host.id).map(|entry| entry.title),
+        Some("Ducktape 2 is installed.".into())
+    );
+    assert_eq!(center.unread(), 1, "the chain's row is still unread");
+
+    flushed(&mut center, &device);
+    settled(&chain);
+    let kept = |path: &Path| {
+        read_log(path)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.title)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(kept(&device), ["Ducktape 2 is installed."]);
+    assert_eq!(kept(&chain), ["hi"]);
+    center.open_log("other", None);
+    assert_eq!(
+        titles(&center),
+        ["Ducktape 2 is installed."],
+        "another network"
+    );
+    let mut next = Center::default();
+    next.open_device_log(device.clone());
+    assert_eq!(
+        next.entries().map(|entry| entry.read).collect::<Vec<_>>(),
+        [true],
+        "the next start reads them back"
+    );
+
+    center.withdraw_host("update");
+    assert_eq!(center.entries().count(), 0);
+    flushed(&mut center, &device);
+    assert_eq!(kept(&device), Vec::<String>::new());
 }

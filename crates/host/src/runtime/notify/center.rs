@@ -1,8 +1,10 @@
 //! The notification centre: the log of the chain in hand (one JSON file
-//! per chain under `<config>/notifications`) and the banner policy —
-//! permission, focus, the per-view token bucket — that decides what a
-//! posted notice becomes. The app keeps one, reached through [`center`];
-//! a test builds its own.
+//! per chain under `<config>/notifications`), the device's own rows beside
+//! it (the host's, [`HOST`], one file there too: they show whichever chain
+//! is in hand, and before any is) and the banner policy — permission,
+//! focus, the per-view token bucket — that decides what a posted notice
+//! becomes. The app keeps one, reached through [`center`]; a test builds
+//! its own.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -56,6 +58,22 @@ pub struct Entry {
     pub read: bool,
 }
 
+/// The program the host's own rows are under, and the first part of its
+/// banners' tags: no view's.
+pub const HOST: &str = "ducktape";
+
+/// The bit every device row's id carries and no chain row's does: the two
+/// logs number their rows apart.
+const DEVICE: u64 = 1 << 63;
+
+impl Entry {
+    /// One of the host's own rows, the device's ([`Center::post_host`]),
+    /// not a view's.
+    pub fn host(&self) -> bool {
+        self.id & DEVICE != 0
+    }
+}
+
 struct Bucket {
     tokens: f64,
     at: Instant,
@@ -72,6 +90,11 @@ pub struct Center {
     log: Option<PathBuf>,
     entries: Vec<Entry>,
     next: u64,
+    /// The device's own rows, the host's: kept whichever chain is in hand.
+    device: Vec<Entry>,
+    /// Where they are saved: none until the host opens them
+    /// ([`Center::open_device`]), or when their file could not be read.
+    device_log: Option<PathBuf>,
     buckets: HashMap<String, Bucket>,
     /// Notices past the burst limit since the view's last banner.
     more: HashMap<String, u32>,
@@ -301,13 +324,87 @@ impl Center {
         self.rev += 1;
     }
 
-    /// Newest first.
+    /// The host's own notice: a row of the device's, under `tag`, where a
+    /// row there already takes its words and comes back to the top, unread
+    /// (a newer release's "ready", or "installed" in place of "ready").
+    /// Its banner is the shell's to raise; written now, no view's redraw
+    /// writes it.
+    pub fn post_host(&mut self, title: &str, body: &str, tag: &str, wall: i64) {
+        let at = self.device.iter().position(|entry| entry.tag == tag);
+        let id = match at {
+            Some(index) => self.device.remove(index).id,
+            None => {
+                let last = self.device.iter().map(|entry| entry.id).max();
+                last.map_or(DEVICE | 1, |id| id + 1)
+            }
+        };
+        self.device.push(Entry {
+            id,
+            program: HOST.to_owned(),
+            view: "Ducktape".to_owned(),
+            title: title.to_owned(),
+            body: body.to_owned(),
+            tag: tag.to_owned(),
+            link: String::new(),
+            at: wall,
+            count: 1,
+            read: false,
+        });
+        self.device_moved();
+    }
+
+    /// The host's row under `tag` taken out: what it said holds no more.
+    pub fn withdraw_host(&mut self, tag: &str) {
+        let before = self.device.len();
+        self.device.retain(|entry| entry.tag != tag);
+        if self.device.len() != before {
+            self.device_moved();
+        }
+    }
+
+    /// The device's rows moved: the bell reads again, and they are handed
+    /// to their file now (no view's redraw writes them), the chain's log
+    /// no dirtier for it.
+    fn device_moved(&mut self) {
+        let clean = self.saved == self.rev;
+        self.rev += 1;
+        if clean {
+            self.saved = self.rev;
+        }
+        if let Some(path) = &self.device_log {
+            save(path.clone(), self.device.clone());
+        }
+    }
+
+    /// Newest first: the chain's rows and the device's, merged by when
+    /// they came (each log in its own order).
     pub fn entries(&self) -> impl Iterator<Item = &Entry> {
-        self.entries.iter().rev()
+        let mut chain = self.entries.iter().rev().peekable();
+        let mut device = self.device.iter().rev().peekable();
+        std::iter::from_fn(move || {
+            let host = match (chain.peek(), device.peek()) {
+                (Some(view), Some(host)) => host.at > view.at,
+                (chain, _) => chain.is_none(),
+            };
+            match host {
+                true => device.next(),
+                false => chain.next(),
+            }
+        })
+    }
+
+    /// The row a view's notice last went into.
+    pub fn logged(&self) -> Option<u64> {
+        self.entries.last().map(|entry| entry.id)
     }
 
     pub fn unread(&self) -> usize {
-        self.entries.iter().filter(|entry| !entry.read).count()
+        self.rows().filter(|entry| !entry.read).count()
+    }
+
+    /// Both logs' rows, in no order.
+    fn rows(&self) -> impl Iterator<Item = &Entry> {
+        self.entries.iter().chain(&self.device)
     }
 
     /// How many times the log changed: equal, it lists what it listed.
@@ -317,11 +414,17 @@ impl Center {
 
     /// A row picked: read now, and handed back to open.
     pub fn open(&mut self, id: u64) -> Option<Entry> {
-        let entry = self.entries.iter_mut().find(|entry| entry.id == id)?;
+        let entry =
+            (self.entries.iter_mut().chain(&mut self.device)).find(|entry| entry.id == id)?;
         entry.read = true;
         let entry = entry.clone();
-        self.rev += 1;
-        self.flush();
+        match entry.host() {
+            true => self.device_moved(),
+            false => {
+                self.rev += 1;
+                self.flush();
+            }
+        }
         Some(entry)
     }
 
@@ -345,17 +448,20 @@ impl Center {
     }
 
     pub fn mark_all_read(&mut self) {
-        for entry in &mut self.entries {
+        for entry in self.entries.iter_mut().chain(&mut self.device) {
             entry.read = true;
         }
         self.rev += 1;
         self.flush();
+        self.device_moved();
     }
 
     pub fn clear_read(&mut self) {
         self.entries.retain(|entry| !entry.read);
+        self.device.retain(|entry| !entry.read);
         self.rev += 1;
         self.flush();
+        self.device_moved();
     }
 
     /// Whether `program`'s window shows the permission bar.
@@ -414,29 +520,50 @@ impl Center {
 
     /// `network` in hand with its log at `path`. A log that cannot be read
     /// leaves the centre empty and with no `log`, so no save replaces it.
+    /// The device's rows stay.
     pub(super) fn open_log(&mut self, network: &str, path: Option<PathBuf>) {
         *self = Center {
             network: network.to_owned(),
             front: self.front,
             rev: self.rev + 1,
             saved: self.rev + 1,
+            device: std::mem::take(&mut self.device),
+            device_log: self.device_log.take(),
             ..Center::default()
         };
-        if let Some(path) = path {
-            match read_log(&path) {
-                Ok(entries) => (self.entries, self.log) = (entries, Some(path)),
-                Err(error) => {
-                    tracing::warn!(target: "ducktape::app", path = %path.display(), %error, "notification log unreadable, not saving over it");
-                }
-            }
+        if let Some((entries, path)) = path.and_then(|path| Some((opened(&path)?, path))) {
+            (self.entries, self.log) = (entries, Some(path));
         }
         self.next = self.entries.iter().map(|entry| entry.id).max().unwrap_or(0);
     }
 
-    /// The log handed to the disk if it moved since it last was: once per
-    /// person's action here (open, mark all read, clear read), and once at
-    /// the end of each view redraw for whatever its requests logged
-    /// (`View::redraw`), never per post. Written whole through
+    /// The device's own rows off disk, as the host starts:
+    /// `<config>/notifications/@device.json` (`@` is in no chain's file
+    /// name, [`log_path`]).
+    pub fn open_device(&mut self) {
+        self.open_device_log(notifications_dir().join("@device.json"));
+    }
+
+    /// The device's rows from the log at `path`. One that cannot be read
+    /// leaves them empty and with no file, so no save replaces it.
+    pub(super) fn open_device_log(&mut self, path: PathBuf) {
+        (self.device, self.device_log) = match opened(&path) {
+            Some(device) => (device, Some(path)),
+            None => (Vec::new(), None),
+        };
+        // read, not changed: nothing to write back
+        let saved = self.saved == self.rev;
+        self.rev += 1;
+        if saved {
+            self.saved = self.rev;
+        }
+    }
+
+    /// The chain's log handed to the disk if it moved since it last was:
+    /// once per person's action here (open, mark all read, clear read), and
+    /// once at the end of each view redraw for whatever its requests logged
+    /// (`View::redraw`), never per post. (The device's rows go as they
+    /// move.) Written whole through
     /// `noded_client::fs::atomic_write` on the blocking pool, one write after
     /// another (`kernel::in_order` under the log's path).
     pub fn flush(&mut self) {
@@ -444,21 +571,35 @@ impl Center {
             return;
         }
         self.saved = self.rev;
-        let Some(path) = self.log.clone() else {
-            return;
-        };
-        let entries = self.entries.clone();
-        let name = path.to_string_lossy().into_owned();
-        crate::runtime::kernel::in_order(&name, move || {
-            let _timed = crate::perf::time(crate::perf::Key::Shell, "io.notify_save");
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Ok(bytes) = serde_json::to_vec(&entries) {
-                let _ = noded_client::fs::atomic_write(&path, &bytes, false);
-            }
-        });
+        if let Some(path) = &self.log {
+            save(path.clone(), self.entries.clone());
+        }
     }
+}
+
+/// `entries` written whole to `path` on the blocking pool, after every
+/// write to it queued before (`kernel::in_order` under the path).
+fn save(path: PathBuf, entries: Vec<Entry>) {
+    let name = path.to_string_lossy().into_owned();
+    crate::runtime::kernel::in_order(&name, move || {
+        let _timed = crate::perf::time(crate::perf::Key::Shell, "io.notify_save");
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(bytes) = serde_json::to_vec(&entries) {
+            let _ = noded_client::fs::atomic_write(&path, &bytes, false);
+        }
+    });
+}
+
+/// The rows of the log at `path` ([`read_log`]), or none when it cannot be
+/// read, said in app.log.
+fn opened(path: &Path) -> Option<Vec<Entry>> {
+    read_log(path)
+        .inspect_err(|error| {
+            tracing::warn!(target: "ducktape::app", path = %path.display(), %error, "notification log unreadable, not saving over it");
+        })
+        .ok()
 }
 
 /// The log at `path`; empty when it is missing. One that will not parse is
@@ -483,6 +624,10 @@ fn log_path(network: &str) -> Option<PathBuf> {
             },
         )
         .collect();
-    let dir = crate::backend::dirs().config.join("notifications");
-    Some(dir.join(format!("{file}.json")))
+    Some(notifications_dir().join(format!("{file}.json")))
+}
+
+/// `<config>/notifications`, where every log is.
+fn notifications_dir() -> PathBuf {
+    crate::backend::dirs().config.join("notifications")
 }
