@@ -85,14 +85,16 @@
 //! (`view-meter <in.wasm> <out.wasm> <view_bytes>`); `tests/` is the runner
 //! equivalence gate against wasmtime (SPEC §13.3 (a)).
 //!
-//! The rewrite streams: it never holds the module as a tree. It reads the
-//! module once, keeping the few small sections it adds to and writing each
-//! body as it reads it, operator by operator (`Pass::read`); then reads it
-//! again, writing every section as it is (wasm-encoder's `reencode`) with
-//! the pass's additions appended. So it holds the input, the output and one
-//! body (a 2.7 MB view took 213 MB as walrus's tree). Every function, type
-//! and global the module had keeps its index, and what the pass adds comes
-//! after them; only a body's own locals move, one up, past the count.
+//! The rewrite streams: it never holds the module as a tree. A first read
+//! keeps the few small sections the pass adds to and meters each body,
+//! operator by operator, into a code section it holds whole (`Pass::read`).
+//! A second read writes every section as it is (wasm-encoder's `reencode`)
+//! with the pass's additions appended, and copies that code section in at
+//! its place. So it holds the input, the metered code section and the
+//! output it is copied into: a few times the input (a 2.7 MB view took
+//! 213 MB as walrus's tree, 11 MB here). Every function, type and global
+//! the module had keeps its index, and what the pass adds comes after them;
+//! only a body's own locals move, one up, past the count.
 use std::collections::BTreeSet;
 use std::convert::Infallible;
 
@@ -591,6 +593,8 @@ impl Pass {
                     continue;
                 }
                 Operator::Drop | Operator::Nop => {}
+                // `return_call` and `return_call_indirect` are outside FEATURES:
+                // `accepts` refuses them, and so would the final validation
                 _ => out.pending += 1,
             }
             let instruction = self.instruction(op).map_err(unsupported)?;
