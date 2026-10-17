@@ -3,7 +3,8 @@
 //! these are this device's.
 
 use super::super::super::ink::{self, Ink, mono, sans, words};
-use super::{OverlayLayer, dialog_fit, scrim};
+use super::super::Inset;
+use super::{DIALOG_EDGE, OverlayLayer, dialog_fit, scrim};
 use crate::a11y::Control as _;
 use crate::shell::entities::{Overlay, Prefs, SettingsPage, Slice};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -22,6 +23,43 @@ pub(super) struct Page {
     rows: Vec<gpui_kit::FocusHandle>,
     /// The row that held the keys when the page was last laid out.
     held: Rc<Cell<Option<usize>>>,
+}
+
+/// The card: `760 × 680`, hung 74px below the chrome, its title strip 34px.
+const WIDE: f32 = 760.;
+const TALL: f32 = 680.;
+const HANG: f32 = 74.;
+const STRIP: f32 = 34.;
+
+/// Where Settings was put by its title strip: kept while it is closed, so
+/// it opens there again for the rest of the run.
+#[derive(Default)]
+pub(super) struct Moved {
+    /// The card's offset from where it hangs, as it was last put.
+    by: (f32, f32),
+    /// The pointer holding the strip: where it pressed, and `by` then.
+    held: Option<((f32, f32), (f32, f32))>,
+}
+
+/// Settings' card in a window `size` big, under the chrome's `inset`:
+/// where its top hangs and the height it may take (`dialog_fit`), and the
+/// offset `by` held so the whole card stays inside the scrim's 12px
+/// margins (`dialog_fit` sizes it to fit where it hangs, so it always
+/// can): `(top, tall, by)`.
+fn placed(size: (f32, f32), inset: Inset, by: (f32, f32)) -> (f32, f32, (f32, f32)) {
+    let (top, tall) = dialog_fit(size.1, inset, TALL, HANG);
+    // centred across the scrim, inside its 12px sides
+    let room = size.0 - inset.left - 2. * DIALOG_EDGE;
+    let side = ((room - WIDE.min(room)) / 2.).max(0.);
+    // up to the top margin, down by what the card leaves of its fit
+    let (up, down) = (DIALOG_EDGE - top, tall - TALL.min(tall));
+    (top, tall, (by.0.clamp(-side, side), by.1.clamp(up, down)))
+}
+
+/// `window`'s size, as `placed` takes it.
+fn size_of(window: &Window) -> (f32, f32) {
+    let size = window.viewport_size();
+    (size.width.into(), size.height.into())
 }
 
 /// What Settings' picks change, as it stood: the prefs, and what they
@@ -72,7 +110,8 @@ impl OverlayLayer {
     /// The dialog on `shown`: `760 × 680; border: 1.5px solid ink` (the
     /// board's 540, taller so every view's row fits), a 34px title strip
     /// with its close, on a scrim below the bar. A click on the scrim, or
-    /// Escape, closes it.
+    /// Escape, closes it. Its strip moves it (`Moved`), never out of the
+    /// window (`placed`).
     pub(super) fn settings(
         &mut self,
         shown: SettingsPage,
@@ -148,6 +187,7 @@ impl OverlayLayer {
         let held = {
             let (handles, held) = (page.rows[..rows.len()].to_vec(), page.held.clone());
             let scroll = page.scroll.clone();
+            let this = cx.entity();
             canvas(
                 move |_, window, cx| {
                     let now = handles
@@ -159,7 +199,25 @@ impl OverlayLayer {
                         scroll.scroll_to_item(row);
                     }
                 },
-                |_, _, _, _| {},
+                // the title strip's hold, followed window-wide
+                move |_, _, window, _| {
+                    crate::shell::pane_drag::follow_pointer(this, window, |this, to, window, cx| {
+                        let Some((from, start)) = this.settings_moved.held else {
+                            return;
+                        };
+                        let Some(to) = to else {
+                            this.settings_moved.held = None;
+                            cx.notify();
+                            return;
+                        };
+                        let by = (start.0 + to.0 - from.0, start.1 + to.1 - from.1);
+                        let (.., by) = placed(size_of(window), this.inset(window, cx), by);
+                        if by != this.settings_moved.by {
+                            this.settings_moved.by = by;
+                            cx.notify();
+                        }
+                    })
+                },
             )
             .absolute()
             .size_0()
@@ -222,8 +280,11 @@ impl OverlayLayer {
             );
         let shut = self.overlays.entity().clone();
         let surface = ink.surface;
+        let inset = self.inset(window, cx);
+        let (top, tall, by) = placed(size_of(window), inset, self.settings_moved.by);
+        // the strip is the card's handle: a press takes hold of it
         let title = div()
-            .h(px(34.))
+            .h(px(STRIP))
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -232,6 +293,28 @@ impl OverlayLayer {
             .pr(px(6.))
             .border_b_1()
             .border_color(ink.line)
+            .cursor(match self.settings_moved.held {
+                Some(_) => CursorStyle::ClosedHand,
+                None => CursorStyle::OpenHand,
+            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    // a press on the strip leaves the keys where they were
+                    window.prevent_default();
+                    let at = (event.position.x.into(), event.position.y.into());
+                    let (.., by) = placed(
+                        size_of(window),
+                        this.inset(window, cx),
+                        this.settings_moved.by,
+                    );
+                    this.settings_moved = Moved {
+                        by,
+                        held: Some((at, by)),
+                    };
+                    cx.notify();
+                }),
+            )
             .child(sans(500, 13.).child("Settings"))
             .child(crate::a11y::keyboard(
                 div()
@@ -244,6 +327,8 @@ impl OverlayLayer {
                     .cursor_pointer()
                     .text_color(ink.muted)
                     .hover(move |style| style.bg(surface))
+                    // a press on the close isn't a hold on the strip
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
                         shut.update(cx, |overlays, cx| {
@@ -255,12 +340,6 @@ impl OverlayLayer {
                     ),
                 ink.ink,
             ));
-        let (top, tall) = dialog_fit(
-            f32::from(window.viewport_size().height),
-            self.inset(window, cx),
-            680.,
-            74.,
-        );
         scrim(
             "settings-window",
             Role::Dialog,
@@ -268,15 +347,18 @@ impl OverlayLayer {
             Overlay::Settings(shown),
             self.overlays.entity(),
             &self.modal,
-            self.inset(window, cx),
+            inset,
             &ink,
             |card| {
                 card.mt(px(top))
-                    .w(px(760.))
-                    .h(px(680.))
+                    .w(px(WIDE))
+                    .h(px(TALL))
                     .max_w_full()
                     .max_h(px(tall))
                     .self_start()
+                    // moved by its strip, from where it hangs
+                    .left(px(by.0))
+                    .top(px(by.1))
                     .child(title)
                     .child(body)
                     .into_any_element()
