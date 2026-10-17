@@ -844,7 +844,12 @@ async fn serve_put(stream: tokio::net::TcpStream, mut put: Put) {
     let answer = match line.split(' ').nth(1).unwrap() {
         noded::route::STATUS => {
             let mut status = status_at(TIP);
-            status.roles.bind(abi::role::BLOBS, KEEPER);
+            status.roles = status
+                .roles
+                .iter()
+                .map(|(role, program)| (role.to_owned(), program.clone()))
+                .chain([(abi::role::BLOBS.to_owned(), KEEPER.into())])
+                .collect();
             abi::encode(&status)
         }
         noded::route::BLOB_PUT => {

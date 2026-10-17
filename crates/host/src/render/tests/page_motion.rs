@@ -276,9 +276,19 @@ fn pushed(cx: &mut gpui_kit::TestAppContext) -> (Entity<ViewTree>, gpui_kit::Vis
     (tree, native)
 }
 
-/// The edge swipe `progress` in, drawn: whether the page followed.
+/// The swipe `progress` in, drawn: whether the page followed.
 fn drag(tree: &Entity<ViewTree>, native: &mut gpui_kit::VisualTestContext, progress: f32) -> bool {
-    let followed = tree.update(native, |tree, cx| tree.drag_page(progress, cx));
+    drag_at(tree, native, progress, 0.)
+}
+
+/// [`drag`], the finger moving at `speed` (widths per second).
+fn drag_at(
+    tree: &Entity<ViewTree>,
+    native: &mut gpui_kit::VisualTestContext,
+    progress: f32,
+    speed: f32,
+) -> bool {
+    let followed = tree.update(native, |tree, cx| tree.drag_page(progress, speed, cx));
     native.update(|window, cx| window.render_frame(cx));
     followed
 }
@@ -395,6 +405,27 @@ fn a_swipe_let_go_as_back_pops_from_where_the_finger_left(cx: &mut gpui_kit::Tes
     assert!(!drawn(&mut native, "room"));
     assert_eq!(frames(&mut native), 0, "a frame asked for once still");
     assert!(!drag(&tree, &mut native, 0.3), "a root page followed");
+    crate::contract::testing::touch_first_for_test(false);
+}
+
+/// The page let go starts at the finger's speed: a pop on with it, a
+/// release short back the other way.
+#[gpui_kit::test]
+fn a_page_let_go_starts_at_the_fingers_speed(cx: &mut gpui_kit::TestAppContext) {
+    crate::contract::testing::touch_first_for_test(true);
+    let (tree, mut native) = pushed(cx);
+    let velocity = |native: &gpui_kit::VisualTestContext| {
+        tree.read_with(native, |tree, _| tree.page_velocity())
+    };
+    assert!(drag_at(&tree, &mut native, 0.2, 0.5));
+    let_go_short(&tree, &mut native);
+    assert_eq!(velocity(&native), Some(-0.5), "slid back from still");
+    later(&tree, &mut native, crate::motion::idiom().push.duration);
+
+    assert!(drag_at(&tree, &mut native, 0.2, 3.));
+    tree.update(&mut native, |tree, _| tree.heard_back());
+    show(&tree, &mut native, page("rooms", 0));
+    assert_eq!(velocity(&native), Some(3.), "popped from still");
     crate::contract::testing::touch_first_for_test(false);
 }
 

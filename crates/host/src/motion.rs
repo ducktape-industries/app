@@ -52,6 +52,8 @@ pub enum Curve {
     /// Reanimated runs it for a damping ratio of 1 or more: critically
     /// damped at ω₀ = √(1000 / 3) ≈ 18.3 s⁻¹, `1 − e^(−ω₀t)(1 + ω₀t)`, at
     /// rest to within 0.11 % after 0.5 s, so a motion on it ends there.
+    /// Started moving (a finger let go of what it dragged, [`Curve::thrown`]),
+    /// the same spring with that speed at its start: `1 − e^(−ω₀t)(1 + (ω₀ − v)t)`.
     Spring,
     /// Android's `fast_out_extra_slow_in`: the path
     /// `M 0,0 C 0.05,0 0.133333,0.06 0.166666,0.4 C 0.208333,0.82 0.25,1 1,1`.
@@ -74,6 +76,15 @@ impl Curve {
     /// The progress `time` (a fraction of the motion, 0 to 1) into a motion
     /// of `duration` on this curve.
     pub fn at(self, time: f32, duration: Duration) -> f32 {
+        self.thrown(time, duration, 0.)
+    }
+
+    /// [`Curve::at`] for a motion that starts moving at `speed` (its whole
+    /// way per second, toward its end when positive): the spring keeps that
+    /// speed at its start, as UIKit's interactive pop carries the finger's
+    /// into the rest of its move, and stops at its end rather than pass it.
+    /// The other curves start as they always do.
+    pub fn thrown(self, time: f32, duration: Duration, speed: f32) -> f32 {
         let t = time.clamp(0., 1.);
         if t >= 1. {
             return 1.;
@@ -82,12 +93,12 @@ impl Curve {
             Curve::Spring => {
                 let settle = |seconds: f32| {
                     let x = SPRING_OMEGA * seconds;
-                    1. - (-x).exp() * (1. + x)
+                    1. - (-x).exp() * (1. + (SPRING_OMEGA - speed) * seconds)
                 };
                 let seconds = duration.as_secs_f32();
                 // scaled so the end is exactly 1: the last frame jumps no
                 // fraction of a point
-                settle(t * seconds) / settle(seconds)
+                (settle(t * seconds) / settle(seconds)).min(1.)
             }
             Curve::Emphasized => {
                 let (a, b) = EMPHASIZED;
@@ -369,6 +380,10 @@ pub struct Tween {
     pub from: f32,
     /// Its value at its end.
     pub to: f32,
+    /// How fast its value moves at its start, per second: the speed a
+    /// finger let go at ([`Tween::thrown`]), 0 for a motion that starts
+    /// still.
+    pub velocity: f32,
 }
 
 impl Tween {
@@ -382,11 +397,20 @@ impl Tween {
     /// `motion` (what Reduce Motion leaves of it) from `from` to `to`, now:
     /// the rest of a drag let go of, a release settling at a detent.
     pub fn between(from: f32, to: f32, motion: Motion, cx: &App) -> Self {
+        Self::thrown(from, to, 0., motion, cx)
+    }
+
+    #[cfg(feature = "ui")]
+    /// [`Tween::between`] for the rest of a drag a finger let go of moving
+    /// at `velocity` (the value's own units per second): it starts at that
+    /// speed (`Curve::thrown`).
+    pub fn thrown(from: f32, to: f32, velocity: f32, motion: Motion, cx: &App) -> Self {
         Self {
             motion: motion.under(cx),
             started: now(cx),
             from,
             to,
+            velocity,
         }
     }
 
@@ -399,18 +423,31 @@ impl Tween {
         (now.saturating_duration_since(self.started).as_secs_f32() / total).clamp(0., 1.)
     }
 
+    /// How far along its way it is by `now`, 0 to 1: 1 once it has landed.
+    fn eased(&self, now: Instant) -> f32 {
+        let way = self.to - self.from;
+        let speed = match way == 0. {
+            true => 0.,
+            false => self.velocity / way,
+        };
+        self.motion
+            .curve
+            .thrown(self.time(now), self.motion.duration, speed)
+    }
+
     /// Its value at `now`: exactly `to` once it is done.
     pub fn at(&self, now: Instant) -> f32 {
-        let eased = self.motion.curve.at(self.time(now), self.motion.duration);
+        let eased = self.eased(now);
         if eased >= 1. {
             return self.to;
         }
         self.from + (self.to - self.from) * eased
     }
 
-    /// Whether it has ended by `now`.
+    /// Whether it has ended by `now`: its time is up, or it has landed (a
+    /// spring thrown fast lands before its time).
     pub fn done(&self, now: Instant) -> bool {
-        self.time(now) >= 1.
+        self.eased(now) >= 1.
     }
 
     #[cfg(feature = "ui")]
@@ -583,6 +620,7 @@ mod tests {
             started,
             from: 0.25,
             to: 1.,
+            velocity: 0.,
         };
         assert_eq!(tween.at(started), 0.25);
         assert!(!tween.done(started));
@@ -590,5 +628,57 @@ mod tests {
         assert!(tween.done(end));
         assert_eq!(tween.at(end), 1.);
         assert_eq!(tween.at(end + ms(1)), 1.);
+    }
+
+    /// A pop let go of at a finger's speed starts at that speed, not still,
+    /// and still lands exactly on its end without passing it; let go still,
+    /// it is the spring it always was.
+    #[test]
+    fn a_thrown_spring_starts_at_the_fingers_speed() {
+        let started = Instant::now();
+        let thrown = |velocity| Tween {
+            motion: IOS.push,
+            started,
+            from: 0.25,
+            to: 1.,
+            velocity,
+        };
+        let step = Duration::from_micros(100);
+        let slope = |tween: Tween| (tween.at(started + step) - tween.from) / step.as_secs_f32();
+        for velocity in [0.5, 3., 9.] {
+            let slope = slope(thrown(velocity));
+            assert!(
+                (slope - velocity).abs() < velocity * 0.05,
+                "let go at {velocity}/s, it started at {slope}/s"
+            );
+            let tween = thrown(velocity);
+            let mut last = tween.from;
+            for millis in 0..=500 {
+                let at = tween.at(started + ms(millis));
+                assert!(at <= 1., "passed its end at {millis} ms: {at}");
+                assert!(at + 1e-4 >= last, "went back at {millis} ms");
+                last = at;
+            }
+            assert_eq!(tween.at(started + IOS.push.duration), 1.);
+        }
+        // thrown faster than the spring settles, it lands early, and is
+        // done there
+        let fast = thrown(20.);
+        let landed = (0..500).find(|&millis| fast.done(started + ms(millis)));
+        assert!(
+            landed.is_some_and(|millis| millis < 300),
+            "a fast throw landed at {landed:?} ms"
+        );
+        assert!(!thrown(0.5).done(started + ms(499)));
+        assert!(
+            slope(thrown(0.)).abs() < 0.05,
+            "a still spring started moving"
+        );
+        let still = thrown(0.);
+        for millis in [50, 150, 300] {
+            let time = millis as f32 / 500.;
+            let eased = Curve::Spring.at(time, IOS.push.duration);
+            assert_eq!(still.at(started + ms(millis)), 0.25 + 0.75 * eased);
+        }
     }
 }

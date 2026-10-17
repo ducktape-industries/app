@@ -2725,7 +2725,7 @@ fn a_swipe_let_go_during_a_tick_waits_for_the_backs_own_answer(cx: &mut TestAppC
         .expect("a tree");
     let finger = |native: &VisualTestContext| tree.read_with(native, |tree, _| tree.page_finger());
     assert!(
-        native.update(|_, cx| tree.update(cx, |tree, cx| tree.drag_page(0.5, cx))),
+        native.update(|_, cx| tree.update(cx, |tree, cx| tree.drag_page(0.5, 0., cx))),
         "the page did not follow"
     );
 
