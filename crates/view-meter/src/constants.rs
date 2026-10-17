@@ -48,8 +48,8 @@
 //! Cranelift's on the same body.
 //!
 //! The result maps each size-charged operator wasmtime sees a constant
-//! length for (by its byte offset in the module, which walrus keeps as the
-//! instruction's `InstrLocId`) to the cost wasmtime folds for it.
+//! length for (by its byte offset in the module, where the rewrite reads it
+//! again) to the cost wasmtime folds for it.
 use std::collections::{HashMap, HashSet};
 
 use wasmparser::{
