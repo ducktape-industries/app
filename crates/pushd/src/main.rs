@@ -372,8 +372,9 @@ fn probe(config: &Config) -> Result<(), String> {
         at: 1,
     };
     if apns.is_some() {
+        // two tokens: one token is one install's, kept on one row
         devices.put(row("apns", &"0".repeat(64), "production"));
-        devices.put(row("apns", &"0".repeat(64), "sandbox"));
+        devices.put(row("apns", &"1".repeat(64), "sandbox"));
     }
     if fcm.is_some() {
         devices.put(row("fcm", "probe-token-that-is-no-device", ""));

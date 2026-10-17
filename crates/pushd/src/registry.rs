@@ -16,9 +16,11 @@
 //!
 //! An empty token is the device leaving: its row stays as a tombstone (its
 //! `at` is what refuses a replay of the token it withdrew), and nothing is
-//! sent to it. Every hour each key is asked of identity again, and one that
-//! no longer acts as its account is dropped: a phone taken off an account
-//! stops hearing the account's notices then at the latest.
+//! sent to it. A token registered under another key (the phone seated
+//! another account) leaves the old key's row the same way. Every hour each
+//! key is asked of identity again, and one that no longer acts as its
+//! account is dropped: a phone taken off an account stops hearing the
+//! account's notices then at the latest.
 //!
 //! The rows of each network live in `<data>/<network>/devices.json`,
 //! written whole and renamed into place. The process that runs a network's
@@ -142,23 +144,28 @@ impl Devices {
     }
 
     /// `row` kept in place of the one of its key and kind, when it is newer;
-    /// whether it was.
+    /// whether it was. A token is one install's, on the key seated there
+    /// now: the same token kept under another key (the phone seated another
+    /// account, and the key it left signs no leave) becomes a tombstone,
+    /// whose own `at` still refuses a replay.
     pub(crate) fn put(&self, row: Row) -> bool {
         let mut rows = lock(&self.rows);
-        match rows
-            .iter_mut()
-            .find(|kept| kept.key == row.key && kept.kind == row.kind)
-        {
-            Some(kept) if kept.at >= row.at => false,
-            Some(kept) => {
-                *kept = row;
-                true
-            }
-            None => {
-                rows.push(row);
-                true
-            }
+        let at = rows
+            .iter()
+            .position(|kept| kept.key == row.key && kept.kind == row.kind);
+        if at.is_some_and(|at| rows[at].at >= row.at) {
+            return false;
         }
+        if !row.token.is_empty() {
+            rows.iter_mut()
+                .filter(|kept| kept.kind == row.kind && kept.token == row.token)
+                .for_each(|kept| kept.token.clear());
+        }
+        match at {
+            Some(at) => rows[at] = row,
+            None => rows.push(row),
+        }
+        true
     }
 
     /// The rows as the file holds them, written whole and renamed into place.
@@ -542,7 +549,8 @@ mod tests {
     /// a rotation replaces, a replay of what came before is refused, a
     /// leave is a tombstone that still refuses the token it withdrew; the
     /// account's signer is its smallest key with a token, and an account
-    /// whose devices all left has none.
+    /// whose devices all left has none; a token registered under another
+    /// key leaves the old key's row.
     #[test]
     fn rows_keep_the_newest_token_per_key_and_kind() {
         let devices = Devices::default();
@@ -574,6 +582,21 @@ mod tests {
         assert!(devices.put(row("bb", "voip", "", 13)));
         assert!(devices.put(row("bb", "apns", "", 13)));
         assert!(devices.accounts().is_empty());
+        // one install's token registered under another key (the phone
+        // seated another account): the old key's row is a tombstone, and
+        // its registration replayed changes nothing
+        assert!(devices.put(row("dd", "apns", "t4", 20)));
+        assert!(devices.put(Row {
+            account: 16,
+            ..row("ee", "apns", "t4", 21)
+        }));
+        assert!(devices.tokens(15, "apns").is_empty());
+        assert_eq!(
+            devices.tokens(16, "apns"),
+            vec![("t4".to_owned(), "production".to_owned())]
+        );
+        assert!(!devices.put(row("dd", "apns", "t4", 20)));
+        assert_eq!(devices.accounts(), vec![(16, "ee".into())]);
     }
 
     /// The file is written whole and read back; one that moved is read
@@ -588,7 +611,7 @@ mod tests {
             account: 2,
             key: "aa".into(),
             kind: "fcm".into(),
-            token: "t".into(),
+            token: "t2".into(),
             env: String::new(),
             at: 1,
         });
@@ -600,7 +623,7 @@ mod tests {
             account: 3,
             key: "bb".into(),
             kind: "fcm".into(),
-            token: "t".into(),
+            token: "t3".into(),
             env: String::new(),
             at: 1,
         });
@@ -627,7 +650,7 @@ mod tests {
                             account,
                             key: format!("key{account}"),
                             kind: "fcm".into(),
-                            token: "t".repeat(200),
+                            token: account.to_string().repeat(200),
                             env: String::new(),
                             at,
                         });
