@@ -20,9 +20,10 @@ use crate::contract::{
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, SystemTime};
 use view_wire as wire;
 use wasmtime::{
     Cache, CacheConfig, Caller, Config, Engine, Linker, Memory, Module, OptLevel, Store, TypedFunc,
@@ -51,6 +52,15 @@ pub struct WasmtimeRunner {
 /// ([`compile_child`]), followed by `<signal traps 0|1> <cache dir>`, the
 /// code on its stdin.
 pub const COMPILE_APART: &str = "--compile-view";
+
+/// What the disk cache keeps where compiles run apart: wasmtime's own
+/// soft limit. Its upkeep runs after a write, in the process that wrote,
+/// and that is now a child that exits before it starts ([`prune`]).
+const CACHE_BYTES: u64 = 512 << 20;
+
+/// A `*.wip-*` cache file older than this is a write or a cleanup lock
+/// whose process died before finishing it (wasmtime's cleanup interval).
+const STALE: Duration = Duration::from_secs(60 * 60);
 
 /// Compiled code, as long as something holds it, and the `view_bytes` it
 /// was last prepared for.
@@ -83,9 +93,13 @@ impl WasmtimeRunner {
                         true => "1",
                         false => "0",
                     });
-                    apart = config
-                        .compile_apart
-                        .map(|exe| (exe, [COMPILE_APART.into(), traps, dir.into()]));
+                    if let Some(exe) = config.compile_apart {
+                        let kept = dir.clone();
+                        let _ = std::thread::Builder::new()
+                            .name("view-cache-upkeep".into())
+                            .spawn(move || prune(&kept, CACHE_BYTES));
+                        apart = Some((exe, [COMPILE_APART.into(), traps, dir.into()]));
+                    }
                 }
                 Err(error) => tracing::warn!(reason = "view_cache_unavailable", %error),
             }
@@ -99,11 +113,12 @@ impl WasmtimeRunner {
         }
     }
 
-    /// Compiles `code` into the disk cache in a child of this binary, which
-    /// says whether it found it there (`Disk`) or compiled it (`Cold`). A
-    /// child that fails is logged, and the compile happens here as it did
-    /// before there was a child.
-    fn compile_apart(&self, code: &[u8]) -> Option<CodeSource> {
+    /// Compiles `code` (`hash`) into the disk cache in a child of this
+    /// binary, which says whether it found it there (`Disk`) or compiled it
+    /// (`Cold`). A child that fails is logged, and the compile happens here
+    /// as it did before there was a child; code that does not compile is
+    /// not logged, the compile here fails with the reason.
+    fn compile_apart(&self, hash: [u8; 32], code: &[u8]) -> Option<CodeSource> {
         let (exe, args) = self.apart.as_ref()?;
         let ran = Command::new(exe)
             .args(args)
@@ -113,24 +128,29 @@ impl WasmtimeRunner {
             .spawn()
             .and_then(|mut child| {
                 // a child gone early fails the write; its exit says why
-                let _ = child.stdin.take().map(|mut stdin| stdin.write_all(code));
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(code);
+                }
                 child.wait_with_output()
             });
+        let hash = noded_client::hex::hex_encode(&hash);
         match ran {
             Ok(output) if output.status.success() => match &output.stdout[..] {
                 b"disk" => Some(CodeSource::Disk),
                 _ => Some(CodeSource::Cold),
             },
+            Ok(output) if output.status.code() == Some(1) => None,
             Ok(output) => {
                 tracing::warn!(
                     reason = "compile_apart_failed",
+                    %hash,
                     status = %output.status,
                     error = %String::from_utf8_lossy(&output.stderr).trim(),
                 );
                 None
             }
             Err(error) => {
-                tracing::warn!(reason = "compile_apart_unavailable", %error);
+                tracing::warn!(reason = "compile_apart_unavailable", %hash, %error);
                 None
             }
         }
@@ -222,14 +242,29 @@ impl ViewRunner for WasmtimeRunner {
         // concurrently on purpose, so a hit landing from another thread can
         // name a cold compile `disk`.
         view_meter::accepts(code).map_err(|refusal| Failure::Unsupported(refusal.to_string()))?;
-        let apart = self.compile_apart(code);
+        let apart = self.compile_apart(hash, code);
         let before = self.disk.as_ref().map(Cache::cache_hits);
         let module =
             Module::new(&self.engine, code).map_err(|error| Failure::Runner(error.to_string()))?;
-        let source = apart.unwrap_or(match (before, self.disk.as_ref().map(Cache::cache_hits)) {
-            (Some(before), Some(after)) if after > before => CodeSource::Disk,
-            _ => CodeSource::Cold,
-        });
+        let hit = matches!(
+            (before, self.disk.as_ref().map(Cache::cache_hits)),
+            (Some(before), Some(after)) if after > before
+        );
+        let source = match (apart, hit) {
+            (Some(source), true) => source,
+            // the child compiled it and it was still not on disk (no room,
+            // or a write a killed child left blocks it): compiled here too.
+            // No hit is a miss here even with other loaders reading.
+            (Some(_), false) => {
+                tracing::warn!(
+                    reason = "compile_apart_missed",
+                    hash = %noded_client::hex::hex_encode(&hash),
+                );
+                CodeSource::Cold
+            }
+            (None, true) => CodeSource::Disk,
+            (None, false) => CodeSource::Cold,
+        };
         let mut kept = lock(&self.code);
         kept.retain(|_, (module, _)| module.strong_count() > 0);
         let module = match kept.get(&hash).and_then(|(module, _)| module.upgrade()) {
@@ -582,16 +617,19 @@ fn panic_message(store: &mut Store<HostState>) -> Option<String> {
 /// it. Exit 1 with wasmtime's error when the code does not compile, 2 on a
 /// bad call.
 pub fn compile_child(args: &[OsString]) -> i32 {
-    let [traps, dir] = args else {
-        eprintln!("usage: {COMPILE_APART} <signal traps 0|1> <cache dir>, the code on stdin");
-        return 2;
+    let (traps, dir) = match args {
+        [traps, dir] if traps == "0" || traps == "1" => (traps == "1", dir),
+        _ => {
+            eprintln!("usage: {COMPILE_APART} <signal traps 0|1> <cache dir>, the code on stdin");
+            return 2;
+        }
     };
     let mut code = Vec::new();
     if let Err(error) = std::io::stdin().read_to_end(&mut code) {
         eprintln!("{error}");
         return 2;
     }
-    match compile_into(traps == "1", dir.into(), &code) {
+    match compile_into(traps, dir.into(), &code) {
         Ok(CodeSource::Disk) => print!("disk"),
         Ok(_) => print!("cold"),
         Err((exit, error)) => {
@@ -623,6 +661,55 @@ fn compile_into(
         0 => CodeSource::Cold,
         _ => CodeSource::Disk,
     })
+}
+
+/// The disk cache's upkeep where compiles run apart, once at start: the
+/// `*.wip-*` files a killed write or cleanup left past [`STALE`], then the
+/// code least recently read until the rest fits `limit`. Each read rewrites
+/// the `.stats` file beside the code, so that file's time is its last use.
+fn prune(dir: &Path, limit: u64) {
+    let now = SystemTime::now();
+    let age = |meta: &std::fs::Metadata| {
+        meta.modified()
+            .ok()
+            .and_then(|at| now.duration_since(at).ok())
+            .unwrap_or_default()
+    };
+    // the cleanup lock sits at the top, the code under modules/<wasmtime>/
+    let versions = std::fs::read_dir(dir.join("modules"))
+        .into_iter()
+        .flatten()
+        .flatten();
+    let files = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .chain(versions.flat_map(|version| std::fs::read_dir(version.path()).into_iter().flatten()))
+        .flatten();
+    let mut code = Vec::new();
+    for file in files {
+        let (path, Ok(meta)) = (file.path(), file.metadata()) else {
+            continue;
+        };
+        let name = file.file_name().to_string_lossy().into_owned();
+        if name.contains(".wip-") {
+            if age(&meta) > STALE {
+                let _ = std::fs::remove_file(&path);
+            }
+        } else if meta.is_file() && !name.ends_with(".stats") {
+            let stats = path.with_file_name(format!("{name}.stats"));
+            let unread = std::fs::metadata(&stats).map_or(age(&meta), |stats| age(&stats));
+            code.push((unread, meta.len(), path, stats));
+        }
+    }
+    code.sort_by_key(|(unread, ..)| *unread);
+    let mut kept = 0;
+    for (_, bytes, path, stats) in code {
+        kept += bytes;
+        if kept > limit {
+            let _ = std::fs::remove_file(path);
+            let _ = std::fs::remove_file(stats);
+        }
+    }
 }
 
 /// Why a call failed: the trap itself, not the wrapper and backtrace
@@ -667,6 +754,40 @@ mod tests {
         });
         let prepared = runner.prepare([7; 32], &code, PAGE).expect("prepares");
         assert!(matches!(prepared.source, CodeSource::Disk));
+    }
+
+    /// The upkeep a child exits before: code read least recently goes
+    /// first, with its `.stats`, until the rest fits; a write or a cleanup
+    /// lock left past [`STALE`] goes, a younger one (live) stays.
+    #[test]
+    fn upkeep_drops_the_least_read_code_and_stale_work_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let code = dir.path().join("modules").join("wasmtime-x");
+        std::fs::create_dir_all(&code).expect("dirs");
+        let hours_ago = |hours: u64| SystemTime::now() - Duration::from_secs(hours * 3600);
+        let file = |path: &Path, bytes: usize, at: SystemTime| {
+            std::fs::write(path, vec![0; bytes]).expect("write");
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .and_then(|file| file.set_modified(at))
+                .expect("touch");
+        };
+        // written lately, read long ago; written long ago, read lately
+        file(&code.join("old"), 10, hours_ago(1));
+        file(&code.join("old.stats"), 1, hours_ago(9));
+        file(&code.join("new"), 10, hours_ago(9));
+        file(&code.join("new.stats"), 1, hours_ago(1));
+        file(&code.join("new.wip-atomic-write-mod"), 1, hours_ago(9));
+        file(&code.join("now.wip-atomic-write-mod"), 1, SystemTime::now());
+        file(&dir.path().join(".cleanup.wip-1"), 0, hours_ago(2));
+        prune(dir.path(), 15);
+        let left = |path: PathBuf| path.exists();
+        assert!(!left(code.join("old")) && !left(code.join("old.stats")));
+        assert!(left(code.join("new")) && left(code.join("new.stats")));
+        assert!(!left(code.join("new.wip-atomic-write-mod")));
+        assert!(left(code.join("now.wip-atomic-write-mod")));
+        assert!(!left(dir.path().join(".cleanup.wip-1")));
     }
 
     /// A grow past the module's own maximum is refused and counts nothing:
