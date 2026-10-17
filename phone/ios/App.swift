@@ -85,8 +85,9 @@ final class EdgeBack: NSObject {
 /// (a call answered here is CallKit's until its voice goes). An app the person force-quit gets no background push:
 /// `until` stays the ring's end there. Hanging up from CallKit's own screen opens the call's `end` link (the program's
 /// `end_link`): what that hang-up means is the program's, as Answer's link is; a decline opens nothing. A call that
-/// comes while one answered here is CallKit's is reported and ended at once, missed (busy).
-final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
+/// comes while one answered here is CallKit's is reported and ended at once, missed (busy). A tap on a program's
+/// notice (an alert to the regular token) opens its `link`, as Answer does.
+final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate, UNUserNotificationCenterDelegate {
   static let shared = Ring()
   /// The huddle program's ring, for a payload that carries no `until`: a call always carries one (SPEC §5).
   private static let ringSeconds: TimeInterval = 45
@@ -112,6 +113,8 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
   private lazy var calls = CXCallController()
 
   func follow() {
+    // before launch ends: a tap that launched the app is handed to the delegate set by then
+    UNUserNotificationCenter.current().delegate = self
     observer = NotificationCenter.default.addObserver(
       forName: UIApplication.didFinishLaunchingNotification, object: nil, queue: .main
     ) { [weak self] _ in self?.start() }
@@ -216,6 +219,18 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
     NSLog("ducktape ring: \(tag) withdrawn")
     provider.reportCall(with: id, endedAt: nil, reason: .remoteEnded)
     return true
+  }
+
+  /// A notice tapped: its link opens (a dismissal opens nothing).
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+  ) {
+    let link = response.notification.request.content.userInfo["link"] as? String ?? ""
+    if response.actionIdentifier == UNNotificationDefaultActionIdentifier && !link.isEmpty {
+      ducktape_phone_link(link)
+    }
+    completionHandler()
   }
 
   /// The call under `id` stops ringing unanswered, if it still rings.
