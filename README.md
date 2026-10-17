@@ -26,8 +26,11 @@ nothing until you press Update now there.
 For nightly, read `nightly.json` instead of `stable.json` below.
 
 **macOS (Apple silicon).** Needs `jq`. The archive is `Ducktape.app`,
-Developer ID signed and notarized. At its first start from `/Applications`
-it adopts itself as the install the updater owns.
+Developer ID signed and notarized, with a Developer ID provisioning profile
+embedded: it authorizes the app's application identifier and keychain access
+group, which a key locked by Touch ID needs (macOS keeps those in the data
+protection keychain). At its first start from `/Applications` it adopts
+itself as the install the updater owns.
 
 ```bash
 sha=$(curl -fsS https://dl.ducktape.industries/app/stable.json \
