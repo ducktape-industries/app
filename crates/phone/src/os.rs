@@ -50,6 +50,7 @@ pub mod ios {
     }
 }
 
+use ducktape_host::backend::Appearance;
 use ducktape_host::contract::{
     Banners, Dirs, Inbound, KeyRefusal, KeyStorage, Limits, MintInvite, OsFacts, OsServices,
     Preload, RunnerConfig, Signal, SoftKeyboard, ViewRunner,
@@ -479,6 +480,83 @@ pub fn system_bars(dark: bool) {
     #[cfg(target_os = "android")]
     android::jni::system_bars(dark);
     let _ = dark;
+}
+
+/// Puts the appearance App settings chose on the app's iOS windows
+/// (`overrideUserInterfaceStyle`), so what UIKit draws for the app takes it
+/// too: the keyboard, its own alerts and sheets, and the trait collection
+/// gpui_ios reads `window.appearance()` from. System leaves them to the
+/// system (`Unspecified`). Called before the theme reads the window, which
+/// under System it must read without an override; a trait change UIKit
+/// lands later is heard as the window's appearance changing. Android draws
+/// its keyboard by the keyboard's own theme: nothing there.
+pub fn interface_style(appearance: Appearance) {
+    #[cfg(target_os = "ios")]
+    {
+        use objc2_ui_kit::{UIApplication, UIUserInterfaceStyle, UIWindowScene};
+        let Some(main) = objc2::MainThreadMarker::new() else {
+            return;
+        };
+        let style = match appearance {
+            Appearance::System => UIUserInterfaceStyle::Unspecified,
+            Appearance::Light => UIUserInterfaceStyle::Light,
+            Appearance::Dark => UIUserInterfaceStyle::Dark,
+        };
+        for scene in UIApplication::sharedApplication(main).connectedScenes() {
+            if let Ok(scene) = scene.downcast::<UIWindowScene>() {
+                for window in scene.windows() {
+                    window.setOverrideUserInterfaceStyle(style);
+                }
+            }
+        }
+    }
+    let _ = appearance;
+}
+
+/// The app's memory footprint now and at its peak, in bytes, on iOS:
+/// Mach's `TASK_VM_INFO` `phys_footprint` and `ledger_phys_footprint_peak`,
+/// the figure iOS's memory limit counts and Xcode's memory gauge shows
+/// (dirty and compressed pages, not shared clean ones). Each is `None`
+/// where the kernel's answer does not reach it, and both are elsewhere
+/// (Android's resident figure is the host's, `/proc/self/statm`).
+#[cfg_attr(
+    target_os = "ios",
+    allow(unsafe_code, reason = "Mach's task_info on this task")
+)]
+pub fn footprint_bytes() -> (Option<u64>, Option<u64>) {
+    #[cfg(target_os = "ios")]
+    {
+        use mach2::task_info::{TASK_VM_INFO, task_vm_info};
+        let mut info = task_vm_info::default();
+        let mut count =
+            (size_of::<task_vm_info>() / size_of::<mach2::vm_types::natural_t>()) as u32;
+        // SAFETY: this task's own port, and an out struct of `count`
+        // naturals, which the kernel fills no further than
+        let answered = unsafe {
+            mach2::task::task_info(
+                mach2::traps::mach_task_self(),
+                TASK_VM_INFO,
+                (&raw mut info).cast(),
+                &mut count,
+            )
+        };
+        if answered != mach2::kern_return::KERN_SUCCESS {
+            return (None, None);
+        }
+        // an older kernel answers a shorter struct: a field past its answer is not had
+        let filled = |end: usize| end <= count as usize * size_of::<mach2::vm_types::natural_t>();
+        let now = std::mem::offset_of!(task_vm_info, phys_footprint) + size_of::<u64>();
+        let peak =
+            std::mem::offset_of!(task_vm_info, ledger_phys_footprint_peak) + size_of::<i64>();
+        (
+            filled(now).then_some(info.phys_footprint),
+            filled(peak)
+                .then(|| u64::try_from(info.ledger_phys_footprint_peak).ok())
+                .flatten(),
+        )
+    }
+    #[cfg(not(target_os = "ios"))]
+    (None, None)
 }
 
 /// The system, as a sentence names it ("Light and dark come from iOS's
