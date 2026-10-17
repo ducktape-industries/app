@@ -76,7 +76,8 @@ final class EdgeBack: NSObject {
 /// made with the first call piece and gone with the last: Leave, or the call over): then it is reported ended. The
 /// audio session is the host's own (it activates it for the voice and lets it go after); CallKit's activation of the
 /// same session (`didActivate`) is only logged, and a voice opened before CallKit's activation lands is retried by the
-/// host. Not yet: a withdraw (the call seen or answered elsewhere) takes no ring down here. It comes as a regular
+/// host. A call with no voice (another program's video-only call) never ends by this route: a CallKit ring is a voice
+/// call. Not yet: a withdraw (the call seen or answered elsewhere) takes no ring down here. It comes as a regular
 /// background push, and gpui_ios's app delegate hands the app neither that token nor that push (a gpui-pre hook to
 /// come), so a call rings on until its `until`. Hanging up from CallKit's own screen ends no call in the app.
 final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
@@ -180,12 +181,18 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
     provider.reportCall(with: id, endedAt: nil, reason: .unanswered)
   }
 
-  /// The call's voice I/O made (`alive`) or gone: with it goes the call answered here, if one is CallKit's.
+  /// The call's voice I/O made (`alive`) or gone: with it goes the call answered here, if one is CallKit's. An end
+  /// the app makes is asked of CallKit as the person's own hang-up would be (`CXEndCallAction` through the
+  /// controller), with `answered` cleared first, so the action's handler takes it as one made here; a call CallKit
+  /// no longer has refuses the action, and is reported ended instead.
   func voice(_ alive: Bool) {
     guard !alive, let id = answered else { return }
     answered = nil
     NSLog("ducktape ring: \(id) over, its voice gone")
-    provider.reportCall(with: id, endedAt: nil, reason: .remoteEnded)
+    calls.request(CXTransaction(action: CXEndCallAction(call: id))) { error in
+      guard error != nil else { return }
+      DispatchQueue.main.async { self.provider.reportCall(with: id, endedAt: nil, reason: .remoteEnded) }
+    }
   }
 
   func providerDidReset(_ provider: CXProvider) {

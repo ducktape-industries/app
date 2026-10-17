@@ -98,9 +98,12 @@ pub struct Io {
 static IO: Mutex<Weak<Io>> = Mutex::new(Weak::new());
 
 /// Told `true` when the voice I/O is made and `false` when its last holder
-/// let go: the app's call, as what stands outside it sees it (the phone's
+/// lets go: the app's call, as what stands outside it sees it (the phone's
 /// call screen, iOS CallKit through the launcher, ends its call with it).
-/// One for the process, set before the first hold ([`on_life`]).
+/// Told on the thread that makes or drops the I/O, any thread, under the
+/// voice's lock: a follower must not hold the voice itself, and should
+/// hand the news on and return. One for the process, set before the first
+/// hold ([`on_life`]).
 static LIFE: std::sync::OnceLock<fn(bool)> = std::sync::OnceLock::new();
 
 /// Sets what is told the voice I/O's life ([`LIFE`]); the first set stands.
@@ -171,7 +174,15 @@ fn apm() -> sonora::AudioProcessing {
 impl Drop for Io {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(told) = LIFE.get() {
+        // under the hold's lock, and only when no I/O was made since: a
+        // hold that raced this drop made a new one, and the voice goes on
+        // (`strong_count`, never `upgrade`: a strong reference taken here
+        // could be some I/O's last, and its drop would re-enter under the
+        // lock)
+        let held = lock(&IO);
+        if held.strong_count() == 0
+            && let Some(told) = LIFE.get()
+        {
             told(false);
         }
     }
@@ -569,7 +580,9 @@ mod tests {
     }
 
     /// The I/O's life is told once each way: made with the first holder
-    /// (a second hold is the same I/O), gone with the last.
+    /// (a second hold is the same I/O), gone with the last. The follower
+    /// is the process's one, and `TOLD` counts every I/O of this binary:
+    /// this is the only test that holds the voice.
     #[test]
     fn the_voice_io_s_life_is_told_at_its_first_hold_and_its_last_let_go() {
         use std::sync::atomic::AtomicU8;
