@@ -743,6 +743,56 @@ mod tests {
         );
     }
 
+    /// A notifier's wire `Notification` of kind `Call` passes an account's
+    /// centre (pushd's own settings) as a call and rings the phones: a
+    /// VoIP push and a high-priority FCM message, both until its `until`.
+    #[test]
+    fn a_notifiers_call_notification_rings_the_phones() {
+        let (push, http) = push(&[("voip", "ab12"), ("fcm", "fcm-token")]);
+        let until = now() + 45;
+        let ring = view_wire::methods::Notification {
+            title: "ada is calling".into(),
+            body: String::new(),
+            tag: "call/c1".into(),
+            link: "duck://testkit-0a1b2c3d/huddle/call/c1".into(),
+            kind: NoticeKind::Call,
+            until,
+        };
+        let center = ducktape_host::runtime::notify::CenterHandle::default();
+        let wall = i64::try_from(now()).unwrap();
+        let (_, banner) = center.lock().post(
+            &crate::settings(),
+            "huddle",
+            "Huddle",
+            ring,
+            Instant::now(),
+            wall,
+        );
+        let banner = banner.expect("the call passed the centre");
+        assert_eq!((banner.kind, banner.until), (NoticeKind::Call, until));
+        assert!(push.post(&banner, None));
+        let sent = http.0.lock().unwrap().clone();
+        let apns = sent
+            .iter()
+            .find(|request| request.url.contains("/3/device/ab12"));
+        let apns = apns.expect("a push to the iPhone");
+        assert_eq!(header(apns, "apns-push-type"), "voip");
+        assert_eq!(header(apns, "apns-expiration"), until.to_string());
+        let fcm = sent
+            .iter()
+            .find(|request| request.url.contains("messages:send"));
+        let fcm: serde_json::Value =
+            serde_json::from_str(&fcm.expect("an FCM message").body).unwrap();
+        assert_eq!(fcm["message"]["android"]["priority"], "high");
+        assert_eq!(
+            (
+                &fcm["message"]["data"]["kind"],
+                &fcm["message"]["data"]["tag"]
+            ),
+            (&"call".into(), &"huddle/call/c1".into())
+        );
+    }
+
     /// Taken down before its `until`, a call is withdrawn: a background push
     /// to the iPhone's APNs token (no second VoIP push) and `kind: withdraw`
     /// to the Android phone. Past its `until`, nothing is sent.

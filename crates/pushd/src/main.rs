@@ -253,15 +253,7 @@ fn run(network: &Network, config: &Config, data: &Path) -> Result<(), String> {
                 .join(account.account.to_string())
                 .join("store"),
             center: CenterHandle::default(),
-            settings: Settings {
-                banners: true,
-                in_front: false,
-                burst: BURST,
-                views: BTreeMap::new(),
-                // no one to ask: a program's notices go out until the
-                // account's devices say otherwise
-                unasked: Some(Permission::Allow),
-            },
+            settings: settings(),
             banners: Arc::new(Push::new(
                 Log {
                     network: network.name.clone(),
@@ -314,6 +306,19 @@ impl Banners for Log {
             "withdraw": tag,
         });
         println!("{withdrawn}");
+    }
+}
+
+/// What an account's centre lets through.
+fn settings() -> Settings {
+    Settings {
+        banners: true,
+        in_front: false,
+        burst: BURST,
+        views: BTreeMap::new(),
+        // no one to ask: a program's notices go out until the account's
+        // devices say otherwise
+        unasked: Some(Permission::Allow),
     }
 }
 
