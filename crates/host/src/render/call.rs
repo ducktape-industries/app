@@ -419,7 +419,7 @@ mod inner {
                     },
                     ducktape_av::Kind::Camera,
                 );
-                state.track = standing.track;
+                state.track = standing.track.clone();
                 if standing.unsupported {
                     state.status = wire::MediaStatus::Unsupported;
                 }
@@ -604,7 +604,9 @@ mod inner {
                         subscribers = *n;
                         up = true;
                     }
-                    TrackHeard::Waiting | TrackHeard::Ended { .. } => up = false,
+                    TrackHeard::Waiting | TrackHeard::Ended { .. } | TrackHeard::None => {
+                        up = false;
+                    }
                 }
                 word.track = heard;
             }
