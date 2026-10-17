@@ -25,10 +25,9 @@ the app still checks and says what is newer, but downloads and installs
 nothing until you press Update now there.
 For nightly, read `nightly.json` instead of `stable.json` below.
 
-**macOS (Apple silicon).** Needs `jq`. The archive is `Ducktape.app`, ad-hoc
-signed; a copy fetched with `curl` carries no quarantine, so Gatekeeper lets
-it open. At its first start from `/Applications` it adopts itself as the
-install the updater owns.
+**macOS (Apple silicon).** Needs `jq`. The archive is `Ducktape.app`,
+Developer ID signed and notarized. At its first start from `/Applications`
+it adopts itself as the install the updater owns.
 
 ```bash
 sha=$(curl -fsS https://dl.ducktape.industries/app/stable.json \
@@ -134,7 +133,8 @@ needs.
 with `--features ax-door`) and `cargo test --locked --workspace --no-fail-fast`
 are what CI runs.
 
-Each commit on `main` also has a built app: the prerelease `bin-<commit>`
-carries `ducktape-app-x86_64-unknown-linux-gnu.tar.gz` and an ad-hoc signed
-`ducktape-app-aarch64-apple-darwin.dmg` (`.github/workflows/release.yml`);
-the same build is what the stable channel publishes (see [Install](#install)).
+Each commit on `main` and `dev` also has a built app: the prerelease
+`bin-<commit>` carries `ducktape-app-x86_64-unknown-linux-gnu.tar.gz` and a
+Developer ID signed, notarized `ducktape-app-aarch64-apple-darwin.dmg`
+(`.github/workflows/release.yml`); the same build is what the stable (`main`)
+or nightly (`dev`) channel publishes (see [Install](#install)).

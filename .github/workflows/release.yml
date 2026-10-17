@@ -1,7 +1,8 @@
 # The app is built for Linux x86_64 (GitHub's Ubuntu) and macOS arm64 (the
 # self-hosted runner mac-byeongsu) and published twice:
 # - on the prerelease bin-<commit>: the Linux binary as a tarball, the Mac
-#   app as an ad-hoc signed DMG and as a tarball of Ducktape.app;
+#   app as a Developer ID signed, notarized DMG and as a tarball of
+#   Ducktape.app;
 # - to the self-update's prefix (dl.ducktape.industries/app/, Cloudflare R2): the
 #   two tarballs named by their sha256, then the channel's one file, its
 #   manifest and the signature over it.
@@ -12,10 +13,14 @@
 #   failed) and on demand from dev's head, skipped when the published
 #   nightly is not older.
 # The signing key and the bucket's credentials live in the `release`
-# environment, which admits runs on `dev` and `main` only. Only the publish
-# job enters it, and it runs nothing of the built commit: it builds the
-# signer from `main`, and the archives reach it as artifacts of the build
-# jobs, which see no secret.
+# environment, which admits runs on `dev` and `main` only. The Developer ID
+# certificate (organization secrets) and the notary key are read by one
+# job, macos-sign, which runs in that environment too. Neither job that
+# holds a secret builds the built commit: macos-sign runs that commit's
+# ops/sign-app-macos.sh over the build job's bundle (with that commit's
+# entitlements, the ones its app needs), publish builds the signer from
+# `main`, and the archives reach both as artifacts of the build jobs, which
+# see no secret.
 name: release
 
 on:
@@ -132,26 +137,104 @@ jobs:
     timeout-minutes: 120
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/../target
-      SHA: ${{ needs.plan.outputs.sha }}
-      TAG: bin-${{ needs.plan.outputs.sha }}
-      # the update archive: Ducktape.app whole, no AppleDouble files and no
-      # extended attributes (its signature lives in its files)
-      APP_ASSET: ducktape-app-aarch64-apple-darwin.app.tar.gz
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.plan.outputs.sha }}
+      # ad-hoc signed here: macos-sign signs it for real
       - run: ops/bundle-app-macos.sh
         env:
           DUCKTAPE_CARGO_PROFILE: dist
+      - run: |
+          COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -czf ducktape-app-unsigned.app.tar.gz \
+            -C target/app-bundle Ducktape.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-unsigned
+          path: ducktape-app-unsigned.app.tar.gz
+          retention-days: 1
+          overwrite: true
+
+  # Developer ID signs the build job's bundle, images it, notarizes and
+  # staples: a throwaway keychain holds the certificate for this job only.
+  macos-sign:
+    needs: [plan, macos]
+    runs-on: [self-hosted, mac-byeongsu]
+    timeout-minutes: 60
+    environment: release
+    permissions:
+      contents: write
+    env:
+      SHA: ${{ needs.plan.outputs.sha }}
+      TAG: bin-${{ needs.plan.outputs.sha }}
+      ASSET: ducktape-app-aarch64-apple-darwin.dmg
+      # the update archive: Ducktape.app whole, no AppleDouble files and no
+      # extended attributes (its signature lives in its files)
+      APP_ASSET: ducktape-app-aarch64-apple-darwin.app.tar.gz
+    steps:
+      # the built commit's script and entitlements, nothing built here: main
+      # may not have the script yet, nor the camera and microphone
+      # entitlements the commit's app needs (hardened runtime enforces them)
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-unsigned
+          path: unsigned
+      - name: keychain
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(uuidgen)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          (umask 077 && printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12")
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
+          # codesign reaches the private key through the search list: this
+          # keychain joins it until the cleanup step deletes it (which takes
+          # it off the list); a list read as empty would drop the login one
+          searched=$(security list-keychains -d user | tr -d '" ')
+          [ -n "$searched" ] || { echo "::error::the user keychain search list read empty"; exit 1; }
+          # shellcheck disable=SC2086 # one keychain path per word
+          security list-keychains -d user -s "$keychain" $searched
+          identity=$(security find-identity -v -p codesigning "$keychain" \
+            | awk '/Developer ID Application/ { print $2; exit }')
+          [ -n "$identity" ] || { echo "::error::no Developer ID Application identity in MACOS_CERTIFICATE_P12"; exit 1; }
+          (umask 077 && printf '%s' "$APPLE_NOTARY_KEY" > "$RUNNER_TEMP/notary.p8")
+          {
+            echo "DUCKTAPE_CODESIGN_KEYCHAIN=$keychain"
+            echo "DUCKTAPE_CODESIGN_IDENTITY=$identity"
+            echo "DUCKTAPE_NOTARY_KEY=$RUNNER_TEMP/notary.p8"
+          } >> "$GITHUB_ENV"
+      - name: sign
+        env:
+          DUCKTAPE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          DUCKTAPE_NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER }}
+        run: |
+          mkdir -p signed
+          tar xzf unsigned/ducktape-app-unsigned.app.tar.gz -C signed
+          ops/sign-app-macos.sh signed/Ducktape.app "$ASSET"
+          spctl --assess --type open --context context:primary-signature -v "$ASSET"
+          spctl --assess --type execute -v signed/Ducktape.app
+          COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -czf "$APP_ASSET" -C signed Ducktape.app
+      - name: cleanup
+        if: always()
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          security delete-keychain "$keychain" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/certificate.p12"
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}
-          ASSET: ducktape-app-aarch64-apple-darwin.dmg
         run: |
-          mv target/app-bundle/Ducktape-*.dmg "$ASSET"
-          COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -czf "$APP_ASSET" \
-            -C target/app-bundle Ducktape.app
           # Both jobs may try to create the release; the loser finds it made.
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
             --prerelease --latest=false --target "$SHA" --title "$TAG" \
@@ -168,12 +251,12 @@ jobs:
   # Sign the channel's manifest over both archives and upload: archives
   # first (immutable, named by their sha256), then the channel's one file,
   # so a client never reads a manifest whose archive is not there, nor a
-  # manifest beside another one's signature. The one job in the `release`
-  # environment: `main`'s signer over the build jobs' archives. No cache:
+  # manifest beside another one's signature. In the `release` environment
+  # with macos-sign: `main`'s signer over the build jobs' archives. No cache:
   # the build jobs build whatever commit they are given, and nothing they
   # leave behind reaches the job that holds the key.
   publish:
-    needs: [plan, linux, macos]
+    needs: [plan, linux, macos-sign]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: release
