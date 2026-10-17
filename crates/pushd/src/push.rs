@@ -1041,7 +1041,9 @@ mod tests {
         assert_eq!(body["aps"]["thread-id"], "chat");
         assert_eq!(body["kind"], "notice");
         assert_eq!(body["link"], "duck://testkit-0a1b2c3d/chat/general/7");
-        let fcm = sent.iter().find(|request| request.url.contains("messages:send"));
+        let fcm = sent
+            .iter()
+            .find(|request| request.url.contains("messages:send"));
         let fcm: serde_json::Value = serde_json::from_str(&fcm.unwrap().body).unwrap();
         assert_eq!(fcm["message"]["android"]["priority"], "high");
         assert!(fcm["message"]["android"].get("ttl").is_none());
@@ -1052,28 +1054,41 @@ mod tests {
         http.0.lock().unwrap().clear();
         push.post(&notice, None);
         let sent = http.0.lock().unwrap().clone();
-        let apns = sent.iter().find(|request| request.url.contains("/3/device/")).unwrap();
+        let apns = sent
+            .iter()
+            .find(|request| request.url.contains("/3/device/"))
+            .unwrap();
         assert_eq!(header(apns, "apns-priority"), "5");
         let body: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
         assert!(body["aps"].get("sound").is_none(), "{body}");
-        let fcm = sent.iter().find(|request| request.url.contains("messages:send"));
+        let fcm = sent
+            .iter()
+            .find(|request| request.url.contains("messages:send"));
         let fcm: serde_json::Value = serde_json::from_str(&fcm.unwrap().body).unwrap();
         assert_eq!(fcm["message"]["data"]["quiet"], "1");
 
         http.0.lock().unwrap().clear();
         push.withdraw("chat/#general");
         let sent = http.0.lock().unwrap().clone();
-        let apns = sent.iter().find(|request| request.url.contains("/3/device/")).unwrap();
+        let apns = sent
+            .iter()
+            .find(|request| request.url.contains("/3/device/"))
+            .unwrap();
         assert_eq!(header(apns, "apns-push-type"), "background");
         assert_eq!(header(apns, "apns-expiration"), "");
-        let fcm = sent.iter().find(|request| request.url.contains("messages:send"));
+        let fcm = sent
+            .iter()
+            .find(|request| request.url.contains("messages:send"));
         let fcm: serde_json::Value = serde_json::from_str(&fcm.unwrap().body).unwrap();
         assert_eq!(fcm["message"]["data"]["kind"], "withdraw");
 
         http.0.lock().unwrap().clear();
         push.post(&notice, None);
         let sent = http.0.lock().unwrap().clone();
-        let apns = sent.iter().find(|request| request.url.contains("/3/device/")).unwrap();
+        let apns = sent
+            .iter()
+            .find(|request| request.url.contains("/3/device/"))
+            .unwrap();
         assert_eq!(header(apns, "apns-priority"), "10");
     }
 

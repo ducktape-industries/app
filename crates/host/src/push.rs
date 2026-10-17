@@ -36,7 +36,8 @@ pub const AT_WINDOW_MS: u64 = 5 * 60 * 1000;
 /// key.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Registration {
-    /// The chain as `duck://` links spell it (`ducklink::ChainId`).
+    /// The chain id as the session names it, `<network>#<salt>`
+    /// (`ducklink::ChainId`'s text; a `duck://` link spells the same with `-`).
     pub chain: String,
     pub account: u64,
     /// The device's Ed25519 public key on that chain, hex.

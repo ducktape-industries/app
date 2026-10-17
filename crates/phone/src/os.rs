@@ -564,7 +564,10 @@ mod tests {
         assert!(push_tokens_moved().try_recv().is_ok());
         assert!(push_tokens_moved().try_recv().is_err());
         push_token("test-fcm", "f".into());
-        assert!(push_tokens_moved().try_recv().is_err(), "an unmoved token woke it");
+        assert!(
+            push_tokens_moved().try_recv().is_err(),
+            "an unmoved token woke it"
+        );
     }
 
     /// An app build keeps its code in a folder of its own, and the other

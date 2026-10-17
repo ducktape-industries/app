@@ -139,7 +139,10 @@ impl Registrar {
         let account = self.shared.account.read(cx).get();
         let due = plan(
             &session.chain,
-            account.account.as_ref().and_then(|found| found.as_ref().map(|(number, _)| *number)),
+            account
+                .account
+                .as_ref()
+                .and_then(|found| found.as_ref().map(|(number, _)| *number)),
             &account.signer_key,
             &crate::os::push_tokens(),
             crate::os::push_environment(),
@@ -243,7 +246,14 @@ mod tests {
     #[test]
     fn every_token_is_due_once_the_phone_is_on_an_account() {
         let have = tokens(&[("voip", "v1"), ("apns", "a1"), ("fcm", "f1")]);
-        let due = plan("testkit-0a1b2c3d", Some(15), "ab", &have, "sandbox", &Sent::new());
+        let due = plan(
+            "testkit-0a1b2c3d",
+            Some(15),
+            "ab",
+            &have,
+            "sandbox",
+            &Sent::new(),
+        );
         assert_eq!(due.len(), 3);
         let by_kind = |kind: &str| due.iter().find(|want| want.kind == kind).unwrap().clone();
         assert_eq!(
@@ -259,8 +269,28 @@ mod tests {
         );
         assert_eq!(by_kind("fcm").env, "");
         assert!(plan("", Some(15), "ab", &have, "sandbox", &Sent::new()).is_empty());
-        assert!(plan("testkit-0a1b2c3d", Some(15), "", &have, "sandbox", &Sent::new()).is_empty());
-        assert!(plan("testkit-0a1b2c3d", None, "ab", &have, "sandbox", &Sent::new()).is_empty());
+        assert!(
+            plan(
+                "testkit-0a1b2c3d",
+                Some(15),
+                "",
+                &have,
+                "sandbox",
+                &Sent::new()
+            )
+            .is_empty()
+        );
+        assert!(
+            plan(
+                "testkit-0a1b2c3d",
+                None,
+                "ab",
+                &have,
+                "sandbox",
+                &Sent::new()
+            )
+            .is_empty()
+        );
     }
 
     /// What the server holds as sent is not sent again; a token that moved
@@ -276,18 +306,35 @@ mod tests {
     fn only_what_moved_is_sent_again_and_a_withdrawn_token_leaves() {
         let chain = "testkit-0a1b2c3d";
         let have = tokens(&[("voip", "v1"), ("fcm", "f1")]);
-        let sent = sent_of(&plan(chain, Some(15), "ab", &have, "production", &Sent::new()));
+        let sent = sent_of(&plan(
+            chain,
+            Some(15),
+            "ab",
+            &have,
+            "production",
+            &Sent::new(),
+        ));
         assert!(plan(chain, Some(15), "ab", &have, "production", &sent).is_empty());
         let rotated = tokens(&[("voip", "v2"), ("fcm", "f1")]);
         let due = plan(chain, Some(15), "ab", &rotated, "production", &sent);
         assert_eq!(due.len(), 1);
-        assert_eq!((due[0].kind.as_str(), due[0].token.as_str()), ("voip", "v2"));
+        assert_eq!(
+            (due[0].kind.as_str(), due[0].token.as_str()),
+            ("voip", "v2")
+        );
         let withdrawn = tokens(&[("fcm", "f1")]);
         let due = plan(chain, Some(15), "ab", &withdrawn, "production", &sent);
         assert_eq!(due.len(), 1);
         assert_eq!((due[0].kind.as_str(), due[0].token.as_str()), ("voip", ""));
         // another chain's sends say nothing about this one
-        let due = plan("other-11111111", Some(3), "ab", &withdrawn, "production", &sent);
+        let due = plan(
+            "other-11111111",
+            Some(3),
+            "ab",
+            &withdrawn,
+            "production",
+            &sent,
+        );
         assert_eq!(due.len(), 1);
         assert_eq!((due[0].kind.as_str(), due[0].token.as_str()), ("fcm", "f1"));
         // the account moved under the same key: sent again

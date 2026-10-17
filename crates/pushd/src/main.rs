@@ -71,6 +71,8 @@ const BURST: u32 = 6;
 /// through, and the credentials the pushes are sent with.
 #[derive(Debug, serde::Deserialize)]
 struct Config {
+    /// None at all: a config `probe` reads, with the credentials only.
+    #[serde(default)]
     networks: Vec<Network>,
     /// Where the registry's door listens (`127.0.0.1:9201` behind the
     /// tunnel); none: no device can register, the ones registered stay.
@@ -149,6 +151,7 @@ fn start() -> Result<(), String> {
         ));
     }
     match (only, &config.networks[..]) {
+        (_, []) => Err("the config lists no [[networks]]".into()),
         (Some(name), networks) => {
             let network = networks
                 .iter()
@@ -183,8 +186,8 @@ fn open_door(config: &Config, data: &Path) -> Result<(), String> {
         tracing::warn!(target: "pushd", "no `listen`: no device can register");
         return Ok(());
     };
-    let listener = std::net::TcpListener::bind(listen)
-        .map_err(|error| format!("{listen}: {error}"))?;
+    let listener =
+        std::net::TcpListener::bind(listen).map_err(|error| format!("{listen}: {error}"))?;
     let networks = config
         .networks
         .iter()
@@ -293,9 +296,7 @@ fn run(network: &Network, config: &Config, data: &Path) -> Result<(), String> {
     let mut carried: HashMap<u64, (String, Carried)> = HashMap::new();
     let carry = |carried: &mut HashMap<u64, (String, Carried)>| {
         let wanted = devices.accounts();
-        carried.retain(|account, (signer, _)| {
-            wanted.contains(&(*account, signer.clone()))
-        });
+        carried.retain(|account, (signer, _)| wanted.contains(&(*account, signer.clone())));
         for (account, signer) in wanted {
             if carried.contains_key(&account) {
                 continue;

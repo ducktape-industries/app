@@ -92,9 +92,9 @@ impl Devices {
         if modified.is_none() || modified == *seen {
             return false;
         }
-        match std::fs::read(file).and_then(|bytes| {
-            serde_json::from_slice(&bytes).map_err(std::io::Error::other)
-        }) {
+        match std::fs::read(file)
+            .and_then(|bytes| serde_json::from_slice(&bytes).map_err(std::io::Error::other))
+        {
             Ok(rows) => {
                 *lock(&self.rows) = rows;
                 *seen = modified;
@@ -128,7 +128,9 @@ impl Devices {
         // choice per account if that proves to be felt
         let mut accounts: HashMap<u64, String> = HashMap::new();
         for row in lock(&self.rows).iter().filter(|row| !row.token.is_empty()) {
-            let signer = accounts.entry(row.account).or_insert_with(|| row.key.clone());
+            let signer = accounts
+                .entry(row.account)
+                .or_insert_with(|| row.key.clone());
             if row.key < *signer {
                 *signer = row.key.clone();
             }
@@ -171,7 +173,9 @@ impl Devices {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Why a registration was not taken, and the status that says so.
@@ -224,8 +228,8 @@ pub struct Followed {
     pub devices: Arc<Devices>,
     pub file: PathBuf,
     pub client: noded_client::Client,
-    /// The chain as links spell it, and the network's name as frames name
-    /// it, once the node answered.
+    /// The chain id (`<network>#<salt>`) and the network's name as frames
+    /// name it, once the node answered.
     pub chain: Mutex<Option<(String, String)>>,
 }
 
@@ -310,9 +314,13 @@ impl Door {
                 let Ok(key) = noded_client::hex::hex_decode(&row.key) else {
                     continue;
                 };
-                let acts =
-                    noded_client::identity::account_of_key(&network.client, &name, key, &*self.reader)
-                        .await;
+                let acts = noded_client::identity::account_of_key(
+                    &network.client,
+                    &name,
+                    key,
+                    &*self.reader,
+                )
+                .await;
                 if let Ok(acts) = acts
                     && acts.map(|(number, _)| number) != Some(row.account)
                 {
@@ -322,7 +330,8 @@ impl Door {
             if dropped.is_empty() {
                 continue;
             }
-            lock(&network.devices.rows).retain(|row| !dropped.contains(&(row.key.clone(), row.kind.clone())));
+            lock(&network.devices.rows)
+                .retain(|row| !dropped.contains(&(row.key.clone(), row.kind.clone())));
             tracing::info!(target: "pushd", network = network.name, dropped = dropped.len(),
                 "devices whose key left the account dropped");
             if let Err(error) = network.devices.save(&network.file) {
@@ -428,7 +437,11 @@ mod tests {
     }
 
     /// `registration` signed by `key` at `at`.
-    pub(crate) fn signed(mut registration: Registration, key: &ed25519::PrivateKey, at: u64) -> Registration {
+    pub(crate) fn signed(
+        mut registration: Registration,
+        key: &ed25519::PrivateKey,
+        at: u64,
+    ) -> Registration {
         use commonware_codec::Encode as _;
         registration.at = at;
         registration.key = noded_client::hex::hex_encode(&key.public_key().encode());
