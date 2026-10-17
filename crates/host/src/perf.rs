@@ -1,5 +1,5 @@
-//! Performance counters, on with `DUCKTAPE_PERF=1`, read at `GET /perf`
-//! (docs/perf.md). One registry for the shell, its windows and every view
+//! Performance counters, on with `DUCKTAPE_PERF=1` (or the phone's debug
+//! mode, [`switch`]), read at `GET /perf` (docs/perf.md). One registry for the shell, its windows and every view
 //! instance, keyed by `(Key, stage)`. Off, every hook is one relaxed atomic
 //! load: [`time`] returns `None` before it reads the clock and the writers
 //! return before the lock. On, a sample costs a lock, a map lookup and one
@@ -35,7 +35,7 @@ pub fn start() {
     if asked.as_deref().map(str::trim) != Some("1") {
         return;
     }
-    ON.store(true, Ordering::Relaxed);
+    switch(true);
     let _ = std::thread::Builder::new().name("perf".into()).spawn(|| {
         let mut next_summary = Instant::now() + SUMMARY_EVERY;
         loop {
@@ -47,6 +47,15 @@ pub fn start() {
             }
         }
     });
+}
+
+/// Turns the counters on or off while the app runs (the phone's debug
+/// mode, `Prefs::debug`). Off, every hook is the one relaxed load again;
+/// what was counted stays for the next time on. The RSS sampler thread is
+/// `DUCKTAPE_PERF=1`'s alone: a shell that switches the counters on reads
+/// RSS itself, when it shows it ([`sample_rss`]).
+pub fn switch(on: bool) {
+    ON.store(on, Ordering::Relaxed);
 }
 
 /// What a sample belongs to.
@@ -340,6 +349,7 @@ fn json_of(metrics: &[&Metric]) -> serde_json::Value {
             let at = |percent: usize| recent.get((recent.len().saturating_sub(1)) * percent / 100);
             json!({
                 "n": n,
+                "sum": sum,
                 "mean": sum.checked_div(n).unwrap_or(0),
                 "p50": at(50),
                 "p95": at(95),
@@ -385,9 +395,14 @@ pub fn retire(program: &'static str, instance: u64) {
     tracing::info!(target: "ducktape::perf", program, instance, perf = %own, "view_perf");
 }
 
-/// RSS peak and current, in bytes: `getrusage` gives KiB on Linux and bytes
-/// on macOS; the current figure is Linux only (`/proc/self/statm`).
-fn sample_rss() {
+/// RSS peak and current, in bytes, as `rss.peak` and `rss.current`:
+/// `getrusage` gives KiB on Linux and bytes on Apple's systems; the
+/// current figure is where `/proc/self/statm` is (Linux, Android), none
+/// elsewhere. Nothing while off.
+pub fn sample_rss() {
+    if !on() {
+        return;
+    }
     // SAFETY: a plain libc call into a zeroed, stack-local rusage.
     let usage = unsafe {
         let mut usage: libc::rusage = std::mem::zeroed();

@@ -5,6 +5,7 @@
 //! (`design/canvas/shell`), English as the Expo app's.
 
 use super::Root;
+use super::debug::Readout;
 use super::look::{self, Palette};
 use super::stack::{Opened, Tab};
 use ducktape_host::a11y::Control as _;
@@ -425,14 +426,23 @@ pub fn ago(since: Duration) -> String {
 
 /// Open: the programs open, the latest first, each with the title its view
 /// gave its window and when it was last on screen; a press goes back to
-/// where it was left, the × lets it go (it stays on Home).
+/// where it was left, the × lets it go (it stays on Home). In debug mode
+/// (`readout`) each says what it costs under its name, and the app's own
+/// memory heads the list.
 pub fn open(
     shared: &Shared,
     opened: &[Opened],
     titles: &BTreeMap<u64, String>,
+    readout: Option<&Readout>,
     palette: Palette,
     cx: &mut Context<Root>,
 ) -> Div {
+    let mono = |text: String| {
+        look::text(look::CAPTION, FontWeight::NORMAL, palette.muted())
+            .font_family(ducktape_host::fonts::FAMILY_MONO)
+            .truncate()
+            .child(text)
+    };
     // the network in hand and the reader's name ("garage · phone test")
     let on = {
         let network = shared.session.read(cx).get().network.clone();
@@ -442,6 +452,17 @@ pub fn open(
         }
     };
     let header = root_header("Open".into(), caption(shared, on, cx), palette);
+    // the whole app, over the list (debug mode)
+    let app = readout.map(|readout| {
+        div()
+            .id("open/app")
+            .debug_selector(|| "open/app".to_owned())
+            .px(px(look::GUTTER))
+            .py(px(look::gap::SM))
+            .border_b_1()
+            .border_color(palette.border())
+            .child(mono(readout.app()))
+    });
     if opened.is_empty() {
         return div()
             .flex_1()
@@ -449,6 +470,7 @@ pub fn open(
             .flex()
             .flex_col()
             .child(header)
+            .children(app)
             .child(empty(
                 "icons/archive.svg",
                 "Nothing open",
@@ -473,6 +495,21 @@ pub fn open(
             .as_ref()
             .map(|row| row.icon.clone())
             .filter(|icon| !icon.is_empty());
+        let cost = readout.map(|readout| {
+            let seat = shared.seats.read(cx).seat(opened.instance);
+            let memory = seat.and_then(|seat| seat.read(cx).memory_bytes());
+            let id = format!("open/{program}/cost");
+            div()
+                .id(SharedString::from(id.clone()))
+                .debug_selector(move || id.clone())
+                .pt(px(look::gap::XXS))
+                .children(
+                    readout
+                        .cost(program, opened.instance, memory)
+                        .lines()
+                        .map(mono),
+                )
+        });
         let mut line = div()
             .id(SharedString::from(format!("open/{program}")))
             .control(Role::Button, name.clone())
@@ -512,7 +549,8 @@ pub fn open(
                         look::text(look::CAPTION, FontWeight::NORMAL, palette.muted())
                             .truncate()
                             .child(caption),
-                    ),
+                    )
+                    .children(cost),
             )
             .on_click(cx.listener(move |root, _, window, cx| {
                 window.blur(cx);
@@ -554,6 +592,7 @@ pub fn open(
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
+                .children(app)
                 .children(rows)
                 .child(
                     look::text(look::SECONDARY, FontWeight::NORMAL, palette.muted())

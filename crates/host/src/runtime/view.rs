@@ -267,6 +267,12 @@ impl View {
         self.running.fuel_used()
     }
 
+    /// The view's linear memory, in bytes, as its runner reports it
+    /// (`ViewInstance::memory_bytes`).
+    pub fn memory_bytes(&self) -> usize {
+        self.running.memory_bytes()
+    }
+
     /// The answer to the call just begun, when it lands: before the call
     /// returned on the wasmtime runner, later on one that answers across a
     /// process boundary.

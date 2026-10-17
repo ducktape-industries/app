@@ -6,8 +6,9 @@
 //!
 //! It reads the session (the node, the network), the chain (the network's
 //! founding time), the account (this phone's key), the prefs and what the
-//! key store said as the page opened. Its Appearance page (the Expo build
-//! has none: it followed the system) writes the one pref it shows.
+//! key store said as the page opened; it writes two prefs, debug mode's
+//! switch here and the appearance on its own page (the Expo build had
+//! neither: it followed the system).
 
 use super::look::{self, Palette};
 use super::{Page, Root, about, join};
@@ -119,6 +120,27 @@ pub fn page(
     .active(|style| style.opacity(look::PRESSED))
     .child(chevron(palette))
     .on_click(cx.listener(|root, _, _, cx| root.push_page(Page::Appearance, cx)));
+    let on = shared.prefs.read(cx).get().debug;
+    let debug = row(
+        "settings/debug",
+        "icons/gauge.svg",
+        "Debug mode",
+        Some(caption(
+            "What each program costs, on the Open tab.",
+            palette,
+        )),
+        palette,
+    )
+    .control(Role::Switch, "Debug mode")
+    .aria_toggled(on.into())
+    .debug_selector(|| "settings/debug".to_owned())
+    .active(|style| style.opacity(look::PRESSED))
+    .child(toggle(on, palette))
+    .on_click(cx.listener(move |root, _, _, cx| {
+        root.shared
+            .prefs
+            .update(cx, |prefs, cx| prefs.set_debug(!on, cx));
+    }));
     let version = row(
         "settings/about",
         "icons/info.svg",
@@ -139,6 +161,8 @@ pub fn page(
         .child(storage)
         .child(about::section("Appearance", None, palette))
         .child(appearance)
+        .child(about::section("Debug", None, palette))
+        .child(debug)
         .child(about::section("About", None, palette))
         .child(version);
     div()
@@ -248,6 +272,32 @@ fn chosen_words(appearance: Appearance) -> String {
         Appearance::Light => "Always light".to_owned(),
         Appearance::Dark => "Always dark".to_owned(),
     }
+}
+
+/// The Expo `Switch` (kit `Toggle.tsx`): a 40 × 24 pill, `primary` when
+/// on and `border_strong` off, its 18 knob in `background` at the left or
+/// the right; the row around it is the press.
+fn toggle(on: bool, palette: Palette) -> Div {
+    let ground = match on {
+        true => palette.primary(),
+        false => palette.border_strong(),
+    };
+    div()
+        .relative()
+        .w(px(40.))
+        .h(px(24.))
+        .flex_none()
+        .rounded(px(12.))
+        .bg(ground)
+        .child(
+            div()
+                .absolute()
+                .top(px(3.))
+                .left(px(if on { 19. } else { 3. }))
+                .size(px(18.))
+                .rounded(px(9.))
+                .bg(palette.background()),
+        )
 }
 
 /// A row's chevron (Expo `Row`'s `chevron`): the row pushes a page.

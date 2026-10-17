@@ -25,6 +25,7 @@
 //! changes: a frame is asked for only while something is under way.
 
 mod about;
+mod debug;
 mod home;
 mod join;
 mod look;
@@ -116,6 +117,11 @@ pub fn launch(os: Arc<dyn OsServices>, cx: &mut App) {
     };
     let (host, inbound) = ducktape_host::start::start(boot, cx);
     crate::os::install_inbound(inbound);
+    // debug mode left on: the counters on from the start (never turned off
+    // here, where `DUCKTAPE_PERF=1` may have turned them on)
+    if host.shared.prefs.read(cx).get().debug {
+        ducktape_host::perf::switch(true);
+    }
     if let Some(target) = Session::boot_target() {
         host.shared
             .session
@@ -409,6 +415,8 @@ pub struct Root {
     waiting: Vec<String>,
     /// The appearance last put on the theme (`sync_appearance`).
     appearance: Appearance,
+    /// Debug mode's numbers, read while the Open tab is on screen.
+    readout: debug::Readout,
     /// Home's filter, and whether it is open (its magnifier pressed).
     search: Entity<InputState>,
     filtering: bool,
@@ -517,6 +525,7 @@ impl Root {
             placed: Default::default(),
             waiting: Vec::new(),
             appearance,
+            readout: debug::Readout::default(),
             search,
             filtering: false,
             watched: BTreeMap::new(),
@@ -1570,7 +1579,9 @@ impl Root {
                     }
                     Tab::Open => {
                         let opened = self.stack.read(cx).open().to_vec();
-                        home::open(&self.shared, &opened, &self.titles, palette, cx)
+                        let debug = self.shared.prefs.read(cx).get().debug;
+                        let readout = debug.then_some(&self.readout);
+                        home::open(&self.shared, &opened, &self.titles, readout, palette, cx)
                     }
                 };
                 let body = safe().flex().flex_col().child(screen).child(home::tab_bar(
@@ -1605,6 +1616,11 @@ impl Render for Root {
             self.moving = None;
         }
         self.place(window, body, cx);
+        // debug mode's numbers: read while the Open tab is on screen
+        let open = join::step(*self.shared.screen.read(cx).get()).is_none()
+            && self.page(cx) == Page::Root(Tab::Open);
+        let shown = open && self.shared.prefs.read(cx).get().debug && window.is_window_active();
+        self.readout.follow(shown, window, cx);
         let mut root = div()
             .size_full()
             .relative()
@@ -2106,6 +2122,36 @@ mod tests {
             click(choice, cx);
             assert_eq!(dark(cx), (chosen, chosen), "{choice}");
         }
+    }
+
+    /// Debug mode off: no cost on Open and the perf counters off; on, each
+    /// open program's cost under its name and the app's line over the
+    /// list, the counters on; off again, both gone.
+    #[gpui_kit::test]
+    fn debug_mode_draws_costs_and_counts_only_while_on(cx: &mut TestAppContext) {
+        let _perf = ducktape_host::perf::off_for_test();
+        let (root, _, cx) = phone(cx);
+        root.update(cx, |root, cx| _ = root.open(PROGRAM, cx));
+        run_out(cx);
+        root.update(cx, |root, cx| root.go_home(cx));
+        run_out(cx);
+        root.update(cx, |root, cx| root.pick(Tab::Open, cx));
+        run_out(cx);
+        let prefs = root.read_with(cx, |root, _| root.shared.prefs.clone());
+        let shown = |cx: &mut VisualTestContext| {
+            (
+                cx.debug_bounds("open/phone-root-test/cost").is_some(),
+                cx.debug_bounds("open/app").is_some(),
+                ducktape_host::perf::on(),
+            )
+        };
+        assert_eq!(shown(cx), (false, false, false), "off");
+        prefs.update(cx, |prefs, cx| prefs.set_debug(true, cx));
+        run_out(cx);
+        assert_eq!(shown(cx), (true, true, true), "on");
+        prefs.update(cx, |prefs, cx| prefs.set_debug(false, cx));
+        run_out(cx);
+        assert_eq!(shown(cx), (false, false, false), "off again");
     }
 
     /// Back on Switch network closes an alert over it first, as on any

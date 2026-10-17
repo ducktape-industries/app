@@ -384,6 +384,17 @@ impl Seat {
         Back::Heard
     }
 
+    /// The linear memory of the view running here, in bytes, as its runner
+    /// reports it (wasmtime: now; JavaScriptCore: as of the view's last
+    /// answer), not its compiled code; `None` while no view runs here (on
+    /// its way, failed, none shipped).
+    pub fn memory_bytes(&self) -> Option<usize> {
+        match &lock(&self.mounted).slot {
+            Slot::Ready(view) => Some(view.memory_bytes()),
+            _ => None,
+        }
+    }
+
     /// What [`Seat::back`] would come to now, asked without going back: a
     /// shell that lets the finger drag the program off asks first.
     pub fn hears_back(&self) -> bool {

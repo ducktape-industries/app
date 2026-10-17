@@ -17,7 +17,9 @@ claim comes from another session's measurement it says so.
 
 **Goals**
 
-- One switch, `DUCKTAPE_PERF=1`. Off, every hook is one relaxed atomic load;
+- One switch, `DUCKTAPE_PERF=1` at launch, or `perf::switch` while the
+  app runs (the phone's debug mode in App settings, which reads the same
+  registry for its Open tab). Off, every hook is one relaxed atomic load;
   no `Instant::now`, no lock, no allocation. Users and qa run the same
   binary.
 - One registry in the process, keyed by `(view, stage)` and `(window,
@@ -265,8 +267,8 @@ only when on and only when the tree changed.
   `is_a11y_active` (and, with `perf-deep`, the profiler's histograms) and
   never draws.
 - Reply shape: one flat object of stage → value per key. A counter is a
-  number, a gauge `{max, last}`, a histogram `{n, mean, p50, p95, max,
-  last}` (µs for times). Views by program, or by `program/instance` with
+  number, a gauge `{max, last}`, a histogram `{n, sum, mean, p50, p95,
+  max, last}` (µs for times). Views by program, or by `program/instance` with
   `?by=instance`; windows by `WindowKey` number with the door's `name`
   beside it; `startup` the marks in ms since `t0`:
 
