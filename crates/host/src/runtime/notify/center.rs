@@ -124,7 +124,7 @@ impl Center {
     /// the view's "N more" once it is past its burst. A call is never held
     /// back by the burst nor folded into "N more" but rings only while no
     /// other call of its program stands, under any tag (a default the owner
-    /// may veto), and once before the person said anything about its view.
+    /// may veto), and also before the person said anything about its view.
     /// It stands until its `until`, `notify.seen` of its tag, or a decline
     /// on its banner ([`Center::declined`]); without a tag or an `until` it
     /// is a plain notice. A notice past its `until` is logged only.

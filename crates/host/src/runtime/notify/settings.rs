@@ -55,8 +55,8 @@ pub struct Settings {
     pub burst: u32,
     pub views: BTreeMap<String, Permission>,
     /// The word on a program `views` holds none for: `None` logs its
-    /// notices and asks the person (the permission bar); a host with no one
-    /// to ask answers for them (`crates/pushd`).
+    /// notices, rings its calls and asks the person (the permission bar); a
+    /// host with no one to ask answers for them (`crates/pushd`).
     pub unasked: Option<Permission>,
 }
 
@@ -150,7 +150,7 @@ pub fn set_permission(center: &mut Center, program: &str, permission: Permission
 }
 
 /// "Not now": the bar goes for this run; the view's notices stay logged
-/// silently, and the bar asks again next launch.
+/// silently and its calls still ring, and the bar asks again next launch.
 pub fn not_now(center: &mut Center, program: &str) {
     center.asking.remove(program);
     center.not_now.insert(program.to_owned());

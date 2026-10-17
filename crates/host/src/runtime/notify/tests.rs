@@ -654,6 +654,9 @@ fn a_call_rings_past_the_burst_and_every_time_before_the_persons_word() {
         (Delivery::Banner, Some(NoticeKind::Call))
     );
     assert!(center.asking.contains("chat"), "the bar asks too");
+    // while it stands, the program's next call is logged
+    let (posted, banner) = center.post(&unasked, "chat", "Chat", call("call/1b", 100), now, 50);
+    assert_eq!((posted, banner), (Delivery::Logged, None));
     // the first call is over: the next one rings too, the bar still asking
     let (posted, banner) = center.post(&unasked, "chat", "Chat", call("call/2", 200), now, 101);
     assert_eq!(
@@ -662,6 +665,11 @@ fn a_call_rings_past_the_burst_and_every_time_before_the_persons_word() {
         "a second call rang unasked"
     );
     assert!(center.asking.contains("chat"));
+    // "Not now" puts the bar away, not the ring
+    super::settings::not_now(&mut center, "chat");
+    let (posted, _) = center.post(&unasked, "chat", "Chat", call("call/2b", 300), now, 201);
+    assert_eq!(posted, Delivery::Banner);
+    assert!(!center.asking.contains("chat"));
     // a plain notice of a view not yet asked about stays in the list
     let (posted, banner) = center.post(&unasked, "chat", "Chat", post("m", ""), now, 102);
     assert_eq!((posted, banner), (Delivery::Logged, None));
