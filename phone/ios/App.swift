@@ -83,7 +83,8 @@ final class EdgeBack: NSObject {
 /// (`ducktape_phone_remote_notification`): `{"kind": "withdraw", "tag"}` stops the ring under `tag`, and only a ring
 /// (a call answered here is CallKit's until its voice goes). An app the person force-quit gets no background push:
 /// `until` stays the ring's end there. Hanging up from CallKit's own screen opens the call's `end` link (the program's
-/// `end_link`): what that hang-up means is the program's, as Answer's link is; a decline opens nothing.
+/// `end_link`): what that hang-up means is the program's, as Answer's link is; a decline opens nothing. A call that
+/// comes while one answered here is CallKit's is reported and ended at once, missed (busy).
 final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
   static let shared = Ring()
   /// The huddle program's ring, for a payload that carries no `until`: a call always carries one (SPEC §5).
@@ -173,6 +174,13 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
           // a call under this id rings already (its link stays), or the person's Do Not Disturb refused it
           NSLog("ducktape ring: CallKit did not take the call: \(error)")
           if fresh { self.ringing.removeValue(forKey: id) }
+          return
+        }
+        // one call at a time here, as the provider says: a second call taken with End & Accept would end the first
+        // from CallKit's screen (its end link, then its voice gone), and the voice's end names no call, so it would
+        // end the new one in CallKit too; it is missed instead (busy)
+        if self.answered != nil {
+          self.unanswered(id)
           return
         }
         NSLog("ducktape ring: \(id) rings until \(until)")
