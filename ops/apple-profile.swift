@@ -12,8 +12,8 @@
 // The API key is the notary key: DUCKTAPE_NOTARY_KEY (the .p8's path),
 // DUCKTAPE_NOTARY_KEY_ID, DUCKTAPE_NOTARY_ISSUER. A team without the bundle
 // ID gets it (platform MAC_OS); an ACTIVE profile of it that holds the
-// certificate is reused, else one is made. Every API failure exits non-zero
-// with the HTTP status and Apple's own words.
+// certificate and has 30 days left is reused, else one is made. Every API
+// failure exits non-zero with the HTTP status and Apple's own words.
 import CryptoKit
 import Foundation
 
@@ -33,6 +33,19 @@ func environment(_ name: String) -> String {
 // leading zeros: compare the number
 func normalizedSerial(_ serial: String) -> String {
     String(serial.uppercased().filter { $0 != ":" }.drop { $0 == "0" })
+}
+
+// Apple writes "2041-10-17T07:20:00.000+00:00", fractional seconds or not.
+// An unreadable date fails the run: read as expired, it would make a new
+// profile every run.
+func expiration(_ profile: Resource) -> Date {
+    let text = profile.attributes?.expirationDate ?? ""
+    let fractional = ISO8601DateFormatter()
+    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    guard let date = fractional.date(from: text) ?? ISO8601DateFormatter().date(from: text) else {
+        fail("profile \(profile.id) has an unreadable expirationDate \"\(text)\"")
+    }
+    return date
 }
 
 func base64URL(_ data: Data) -> String {
@@ -60,9 +73,11 @@ func token(key: P256.Signing.PrivateKey, keyID: String, issuer: String, now: Dat
 struct Resource: Decodable {
     struct Attributes: Decodable {
         let identifier: String?
+        let platform: String?
         let serialNumber: String?
         let name: String?
         let profileContent: String?
+        let expirationDate: String?
     }
     struct Link: Decodable { let id: String }
     struct ToOne: Decodable { let data: Link? }
@@ -97,7 +112,11 @@ struct API {
         var request = URLRequest(url: URL(string: base + path)!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try! JSONSerialization.data(withJSONObject: ["data": data])
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["data": data])
+        } catch {
+            fail("POST /v1/\(path): \(error)")
+        }
         return await send(request, as: Document<Resource>.self).data
     }
 
@@ -139,8 +158,13 @@ do {
 } catch {
     fail("DUCKTAPE_NOTARY_KEY: \(error)")
 }
-let api = API(token: try token(key: key, keyID: environment("DUCKTAPE_NOTARY_KEY_ID"),
-    issuer: environment("DUCKTAPE_NOTARY_ISSUER"), now: Date()))
+let api: API
+do {
+    api = API(token: try token(key: key, keyID: environment("DUCKTAPE_NOTARY_KEY_ID"),
+        issuer: environment("DUCKTAPE_NOTARY_ISSUER"), now: Date()))
+} catch {
+    fail("the API token: \(error)")
+}
 
 // ponytail: one page of 200, the API's most; follow links.next if a team
 // ever has more Developer ID certificates or Developer ID profiles
@@ -157,6 +181,10 @@ else {
 let bundle: Resource
 if let found = await api.get("bundleIds", ["filter[identifier]": bundleIdentifier, "limit": "200"])
     .first(where: { $0.attributes?.identifier == bundleIdentifier }) {
+    let platform = found.attributes?.platform ?? "no platform"
+    guard platform == "MAC_OS" || platform == "UNIVERSAL" else {
+        fail("\(bundleIdentifier) is registered on the team for \(platform); a Developer ID profile needs MAC_OS or UNIVERSAL")
+    }
     bundle = found
 } else {
     // an App ID's name takes no dots
@@ -171,16 +199,21 @@ let active = await api.get("profiles", [
     "filter[profileType]": "MAC_APP_DIRECT", "filter[profileState]": "ACTIVE",
     "include": "bundleId,certificates", "limit": "200", "limit[certificates]": "50",
 ])
+// A Developer ID app stops launching once its embedded profile expires, and
+// a release stays installed long after this run: a profile is reused only
+// with 30 days left, else a new one is made.
+let reusableUntil = Date().addingTimeInterval(30 * 24 * 60 * 60)
 let reused = active.first { profile in
     profile.relationships?.bundleId?.data?.id == bundle.id
         && profile.relationships?.certificates?.data?.contains { $0.id == certificate.id } == true
+        && expiration(profile) > reusableUntil
 }
 let profile: Resource
 if let reused {
     profile = reused
 } else {
-    // a profile's name is the team's alone, and an INVALID one keeps holding
-    // it: the time makes it new
+    // profile names are unique within the team, and an INVALID profile keeps
+    // its name: the Unix time keeps a new one from colliding with it
     let name = "\(bundleIdentifier) Developer ID \(Int(Date().timeIntervalSince1970))"
     profile = await api.post("profiles", [
         "type": "profiles",
@@ -199,4 +232,4 @@ do {
 } catch {
     fail("\(out): \(error.localizedDescription)")
 }
-print("\(reused == nil ? "made" : "reused") profile \"\(profile.attributes?.name ?? profile.id)\" for \(bundleIdentifier) and certificate \(serial): \(out)")
+print("apple-profile: \(reused == nil ? "made" : "reused") profile \"\(profile.attributes?.name ?? profile.id)\" for \(bundleIdentifier) and certificate \(serial): \(out)")

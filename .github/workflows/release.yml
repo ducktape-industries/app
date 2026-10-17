@@ -227,9 +227,13 @@ jobs:
           DUCKTAPE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           DUCKTAPE_NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER }}
         run: |
-          # by name: the p12 may carry the Developer ID intermediate too
-          serial=$(security find-certificate -c "Developer ID Application" -p "$DUCKTAPE_CODESIGN_KEYCHAIN" \
-            | openssl x509 -noout -serial)
+          # the certificate of the identity codesign signs with, by its
+          # SHA-1: the profile must hold that one
+          certificate=$(security find-certificate -a -Z -p "$DUCKTAPE_CODESIGN_KEYCHAIN" \
+            | awk -v sha1="$DUCKTAPE_CODESIGN_IDENTITY" \
+              '/ hash: / { take = ($1 == "SHA-1" && toupper($3) == toupper(sha1)); next } take')
+          [ -n "$certificate" ] || { echo "::error::no certificate with SHA-1 $DUCKTAPE_CODESIGN_IDENTITY in the signing keychain"; exit 1; }
+          serial=$(printf '%s\n' "$certificate" | openssl x509 -noout -serial)
           bundle_id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" packaging/Info.plist)
           profile="$RUNNER_TEMP/embedded.provisionprofile"
           swift ops/apple-profile.swift "$bundle_id" "${serial#serial=}" "$profile"

@@ -15,7 +15,8 @@
 #   with packaging/entitlements.plist plus the application identifier, team and
 #   keychain access group it authorizes: a Touch ID-locked key lives in the
 #   data protection keychain, which macOS opens to an app only with those
-#   (TN3137). The signature is checked against the profile before notarizing.
+#   (TN3137). Before notarizing, the signature is checked against the profile
+#   and the app is launched once (`--version`), so AMFI judges it here.
 #   Without a profile (ad-hoc, local) none of the three is signed: a restricted
 #   entitlement no profile authorizes gets the app killed at launch.
 set -euo pipefail
@@ -83,8 +84,13 @@ if [[ -n "$profile" ]]; then
     ($signed | to_entries[] | select(.key | startswith("com.apple.security.") | not)
       | select(.key as $key | .value as $value | $allowed | has($key) and (.[$key] | allows($value)) | not)
       | "\(.key) is not authorized by the profile")')
-  [[ -z "$refused" ]] || { printf '%s\n' "$app's signature outruns its provisioning profile:" "$refused" >&2; exit 1; }
+  [[ -z "$refused" ]] || { printf '%s\n' "$app is signed with entitlements its provisioning profile does not authorize:" "$refused" >&2; exit 1; }
 fi
+# Launched as the updater qualifies a release before it flips to it: AMFI
+# checks the signature, the entitlements and the embedded profile (that it
+# holds the signing certificate too) here, not on a user's Mac.
+"$contents/MacOS/ducktape-app" --version > /dev/null \
+  || { echo "$app does not launch as signed (AMFI kills a signature its profile does not authorize)" >&2; exit 1; }
 image="$work/image"
 mkdir "$image"
 ditto "$app" "$image/Ducktape.app"
