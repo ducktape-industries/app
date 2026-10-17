@@ -39,11 +39,12 @@
 //! opens Settings › Updates. Each gets a row in the centre
 //! ([`center::Center::post_host`]), the program [`HOST`]'s: a row of the
 //! device's own, not the chain's, so it shows whichever network is open
-//! and before any is. Under one tag a newer one takes the row's place
-//! ("installed" in place of "ready"); a "ready" withdrawn (the release
-//! dropped or rolled back) takes its row out
-//! ([`center::Center::withdraw_host`]). A click on the row opens Settings ›
-//! Updates, as the banner's does.
+//! and before any is. "ready" and "installed" stand under tags of their
+//! own: under one, a newer notice takes the row's place (a newer release's
+//! "ready"); "installed", and a "ready" withdrawn (the release dropped or
+//! rolled back, or none staged as the app starts), take "ready"'s row out
+//! ([`center::Center::withdraw_host`]) and leave "installed"'s. A click on
+//! the row opens Settings › Updates, as the banner's does.
 
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;

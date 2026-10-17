@@ -898,7 +898,12 @@ fn the_hosts_rows_stand_beside_every_chains_in_a_file_of_their_own() {
     };
     let mut center = Center::default();
     center.open_device_log(device.clone());
-    center.post_host("Ducktape 2 is ready.", "Restart to update.", "update", 10);
+    center.post_host(
+        "Ducktape 2 is ready.",
+        "Restart to update.",
+        "update/ready",
+        10,
+    );
     assert_eq!(
         titles(&center),
         ["Ducktape 2 is ready."],
@@ -906,19 +911,22 @@ fn the_hosts_rows_stand_beside_every_chains_in_a_file_of_their_own() {
     );
     let host = center.entries().next().unwrap().clone();
     assert!(host.host());
-    assert_eq!((host.program.as_str(), host.tag.as_str()), (HOST, "update"));
+    assert_eq!(
+        (host.program.as_str(), host.tag.as_str()),
+        (HOST, "update/ready")
+    );
 
     center.open_log("dev", Some(chain.clone()));
     let silent = settings(Some(Permission::Silent));
     center.post(&silent, "chat", "Chat", post("hi", ""), Instant::now(), 20);
     assert_eq!(titles(&center), ["hi", "Ducktape 2 is ready."]);
     center.post_host(
-        "Ducktape 2 is installed.",
-        "It runs from now on.",
-        "update",
+        "Ducktape 3 is ready.",
+        "Restart to update.",
+        "update/ready",
         30,
     );
-    assert_eq!(titles(&center), ["Ducktape 2 is installed.", "hi"]);
+    assert_eq!(titles(&center), ["Ducktape 3 is ready.", "hi"]);
     let rows: Vec<_> = center.entries().cloned().collect();
     assert_eq!(
         (rows[0].id, rows[0].count),
@@ -930,7 +938,7 @@ fn the_hosts_rows_stand_beside_every_chains_in_a_file_of_their_own() {
     assert_eq!(center.unread(), 2);
     assert_eq!(
         center.open(host.id).map(|entry| entry.title),
-        Some("Ducktape 2 is installed.".into())
+        Some("Ducktape 3 is ready.".into())
     );
     assert_eq!(center.unread(), 1, "the chain's row is still unread");
 
@@ -943,14 +951,10 @@ fn the_hosts_rows_stand_beside_every_chains_in_a_file_of_their_own() {
             .map(|entry| entry.title)
             .collect::<Vec<_>>()
     };
-    assert_eq!(kept(&device), ["Ducktape 2 is installed."]);
+    assert_eq!(kept(&device), ["Ducktape 3 is ready."]);
     assert_eq!(kept(&chain), ["hi"]);
     center.open_log("other", None);
-    assert_eq!(
-        titles(&center),
-        ["Ducktape 2 is installed."],
-        "another network"
-    );
+    assert_eq!(titles(&center), ["Ducktape 3 is ready."], "another network");
     let mut next = Center::default();
     next.open_device_log(device.clone());
     assert_eq!(
@@ -959,7 +963,7 @@ fn the_hosts_rows_stand_beside_every_chains_in_a_file_of_their_own() {
         "the next start reads them back"
     );
 
-    center.withdraw_host("update");
+    center.withdraw_host("update/ready");
     assert_eq!(center.entries().count(), 0);
     flushed(&mut center, &device);
     assert_eq!(kept(&device), Vec::<String>::new());

@@ -53,9 +53,12 @@ use crate::runtime::notify::{CenterHandle, HOST};
 
 /// How often the running app asks the channel.
 pub(super) const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
-/// The tag the update notice stands under, its row in the centre too: a
-/// newer staged release replaces it, and "installed" replaces "ready".
-const NOTICE_TAG: &str = "update";
+/// The tags the two update notices stand under, their rows in the centre
+/// too (each banner's under [`HOST`]): a newer staged release's "ready"
+/// replaces the last, "installed" takes "ready" out as it goes up, and a
+/// start with nothing staged takes "ready" out and leaves "installed".
+const READY: &str = "update/ready";
+const INSTALLED: &str = "update/installed";
 
 /// The updater the boot step armed, until the first frame starts it.
 static ARMED: Mutex<Option<Updater>> = Mutex::new(None);
@@ -461,21 +464,19 @@ impl Updater {
         if settled {
             info!(target: TARGET, event = "app_update_settled", release = %self.phase.current(), pinned_sequence = self.phase.pinned_sequence());
         }
-        let went_back = matches!(self.phase, Phase::RolledBack(_));
         if let Phase::RolledBack(rolled_back) = &self.phase {
             warn!(target: TARGET, event = "app_update_rolled_back", failed = %rolled_back.failed, current = %rolled_back.current, reason = %rolled_back.reason);
             self.rolled_back = Some(rolled_back.clone());
             self.apply(Event::DismissRollbackNotice);
         }
-        // a flip, a rollback or a dropped release since the notice went up
-        // (by this process or the one before): nothing waits for a restart.
-        // A flip says what it installed in its place; a rollback says
-        // nothing new (Settings › Updates does), and its "ready" goes
+        // a flip, a rollback or a dropped release since "ready" went up
+        // (by this process or the one before, the boot step's drop too):
+        // nothing waits for a restart. A flip says what it installed in its
+        // place; a rollback says nothing new (Settings › Updates does)
         match self.phase {
             _ if settled => self.notice(Said::Installed(&super::version())),
-            _ if went_back => self.notice(Said::Dropped),
             Phase::Staged(_) => {}
-            _ => self.notice(Said::Unstaged),
+            _ => self.notice(Said::Withdrawn),
         }
     }
 
@@ -583,50 +584,52 @@ impl Updater {
         let unstaged = matches!(self.phase, Phase::Staged(_)) && !matches!(phase, Phase::Staged(_));
         self.phase = phase;
         if unstaged {
-            self.notice(Said::Dropped);
+            self.notice(Said::Withdrawn);
         }
         self.publish();
         job
     }
 
     /// The desktop notice and its row in the centre follow the staged
-    /// release: up as one is staged, the banner down whenever none is, the
-    /// row out once what it said is dropped; and after a flip, what it
-    /// installed in their place.
+    /// release: "ready" up as one is staged, and out, banner and row,
+    /// whenever none is; after a flip, "installed" in its place.
     fn notice(&self, said: Said) {
         #[cfg(test)]
         NOTICED_HERE.with(|noticed| {
             noticed.borrow_mut().push(match said {
                 Said::Ready(display) => format!("ready {display}"),
                 Said::Installed(version) => format!("installed {version}"),
-                Said::Dropped | Said::Unstaged => "withdrawn".into(),
+                Said::Withdrawn => "withdrawn".into(),
             });
         });
-        let (title, body) = match said {
+        let (tag, title, body) = match said {
             Said::Ready(display) => (
+                READY,
                 format!("Ducktape {display} is ready."),
                 "Restart to update.",
             ),
-            Said::Installed(version) => (
-                format!("Ducktape {version} is installed."),
-                "It runs from now on.",
-            ),
-            Said::Dropped => {
-                self.center.lock().withdraw_host(NOTICE_TAG);
-                return self.withdraw();
+            Said::Installed(version) => {
+                self.withdraw();
+                (
+                    INSTALLED,
+                    format!("Ducktape {version} is installed."),
+                    "It runs from now on.",
+                )
             }
-            Said::Unstaged => return self.withdraw(),
+            Said::Withdrawn => return self.withdraw(),
         };
         let wall = crate::runtime::notify::wall();
-        self.center.lock().post_host(&title, body, NOTICE_TAG, wall);
+        self.center.lock().post_host(&title, body, tag, wall);
         if self.published {
-            raise(title, body);
+            raise(tag, title, body);
             moved();
         }
     }
 
-    /// The update notice's banner down, whichever process raised it.
+    /// "ready" out: its row, and the update notices' banner (one stands
+    /// for the install, `os::post_host`), whichever process raised it.
     fn withdraw(&self) {
+        self.center.lock().withdraw_host(READY);
         if self.published {
             crate::os::withdraw_host();
             debug!(target: TARGET, event = "app_update_notice_withdrawn");
@@ -717,21 +720,19 @@ enum Said<'a> {
     Ready(&'a str),
     /// The flip settled: the version that runs now ([`super::version`]).
     Installed(&'a str),
-    /// What was ready is no more (dropped, superseded, rolled back): the
-    /// banner down, and its row out.
-    Dropped,
-    /// Nothing is staged as this process starts: a banner an earlier one
-    /// left goes; the row, which says what last happened, stays.
-    Unstaged,
+    /// Nothing is staged (dropped, superseded, rolled back, or none as
+    /// this process starts): "ready" out, banner and row.
+    Withdrawn,
 }
 
-/// The update notice's banner: one for the install, the next replacing it.
-/// The device's banners switch decides; a click opens Settings › Updates.
-fn raise(title: String, body: &str) {
+/// The update notice's banner, under `tag`: one for the install, the next
+/// replacing it. The device's banners switch decides; a click opens
+/// Settings › Updates.
+fn raise(tag: &str, title: String, body: &str) {
     let notice = crate::runtime::notify::Notice {
         title,
         body: body.into(),
-        tag: format!("{HOST}/{NOTICE_TAG}"),
+        tag: format!("{HOST}/{tag}"),
         // the host's own: no program's, and a click opens Settings › Updates
         ..Default::default()
     };

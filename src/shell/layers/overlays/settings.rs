@@ -741,7 +741,10 @@ impl OverlayLayer {
             true => crate::a11y::Patch::default()
                 .busy()
                 .on(crate::a11y::keyboard(
-                    button("updates/check", "Checking…").cursor_default(),
+                    // read at 0.3, as `ink::button` busy
+                    button("updates/check", "Checking…")
+                        .cursor_default()
+                        .opacity(0.3),
                     ink.ink,
                 )
                 .aria_disabled(true)),
@@ -923,7 +926,7 @@ impl OverlayLayer {
             sans(400, 22.)
                 .pb(px(12.))
                 .child(words("product", "Ducktape")),
-            line("Version", env!("CARGO_PKG_VERSION").into(), ink),
+            line("Version", crate::update::version(), ink),
             line(
                 "Node contract",
                 format!("v{}", noded_client::wire::NODE_CONTRACT),

@@ -326,7 +326,7 @@ impl Center {
 
     /// The host's own notice: a row of the device's, under `tag`, where a
     /// row there already takes its words and comes back to the top, unread
-    /// (a newer release's "ready", or "installed" in place of "ready").
+    /// (a newer release's "ready").
     /// Its banner is the shell's to raise; written now, no view's redraw
     /// writes it.
     pub fn post_host(&mut self, title: &str, body: &str, tag: &str, wall: i64) {

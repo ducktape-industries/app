@@ -92,9 +92,9 @@ const RELEASES: &str = match cfg!(target_os = "macos") {
     false => "releases",
 };
 
-/// What this build calls itself, as Settings › Updates shows it and the
-/// "installed" notice says it: its version, and the build that made it
-/// when one is named (`0.1.0 (<build>)`).
+/// What this build calls itself, as Settings › Updates and › About show
+/// it and the "installed" notice says it: its version, and the build that
+/// made it when one is named (`0.1.0 (<build>)`).
 pub(crate) fn version() -> String {
     match option_env!("DUCKTAPE_APP_BUILD") {
         Some(build) => format!("{} ({build})", env!("CARGO_PKG_VERSION")),

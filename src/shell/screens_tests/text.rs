@@ -132,14 +132,12 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
         "the bar's words stayed"
     );
 
-    // Settings › About
+    // Settings › About: the version as Updates says it, the build named
     let about = Overlay::Settings(SettingsPage::About);
     let (_view, mut native) = open((gate::desk(), about), cx);
     let nodes = native.update(draw);
-    reads(
-        &nodes,
-        &["About", "Ducktape", "Version", env!("CARGO_PKG_VERSION")],
-    );
+    let version = crate::update::version();
+    reads(&nodes, &["About", "Ducktape", "Version", &version]);
 
     // Settings › Updates, on a copy that is not an installed one
     let updates = Overlay::Settings(SettingsPage::Updates);

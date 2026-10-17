@@ -1366,6 +1366,86 @@ mod linux {
         assert_eq!(rows(&center), [(HOST.to_owned(), installed, false)], "once");
     }
 
+    /// "ready" and "installed" stand under tags of their own: a release
+    /// staged after a flip shows beside the flip's "installed". The boot
+    /// step drops it (the person picked the other channel and quit before
+    /// the loop's next turn), and the start that finds nothing staged takes
+    /// its row out and leaves "installed", as a plain start after does.
+    #[test]
+    fn a_ready_row_the_boot_step_dropped_goes_and_installed_stays() {
+        use crate::update::boot::{Boot, boot_at};
+        use crate::update::channel::noticed_here;
+        let bucket = Bucket::new();
+        let (root, layout) = rig();
+        let (a, first) = install(root.path(), &layout, &script("a"));
+        let pin = first.pinned_sequence();
+        let b = publish(&bucket, Channel::Stable, pin + 1, &release_of(script("b")));
+        let center = CenterHandle::default();
+        block(
+            updater(&layout, &bucket, Channel::Stable)
+                .with_center(center.clone())
+                .check(&client(), Take::Automatic),
+        );
+        assert_eq!(
+            boot_at(&layout, &layout.release_exe(a)).unwrap(),
+            Boot::Exec(layout.app_exe())
+        );
+        let Boot::Run(phase) = boot_at(&layout, &layout.release_exe(b)).unwrap() else {
+            panic!("B does not run");
+        };
+        let mut running =
+            Updater::new(layout.clone(), phase, keys(), Channel::Stable, &bucket.base)
+                .with_center(center.clone());
+        running.start();
+        let c = publish(&bucket, Channel::Stable, pin + 2, &release_of(script("c")));
+        block(running.check(&client(), Take::Automatic));
+        let installed = (
+            HOST.to_owned(),
+            format!("Ducktape {} is installed.", crate::update::version()),
+            false,
+        );
+        let ready = (
+            HOST.to_owned(),
+            format!("Ducktape 0.1.0+{} is ready.", c.short()),
+            false,
+        );
+        assert_eq!(
+            rows(&center),
+            [ready, installed.clone()],
+            "C's ready beside B's installed"
+        );
+        noticed_here();
+
+        crate::update::channel::keep_channel(&layout, Channel::Nightly).unwrap();
+        let Boot::Run(phase) = boot_at(&layout, &layout.release_exe(b)).unwrap() else {
+            panic!("B does not run");
+        };
+        assert!(
+            matches!(phase, Phase::Idle(_)),
+            "the boot step dropped C: {phase:?}"
+        );
+        Updater::new(
+            layout.clone(),
+            phase,
+            keys(),
+            Channel::Nightly,
+            &bucket.base,
+        )
+        .with_center(center.clone())
+        .start();
+        assert_eq!(noticed_here(), ["withdrawn"]);
+        assert_eq!(
+            rows(&center),
+            std::slice::from_ref(&installed),
+            "C's row went, B's stays"
+        );
+
+        updater(&layout, &bucket, Channel::Nightly)
+            .with_center(center.clone())
+            .start();
+        assert_eq!(rows(&center), [installed], "a plain start leaves it");
+    }
+
     /// A check says when it ended: one the channel does not answer says
     /// so, one that finds nothing newer leaves the status as it was and
     /// says it ran.
