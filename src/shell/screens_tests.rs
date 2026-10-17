@@ -704,6 +704,7 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
         in_front: false,
         burst: 6,
         views: [("chat".to_owned(), Permission::Silent)].into(),
+        unasked: None,
     };
     let now = crate::runtime::notify::wall();
     let post = |title: &str, tag: &str| view_wire::methods::Notification {

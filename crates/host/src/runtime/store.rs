@@ -1,6 +1,7 @@
 //! `store.get` / `store.set`: what a view keeps on this device between runs.
 //!
-//! One file per view per network, `<config>/store/<chain>/<program>.borsh`:
+//! One file per view per network, `<config>/store/<chain>/<program>.borsh`
+//! (a recipient's notifier's under its own store, `notifier::Recipient`):
 //! a borsh map of key → bytes, rewritten whole through
 //! `noded_client::fs::atomic_write`. A view names keys, never paths — the chain and the program come from the
 //! host — so no view reaches another view's file or another network's.
@@ -153,16 +154,15 @@ fn file(view: &View) -> Result<PathBuf, wire::Error> {
             "not connected to a network",
         ));
     }
-    Ok(path(
-        &crate::backend::dirs().config,
-        &connection.chain,
-        view.program,
-    ))
+    let store = match &view.recipient {
+        Some(recipient) => recipient.store.clone(),
+        None => crate::backend::dirs().config.join("store"),
+    };
+    Ok(path(&store, &connection.chain, view.program))
 }
 
-fn path(config: &Path, chain: &str, program: &str) -> PathBuf {
-    config
-        .join("store")
+fn path(store: &Path, chain: &str, program: &str) -> PathBuf {
+    store
         .join(escaped(chain))
         .join(format!("{}.borsh", escaped(program)))
 }
@@ -258,11 +258,8 @@ mod tests {
         assert_eq!(read(&other, "reads"), None);
         assert_ne!(path(&config, "a#b", "chat"), path(&config, "a_23b", "chat"));
         let sly = path(&config, "../..", "../x");
-        assert!(sly.starts_with(config.join("store")));
-        assert_eq!(
-            sly.components().count(),
-            config.join("store").components().count() + 2
-        );
+        assert!(sly.starts_with(&config));
+        assert_eq!(sly.components().count(), config.components().count() + 2);
         let _ = std::fs::remove_dir_all(config);
     }
 

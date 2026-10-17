@@ -1,7 +1,7 @@
 use super::*;
 
 /// Whether `target` is the whole authored path of a node mounted in
-/// `root` (the ancestry `crate::render::enter_scope` walks). A view names a
+/// `root` (the ancestry [`enter_scope`] walks). A view names a
 /// command's target by the id it holds; the view SDK, which lowered every
 /// id above it, sends the whole path, so two scopes holding one id are two
 /// targets and neither is taken for the other.
@@ -12,7 +12,7 @@ pub fn target_names_mounted_node(root: &wire::Node, target: &[wire::ElementIdWir
         path: &mut Vec<wire::ElementIdWire>,
         target: &[wire::ElementIdWire],
     ) -> bool {
-        let entered = crate::render::enter_scope(node, row, path);
+        let entered = enter_scope(node, row, path);
         let found = entered && path == target
             || target.starts_with(path)
                 && node.children().iter().enumerate().any(|(at, child)| {
@@ -161,7 +161,7 @@ impl View {
             self.answer(request, props);
         }
         // what those requests logged reaches the disk once, off this thread
-        notify::center().lock().flush();
+        self.center().lock().flush();
         for id in std::mem::take(&mut self.frame.cancels) {
             self.clipboard.cancel(id);
             self.picker.cancel(id);

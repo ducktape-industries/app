@@ -21,6 +21,11 @@ pub struct Notice {
     pub title: String,
     pub body: String,
     pub tag: String,
+    /// The program whose notice it is (or whose notices it counts).
+    pub program: String,
+    /// The `duck://` link the notice opens, as the program gave it; empty
+    /// for none.
+    pub link: String,
     pub kind: NoticeKind,
     /// Unix seconds past which the notice is stale: never raised past it,
     /// and taken down at it ([`Center::ring_over`]). 0: none.
@@ -142,7 +147,7 @@ impl Center {
             false => NoticeKind::Notice,
         };
         let seconds = u64::try_from(wall).unwrap_or(0);
-        let permission = settings.views.get(program).copied();
+        let permission = settings.views.get(program).copied().or(settings.unasked);
         if permission == Some(Permission::Block) {
             return (Delivery::Blocked, None);
         }
@@ -154,6 +159,8 @@ impl Center {
                 true => String::new(),
                 false => format!("{program}/{}", post.tag),
             },
+            program: program.to_owned(),
+            link: post.link.clone(),
             kind,
             until,
         };
@@ -207,6 +214,8 @@ impl Center {
             title: format!("{more} more from {view}"),
             body: "They're waiting in Notifications.".into(),
             tag: format!("more/{program}"),
+            program: program.to_owned(),
+            link: String::new(),
             ..Notice::default()
         };
         (Delivery::Logged, Some(more))

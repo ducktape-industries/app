@@ -8,13 +8,20 @@
 //! them a slice at a time ([`slice`]), at most `BLOB_MOST` each, and the
 //! bytes go to the node, never through the view. A view gets each file's
 //! own name, never its path.
-use super::kernel::{self, Answer};
+#[cfg(feature = "ui")]
+use super::Seat;
+#[cfg(feature = "ui")]
+use super::kernel;
+#[cfg(any(feature = "ui", test))]
+use super::kernel::Answer;
 use super::wire::methods::{self, Capability, refusal};
-use super::{Seat, View, wire};
+use super::{View, wire};
+#[cfg(feature = "ui")]
 use gpui_kit::{Context, PathPromptOptions};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
+#[cfg(any(feature = "ui", test))]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -92,7 +99,9 @@ fn pick(view: &mut View, id: u64, payload: &[u8]) {
 }
 
 /// Opens the system's picker for each pick asked since the last turn; each
-/// is answered once the person picks or cancels.
+/// is answered once the person picks or cancels. A host with no window
+/// (pushd) opens none: its notifiers have no press to pick with.
+#[cfg(feature = "ui")]
 pub(super) fn mount(view: &mut View, cx: &mut Context<Seat>) {
     for (id, pick) in std::mem::take(&mut view.picker.pending) {
         let prompt = cx.prompt_for_paths(PathPromptOptions {
@@ -120,6 +129,7 @@ pub(super) fn mount(view: &mut View, cx: &mut Context<Seat>) {
 /// place of the pick before; none picked (cancelled), the pick before
 /// stays. A pick that is not a file, or that cannot be opened, refuses the
 /// whole pick by its name alone.
+#[cfg(any(feature = "ui", test))]
 fn opened(paths: Vec<PathBuf>, open: &Mutex<Open>) -> Answer {
     let mut files = Vec::with_capacity(paths.len());
     for path in paths {

@@ -14,9 +14,6 @@
 //! - a link: [`view_for`] names the view an https link opens in.
 
 use super::*;
-use std::collections::BTreeSet;
-use std::sync::Mutex;
-use view_wire::methods::Capability;
 
 /// A CEF child process (this binary started with `--type=...`) runs CEF
 /// and exits here; the app's own process returns at once.
@@ -33,40 +30,9 @@ pub fn shutdown() {
     ducktape_web::shutdown();
 }
 
-/// The programs whose view's manifest declares `web`, as last read.
-fn web_views() -> &'static Mutex<BTreeSet<&'static str>> {
-    static VIEWS: Mutex<BTreeSet<&'static str>> = Mutex::new(BTreeSet::new());
-    &VIEWS
-}
-
-/// `program`'s view manifest was read: whether it declares `web`.
-pub fn seen(program: &'static str, capabilities: &[Capability]) {
-    let mut views = web_views().lock().expect("web views");
-    match capabilities.contains(&Capability::Web) {
-        true => views.insert(program),
-        false => views.remove(program),
-    };
-}
-
-/// The view an http(s) `link` opens in: the program whose view declares
-/// `web` (the first by name, if more do), when this build has a web view
-/// and the address is one a page loads. `None`: the system browser's.
-pub fn view_for(link: &str) -> Option<&'static str> {
-    if !loadable(link) {
-        return None;
-    }
-    web_views().lock().expect("web views").first().copied()
-}
-
-fn loadable(link: &str) -> bool {
-    #[cfg(feature = "web")]
-    return ducktape_web::loadable(link);
-    #[cfg(not(feature = "web"))]
-    {
-        let _ = link;
-        false
-    }
-}
+// which view may draw a page is the runtime's rule (a frame is judged as
+// it lands, a manifest as it is read); the links follow it here
+pub use crate::runtime::web::{seen, view_for};
 
 /// The pages of a tree's web pieces, by authored path.
 #[derive(Default)]

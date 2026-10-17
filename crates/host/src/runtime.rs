@@ -32,11 +32,14 @@ mod roster;
 mod seat;
 mod store;
 mod view;
+pub mod web;
 
 #[cfg(feature = "call")]
 pub(crate) use kernel::live::Subscribed;
 pub use kernel::live::{HostLive, HostPublication, HostSubscription, TrackHeard};
 pub use kernel::{Answered, day, local_offset};
+// a host with no screen runs each program's notifier per account (`crates/pushd`)
+pub use notifier::{Recipient, Said, notify_for};
 // the web view cleans a page's title as a window's (render/web.rs), the
 // av pieces a device's name (render/av.rs)
 #[cfg(any(feature = "web", feature = "av"))]
@@ -47,7 +50,9 @@ pub use kernel::shown_title;
 pub use kernel::plain;
 pub use roster::{Link, RailRow, connected, deployments_checked, disconnected, props, valid_route};
 pub use roster::{Roster, changes_channel, roster};
-pub use seat::{Back, Backgrounded, Failure, Placed, Seat, serve_starts};
+pub use seat::{Back, Failure};
+#[cfg(feature = "ui")]
+pub use seat::{Backgrounded, Placed, Seat, serve_starts};
 
 use roster::{Connection, code_digest, connection, rail_moved};
 use seat::{
@@ -96,6 +101,7 @@ use std::time::{Duration, Instant};
 use crate::contract::{
     CodeSource, FUEL_PER_TICK, Fault, Landed, Landing, Prepared, SeatId, ViewInstance, ViewRunner,
 };
+#[cfg(feature = "ui")]
 use gpui_kit::AppContext as _;
 use pictures::Pictures;
 use view_wire as wire;
@@ -180,6 +186,26 @@ pub fn take_route(program: &'static str, instance: u64) -> Option<String> {
         .lock()
         .expect("pending routes")
         .remove(&(program, instance))
+}
+
+/// The ids of a node and of its identified ancestors, root first: the key
+/// every piece of retained native state is stored under. Only a node with an
+/// id (`Node::identity`) adds a segment; one without shares its nearest
+/// identified ancestor's path, so only identified nodes may write a map
+/// keyed by it.
+pub type AuthoredPath = Vec<wire::ElementIdWire>;
+
+/// Pushes the id `node` is filed under onto `path` (`wire::identity`: its
+/// own, else, as row `row` of a list, its index); the caller pops on the
+/// way out when this answers `true`.
+pub fn enter_scope(node: &wire::Node, row: Option<usize>, path: &mut AuthoredPath) -> bool {
+    match wire::identity::segment(node.identity().cloned(), row) {
+        Some(id) => {
+            path.push(id);
+            true
+        }
+        None => false,
+    }
 }
 
 /// Leaks one copy of each distinct program name, so a name can be the

@@ -54,6 +54,10 @@ pub struct Settings {
     /// Banners a minute, per view.
     pub burst: u32,
     pub views: BTreeMap<String, Permission>,
+    /// The word on a program `views` holds none for: `None` logs its
+    /// notices and asks the person (the permission bar); a host with no one
+    /// to ask answers for them (`crates/pushd`).
+    pub unasked: Option<Permission>,
 }
 
 /// The settings as last read: forgotten when a notice setting is saved,
@@ -108,6 +112,7 @@ impl Settings {
             in_front: prefs[FRONT_PREF].as_str() == Some("show"),
             burst,
             views,
+            unasked: None,
         }
     }
 }

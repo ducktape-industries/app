@@ -703,6 +703,7 @@ impl View {
             staged: _,
             notifier,
             showing: _,
+            recipient,
         } = self;
         let mut sibling =
             Self::seated(program, *instance, runner, running.code_hash(), shown).await?;
@@ -716,6 +717,7 @@ impl View {
         sibling.code = code.clone();
         sibling.hash = *hash;
         sibling.notifier = *notifier;
+        sibling.recipient = recipient.clone();
         Ok(sibling)
     }
 
@@ -870,7 +872,7 @@ impl View {
         view.targets = listing.targets;
         view.min_width = listing.min_width;
         view.wire = listing.wire;
-        crate::render::web::seen(program, &view.capabilities);
+        super::web::seen(program, &view.capabilities);
         view.init(shown)?;
         Ok(view)
     }
@@ -1003,6 +1005,7 @@ impl View {
             staged: false,
             notifier: false,
             showing: None,
+            recipient: None,
         })
     }
 
@@ -1097,7 +1100,7 @@ fn view_code(
     bytes: &[u8],
 ) -> ViewCode {
     let listing = manifest_of(bytes);
-    crate::render::web::seen(program, &listing.capabilities);
+    super::web::seen(program, &listing.capabilities);
     ViewCode {
         runner: runner.clone(),
         blob,
