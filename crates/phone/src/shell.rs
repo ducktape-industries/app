@@ -773,9 +773,10 @@ impl Root {
         cx.notify();
     }
 
-    /// Back (Android's button, iOS's edge): on the join, the code goes back
-    /// to the address on Android (iOS's swipe does nothing there) and the
-    /// address is the OS's own; else the consent
+    /// Back (Android's button, iOS's edge): on the join, the account step
+    /// walks back on Android, the code to the name, the name to the address
+    /// (iOS's swipe does nothing there), and the address is the OS's own;
+    /// else the consent
     /// sheet's ask is refused, an alert dismissed, a sheet closed, the
     /// shell's page on top popped, each first; else the view on top goes back
     /// inside itself when its last frame's root asks to hear it; else the
@@ -790,12 +791,12 @@ impl Root {
 
     fn walk_back(&mut self, cx: &mut Context<Self>) {
         match join::step(*self.shared.screen.read(cx).get()) {
-            // iOS's Back is only the edge swipe, which the code refuses as
-            // Expo's does (`gestureEnabled: false`): its way out is its own
-            // Back button
-            Some(join::Step::Code) if cfg!(target_os = "ios") => return,
-            Some(join::Step::Code) => return self.join.update(cx, |join, cx| join.leave(cx)),
             Some(join::Step::Node) => return crate::os::back_at_root(),
+            // iOS's Back is only the edge swipe, which the account step
+            // refuses as Expo's code does (`gestureEnabled: false`): its way
+            // out is its own Back button
+            Some(_) if cfg!(target_os = "ios") => return,
+            Some(_) => return self.join.update(cx, |join, cx| join.back(cx)),
             None => {}
         }
         if self.consent.is_some() {
