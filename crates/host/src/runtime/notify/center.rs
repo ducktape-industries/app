@@ -30,6 +30,11 @@ pub struct Notice {
     /// Unix seconds past which the notice is stale: never raised past it,
     /// and taken down at it ([`Center::ring_over`]). 0: none.
     pub until: u64,
+    /// For a call: the `duck://` link a carrier opens when the person ends
+    /// the call they answered from the system's own call screen, as the
+    /// program gave it; empty for none. Never for a decline, nor for an
+    /// end made in the app.
+    pub end_link: String,
 }
 
 /// One row of the centre.
@@ -160,6 +165,7 @@ impl Center {
             link: post.link.clone(),
             kind,
             until,
+            end_link: post.end_link.clone(),
         };
         self.log(program, view, post, wall);
         if until != 0 && until <= seconds {

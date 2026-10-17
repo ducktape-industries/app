@@ -54,13 +54,16 @@ pub use settings::{
     BURSTS, Permission, Settings, not_now, save_banners, save_burst, save_in_front, set_permission,
 };
 
-/// A notice with words, and a link that is a `duck://` link or nothing.
+/// A notice with words, and links that are `duck://` links or nothing.
 fn checked(post: Notification) -> Result<Notification, &'static str> {
     if post.title.is_empty() && post.body.is_empty() {
         return Err("a notice carries neither a title nor a body");
     }
     if !post.link.is_empty() && !post.link.starts_with("duck://") {
         return Err("a notice's link is a duck:// link");
+    }
+    if !post.end_link.is_empty() && !post.end_link.starts_with("duck://") {
+        return Err("a call's end link is a duck:// link");
     }
     Ok(post)
 }

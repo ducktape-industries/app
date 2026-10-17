@@ -82,7 +82,8 @@ final class EdgeBack: NSObject {
 /// the token (kind `apns`, to the device registry as PushKit's goes) and the push, which comes back here as JSON
 /// (`ducktape_phone_remote_notification`): `{"kind": "withdraw", "tag"}` stops the ring under `tag`, and only a ring
 /// (a call answered here is CallKit's until its voice goes). An app the person force-quit gets no background push:
-/// `until` stays the ring's end there. Hanging up from CallKit's own screen ends no call in the app.
+/// `until` stays the ring's end there. Hanging up from CallKit's own screen opens the call's `end` link (the program's
+/// `end_link`): what that hang-up means is the program's, as Answer's link is; a decline opens nothing.
 final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
   static let shared = Ring()
   /// The huddle program's ring, for a payload that carries no `until`: a call always carries one (SPEC §5).
@@ -99,10 +100,12 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
     configuration.includesCallsInRecents = false
     return CXProvider(configuration: configuration)
   }()
-  /// The calls ringing, by CallKit's id: the link each one's Answer opens.
-  private var ringing: [UUID: String] = [:]
-  /// The call answered here, CallKit's until the call's voice goes (`voice`).
-  private var answered: UUID?
+  /// The calls ringing, by CallKit's id: the link each one's Answer opens, and the link ending the answered call
+  /// from CallKit's own screen opens (`end`, empty for none).
+  private var ringing: [UUID: (link: String, end: String)] = [:]
+  /// The call answered here, CallKit's until the call's voice goes (`voice`), and what ending it from CallKit's
+  /// screen opens: the program's `end_link`, never for a decline nor for an end the app makes.
+  private var answered: (id: UUID, end: String)?
   /// The debug entry's taps (`test`), made with the provider.
   private lazy var calls = CXCallController()
 
@@ -153,6 +156,7 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
     let id = Ring.id(payload["tag"] as? String ?? "")
     let title = payload["title"] as? String ?? ""
     let link = payload["link"] as? String ?? ""
+    let end = payload["end"] as? String ?? ""
     let until = (payload["until"] as? NSNumber)?.doubleValue ?? Date().timeIntervalSince1970 + Ring.ringSeconds
     let update = CXCallUpdate()
     update.remoteHandle = CXHandle(type: .generic, value: title)
@@ -160,7 +164,7 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
     update.hasVideo = true
     // kept before CallKit hears of it: an Answer may come before the report's answer does
     let fresh = ringing[id] == nil
-    ringing[id] = link
+    ringing[id] = (link, end)
     provider.reportNewIncomingCall(with: id, update: update) { error in
       // CallKit answers on a queue of its own; the calls are kept on the main one
       DispatchQueue.main.async {
@@ -204,7 +208,7 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
   /// controller), with `answered` cleared first, so the action's handler takes it as one made here; a call CallKit
   /// no longer has refuses the action, and is reported ended instead.
   func voice(_ alive: Bool) {
-    guard !alive, let id = answered else { return }
+    guard !alive, let id = answered?.id else { return }
     answered = nil
     NSLog("ducktape ring: \(id) over, its voice gone")
     calls.request(CXTransaction(action: CXEndCallAction(call: id))) { error in
@@ -221,18 +225,24 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
 
   /// Answered: the call's link opens, and it rings no more.
   func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
-    if let link = ringing.removeValue(forKey: action.callUUID), !link.isEmpty {
+    let links = ringing.removeValue(forKey: action.callUUID)
+    if let link = links?.link, !link.isEmpty {
       ducktape_phone_link(link)
     }
-    answered = action.callUUID
+    answered = (action.callUUID, links?.end ?? "")
     action.fulfill()
   }
 
-  /// Declined while ringing, or hung up in CallKit's screen: this phone's alone (SPEC D11).
+  /// Declined while ringing: this phone's alone (SPEC D11), nothing opens. Hung up in CallKit's own screen while
+  /// answered: the call's end link opens, so the program hears the end (an end the app made itself cleared
+  /// `answered` first, `voice`).
   func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
     NSLog("ducktape ring: \(action.callUUID) ended here")
     ringing.removeValue(forKey: action.callUUID)
-    if answered == action.callUUID { answered = nil }
+    if let answered, answered.id == action.callUUID {
+      self.answered = nil
+      if !answered.end.isEmpty { ducktape_phone_link(answered.end) }
+    }
     action.fulfill()
   }
 
@@ -254,7 +264,7 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
     let tag = "call/ring-test"
     let payload: [AnyHashable: Any] = [
       "kind": "call", "chain": "test", "program": "huddle", "tag": tag, "title": "Ring test", "body": "",
-      "link": "duck://test/huddle/call/ring-test", "until": Date().timeIntervalSince1970 + 30,
+      "link": "duck://test/huddle/call/ring-test", "end": "duck://test/huddle/call/ring-test/leave", "until": Date().timeIntervalSince1970 + 30,
     ]
     let id = Ring.id(tag)
     let action: CXAction? =

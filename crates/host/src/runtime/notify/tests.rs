@@ -285,8 +285,8 @@ fn prefs_read_back_as_settings() {
 }
 
 /// A post round-trips as borsh and trailing bytes are refused; a post
-/// with no words, or a link that is not `duck://`, is refused; long text
-/// and a long link are kept whole.
+/// with no words, or a link or end link that is not `duck://`, is
+/// refused; long text and a long link are kept whole.
 #[test]
 fn a_post_is_words_a_tag_and_a_duck_link() {
     let full = Notification {
@@ -304,6 +304,13 @@ fn a_post_is_words_a_tag_and_a_duck_link() {
     assert!(
         checked(Notification {
             link: "https://example.com".into(),
+            ..full.clone()
+        })
+        .is_err()
+    );
+    assert!(
+        checked(Notification {
+            end_link: "https://example.com/leave".into(),
             ..full.clone()
         })
         .is_err()
@@ -588,18 +595,20 @@ fn a_views_live_line_shows_once_a_run() {
     assert!(!center.sharing.contains("chat"));
 }
 
-/// A call from `chat` under `tag`, standing until `until`.
+/// A call from `chat` under `tag`, standing until `until`, whose end from
+/// the system's call screen opens `duck://chat/<tag>/leave`.
 fn call(tag: &str, until: u64) -> Notification {
     Notification {
         kind: NoticeKind::Call,
         until,
+        end_link: format!("duck://chat/{tag}/leave"),
         ..post("Ada is calling", tag)
     }
 }
 
 /// A view's `notify.post` payload is what the centre judges: a wire call
-/// with a tag and an `until` rings past the burst as a call, and is over
-/// at its `until`.
+/// with a tag and an `until` rings past the burst as a call, keeps its
+/// end link for the carrier, and is over at its `until`.
 #[test]
 fn a_wire_call_rings_as_a_call_and_is_over_at_its_until() {
     let now = Instant::now();
@@ -617,6 +626,7 @@ fn a_wire_call_rings_as_a_call_and_is_over_at_its_until() {
         (banner.kind, banner.until, banner.tag.as_str()),
         (NoticeKind::Call, 100, "chat/call/1")
     );
+    assert_eq!(banner.end_link, "duck://chat/call/1/leave");
     assert!(center.ring_over("chat/call/1", 100));
 }
 
