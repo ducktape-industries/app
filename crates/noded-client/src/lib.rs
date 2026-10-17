@@ -202,6 +202,27 @@ impl Client {
         .await
     }
 
+    /// A blob upload: `frame`, a signed blobs-role `Put` naming each blob's
+    /// id, length and kind, then each blob it names, framed
+    /// (`kind len\0body`), in its order, sent as `blobs` yields them, so
+    /// neither side holds the bundle whole. The node stages the bytes and
+    /// pools the frame unpredicted ([`Submitted::Pooled`]): the bundle is put
+    /// once a block carries the frame.
+    pub async fn put_blobs(
+        &self,
+        frame: Vec<u8>,
+        blobs: impl Stream<Item = std::io::Result<Vec<u8>>> + Send + 'static,
+    ) -> Result<Submitted> {
+        let opening = [&(frame.len() as u32).to_le_bytes()[..], &frame].concat();
+        let body = futures::stream::once(async { Ok(opening) }).chain(blobs);
+        answered(
+            self.http
+                .post(self.url(route::BLOB_PUT))
+                .body(reqwest::Body::wrap_stream(body)),
+        )
+        .await
+    }
+
     pub async fn blocks(&self, page: &Blocks) -> Result<Page> {
         self.post(route::BLOCKS, page).await
     }
@@ -305,6 +326,71 @@ impl Signer for FixedSigner {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// One request off a socket, its body read whole whether sent by
+    /// length or chunked (an upload is chunked), then `answer` with 200.
+    async fn served_once(listener: tokio::net::TcpListener, answer: Vec<u8>) -> (String, Vec<u8>) {
+        use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _};
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut stream = tokio::io::BufReader::new(stream);
+        let mut head = String::new();
+        let (mut length, mut chunked) = (0, false);
+        loop {
+            let mut line = String::new();
+            stream.read_line(&mut line).await.unwrap();
+            if line == "\r\n" {
+                break;
+            }
+            let lower = line.to_ascii_lowercase();
+            if let Some(value) = lower.strip_prefix("content-length:") {
+                length = value.trim().parse().unwrap();
+            }
+            chunked |= lower.starts_with("transfer-encoding:") && lower.contains("chunked");
+            head.push_str(&line);
+        }
+        let mut body = vec![0; length];
+        stream.read_exact(&mut body).await.unwrap();
+        while chunked {
+            let mut size = String::new();
+            stream.read_line(&mut size).await.unwrap();
+            let size = usize::from_str_radix(size.trim(), 16).unwrap();
+            let mut chunk = vec![0; size + 2];
+            stream.read_exact(&mut chunk).await.unwrap();
+            body.extend_from_slice(&chunk[..size]);
+            chunked = size > 0;
+        }
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+            answer.len()
+        );
+        stream.write_all(reply.as_bytes()).await.unwrap();
+        stream.write_all(&answer).await.unwrap();
+        (head, body)
+    }
+
+    /// An upload is the frame's length (u32 LE), the frame, then each blob
+    /// as it came, in order, to `/v1/blob/put`; the node's `Submitted` is
+    /// the answer.
+    #[tokio::test]
+    async fn a_blob_upload_is_the_frame_by_its_length_then_each_blob_in_order() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = Client::new(format!("http://{}", listener.local_addr().unwrap()));
+        let served = tokio::spawn(served_once(listener, abi::encode(&Submitted::Pooled)));
+        let blobs = [b"chunk 3\0abc".to_vec(), b"chunk 0\0".to_vec()];
+        let submitted = client
+            .put_blobs(vec![7; 300], futures::stream::iter(blobs.clone().map(Ok)))
+            .await
+            .unwrap();
+        assert_eq!(submitted, Submitted::Pooled);
+        let (head, body) = served.await.unwrap();
+        assert!(head.starts_with("POST /v1/blob/put "), "{head}");
+        let mut sent = 300u32.to_le_bytes().to_vec();
+        sent.extend([7; 300]);
+        sent.extend(blobs.concat());
+        assert_eq!(body, sent);
+    }
+
     #[tokio::test]
     async fn wss_gets_tls_not_a_missing_feature() {
         // A port that hangs up: the TLS handshake fails, but only after the

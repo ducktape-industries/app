@@ -687,3 +687,500 @@ async fn a_submit_out_at_a_reconnect_answers_in_doubt() {
         other => panic!("{other:?}"),
     }
 }
+
+/// One request off an upload's socket: its request line, and its body
+/// whether sent by length or chunked (an upload streams, so it is chunked).
+async fn read_http(stream: &mut tokio::io::BufReader<tokio::net::TcpStream>) -> (String, Vec<u8>) {
+    use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _};
+    let mut request = String::new();
+    stream.read_line(&mut request).await.unwrap();
+    let (mut length, mut chunked) = (0, false);
+    loop {
+        let mut line = String::new();
+        stream.read_line(&mut line).await.unwrap();
+        if line == "\r\n" {
+            break;
+        }
+        let line = line.to_ascii_lowercase();
+        if let Some(value) = line.strip_prefix("content-length:") {
+            length = value.trim().parse().unwrap();
+        }
+        chunked |= line.starts_with("transfer-encoding:") && line.contains("chunked");
+    }
+    let mut body = vec![0; length];
+    stream.read_exact(&mut body).await.unwrap();
+    while chunked {
+        let mut size = String::new();
+        stream.read_line(&mut size).await.unwrap();
+        let size = usize::from_str_radix(size.trim(), 16).unwrap();
+        let mut chunk = vec![0; size + 2];
+        stream.read_exact(&mut chunk).await.unwrap();
+        body.extend_from_slice(&chunk[..size]);
+        chunked = size > 0;
+    }
+    (request, body)
+}
+
+/// The program [`put_node`] binds to the blobs role: not the role's name,
+/// so a put that names the role instead of its program goes nowhere.
+const KEEPER: &str = "keeper";
+
+/// A node an `op.put` meets: one blob upload taken (its body kept). With
+/// `carried`, block 8 carries the upload's frame with that outcome (bundle
+/// 5, receipted there) and the bundle is held at 9 once `hold` lets it;
+/// without, block 8 + the anchor window (the frame's `until`) comes and no
+/// block carries it.
+struct PutNode {
+    node: Node,
+    upload: Upload,
+    hold: std::sync::Arc<tokio::sync::Notify>,
+}
+
+type Upload = std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>;
+
+/// What every connection to a [`put_node`] shares.
+#[derive(Clone)]
+struct Put {
+    upload: Upload,
+    hold: std::sync::Arc<tokio::sync::Notify>,
+    landed: std::sync::Arc<tokio::sync::watch::Sender<bool>>,
+    landing: tokio::sync::watch::Receiver<bool>,
+    carried: Option<abi::Outcome>,
+}
+
+/// [`put_node`]'s block 8 carrying the frame as applied, putting bundle 5.
+fn bundle_five() -> Option<abi::Outcome> {
+    Some(abi::Outcome::Applied {
+        output: abi::encode(&5u64),
+    })
+}
+
+fn put_node(carried: Option<abi::Outcome>) -> PutNode {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let node = Node {
+        client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
+        network: "test-network".into(),
+    };
+    let fake = PutNode {
+        node,
+        upload: Default::default(),
+        hold: Default::default(),
+    };
+    let (landed, landing) = tokio::sync::watch::channel(false);
+    let put = Put {
+        upload: fake.upload.clone(),
+        hold: fake.hold.clone(),
+        landed: std::sync::Arc::new(landed),
+        landing,
+        carried,
+    };
+    handle().spawn(async move {
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        while let Ok((stream, _)) = listener.accept().await {
+            tokio::spawn(serve_put(stream, put.clone()));
+        }
+    });
+    fake
+}
+
+/// The frame an upload carried: its length, then the frame.
+fn uploaded_frame(upload: &[u8]) -> noded::Frame {
+    let len = u32::from_le_bytes(upload[..4].try_into().unwrap()) as usize;
+    abi::decode(&upload[4..4 + len]).unwrap()
+}
+
+/// One connection to a [`put_node`]: a changes socket, or one request.
+async fn serve_put(stream: tokio::net::TcpStream, mut put: Put) {
+    use futures::{SinkExt as _, StreamExt as _};
+    use tokio::io::AsyncWriteExt as _;
+    let mut head = [0; 64];
+    let read = stream.peek(&mut head).await.unwrap();
+    let line = String::from_utf8_lossy(&head[..read]).into_owned();
+    if let Some(program) = line.strip_prefix("GET /v1/changes/") {
+        let blocks = program.starts_with(noded::RECENT) || program.starts_with("%24recent");
+        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        put.landing.wait_for(|landed| *landed).await.unwrap();
+        let change = |height, key: Vec<u8>, value| {
+            let writes = vec![(key, Some(value))];
+            let change = noded::Change {
+                height,
+                root: abi::Root([0; 32]),
+                writes,
+            };
+            tokio_tungstenite::tungstenite::Message::Binary(abi::encode(&change))
+        };
+        let bundle = |custody| {
+            abi::encode(&blob::contract::Bundle {
+                putter: 1,
+                height: 8,
+                blobs: Vec::new(),
+                custody,
+            })
+        };
+        let key = blob::contract::bundle_key(5);
+        let height = match put.carried {
+            Some(_) => 8,
+            None => TIP.height + noded::ANCHOR_WINDOW,
+        };
+        if blocks {
+            let block = change(height, b"tip".to_vec(), Vec::new());
+            socket.send(block).await.unwrap();
+        } else if put.carried.is_some() {
+            let receipted = blob::contract::Custody::Receipted(Vec::new());
+            socket
+                .send(change(8, key.clone(), bundle(receipted)))
+                .await
+                .unwrap();
+            put.hold.notified().await;
+            let held = blob::contract::Custody::Held { since: 9 };
+            socket.send(change(9, key, bundle(held))).await.unwrap();
+        }
+        while socket.next().await.is_some() {}
+        return;
+    }
+    let mut stream = tokio::io::BufReader::new(stream);
+    let (line, body) = read_http(&mut stream).await;
+    let answer = match line.split(' ').nth(1).unwrap() {
+        noded::route::STATUS => {
+            let mut status = status_at(TIP);
+            status.roles.bind(abi::role::BLOBS, KEEPER);
+            abi::encode(&status)
+        }
+        noded::route::BLOB_PUT => {
+            *put.upload.lock().unwrap() = Some(body);
+            put.landed.send_replace(true);
+            abi::encode(&noded::Submitted::Pooled)
+        }
+        // block 8 carried the uploaded frame, and only that one
+        noded::route::TX => {
+            let ask: noded::TxAsk = abi::decode(&body).unwrap();
+            let upload = put.upload.lock().unwrap().clone().unwrap();
+            let id = uploaded_frame(&upload).body.id();
+            let carried = put.carried.filter(|_| ask.tx == noded::TxRef::Hash(id));
+            let located = carried.map(|outcome| noded::Located {
+                height: 8,
+                position: 0,
+                time: 0,
+                tx: noded::Tx {
+                    hash: id,
+                    signer: Vec::new(),
+                    anchor: TIP,
+                    target: KEEPER.into(),
+                    size: 0,
+                    payload: None,
+                    receipt: Some(noded::Receipt {
+                        program: KEEPER.into(),
+                        outcome,
+                        events: Vec::new(),
+                        nested: Vec::new(),
+                    }),
+                },
+            });
+            abi::encode(&located)
+        }
+        other => panic!("{other}"),
+    };
+    let reply = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        answer.len()
+    );
+    stream.write_all(reply.as_bytes()).await.unwrap();
+    stream.write_all(&answer).await.unwrap();
+}
+
+fn bytes(kind: &str, bytes: &[u8]) -> methods::NewBlob {
+    methods::NewBlob {
+        kind: kind.into(),
+        body: methods::BlobBody::Bytes(bytes.to_vec()),
+    }
+}
+
+fn picked(file: u64, offset: u64, len: u64) -> methods::NewBlob {
+    methods::NewBlob {
+        kind: "chunk".into(),
+        body: methods::BlobBody::Picked { file, offset, len },
+    }
+}
+
+/// `op.put` of `blobs` as its ask checks it.
+fn asked(view: &View, blobs: Vec<methods::NewBlob>) -> Result<Vec<Blob>, wire::Error> {
+    blobs_of(view, &methods::encode(&methods::PutBlobs { blobs }))
+}
+
+/// The blobs of a put the ask takes.
+fn put_of(view: &View, blobs: Vec<methods::NewBlob>) -> Vec<Blob> {
+    match asked(view, blobs) {
+        Ok(blobs) => blobs,
+        Err(refusal) => panic!("{refusal:?}"),
+    }
+}
+
+/// `op.put` puts two slices of a picked file and bytes of the view's own
+/// as one bundle: a `Put` to the program bound to the blobs role naming
+/// each framed blob's id, length and kind, and the framed blobs after it
+/// on the upload, in order. It answers each one's sha256 only once the
+/// network holds the bundle: a receipted bundle is not yet held.
+#[tokio::test]
+async fn a_put_answers_each_framed_blobs_sha256_once_the_bundle_is_held() {
+    use commonware_cryptography::Signer as _;
+    const MOST: u64 = methods::BLOB_MOST;
+    let _seat = backend::seat_serial();
+    backend::seat_key(std::sync::Arc::new(
+        commonware_cryptography::ed25519::PrivateKey::from_seed(43),
+    ))
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tape.bin");
+    let file: Vec<u8> = (0..MOST + 5).map(|at| at as u8).collect();
+    std::fs::write(&path, &file).unwrap();
+    let view = view();
+    let handle = view.picker.pick(vec![path])[0].file;
+    let blobs = vec![
+        picked(handle, 0, MOST),
+        picked(handle, MOST, 5),
+        bytes("note", b"hi"),
+    ];
+    let blobs = put_of(&view, blobs);
+    let fake = put_node(bundle_five());
+    let mut answer = std::pin::pin!(put(fake.node.clone(), blobs));
+    let waited = tokio::time::timeout(std::time::Duration::from_millis(500), &mut answer).await;
+    assert!(waited.is_err(), "answered before the bundle was held");
+    assert!(fake.upload.lock().unwrap().is_some(), "the upload went in");
+    fake.hold.notify_one();
+    let answer = tokio::time::timeout(std::time::Duration::from_secs(5), answer)
+        .await
+        .expect("answered once held");
+    let framed = [
+        blob::frame("chunk", &file[..MOST as usize]).unwrap(),
+        blob::frame("chunk", &file[MOST as usize..]).unwrap(),
+        blob::frame("note", b"hi").unwrap(),
+    ];
+    let entries: Vec<_> = framed
+        .iter()
+        .map(|framed| blob::contract::Entry::of(framed).unwrap())
+        .collect();
+    let ids: Vec<[u8; 32]> = entries
+        .iter()
+        .map(|entry| match entry.id {
+            abi::BlobId::Sha256(digest) => digest,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        methods::decode::<Vec<[u8; 32]>>(&answer.unwrap()).unwrap(),
+        ids
+    );
+    let upload = fake.upload.lock().unwrap().take().unwrap();
+    let len = u32::from_le_bytes(upload[..4].try_into().unwrap()) as usize;
+    let frame = uploaded_frame(&upload);
+    assert_eq!(frame.body.target, KEEPER, "to the program the role binds");
+    assert_eq!(frame.body.anchor, TIP);
+    assert_eq!(
+        abi::decode::<blob::contract::Op>(&frame.body.payload).unwrap(),
+        blob::contract::Op::Put { blobs: entries },
+        "the op names ids, lengths and kinds, never bytes"
+    );
+    assert_eq!(
+        upload[4 + len..],
+        framed.concat(),
+        "each blob framed, in order"
+    );
+}
+
+/// `op.put` against a [`put_node`] whose blocks carry the frame as
+/// `carried` says, answered within five seconds.
+async fn put_meeting(carried: Option<abi::Outcome>, seed: u64) -> Answer {
+    use commonware_cryptography::Signer as _;
+    let _seat = backend::seat_serial();
+    backend::seat_key(std::sync::Arc::new(
+        commonware_cryptography::ed25519::PrivateKey::from_seed(seed),
+    ))
+    .await;
+    let blobs = put_of(&view(), vec![bytes("chunk", b"tape")]);
+    let fake = put_node(carried);
+    let answer = put(fake.node.clone(), blobs);
+    tokio::time::timeout(std::time::Duration::from_secs(5), answer)
+        .await
+        .expect("answered")
+}
+
+/// The block that carries the put rejects it: the program's refusal is
+/// the answer, as it said it.
+#[tokio::test]
+async fn a_put_the_program_rejects_answers_its_refusal() {
+    let rejected = abi::Refusal::new(abi::reason::UNAUTHORIZED, "no account puts here");
+    let refusal = put_meeting(Some(abi::Outcome::Rejected(rejected)), 45)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (refusal.code.as_str(), refusal.message.as_str()),
+        (abi::reason::UNAUTHORIZED, "no account puts here")
+    );
+}
+
+/// No block carries the put by its frame's `until`: refused `anchor`,
+/// saying so, not waited on forever.
+#[tokio::test]
+async fn a_put_no_block_carries_by_its_until_is_refused_anchor() {
+    let refusal = put_meeting(None, 46).await.unwrap_err();
+    assert_eq!(refusal.code, abi::reason::ANCHOR);
+    let until = TIP.height + noded::ANCHOR_WINDOW;
+    assert_eq!(
+        refusal.message,
+        format!("no block carried the put by block {until}, the last its frame may land at")
+    );
+}
+
+/// What `op.put` refuses at the ask, before anything is read or signed.
+#[test]
+fn a_put_of_no_blob_one_too_big_or_a_slice_of_no_pick_is_malformed() {
+    const MOST: u64 = methods::BLOB_MOST;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.txt");
+    std::fs::write(&path, b"abc").unwrap();
+    let view = view();
+    assert_eq!(view.picker.pick(vec![path])[0].file, 1);
+    let cases = [
+        (Vec::new(), "names no blob"),
+        (vec![bytes("chunk", &vec![0; MOST as usize + 1])], "over"),
+        (vec![picked(1, 0, MOST + 1)], "past"),
+        (vec![picked(1, 2, 2)], "past"),
+        (vec![picked(1, u64::MAX, 2)], "past"),
+        (vec![picked(2, 0, 1)], "not of the latest pick"),
+        (vec![bytes("two words", b"x")], "one word"),
+        (vec![bytes("", b"x")], "one word"),
+    ];
+    for (blobs, why) in cases {
+        let Err(refusal) = asked(&view, blobs) else {
+            panic!("taken: {why}")
+        };
+        assert_eq!(refusal.code, refusal::MALFORMED_REQUEST);
+        assert!(refusal.message.contains(why), "{}", refusal.message);
+    }
+    // the most a blob holds, and a whole file
+    put_of(
+        &view,
+        vec![bytes("chunk", &vec![0; MOST as usize]), picked(1, 0, 3)],
+    );
+}
+
+/// A picked file whose size changed since the pick is refused
+/// `host_fault` by the hash pass, before the node is asked anything.
+#[tokio::test]
+async fn a_put_of_a_file_whose_size_changed_since_the_pick_is_a_host_fault() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("log.txt");
+    std::fs::write(&path, b"one").unwrap();
+    let view = view();
+    view.picker.pick(vec![path.clone()]);
+    let blobs = put_of(&view, vec![picked(1, 0, 3)]);
+    std::fs::write(&path, b"one two").unwrap();
+    let nowhere = Node {
+        client: RpcClient::new("http://127.0.0.1:1"),
+        network: "test-network".into(),
+    };
+    let refusal = put(nowhere, blobs).await.unwrap_err();
+    assert_eq!(refusal.code, refusal::HOST_FAULT);
+    assert_eq!(refusal.message, "log.txt changed since it was picked");
+}
+
+/// A put waiting for its bundle to be held is a node task: cancelled
+/// (as a view going away cancels its tasks), it gives its slot back and
+/// answers nothing.
+#[test]
+fn a_put_waiting_for_its_bundle_goes_with_the_view() {
+    use commonware_cryptography::Signer as _;
+    let _seat = backend::seat_serial();
+    futures::executor::block_on(backend::seat_key(std::sync::Arc::new(
+        commonware_cryptography::ed25519::PrivateKey::from_seed(44),
+    )));
+    let fake = put_node(bundle_five());
+    let mut view = view();
+    let blobs = put_of(&view, vec![bytes("chunk", b"tape")]);
+    let replies = view.replies.clone();
+    let mut changed = view.replies.changes();
+    let node = fake.node.clone();
+    start(&mut view, 1, None, Claim::default(), async move {
+        let answer = put(node, blobs).await;
+        replies.item(1, answer, true);
+    });
+    for _ in 0..200 {
+        if fake.upload.lock().unwrap().is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(fake.upload.lock().unwrap().is_some(), "the upload went in");
+    assert!(view.replies.answer_owed());
+    changed.borrow_and_update();
+    view.tasks.clear();
+    futures::executor::block_on(async {
+        while view.replies.answer_owed() {
+            changed.changed().await.unwrap();
+        }
+    });
+    let mut answered = Vec::new();
+    assert_eq!(view.replies.drain_into(&mut answered), 0, "no answer came");
+}
+
+/// The throwaway try network (unit `garage5-try`, tunnelled to
+/// `127.0.0.1:18947`; `DUCKTAPE_TRY_NODE` names another): a fresh key makes
+/// its account, puts a picked file's two slices (1 MiB and 5 bytes) as
+/// `chunk` blobs, and the blobs program says the network holds each id
+/// answered. Never run against garage.
+#[tokio::test]
+#[ignore = "needs the try network's node"]
+async fn the_try_network_holds_a_put() {
+    use commonware_cryptography::Signer as _;
+    const MOST: u64 = methods::BLOB_MOST;
+    let _seat = backend::seat_serial();
+    let key = commonware_cryptography::ed25519::PrivateKey::from_seed(noded::salt());
+    backend::seat_key(std::sync::Arc::new(key)).await;
+    let endpoint =
+        std::env::var("DUCKTAPE_TRY_NODE").unwrap_or_else(|_| "http://127.0.0.1:18947".into());
+    let client = RpcClient::new(endpoint);
+    let status = client.status().await.unwrap();
+    let name = format!("op-put {}", noded::salt() % 1_000_000);
+    let account = backend::identity::create_plain_account(&client, &status.network, &name)
+        .await
+        .unwrap();
+    eprintln!(
+        "account {account:?} on {} at block {}",
+        status.network, status.height
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("try.bin");
+    let mut file: Vec<u8> = (0..MOST + 5).map(|at| (at * 7) as u8).collect();
+    file[..8].copy_from_slice(&noded::salt().to_le_bytes());
+    std::fs::write(&path, &file).unwrap();
+    let view = view();
+    let handle = view.picker.pick(vec![path])[0].file;
+    let slices = vec![picked(handle, 0, MOST), picked(handle, MOST, 5)];
+    let blobs = put_of(&view, slices);
+    let node = Node {
+        client: client.clone(),
+        network: status.network.clone(),
+    };
+    let asked = std::time::Instant::now();
+    let ids: Vec<[u8; 32]> = methods::decode(&put(node, blobs).await.unwrap()).unwrap();
+    eprintln!("held after {:?}", asked.elapsed());
+    let target = status.roles.bound(abi::role::BLOBS).unwrap();
+    for id in ids {
+        let blob = abi::BlobId::Sha256(id);
+        let ask = abi::encode(&blob::contract::Query::Held { blob });
+        let frame = backend::query_frame(&status.network, target, ask)
+            .await
+            .unwrap();
+        let reply = client
+            .query(backend::Layer::Confirmed, frame)
+            .await
+            .unwrap();
+        let reply: blob::contract::Reply = abi::decode(&reply).unwrap();
+        eprintln!("sha256:{} {reply:?}", noded_client::hex::hex_encode(&id));
+        assert!(
+            matches!(reply, blob::contract::Reply::Held(Some(_))),
+            "{reply:?}"
+        );
+    }
+}

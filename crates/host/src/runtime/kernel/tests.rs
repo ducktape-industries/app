@@ -1026,15 +1026,20 @@ fn file_pick_needs_an_activation_and_takes_it() {
         refusal_code(&mut view).as_deref(),
         Some("malformed_request")
     );
-    // a file is read only by a handle of the latest pick
+    // a file is put only by a handle of the latest pick
     view.answer(
         wire::Request {
             id: 5,
-            kind: "file.read".into(),
-            payload: methods::encode(&methods::ReadFile {
-                file: 1,
-                offset: 0,
-                len: 1,
+            kind: "op.put".into(),
+            payload: methods::encode(&methods::PutBlobs {
+                blobs: vec![methods::NewBlob {
+                    kind: "chunk".into(),
+                    body: methods::BlobBody::Picked {
+                        file: 1,
+                        offset: 0,
+                        len: 1,
+                    },
+                }],
             }),
         },
         &None,
