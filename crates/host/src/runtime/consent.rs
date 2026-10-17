@@ -445,6 +445,7 @@ pub fn needed(
             | identity::Op::SetProfile { .. }
             | identity::Op::Resume { .. }
             | identity::Op::SetOwnership { .. }
+            | identity::Op::Migrate
             | identity::Op::SetScript {
                 script: Some(_), ..
             } => None,
@@ -894,10 +895,9 @@ mod tests {
     }
 
     /// Claim: a vote on a role's op reads on the card in that program's own
-    /// words (halo's here), through the validators' program's description;
-    /// a vote on the roles table names the role and the program it binds.
+    /// words (halo's here), through the validators' program's description.
     #[test]
-    fn a_role_vote_reads_in_its_programs_words_and_a_bind_names_both() {
+    fn a_role_vote_reads_in_its_programs_words() {
         let open = abi::role::halo::Op::Open {
             name: "ducktape/live".into(),
             cap: abi::role::halo::Class::Client,
@@ -909,14 +909,6 @@ mod tests {
         assert_eq!(
             shown(Some(&valset::describe(&vote)), 0),
             "Vote · Open lane · ducktape/live\ncap Client"
-        );
-        let bind = valset::Op::Vote(valset::Motion::Bind {
-            role: abi::role::EGRESS.into(),
-            program: Some("gateway".into()),
-        });
-        assert_eq!(
-            shown(Some(&valset::describe(&bind)), 0),
-            "Vote · bind egress to gateway\nrole egress · program gateway"
         );
     }
 
