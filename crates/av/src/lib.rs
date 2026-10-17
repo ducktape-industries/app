@@ -43,6 +43,10 @@
 //!   when its [`Release`] is: its thread sees the feed's stop and closes
 //!   the device (the camera's light off).
 //!
+//! - with feature `call`, [`codec`]'s encoders and decoders turn a
+//!   microphone's samples and a camera's [`Picture`]s into packets and
+//!   back, for the host's call pipeline; they touch no device.
+//!
 //! Without feature `capture` the crate is empty (`Cargo.toml` says why).
 #![cfg(feature = "capture")]
 
@@ -64,6 +68,8 @@ mod android_rules;
 mod apple;
 mod backend;
 mod camera;
+#[cfg(feature = "call")]
+pub mod codec;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod devices;
 #[cfg(target_os = "ios")]
@@ -87,6 +93,8 @@ use v4l2 as platform;
 pub use android::{Asker, asks_through};
 #[cfg(feature = "test-support")]
 pub use backend::Ask;
+#[cfg(feature = "call")]
+pub use backend::Picture;
 pub use backend::{
     AudioDevice, AudioKind, CameraDevice, Device, Facing, Playback, Release, Status,
 };

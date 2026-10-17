@@ -21,8 +21,16 @@
 #
 # Without feature `capture` it is empty and has no dependencies. The host's
 # `av` feature turns `capture` on, and the app's default build turns that
-# on. From the workspace root:
+# on. Feature `call` adds a call's codecs (`src/codec.rs`): Opus for the
+# voice (libopus vendored in `opus/`, built by `build.rs`), H.264 for the
+# picture from each OS's own licensed source (`src/codec/videotoolbox.rs`
+# on macOS and iOS, `src/codec/mediacodec.rs` on Android, Cisco's prebuilt
+# OpenH264 loaded at run time on Linux, `src/codec/openh264.rs`): nothing
+# here compiles H.264 code, so no build of this crate carries it without
+# its patent licence.
+# From the workspace root:
 #   cargo test --locked -p ducktape-av --features capture
+#   cargo test --locked -p ducktape-av --features call
 # Linux needs ALSA's headers (libasound2-dev).
 
 [package]
@@ -38,6 +46,16 @@ capture = [
     "dep:objc2-core-media", "dep:objc2-core-video", "dep:dispatch2", "dep:objc2-core-audio",
     "dep:objc2-avf-audio",
     "dep:jni", "dep:ndk", "dep:ndk-context", "dep:ndk-sys",
+]
+
+# a call's codecs over the pictures and samples the capture side gives:
+# capture's `Picture` is what goes in and comes out
+call = [
+    "capture", "dep:cc",
+    "dep:openh264", "dep:openh264-sys2",
+    "dep:objc2-video-toolbox", "dep:objc2-core-foundation",
+    "objc2-core-media?/CMBlockBuffer", "objc2-core-media?/CMFormatDescription",
+    "objc2-core-media?/CMTime", "objc2-core-media?/CMBase",
 ]
 
 # what a test reads off a piece (`Camera::let_go`, `Meter::monitor`,
@@ -59,6 +77,13 @@ tracing = { workspace = true, optional = true }
 # Linux: the V4L2 calls (open, ioctl, mmap, poll), with our own few structs
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = { workspace = true, optional = true }
+# a call's picture: Cisco's prebuilt OpenH264 (the one build Cisco's
+# AVC/H.264 patent licence covers), fetched by the app onto this device
+# and loaded here (`libloading`; the crate checks its sha256 against the
+# builds it knows). Never `source`: that compiles OpenH264 in, unlicensed.
+openh264 = { version = "0.9.9", default-features = false, features = ["libloading"], optional = true }
+# its raw options: the bitrate changed while it runs
+openh264-sys2 = { version = "0.9.9", default-features = false, optional = true }
 
 # macOS and iOS: the camera and microphone permission, and the camera
 # through AVFoundation (a capture session, its frames as BGRA pixel buffers
@@ -72,6 +97,10 @@ objc2-av-foundation = { version = "0.3", default-features = false, features = ["
 objc2-core-media = { version = "0.3", default-features = false, features = ["std", "objc2-core-video", "CMSampleBuffer"], optional = true }
 objc2-core-video = { version = "0.3", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"], optional = true }
 dispatch2 = { version = "0.3", default-features = false, features = ["std", "objc2"], optional = true }
+# a call's picture: VideoToolbox's H.264 (Apple's licence), the frames as
+# CoreMedia sample buffers, their settings as CoreFoundation values
+objc2-video-toolbox = { version = "0.3", default-features = false, features = ["std", "VTBase", "VTSession", "VTErrors", "VTCompressionSession", "VTCompressionProperties", "VTDecompressionSession", "VTDecompressionProperties", "objc2", "objc2-core-media", "objc2-core-video"], optional = true }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFDictionary", "CFNumber", "CFString"], optional = true }
 
 # macOS: what a microphone or speaker is, its transport and data source
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -91,6 +120,10 @@ jni = { version = "0.22", optional = true }
 ndk = { version = "0.9", default-features = false, features = ["media", "api-level-26"], optional = true }
 ndk-context = { version = "0.1", optional = true }
 ndk-sys = { version = "0.6", optional = true }
+
+# a call's libopus, compiled from `opus/` (`build.rs`)
+[build-dependencies]
+cc = { version = "1.4", optional = true }
 
 [dev-dependencies]
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }

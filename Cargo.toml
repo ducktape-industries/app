@@ -99,11 +99,18 @@ web = ["ducktape-host/web"]
 # compiles none of it: the pieces say the build has no camera or
 # microphone and their methods are refused `unknown_request`.
 av = ["ducktape-host/av"]
+# Calls' codecs (`crates/av` with `call`). On Linux the picture codec is
+# Cisco's prebuilt OpenH264, fetched onto this machine by
+# `src/backend/openh264.rs` and switched in Settings; nothing turns the
+# feature on yet.
+call = ["av", "dep:ducktape-av", "dep:bzip2", "ducktape-av/call"]
 default = ["av"]
 
 [dependencies]
 # the blind host core, shared with the phone
 ducktape-host = { path = "crates/host" }
+# feature `call`: where Cisco's OpenH264 binary is (`codec::cisco`)
+ducktape-av = { path = "crates/av", optional = true }
 gpui-kit = "=0.7.3"
 gpui-base = "=0.7.3"
 futures.workspace = true
@@ -167,6 +174,9 @@ zbus = "5"
 # XCB connection. Already in the graph under gpui-pre-linux, with this feature.
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
+# feature `call`: Cisco serves its OpenH264 binary bzip2-packed (pure
+# Rust, libbz2-rs-sys)
+bzip2 = { version = "0.6", optional = true }
 
 [dev-dependencies]
 # the host core's test helpers (`*_for_test`, `test_style`, the door)
@@ -233,6 +243,17 @@ opt-level = 1
 # sha256 over a whole app binary (the self-update's install, and every
 # archive it stages): half a minute unoptimized, under a second optimized.
 [profile.dev.package.sha2]
+opt-level = 3
+
+# A call's codecs (ducktape-av's `call`) optimized in a dev build too:
+# unoptimized, the openh264 crate's picture conversions (the H.264 itself
+# is Cisco's binary, or the OS's) and ducktape-av's own scaling take tens
+# to hundreds of ms a picture (a 720p picture scaled to 360p: 565 ms,
+# 10.8 ms optimized). libopus sets its own, in crates/av/build.rs.
+[profile.dev.package.openh264]
+opt-level = 3
+
+[profile.dev.package.ducktape-av]
 opt-level = 3
 
 # Optimize the native render and text stack without slowing unrelated workspace crates.
