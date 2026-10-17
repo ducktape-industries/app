@@ -39,7 +39,7 @@ pub(crate) use kernel::live::Subscribed;
 pub use kernel::live::{HostLive, HostPublication, HostSubscription, TrackHeard};
 pub use kernel::{Answered, day, local_offset};
 // a host with no screen runs each program's notifier per account (`crates/pushd`)
-pub use notifier::{Recipient, Said, notify_for};
+pub use notifier::{Carried, Recipient, Said, notify_for};
 // the web view cleans a page's title as a window's (render/web.rs), the
 // av pieces a device's name (render/av.rs)
 #[cfg(any(feature = "web", feature = "av"))]

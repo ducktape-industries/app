@@ -1,19 +1,25 @@
-//! The `push` channel: a call to an account's phones (huddle call SPEC §5).
+//! The `push` channel: an account's notices to its phones.
 //!
-//! A notice the centre lets through whose kind is a call
-//! ([`NoticeKind::Call`]) goes to each of the account's devices: an
-//! iPhone's PushKit token as an APNs VoIP push, an Android phone's Firebase
-//! token as a high-priority FCM data message, both expiring at the call's
-//! `until`. Taken down before then (the program's `notify.seen` of its
-//! tag), it is withdrawn: a background push to an iPhone's APNs token (never
-//! a second VoIP push, which iOS would ring), `kind: withdraw` to an Android
-//! phone at normal priority. Past its `until` it is dropped: a phone stops ringing then on its
-//! own, and pushd sends no call already past it. Every other notice goes on
-//! to the `log` channel.
+//! A notice the centre lets through goes to each of the account's devices
+//! the registry lists ([`Devices`]): a call ([`NoticeKind::Call`]) to an
+//! iPhone's PushKit token as an APNs VoIP push and to an Android phone's
+//! Firebase token as a high-priority data message, both expiring at its
+//! `until` (huddle call SPEC §5); any other notice to an iPhone's
+//! remote-notification token as an alert and to an Android phone as a
+//! high-priority data message the app shows (`Ring.kt`), under the notice's
+//! tag as its collapse id. A second notice under a tag still standing goes
+//! quietly (no sound, a lower priority, `quiet` for Android): the "N more"
+//! banner past the burst is posted again on every post. Taken down (the
+//! program's `notify.seen` of its tag, or its `until`), it is withdrawn: a
+//! background push to the remote-notification token (never a second VoIP
+//! push, which iOS would ring) and `kind: withdraw` to Android. Past its
+//! `until` it is dropped. Every notice is also one `log` line.
 //!
-//! Both carry one payload, `{kind, chain, program, tag, title, body, link,
-//! until}` (FCM's data values are strings). pushd names no program: a call
-//! is a call whoever posts it.
+//! An APNs token is sent to the server its `env` names: Apple's sandbox for
+//! a build signed for development, production for the rest. Both carry one
+//! payload, `{kind, chain, program, tag, title, body, link, until}` (FCM's
+//! data values are strings). pushd names no program: a call is a call
+//! whoever posts it.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -26,16 +32,7 @@ use ducktape_host::runtime::notify::{Click, Notice, NoticeKind};
 use ring::signature::{self, EcdsaKeyPair, RsaKeyPair};
 
 use crate::Log;
-
-/// One device of an account: its token and what kind it is.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
-pub struct Device {
-    /// `voip`: an iPhone's PushKit token (hex), for a call. `apns`: its
-    /// remote-notification token (hex), for a withdraw. `fcm`: an Android
-    /// phone's Firebase token, for both.
-    pub kind: String,
-    pub token: String,
-}
+use crate::registry::Devices;
 
 /// `[apns]` in pushd.toml: the team's APNs auth key, kept out of any repo.
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -46,9 +43,10 @@ pub struct ApnsConfig {
     pub team_id: String,
     /// The app's bundle id; a VoIP push goes to `<topic>.voip`.
     pub topic: String,
-    /// Apple's development server: for a build signed for development.
+    /// Where every push goes instead of Apple, whatever a token's env: a
+    /// stage's recorder.
     #[serde(default)]
-    pub sandbox: bool,
+    pub endpoint: Option<String>,
 }
 
 /// `[fcm]` in pushd.toml: the Firebase project's service account.
@@ -56,6 +54,9 @@ pub struct ApnsConfig {
 pub struct FcmConfig {
     /// The service account's JSON key file.
     pub service_account: PathBuf,
+    /// Where every message goes instead of Google: a stage's recorder.
+    #[serde(default)]
+    pub endpoint: Option<String>,
 }
 
 /// One HTTP request a channel sends.
@@ -74,7 +75,7 @@ pub trait Http: Send + Sync {
 
 /// The internet: HTTP/2, which APNs requires, through reqwest. Every
 /// request gives up in bounded time: the channel's sends run one after
-/// another in the program's queue, and one stuck connection would hold
+/// another in the account's queue, and one stuck connection would hold
 /// every later ring past its `until`. Idle HTTP/2 connections are pinged,
 /// so a dead one is found before a ring waits on it.
 pub struct Client(reqwest::Client);
@@ -125,7 +126,7 @@ pub struct Apns {
     key_id: String,
     team_id: String,
     topic: String,
-    host: &'static str,
+    endpoint: Option<String>,
     token: Kept,
 }
 
@@ -145,12 +146,18 @@ impl Apns {
             key_id: config.key_id.clone(),
             team_id: config.team_id.clone(),
             topic: config.topic.clone(),
-            host: match config.sandbox {
-                true => "https://api.sandbox.push.apple.com",
-                false => "https://api.push.apple.com",
-            },
+            endpoint: config.endpoint.clone(),
             token: Mutex::default(),
         })
+    }
+
+    /// Apple's server for a token of `env`, or the configured endpoint.
+    pub fn host(&self, env: &str) -> &str {
+        match (&self.endpoint, env) {
+            (Some(endpoint), _) => endpoint,
+            (None, "sandbox") => "https://api.sandbox.push.apple.com",
+            (None, _) => "https://api.push.apple.com",
+        }
     }
 
     /// The provider token (an ES256 JWT of the team, signed with the key),
@@ -169,6 +176,24 @@ impl Apns {
             Ok((token, Duration::from_secs(40 * 60)))
         })
     }
+
+    /// One push of `body` to `token` (of `env`) with `headers` and the
+    /// provider token.
+    fn request(
+        &self,
+        token: &str,
+        env: &str,
+        bearer: &str,
+        mut headers: Vec<(&'static str, String)>,
+        body: &serde_json::Value,
+    ) -> Request {
+        headers.insert(0, ("authorization", format!("bearer {bearer}")));
+        Request {
+            url: format!("{}/3/device/{token}", self.host(env)),
+            headers,
+            body: body.to_string(),
+        }
+    }
 }
 
 /// What signs the service account's assertion: its RSA key (RS256).
@@ -179,6 +204,7 @@ pub struct Fcm {
     project: String,
     email: String,
     token_uri: String,
+    endpoint: Option<String>,
     sign: Signer,
     token: Kept,
 }
@@ -215,9 +241,21 @@ impl Fcm {
             project: account.project_id,
             email: account.client_email,
             token_uri: account.token_uri,
+            endpoint: config.endpoint.clone(),
             sign,
             token: Mutex::default(),
         })
+    }
+
+    /// Where a message is sent.
+    fn url(&self) -> String {
+        match &self.endpoint {
+            Some(endpoint) => format!("{endpoint}/v1/projects/{}/messages:send", self.project),
+            None => format!(
+                "https://fcm.googleapis.com/v1/projects/{}/messages:send",
+                self.project
+            ),
+        }
     }
 
     /// An OAuth access token for FCM, from Google's token endpoint for an
@@ -310,156 +348,207 @@ fn now() -> u64 {
         .map_or(0, |since| since.as_secs())
 }
 
+/// Unix milliseconds now.
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as u64)
+}
+
 /// The `push` channel of one account ([module docs](self)).
 pub struct Push {
-    /// Where every notice that is not a call goes.
+    /// Where every notice is also written.
     pub log: Log,
     /// The chain the payload names, as `duck://` links spell it.
     pub chain: String,
-    // ponytail: the account's devices come from pushd.toml; M2's registry
-    // (a device registered with a key `identity` says acts for the account)
-    // replaces the list
-    pub devices: Vec<Device>,
+    pub account: u64,
+    /// The network's registry: the account's devices, as registered now.
+    pub devices: Arc<Devices>,
     pub apns: Option<Arc<Apns>>,
     pub fcm: Option<Arc<Fcm>>,
     pub http: Arc<dyn Http>,
-    /// The calls sent, by tag, and their `until`: what a withdraw takes back.
-    calls: Mutex<HashMap<String, u64>>,
+    /// The notices standing on the phones, by tag, each with its `until`:
+    /// what a withdraw takes back, and what a repost replaces quietly.
+    // ponytail: in memory, so a restart alerts once more under a standing
+    // tag and withdraws nothing posted before it; kept in the store if felt
+    standing: Mutex<HashMap<String, u64>>,
 }
+
+/// The two priorities a push is sent at.
+const LOUD: &str = "10";
+const QUIET: &str = "5";
 
 impl Push {
     pub fn new(
         log: Log,
         chain: String,
-        devices: Vec<Device>,
+        account: u64,
+        devices: Arc<Devices>,
         (apns, fcm): (Option<Arc<Apns>>, Option<Arc<Fcm>>),
         http: Arc<dyn Http>,
     ) -> Self {
         Self {
             log,
             chain,
+            account,
             devices,
             apns,
             fcm,
             http,
-            calls: Mutex::default(),
+            standing: Mutex::default(),
         }
     }
 
-    /// The account's tokens of `kind`.
-    fn tokens(&self, kind: &str) -> impl Iterator<Item = &str> {
-        self.devices
-            .iter()
-            .filter(move |device| device.kind == kind)
-            .map(|device| device.token.as_str())
+    /// The account's tokens of `kind`, each with its env.
+    fn tokens(&self, kind: &str) -> Vec<(String, String)> {
+        self.devices.tokens(self.account, kind)
+    }
+
+    /// The APNs provider token, when there are tokens of `kind` to push to.
+    fn apns_for(&self, kind: &str, now: u64) -> Option<(&Apns, String, Vec<(String, String)>)> {
+        let apns = self.apns.as_deref()?;
+        let tokens = self.tokens(kind);
+        if tokens.is_empty() {
+            return None;
+        }
+        match apns.bearer(now) {
+            Ok(bearer) => Some((apns, bearer, tokens)),
+            Err(error) => {
+                tracing::warn!(target: "pushd", %error, "no APNs provider token");
+                None
+            }
+        }
+    }
+
+    /// The payload every push of `notice` carries.
+    fn payload(&self, notice: &Notice, kind: &str) -> serde_json::Value {
+        serde_json::json!({
+            "kind": kind,
+            "chain": self.chain,
+            "program": notice.program,
+            "tag": notice.tag,
+            "title": notice.title,
+            "body": notice.body,
+            "link": notice.link,
+            "until": notice.until,
+        })
     }
 
     /// The requests that ring `call` on every device, at `now`.
     fn ring(&self, call: &Notice, now: u64) -> Vec<Request> {
-        let payload = serde_json::json!({
-            "kind": "call",
-            "chain": self.chain,
-            "program": call.program,
-            "tag": call.tag,
-            "title": call.title,
-            "body": call.body,
-            "link": call.link,
-            "until": call.until,
-        });
+        let payload = self.payload(call, "call");
         let mut requests = Vec::new();
-        if let Some(apns) = self
-            .apns
-            .as_deref()
-            .filter(|_| self.tokens("voip").next().is_some())
-        {
-            match apns.bearer(now) {
-                Ok(bearer) => requests.extend(self.tokens("voip").map(|token| Request {
-                    url: format!("{}/3/device/{token}", apns.host),
-                    headers: vec![
-                        ("authorization", format!("bearer {bearer}")),
+        if let Some((apns, bearer, tokens)) = self.apns_for("voip", now) {
+            requests.extend(tokens.iter().map(|(token, env)| {
+                apns.request(
+                    token,
+                    env,
+                    &bearer,
+                    vec![
                         ("apns-push-type", "voip".into()),
                         ("apns-topic", format!("{}.voip", apns.topic)),
-                        ("apns-priority", "10".into()),
+                        ("apns-priority", LOUD.into()),
                         ("apns-expiration", call.until.to_string()),
                         ("apns-collapse-id", collapse_id(&call.tag)),
                     ],
-                    body: payload.to_string(),
-                })),
-                Err(error) => tracing::warn!(target: "pushd", %error, "no APNs provider token"),
-            }
+                    &payload,
+                )
+            }));
         }
-        // FCM's data values are strings
-        let data: serde_json::Map<_, _> = payload
-            .as_object()
-            .into_iter()
-            .flatten()
-            .map(|(key, value)| {
-                let text = value
-                    .as_str()
-                    .map_or_else(|| value.to_string(), str::to_owned);
-                (key.clone(), serde_json::Value::String(text))
-            })
-            .collect();
-        requests.extend(self.fcm(&data, &call.tag, call.until, now, "high"));
+        requests.extend(self.fcm(strings(&payload), Some(&call.tag), call.until, now, "high"));
         requests
     }
 
-    /// The requests that take the call under `tag` back from every device
-    /// before its `until`.
+    /// The requests that show `notice` on every device, at `now`; `quiet`
+    /// when one under its tag already stands there.
+    fn show(&self, notice: &Notice, now: u64, quiet: bool) -> Vec<Request> {
+        let payload = self.payload(notice, "notice");
+        let mut requests = Vec::new();
+        if let Some((apns, bearer, tokens)) = self.apns_for("apns", now) {
+            let mut aps = serde_json::json!({
+                "alert": { "title": notice.title, "body": notice.body },
+                "thread-id": notice.program,
+            });
+            if !quiet {
+                aps["sound"] = "default".into();
+            }
+            let mut body = payload.clone();
+            body["aps"] = aps;
+            let mut headers = vec![
+                ("apns-push-type", "alert".into()),
+                ("apns-topic", apns.topic.clone()),
+                ("apns-priority", if quiet { QUIET } else { LOUD }.into()),
+                ("apns-collapse-id", collapse_id(&notice.tag)),
+            ];
+            if notice.until != 0 {
+                headers.push(("apns-expiration", notice.until.to_string()));
+            }
+            requests.extend(
+                tokens
+                    .iter()
+                    .map(|(token, env)| apns.request(token, env, &bearer, headers.clone(), &body)),
+            );
+        }
+        let mut data = strings(&payload);
+        if quiet {
+            data.insert("quiet".into(), "1".into());
+        }
+        // no collapse key: FCM keeps four per device at most, and the
+        // phone replaces the notification under its tag itself
+        requests.extend(self.fcm(data, None, notice.until, now, "high"));
+        requests
+    }
+
+    /// The requests that take what stands under `tag` down from every
+    /// device before its `until`.
     fn withdrawal(&self, tag: &str, until: u64, now: u64) -> Vec<Request> {
         let mut requests = Vec::new();
-        if let Some(apns) = self
-            .apns
-            .as_deref()
-            .filter(|_| self.tokens("apns").next().is_some())
-        {
-            match apns.bearer(now) {
-                Ok(bearer) => requests.extend(self.tokens("apns").map(|token| {
-                    Request {
-                        url: format!("{}/3/device/{token}", apns.host),
-                        headers: vec![
-                            ("authorization", format!("bearer {bearer}")),
-                            ("apns-push-type", "background".into()),
-                            ("apns-topic", apns.topic.clone()),
-                            ("apns-priority", "5".into()),
-                            ("apns-expiration", until.to_string()),
-                        ],
-                        body: serde_json::json!({
-                            "aps": { "content-available": 1 },
-                            "kind": "withdraw",
-                            "tag": tag,
-                        })
-                        .to_string(),
-                    }
-                })),
-                Err(error) => tracing::warn!(target: "pushd", %error, "no APNs provider token"),
+        if let Some((apns, bearer, tokens)) = self.apns_for("apns", now) {
+            let body = serde_json::json!({
+                "aps": { "content-available": 1 },
+                "kind": "withdraw",
+                "tag": tag,
+            });
+            let mut headers = vec![
+                ("apns-push-type", "background".into()),
+                ("apns-topic", apns.topic.clone()),
+                ("apns-priority", QUIET.into()),
+            ];
+            if until != 0 {
+                headers.push(("apns-expiration", until.to_string()));
             }
+            requests.extend(
+                tokens
+                    .iter()
+                    .map(|(token, env)| apns.request(token, env, &bearer, headers.clone(), &body)),
+            );
         }
         let data = serde_json::json!({ "kind": "withdraw", "tag": tag });
         let data = data.as_object().cloned().unwrap_or_default();
         // normal: it shows nothing, and FCM deprioritises an app whose
         // high-priority messages show nothing
-        requests.extend(self.fcm(&data, tag, until, now, "normal"));
+        requests.extend(self.fcm(data, None, until, now, "normal"));
         requests
     }
 
     /// One FCM data message of `data` at `priority` per Android token,
-    /// living until `until`.
+    /// living until `until` (0: FCM's default), collapsed under
+    /// `collapse` when given.
     fn fcm(
         &self,
-        data: &serde_json::Map<String, serde_json::Value>,
-        tag: &str,
+        data: serde_json::Map<String, serde_json::Value>,
+        collapse: Option<&str>,
         until: u64,
         now: u64,
         priority: &str,
     ) -> Vec<Request> {
-        let Some(fcm) = self
-            .fcm
-            .as_deref()
-            .filter(|_| self.tokens("fcm").next().is_some())
-        else {
+        let Some(fcm) = self.fcm.as_deref() else {
             return Vec::new();
         };
+        let tokens = self.tokens("fcm");
+        if tokens.is_empty() {
+            return Vec::new();
+        }
         let bearer = match fcm.bearer(&*self.http, now) {
             Ok(bearer) => bearer,
             Err(error) => {
@@ -467,28 +556,27 @@ impl Push {
                 return Vec::new();
             }
         };
-        self.tokens("fcm")
-            .map(|token| Request {
-                url: format!(
-                    "https://fcm.googleapis.com/v1/projects/{}/messages:send",
-                    fcm.project
-                ),
-                headers: vec![
-                    ("authorization", format!("Bearer {bearer}")),
-                    ("content-type", "application/json".into()),
-                ],
-                body: serde_json::json!({
-                    "message": {
-                        "token": token,
-                        "data": data,
-                        "android": {
-                            "priority": priority,
-                            "ttl": format!("{}s", until.saturating_sub(now)),
-                            "collapse_key": tag,
-                        },
-                    },
-                })
-                .to_string(),
+        tokens
+            .iter()
+            .map(|(token, _)| {
+                let mut android = serde_json::json!({ "priority": priority });
+                if until != 0 {
+                    android["ttl"] = format!("{}s", until.saturating_sub(now)).into();
+                }
+                if let Some(collapse) = collapse {
+                    android["collapse_key"] = collapse.into();
+                }
+                Request {
+                    url: fcm.url(),
+                    headers: vec![
+                        ("authorization", format!("Bearer {bearer}")),
+                        ("content-type", "application/json".into()),
+                    ],
+                    body: serde_json::json!({
+                        "message": { "token": token, "data": data, "android": android },
+                    })
+                    .to_string(),
+                }
             })
             .collect()
     }
@@ -500,7 +588,8 @@ impl Push {
             match self.http.send(&request) {
                 Ok((200, _)) => taken = true,
                 // ponytail: a token APNs or FCM says is gone stays listed
-                // until M2's registry drops it
+                // until the phone registers again or its key leaves the
+                // account; dropped on `410 Unregistered` if felt
                 Ok((status, body)) => {
                     let to = shown(&request.url);
                     tracing::warn!(target: "pushd", to, status, body, "push refused")
@@ -513,6 +602,27 @@ impl Push {
         }
         taken
     }
+
+    fn standing(&self) -> std::sync::MutexGuard<'_, HashMap<String, u64>> {
+        self.standing
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// `payload`'s fields as strings: FCM's data values.
+fn strings(payload: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    payload
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(key, value)| {
+            let text = value
+                .as_str()
+                .map_or_else(|| value.to_string(), str::to_owned);
+            (key.clone(), serde_json::Value::String(text))
+        })
+        .collect()
 }
 
 /// Where a request went, for the log: an APNs device token in its URL cut
@@ -542,27 +652,26 @@ fn collapse_id(tag: &str) -> String {
 impl Banners for Push {
     fn post(&self, notice: &Notice, click: Option<Click>) -> bool {
         let now = now();
-        let over = notice.until != 0 && notice.until <= now;
-        if notice.kind != NoticeKind::Call || over {
-            return self.log.post(notice, click);
-        }
-        self.calls
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(notice.tag.clone(), notice.until);
         self.log.post(notice, click);
-        self.send(self.ring(notice, now))
+        if notice.until != 0 && notice.until <= now {
+            return false;
+        }
+        let quiet = !notice.tag.is_empty()
+            && self
+                .standing()
+                .insert(notice.tag.clone(), notice.until)
+                .is_some();
+        match notice.kind {
+            NoticeKind::Call => self.send(self.ring(notice, now)),
+            NoticeKind::Notice => self.send(self.show(notice, now, quiet)),
+        }
     }
 
     fn withdraw(&self, tag: &str) {
         self.log.withdraw(tag);
-        let until = self
-            .calls
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(tag);
+        let until = self.standing().remove(tag);
         let now = now();
-        // a call past its until rings nowhere any more: nothing to take back
+        // one past its until shows nowhere any more: nothing to take back
         if let Some(until) = until.filter(|until| *until == 0 || *until > now) {
             self.send(self.withdrawal(tag, until, now));
         }
@@ -591,9 +700,10 @@ mod tests {
         }
     }
 
-    fn push(devices: &[(&str, &str)]) -> (Push, Arc<Recorded>) {
+    /// An `Apns` over a key made for the test, as Apple's `.p8` holds it
+    /// (PKCS#8 PEM), sending to `endpoint` when given.
+    fn apns_with(endpoint: Option<String>) -> Apns {
         let dir = tempfile::tempdir().unwrap();
-        // a key made for the test, as Apple's `.p8` holds it (PKCS#8 PEM)
         let key = EcdsaKeyPair::generate_pkcs8(
             &signature::ECDSA_P256_SHA256_FIXED_SIGNING,
             &ring::rand::SystemRandom::new(),
@@ -603,37 +713,51 @@ mod tests {
         let p8 = dir.path().join("AuthKey_TESTKEY123.p8");
         let p8_text = format!("-----BEGIN PRIVATE KEY-----\n{pem}\n-----END PRIVATE KEY-----\n");
         std::fs::write(&p8, p8_text).unwrap();
-        let apns = Apns::load(&ApnsConfig {
+        Apns::load(&ApnsConfig {
             key_file: p8,
             key_id: "TESTKEY123".into(),
             team_id: "8464KRUNQG".into(),
             topic: "industries.ducktape.mobile".into(),
-            sandbox: false,
+            endpoint,
         })
-        .unwrap();
+        .unwrap()
+    }
+
+    fn push(devices: &[(&str, &str)]) -> (Push, Arc<Recorded>) {
+        let apns = apns_with(None);
         // ring makes no RSA key: the assertion's signature is a stand-in,
         // and Google's endpoint is the recorder
         let fcm = Fcm {
             project: "ducktape-test".into(),
             email: "pushd@ducktape-test.iam.gserviceaccount.com".into(),
             token_uri: "https://oauth2.googleapis.com/token".into(),
+            endpoint: None,
             sign: Box::new(|_| Ok(b"signed".to_vec())),
             token: Mutex::default(),
         };
         let http = Arc::new(Recorded::default());
+        let registry = Arc::new(Devices::default());
+        for (at, (kind, token)) in devices.iter().enumerate() {
+            registry.put(crate::registry::Row {
+                account: 2,
+                key: format!("key{at}"),
+                kind: (*kind).into(),
+                token: (*token).into(),
+                env: match *kind {
+                    "fcm" => String::new(),
+                    _ => "production".into(),
+                },
+                at: 1,
+            });
+        }
         let push = Push::new(
             Log {
                 network: "testkit".into(),
                 account: 2,
             },
             "testkit-0a1b2c3d".into(),
-            devices
-                .iter()
-                .map(|(kind, token)| Device {
-                    kind: (*kind).into(),
-                    token: (*token).into(),
-                })
-                .collect(),
+            2,
+            registry,
             (Some(Arc::new(apns)), Some(Arc::new(fcm))),
             http.clone(),
         );
@@ -879,17 +1003,120 @@ mod tests {
         assert_eq!(shown(fcm), fcm);
     }
 
-    /// A notice that is not a call sends nothing: it goes to the log.
+    /// A notice that is not a call is an alert to the iPhone's
+    /// remote-notification token (never its VoIP one), under its tag as
+    /// the collapse id, with a sound, and a high-priority data message the
+    /// Android app shows; a second under the same tag goes quietly (no
+    /// sound, lower priority, `quiet` for Android); taken down, both get a
+    /// withdraw; a tag withdrawn alerts again when posted again.
     #[test]
-    fn a_plain_notice_sends_no_push() {
-        let (push, http) = push(&[("voip", "ab12"), ("fcm", "fcm-token")]);
+    fn a_notice_alerts_once_then_replaces_quietly_until_withdrawn() {
+        let (push, http) = push(&[("voip", "ab12"), ("apns", "cd34"), ("fcm", "fcm-token")]);
         let notice = Notice {
             kind: NoticeKind::Notice,
-            ..call(0)
+            title: "ada mentioned you".into(),
+            body: "hey @bob".into(),
+            tag: "chat/#general".into(),
+            program: "chat".into(),
+            link: "duck://testkit-0a1b2c3d/chat/general/7".into(),
+            until: 0,
         };
+        assert!(push.post(&notice, Some(Click::Row(1))));
+        let sent = http.0.lock().unwrap().clone();
+        let apns: Vec<_> = sent
+            .iter()
+            .filter(|request| request.url.contains("/3/device/"))
+            .collect();
+        assert_eq!(apns.len(), 1, "{sent:#?}");
+        assert_eq!(apns[0].url, "https://api.push.apple.com/3/device/cd34");
+        assert_eq!(header(apns[0], "apns-push-type"), "alert");
+        assert_eq!(header(apns[0], "apns-topic"), "industries.ducktape.mobile");
+        assert_eq!(header(apns[0], "apns-priority"), "10");
+        assert_eq!(header(apns[0], "apns-collapse-id"), "chat/#general");
+        assert_eq!(header(apns[0], "apns-expiration"), "");
+        let body: serde_json::Value = serde_json::from_str(&apns[0].body).unwrap();
+        assert_eq!(body["aps"]["alert"]["title"], "ada mentioned you");
+        assert_eq!(body["aps"]["alert"]["body"], "hey @bob");
+        assert_eq!(body["aps"]["sound"], "default");
+        assert_eq!(body["aps"]["thread-id"], "chat");
+        assert_eq!(body["kind"], "notice");
+        assert_eq!(body["link"], "duck://testkit-0a1b2c3d/chat/general/7");
+        let fcm = sent.iter().find(|request| request.url.contains("messages:send"));
+        let fcm: serde_json::Value = serde_json::from_str(&fcm.unwrap().body).unwrap();
+        assert_eq!(fcm["message"]["android"]["priority"], "high");
+        assert!(fcm["message"]["android"].get("ttl").is_none());
+        assert!(fcm["message"]["android"].get("collapse_key").is_none());
+        assert_eq!(fcm["message"]["data"]["kind"], "notice");
+        assert!(fcm["message"]["data"].get("quiet").is_none());
+
+        http.0.lock().unwrap().clear();
         push.post(&notice, None);
-        push.withdraw("huddle/call/c1");
-        assert!(http.0.lock().unwrap().is_empty());
+        let sent = http.0.lock().unwrap().clone();
+        let apns = sent.iter().find(|request| request.url.contains("/3/device/")).unwrap();
+        assert_eq!(header(apns, "apns-priority"), "5");
+        let body: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
+        assert!(body["aps"].get("sound").is_none(), "{body}");
+        let fcm = sent.iter().find(|request| request.url.contains("messages:send"));
+        let fcm: serde_json::Value = serde_json::from_str(&fcm.unwrap().body).unwrap();
+        assert_eq!(fcm["message"]["data"]["quiet"], "1");
+
+        http.0.lock().unwrap().clear();
+        push.withdraw("chat/#general");
+        let sent = http.0.lock().unwrap().clone();
+        let apns = sent.iter().find(|request| request.url.contains("/3/device/")).unwrap();
+        assert_eq!(header(apns, "apns-push-type"), "background");
+        assert_eq!(header(apns, "apns-expiration"), "");
+        let fcm = sent.iter().find(|request| request.url.contains("messages:send"));
+        let fcm: serde_json::Value = serde_json::from_str(&fcm.unwrap().body).unwrap();
+        assert_eq!(fcm["message"]["data"]["kind"], "withdraw");
+
+        http.0.lock().unwrap().clear();
+        push.post(&notice, None);
+        let sent = http.0.lock().unwrap().clone();
+        let apns = sent.iter().find(|request| request.url.contains("/3/device/")).unwrap();
+        assert_eq!(header(apns, "apns-priority"), "10");
+    }
+
+    /// A token registered under `sandbox` goes to Apple's sandbox server,
+    /// one under `production` to the production one; an endpoint set in
+    /// the config takes every push whatever the env.
+    #[test]
+    fn an_apns_token_goes_to_the_server_its_env_names() {
+        let (push, http) = push(&[("apns", "cd34")]);
+        push.devices.put(crate::registry::Row {
+            account: 2,
+            key: "dev-key".into(),
+            kind: "apns".into(),
+            token: "ef56".into(),
+            env: "sandbox".into(),
+            at: 1,
+        });
+        push.post(
+            &Notice {
+                kind: NoticeKind::Notice,
+                ..call(0)
+            },
+            None,
+        );
+        let sent = http.0.lock().unwrap().clone();
+        let mut urls: Vec<_> = sent
+            .iter()
+            .filter(|request| request.url.contains("/3/device/"))
+            .map(|request| request.url.as_str())
+            .collect();
+        urls.sort();
+        assert_eq!(
+            urls,
+            [
+                "https://api.push.apple.com/3/device/cd34",
+                "https://api.sandbox.push.apple.com/3/device/ef56"
+            ]
+        );
+        let apns = push.apns.as_ref().unwrap();
+        assert_eq!(apns.host("sandbox"), "https://api.sandbox.push.apple.com");
+        let staged = apns_with(Some("http://127.0.0.1:9".into()));
+        assert_eq!(staged.host("sandbox"), "http://127.0.0.1:9");
+        assert_eq!(staged.host("production"), "http://127.0.0.1:9");
     }
 
     /// A tag past APNs's 64 bytes collapses by its hash.

@@ -16,10 +16,13 @@
 //!   program on top, its view seated full screen under the capsule), the
 //!   sheets over it (the account menu, the capsule's menu, the consent
 //!   sheet), Back, the links the OS hands over, memory pressure.
+//! - [`push`]: this phone's push tokens registered with the push server,
+//!   signed by its key, so the server carries the account's notices here.
 //!
 //! Nothing here names a user program; the host decides what runs.
 
 pub mod assets;
 pub mod key;
 pub mod os;
+pub mod push;
 pub mod shell;

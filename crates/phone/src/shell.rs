@@ -78,6 +78,9 @@ struct Phone {
     stack: Entity<Stack>,
     window: Option<(AnyWindowHandle, WeakEntity<Root>)>,
     waiting: Vec<String>,
+    /// This phone's push tokens kept registered with the push server, for
+    /// as long as the app runs.
+    _registrar: Entity<crate::push::Registrar>,
 }
 
 impl Global for Phone {}
@@ -120,11 +123,13 @@ pub fn launch(os: Arc<dyn OsServices>, cx: &mut App) {
     }
     let (signals, mut asks) = (host.signals, host.consent);
     let stack = cx.new(|_| Stack::default());
+    let registrar = crate::push::Registrar::start(host.shared.clone(), cx);
     cx.set_global(Phone {
         shared: host.shared,
         stack,
         window: None,
         waiting: Vec::new(),
+        _registrar: registrar,
     });
     cx.spawn(async move |cx: &mut AsyncApp| {
         while let Ok(signal) = signals.recv().await {
@@ -1665,11 +1670,13 @@ mod tests {
         let shared = cx.update(|cx| Shared::for_test(Default::default(), Default::default(), cx));
         let stack = cx.new(|_| Stack::default());
         cx.update(|cx| {
+            let registrar = crate::push::Registrar::start(shared.clone(), cx);
             cx.set_global(Phone {
                 shared: shared.clone(),
                 stack: stack.clone(),
                 window: None,
                 waiting: Vec::new(),
+                _registrar: registrar,
             })
         });
         let (root, cx) =
@@ -2088,11 +2095,13 @@ mod tests {
         let shared = cx.update(|cx| Shared::for_test(Default::default(), Default::default(), cx));
         let stack = cx.new(|_| Stack::default());
         cx.update(|cx| {
+            let registrar = crate::push::Registrar::start(shared.clone(), cx);
             cx.set_global(Phone {
                 shared: shared.clone(),
                 stack: stack.clone(),
                 window: None,
                 waiting: Vec::new(),
+                _registrar: registrar,
             })
         });
         let (root, cx) =
