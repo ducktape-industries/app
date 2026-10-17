@@ -47,7 +47,7 @@ mod settings;
 #[cfg(test)]
 mod tests;
 
-pub use center::{CenterHandle, Entry, Notice, NoticeKind, Posted, center, wall};
+pub use center::{CenterHandle, Entry, Notice, NoticeKind, center, wall};
 pub use settings::{
     BURSTS, Permission, Settings, not_now, save_banners, save_burst, save_in_front, set_permission,
 };
