@@ -3,7 +3,8 @@
 //!
 //! A phone sends a [`Registration`] (`ducktape_host::push`: the shape, the
 //! namespace, the preimage) to `POST /v1/devices`. It is taken when:
-//! - its kind is `voip`, `apns` (each with an APNs `env`) or `fcm` (none);
+//! - its kind is `voip`, `apns` (each with an APNs `env`, its token hex)
+//!   or `fcm` (no env);
 //! - its `at` is within [`AT_WINDOW_MS`] of now AND newer than the `at`
 //!   kept for that key and kind: an old message replayed (a stale token
 //!   put back after a rotation, a leave undone) changes nothing, whatever
@@ -200,6 +201,16 @@ pub fn checked(registration: &Registration, now: u64) -> Result<[u8; 32], Refuse
     }
     if registration.token.len() > 512 || registration.chain.len() > 128 {
         return Err(bad("a token is at most 512 bytes, a chain 128"));
+    }
+    // an APNs token ends the URL it is pushed to (`/3/device/<token>`):
+    // hex, never a `/`, `..` or `?` that moves the path
+    if registration.kind != "fcm"
+        && !registration
+            .token
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(bad("an APNs token is hex"));
     }
     if registration.at.abs_diff(now) > AT_WINDOW_MS {
         return Err(bad("the registration's time is too far from now"));
@@ -475,7 +486,8 @@ mod tests {
 
     /// A registration is taken when its key signed it, its time is near
     /// now, and its kind and env fit; a changed field, another key's
-    /// signature, a stale time or an fcm token with an env is refused.
+    /// signature, a stale time, an fcm token with an env or an APNs token
+    /// that is not hex is refused.
     #[test]
     fn a_registration_is_its_keys_word_at_about_now() {
         let key = key();
@@ -506,6 +518,15 @@ mod tests {
             NOW,
         );
         assert!(checked(&fcm, NOW).unwrap_err().1.contains("fcm"));
+        let path = signed(
+            Registration {
+                token: "../../3/device/ab12".into(),
+                ..voip()
+            },
+            &key,
+            NOW,
+        );
+        assert!(checked(&path, NOW).unwrap_err().1.contains("hex"));
         let unknown = signed(
             Registration {
                 kind: "sms".into(),
