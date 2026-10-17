@@ -301,6 +301,7 @@ pub fn runner(dirs: &Dirs) -> Arc<dyn ViewRunner> {
     let config = RunnerConfig {
         signals_based_traps: !cfg!(target_os = "android"),
         cache_dir: code_cache(&dirs.cache),
+        compile_apart: None,
     };
     #[cfg(target_os = "ios")]
     {
