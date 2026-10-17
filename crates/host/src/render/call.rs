@@ -562,6 +562,7 @@ mod inner {
             }
         };
         feed.tapped.store(encoder.is_some(), Ordering::Relaxed);
+        let mut sent = ducktape_av::fake::tap("sent.log");
         let mut chunker = Chunker::default();
         let mut subscribers = 0u32;
         let mut up = false;
@@ -628,10 +629,28 @@ mod inner {
                 keyframe: packet.keyframe,
                 data: packet.data,
             };
-            for object in chunker.push(&frame, now) {
+            let objects = chunker.push(&frame, now);
+            if let Some(sent) = &mut sent {
+                use std::io::Write as _;
+                let _ = writeln!(
+                    sent,
+                    "frame {} key {} bytes {} objects {} rung {}x{}",
+                    frame.ts_ms,
+                    frame.keyframe,
+                    frame.data.len(),
+                    objects.len(),
+                    ladder.rung().width,
+                    ladder.rung().height
+                );
+            }
+            for object in objects {
                 match publication.push(object) {
                     Pushed::Queued | Pushed::Dropped => {}
                     Pushed::Cut(_) => {
+                        if let Some(sent) = &mut sent {
+                            use std::io::Write as _;
+                            let _ = writeln!(sent, "cut");
+                        }
                         chunker.cut();
                         if let Some(rung) = ladder.cut(now) {
                             apply(encoder, rung);
@@ -741,15 +760,23 @@ mod inner {
         if decoder.is_none() {
             lock(&standing).unsupported = true;
         }
-        let tap = ducktape_av::fake::tap_dir().and_then(|dir| {
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(dir.join("video.log"))
-                .ok()
-        });
+        let tap = ducktape_av::fake::tap("video.log");
+        let mut got = ducktape_av::fake::tap("recv.log");
         let mut frames = Reassembler::default();
         while let Some(item) = subscription.recv() {
+            if let Some(got) = &mut got {
+                use std::io::Write as _;
+                let line = match &item {
+                    Subscribed::Heard(heard) => format!("heard {heard:?}"),
+                    Subscribed::Data(Data::Object { group, body, .. }) => {
+                        format!("object {group} {}", body.len())
+                    }
+                    Subscribed::Data(Data::GroupEnd { group, complete }) => {
+                        format!("end {group} {complete}")
+                    }
+                };
+                let _ = writeln!(got, "{line}");
+            }
             match item {
                 Subscribed::Heard(heard) => {
                     let mut word = lock(&standing);

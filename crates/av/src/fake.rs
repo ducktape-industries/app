@@ -29,6 +29,15 @@ pub fn tap_dir() -> Option<PathBuf> {
     std::env::var_os("DUCKTAPE_AV_FAKE_TAP").map(PathBuf::from)
 }
 
+/// A proof's log `name` under the tap directory, appended to.
+pub fn tap(name: &str) -> Option<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(tap_dir()?.join(name))
+        .ok()
+}
+
 /// The fake camera's picture size and rate.
 pub const WIDTH: u32 = 640;
 pub const HEIGHT: u32 = 360;
@@ -89,7 +98,7 @@ impl Bars {
 }
 
 impl Source for Bars {
-    fn next(&mut self, wait: Duration, wanted: bool, _mirror: bool) -> Result<Got, Status> {
+    fn next(&mut self, wait: Duration, wanted: bool, mirror: bool) -> Result<Got, Status> {
         let due = self.started + Duration::from_millis(1000 * self.frames / FPS);
         let now = Instant::now();
         if due > now {
@@ -123,6 +132,9 @@ impl Source for Bars {
             bgra,
         };
         stamp(&mut picture, n);
+        if mirror {
+            picture.flip_horizontal();
+        }
         Ok(Got::Picture(picture))
     }
 }
@@ -185,6 +197,32 @@ pub(crate) fn run_voice(io: Weak<Io>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Thirty stamped frames through the video codec at the top rung: every
+    /// one decodes, in order, its stamp read back.
+    #[test]
+    fn stamped_frames_survive_the_video_codec() {
+        use crate::codec::{VideoDecoder, VideoEncoder};
+        let mut bars = Bars::new();
+        let mut encoder = VideoEncoder::new(WIDTH, HEIGHT, 600_000, FPS as u32).expect("encoder");
+        let mut decoder = VideoDecoder::new().expect("decoder");
+        let mut read = Vec::new();
+        for i in 0..30u64 {
+            bars.started = Instant::now() - Duration::from_secs(10);
+            let Ok(Got::Picture(picture)) = bars.next(Duration::ZERO, true, false) else {
+                panic!("a picture");
+            };
+            let packet = encoder
+                .encode(&picture, Duration::from_millis(i * 1000 / FPS))
+                .expect("encoded")
+                .expect("a packet each frame");
+            if let Some(decoded) = decoder.decode(&packet.data).expect("decoded") {
+                read.push(read_stamp(&decoded).expect("a stamp"));
+            }
+        }
+        assert!(read.len() >= 28, "{read:?}");
+        assert!(read.windows(2).all(|w| w[1] == w[0] + 1), "{read:?}");
+    }
 
     /// A number burnt in is read back; a picture without the marks reads
     /// nothing.
