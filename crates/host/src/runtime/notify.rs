@@ -31,10 +31,20 @@
 //! macOS the notification centre's delegate hearing the default action on a
 //! banner that names its row (in its `userInfo`).
 //!
-//! The host posts one notice of its own ([`post_host`]): the self-update's
-//! "ready". It is no view's, so no row, no view's word and no burst limit;
-//! only the device's banners switch decides it, and a click on it opens
-//! Settings › Updates.
+//! The host posts notices of its own: the self-update's "ready" and
+//! "installed". What is a notice is decided by whoever owns it: the host
+//! owns its update notices, as each program owns its own. They are no
+//! view's, so no view's word and no burst limit; only the device's banners
+//! switch decides the banner (the shell's `post_host`), and a click on it
+//! opens Settings › Updates. Each gets a row in the centre
+//! ([`center::Center::post_host`]), the program [`HOST`]'s: a row of the
+//! device's own, not the chain's, so it shows whichever network is open
+//! and before any is. "ready" and "installed" stand under tags of their
+//! own: under one, a newer notice takes the row's place (a newer release's
+//! "ready"); "installed", and a "ready" withdrawn (the release dropped or
+//! rolled back, or none staged as the app starts), take "ready"'s row out
+//! ([`center::Center::withdraw_host`]) and leave "installed"'s. A click on
+//! the row opens Settings › Updates, as the banner's does.
 
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
@@ -49,7 +59,7 @@ mod settings;
 #[cfg(test)]
 mod tests;
 
-pub use center::{CenterHandle, Entry, Notice, NoticeKind, center, wall};
+pub use center::{CenterHandle, Entry, HOST, Notice, NoticeKind, center, wall};
 pub use settings::{
     BURSTS, Permission, Settings, not_now, save_banners, save_burst, save_in_front, set_permission,
 };
@@ -114,9 +124,9 @@ fn post(view: &mut View, center: &CenterHandle, id: u64, payload: &[u8]) {
             Instant::now(),
             wall(),
         );
-        // the row just logged is the newest: a click on its banner opens it
+        // a click on its banner opens the row just logged
         let entry = (posted == Delivery::Banner)
-            .then(|| center.entries().next().map(|entry| entry.id))
+            .then(|| center.logged())
             .flatten();
         (posted, banner, entry)
     };

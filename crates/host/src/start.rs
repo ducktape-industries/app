@@ -25,8 +25,8 @@ pub struct Host {
 
 /// Installs the shell's services, its view runner and its banner opener,
 /// opens the stores
-/// (the notification centre's log off disk, the roster the node's reads
-/// fill), makes the entities, and spawns the drain: `Lifecycle` to the
+/// (the notification centre's device rows off disk, the roster the node's
+/// reads fill), makes the entities, and spawns the drain: `Lifecycle` to the
 /// session (the status poll stops in the background and resumes in
 /// front), `BannerClick` to the centre (`notify::clicked`, which opens
 /// through `Boot::open`), the rest to `Host::signals`; and the task that
@@ -50,6 +50,8 @@ fn started(
     contract::install_runner(boot.runner);
     crate::runtime::notify::on_open(boot.open);
     let center = crate::runtime::notify::center().clone();
+    // the device's own rows, whichever network comes
+    center.lock().open_device();
     let roster = crate::runtime::roster().clone();
     crate::perf::mark("boot");
     let shared = Shared::new(roster, center, changes, cx);

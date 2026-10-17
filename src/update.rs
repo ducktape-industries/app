@@ -63,8 +63,8 @@ mod tests;
 
 pub(crate) use boot::boot;
 pub(crate) use channel::{
-    RESTART_WAITER, Updates, automate, choose, on_moved, rendered, restart, restart_waiter,
-    update_now, updates,
+    RESTART_WAITER, Updates, automate, check_now, choose, on_moved, rendered, restart,
+    restart_waiter, update_now, updates,
 };
 #[cfg(test)]
 pub(crate) use channel::{Shown, rendered_here, show_here};
@@ -91,6 +91,16 @@ const RELEASES: &str = match cfg!(target_os = "macos") {
     true => "releases.noindex",
     false => "releases",
 };
+
+/// What this build calls itself, as Settings › Updates and › About show
+/// it and the "installed" notice says it: its version, and the build that
+/// made it when one is named (`0.1.0 (<build>)`).
+pub(crate) fn version() -> String {
+    match option_env!("DUCKTAPE_APP_BUILD") {
+        Some(build) => format!("{} ({build})", env!("CARGO_PKG_VERSION")),
+        None => env!("CARGO_PKG_VERSION").into(),
+    }
+}
 
 /// The sequence this binary is published at: its commit's committer time
 /// (`build.rs`), 0 for a build without git. An install pins it, so a channel

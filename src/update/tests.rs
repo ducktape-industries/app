@@ -564,6 +564,7 @@ mod linux {
     use ducktape_updater::{Event, Idle, Phase};
 
     use super::*;
+    use crate::runtime::notify::{CenterHandle, HOST};
     use crate::update::channel::Updater;
     use crate::update::read_state;
 
@@ -1274,9 +1275,21 @@ mod linux {
         assert!(layout.release_dir(a).exists() && layout.release_dir(b).exists());
     }
 
-    /// The "is ready" notice stands exactly while a release is staged: up as
-    /// one is, down when a switch drops it, and down at the start after the
-    /// flip (or a rollback); a start that still has it staged leaves it up.
+    /// The rows the update notices left in `center`, newest first: each
+    /// one's program, title and whether it was read.
+    fn rows(center: &CenterHandle) -> Vec<(String, String, bool)> {
+        center
+            .lock()
+            .entries()
+            .map(|entry| (entry.program.clone(), entry.title.clone(), entry.read))
+            .collect()
+    }
+
+    /// The "is ready" notice stands exactly while a release is staged, its
+    /// row in the centre with it: up as one is, both down when a switch
+    /// drops it; a start that still has it staged leaves it up. The first
+    /// frame after the flip says once what it installed, in the ready one's
+    /// place, and the start after that says nothing new.
     #[test]
     fn the_ready_notice_stands_while_a_release_is_staged_and_goes_with_it() {
         use crate::update::boot::{Boot, boot_at};
@@ -1287,23 +1300,38 @@ mod linux {
         let pin = installed.pinned_sequence();
         let b = publish(&bucket, Channel::Stable, pin + 1, &release_of(script("b")));
         let ready = format!("ready 0.1.0+{}", b.short());
+        let ready_row = |read| {
+            let title = format!("Ducktape 0.1.0+{} is ready.", b.short());
+            vec![(HOST.to_owned(), title, read)]
+        };
+        let center = CenterHandle::default();
         noticed_here();
 
-        let mut running = updater(&layout, &bucket, Channel::Stable);
+        let mut running = updater(&layout, &bucket, Channel::Stable).with_center(center.clone());
         running.start();
+        assert_eq!(
+            rows(&center),
+            [],
+            "a start with nothing staged says nothing"
+        );
         block(running.check(&client(), Take::Automatic));
         assert_eq!(noticed_here(), ["withdrawn", ready.as_str()]);
+        assert_eq!(rows(&center), ready_row(false), "the staged release's row");
 
         crate::update::channel::keep_channel(&layout, Channel::Nightly).unwrap();
         running.switch(Channel::Nightly);
         assert_eq!(noticed_here(), ["withdrawn"], "the switch dropped it");
+        assert_eq!(rows(&center), [], "and its row");
 
         crate::update::channel::keep_channel(&layout, Channel::Stable).unwrap();
-        let mut running = updater(&layout, &bucket, Channel::Stable);
+        let mut running = updater(&layout, &bucket, Channel::Stable).with_center(center.clone());
         block(running.check(&client(), Take::Automatic));
         assert_eq!(noticed_here(), [ready.as_str()]);
-        updater(&layout, &bucket, Channel::Stable).start();
+        updater(&layout, &bucket, Channel::Stable)
+            .with_center(center.clone())
+            .start();
         assert_eq!(noticed_here(), Vec::<String>::new(), "still staged");
+        assert_eq!(rows(&center), ready_row(false), "its row stands");
 
         assert_eq!(
             boot_at(&layout, &layout.release_exe(a)).unwrap(),
@@ -1312,8 +1340,160 @@ mod linux {
         let Boot::Run(phase) = boot_at(&layout, &layout.release_exe(b)).unwrap() else {
             panic!("B does not run");
         };
-        Updater::new(layout.clone(), phase, keys(), Channel::Stable, &bucket.base).start();
-        assert_eq!(noticed_here(), ["withdrawn"], "the flip took it over");
+        Updater::new(layout.clone(), phase, keys(), Channel::Stable, &bucket.base)
+            .with_center(center.clone())
+            .start();
+        let installed = format!("Ducktape {} is installed.", crate::update::version());
+        assert_eq!(
+            noticed_here(),
+            [format!("installed {}", crate::update::version())],
+            "the flip took it over"
+        );
+        assert_eq!(
+            rows(&center),
+            [(HOST.to_owned(), installed.clone(), false)],
+            "in the ready one's place"
+        );
+
+        updater(&layout, &bucket, Channel::Stable)
+            .with_center(center.clone())
+            .start();
+        assert_eq!(
+            noticed_here(),
+            ["withdrawn"],
+            "the next start says nothing new"
+        );
+        assert_eq!(rows(&center), [(HOST.to_owned(), installed, false)], "once");
+    }
+
+    /// "ready" and "installed" stand under tags of their own: a release
+    /// staged after a flip shows beside the flip's "installed". The boot
+    /// step drops it (the person picked the other channel and quit before
+    /// the loop's next turn), and the start that finds nothing staged takes
+    /// its row out and leaves "installed", as a plain start after does.
+    #[test]
+    fn a_ready_row_the_boot_step_dropped_goes_and_installed_stays() {
+        use crate::update::boot::{Boot, boot_at};
+        use crate::update::channel::noticed_here;
+        let bucket = Bucket::new();
+        let (root, layout) = rig();
+        let (a, first) = install(root.path(), &layout, &script("a"));
+        let pin = first.pinned_sequence();
+        let b = publish(&bucket, Channel::Stable, pin + 1, &release_of(script("b")));
+        let center = CenterHandle::default();
+        block(
+            updater(&layout, &bucket, Channel::Stable)
+                .with_center(center.clone())
+                .check(&client(), Take::Automatic),
+        );
+        assert_eq!(
+            boot_at(&layout, &layout.release_exe(a)).unwrap(),
+            Boot::Exec(layout.app_exe())
+        );
+        let Boot::Run(phase) = boot_at(&layout, &layout.release_exe(b)).unwrap() else {
+            panic!("B does not run");
+        };
+        let mut running =
+            Updater::new(layout.clone(), phase, keys(), Channel::Stable, &bucket.base)
+                .with_center(center.clone());
+        running.start();
+        let c = publish(&bucket, Channel::Stable, pin + 2, &release_of(script("c")));
+        block(running.check(&client(), Take::Automatic));
+        let installed = (
+            HOST.to_owned(),
+            format!("Ducktape {} is installed.", crate::update::version()),
+            false,
+        );
+        let ready = (
+            HOST.to_owned(),
+            format!("Ducktape 0.1.0+{} is ready.", c.short()),
+            false,
+        );
+        assert_eq!(
+            rows(&center),
+            [ready, installed.clone()],
+            "C's ready beside B's installed"
+        );
+        noticed_here();
+
+        crate::update::channel::keep_channel(&layout, Channel::Nightly).unwrap();
+        let Boot::Run(phase) = boot_at(&layout, &layout.release_exe(b)).unwrap() else {
+            panic!("B does not run");
+        };
+        assert!(
+            matches!(phase, Phase::Idle(_)),
+            "the boot step dropped C: {phase:?}"
+        );
+        Updater::new(
+            layout.clone(),
+            phase,
+            keys(),
+            Channel::Nightly,
+            &bucket.base,
+        )
+        .with_center(center.clone())
+        .start();
+        assert_eq!(noticed_here(), ["withdrawn"]);
+        assert_eq!(
+            rows(&center),
+            std::slice::from_ref(&installed),
+            "C's row went, B's stays"
+        );
+
+        updater(&layout, &bucket, Channel::Nightly)
+            .with_center(center.clone())
+            .start();
+        assert_eq!(rows(&center), [installed], "a plain start leaves it");
+    }
+
+    /// A check says when it ended: one the channel does not answer says
+    /// so, one that finds nothing newer leaves the status as it was and
+    /// says it ran.
+    #[test]
+    fn a_check_says_when_it_ended_and_whether_the_channel_answered() {
+        use crate::update::channel::clock;
+        let bucket = Bucket::new();
+        let (root, layout) = rig();
+        let (_, installed) = install(root.path(), &layout, &script("a"));
+        let mut running = updater(&layout, &bucket, Channel::Stable);
+        running.start();
+        assert_eq!(running.shown().checked, None, "not checked yet");
+        // the minute it ended, read on either side of it
+        let check = |running: &mut Updater| {
+            let before = clock(crate::runtime::notify::wall());
+            block(running.check(&client(), Take::Automatic));
+            let after = clock(crate::runtime::notify::wall());
+            (running.shown(), [before, after])
+        };
+
+        // nothing published: the channel did not answer
+        let (shown, at) = check(&mut running);
+        assert_eq!(shown.status, "Not checked yet");
+        let checked = shown.checked.unwrap();
+        assert!(
+            at.iter()
+                .any(|at| checked == format!("Stable did not answer at {at}")),
+            "{checked}"
+        );
+
+        // what runs is what the channel offers: up to date, and checked
+        publish(
+            &bucket,
+            Channel::Stable,
+            installed.pinned_sequence(),
+            &release_of(script("a")),
+        );
+        let (shown, at) = check(&mut running);
+        assert_eq!(shown.status, "Up to date");
+        let checked = shown.checked.unwrap();
+        assert!(
+            at.iter().any(|at| checked == format!("checked at {at}")),
+            "{checked}"
+        );
+        let status = shown.status;
+        let (again, _) = check(&mut running);
+        assert_eq!(again.status, status, "the words stay; the time says it ran");
+        assert!(again.checked.is_some());
     }
 
     /// The headline. An installed app checks the channel, finds a newer signed
@@ -1334,10 +1514,12 @@ mod linux {
         let booted = boot_at(&layout, &own_a).unwrap();
         assert_eq!(booted, Boot::Run(installed.clone()));
         let b = publish(&bucket, Channel::Stable, pin + 1, &release_of(script("b")));
-        let mut running = updater(&layout, &bucket, Channel::Stable);
+        let center = CenterHandle::default();
+        let mut running = updater(&layout, &bucket, Channel::Stable).with_center(center.clone());
         running.start();
         block(running.check(&client(), Take::Automatic));
         assert!(matches!(state(&layout), Phase::Staged(ref staged) if staged.staged == b));
+        assert_eq!(rows(&center).len(), 1, "B's ready row");
 
         // start 2: the session starts the install path's A; its boot step
         // qualifies B, flips, and hands the process to B
@@ -1376,14 +1558,17 @@ mod linux {
         let partial = layout.releases_dir().join(format!("{b}.partial"));
         std::fs::write(&partial, b"part").unwrap();
 
-        // A runs, reads the rollback, and the channel's B is not taken again
+        // A runs, reads the rollback, and the channel's B is not taken again;
+        // B's row goes, and nothing new is said (Settings says it)
         let mut running =
-            Updater::new(layout.clone(), phase, keys(), Channel::Stable, &bucket.base);
+            Updater::new(layout.clone(), phase, keys(), Channel::Stable, &bucket.base)
+                .with_center(center.clone());
         running.start();
         assert_eq!(
             running.shown().status,
             format!("Went back from 0.1.0+{}: it never came up", b.short())
         );
+        assert_eq!(rows(&center), [], "B's row went with it");
         block(running.check(&client(), Take::Automatic));
         assert_eq!(
             state(&layout),
