@@ -15,10 +15,11 @@
 #   with packaging/entitlements.plist plus the application identifier, team and
 #   keychain access group it authorizes: a Touch ID-locked key lives in the
 #   data protection keychain, which macOS opens to an app only with those
-#   (TN3137). Before notarizing, the signature is checked against the profile
-#   and the app is launched once (`--version`), so AMFI judges it here.
+#   (TN3137). Before notarizing, the signature is checked against the profile.
 #   Without a profile (ad-hoc, local) none of the three is signed: a restricted
 #   entitlement no profile authorizes gets the app killed at launch.
+# Every signature, with a profile or not, is launched once (`--version`)
+# before the DMG, so AMFI judges it here.
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 app=${1:?the Ducktape.app to sign}
