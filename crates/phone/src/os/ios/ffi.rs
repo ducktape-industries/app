@@ -14,9 +14,17 @@
 //! - `ducktape_phone_push_token(kind, token)`: PushKit's token, as hex.
 //! - `ducktape_phone_call_audio(active)`: CallKit's audio session up or down.
 //!
-//! Swift's entries called from here, on any thread (`App.swift`):
+//! Swift's entries called from here (`App.swift`):
 //! - `ducktape_phone_call_voice(active)`: the call's voice I/O made or gone
-//!   (`ducktape_av::voice`): CallKit's answered call ends with it.
+//!   (`ducktape_av::voice`): CallKit's answered call ends with it. Any
+//!   thread.
+//! - `ducktape_phone_remote_notification(json) -> taken`: a background push
+//!   the app delegate (gpui_ios) handed over, its payload as JSON: a
+//!   withdrawn call's ring stops. Main thread.
+//!
+//! The regular remote-notification token (kind `apns`, the one a withdraw
+//! is pushed to) comes through gpui_ios's delegate hooks, set on the
+//! platform before UIKit runs; the launcher asks UIKit to register.
 //!
 //! No `catch_unwind`: the phone profile builds with `panic = "abort"`
 //! (gpui_ios's ObjC entries have no unwind guard, `README.ducktape.md`).
@@ -28,6 +36,25 @@ use std::path::PathBuf;
 #[cfg(feature = "call")]
 unsafe extern "C" {
     fn ducktape_phone_call_voice(active: u8);
+}
+
+unsafe extern "C" {
+    fn ducktape_phone_remote_notification(json: *const c_char) -> u8;
+}
+
+/// A background push, as the app delegate hands it over: to the
+/// launcher, which knows the carrier's payload and answers whether it
+/// took it (a withdrawn call's ring stopped).
+fn remote_notification(json: String) -> bool {
+    match std::ffi::CString::new(json) {
+        // SAFETY: a Swift `@_cdecl` entry taking a C string alive for the
+        // call, on the main thread (where UIKit delivers the push).
+        Ok(json) => unsafe { ducktape_phone_remote_notification(json.as_ptr()) != 0 },
+        Err(_) => {
+            tracing::error!(target: "ducktape::phone", "a push's payload held a NUL");
+            false
+        }
+    }
 }
 
 /// The call's voice I/O made (`true`) or gone, told to the launcher's
@@ -57,7 +84,22 @@ pub unsafe extern "C" fn ducktape_phone_main(documents: *const c_char, caches: *
     };
     #[cfg(feature = "call")]
     ducktape_av::voice::on_life(call_voice);
-    let app = gpui_kit::Application::with_platform(gpui_ios::current_platform(false))
+    let platform = gpui_ios::IosPlatform::new();
+    platform.on_remote_notification_token(Box::new(|token| match token {
+        Ok(token) => {
+            let token: String = token.iter().map(|byte| format!("{byte:02x}")).collect();
+            crate::os::push_token("apns", token);
+        }
+        // without the `aps-environment` entitlement, every launch: no
+        // token, so a withdraw never reaches this phone (the ring's
+        // `until` ends it)
+        Err(why) => {
+            tracing::warn!(target: "ducktape::phone", %why, "no remote-notification token");
+            crate::os::push_token("apns", String::new());
+        }
+    }));
+    platform.on_remote_notification(Box::new(remote_notification));
+    let app = gpui_kit::Application::with_platform(std::rc::Rc::new(platform))
         .with_assets(crate::assets::PhoneAssets);
     // a scene's URL contexts, at launch and later (`duck://`, `ducktape://`,
     // Info.plist `CFBundleURLTypes`)

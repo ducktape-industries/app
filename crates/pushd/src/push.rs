@@ -12,8 +12,8 @@
 //! to the `log` channel.
 //!
 //! Both carry one payload, `{kind, chain, program, tag, title, body, link,
-//! until}` (FCM's data values are strings). pushd names no program: a call
-//! is a call whoever posts it.
+//! until, end}` (`end`: the notice's `end_link`; FCM's data values are
+//! strings). pushd names no program: a call is a call whoever posts it.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -365,6 +365,7 @@ impl Push {
             "body": call.body,
             "link": call.link,
             "until": call.until,
+            "end": call.end_link,
         });
         let mut requests = Vec::new();
         if let Some(apns) = self
@@ -649,6 +650,7 @@ mod tests {
             link: "duck://testkit-0a1b2c3d/huddle/call/c1".into(),
             kind: NoticeKind::Call,
             until,
+            end_link: "duck://testkit-0a1b2c3d/huddle/call/c1/leave".into(),
         }
     }
 
@@ -690,6 +692,7 @@ mod tests {
                 "kind": "call", "chain": "testkit-0a1b2c3d", "program": "huddle",
                 "tag": "huddle/call/c1", "title": "ada is calling", "body": "Huddle with 2 people",
                 "link": "duck://testkit-0a1b2c3d/huddle/call/c1", "until": until,
+                "end": "duck://testkit-0a1b2c3d/huddle/call/c1/leave",
             })
         );
         let jwt = header(apns, "authorization")
@@ -741,6 +744,10 @@ mod tests {
             message["data"]["link"],
             "duck://testkit-0a1b2c3d/huddle/call/c1"
         );
+        assert_eq!(
+            message["data"]["end"],
+            "duck://testkit-0a1b2c3d/huddle/call/c1/leave"
+        );
     }
 
     /// A notifier's wire `Notification` of kind `Call` passes an account's
@@ -757,7 +764,7 @@ mod tests {
             link: "duck://testkit-0a1b2c3d/huddle/call/c1".into(),
             kind: NoticeKind::Call,
             until,
-            end_link: String::new(),
+            end_link: "duck://testkit-0a1b2c3d/huddle/call/c1/leave".into(),
         };
         let center = ducktape_host::runtime::notify::CenterHandle::default();
         let wall = i64::try_from(now()).unwrap();
@@ -771,6 +778,10 @@ mod tests {
         );
         let banner = banner.expect("the call passed the centre");
         assert_eq!((banner.kind, banner.until), (NoticeKind::Call, until));
+        assert_eq!(
+            banner.end_link,
+            "duck://testkit-0a1b2c3d/huddle/call/c1/leave"
+        );
         assert!(push.post(&banner, None));
         let sent = http.0.lock().unwrap().clone();
         let apns = sent
