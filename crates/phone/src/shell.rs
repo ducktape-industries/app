@@ -18,7 +18,8 @@
 //! It moves as the Expo build's moves (`ducktape_host::motion`): a program
 //! (or its page) pushed slides in from the right over the screen it left,
 //! which moves left under a dim, and a pop is the reverse; iOS's left-edge
-//! swipe drags the screen on top off under the finger; a sheet slides up
+//! swipe drags the screen on top off under the finger (inside a program
+//! above its root page, that page, by the view's own tree); a sheet slides up
 //! over a fading scrim and down again; the alert and the toast fade. Tab
 //! switches do not move (Expo's tabs do not). Nothing moves while nothing
 //! changes: a frame is asked for only while something is under way.
@@ -35,6 +36,7 @@ pub mod stack;
 use ducktape_host::a11y::Control as _;
 use ducktape_host::contract::{Boot, KeyStorage, OsServices, Signal, SoftKeyboard};
 use ducktape_host::motion::{self, Shown, Slide, Tween};
+use ducktape_host::render::ViewTree;
 use ducktape_host::runtime::notify::{Opened as Banner, Permission};
 use ducktape_host::runtime::{Back, Placed, consent};
 use ducktape_host::session::{Opening, Place, Seats, SeatsEvent, Session, SessionEvent, Shared};
@@ -643,12 +645,19 @@ impl Root {
     /// iOS's left-edge swipe, `x` points in: the screen on top follows the
     /// finger while a Back would pop it (a program's page, or a program on
     /// top whose view does not hear Back itself) and nothing is over it.
-    /// Under Reduce Motion nothing follows; the release is Back as before.
-    /// A swipe begun while the stack moves does not follow either.
+    /// When the view on top hears Back (a page above its root), its own
+    /// page follows inside it instead, if its tree keeps the page under
+    /// (`ViewTree::drag_page`). Under Reduce Motion nothing follows; the
+    /// release is Back as before. A swipe begun while the stack moves does
+    /// not follow either.
     fn drag(&mut self, x: f32, cx: &mut Context<Self>) {
         let now = motion::now(cx);
         let busy = self.moving.is_some_and(|moving| !moving.tween.done(now));
         if self.dragged.is_none() && (busy || !self.can_drag(cx)) {
+            if !busy && let Some(tree) = self.view_swiped(cx) {
+                let progress = x / self.width.max(1.);
+                tree.update(cx, |tree, cx| tree.drag_page(progress, cx));
+            }
             return;
         }
         // a move that has ended may not be cleared yet: it is over
@@ -658,9 +667,7 @@ impl Root {
     }
 
     fn can_drag(&self, cx: &App) -> bool {
-        let covered = self.consent.is_some() || self.alert.is_some() || self.sheet.is_some();
-        let joining = join::step(*self.shared.screen.read(cx).get()).is_some();
-        if covered || joining || motion::reduced(cx) || self.under(cx).is_none() {
+        if self.covered(cx) || motion::reduced(cx) || self.under(cx).is_none() {
             return false;
         }
         self.page(cx).pushed()
@@ -669,9 +676,35 @@ impl Root {
                 .is_none_or(|seat| !seat.read(cx).hears_back())
     }
 
+    /// Whether the join, or a sheet, the consent sheet or an alert of the
+    /// shell's, is over the stack.
+    fn covered(&self, cx: &App) -> bool {
+        let covered = self.consent.is_some() || self.alert.is_some() || self.sheet.is_some();
+        covered || join::step(*self.shared.screen.read(cx).get()).is_some()
+    }
+
+    /// The tree of the view on top when the edge swipe is the view's own:
+    /// nothing of the shell's over it, and the view hears Back.
+    fn view_swiped(&self, cx: &App) -> Option<Entity<ViewTree>> {
+        if self.covered(cx) || !self.pages.is_empty() {
+            return None;
+        }
+        let seat = self.top_seat(cx)?;
+        let seat = seat.read(cx);
+        seat.hears_back().then(|| seat.tree()).flatten()
+    }
+
+    /// The tree of the view on top.
+    fn top_tree(&self, cx: &App) -> Option<Entity<ViewTree>> {
+        self.top_seat(cx)?.read(cx).tree()
+    }
+
     /// The swipe let go short of Back: the screen on top slides back into
-    /// place over the one under it.
+    /// place over the one under it, or the view's page inside it.
     fn drag_cancelled(&mut self, cx: &mut Context<Self>) {
+        if let Some(tree) = self.top_tree(cx) {
+            tree.update(cx, |tree, cx| tree.drag_page_cancelled(cx));
+        }
         let Some(x) = self.dragged.take() else {
             return;
         };
@@ -781,9 +814,14 @@ impl Root {
     /// shell's page on top popped, each first; else the view on top goes back
     /// inside itself when its last frame's root asks to hear it; else the
     /// stack pops; at Home, the OS's own (SPEC §7.6). A drag under way
-    /// that this Back does not pop springs back.
+    /// that this Back does not pop springs back; a view's page under the
+    /// finger that the view does not hear it for slides back.
     fn back(&mut self, cx: &mut Context<Self>) {
+        let tree = self.top_tree(cx);
         self.walk_back(cx);
+        if let Some(tree) = tree {
+            tree.update(cx, |tree, cx| tree.drag_page_cancelled(cx));
+        }
         if self.dragged.take().is_some() {
             cx.notify();
         }
@@ -2220,5 +2258,129 @@ mod tests {
             Some(PROGRAM),
             "the link held over the leave did not open on the next list"
         );
+    }
+
+    /// A view's frame root showing the page `key`, `depth` over its root,
+    /// hearing Back when `back`.
+    fn view_page(key: &str, depth: u32, back: bool) -> view_wire::Node {
+        let style = ducktape_host::render::plain_style();
+        let page = view_wire::Node::Container(view_wire::ContainerNode {
+            id: Some(view_wire::ElementIdWire::Name(key.into())),
+            style,
+            interactivity: Some(Box::new(view_wire::Interactivity {
+                page: Some(depth),
+                ..Default::default()
+            })),
+            children: Vec::new(),
+        });
+        view_wire::Node::Container(view_wire::ContainerNode {
+            id: Some(view_wire::ElementIdWire::Name("view".into())),
+            style,
+            interactivity: Some(Box::new(view_wire::Interactivity {
+                on_back: back.then_some(5),
+                ..Default::default()
+            })),
+            children: vec![page],
+        })
+    }
+
+    /// Inside a program above its root page, iOS's edge swipe drags the
+    /// view's own page, not the program: the shell moves nothing of its
+    /// own and no frame is asked for; let go short, the page slides back
+    /// and the view hears nothing; let go past the rule, the view hears
+    /// Back, and a page it did not pop to (it answered nothing new) slides
+    /// back. Under an alert of the shell's, nothing of the view's follows.
+    #[gpui_kit::test]
+    fn the_edge_swipe_drags_a_views_page_inside_it(cx: &mut TestAppContext) {
+        const SWIPED: &str = "phone-swipe-test";
+        let _seat = ducktape_host::backend::seat_serial();
+        ducktape_host::contract::testing::touch_first_for_test(true);
+        // the view's root page, a page pushed over it on the next tick,
+        // then nothing new on every tick after, a Back's included
+        let frame = |root, busy| view_wire::Frame {
+            root: Some(root),
+            busy,
+            ..Default::default()
+        };
+        ducktape_host::runtime::seat_ticking_for_test(
+            SWIPED,
+            320,
+            &[
+                frame(view_page("rooms", 0, false), true),
+                frame(view_page("room", 1, true), false),
+                view_wire::Frame {
+                    unchanged: true,
+                    ..Default::default()
+                },
+            ],
+        );
+        let (root, stack, cx) = phone(cx);
+        root.update(cx, |root, cx| root.open(SWIPED, cx));
+        run_out(cx);
+        run_out(cx);
+        let tree = root
+            .read_with(cx, |root, cx| root.top_tree(cx))
+            .expect("the view's tree");
+        let finger = |cx: &mut VisualTestContext| tree.read_with(cx, |tree, _| tree.page_finger());
+        let sliding = |cx: &mut VisualTestContext| tree.read_with(cx, |tree, _| tree.page_moving());
+        let backs = || {
+            ducktape_host::runtime::ticks_for_test(SWIPED)
+                .iter()
+                .flatten()
+                .filter(|event| matches!(event, view_wire::Event::Back { .. }))
+                .count()
+        };
+        let shell_moves = |cx: &mut VisualTestContext| {
+            root.read_with(cx, |root, _| (root.dragged, root.moving.is_some()))
+        };
+
+        let width = root.read_with(cx, |root, _| root.width);
+        root.update(cx, |root, cx| root.drag(width / 4., cx));
+        cx.run_until_parked();
+        assert_eq!(
+            finger(cx),
+            Some((0.25, false)),
+            "the view's page did not follow"
+        );
+        assert_eq!(
+            shell_moves(cx),
+            (None, false),
+            "the shell moved the program"
+        );
+        assert_eq!(
+            frames(cx),
+            0,
+            "a drag asks for no frame: the finger moves it"
+        );
+
+        root.update(cx, |root, cx| root.drag_cancelled(cx));
+        cx.run_until_parked();
+        assert_eq!(finger(cx), None);
+        assert!(sliding(cx), "let go short, the page did not slide back");
+        run_out(cx);
+        assert_eq!(backs(), 0, "a swipe let go short sent the view Back");
+        assert_eq!(frames(cx), 0, "a frame asked for once still");
+
+        root.update(cx, |root, cx| root.drag(width / 2., cx));
+        root.update(cx, |root, cx| root.back(cx));
+        cx.run_until_parked();
+        assert_eq!(backs(), 1, "Back did not reach the view");
+        assert_eq!(top(&stack, cx), Some(SWIPED), "the shell left the program");
+        assert_eq!(
+            shell_moves(cx),
+            (None, false),
+            "the shell moved the program"
+        );
+        assert_eq!(finger(cx), None, "the page held on past the view's answer");
+        assert!(sliding(cx), "a page the view did not pop to stayed off");
+        run_out(cx);
+        assert_eq!(frames(cx), 0, "a frame asked for once still");
+
+        root.update(cx, |root, _| {
+            root.alert = Some(("Alert", "Over the program".into()))
+        });
+        root.update(cx, |root, cx| root.drag(width / 4., cx));
+        assert_eq!(finger(cx), None, "the view's page followed under an alert");
+        ducktape_host::contract::testing::touch_first_for_test(false);
     }
 }
