@@ -663,15 +663,17 @@ impl Banners for Push {
         if notice.until != 0 && notice.until <= now {
             return false;
         }
-        let quiet = !notice.tag.is_empty()
-            && self
-                .standing()
-                .insert(notice.tag.clone(), notice.until)
-                .is_some();
-        match notice.kind {
+        let quiet = self.standing().contains_key(&notice.tag);
+        let taken = match notice.kind {
             NoticeKind::Call => self.send(self.ring(notice, now)),
             NoticeKind::Notice => self.send(self.show(notice, now, quiet)),
+        };
+        // a tag stands once a device took it: one sent nowhere (an account
+        // with no token of its kind yet) leaves the next one loud
+        if taken && !notice.tag.is_empty() {
+            self.standing().insert(notice.tag.clone(), notice.until);
         }
+        taken
     }
 
     fn withdraw(&self, tag: &str) {
@@ -1160,6 +1162,36 @@ mod tests {
         let staged = apns_with(Some("http://127.0.0.1:9".into()));
         assert_eq!(staged.host("sandbox"), "http://127.0.0.1:9");
         assert_eq!(staged.host("production"), "http://127.0.0.1:9");
+    }
+
+    /// A notice no device took leaves its tag not standing: an account
+    /// with only a VoIP token is sent no notice, and the first one after
+    /// its remote-notification token registers alerts with a sound.
+    #[test]
+    fn a_tag_stands_once_a_device_took_it() {
+        let (push, http) = push(&[("voip", "ab12")]);
+        let notice = Notice {
+            kind: NoticeKind::Notice,
+            ..call(0)
+        };
+        assert!(!push.post(&notice, None));
+        assert!(http.0.lock().unwrap().is_empty());
+        push.devices.put(crate::registry::Row {
+            account: 2,
+            key: "key9".into(),
+            kind: "apns".into(),
+            token: "cd34".into(),
+            env: "production".into(),
+            at: 1,
+        });
+        assert!(push.post(&notice, None));
+        let sent = http.0.lock().unwrap().clone();
+        let [apns] = &sent[..] else {
+            panic!("one alert: {sent:#?}");
+        };
+        assert_eq!(header(apns, "apns-priority"), "10");
+        let body: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
+        assert_eq!(body["aps"]["sound"], "default");
     }
 
     /// A tag past APNs's 64 bytes collapses by its hash.
