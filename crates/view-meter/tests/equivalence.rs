@@ -1508,3 +1508,147 @@ fn a_ref_func_of_a_function_only_its_export_declares_is_metered() {
         );
     }
 }
+
+// --- what the rewrite writes apart -----------------------------------------
+
+#[test]
+fn an_import_used_as_a_value_is_reached_through_its_adapter_under_both() {
+    // a global's initializer, an active segment's expression and a passive
+    // segment `table.init` loads: each names the import's adapter, which a
+    // `call_indirect` of the widened type reaches
+    let mut both = Both::new(
+        r#"(module
+            (import "ducktape_view" "panicked" (func $p (param i32 i32)))
+            (type $t (func (param i32 i32)))
+            (table 3 funcref)
+            (global $g funcref (ref.func $p))
+            (elem (i32.const 0) funcref (ref.func $p))
+            (elem $passive funcref (ref.func $p))
+            (func (export "element")
+                i32.const 1 i32.const 2 i32.const 0 call_indirect (type $t))
+            (func (export "global")
+                i32.const 1 global.get $g table.set 0
+                i32.const 1 i32.const 2 i32.const 1 call_indirect (type $t))
+            (func (export "segment")
+                i32.const 2 i32.const 0 i32.const 1 table.init $passive
+                i32.const 1 i32.const 2 i32.const 2 call_indirect (type $t)))"#,
+        VIEW_BYTES,
+    );
+    for name in ["element", "global", "segment"] {
+        assert_eq!(both.call(name, &[], FUEL_PER_TICK).0, End::Returned(vec![]));
+        both.every_budget(name, &[]);
+    }
+}
+
+#[test]
+fn a_call_indirect_to_two_results_matches_under_both() {
+    // the callee's body moves into a block of two results: its `return`
+    // and its branch to the function's label both carry them out
+    let mut both = Both::new(
+        r#"(module
+            (type $two (func (param i32) (result i32 i64)))
+            (table 1 funcref)
+            (elem (i32.const 0) $pair)
+            (func $pair (type $two)
+                local.get 0 i32.eqz
+                if i32.const 7 i64.const 7 return end
+                local.get 0 i32.const 1 i32.eq
+                if i32.const 8 i64.const 8 br 1 end
+                local.get 0 i32.const 1 i32.add
+                local.get 0 i64.extend_i32_u)
+            (func (export "pair") (param i32) (result i32 i64)
+                local.get 0 i32.const 0 call_indirect (type $two)))"#,
+        VIEW_BYTES,
+    );
+    for (arg, results) in [(0, [7, 7]), (1, [8, 8]), (5, [6, 5])] {
+        assert_eq!(
+            both.call("pair", &[arg], FUEL_PER_TICK).0,
+            End::Returned(results.to_vec())
+        );
+        both.every_budget("pair", &[arg]);
+    }
+}
+
+#[test]
+fn a_function_past_127_locals_matches_under_both() {
+    // 300 locals in 300 groups of alternating types: the indices past the
+    // count's parameter move one up across the one-byte boundary (127 to
+    // 128), and the group count takes two bytes
+    let locals: String = (1..=300)
+        .map(|i| {
+            if i % 2 == 1 {
+                "(local i32) "
+            } else {
+                "(local i64) "
+            }
+        })
+        .collect();
+    let sets: String = (1..=300)
+        .map(|i| match i % 2 {
+            1 => format!("local.get 0 i32.const {i} i32.add local.set {i} "),
+            _ => format!("local.get 0 i64.extend_i32_u i64.const {i} i64.add local.set {i} "),
+        })
+        .collect();
+    let sum: String = (1..=300)
+        .map(|i| match i % 2 {
+            1 => format!("local.get {i} i32.add "),
+            _ => format!("local.get {i} i32.wrap_i64 i32.add "),
+        })
+        .collect();
+    let mut both = Both::new(
+        &format!(
+            "(module (func (export \"sum\") (param i32) (result i32) {locals} {sets} \
+             i32.const 0 {sum}))"
+        ),
+        VIEW_BYTES,
+    );
+    let total: i64 = (1..=300).map(|i| 3 + i).sum();
+    assert_eq!(
+        both.call("sum", &[3], FUEL_PER_TICK).0,
+        End::Returned(vec![total])
+    );
+    both.every_budget("sum", &[3]);
+}
+
+#[test]
+fn a_module_without_the_sections_the_pass_adds_to_is_metered() {
+    // no type, function, code, global or export section, in turn: the pass
+    // writes each one it adds to in its place, and [`GAS`] is there to arm
+    for wat in [
+        "(module)",
+        r#"(module (memory (export "memory") 1))"#,
+        r#"(module (import "ducktape_view" "panicked" (func (param i32 i32))))"#,
+        "(module (global $g (mut i32) (i32.const 0)) (func global.get $g drop))",
+    ] {
+        let mut both = Both::new(wat, VIEW_BYTES);
+        both.metered.arm(5);
+        assert_eq!(both.metered.left(), 5, "{wat}");
+    }
+    // no global section: [`GAS`] is the module's only global
+    let mut both = Both::new(
+        r#"(module (func (export "f") (result i32) i32.const 1))"#,
+        VIEW_BYTES,
+    );
+    both.every_budget("f", &[]);
+}
+
+#[test]
+fn the_same_module_meters_to_the_same_bytes() {
+    let values = r#"(module
+        (import "ducktape_view" "panicked" (func $p (param i32 i32)))
+        (table 2 funcref)
+        (global funcref (ref.func $p))
+        (elem (i32.const 0) func $p $own)
+        (func $own (export "own") (result i32) ref.func $p ref.is_null)
+        (func (export "other") (result i32) ref.func $own ref.is_null))"#;
+    let modules = [values.to_owned()]
+        .into_iter()
+        .chain((1..=8).map(random_module));
+    for wat in modules {
+        let code = wat::parse_str(&wat).unwrap();
+        let first = meter_accepted(&code, VIEW_BYTES);
+        for _ in 0..3 {
+            assert!(meter_accepted(&code, VIEW_BYTES) == first, "deterministic");
+        }
+    }
+}
