@@ -712,6 +712,26 @@ fn a_publication_losing_its_session_is_told_and_opened_again() {
     assert!(matches!(again, Ask::Publish { .. }));
 }
 
+/// The session going under a subscription is told as `not_connected`,
+/// and the track is subscribed again at once on the session the app has.
+#[test]
+fn a_subscription_losing_its_session_is_told_and_opened_again() {
+    let (live, opens) = host_live();
+    let mut subscription = live.subscribe(&track("cam/7"), Start::Latest);
+    let (_, ends) = opened(&opens);
+    drop(ends);
+    assert_eq!(
+        subscription.recv(),
+        Some(Subscribed::Heard(TrackHeard::Ended {
+            code: refusal::NOT_CONNECTED.into()
+        }))
+    );
+    let (again, _ends) = opens
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("subscribed again at once");
+    assert!(matches!(again, Ask::Subscribe { .. }));
+}
+
 /// A host-run subscription reads datagrams on its own thread: a burst
 /// of them reaches it whole and in order, not thinned to the newest as a
 /// view's slot is.

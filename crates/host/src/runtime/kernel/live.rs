@@ -892,6 +892,9 @@ impl HostLive {
                 refusal::PUBLISHER_GONE | refusal::TRACK_ENDED | refusal::UNKNOWN_TRACK => {
                     announced(&session, &stamped).await;
                 }
+                // the session went: opened again at once on the one the
+                // app has now
+                refusal::NOT_CONNECTED => {}
                 _ => tokio::time::sleep(HOLD).await,
             }
         }

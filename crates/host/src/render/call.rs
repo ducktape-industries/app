@@ -427,16 +427,9 @@ mod inner {
                     && let Some(Some((io, voice))) = played.get()
                 {
                     // the speaker that would not open is the piece's fault
-                    let speaker = io.speaker();
-                    if !matches!(speaker, Status::Starting | Status::Live) {
-                        state = super::av::told(
-                            &ducktape_av::State {
-                                status: speaker,
-                                ..Default::default()
-                            },
-                            ducktape_av::Kind::Microphone,
-                        );
-                        state.track = standing.track.clone();
+                    if let Some((status, detail)) = speaker_fault(io.speaker()) {
+                        state.status = status;
+                        state.detail = detail;
                     }
                     let live = state.status == wire::MediaStatus::Live;
                     state.speaking = live && remote.speaking.heard(voice.level(), now);
@@ -550,6 +543,31 @@ mod inner {
         mutex
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// A speaker that is not playing, in the speaker's own words; `None`
+    /// while it plays or is not asked yet.
+    fn speaker_fault(status: Status) -> Option<(wire::MediaStatus, String)> {
+        let said = |why: &str| -> String {
+            why.chars()
+                .filter(crate::runtime::plain)
+                .take(200)
+                .collect()
+        };
+        Some(match status {
+            Status::Starting | Status::Live => return None,
+            Status::Denied => (
+                wire::MediaStatus::Denied,
+                "The system refused the speaker.".into(),
+            ),
+            Status::Busy => (
+                wire::MediaStatus::Busy,
+                "Another app is using the speaker.".into(),
+            ),
+            Status::NoDevice => (wire::MediaStatus::NoDevice, "No speaker found.".into()),
+            Status::Gone(why) => (wire::MediaStatus::Gone, said(&why)),
+            Status::Failed(why) => (wire::MediaStatus::Failed, said(&why)),
+        })
     }
 
     /// One line onto a proof tap (`DUCKTAPE_AV_FAKE_TAP`), nothing without.
