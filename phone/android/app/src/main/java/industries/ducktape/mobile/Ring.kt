@@ -6,6 +6,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -16,6 +17,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.util.Log
 import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessaging
@@ -66,16 +68,26 @@ object Ring {
         val decline = PendingIntent.getBroadcast(
             context, tag.hashCode(), Intent(context, Decline::class.java).putExtra(TAG, tag), flags,
         )
-        // the app, not the call: a phone woken by the ring shows the app, and Answer is still the person's
-        val app = PendingIntent.getActivity(context, 0, Intent(context, MainActivity::class.java), flags)
+        // a tap on the notification: the app, and the ring goes (the call is still the person's to answer there)
+        val tapped = PendingIntent.getActivity(
+            context, tag.hashCode(), Intent(context, MainActivity::class.java).putExtra(TAG, tag), flags,
+        )
+        // a locked or sleeping phone: the call's own screen over the lock, never the app
+        val screen = PendingIntent.getActivity(
+            context, tag.hashCode(),
+            Intent(context, RingActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra(TAG, tag)
+                .putExtra(RingActivity.TITLE, call["title"].orEmpty()).putExtra(RingActivity.BODY, call["body"].orEmpty())
+                .putExtra(RingActivity.LINK, call["link"].orEmpty()).putExtra(RingActivity.UNTIL, until),
+            flags,
+        )
         val notification = Notification.Builder(context, CHANNEL)
             .setSmallIcon(android.R.drawable.sym_call_incoming)
             .setContentTitle(call["title"].orEmpty())
             .setContentText(call["body"].orEmpty())
             .setCategory(Notification.CATEGORY_CALL)
             .setOngoing(true)
-            .setContentIntent(app)
-            .setFullScreenIntent(app, true)
+            .setContentIntent(tapped)
+            .setFullScreenIntent(screen, true)
             .addAction(Notification.Action.Builder(null, "Decline", decline).build())
             .addAction(Notification.Action.Builder(null, "Answer", answer).build())
             .apply { if (until != 0L) setTimeoutAfter(left) }
@@ -85,24 +97,56 @@ object Ring {
         manager.notify(tag, ID, notification)
     }
 
-    /** The call under [tag] stops ringing. */
-    fun withdraw(context: Context, tag: String) =
+    /** The call under [tag] stops ringing, and its screen goes. */
+    fun withdraw(context: Context, tag: String) {
         context.getSystemService(NotificationManager::class.java).cancel(tag, ID)
+        RingActivity.over(tag)
+    }
 
-    /** Firebase's token for this device to Rust, when the build has the owner's Firebase app. */
+    /**
+     * Firebase's token for this device to Rust, when the build has the owner's Firebase app.
+     * firebase-messaging 26 deprecates `token` and `onNewToken` for `register()` and `onRegistered`, which take a
+     * manifest opt-in (`firebase_messaging_installation_id_enabled`) and change when a token is handed over: a move
+     * for when the device registry (pushd M2) reads the tokens, not a rename.
+     */
+    @Suppress("DEPRECATION")
     fun token(context: Context) {
         if (FirebaseApp.getApps(context).isEmpty()) return
         FirebaseMessaging.getInstance().token.addOnSuccessListener { Native.pushToken("fcm", it) }
     }
 
-    /** The notification permission (Android 13 on), asked on the app's first open and never again by the app. */
+    /**
+     * The notification permission (Android 13 on), asked on the app's first open and never again by the app; once it
+     * is granted, the full-screen ring ([askFullScreenOnce], from [MainActivity]'s answer when it was asked here).
+     */
     fun askOnce(activity: Activity) {
-        if (Build.VERSION.SDK_INT < 33) return
+        if (Build.VERSION.SDK_INT < 33 ||
+            activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        ) {
+            return askFullScreenOnce(activity)
+        }
         val prefs = activity.getSharedPreferences("ring", Context.MODE_PRIVATE)
         if (prefs.getBoolean("asked", false)) return
         prefs.edit().putBoolean("asked", true).apply()
-        if (activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            activity.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), ASK_NOTIFY)
+        activity.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), ASK_NOTIFY)
+    }
+
+    /**
+     * Android 14 on, the full-screen ring over a locked phone is the person's to allow (the Play Store grants it to
+     * calling apps only); without it a call is a heads-up notification. Its Settings page opens once, when it is off.
+     */
+    fun askFullScreenOnce(activity: Activity) {
+        if (Build.VERSION.SDK_INT < 34) return
+        val prefs = activity.getSharedPreferences("ring", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("asked_full_screen", false)) return
+        prefs.edit().putBoolean("asked_full_screen", true).apply()
+        if (activity.getSystemService(NotificationManager::class.java).canUseFullScreenIntent()) return
+        try {
+            activity.startActivity(
+                Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, Uri.parse("package:${activity.packageName}")),
+            )
+        } catch (missing: ActivityNotFoundException) {
+            Log.w("ducktape", "no full-screen ring page in Settings", missing)
         }
     }
 
@@ -153,6 +197,7 @@ object Ring {
             }
         }
 
+        @Suppress("OVERRIDE_DEPRECATION")
         override fun onNewToken(token: String) = Native.pushToken("fcm", token)
     }
 }

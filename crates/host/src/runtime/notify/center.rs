@@ -38,9 +38,13 @@ pub enum NoticeKind {
     #[default]
     Notice,
     /// Rings: a banner with Answer and Decline where the OS has actions,
-    /// standing until `notify.seen` of its tag or its `until`. Never held
-    /// back by the burst limit, and raised once before the person said
-    /// anything about its view.
+    /// standing until `notify.seen` of its tag or its `until`. Not held
+    /// back by the burst limit but one call stands per program: another
+    /// while it rings, under any tag, is logged only (a default the owner
+    /// may veto; a call declined on its banner still counts until its
+    /// `until`). Raised once before the person said anything about its
+    /// view. A call needs a tag and an `until`: without either it is a
+    /// plain notice.
     Call,
 }
 
@@ -118,6 +122,9 @@ pub struct Center {
     rang_unasked: BTreeSet<String>,
     /// The `until` of each banner standing under a tag that has one.
     until: HashMap<String, u64>,
+    /// Each program's last call rung, by its tag: it stands while its tag
+    /// is in `until` and not past it.
+    calls: HashMap<String, String>,
     /// Moves with every change to the log: the bell's list is read again.
     rev: u64,
     /// The `rev` last handed to the disk ([`Center::flush`]).
@@ -155,9 +162,10 @@ impl Center {
     /// What to do with one notice from `program` (named `view`): the answer
     /// for the view, and the banner to raise, if any — the notice's own, or
     /// the view's "N more" once it is past its burst. A call is never held
-    /// back by the burst nor folded into "N more", and rings once before
-    /// the person said anything about its view; a notice past its `until`
-    /// is logged only.
+    /// back by the burst nor folded into "N more" but rings only while no
+    /// other call of its program stands ([`NoticeKind::Call`]), and once
+    /// before the person said anything about its view; a notice past its
+    /// `until` is logged only.
     pub fn post(
         &mut self,
         settings: &Settings,
@@ -172,6 +180,12 @@ impl Center {
             kind,
             until,
         } = post.into();
+        // a ring has an end and a tag to take it down by
+        let kind = match until != 0 && !post.tag.is_empty() {
+            true => kind,
+            false => NoticeKind::Notice,
+        };
+        let seconds = u64::try_from(wall).unwrap_or(0);
         let permission = settings.views.get(program).copied().or(settings.unasked);
         if permission == Some(Permission::Block) {
             return (Delivery::Blocked, None);
@@ -190,7 +204,7 @@ impl Center {
             until,
         };
         self.log(program, view, post, wall);
-        if until != 0 && until <= u64::try_from(wall).unwrap_or(0) {
+        if until != 0 && until <= seconds {
             return (Delivery::Logged, None);
         }
         let call = kind == NoticeKind::Call;
@@ -211,6 +225,11 @@ impl Center {
             return (Delivery::Logged, None);
         }
         if call {
+            let standing = self.calls.get(program).and_then(|tag| self.until.get(tag));
+            if standing.is_some_and(|&until| until > seconds) {
+                return (Delivery::Logged, None);
+            }
+            self.calls.insert(program.to_owned(), notice.tag.clone());
             self.raised(&notice);
             return (Delivery::Banner, Some(notice));
         }

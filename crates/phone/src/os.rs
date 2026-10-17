@@ -79,7 +79,8 @@ static PUSH_TOKENS: std::sync::Mutex<std::collections::BTreeMap<String, String>>
 /// Keeps `token` as this device's push token of `kind`; an empty one is
 /// withdrawn.
 pub fn push_token(kind: &str, token: String) {
-    tracing::info!(target: "ducktape::phone", kind, %token, "this device's push token");
+    // the token addresses this device: kept out of the log
+    tracing::debug!(target: "ducktape::phone", kind, "this device's push token");
     let mut tokens = PUSH_TOKENS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());

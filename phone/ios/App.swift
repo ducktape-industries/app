@@ -72,17 +72,29 @@ final class EdgeBack: NSObject {
 /// (`ducktape_phone_link`, as an OS link), `until` (Unix seconds) is when it stops ringing unanswered. Decline is this
 /// phone's alone (SPEC D11): nothing is sent. PushKit's token goes to Rust (`ducktape_phone_push_token`) for the device
 /// registry. Made when UIKit finishes launching, which is also when a push that launched the app is delivered.
+/// Not yet: a withdraw (the call seen or answered elsewhere) takes no ring down here. It comes as a regular background
+/// push, and gpui_ios's app delegate hands the app neither that token nor that push (a gpui-pre hook to come), so a
+/// call rings on until its `until`. Ending an answered call when the person leaves it is the call host's.
 final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
   static let shared = Ring()
   /// The huddle program's ring, for a payload that carries no `until`: a call always carries one (SPEC §5).
   private static let ringSeconds: TimeInterval = 45
   private var observer: NSObjectProtocol?
   private var registry: PKPushRegistry?
-  private var provider: CXProvider?
+  /// Made on first use, which is `start`, after launch.
+  private lazy var provider: CXProvider = {
+    let configuration = CXProviderConfiguration()
+    configuration.supportsVideo = true
+    configuration.maximumCallGroups = 1
+    configuration.maximumCallsPerCallGroup = 1
+    configuration.supportedHandleTypes = [.generic]
+    configuration.includesCallsInRecents = false
+    return CXProvider(configuration: configuration)
+  }()
   /// The calls ringing, by CallKit's id: the link each one's Answer opens.
   private var ringing: [UUID: String] = [:]
   /// The debug entry's taps (`test`), made with the provider.
-  private var calls: CXCallController?
+  private lazy var calls = CXCallController()
 
   func follow() {
     observer = NotificationCenter.default.addObserver(
@@ -91,16 +103,9 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
   }
 
   private func start() {
-    let configuration = CXProviderConfiguration()
-    configuration.supportsVideo = true
-    configuration.maximumCallGroups = 1
-    configuration.maximumCallsPerCallGroup = 1
-    configuration.supportedHandleTypes = [.generic]
-    configuration.includesCallsInRecents = false
-    let provider = CXProvider(configuration: configuration)
     provider.setDelegate(self, queue: nil)
-    self.provider = provider
-    calls = CXCallController()
+    // the controller before any call, so its observer sees them all
+    _ = calls
     // after the provider: a push waiting for the app is delivered as soon as the registry wants it
     let registry = PKPushRegistry(queue: .main)
     registry.delegate = self
@@ -141,17 +146,20 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
     update.remoteHandle = CXHandle(type: .generic, value: title)
     update.localizedCallerName = title
     update.hasVideo = true
-    provider?.reportNewIncomingCall(with: id, update: update) { error in
+    // kept before CallKit hears of it: an Answer may come before the report's answer does
+    let fresh = ringing[id] == nil
+    ringing[id] = link
+    provider.reportNewIncomingCall(with: id, update: update) { error in
       // CallKit answers on a queue of its own; the calls are kept on the main one
       DispatchQueue.main.async {
         defer { completion() }
         if let error {
-          // a call under this id rings already, or the person's Do Not Disturb refused it
+          // a call under this id rings already (its link stays), or the person's Do Not Disturb refused it
           NSLog("ducktape ring: CallKit did not take the call: \(error)")
+          if fresh { self.ringing.removeValue(forKey: id) }
           return
         }
         NSLog("ducktape ring: \(id) rings until \(until)")
-        self.ringing[id] = link
         DispatchQueue.main.asyncAfter(deadline: .now() + max(until - Date().timeIntervalSince1970, 0)) {
           self.unanswered(id)
         }
@@ -163,7 +171,7 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
   private func unanswered(_ id: UUID) {
     guard ringing.removeValue(forKey: id) != nil else { return }
     NSLog("ducktape ring: \(id) unanswered")
-    provider?.reportCall(with: id, endedAt: nil, reason: .unanswered)
+    provider.reportCall(with: id, endedAt: nil, reason: .unanswered)
   }
 
   func providerDidReset(_ provider: CXProvider) {
@@ -217,9 +225,9 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
       self.ring(payload)
       guard let action else { return }
       DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-        let known = self.calls?.callObserver.calls.map { "\($0.uuid) answered \($0.hasConnected)" } ?? []
+        let known = self.calls.callObserver.calls.map { "\($0.uuid) answered \($0.hasConnected)" }
         NSLog("ducktape ring test: \(mode) \(id), CallKit has \(known)")
-        self.calls?.request(CXTransaction(action: action)) { error in
+        self.calls.request(CXTransaction(action: action)) { error in
           NSLog("ducktape ring test: \(mode): \(error.map { "\($0)" } ?? "requested")")
           // the simulator's CallKit takes the call and ends it at once (it has no call screen), so it refuses the
           // tap: the link goes the way Answer sends it

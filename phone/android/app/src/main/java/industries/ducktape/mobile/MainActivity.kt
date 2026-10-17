@@ -83,12 +83,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun handOn(intent: Intent?) {
-        val url = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.dataString ?: return
-        // a call's Answer: its ring goes
-        intent.getStringExtra(Ring.TAG)?.let {
-            Log.i("ducktape", "a call was answered: $url")
+        // a call's Answer, or a tap on its notification: its ring goes
+        intent?.getStringExtra(Ring.TAG)?.let {
+            Log.i("ducktape", "a call's ring taken down: $it")
             Ring.withdraw(this, it)
         }
+        val url = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.dataString ?: return
         Native.link(url)
     }
 
@@ -180,6 +180,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     /** The person's answer, to the instance on screen then (one made again since the ask hears it too). */
     override fun onRequestPermissionsResult(code: Int, permissions: Array<out String>, results: IntArray) {
         if (code == ASK) asked?.offer(results.firstOrNull() == PackageManager.PERMISSION_GRANTED)
+        if (code == Ring.ASK_NOTIFY && results.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            Ring.askFullScreenOnce(this)
+        }
     }
 
     /** The app's own page in Settings, [page] its `package:` URI: where a refused camera or microphone is allowed. */

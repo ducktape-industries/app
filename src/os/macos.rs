@@ -135,6 +135,16 @@ fn listen(centre: &UNUserNotificationCenter) {
     });
 }
 
+/// The delegate and the call category in place at the host's start: the
+/// centre takes categories in on its own time, so a call's first banner
+/// raised right after them could show no Answer and Decline.
+pub(super) fn start() {
+    if bundled() {
+        // SAFETY: as in `post`.
+        unsafe { listen(&UNUserNotificationCenter::currentNotificationCenter()) };
+    }
+}
+
 pub(super) fn post(notice: &Notice, click: Option<Click>) -> bool {
     if !bundled() {
         tracing::debug!(

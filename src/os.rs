@@ -40,6 +40,8 @@ static INBOUND: OnceLock<Inbound> = OnceLock::new();
 /// `Inbound`): the desktop feeds banner clicks.
 pub(crate) fn install_inbound(inbound: Inbound) {
     let _ = INBOUND.set(inbound);
+    #[cfg(target_os = "macos")]
+    macos::start();
 }
 
 /// A banner clicked, from the OS's own thread: into the host through the

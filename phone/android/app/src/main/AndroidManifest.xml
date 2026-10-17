@@ -45,7 +45,14 @@
             </intent-filter>
         </activity>
 
-        <!-- the ring (Ring.kt): a call's Decline, and the owner's Firebase project's messages -->
+        <!-- the ring (Ring.kt): a call's screen over a locked phone (its own task, out of Recents), its Decline, and
+             the owner's Firebase project's messages -->
+        <activity
+            android:name=".RingActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:taskAffinity="" />
         <receiver android:name=".Ring$Decline" android:exported="false" />
         <service android:name=".Ring$Messages" android:exported="false">
             <intent-filter>
