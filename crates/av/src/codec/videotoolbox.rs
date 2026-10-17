@@ -29,8 +29,7 @@ use objc2_video_toolbox::{
     VTSessionSetProperty, kVTCompressionPropertyKey_AllowFrameReordering,
     kVTCompressionPropertyKey_AverageBitRate, kVTCompressionPropertyKey_ExpectedFrameRate,
     kVTCompressionPropertyKey_ProfileLevel, kVTCompressionPropertyKey_RealTime,
-    kVTEncodeFrameOptionKey_ForceKeyFrame, kVTProfileLevel_H264_Baseline_AutoLevel,
-    kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel,
+    kVTEncodeFrameOptionKey_ForceKeyFrame,
 };
 
 use super::{NAL_PPS, NAL_SPS, VideoPacket, nal_type, nal_units};
@@ -39,13 +38,22 @@ use crate::Picture;
 /// The clock the pictures are stamped in: milliseconds.
 const TIMESCALE: i32 = 1000;
 const START_CODE: [u8; 4] = [0, 0, 0, 1];
+/// kVTInvalidSessionErr: the session died under us (iOS took the codec
+/// while the app was in the background); a new one is made.
+const INVALID_SESSION: i32 = -12903;
+/// The profile keys by their value rather than their symbol: the
+/// Constrained Baseline one exists from macOS 12 on, and a symbol the OS
+/// lacks stops the app at launch (the app runs on macOS 11).
+const CONSTRAINED_BASELINE: &str = "H264_ConstrainedBaseline_AutoLevel";
+const BASELINE: &str = "H264_Baseline_AutoLevel";
 
 /// What the encoder's callback leaves: the packets of the frames completed
 /// (one a call, in practice), or the first error.
 #[derive(Default)]
 struct Encoded {
     packets: Vec<VideoPacket>,
-    error: Option<String>,
+    /// The status and its words.
+    error: Option<(i32, String)>,
 }
 
 pub(super) struct Encoder {
@@ -54,6 +62,9 @@ pub(super) struct Encoder {
     out: *mut Mutex<Encoded>,
     width: u32,
     height: u32,
+    bitrate: u32,
+    fps: u32,
+    /// The next packet must be a keyframe: held until one comes out.
     force_key: bool,
 }
 
@@ -92,6 +103,8 @@ impl Encoder {
             out,
             width,
             height,
+            bitrate,
+            fps,
             force_key: true,
         };
         // SAFETY: static keys
@@ -101,18 +114,19 @@ impl Encoder {
                 kVTCompressionPropertyKey_AllowFrameReordering,
                 CFBoolean::new(false),
             )?;
-            // Constrained Baseline is the wire's profile; an encoder
-            // without it (older hardware) gives Baseline
+            // Constrained Baseline is the wire's profile; an OS or an
+            // encoder without it gives Baseline (with reordering off, the
+            // same stream)
             if encoder
                 .set(
                     kVTCompressionPropertyKey_ProfileLevel,
-                    kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel,
+                    &CFString::from_static_str(CONSTRAINED_BASELINE),
                 )
                 .is_err()
             {
                 encoder.set(
                     kVTCompressionPropertyKey_ProfileLevel,
-                    kVTProfileLevel_H264_Baseline_AutoLevel,
+                    &CFString::from_static_str(BASELINE),
                 )?;
             }
             encoder.set(
@@ -132,12 +146,23 @@ impl Encoder {
     }
 
     /// The average the rate control keeps to. No `DataRateLimits` cap
-    /// with it: a cap set once held the encoder under it after the
-    /// average was raised again (proven on macOS 27: 8 kB/s at 1 Mb/s).
+    /// with it: a cap lowered mid-session holds, one raised again does
+    /// not (macOS 27, 1 Mb/s -> 100 kb/s -> 1 Mb/s with the cap at 1.0,
+    /// 1.5 and 2.0 times the average: the stream stayed at the lowered
+    /// cap's 8, 12 and 17 kB/s), so a call would never climb back.
     pub(super) fn set_bitrate(&mut self, bitrate: u32) -> Result<(), String> {
         let average = CFNumber::new_i64(i64::from(bitrate));
         // SAFETY: a static key
-        unsafe { self.set(kVTCompressionPropertyKey_AverageBitRate, &average) }
+        unsafe { self.set(kVTCompressionPropertyKey_AverageBitRate, &average)? };
+        self.bitrate = bitrate;
+        Ok(())
+    }
+
+    /// A new session in place of one that died: its first packet is a
+    /// keyframe.
+    fn renew(&mut self) -> Result<(), String> {
+        *self = Self::new(self.width, self.height, self.bitrate, self.fps)?;
+        Ok(())
     }
 
     pub(super) fn keyframe(&mut self) {
@@ -170,24 +195,39 @@ impl Encoder {
                 std::ptr::null_mut::<VTEncodeInfoFlags>(),
             )
         };
+        if frame == INVALID_SESSION {
+            self.renew()?;
+            return Ok(None);
+        }
         if frame != 0 {
             return Err(format!("VTCompressionSessionEncodeFrame: {frame}"));
         }
-        self.force_key = false;
         // SAFETY: the session is live; the callback has run when this returns
         let done = unsafe { self.session.complete_frames(kCMTimeInvalid) };
+        if done == INVALID_SESSION {
+            self.renew()?;
+            return Ok(None);
+        }
         if done != 0 {
             return Err(format!("VTCompressionSessionCompleteFrames: {done}"));
         }
         // SAFETY: `out` lives as long as `self`
-        let mut out = lock(unsafe { &*self.out });
-        if let Some(error) = out.error.take() {
+        let taken = lock(unsafe { &*self.out }).error.take();
+        if let Some((status, error)) = taken {
+            if status == INVALID_SESSION {
+                self.renew()?;
+                return Ok(None);
+            }
             return Err(error);
         }
         // a frame the rate control dropped leaves none; two would be a
         // frame held from before, which VideoToolbox does not do with
         // reordering off: the last is the newest
-        Ok(out.packets.drain(..).next_back())
+        let packet = lock(unsafe { &*self.out }).packets.drain(..).next_back();
+        if packet.as_ref().is_some_and(|packet| packet.keyframe) {
+            self.force_key = false;
+        }
+        Ok(packet)
     }
 
     /// # Safety
@@ -228,7 +268,7 @@ unsafe extern "C-unwind" fn encoded(
     let mut out = lock(out);
     if status != 0 {
         out.error
-            .get_or_insert_with(|| format!("VideoToolbox encode: {status}"));
+            .get_or_insert_with(|| (status, format!("VideoToolbox encode: {status}")));
         return;
     }
     // SAFETY: a sample buffer VideoToolbox handed over for this call
@@ -239,7 +279,7 @@ unsafe extern "C-unwind" fn encoded(
         Ok(Some(packet)) => out.packets.push(packet),
         Ok(None) => {}
         Err(error) => {
-            out.error.get_or_insert(error);
+            out.error.get_or_insert((0, error));
         }
     }
 }
@@ -267,7 +307,10 @@ unsafe fn packet(sample: &CMSampleBuffer) -> Result<Option<VideoPacket>, String>
             let format = sample
                 .format_description()
                 .ok_or("a compressed sample without a format description")?;
-            for index in 0..2 {
+            // as many sets as the description holds (the SPS and the PPS)
+            let mut count = 1usize;
+            let mut index = 0;
+            while index < count {
                 let mut set: *const u8 = std::ptr::null();
                 let mut size = 0usize;
                 let got = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
@@ -275,7 +318,7 @@ unsafe fn packet(sample: &CMSampleBuffer) -> Result<Option<VideoPacket>, String>
                     index,
                     &mut set,
                     &mut size,
-                    std::ptr::null_mut(),
+                    &mut count,
                     std::ptr::null_mut(),
                 );
                 if got != 0 || set.is_null() {
@@ -283,6 +326,7 @@ unsafe fn packet(sample: &CMSampleBuffer) -> Result<Option<VideoPacket>, String>
                 }
                 data.extend(START_CODE);
                 data.extend(std::slice::from_raw_parts(set, size));
+                index += 1;
             }
         }
         let Some(block) = sample.data_buffer() else {
@@ -366,12 +410,20 @@ struct Decoded {
     error: Option<String>,
 }
 
-/// A session at one stream's parameter sets.
+/// A session at one stream's parameter sets; invalidated when replaced
+/// or dropped.
 struct Stream {
     sps: Vec<u8>,
     pps: Vec<u8>,
     format: CFRetained<CMFormatDescription>,
     session: CFRetained<VTDecompressionSession>,
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        // SAFETY: invalidated, the callback runs no more
+        unsafe { self.session.invalidate() };
+    }
 }
 
 pub(super) struct Decoder {
@@ -441,17 +493,20 @@ impl Decoder {
             )
         };
         // SAFETY: `out` lives as long as `self`
-        let mut out = lock(unsafe { &*self.out });
-        if let Some(error) = out.error.take() {
+        let (error, picture) = {
+            let mut out = lock(unsafe { &*self.out });
+            (out.error.take(), out.picture.take())
+        };
+        let error = error
+            .or((decoded != 0).then(|| format!("VTDecompressionSessionDecodeFrame: {decoded}")));
+        if let Some(error) = error {
+            // a slice the decoder refused (a peer's bytes), or a session
+            // that died (iOS took it in the background): the next keyframe
+            // opens a new one
+            self.stream = None;
             return Err(error);
         }
-        if decoded != 0 {
-            // a slice the decoder refused (a peer's bytes): no picture,
-            // the next keyframe starts afresh
-            out.picture = None;
-            return Err(format!("VTDecompressionSessionDecodeFrame: {decoded}"));
-        }
-        Ok(out.picture.take())
+        Ok(picture)
     }
 
     fn open(
@@ -488,10 +543,7 @@ impl Decoder {
 
 impl Drop for Decoder {
     fn drop(&mut self) {
-        if let Some(stream) = self.stream.take() {
-            // SAFETY: invalidated, the callback runs no more
-            unsafe { stream.session.invalidate() };
-        }
+        self.stream = None;
         // SAFETY: no session holds `out` any more
         drop(unsafe { Box::from_raw(self.out) });
     }
@@ -598,4 +650,30 @@ fn sample(avcc: &[u8], format: &CMFormatDescription) -> Result<CFRetained<CMSamp
         .ok_or_else(|| format!("CMSampleBufferCreateReady: {made}"))?;
     // SAFETY: a sample `create` returned, retained once for us
     Ok(unsafe { CFRetained::from_raw(sample) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A session made anew (what a dead one gets) starts with a keyframe.
+    #[test]
+    fn a_renewed_session_starts_with_a_keyframe() {
+        let mut encoder = Encoder::new(64, 48, 300_000, 30).unwrap();
+        let grey = vec![128u8; 64 * 48 * 4];
+        let first = encoder.encode(&grey, Duration::ZERO).unwrap().unwrap();
+        assert!(first.keyframe);
+        let second = encoder
+            .encode(&grey, Duration::from_millis(33))
+            .unwrap()
+            .unwrap();
+        assert!(!second.keyframe);
+        encoder.renew().unwrap();
+        let third = encoder
+            .encode(&grey, Duration::from_millis(66))
+            .unwrap()
+            .unwrap();
+        assert!(third.keyframe);
+        assert!(!encoder.force_key);
+    }
 }

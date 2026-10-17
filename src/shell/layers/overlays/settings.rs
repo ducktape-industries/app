@@ -908,8 +908,8 @@ impl OverlayLayer {
             ),
             line("Log", log, ink),
         ];
-        #[cfg(feature = "call")]
-        if crate::backend::openh264::WANTED {
+        #[cfg(all(feature = "call", target_os = "linux"))]
+        {
             use crate::backend::openh264;
             let on = openh264::enabled();
             let switch = self.switch(
@@ -934,9 +934,10 @@ impl OverlayLayer {
                     .text_color(ink.muted)
                     .child(words(
                         "about/openh264/hint",
-                        "Fetched from Cisco onto this machine the first time a call sends or shows a picture; off, calls go on by voice. Its licence is saved beside it.",
+                        "Fetched from Cisco onto this machine the first time a call sends or shows a picture; off, calls go on by voice.",
                     )),
             );
+            rows.push(line("H.264 licence", openh264::license_path(), ink));
         }
         rows
     }
