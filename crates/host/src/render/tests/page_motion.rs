@@ -2,7 +2,9 @@
 //! one it was opened from, a shallower one is uncovered, and both land
 //! at the still layout; a page at the same depth, Reduce Motion and a
 //! pointer window slide nothing. The page going keeps its lists where they
-//! were left and takes no press.
+//! were left and takes no press. The edge swipe drags a page off the page
+//! kept under it, slides it back let go short, and pops it from where the
+//! finger let go when the view answers its Back with the page under.
 use super::*;
 use std::time::Duration;
 
@@ -261,5 +263,304 @@ fn a_press_on_the_page_going_reaches_nothing(cx: &mut gpui_kit::TestAppContext) 
         1,
         "the control under it is where the press was"
     );
+    crate::contract::testing::touch_first_for_test(false);
+}
+
+/// rooms (the root), then room pushed over it and landed still: the page
+/// kept under room is rooms.
+fn pushed(cx: &mut gpui_kit::TestAppContext) -> (Entity<ViewTree>, gpui_kit::VisualTestContext) {
+    let (tree, mut native) = open(cx, page("rooms", 0));
+    show(&tree, &mut native, page("room", 1));
+    later(&tree, &mut native, crate::motion::idiom().push.duration);
+    assert!(!moving(&tree, &native));
+    (tree, native)
+}
+
+/// The edge swipe `progress` in, drawn: whether the page followed.
+fn drag(tree: &Entity<ViewTree>, native: &mut gpui_kit::VisualTestContext, progress: f32) -> bool {
+    let followed = tree.update(native, |tree, cx| tree.drag_page(progress, cx));
+    native.update(|window, cx| window.render_frame(cx));
+    followed
+}
+
+/// The swipe let go short, drawn.
+fn let_go_short(tree: &Entity<ViewTree>, native: &mut gpui_kit::VisualTestContext) {
+    tree.update(native, |tree, cx| tree.drag_page_cancelled(cx));
+    native.update(|window, cx| window.render_frame(cx));
+}
+
+fn finger(tree: &Entity<ViewTree>, native: &gpui_kit::VisualTestContext) -> Option<(f32, bool)> {
+    tree.read_with(native, |tree, _| tree.page_finger())
+}
+
+/// The frames a draw now asks for: the ones earlier draws asked for (a
+/// test draws without delivering them) are delivered first.
+fn frames(native: &mut gpui_kit::VisualTestContext) -> usize {
+    native.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.render_frame(cx);
+        window.simulate_next_frame(cx)
+    })
+}
+
+fn near(drawn: f32, expected: f32, what: &str) {
+    assert!(
+        (drawn - expected).abs() < 1.,
+        "{what}: {drawn}, not {expected}"
+    );
+}
+
+/// The edge swipe drags the page on top off the page it was pushed over,
+/// kept under it and coming back from the left, the finger moving both
+/// (no frame asked for); let go short, the page slides back from where it
+/// was left, and lands still, the page under it gone, with nothing asked
+/// for after.
+#[gpui_kit::test]
+fn the_edge_swipe_drags_a_page_off_the_one_under_it_and_back(cx: &mut gpui_kit::TestAppContext) {
+    crate::contract::testing::touch_first_for_test(true);
+    let (tree, mut native) = pushed(cx);
+    assert!(!drawn(&mut native, "rooms"));
+    assert!(drag(&tree, &mut native, 0.25), "the page did not follow");
+    near(left(&mut native, "room"), WIDTH * 0.25, "the page on top");
+    near(
+        left(&mut native, "rooms"),
+        -WIDTH * 0.3 * 0.75,
+        "the page under it",
+    );
+    assert_eq!(
+        frames(&mut native),
+        0,
+        "the finger moves it: no frame asked for"
+    );
+    assert!(drag(&tree, &mut native, 0.5));
+    near(left(&mut native, "room"), WIDTH * 0.5, "the page on top");
+
+    let_go_short(&tree, &mut native);
+    assert_eq!(finger(&tree, &native), None);
+    assert!(
+        moving(&tree, &native),
+        "let go short, it did not slide back"
+    );
+    near(
+        left(&mut native, "room"),
+        WIDTH * 0.5,
+        "it slides back from the finger",
+    );
+    later(&tree, &mut native, crate::motion::idiom().push.duration);
+    assert!(!moving(&tree, &native));
+    assert_eq!(left(&mut native, "room"), 0.);
+    assert!(!drawn(&mut native, "rooms"));
+    assert_eq!(frames(&mut native), 0, "a frame asked for once still");
+    crate::contract::testing::touch_first_for_test(false);
+}
+
+/// Let go as a Back the view hears, the page holds where the finger left
+/// it (no frame asked for, no second swipe followed); the shallower page
+/// the view answers with is uncovered from there, not from the start, and
+/// lands still; nothing is kept under a root page.
+#[gpui_kit::test]
+fn a_swipe_let_go_as_back_pops_from_where_the_finger_left(cx: &mut gpui_kit::TestAppContext) {
+    crate::contract::testing::touch_first_for_test(true);
+    let (tree, mut native) = pushed(cx);
+    assert!(drag(&tree, &mut native, 0.4));
+    tree.update(&mut native, |tree, _| tree.heard_back());
+    assert!(
+        !drag(&tree, &mut native, 0.6),
+        "a page let go followed again"
+    );
+    assert_eq!(finger(&tree, &native), Some((0.4, true)));
+    near(
+        left(&mut native, "room"),
+        WIDTH * 0.4,
+        "held where the finger left it",
+    );
+    assert_eq!(frames(&mut native), 0, "a held page asked for a frame");
+
+    show(&tree, &mut native, page("rooms", 0));
+    assert!(moving(&tree, &native));
+    assert_eq!(finger(&tree, &native), None);
+    near(
+        left(&mut native, "room"),
+        WIDTH * 0.4,
+        "the pop starts at the finger",
+    );
+    near(
+        left(&mut native, "rooms"),
+        -WIDTH * 0.3 * 0.6,
+        "the page coming back",
+    );
+    later(&tree, &mut native, crate::motion::idiom().push.duration);
+    assert!(!moving(&tree, &native));
+    assert_eq!(left(&mut native, "rooms"), 0.);
+    assert!(!drawn(&mut native, "room"));
+    assert_eq!(frames(&mut native), 0, "a frame asked for once still");
+    assert!(!drag(&tree, &mut native, 0.3), "a root page followed");
+    crate::contract::testing::touch_first_for_test(false);
+}
+
+/// A Back the view answers at the same depth (a dialog it closed, a Back
+/// it had no use for) holds the page until the answer is in; then it
+/// slides back, as from a release short.
+#[gpui_kit::test]
+fn a_back_answered_without_a_pop_slides_the_page_back(cx: &mut gpui_kit::TestAppContext) {
+    crate::contract::testing::touch_first_for_test(true);
+    let (tree, mut native) = pushed(cx);
+    assert!(drag(&tree, &mut native, 0.4));
+    tree.update(&mut native, |tree, _| tree.heard_back());
+    show(&tree, &mut native, page("room", 1));
+    assert_eq!(
+        finger(&tree, &native),
+        Some((0.4, true)),
+        "a frame at the same depth let the page go"
+    );
+    assert!(!moving(&tree, &native));
+    tree.update(&mut native, |tree, cx| tree.back_answered(cx));
+    native.update(|window, cx| window.render_frame(cx));
+    assert_eq!(finger(&tree, &native), None);
+    assert!(moving(&tree, &native), "the page held did not slide back");
+    later(&tree, &mut native, crate::motion::idiom().push.duration);
+    assert_eq!(left(&mut native, "room"), 0.);
+    assert!(!drawn(&mut native, "rooms"));
+    assert_eq!(frames(&mut native), 0, "a frame asked for once still");
+    crate::contract::testing::touch_first_for_test(false);
+}
+
+/// A page opened straight (a link onto a deep page), or jumped to past the
+/// page under it, has no page kept under it: the swipe does not follow,
+/// and stays the shell's (its release a Back as ever).
+#[gpui_kit::test]
+fn a_page_with_none_kept_under_it_does_not_follow(cx: &mut gpui_kit::TestAppContext) {
+    crate::contract::testing::touch_first_for_test(true);
+    let (tree, mut native) = open(cx, page("room", 1));
+    assert!(
+        !drag(&tree, &mut native, 0.3),
+        "a page opened straight followed"
+    );
+    assert_eq!(left(&mut native, "room"), 0.);
+    show(&tree, &mut native, page("rooms", 0));
+    later(&tree, &mut native, crate::motion::idiom().push.duration);
+    show(&tree, &mut native, page("member", 2));
+    later(&tree, &mut native, crate::motion::idiom().push.duration);
+    assert!(
+        !drag(&tree, &mut native, 0.3),
+        "a page two over the one kept followed"
+    );
+    assert_eq!(finger(&tree, &native), None);
+    crate::contract::testing::touch_first_for_test(false);
+}
+
+/// One page kept per depth under the top: two pushes keep both, and the
+/// swipe uncovers the one right under; a pop drops the page it uncovers,
+/// and the swipe on the page it lands on uncovers the one under that.
+#[gpui_kit::test]
+fn each_depth_keeps_the_page_under_it(cx: &mut gpui_kit::TestAppContext) {
+    crate::contract::testing::touch_first_for_test(true);
+    let (tree, mut native) = pushed(cx);
+    show(&tree, &mut native, page("member", 2));
+    later(&tree, &mut native, crate::motion::idiom().push.duration);
+    assert!(drag(&tree, &mut native, 0.5));
+    assert!(drawn(&mut native, "room") && !drawn(&mut native, "rooms"));
+    let_go_short(&tree, &mut native);
+    later(&tree, &mut native, crate::motion::idiom().push.duration);
+
+    show(&tree, &mut native, page("room", 1));
+    later(&tree, &mut native, crate::motion::idiom().push.duration);
+    assert!(drag(&tree, &mut native, 0.5));
+    assert!(drawn(&mut native, "rooms") && !drawn(&mut native, "member"));
+    crate::contract::testing::touch_first_for_test(false);
+}
+
+/// A sheet over the page (the view's Back closes it first) or Reduce
+/// Motion: the swipe does not follow.
+#[gpui_kit::test]
+fn a_sheet_over_the_page_or_reduce_motion_holds_it_still(cx: &mut gpui_kit::TestAppContext) {
+    crate::contract::testing::touch_first_for_test(true);
+    let (tree, mut native) = pushed(cx);
+    native.update(|_, cx| cx.set_reduce_motion(true));
+    assert!(
+        !drag(&tree, &mut native, 0.3),
+        "it followed under Reduce Motion"
+    );
+    native.update(|_, cx| cx.set_reduce_motion(false));
+
+    let sheet = wire::Node::Sheet {
+        id: named_id("actions"),
+        label: Some("Message actions".into()),
+        style: crate::render::plain_style(),
+        detents: vec![0.5, 1.],
+        on_dismiss: Some(7),
+        child: Box::new(text("copy", "Copy text")),
+    };
+    show(
+        &tree,
+        &mut native,
+        page_of("room", 1, vec![text("room-words", "room"), sheet]),
+    );
+    assert!(!drag(&tree, &mut native, 0.3), "it followed under a sheet");
+    assert_eq!(finger(&tree, &native), None);
+    crate::contract::testing::touch_first_for_test(false);
+}
+
+/// A page with a camera and a microphone, pushed over: its copy, drawn
+/// under the push and kept under the page after, holds neither, opens
+/// neither (a device it opened would stay open, unseen, while the page is
+/// kept), and keeps each one's place.
+#[gpui_kit::test]
+fn the_page_kept_under_opens_no_device(cx: &mut gpui_kit::TestAppContext) {
+    crate::contract::testing::touch_first_for_test(true);
+    let style = crate::render::test_style(div().w(px(40.)).h(px(40.)).style().clone());
+    // a device no system lists: nothing opens should the copy try
+    let camera = wire::Node::Camera {
+        id: named_id("camera"),
+        style,
+        device: Some("no-such".into()),
+        mirror: true,
+        object_fit: wire::ImageObjectFit::Cover,
+        on_state: None,
+        publish: None,
+    };
+    let microphone = wire::Node::Microphone {
+        id: named_id("mic"),
+        style,
+        device: Some("no-such".into()),
+        output: None,
+        monitor: false,
+        revision: 0,
+        commands: Vec::new(),
+        on_state: None,
+        publish: None,
+        muted: false,
+    };
+    let (tree, mut native) = open(cx, page_of("call", 0, vec![camera, microphone]));
+    show(&tree, &mut native, page("room", 1));
+    let kept = tree
+        .read_with(&native, |tree, _| tree.leaving_page())
+        .expect("the push moves");
+    let devices = kept.read_with(&native, |kept, _| {
+        let mut root = kept.root.clone();
+        let mut devices = 0;
+        root.for_each_mut(&mut |node| {
+            devices += matches!(
+                node,
+                wire::Node::Camera { .. } | wire::Node::Microphone { .. } | wire::Node::Web { .. }
+            ) as usize
+        });
+        devices
+    });
+    assert_eq!(devices, 0, "the copy holds a device");
+    later(&tree, &mut native, crate::motion::idiom().push.duration);
+    assert!(drag(&tree, &mut native, 0.5), "the page did not follow");
+    assert!(
+        drawn(&mut native, "camera") && drawn(&mut native, "mic"),
+        "the copy lost the pieces' places"
+    );
+    #[cfg(feature = "av")]
+    {
+        let (cameras, meters) = kept.read_with(&native, |kept, _| kept.media_for_test());
+        assert!(
+            cameras.is_empty() && meters.is_empty(),
+            "the copy opened a device"
+        );
+    }
     crate::contract::testing::touch_first_for_test(false);
 }
