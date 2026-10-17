@@ -17,9 +17,9 @@
 //!
 //! An APNs token is sent to the server its `env` names: Apple's sandbox for
 //! a build signed for development, production for the rest. Both carry one
-//! payload, `{kind, chain, program, tag, title, body, link, until}` (FCM's
-//! data values are strings). pushd names no program: a call is a call
-//! whoever posts it.
+//! payload, `{kind, chain, program, tag, title, body, link, until}`, and a
+//! call also `end` (the notice's `end_link`); FCM's data values are strings.
+//! pushd names no program: a call is a call whoever posts it.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -440,7 +440,8 @@ impl Push {
 
     /// The requests that ring `call` on every device, at `now`.
     fn ring(&self, call: &Notice, now: u64) -> Vec<Request> {
-        let payload = self.payload(call, "call");
+        let mut payload = self.payload(call, "call");
+        payload["end"] = call.end_link.clone().into();
         let mut requests = Vec::new();
         if let Some((apns, bearer, tokens)) = self.apns_for("voip", now) {
             requests.extend(tokens.iter().map(|(token, env)| {
@@ -777,6 +778,7 @@ mod tests {
             link: "duck://testkit-0a1b2c3d/huddle/call/c1".into(),
             kind: NoticeKind::Call,
             until,
+            end_link: "duck://testkit-0a1b2c3d/huddle/call/c1/leave".into(),
         }
     }
 
@@ -818,6 +820,7 @@ mod tests {
                 "kind": "call", "chain": "testkit-0a1b2c3d", "program": "huddle",
                 "tag": "huddle/call/c1", "title": "ada is calling", "body": "Huddle with 2 people",
                 "link": "duck://testkit-0a1b2c3d/huddle/call/c1", "until": until,
+                "end": "duck://testkit-0a1b2c3d/huddle/call/c1/leave",
             })
         );
         let jwt = header(apns, "authorization")
@@ -869,6 +872,10 @@ mod tests {
             message["data"]["link"],
             "duck://testkit-0a1b2c3d/huddle/call/c1"
         );
+        assert_eq!(
+            message["data"]["end"],
+            "duck://testkit-0a1b2c3d/huddle/call/c1/leave"
+        );
     }
 
     /// A notifier's wire `Notification` of kind `Call` passes an account's
@@ -885,6 +892,7 @@ mod tests {
             link: "duck://testkit-0a1b2c3d/huddle/call/c1".into(),
             kind: NoticeKind::Call,
             until,
+            end_link: "duck://testkit-0a1b2c3d/huddle/call/c1/leave".into(),
         };
         let center = ducktape_host::runtime::notify::CenterHandle::default();
         let wall = i64::try_from(now()).unwrap();
@@ -898,6 +906,10 @@ mod tests {
         );
         let banner = banner.expect("the call passed the centre");
         assert_eq!((banner.kind, banner.until), (NoticeKind::Call, until));
+        assert_eq!(
+            banner.end_link,
+            "duck://testkit-0a1b2c3d/huddle/call/c1/leave"
+        );
         assert!(push.post(&banner, None));
         let sent = http.0.lock().unwrap().clone();
         let apns = sent
@@ -1024,6 +1036,7 @@ mod tests {
             program: "chat".into(),
             link: "duck://testkit-0a1b2c3d/chat/general/7".into(),
             until: 0,
+            end_link: "duck://testkit-0a1b2c3d/chat/general/7/end".into(),
         };
         assert!(push.post(&notice, Some(Click::Row(1))));
         let sent = http.0.lock().unwrap().clone();
@@ -1045,6 +1058,8 @@ mod tests {
         assert_eq!(body["aps"]["thread-id"], "chat");
         assert_eq!(body["kind"], "notice");
         assert_eq!(body["link"], "duck://testkit-0a1b2c3d/chat/general/7");
+        // `end` is a call's alone
+        assert!(body.get("end").is_none(), "{body}");
         let fcm = sent
             .iter()
             .find(|request| request.url.contains("messages:send"));
@@ -1053,6 +1068,7 @@ mod tests {
         assert!(fcm["message"]["android"].get("ttl").is_none());
         assert!(fcm["message"]["android"].get("collapse_key").is_none());
         assert_eq!(fcm["message"]["data"]["kind"], "notice");
+        assert!(fcm["message"]["data"].get("end").is_none());
         assert!(fcm["message"]["data"].get("quiet").is_none());
 
         http.0.lock().unwrap().clear();
@@ -1085,6 +1101,7 @@ mod tests {
             .find(|request| request.url.contains("messages:send"));
         let fcm: serde_json::Value = serde_json::from_str(&fcm.unwrap().body).unwrap();
         assert_eq!(fcm["message"]["data"]["kind"], "withdraw");
+        assert!(fcm["message"]["data"].get("end").is_none());
 
         http.0.lock().unwrap().clear();
         push.post(&notice, None);

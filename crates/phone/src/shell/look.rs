@@ -11,6 +11,7 @@ use gpui_kit::{
     App, ClickEvent, Div, FontWeight, Hsla, InteractiveElement as _, ParentElement as _, Rgba,
     StatefulInteractiveElement as _, Styled as _, Window, WindowAppearance, div, px, svg,
 };
+use view_wire::manifest::Tint;
 
 /// A text role: size and line height in points (theme.ts `type`).
 #[derive(Clone, Copy)]
@@ -103,8 +104,6 @@ pub const GUTTER: f32 = 16.;
 pub const ICON_HIT: f32 = 22.;
 /// An empty state's icon (`size.icon.empty`).
 pub const ICON_EMPTY: f32 = 28.;
-/// The avatar in a list or header (`size.avatar.list`).
-pub const AVATAR: f32 = 32.;
 /// A sheet row (`size.sheetRow`).
 pub const SHEET_ROW: f32 = 52.;
 /// The icon in a sheet row (`size.icon.sheet`).
@@ -208,6 +207,33 @@ impl Palette {
         self.dark
     }
 
+    /// A program's tile in the tint its view's manifest names (SPEC §7.7):
+    /// its ground and its glyph's ink, in this appearance. The name is the
+    /// program's, the colours are the app's: a soft ground under a strong
+    /// ink, the glyph at 3:1 or more on its ground in both appearances, the
+    /// design palette's own pairs where one fits (green is `success`, red
+    /// `danger`, violet `agent`; `warning` is too near orange, so amber is
+    /// its own, clearly yellow). No tint is the neutral filled tile.
+    pub fn tint(self, tint: Tint) -> (Hsla, Hsla) {
+        // [ground, ink], light then dark
+        let pair = |light: [u32; 2], dark: [u32; 2]| {
+            let [ground, ink] = if self.dark { dark } else { light };
+            (hex(ground), hex(ink))
+        };
+        match tint {
+            Tint::None => (self.surface_raised(), self.foreground()),
+            Tint::Blue => pair([0xD8EDFF, 0x1762B6], [0x182E4B, 0x99CEFF]),
+            Tint::Teal => pair([0xCBF6EF, 0x00786C], [0x003732, 0x6AE2D4]),
+            Tint::Green => (self.success_soft(), self.success()),
+            Tint::Lime => pair([0xE4F1D1, 0x546E0D], [0x27330E, 0xBAD787]),
+            Tint::Amber => pair([0xFDEFBA, 0x8D6C00], [0x3B2F04, 0xF2D76C]),
+            Tint::Orange => pair([0xFFE3D1, 0xA34100], [0x45240F, 0xFFB589]),
+            Tint::Red => (self.danger_soft(), self.danger()),
+            Tint::Pink => pair([0xFFE0EF, 0x9E366F], [0x442032, 0xFFADD5]),
+            Tint::Violet => (self.agent_soft(), self.agent()),
+        }
+    }
+
     /// The scrim under a sheet (theme.ts: black at 0.4, 0.55 in the dark).
     pub fn scrim(self) -> Hsla {
         let alpha = if self.dark { 0.55 } else { 0.4 };
@@ -219,6 +245,18 @@ impl Palette {
         }
         .into()
     }
+}
+
+/// `0xRRGGBB`, opaque.
+fn hex(rgb: u32) -> Hsla {
+    let channel = |shift: u32| ((rgb >> shift) & 0xFF) as f32 / 255.;
+    Rgba {
+        r: channel(16),
+        g: channel(8),
+        b: channel(0),
+        a: 1.,
+    }
+    .into()
 }
 
 macro_rules! colours {
@@ -249,5 +287,58 @@ colours!(
     success,
     success_soft,
     danger,
-    danger_soft
+    danger_soft,
+    agent,
+    agent_soft
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LIGHT: Palette = Palette {
+        colours: &design::LIGHT,
+        dark: false,
+    };
+    const DARK: Palette = Palette {
+        colours: &design::DARK,
+        dark: true,
+    };
+
+    /// A tint is its own pair in each appearance, the design palette's
+    /// where it has one; no tint is the neutral filled tile.
+    #[test]
+    fn a_tint_is_its_pair_and_none_is_the_neutral_tile() {
+        assert_eq!(LIGHT.tint(Tint::Blue), (hex(0xD8EDFF), hex(0x1762B6)));
+        assert_eq!(DARK.tint(Tint::Blue), (hex(0x182E4B), hex(0x99CEFF)));
+        assert_eq!(DARK.tint(Tint::Violet), (DARK.agent_soft(), DARK.agent()));
+        for palette in [LIGHT, DARK] {
+            assert_eq!(
+                palette.tint(Tint::None),
+                (palette.surface_raised(), palette.foreground())
+            );
+        }
+    }
+
+    /// Every tile's glyph reads on its ground: 3:1 or more (WCAG's
+    /// non-text contrast), in both appearances.
+    #[test]
+    fn every_glyph_reads_on_its_ground() {
+        let luminance = |colour: Hsla| {
+            let linear = |c: f32| match c <= 0.04045 {
+                true => c / 12.92,
+                false => ((c + 0.055) / 1.055).powf(2.4),
+            };
+            let Rgba { r, g, b, .. } = colour.to_rgb();
+            0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+        };
+        for palette in [LIGHT, DARK] {
+            for tint in Tint::ALL {
+                let (ground, ink) = palette.tint(tint);
+                let (a, b) = (luminance(ground), luminance(ink));
+                let ratio = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+                assert!(ratio >= 3., "{tint:?} dark={}: {ratio:.2}", palette.dark);
+            }
+        }
+    }
+}

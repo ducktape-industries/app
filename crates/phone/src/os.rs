@@ -102,9 +102,9 @@ pub fn link(url: String) {
 }
 
 /// This device's push tokens by kind (`voip`: PushKit's, as hex; `apns`:
-/// the remote-notification token, as hex; `fcm`: Firebase's), as the OS
-/// last handed them over, for the registrar ([`crate::push`]) that hands
-/// them to the push server.
+/// the remote-notification token alerts and a withdraw are pushed to, as
+/// hex; `fcm`: Firebase's), as the OS last handed them over, for the
+/// registrar ([`crate::push`]) that hands them to the push server.
 static PUSH_TOKENS: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 

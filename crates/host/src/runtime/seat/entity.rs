@@ -364,7 +364,8 @@ impl Seat {
     /// to, and the shell leaves the program. With a tick in flight that
     /// frame may be one tick old: a view that has just popped to its root
     /// hears a Back it has no use for and ignores it, and its next frame
-    /// has no `on_back`.
+    /// has no `on_back`. A page the edge swipe holds off holds there for the
+    /// view's answer (`ViewTree::drag_page`).
     pub fn back(&mut self, cx: &mut Context<Self>) -> Back {
         let mounted = self.mounted.clone();
         let mut locked = lock(&mounted);
@@ -376,6 +377,9 @@ impl Seat {
         };
         view.pending.push(wire::Event::Back { handler });
         drop(locked);
+        if let Some(tree) = &self.tree {
+            tree.update(cx, |tree, _| tree.heard_back());
+        }
         self.turn(cx);
         Back::Heard
     }
@@ -816,6 +820,11 @@ impl Seat {
         let min_width = self.layout_min(view);
         let body = view.viewport_sent;
         let first_tree = ticks == 0 && view.ticks == 1;
+        // a Back still queued has not been answered by this frame
+        let back_queued = view
+            .pending
+            .iter()
+            .any(|event| matches!(event, wire::Event::Back { .. }));
         drop(locked);
 
         // a pane draws a placed seat's tree; nothing draws an unplaced one,
@@ -855,7 +864,14 @@ impl Seat {
         }
         if let Some(tree) = &self.tree {
             // the body the view was told: a sheet docks by its class
-            tree.update(cx, |tree, cx| tree.set_body(body, cx));
+            tree.update(cx, |tree, cx| {
+                tree.set_body(body, cx);
+                // the view answered a Back the edge swipe let go as: a page
+                // it did not pop to slides back
+                if !back_queued {
+                    tree.back_answered(cx);
+                }
+            });
         }
         if !tooltips.is_empty()
             && let Some(tree) = &self.tree
@@ -886,12 +902,15 @@ impl Seat {
         // the standin goes over the tree, whose draw would release the hold
         self.holding = false;
         // a view that stopped (a fault, a failed load, none to show) keeps
-        // no camera or microphone open under its standin; a load's leaves
-        // the tree as it is
+        // no camera or microphone open under its standin, and no page held
+        // for a Back it will not answer; a load's leaves the tree as it is
         if !standin.loading
             && let Some(tree) = &self.tree
         {
-            tree.update(cx, |tree, _| tree.release_media());
+            tree.update(cx, |tree, cx| {
+                tree.release_media();
+                tree.back_answered(cx);
+            });
         }
         if self.standin.as_ref() != Some(&standin) {
             self.standin = Some(standin);

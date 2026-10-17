@@ -2672,3 +2672,92 @@ fn no_seat_turns_in_the_background(cx: &mut TestAppContext) {
         "the props it held, delivered"
     );
 }
+
+/// The edge swipe let go as Back while another tick is in flight (a JSC
+/// page answers later): the frame that tick lands, at the page's depth,
+/// is not the view's answer to the Back, so the page stays where the
+/// finger left it; the Back's own tick lands the page under, which pops
+/// from there, not from the start.
+#[gpui_kit::test]
+fn a_swipe_let_go_during_a_tick_waits_for_the_backs_own_answer(cx: &mut TestAppContext) {
+    use gpui_kit::test::TestWindowExt as _;
+    const PROGRAM: &str = "deferred-swipe-back";
+    crate::contract::testing::touch_first_for_test(true);
+    let style = crate::render::test_style(div().size_full().style().clone());
+    let page = |key: &str, depth: u32| wire::Frame {
+        root: Some(wire::Node::Container(view_wire::ContainerNode {
+            id: Some(wire::ElementIdWire::Name("view".into())),
+            style,
+            interactivity: Some(Box::new(wire::Interactivity {
+                on_back: (depth > 0).then_some(5),
+                ..Default::default()
+            })),
+            children: vec![wire::Node::Container(view_wire::ContainerNode {
+                id: Some(wire::ElementIdWire::Name(key.into())),
+                style,
+                interactivity: Some(Box::new(wire::Interactivity {
+                    page: Some(depth),
+                    ..Default::default()
+                })),
+                children: Vec::new(),
+            })],
+        })),
+        ..Default::default()
+    };
+    // the root page; the page pushed over it; that page again (the tick
+    // in flight); the root page on every tick after (the Back's answer)
+    let frames = [
+        page("rooms", 0),
+        page("room", 1),
+        page("room", 1),
+        page("rooms", 0),
+    ];
+    let (seat, _, mut native, pump) = deferred(cx, PROGRAM, &frames);
+    draw_now(&mut native);
+    subscribe_props(&seat, &native);
+    nudge(&seat, b"one", &mut native);
+    draw_now(&mut native);
+    native.executor().advance_clock(Duration::from_secs(1));
+    draw_now(&mut native);
+    assert_eq!(ticks_of(&seat, &native), 2, "the page pushed is not on top");
+    let tree = seat
+        .read_with(&native, |seat, _| seat.tree())
+        .expect("a tree");
+    let finger = |native: &VisualTestContext| tree.read_with(native, |tree, _| tree.page_finger());
+    assert!(
+        native.update(|_, cx| tree.update(cx, |tree, cx| tree.drag_page(0.5, cx))),
+        "the page did not follow"
+    );
+
+    pump.hold();
+    nudge(&seat, b"two", &mut native);
+    assert!(in_flight(&seat, &native));
+    let back = native.update(|_, cx| seat.update(cx, |seat, cx| seat.back(cx)));
+    assert_eq!(back, Back::Heard);
+    assert!(pump.release_next());
+    native.run_until_parked();
+    assert_eq!(ticks_of(&seat, &native), 3);
+    assert_eq!(
+        finger(&native),
+        Some((0.5, true)),
+        "a frame the Back was not in let the page go"
+    );
+
+    // the Back's own tick, begun and held, lands
+    pump.at_once();
+    pump.release_all();
+    draw_now(&mut native);
+    draw_now(&mut native);
+    assert_eq!(ticks_of(&seat, &native), 4, "the Back's tick did not land");
+    assert_eq!(finger(&native), None);
+    assert!(tree.read_with(&native, |tree, _| tree.page_moving()));
+    let going = native.update(|window, _| {
+        let page = crate::render::native_id(&wire::ElementIdWire::Name("room".into()));
+        f32::from(window.find(page).bounds().left())
+    });
+    assert!(
+        (going - 200.).abs() < 1.,
+        "the pop did not start at the finger: {going}"
+    );
+    crate::contract::testing::touch_first_for_test(false);
+}

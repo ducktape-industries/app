@@ -30,7 +30,7 @@ ax-door = ["ducktape-host/ax-door"]
 # calls on the phone (the host's `call`: codecs, the echo-cancelled voice
 # I/O); on, as the desktop's default is
 default = ["call"]
-call = ["ducktape-host/call"]
+call = ["ducktape-host/call", "ducktape-av/call"]
 
 [dependencies]
 # the host's runner is the phone's own pick (`os::runner`): wasmtime below,
@@ -67,6 +67,8 @@ serde_json.workspace = true
 # the app's audio session, `crates/av`); the usage strings are
 # `phone/ios/Info.plist`'s
 ducktape-host = { path = "../host", default-features = false, features = ["av"] }
+# a call's voice I/O, whose life the launcher's CallKit call follows
+ducktape-av = { path = "../av" }
 ducktape-host-jsc = { path = "../host-jsc" }
 gpui-pre-ios.workspace = true
 # the log on the simulator's console (Android's goes to logcat through gm's

@@ -1183,6 +1183,7 @@ mod tests {
                 program: "folded-tab",
                 label: "Folded".into(),
                 icon: icon.into(),
+                tint: view_wire::manifest::Tint::None,
                 description: String::new(),
                 note: None,
                 empty: false,
