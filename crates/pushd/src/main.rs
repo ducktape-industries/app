@@ -276,6 +276,7 @@ fn run(network: &Network, config: &Config, data: &Path) -> Result<(), String> {
         contract::RunnerConfig {
             signals_based_traps: true,
             cache_dir: Some(home.join("cache").join("view-code")),
+            compile_apart: None,
         },
     )));
     let client = backend::rpc_client(network.node_url.clone());
