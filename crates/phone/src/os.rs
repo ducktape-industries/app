@@ -16,6 +16,38 @@ pub mod android;
 #[cfg(target_os = "ios")]
 pub mod ios {
     pub mod ffi;
+
+    /// Which of Apple's servers this build's APNs tokens belong to: the
+    /// `aps-environment` of the provisioning profile the app was signed
+    /// with (`embedded.mobileprovision` beside the executable, its plist in
+    /// the clear inside the signed blob): `development` is the sandbox, as
+    /// an Xcode build on a device is; `production` is TestFlight's and the
+    /// App Store's, which ships no profile at all.
+    pub fn apns_environment() -> &'static str {
+        static ENV: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+        ENV.get_or_init(|| {
+            let profile = std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(|dir| dir.join("embedded.mobileprovision")));
+            let bytes = profile
+                .and_then(|profile| std::fs::read(profile).ok())
+                .unwrap_or_default();
+            let text = String::from_utf8_lossy(&bytes);
+            let value = text
+                .find("<key>aps-environment</key>")
+                .and_then(|at| {
+                    let rest = &text[at..];
+                    rest.find("<string>")
+                        .map(|open| &rest[open + "<string>".len()..])
+                })
+                .and_then(|rest| rest.split('<').next())
+                .map(str::trim);
+            match value {
+                Some("development") => "sandbox",
+                _ => "production",
+            }
+        })
+    }
 }
 
 use ducktape_host::contract::{
@@ -70,25 +102,58 @@ pub fn link(url: String) {
 }
 
 /// This device's push tokens by kind (`voip`: PushKit's, as hex; `apns`:
-/// the remote-notification token a withdraw is pushed to, as hex; `fcm`:
-/// Firebase's), as the OS last handed them over, for the device registry
-/// that hands them to the push server (pushd M2, not built: until then
-/// they are only logged).
+/// the remote-notification token alerts and a withdraw are pushed to, as
+/// hex; `fcm`: Firebase's), as the OS last handed them over, for the
+/// registrar ([`crate::push`]) that hands them to the push server.
 static PUSH_TOKENS: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
+/// One item each time the tokens moved, for the registrar; a bounded
+/// channel of one, so moves coalesce.
+static PUSH_MOVED: OnceLock<(async_channel::Sender<()>, async_channel::Receiver<()>)> =
+    OnceLock::new();
+
+fn push_moved() -> &'static (async_channel::Sender<()>, async_channel::Receiver<()>) {
+    PUSH_MOVED.get_or_init(|| async_channel::bounded(1))
+}
+
 /// Keeps `token` as this device's push token of `kind`; an empty one is
-/// withdrawn.
+/// withdrawn. The registrar is woken when the kept one moved.
 pub fn push_token(kind: &str, token: String) {
     // the token addresses this device: kept out of the log
     tracing::debug!(target: "ducktape::phone", kind, "this device's push token");
-    let mut tokens = PUSH_TOKENS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    match token.is_empty() {
-        true => tokens.remove(kind),
-        false => tokens.insert(kind.to_owned(), token),
+    let moved = {
+        let mut tokens = PUSH_TOKENS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match token.is_empty() {
+            true => tokens.remove(kind).is_some(),
+            false => tokens.insert(kind.to_owned(), token.clone()) != Some(token),
+        }
     };
+    if moved {
+        // a full channel already holds a wake
+        push_moved().0.try_send(()).ok();
+    }
+}
+
+/// Wakes once per move of the tokens ([`push_token`]).
+pub fn push_tokens_moved() -> async_channel::Receiver<()> {
+    push_moved().1.clone()
+}
+
+/// Which of Apple's servers this build's APNs tokens belong to
+/// (`production` or `sandbox`); an Android build's tokens have no such
+/// side, and the registrar sends none for them.
+pub fn push_environment() -> &'static str {
+    #[cfg(target_os = "ios")]
+    {
+        ios::apns_environment()
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        "production"
+    }
 }
 
 /// This device's push tokens by kind ([`push_token`]).
@@ -496,6 +561,14 @@ mod tests {
         push_token("test-voip", String::new());
         assert!(!push_tokens().contains_key("test-voip"));
         assert!(push_tokens().contains_key("test-fcm"));
+        // the registrar was woken, once for the moves so far
+        assert!(push_tokens_moved().try_recv().is_ok());
+        assert!(push_tokens_moved().try_recv().is_err());
+        push_token("test-fcm", "f".into());
+        assert!(
+            push_tokens_moved().try_recv().is_err(),
+            "an unmoved token woke it"
+        );
     }
 
     /// An app build keeps its code in a folder of its own, and the other

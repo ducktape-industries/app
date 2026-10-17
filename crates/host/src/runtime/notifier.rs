@@ -114,8 +114,9 @@ fn recipients() -> std::sync::MutexGuard<'static, Vec<Arc<Notifiers>>> {
 
 /// Every listed program's notifier runs for `recipient` too, as for the
 /// person at this device: started by each roster read (now, when the
-/// network in hand was read), stopped and started again with a connect.
-pub fn notify_for(recipient: Recipient) {
+/// network in hand was read), stopped and started again with a connect,
+/// for as long as the [`Carried`] handed back lives.
+pub fn notify_for(recipient: Recipient) -> Carried {
     let notifiers = Arc::new(Notifiers {
         running: Mutex::default(),
         recipient: Some(Arc::new(recipient)),
@@ -125,6 +126,19 @@ pub fn notify_for(recipient: Recipient) {
     if asked_of.client.is_some() {
         let programs = roster().lock().clone();
         notifiers.reconcile(&asked_of, &programs);
+    }
+    Carried(notifiers)
+}
+
+/// A recipient's notifiers, running while this lives: dropped (the
+/// account's last device left), every one of them stops and no roster read
+/// starts them again.
+pub struct Carried(Arc<Notifiers>);
+
+impl Drop for Carried {
+    fn drop(&mut self) {
+        recipients().retain(|set| !Arc::ptr_eq(set, &self.0));
+        self.0.stop_all();
     }
 }
 

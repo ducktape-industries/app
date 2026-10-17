@@ -7,8 +7,10 @@
 //! no notice.
 //!
 //! For each network it follows ONE node and trusts it, as the app does: no
-//! light client, no block sync. For each account the config lists, it runs
-//! every listed program's notifier through the app's own runtime
+//! light client, no block sync. For each account with a device in the
+//! registry (`registry.rs`: a phone registers its push token signed by a
+//! key identity says acts as the account), it runs every listed program's
+//! notifier through the app's own runtime
 //! (`ducktape_host::runtime::notify_for`), as the desktop app runs it for the
 //! person at the screen: the same kernel contract, the same store, the same
 //! notification centre. Per account it is handed a session of its own
@@ -17,26 +19,29 @@
 //! A notifier never signs (`op.submit` is not a notifier's), so pushd holds
 //! no user key.
 //!
-//! The channel is `push` (`push.rs`): a call (a notice of kind `Call`) goes
-//! to the account's phones as an APNs VoIP push and an FCM high-priority
-//! message, its withdraw as a background push and a `withdraw` message;
-//! every notice is also one JSON line on stdout (`log`), as is each badge
-//! that moved. The APNs auth key and the Firebase service account are files
-//! pushd.toml names (`[apns]`, `[fcm]`), never in a repo; without them a
-//! call is logged only.
+//! The channel is `push` (`push.rs`): a call goes to the account's phones as
+//! an APNs VoIP push and an FCM high-priority message, a notice as an APNs
+//! alert and an FCM message the app shows, a withdraw as a background push
+//! and a `withdraw` message; every notice is also one JSON line on stdout
+//! (`log`), as is each badge that moved. The APNs auth key and the Firebase
+//! service account are files pushd.toml names (`[apns]`, `[fcm]`), never in
+//! a repo; without them a notice is logged only.
 //!
 //! The runtime keeps one network per process, so pushd runs one process per
 //! network: with several in the config and no `--network`, it starts itself
-//! once for each and waits on them.
+//! once for each and waits on them. The registry's door (`listen`) is the
+//! process without `--network`: the supervisor, or the one process of a
+//! one-network config. The children read the registry's files.
 //!
 //! ```text
 //! pushd --config pushd.toml --data /var/lib/pushd [--network NAME]
+//! pushd probe --config pushd.toml      one push per credential to a made-up token: the answer proves the credential
 //! ```
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ducktape_host::backend;
@@ -46,27 +51,35 @@ use ducktape_host::contract::{
 use ducktape_host::runtime::notify::{
     CenterHandle, Click, Notice, NoticeKind, Permission, Settings,
 };
-use ducktape_host::runtime::{self, Answered, Intent, Recipient};
+use ducktape_host::runtime::{self, Answered, Carried, Intent, Recipient};
 
 mod push;
-use push::{Apns, ApnsConfig, Device, Fcm, FcmConfig, Push};
+mod registry;
+use push::{Apns, ApnsConfig, Fcm, FcmConfig, Push};
+use registry::{Devices, Door, Followed};
 
 /// How often the node's status is read: the app's own pace
-/// (`session::node::STATUS_EVERY`). A moved height reads the roster again.
+/// (`session::node::STATUS_EVERY`). A moved height reads the roster again;
+/// the registry's file is looked at too.
 const STATUS_EVERY: Duration = Duration::from_secs(2);
 
 /// Banners a minute per program, past which one "N more" stands for the
 /// rest: the app's default.
 const BURST: u32 = 6;
 
-/// The device registry's stand-in until devices register: each network,
-/// the node pushd follows on it, and the accounts it carries notices for.
+/// Each network, the node pushd follows on it, the door devices register
+/// through, and the credentials the pushes are sent with.
 #[derive(Debug, serde::Deserialize)]
 struct Config {
+    /// None at all: a config `probe` reads, with the credentials only.
+    #[serde(default)]
     networks: Vec<Network>,
-    /// The team's APNs auth key: a call to an iPhone.
+    /// Where the registry's door listens (`127.0.0.1:9201` behind the
+    /// tunnel); none: no device can register, the ones registered stay.
+    listen: Option<String>,
+    /// The team's APNs auth key: pushes to an iPhone.
     apns: Option<ApnsConfig>,
-    /// The Firebase project's service account: a call to an Android phone.
+    /// The Firebase project's service account: pushes to an Android phone.
     fcm: Option<FcmConfig>,
 }
 
@@ -75,20 +88,11 @@ struct Network {
     /// A name for the network here: its directory under `--data`.
     name: String,
     node_url: String,
-    #[serde(default)]
-    accounts: Vec<Account>,
 }
 
-#[derive(Debug, serde::Deserialize)]
-struct Account {
-    account: u64,
-    /// One canonical key of the account, hex: the `signer` its notifiers'
-    /// session names. One notifier per account, never one per device, or
-    /// a device would hear every notice once per key.
-    signer: String,
-    /// The account's phones: their push tokens (`push::Device`).
-    #[serde(default)]
-    devices: Vec<Device>,
+/// Where a network's registered devices are kept.
+fn devices_file(data: &Path, network: &str) -> PathBuf {
+    data.join(network).join("devices.json")
 }
 
 fn main() -> ExitCode {
@@ -108,7 +112,8 @@ fn main() -> ExitCode {
 }
 
 fn start() -> Result<(), String> {
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args().skip(1).peekable();
+    let probing = args.next_if_eq("probe").is_some();
     let (mut config, mut data, mut only) = (None, None, None);
     while let Some(arg) = args.next() {
         let value = args.next().ok_or_else(|| format!("{arg} takes a value"))?;
@@ -119,11 +124,15 @@ fn start() -> Result<(), String> {
             _ => return Err(format!("unknown argument {arg}")),
         }
     }
-    let usage = "pushd --config FILE --data DIR [--network NAME]";
-    let (config_path, data) = config.zip(data).ok_or(usage)?;
+    let usage = "pushd --config FILE --data DIR [--network NAME] | pushd probe --config FILE";
+    let config_path = config.ok_or(usage)?;
     let text = std::fs::read_to_string(&config_path)
         .map_err(|error| format!("{}: {error}", config_path.display()))?;
     let config: Config = toml::from_str(&text).map_err(|error| error.to_string())?;
+    if probing {
+        return probe(&config);
+    }
+    let data = data.ok_or(usage)?;
     if let Some(bad) = config.networks.iter().find(|network| !named(&network.name)) {
         return Err(format!(
             "a network's name is [A-Za-z0-9._-]: {:?}",
@@ -142,6 +151,7 @@ fn start() -> Result<(), String> {
         ));
     }
     match (only, &config.networks[..]) {
+        (_, []) => Err("the config lists no [[networks]]".into()),
         (Some(name), networks) => {
             let network = networks
                 .iter()
@@ -149,8 +159,14 @@ fn start() -> Result<(), String> {
                 .ok_or_else(|| format!("the config lists no network {name}"))?;
             run(network, &config, &data)
         }
-        (None, [network]) => run(network, &config, &data),
-        (None, networks) => supervise(&config_path, &data, networks),
+        (None, [network]) => {
+            open_door(&config, &data)?;
+            run(network, &config, &data)
+        }
+        (None, networks) => {
+            open_door(&config, &data)?;
+            supervise(&config_path, &data, networks)
+        }
     }
 }
 
@@ -161,6 +177,37 @@ fn named(name: &str) -> bool {
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+}
+
+/// The registry's door on `listen`, for every network of the config, when
+/// the config names one.
+fn open_door(config: &Config, data: &Path) -> Result<(), String> {
+    let Some(listen) = &config.listen else {
+        tracing::warn!(target: "pushd", "no `listen`: no device can register");
+        return Ok(());
+    };
+    let listener =
+        std::net::TcpListener::bind(listen).map_err(|error| format!("{listen}: {error}"))?;
+    let networks = config
+        .networks
+        .iter()
+        .map(|network| {
+            let file = devices_file(data, &network.name);
+            Ok(Arc::new(Followed {
+                name: network.name.clone(),
+                devices: Devices::load(&file)?,
+                file,
+                client: backend::rpc_client(network.node_url.clone()),
+                chain: Mutex::default(),
+            }))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    tracing::info!(target: "pushd", listen, networks = networks.len(), "the door is open");
+    Arc::new(Door {
+        networks,
+        reader: Arc::new(reader_key()),
+    })
+    .serve(listener)
 }
 
 /// One pushd per network, each this binary with `--network`: until the
@@ -197,9 +244,10 @@ fn supervise(config: &Path, data: &Path, networks: &[Network]) -> Result<(), Str
     }
 }
 
-/// pushd on one network: the host installed, one recipient per account,
-/// the node connected, and its status followed for as long as it runs.
-fn run(network: &Network, config: &Config, data: &Path) -> Result<(), String> {
+/// The credentials loaded, as `run` and `probe` take them.
+type Credentials = (Option<Arc<Apns>>, Option<Arc<Fcm>>);
+
+fn credentials(config: &Config) -> Result<Credentials, String> {
     let apns = config
         .apns
         .as_ref()
@@ -212,6 +260,14 @@ fn run(network: &Network, config: &Config, data: &Path) -> Result<(), String> {
         .map(Fcm::load)
         .transpose()?
         .map(Arc::new);
+    Ok((apns, fcm))
+}
+
+/// pushd on one network: the host installed, the node connected, and its
+/// status and the registry followed for as long as it runs: one recipient
+/// per account with a device, on the account's canonical signer.
+fn run(network: &Network, config: &Config, data: &Path) -> Result<(), String> {
+    let (apns, fcm) = credentials(config)?;
     let http: Arc<dyn push::Http> = Arc::new(push::Client::new()?);
     let home = data.join(&network.name);
     contract::install(Arc::new(Headless::new(&home)?));
@@ -235,44 +291,55 @@ fn run(network: &Network, config: &Config, data: &Path) -> Result<(), String> {
     // the chain id `duck://` links name, as the app spells it
     let chain = ducklink::ChainId::of(&status.network, &status.genesis)
         .map_or_else(|| status.network.clone(), |chain| chain.to_string());
+    let file = devices_file(data, &network.name);
+    let devices = Devices::load(&file)?;
     tracing::info!(target: "pushd", network = network.name, chain, height = status.height,
-        accounts = network.accounts.len(), "following the node");
-    for account in &network.accounts {
-        let (said, heard) = futures::channel::mpsc::unbounded();
-        let session = runtime::props(
-            true,
-            &chain,
-            &account.signer,
-            Some(account.account),
-            &network.node_url,
-        );
-        runtime::notify_for(Recipient {
-            session: tokio::sync::watch::channel(Some(session)).0,
-            store: home
-                .join("accounts")
-                .join(account.account.to_string())
-                .join("store"),
-            center: CenterHandle::default(),
-            settings: settings(),
-            banners: Arc::new(Push::new(
-                Log {
-                    network: network.name.clone(),
-                    account: account.account,
-                },
-                chain.clone(),
-                account.devices.clone(),
-                (apns.clone(), fcm.clone()),
-                http.clone(),
-            )),
-            said,
-        });
-        runtime::handle().spawn(badges(heard, network.name.clone(), account.account));
-    }
+        accounts = devices.accounts().len(), "following the node");
+    let mut carried: HashMap<u64, (String, Carried)> = HashMap::new();
+    let carry = |carried: &mut HashMap<u64, (String, Carried)>| {
+        let wanted = devices.accounts();
+        carried.retain(|account, (signer, _)| wanted.contains(&(*account, signer.clone())));
+        for (account, signer) in wanted {
+            if carried.contains_key(&account) {
+                continue;
+            }
+            let (said, heard) = futures::channel::mpsc::unbounded();
+            let session = runtime::props(true, &chain, &signer, Some(account), &network.node_url);
+            let handle = runtime::notify_for(Recipient {
+                session: tokio::sync::watch::channel(Some(session)).0,
+                store: home
+                    .join("accounts")
+                    .join(account.to_string())
+                    .join("store"),
+                center: CenterHandle::default(),
+                settings: settings(),
+                banners: Arc::new(Push::new(
+                    Log {
+                        network: network.name.clone(),
+                        account,
+                    },
+                    chain.clone(),
+                    account,
+                    devices.clone(),
+                    (apns.clone(), fcm.clone()),
+                    http.clone(),
+                )),
+                said,
+            });
+            runtime::handle().spawn(badges(heard, network.name.clone(), account));
+            carried.insert(account, (signer, handle));
+        }
+    };
+    carry(&mut carried);
     runtime::connected(&client, &status.network, &chain);
     // the roster followed as the app follows it: read again when the height moves
     let mut height = status.height;
     loop {
         std::thread::sleep(STATUS_EVERY);
+        if devices.follow(&file) {
+            carry(&mut carried);
+            tracing::info!(target: "pushd", accounts = carried.len(), "devices read again");
+        }
         match runtime::handle().block_on(client.status()) {
             Ok(status) if status.height != height => {
                 height = status.height;
@@ -283,6 +350,63 @@ fn run(network: &Network, config: &Config, data: &Path) -> Result<(), String> {
                 tracing::debug!(target: "pushd", %error, "status not answered");
             }
         }
+    }
+}
+
+/// One push per credential to a token that is no device's, on each of
+/// Apple's servers and on Google's: the answer names the token as bad
+/// (`BadDeviceToken`, `UNREGISTERED` or `INVALID_ARGUMENT`) when the
+/// credential is good, and the credential (`InvalidProviderToken`, a 401
+/// or 403) when it is not. Nothing is printed but the status and the
+/// reason.
+fn probe(config: &Config) -> Result<(), String> {
+    let (apns, fcm) = credentials(config)?;
+    let http: Arc<dyn push::Http> = Arc::new(push::Client::new()?);
+    let devices = Arc::new(Devices::default());
+    let row = |kind: &str, token: &str, env: &str| registry::Row {
+        account: 0,
+        key: format!("probe-{kind}-{env}"),
+        kind: kind.into(),
+        token: token.into(),
+        env: env.into(),
+        at: 1,
+    };
+    if apns.is_some() {
+        // two tokens: one token is one install's, kept on one row
+        devices.put(row("apns", &"0".repeat(64), "production"));
+        devices.put(row("apns", &"1".repeat(64), "sandbox"));
+    }
+    if fcm.is_some() {
+        devices.put(row("fcm", "probe-token-that-is-no-device", ""));
+    }
+    if apns.is_none() && fcm.is_none() {
+        return Err("the config names no [apns] or [fcm] credential".into());
+    }
+    let push = Push::new(
+        Log {
+            network: "probe".into(),
+            account: 0,
+        },
+        "probe-00000000".into(),
+        0,
+        devices,
+        (apns, fcm),
+        http,
+    );
+    let taken = push.post(
+        &Notice {
+            title: "pushd probe".into(),
+            body: "a push to no device".into(),
+            tag: "probe".into(),
+            program: "pushd".into(),
+            ..Notice::default()
+        },
+        None,
+    );
+    println!("probe: the answers are above (a token named as bad = the credential is good)");
+    match taken {
+        true => Err("a push to a made-up token was taken".into()),
+        false => Ok(()),
     }
 }
 
@@ -510,16 +634,17 @@ mod tests {
         );
     }
 
-    /// The config lists networks and their accounts; a network name is one
-    /// path segment.
+    /// The config lists networks, the door and the credentials; a network
+    /// name is one path segment.
     #[test]
-    fn the_config_lists_networks_and_their_accounts() {
+    fn the_config_lists_networks_the_door_and_the_credentials() {
         let config: Config = toml::from_str(
             r#"
+            listen = "127.0.0.1:9201"
+
             [[networks]]
             name = "testkit"
             node_url = "http://127.0.0.1:8844"
-            accounts = [{ account = 2, signer = "ab", devices = [{ kind = "voip", token = "ab12" }] }]
 
             [apns]
             key_file = "/etc/pushd/AuthKey_ABC123.p8"
@@ -529,12 +654,12 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(config.networks[0].accounts[0].account, 2);
-        assert_eq!(config.networks[0].accounts[0].devices[0].kind, "voip");
+        assert_eq!(config.networks[0].name, "testkit");
+        assert_eq!(config.listen.as_deref(), Some("127.0.0.1:9201"));
         let apns = config.apns.unwrap();
         assert_eq!(
-            (apns.topic.as_str(), apns.sandbox),
-            ("industries.ducktape.mobile", false)
+            (apns.topic.as_str(), apns.endpoint),
+            ("industries.ducktape.mobile", None)
         );
         assert!(config.fcm.is_none());
         assert!(named("testkit") && named("duck-pond_1.x"));

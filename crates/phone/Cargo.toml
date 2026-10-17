@@ -57,6 +57,10 @@ futures.workspace = true
 ducklink.workspace = true
 # the host's places a view asks for (`SeatsEvent::Show`)
 view-wire.workspace = true
+# the push server's door (`push`): a registration posted as JSON, through
+# the HTTP client the node client already brings
+reqwest.workspace = true
+serde_json.workspace = true
 
 [target.'cfg(target_os = "ios")'.dependencies]
 # the camera and microphone pieces open the phone's own (AVFoundation and

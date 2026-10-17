@@ -135,10 +135,7 @@ fn post(view: &mut View, center: &CenterHandle, id: u64, payload: &[u8]) {
         }
         let (tell, told) = tokio::sync::oneshot::channel();
         let recipient = view.recipient.clone();
-        // ponytail: every recipient's banners queue under the program, one
-        // after another; a queue per recipient once a channel's post is slow
-        // (a call to APNs or FCM)
-        in_order(view.program, move || {
+        in_order(&queue_of(view.program, recipient.as_deref()), move || {
             let banners = banners_of(recipient.as_deref());
             let _ = tell.send(banners.post(&notice, entry.map(Click::Row)));
         });
@@ -174,7 +171,7 @@ fn seen(view: &mut View, id: u64, payload: &[u8]) {
     if !tag.is_empty() {
         let tag = format!("{}/{tag}", view.program);
         let recipient = view.recipient.clone();
-        in_order(view.program, move || {
+        in_order(&queue_of(view.program, recipient.as_deref()), move || {
             banners_of(recipient.as_deref()).withdraw(&tag)
         });
     }
@@ -211,7 +208,7 @@ fn withdraw_at(
             tokio::time::sleep(left).await;
         }
         if !tag.is_empty() && center.lock().ring_over(&tag, until) {
-            in_order(program, move || {
+            in_order(&queue_of(program, recipient.as_deref()), move || {
                 banners_of(recipient.as_deref()).withdraw(&tag)
             });
         }
@@ -273,6 +270,18 @@ pub(crate) fn clicked(click: Click) {
 /// The shell's banners (`OsServices::banners`).
 fn banners() -> &'static dyn crate::contract::Banners {
     crate::contract::os().banners()
+}
+
+/// The queue a program's banners run through in order, so a burst's "N
+/// more" never lands before the banners it counts: the program's for the
+/// person at this device, and one per recipient (named by its store, which
+/// is its own) for a host with no screen, where a post is a call to a push
+/// service and one account's slow call must hold up no other's.
+fn queue_of(program: &str, recipient: Option<&Recipient>) -> String {
+    match recipient {
+        Some(recipient) => format!("{program}@{}", recipient.store.display()),
+        None => program.to_owned(),
+    }
 }
 
 /// Where a notice of `recipient`'s goes: its banners, or the shell's for
