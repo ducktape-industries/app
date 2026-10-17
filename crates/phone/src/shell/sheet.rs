@@ -21,8 +21,6 @@ use std::rc::Rc;
 /// A sheet the shell has open over the screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sheet {
-    /// The account menu: the Account tab, or the avatar on a root's header.
-    Account,
     /// The capsule's `···` over `program`.
     Capsule(&'static str),
     /// The three words for `program`'s notices.

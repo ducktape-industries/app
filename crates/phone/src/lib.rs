@@ -12,10 +12,10 @@
 //!   its key and its account.
 //! - [`assets`]: gpui-kit's catalog with its Lucide icons at the Expo
 //!   build's stroke.
-//! - [`shell`]: the window: the stack (Home and Open under a tab bar; a
-//!   program on top, its view seated full screen under the capsule), the
-//!   sheets over it (the account menu, the capsule's menu, the consent
-//!   sheet), Back, the links the OS hands over, memory pressure.
+//! - [`shell`]: the window: the stack (Home, Open, Notifications and
+//!   Account under a tab bar; a program on top, its view seated full screen
+//!   under the capsule), the sheets over it (the capsule's menu, the
+//!   consent sheet), Back, the links the OS hands over, memory pressure.
 //! - [`push`]: this phone's push tokens registered with the push server,
 //!   signed by its key, so the server carries the account's notices here.
 //!

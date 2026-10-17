@@ -5,15 +5,15 @@
 //! build the AX door.
 //!
 //! The window draws the join ([`join`]) until the phone is on a network
-//! with an account, then the [`stack`]: a tab root (Home, Open) under the
-//! tab bar, or the program on top, its view seated full screen under the
-//! capsule; the shell's own pages over either (a program's page, its
-//! capabilities, from the capsule's About; App settings and Switch network
-//! from the account menu); a sheet over all (the account menu, the
-//! capsule's menu, the consent sheet). Each program opened keeps one seat,
-//! placed with the safe body and in front only while it is on top and the
-//! window is: a program left stays warm where it was (wasm-mobile SPEC
-//! §7.1).
+//! with an account, then the [`stack`]: a tab root (Home, Open,
+//! Notifications, Account) under the tab bar, or the program on top, its
+//! view seated full screen under the capsule; the shell's own pages over
+//! either (a program's page, its capabilities, from the capsule's About;
+//! App settings and Switch network from the Account tab); a sheet over all
+//! (the capsule's menu, the consent sheet). Each program opened keeps one
+//! seat, placed with the safe body and in front only while it is on top
+//! and the window is: a program left stays warm where it was (wasm-mobile
+//! SPEC §7.1).
 //!
 //! It moves as the Expo build's moves (`ducktape_host::motion`): a program
 //! (or its page) pushed slides in from the right over the screen it left,
@@ -363,6 +363,8 @@ impl Page {
         match self {
             Page::Root(Tab::Home) => "screen::home".into(),
             Page::Root(Tab::Open) => "screen::open".into(),
+            Page::Root(Tab::Notifications) => "screen::notifications".into(),
+            Page::Root(Tab::Account) => "screen::account".into(),
             Page::Program(program) => format!("screen::program/{program}").into(),
             Page::About(program) => format!("screen::about/{program}").into(),
             Page::Settings => "screen::settings".into(),
@@ -898,12 +900,16 @@ impl Root {
         cx.notify();
     }
 
-    /// The capsule's ×: Home, the program left where it is, popped off.
-    fn go_home(&mut self, cx: &mut Context<Self>) {
+    /// `tab`'s root, whatever is over it popped off (the program left
+    /// where it is, the shell's pages and the sheet gone): the capsule's ×
+    /// to Home, a view's avatar to Account.
+    fn go_to(&mut self, tab: Tab, cx: &mut Context<Self>) {
         let now = Self::now(cx);
         let from = self.page(cx);
+        self.sheet = None;
+        self.pages.clear();
         self.stack.update(cx, |stack, cx| {
-            stack.home(now);
+            stack.pick(tab, now);
             cx.notify();
         });
         self.moved(from, true, cx);
@@ -921,10 +927,6 @@ impl Root {
     fn show(&mut self, sheet: Sheet, cx: &mut Context<Self>) {
         self.sheet = Some(sheet);
         cx.notify();
-    }
-
-    fn account_sheet(&mut self, cx: &mut Context<Self>) {
-        self.show(Sheet::Account, cx);
     }
 
     fn capsule_menu(&mut self, program: &'static str, cx: &mut Context<Self>) {
@@ -1077,6 +1079,22 @@ impl Root {
         }
     }
 
+    /// A row of the Notifications tab picked: read now, and what it is
+    /// about opened as a tapped system notice opens it (its link; with none,
+    /// its program, as `notify::clicked` has it), through the same routing.
+    fn open_notice(&mut self, id: u64, cx: &mut Context<Self>) {
+        let notifications = self.shared.notifications.clone();
+        let Some(entry) = notifications.update(cx, |notifications, cx| notifications.open(id, cx))
+        else {
+            return;
+        };
+        let link = match entry.link.is_empty() {
+            true => format!("duck://{}", entry.program),
+            false => entry.link,
+        };
+        self.take_link(link, cx);
+    }
+
     /// A link, read as every shell reads it (`Rail::opening`): this chain's
     /// program comes on top and its view is handed the route; another
     /// chain's is said and not opened, as the Expo app says it.
@@ -1134,8 +1152,10 @@ impl Root {
                 cx.notify();
             }
             SeatsEvent::OpenLink(_, _, link) => self.open_link(link, cx),
-            // the reader's account: the account menu, as from a header's avatar
-            SeatsEvent::Show(_, _, view_wire::methods::Place::Account) => self.account_sheet(cx),
+            // the reader's account: the Account tab, as from a header's avatar
+            SeatsEvent::Show(_, _, view_wire::methods::Place::Account) => {
+                self.go_to(Tab::Account, cx)
+            }
             // a refused camera's or microphone's system settings, where this
             // host has that page (`render/av.rs`: none without `av`); the
             // kernel shows no other
@@ -1241,7 +1261,6 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let (name, content): (&'static str, AnyElement) = match sheet {
-            Sheet::Account => ("Account", self.account_menu(palette, cx)),
             Sheet::Capsule(program) => ("More", self.capsule_sheet(program, palette, cx)?),
             Sheet::Notifications(program) => (
                 "Notifications",
@@ -1353,80 +1372,6 @@ impl Root {
             .occlude()
             .child(ducktape_host::a11y::modal(card))
             .into_any_element()
-    }
-
-    /// The account menu (the shell boards' 40, Expo `you.tsx`): who is
-    /// reading, the account's own program (the `programs` view) opened by
-    /// name, App settings and Switch network.
-    fn account_menu(&mut self, palette: look::Palette, cx: &mut Context<Self>) -> AnyElement {
-        let network = self.shared.session.read(cx).get().network.clone();
-        // Expo `you.tsx`: the account's name, else "No account yet"; the
-        // avatar draws the name's initial, or none
-        let (avatar, name, caption) = match home::me(&self.shared, cx) {
-            Some((number, name)) => (name.clone(), name, format!("account {number} · {network}")),
-            None => (String::new(), "No account yet".to_owned(), network),
-        };
-        let head = sheet::head(palette).child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(look::gap::LG))
-                .child(home::avatar(&avatar, 40., palette))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            look::text(look::BODY, FontWeight::MEDIUM, palette.foreground())
-                                .truncate()
-                                .child(name),
-                        )
-                        .child(
-                            look::text(look::CAPTION, FontWeight::NORMAL, palette.muted())
-                                .font_family(ducktape_host::fonts::FAMILY_MONO)
-                                .truncate()
-                                .child(caption),
-                        ),
-                ),
-        );
-        let mut menu = div().flex().flex_col().child(head);
-        if home::row_of(&self.shared, ACCOUNT_PROGRAM, cx).is_some() {
-            menu = menu.child(
-                sheet::row(
-                    "sheet/account",
-                    Some("icons/circle-user.svg"),
-                    "Account",
-                    Some("keys · agents · invites".into()),
-                    palette,
-                )
-                .on_click(cx.listener(|root, _, _, cx| {
-                    root.open(ACCOUNT_PROGRAM, cx);
-                })),
-            );
-        }
-        menu.child(
-            sheet::row(
-                "sheet/settings",
-                Some("icons/settings.svg"),
-                "App settings",
-                Some("node · this phone · about".into()),
-                palette,
-            )
-            .on_click(cx.listener(|root, _, _, cx| root.show_settings(cx))),
-        )
-        .child(
-            sheet::row(
-                "sheet/switch",
-                Some("icons/refresh-cw.svg"),
-                "Switch network",
-                None,
-                palette,
-            )
-            .on_click(cx.listener(|root, _, window, cx| root.show_switch(window, cx))),
-        )
-        .into_any_element()
     }
 
     /// The capsule's menu (the shell boards' 30): the program, then its
@@ -1674,13 +1619,12 @@ impl Root {
                         let readout = debug.then_some(&self.readout);
                         home::open(&self.shared, &opened, &self.titles, readout, palette, cx)
                     }
+                    Tab::Notifications => home::notifications(&self.shared, palette, cx),
+                    Tab::Account => home::account(&self.shared, palette, cx),
                 };
-                let body = safe().flex().flex_col().child(screen).child(home::tab_bar(
-                    tab,
-                    edges.bottom,
-                    palette,
-                    cx,
-                ));
+                let unread = self.shared.notifications.read(cx).unread() > 0;
+                let bar = home::tab_bar(tab, unread, edges.bottom, palette, cx);
+                let body = safe().flex().flex_col().child(screen).child(bar);
                 let bottom = edges.bottom + px(look::TAB_BAR + look::gap::LG);
                 (layer.child(body), bottom)
             }
@@ -1987,7 +1931,7 @@ mod tests {
         assert_eq!(frames(cx), 0, "a frame asked for after the pop ended");
 
         // the capsule's ×: Home, the program slid off it
-        root.update(cx, |root, cx| root.go_home(cx));
+        root.update(cx, |root, cx| root.go_to(Tab::Home, cx));
         cx.run_until_parked();
         assert_eq!(
             moving(&root, cx),
@@ -2096,28 +2040,25 @@ mod tests {
                 root.drawn_sheet.as_ref().map(|it| (it.what, it.leaving))
             })
         };
-        root.update(cx, |root, cx| root.account_sheet(cx));
+        root.update(cx, |root, cx| root.show(Sheet::Notifications(PROGRAM), cx));
         cx.run_until_parked();
-        assert_eq!(sheet(cx), Some((Sheet::Account, false)));
+        let up = Sheet::Notifications(PROGRAM);
+        assert_eq!(sheet(cx), Some((up, false)));
         assert!(frames(cx) > 0, "a sheet coming asked for no frame");
         run_out(cx);
-        assert_eq!(sheet(cx), Some((Sheet::Account, false)));
+        assert_eq!(sheet(cx), Some((up, false)));
         assert_eq!(frames(cx), 0, "a sheet up asked for a frame");
 
         root.update(cx, |root, cx| root.close_sheet(cx));
         cx.run_until_parked();
-        assert_eq!(
-            sheet(cx),
-            Some((Sheet::Account, true)),
-            "a sheet went at once"
-        );
+        assert_eq!(sheet(cx), Some((up, true)), "a sheet went at once");
         assert!(frames(cx) > 0);
         run_out(cx);
         assert_eq!(sheet(cx), None, "a sheet gone is still drawn");
         assert_eq!(frames(cx), 0, "a frame asked for after the sheet went");
 
         // Back while a sheet still comes up turns it back from where it is
-        root.update(cx, |root, cx| root.account_sheet(cx));
+        root.update(cx, |root, cx| root.show(Sheet::Notifications(PROGRAM), cx));
         cx.run_until_parked();
         cx.executor()
             .advance_clock(motion::idiom().sheet.duration / 8);
@@ -2158,27 +2099,123 @@ mod tests {
         assert_eq!(frames(cx), 0, "a toast up asked for a frame");
     }
 
-    /// The account sheet's App settings and Switch network close it and
-    /// push their pages over the screen it was on (Expo `you.tsx`'s
-    /// `leave`).
+    /// The Account tab is a tab: picked, it is the root on screen with no
+    /// sheet over it; its App settings and Switch network push their pages
+    /// over it and Back comes back to it. A view asking for the reader's
+    /// account (a header's avatar) picks it too, the program left open
+    /// where it was.
     #[gpui_kit::test]
-    fn the_account_sheets_rows_open_app_settings_and_switch_network(cx: &mut TestAppContext) {
-        let (root, _, cx) = phone(cx);
-        for (row, page) in [
-            ("sheet/settings", Page::Settings),
-            ("sheet/switch", Page::Switch),
-        ] {
-            root.update(cx, |root, cx| root.account_sheet(cx));
-            run_out(cx);
-            let at = cx.debug_bounds(row).expect("the row drawn");
+    fn the_account_tab_is_a_root_its_rows_push_over_it(cx: &mut TestAppContext) {
+        let (root, stack, cx) = phone(cx);
+        let click = |id: &'static str, cx: &mut VisualTestContext| {
+            let at = cx.debug_bounds(id).expect(id);
             cx.simulate_click(at.center(), gpui_kit::Modifiers::none());
-            cx.run_until_parked();
-            let shown = root.read_with(cx, |root, cx| (root.sheet, root.page(cx)));
-            assert_eq!(shown, (None, page), "{row}");
             run_out(cx);
+        };
+        let shown =
+            |cx: &mut VisualTestContext| root.read_with(cx, |root, cx| (root.sheet, root.page(cx)));
+        let account = (None, Page::Root(Tab::Account));
+        click("tab/account", cx);
+        assert_eq!(shown(cx), account, "the Account tab");
+        for (row, page) in [
+            ("account/settings", Page::Settings),
+            ("account/switch", Page::Switch),
+        ] {
+            click(row, cx);
+            assert_eq!(shown(cx), (None, page), "{row}");
             root.update(cx, |root, cx| root.back(cx));
             run_out(cx);
+            assert_eq!(shown(cx), account, "Back from {row}");
         }
+
+        click("tab/home", cx);
+        root.update(cx, |root, cx| _ = root.open(PROGRAM, cx));
+        run_out(cx);
+        let asked = SeatsEvent::Show(PROGRAM, 0, view_wire::methods::Place::Account);
+        root.update(cx, |root, cx| root.seats_said(&asked, cx));
+        run_out(cx);
+        assert_eq!(shown(cx), account, "a view's avatar");
+        let open = stack.read_with(cx, |stack, _| {
+            (stack.top(), stack.instance(PROGRAM).is_some())
+        });
+        assert_eq!(open, (None, true), "the program was not left open");
+    }
+
+    /// The Notifications tab lists the host's centre, newest first, a dot on
+    /// the tab while one is unread; a row pressed is read and opens its
+    /// program (no link: as a tapped system notice does); Mark all read
+    /// reads the rest and the dot goes; Clear read empties the list.
+    #[gpui_kit::test]
+    fn the_notifications_tab_lists_the_centre_and_opens_a_notice(cx: &mut TestAppContext) {
+        use ducktape_host::runtime::notify::Settings;
+        let _seat = ducktape_host::backend::seat_serial();
+        let (root, stack, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        ducktape_host::runtime::seat_for_test(PROGRAM, 320);
+        shared.rail.update(cx, |rail, cx| {
+            rail.read_off(Roster::listing(&[PROGRAM]), cx)
+        });
+        let dot = |cx: &mut VisualTestContext| cx.debug_bounds("tab/notifications/dot").is_some();
+        run_out(cx);
+        assert!(!dot(cx), "a dot with nothing logged");
+
+        let settings = Settings {
+            banners: true,
+            in_front: false,
+            burst: 3,
+            views: Default::default(),
+            unasked: None,
+        };
+        let center = shared
+            .notifications
+            .read_with(cx, |it, _| it.center().clone());
+        for (title, at) in [("Older", 100), ("Newer", 200)] {
+            let post = view_wire::methods::Notification {
+                title: title.into(),
+                body: "said".into(),
+                ..Default::default()
+            };
+            let now = std::time::Instant::now();
+            let _ = center
+                .lock()
+                .post(&settings, PROGRAM, "Test", post, now, at);
+        }
+        shared.notifications.update(cx, |it, cx| _ = it.refresh(cx));
+        run_out(cx);
+        assert!(dot(cx), "no dot with two unread");
+
+        let click = |id: &'static str, cx: &mut VisualTestContext| {
+            let at = cx.debug_bounds(id).expect(id);
+            cx.simulate_click(at.center(), gpui_kit::Modifiers::none());
+            run_out(cx);
+        };
+        click("tab/notifications", cx);
+        let ids: Vec<u64> = center.lock().entries().map(|entry| entry.id).collect();
+        let [newer, older] = ids[..] else {
+            panic!("{ids:?}");
+        };
+        let row_top = |id: u64, cx: &mut VisualTestContext| {
+            let row = format!("notifications/{id}").leak();
+            cx.debug_bounds(row).expect("the row drawn").top()
+        };
+        assert!(row_top(newer, cx) < row_top(older, cx), "not newest first");
+
+        click(format!("notifications/{older}").leak(), cx);
+        let read = |cx: &mut VisualTestContext| {
+            let entries = shared.notifications.read_with(cx, |it, _| it.entries());
+            entries.iter().map(|entry| entry.read).collect::<Vec<_>>()
+        };
+        assert_eq!(read(cx), [false, true], "the row pressed was not read");
+        assert_eq!(top(&stack, cx), Some(PROGRAM), "its program did not open");
+
+        root.update(cx, |root, cx| root.back(cx));
+        run_out(cx);
+        assert!(dot(cx), "the dot went with one still unread");
+        click("notifications/mark-all", cx);
+        assert_eq!(read(cx), [true, true]);
+        assert!(!dot(cx), "the dot stayed with nothing unread");
+        click("notifications/clear-read", cx);
+        assert_eq!(read(cx), [] as [bool; 0], "Clear read kept a read row");
     }
 
     /// A Home tile is drawn pressed (`look::PRESSED`) while a touch is
@@ -2302,7 +2339,7 @@ mod tests {
         let (root, _, cx) = phone(cx);
         root.update(cx, |root, cx| _ = root.open(PROGRAM, cx));
         run_out(cx);
-        root.update(cx, |root, cx| root.go_home(cx));
+        root.update(cx, |root, cx| root.go_to(Tab::Home, cx));
         run_out(cx);
         root.update(cx, |root, cx| root.pick(Tab::Open, cx));
         run_out(cx);
