@@ -15,6 +15,10 @@ use std::time::{Duration, Instant};
 const EVERY: Duration = Duration::from_secs(1);
 /// The readings a rate spans: now and up to three seconds back.
 const WINDOW: usize = 4;
+/// The perf stages the app's iOS footprint, now and at its peak, is kept
+/// under (`/perf` too).
+const FOOTPRINT: &str = "footprint";
+const FOOTPRINT_PEAK: &str = "footprint.peak";
 
 /// The perf registry as read over the last few seconds, oldest first, and
 /// the loop reading it while the Open tab is shown.
@@ -53,7 +57,15 @@ impl Readout {
     }
 
     fn read(&mut self, now: Instant) {
-        ducktape_host::perf::sample_rss();
+        use ducktape_host::perf;
+        perf::sample_rss();
+        // iOS's own figure, which the OS-blind host does not read
+        let (footprint, peak) = crate::os::footprint_bytes();
+        for (stage, bytes) in [(FOOTPRINT, footprint), (FOOTPRINT_PEAK, peak)] {
+            if let Some(bytes) = bytes {
+                perf::gauge(perf::Key::Shell, stage, bytes);
+            }
+        }
         self.readings
             .push_back((now, ducktape_host::perf::snapshot(true)));
         if self.readings.len() > WINDOW {
@@ -61,17 +73,19 @@ impl Readout {
         }
     }
 
-    /// The app's line: its resident memory now and at its peak.
+    /// The app's line: its memory now and at its peak, by the figure the
+    /// system keeps (iOS: its footprint; Linux and Android: its resident
+    /// pages), one figure for both.
     pub fn app(&self) -> String {
-        let rss = |stage: &str| {
+        let shell = |stage: &str| {
             let (_, last) = self.readings.back()?;
             last["shell"][stage]["last"].as_u64()
         };
-        format!(
-            "app {} resident · peak {}",
-            mib(rss("rss.current")),
-            mib(rss("rss.peak"))
-        )
+        let (word, now, peak) = match shell(FOOTPRINT) {
+            Some(_) => ("footprint", FOOTPRINT, FOOTPRINT_PEAK),
+            None => ("resident", "rss.current", "rss.peak"),
+        };
+        format!("app {} {word} · peak {}", mib(shell(now)), mib(shell(peak)))
     }
 
     /// What `program`'s seat `instance` costs over the readings, its
@@ -148,11 +162,36 @@ fn mib(bytes: Option<u64>) -> String {
 mod tests {
     use super::*;
 
-    /// A number not to be had reads `n/a`, never 0; each says its unit.
+    /// A number not to be had reads `n/a`, never 0; each says its unit, and
+    /// the app's memory says which figure it is: iOS's footprint where
+    /// there is one, else the resident pages.
     #[test]
     fn a_number_not_had_reads_n_a_and_each_says_its_unit() {
         let none = Readout::default();
         assert_eq!(none.app(), "app n/a resident · peak n/a");
+        let read = |shell: Value| Readout {
+            readings: [(Instant::now(), serde_json::json!({ "shell": shell }))].into(),
+            reading: None,
+        };
+        let resident = serde_json::json!({
+            "rss.current": { "last": 3 << 20 },
+            "rss.peak": { "last": 8 << 20 },
+        });
+        assert_eq!(
+            read(resident.clone()).app(),
+            "app 3.0 MiB resident · peak 8.0 MiB"
+        );
+        let mut footprint = resident;
+        footprint["footprint"] = serde_json::json!({ "last": 2 << 20 });
+        assert_eq!(
+            read(footprint.clone()).app(),
+            "app 2.0 MiB footprint · peak n/a"
+        );
+        footprint["footprint.peak"] = serde_json::json!({ "last": 5 << 20 });
+        assert_eq!(
+            read(footprint).app(),
+            "app 2.0 MiB footprint · peak 5.0 MiB"
+        );
         assert_eq!(
             none.cost("chat", 1, None).lines(),
             [

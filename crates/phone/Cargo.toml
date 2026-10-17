@@ -77,7 +77,19 @@ gpui-pre-ios.workspace = true
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
 # the system's version App settings names (`os::phone`); gpui_ios's own
 # Foundation bindings
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSProcessInfo"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std", "NSArray", "NSEnumerator", "NSProcessInfo", "NSSet",
+] }
+# the appearance chosen in App settings on the app's windows
+# (`os::interface_style`): the keyboard and UIKit's own alerts follow it
+objc2 = "0.6"
+objc2-ui-kit = { version = "0.3.2", default-features = false, features = [
+    "std", "UIApplication", "UIInterface", "UIResponder", "UIScene", "UIView", "UIWindow",
+    "UIWindowScene",
+] }
+# the app's memory footprint for debug mode (`os::footprint_bytes`):
+# Mach's `task_info`, which the OS-blind host does not call
+mach2 = "0.6"
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
 ducktape-host = { path = "../host", features = ["wasmtime"] }

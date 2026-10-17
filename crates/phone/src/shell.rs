@@ -271,13 +271,15 @@ fn let_go_closed(stack: &Entity<Stack>, seats: &Entity<Seats>, cx: &mut App) {
     seats.update(cx, |seats, cx| seats.place(kept, cx));
 }
 
-/// `appearance` (App settings › Appearance) onto the kit theme, which the
-/// phone's palette (`look::palette`), every view's theme and the host's own
-/// chrome read; under System, the window's own; then the system bars over
-/// it. Called as the window opens, when the choice moves and when the
-/// system's does.
+/// `appearance` (App settings › Appearance) onto the app's iOS windows,
+/// which UIKit's keyboard and alerts follow (`os::interface_style`), and
+/// onto the kit theme, which the phone's palette (`look::palette`), every
+/// view's theme and the host's own chrome read; under System, the window's
+/// own; then the system bars over it. Called as the window opens, when the
+/// choice moves and when the system's does.
 fn sync_appearance(appearance: Appearance, window: &mut Window, cx: &mut App) {
     use gpui_kit::component::{Theme, ThemeMode};
+    crate::os::interface_style(appearance);
     match appearance {
         Appearance::Light => Theme::change(ThemeMode::Light, Some(window), cx),
         Appearance::Dark => Theme::change(ThemeMode::Dark, Some(window), cx),
