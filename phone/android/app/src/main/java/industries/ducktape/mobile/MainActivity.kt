@@ -89,6 +89,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             Log.i("ducktape", "a call's ring taken down: $it")
             Ring.withdraw(this, it)
         }
+        // a program's notice opened from the shade: its row read, before its link opens
+        intent?.getStringExtra(Ring.PAYLOAD)?.let { Native.notice(it, intent.getLongExtra(Ring.AT, 0), false, true) }
         val url = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.dataString ?: return
         Native.link(url)
     }
@@ -161,10 +163,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     override fun onResume() {
         super.onResume()
+        Ring.inFront = true
         Native.resumed(host)
+        Ring.shown(this)
     }
 
     override fun onPause() {
+        Ring.inFront = false
         Native.paused(host)
         super.onPause()
     }

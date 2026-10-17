@@ -90,6 +90,13 @@ pub struct Center {
     /// Each program's last call rung, by its tag: it stands while its tag
     /// is in `until` and not past it.
     calls: HashMap<String, String>,
+    /// The notices the push server carried here ([`Center::carried`]) that
+    /// this device's own run of their notifier has not posted yet: its
+    /// post of one is that notice again ([`Center::log`]).
+    // ponytail: one the run here never posts (the program skipped it, on
+    // screen here) waits until the network changes and takes one later
+    // post saying the same; a carried notice's seq in the payload if felt
+    carried: Vec<Entry>,
     /// Moves with every change to the log: the bell's list is read again.
     rev: u64,
     /// The `rev` last handed to the disk ([`Center::flush`]).
@@ -260,8 +267,20 @@ impl Center {
     /// Into the log: a notice under a tag the view already has a row for
     /// folds into that row and brings it back to the top, unread. Past the
     /// view's `share` of rows its own oldest go, never another view's.
-    /// Written at the end of the view's redraw ([`Center::flush`]).
+    /// Written at the end of the view's redraw ([`Center::flush`]). A post
+    /// saying what a notice the push server carried here said, under its
+    /// tag ([`Center::carried`]), is this device's run of that same notice:
+    /// its row stands as it is, read or not, counted once.
     fn log(&mut self, program: &str, view: &str, post: Notification, wall: i64) {
+        let twin = self.carried.iter().position(|copy| {
+            copy.program == program
+                && copy.tag == post.tag
+                && (&copy.title, &copy.body, &copy.link) == (&post.title, &post.body, &post.link)
+        });
+        if let Some(twin) = twin {
+            self.carried.swap_remove(twin);
+            return;
+        }
         let folded = (!post.tag.is_empty())
             .then(|| {
                 self.entries
@@ -299,6 +318,84 @@ impl Center {
         };
         self.entries.push(entry);
         self.rev += 1;
+    }
+
+    /// A notice its program's notifier posted for this person on a host
+    /// with no screen (the push server, `crates/pushd`), which reached this
+    /// device as one of the OS's own notices: `notice` as that host's centre
+    /// let it through (its tag `<program>/<tag>`, as [`Center::post`] words
+    /// a banner), shown at `at` (Unix seconds); `opened` when the person
+    /// opened it there. Logged as a post is, at `at`, unless the log has it
+    /// already: the row it folds into is as new or newer (an earlier read
+    /// of the OS's notices, or this device's own run of the notifier since)
+    /// or is unread and says the same; opened, that row is read. A blocked
+    /// program's is dropped, as its post is; so is one whose link is no
+    /// `duck://` link. Written now: no view's redraw follows it. Whether the
+    /// log moved.
+    pub fn carried(&mut self, settings: &Settings, notice: &Notice, at: i64, opened: bool) -> bool {
+        let program = notice.program.as_str();
+        let permission = settings.views.get(program).copied().or(settings.unasked);
+        let linked = notice.link.is_empty() || notice.link.starts_with("duck://");
+        if program.is_empty() || permission == Some(Permission::Block) || !linked {
+            return false;
+        }
+        let tag = notice.tag.strip_prefix(&format!("{program}/"));
+        let tag = tag.unwrap_or(&notice.tag);
+        let says = |entry: &Entry| {
+            (&entry.title, &entry.body, &entry.link) == (&notice.title, &notice.body, &notice.link)
+        };
+        // the row it folds into: its tag's, or with none the newest saying it
+        let row = self.entries.iter().rposition(|entry| {
+            entry.program == program && entry.tag == tag && (!tag.is_empty() || says(entry))
+        });
+        let logged = row.filter(|&index| {
+            let entry = &self.entries[index];
+            entry.at >= at || (!entry.read && says(entry))
+        });
+        match logged {
+            Some(index) => {
+                let entry = &mut self.entries[index];
+                if !opened || entry.read {
+                    return false;
+                }
+                entry.read = true;
+            }
+            None => {
+                let folded = row
+                    .filter(|_| !tag.is_empty())
+                    .map(|index| self.entries.remove(index));
+                let (id, count) = match folded {
+                    Some(folded) => (folded.id, folded.count + 1),
+                    None => {
+                        self.next += 1;
+                        (self.next, 1)
+                    }
+                };
+                let entry = Entry {
+                    id,
+                    program: program.to_owned(),
+                    view: program.to_owned(),
+                    title: notice.title.clone(),
+                    body: notice.body.clone(),
+                    tag: tag.to_owned(),
+                    link: notice.link.clone(),
+                    at,
+                    count,
+                    read: opened,
+                };
+                self.carried.push(entry.clone());
+                // newest last, as `entries` reads them: it may be older than rows logged since
+                let place = self
+                    .entries
+                    .iter()
+                    .rposition(|row| row.at <= at)
+                    .map_or(0, |index| index + 1);
+                self.entries.insert(place, entry);
+            }
+        }
+        self.rev += 1;
+        self.flush();
+        true
     }
 
     /// Newest first.

@@ -15,6 +15,8 @@
 //!   `ducktape_phone_back_cancel()`: ended without going back.
 //! - `ducktape_phone_link(url)`: a call's Answer (CallKit), its link.
 //! - `ducktape_phone_push_token(kind, token)`: PushKit's token, as hex.
+//! - `ducktape_phone_notice(payload, at, front, opened)`: a program's
+//!   notice the OS showed, delivered or opened.
 //! - `ducktape_phone_call_audio(active)`: CallKit's audio session up or down.
 //!
 //! Swift's entries called from here (`App.swift`):
@@ -185,6 +187,27 @@ pub unsafe extern "C" fn ducktape_phone_push_token(kind: *const c_char, token: *
     let (kind, token) = unsafe { (text(kind), text(token)) };
     if let (Some(kind), Some(token)) = (kind, token) {
         crate::os::push_token(&kind, token);
+    }
+}
+
+/// A program's notice the OS showed (`App.swift` `Ring`): its payload as
+/// JSON, the Unix seconds it was shown at; `front` when it came while the
+/// app was in front (the OS shows nothing then), `opened` when the person
+/// opened it. For the Notifications tab ([`crate::os::os_notice`]).
+///
+/// # Safety
+/// `payload` is null or a NUL-terminated string alive for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ducktape_phone_notice(
+    payload: *const c_char,
+    at: f64,
+    front: u8,
+    opened: u8,
+) {
+    // SAFETY: the caller's contract above.
+    match unsafe { text(payload) } {
+        Some(payload) => crate::os::os_notice(&payload, at as i64, front != 0, opened != 0),
+        None => tracing::error!(target: "ducktape::phone", "an OS notice's payload was not UTF-8"),
     }
 }
 

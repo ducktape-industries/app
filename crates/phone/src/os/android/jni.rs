@@ -24,6 +24,9 @@
 //! - `link(url)`: a `duck://` or `ducktape://` intent's data.
 //! - `pushToken(kind, token)`: this device's push token (`fcm`), for the
 //!   device registry; empty when withdrawn.
+//! - `notice(payload, at, front, opened)`: a program's notice `Ring.kt`
+//!   showed, opened or handed over in front; from Firebase's own thread
+//!   for one that came in front (it only hands on, through a channel).
 //!
 //! - `android_main(app)`: the entry gm's NativeActivity glue (android-activity,
 //!   which gm links whatever path a host takes) names; never called, since
@@ -289,6 +292,26 @@ pub extern "system" fn Java_industries_ducktape_mobile_Native_pushToken<'caller>
 ) {
     env.with_env(|_: &mut Env| -> jni::errors::Result<()> {
         crate::os::push_token(&kind.to_string(), token.to_string());
+        Ok(())
+    })
+    .resolve::<Policy>();
+}
+
+/// `Native.notice`: a program's notice the OS showed (`Ring.kt`), its
+/// payload as JSON, the Unix seconds it was shown at; `front` when it came
+/// while the app was in front (nothing was shown), `opened` when the
+/// person opened it ([`crate::os::os_notice`]).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_notice<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _: JClass<'caller>,
+    payload: JString<'caller>,
+    at: jlong,
+    front: jboolean,
+    opened: jboolean,
+) {
+    env.with_env(|_: &mut Env| -> jni::errors::Result<()> {
+        crate::os::os_notice(&payload.to_string(), at, front, opened);
         Ok(())
     })
     .resolve::<Policy>();

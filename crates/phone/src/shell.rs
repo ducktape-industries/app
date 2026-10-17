@@ -1,8 +1,8 @@
 //! The phone's one window: the host started once per process ([`launch`]),
 //! the window opened over it ([`open_window`]: once on iOS, once per
 //! Activity on Android), what the host hands on acted on (Back, a changed
-//! inset, memory pressure, the consent queue, a link), and in the gate
-//! build the AX door.
+//! inset, memory pressure, the consent queue, a link, a notice the OS
+//! showed), and in the gate build the AX door.
 //!
 //! The window draws the join ([`join`]) until the phone is on a network
 //! with an account, then the [`stack`]: a tab root (Home, Open,
@@ -85,6 +85,8 @@ struct Phone {
     stack: Entity<Stack>,
     window: Option<(AnyWindowHandle, WeakEntity<Root>)>,
     waiting: Vec<String>,
+    /// The OS's notices waiting for their chain's log ([`os_notice`]).
+    notices: Vec<crate::os::OsNotice>,
     /// This phone's push tokens kept registered with the push server, for
     /// as long as the app runs.
     _registrar: Entity<crate::push::Registrar>,
@@ -136,11 +138,13 @@ pub fn launch(os: Arc<dyn OsServices>, cx: &mut App) {
     let (signals, mut asks) = (host.signals, host.consent);
     let stack = cx.new(|_| Stack::default());
     let registrar = crate::push::Registrar::start(host.shared.clone(), cx);
+    log_on_connect(&host.shared, cx);
     cx.set_global(Phone {
         shared: host.shared,
         stack,
         window: None,
         waiting: Vec::new(),
+        notices: Vec::new(),
         _registrar: registrar,
     });
     cx.spawn(async move |cx: &mut AsyncApp| {
@@ -166,6 +170,56 @@ pub fn launch(os: Arc<dyn OsServices>, cx: &mut App) {
         }
     })
     .detach();
+    let notices = crate::os::os_notices();
+    cx.spawn(async move |cx: &mut AsyncApp| {
+        while let Ok(notice) = notices.recv().await {
+            cx.update(|cx| os_notice(notice, cx));
+        }
+    })
+    .detach();
+}
+
+/// A program's notice the OS showed, as the push server carried it: into
+/// the Notifications tab once its chain is the one in hand (another
+/// chain's log is not open, and taking a chain up opens its log over
+/// whatever the centre held), waiting here until then. One that came while
+/// the app was in front on its chain goes: this phone runs its program's
+/// notifier then, and that run decides whether it is a notice here (it
+/// says nothing of what is on screen, which the push server cannot see).
+fn os_notice(notice: crate::os::OsNotice, cx: &mut App) {
+    let session = cx.global::<Phone>().shared.session.read(cx).get();
+    if notice.front && session.connected && session.chain == notice.chain {
+        return;
+    }
+    cx.global_mut::<Phone>().notices.push(notice);
+    log_os_notices(cx);
+}
+
+/// A chain taken up opens its log: the OS's notices waiting for it go in.
+fn log_on_connect(shared: &Shared, cx: &mut App) {
+    cx.observe(&shared.session, |_, cx| log_os_notices(cx))
+        .detach();
+}
+
+/// The OS's notices waiting for the chain in hand, logged.
+fn log_os_notices(cx: &mut App) {
+    let phone = cx.global::<Phone>();
+    let session = phone.shared.session.read(cx).get();
+    if !session.connected || phone.notices.is_empty() {
+        return;
+    }
+    let chain = session.chain.clone();
+    let notifications = phone.shared.notifications.clone();
+    let waiting = std::mem::take(&mut cx.global_mut::<Phone>().notices);
+    let (here, elsewhere) = waiting
+        .into_iter()
+        .partition::<Vec<_>, _>(|notice| notice.chain == chain);
+    cx.global_mut::<Phone>().notices = elsewhere;
+    notifications.update(cx, |notifications, cx| {
+        for notice in here {
+            notifications.carried(&notice.notice, notice.at, notice.opened, cx);
+        }
+    });
 }
 
 /// What a banner's click names, from the host's notification centre: a
@@ -1622,7 +1676,7 @@ impl Root {
                     Tab::Notifications => home::notifications(&self.shared, palette, cx),
                     Tab::Account => home::account(&self.shared, palette, cx),
                 };
-                let unread = self.shared.notifications.read(cx).unread() > 0;
+                let unread = self.shared.notifications.read(cx).unread();
                 let bar = home::tab_bar(tab, unread, edges.bottom, palette, cx);
                 let body = safe().flex().flex_col().child(screen).child(bar);
                 let bottom = edges.bottom + px(look::TAB_BAR + look::gap::LG);
@@ -1827,11 +1881,13 @@ mod tests {
         let stack = cx.new(|_| Stack::default());
         cx.update(|cx| {
             let registrar = crate::push::Registrar::start(shared.clone(), cx);
+            log_on_connect(&shared, cx);
             cx.set_global(Phone {
                 shared: shared.clone(),
                 stack: stack.clone(),
                 window: None,
                 waiting: Vec::new(),
+                notices: Vec::new(),
                 _registrar: registrar,
             })
         });
@@ -2218,6 +2274,98 @@ mod tests {
         assert_eq!(read(cx), [] as [bool; 0], "Clear read kept a read row");
     }
 
+    /// The Notifications tab's name to a screen reader, as last drawn.
+    fn notifications_tab_name(cx: &mut VisualTestContext) -> String {
+        cx.update(|window, cx| {
+            window.activate_a11y();
+            window.render_frame(cx);
+            let tree = window.a11y_tree().expect("an accessibility tree");
+            let tab = tree.nodes.iter().find(|(_, node)| {
+                node.role() == gpui_kit::accesskit::Role::Tab
+                    && node
+                        .label()
+                        .is_some_and(|name| name.starts_with("Notifications"))
+            });
+            tab.and_then(|(_, node)| node.label())
+                .unwrap_or_default()
+                .to_owned()
+        })
+    }
+
+    /// A notice the push server carried, as the OS hands it over (the
+    /// carrier's own payload): it waits for its chain's log, then is one
+    /// row in the Notifications tab with its program's words and the OS's
+    /// time, however often the OS's list is read, and the tab says it is
+    /// unread to a screen reader in the desktop bell's words; opened from
+    /// the OS, its row is read. One that came while the app was in front on
+    /// its chain is left to this phone's own run of the notifier; another
+    /// chain's waits for that chain.
+    #[gpui_kit::test]
+    fn a_pushed_notice_is_one_row_in_the_notifications_tab(cx: &mut TestAppContext) {
+        use ducktape_host::session::SessionState;
+        let _seat = ducktape_host::backend::seat_serial();
+        let (root, _, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        ducktape_host::runtime::seat_for_test(PROGRAM, 320);
+        shared.rail.update(cx, |rail, cx| {
+            rail.read_off(Roster::listing(&[PROGRAM]), cx)
+        });
+        let shown = |chain: &str, title: &str, at: i64, front: bool, cx: &mut VisualTestContext| {
+            // `Push::show`'s APNs body (crates/pushd)
+            let payload = serde_json::json!({
+                "aps": { "alert": { "title": title, "body": "said" }, "thread-id": PROGRAM },
+                "kind": "notice", "chain": chain, "program": PROGRAM,
+                "tag": format!("{PROGRAM}/room"), "title": title, "body": "said",
+                "link": "", "until": 0,
+            });
+            // opened from the OS: the one at 101
+            let opened = at == 101;
+            let notice = crate::os::OsNotice::of(&payload.to_string(), at, front, opened);
+            cx.update(|_, cx| os_notice(notice.expect("a notice"), cx));
+            run_out(cx);
+        };
+        let rows = |cx: &mut VisualTestContext| {
+            let entries = shared.notifications.read_with(cx, |it, _| it.entries());
+            let rows = entries
+                .iter()
+                .map(|entry| (entry.title.clone(), entry.tag.clone(), entry.at, entry.read));
+            rows.collect::<Vec<_>>()
+        };
+        shown("garage#1", "Hello", 100, false, cx);
+        assert_eq!(rows(cx), [], "logged before its chain's log was open");
+
+        shared.session.update(cx, |session, cx| {
+            let state = SessionState {
+                connected: true,
+                chain: "garage#1".into(),
+                ..Default::default()
+            };
+            session.seed(state, cx);
+        });
+        run_out(cx);
+        let hello = ("Hello".to_owned(), "room".to_owned(), 100, false);
+        assert_eq!(rows(cx), std::slice::from_ref(&hello));
+        shown("garage#1", "Hello", 100, false, cx);
+        assert_eq!(
+            rows(cx),
+            [hello],
+            "the OS's list read again logged it again"
+        );
+        assert!(cx.debug_bounds("tab/notifications/dot").is_some());
+        assert_eq!(notifications_tab_name(cx), "Notifications, 1 unread");
+
+        shown("garage#1", "Hello", 101, false, cx);
+        assert!(rows(cx)[0].3, "opened from the OS, and still unread");
+        assert_eq!(notifications_tab_name(cx), "Notifications");
+
+        shown("garage#1", "In front", 200, true, cx);
+        shown("other#2", "Elsewhere", 200, false, cx);
+        let read = ("Hello".to_owned(), "room".to_owned(), 100, true);
+        assert_eq!(rows(cx), [read], "logged one this phone's run decides");
+        let waiting = cx.update(|_, cx| cx.global::<Phone>().notices.clone());
+        assert_eq!(waiting.len(), 1, "the other chain's did not wait for it");
+    }
+
     /// A Home tile is drawn pressed (`look::PRESSED`) while a touch is
     /// held on it, from touch-down (Home scrolls, and the look shows all
     /// the same, as Expo's `Pressable`s do); a touch that is cancelled
@@ -2493,6 +2641,7 @@ mod tests {
                 stack: stack.clone(),
                 window: None,
                 waiting: Vec::new(),
+                notices: Vec::new(),
                 _registrar: registrar,
             })
         });

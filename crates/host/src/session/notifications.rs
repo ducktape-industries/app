@@ -114,6 +114,22 @@ impl Notifications {
         entry
     }
 
+    /// A notice the push server carried to this device, as the OS showed
+    /// it at `at`, opened there or not ([`notify::Center::carried`]),
+    /// judged by the person's word as last read.
+    pub fn carried(
+        &mut self,
+        notice: &notify::Notice,
+        at: i64,
+        opened: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let _timed = timed();
+        let settings = notify::Settings::kept();
+        self.center.lock().carried(&settings, notice, at, opened);
+        self.refresh(cx);
+    }
+
     pub fn mark_all_read(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         self.center.lock().mark_all_read();

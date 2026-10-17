@@ -950,10 +950,11 @@ pub fn opening(row: &RailRow, palette: Palette) -> Div {
 /// The tab bar (Expo `TabBar`): 56 over the bottom inset, icon 22 over an 11
 /// label; the chosen tab in the foreground with a 2 rule over it. Each item
 /// picks its tab's root. Notifications carries a dot while a notice is
-/// unread (Expo's tab dot: 8 in a 2 ring of the ground, never a count).
+/// unread (Expo's tab dot: 8 in a 2 ring of the ground, never a count), and
+/// says how many to a screen reader as the desktop's bell does.
 pub fn tab_bar(
     on: Tab,
-    unread: bool,
+    unread: usize,
     inset: Pixels,
     palette: Palette,
     cx: &mut Context<Root>,
@@ -983,7 +984,11 @@ pub fn tab_bar(
         let mut glyph = div()
             .relative()
             .child(svg().path(icon).size(px(look::ICON_HIT)).text_color(tone));
-        if unread && tab == Tab::Notifications {
+        let name = match (tab, unread) {
+            (Tab::Notifications, 1..) => SharedString::from(format!("{label}, {unread} unread")),
+            _ => SharedString::from(label),
+        };
+        if unread > 0 && tab == Tab::Notifications {
             glyph = glyph.child(
                 dot(palette)
                     .debug_selector(|| "tab/notifications/dot".to_owned())
@@ -997,7 +1002,7 @@ pub fn tab_bar(
         }
         let mut item = div()
             .id(id)
-            .control(Role::Tab, label)
+            .control(Role::Tab, name)
             .aria_selected(chosen)
             .debug_selector(move || id.to_owned())
             .flex_1()

@@ -878,3 +878,143 @@ fn a_calls_banner_is_withdrawn_at_its_until() {
         "the timer left it standing"
     );
 }
+
+/// What the push server carried here for chat under `tag`, worded as its
+/// centre lets a notice through (`chat/<tag>`), linking to `link`.
+fn carried(title: &str, tag: &str, link: &str) -> Notice {
+    Notice {
+        title: title.into(),
+        body: "b".into(),
+        tag: match tag.is_empty() {
+            true => String::new(),
+            false => format!("chat/{tag}"),
+        },
+        program: "chat".into(),
+        link: link.into(),
+        ..Notice::default()
+    }
+}
+
+/// The rows as the list draws them: title, count, read, time.
+fn rows(center: &Center) -> Vec<(String, u32, bool, i64)> {
+    center
+        .entries()
+        .map(|entry| (entry.title.clone(), entry.count, entry.read, entry.at))
+        .collect()
+}
+
+/// A notice the OS shows is logged once under its program and its own tag
+/// at the OS's time, however often the OS's list is read again; this
+/// device's run of the notifier posting the same notice after leaves the
+/// row as it is, read or not. Two posts of its own saying the same are two
+/// notices: the second folds in, unread.
+#[test]
+fn a_carried_notice_is_one_row_whoever_logs_it_again() {
+    let now = Instant::now();
+    let silent = settings(Some(Permission::Silent));
+    let mut center = Center::default();
+    let notice = carried("ada mentioned you", "#room", "duck://c/chat/room/7");
+    assert!(center.carried(&silent, &notice, 100, false));
+    let entry = center.entries().next().unwrap().clone();
+    assert_eq!(
+        (entry.program.as_str(), entry.tag.as_str()),
+        ("chat", "#room"),
+        "the row is under the view's own tag"
+    );
+    assert!(
+        !center.carried(&silent, &notice, 100, false),
+        "read again, logged again"
+    );
+    assert_eq!(rows(&center), [("ada mentioned you".into(), 1, false, 100)]);
+
+    // the notifier here catches up on what came while the app was closed
+    let same = Notification {
+        link: "duck://c/chat/room/7".into(),
+        ..post("ada mentioned you", "#room")
+    };
+    center.post(&silent, "chat", "Chat", same.clone(), now, 160);
+    assert_eq!(rows(&center), [("ada mentioned you".into(), 1, false, 100)]);
+    center.mark_all_read();
+    assert!(
+        !center.carried(&silent, &notice, 100, false),
+        "read, then unread again"
+    );
+
+    // opened from the OS, then this device's run posts it: still read
+    let opened = carried("bob mentioned you", "#other", "");
+    assert!(center.carried(&silent, &opened, 120, true));
+    center.post(
+        &silent,
+        "chat",
+        "Chat",
+        post("bob mentioned you", "#other"),
+        now,
+        170,
+    );
+    assert!(
+        center.entries().next().unwrap().read,
+        "opened, then unread again"
+    );
+
+    center.post(&silent, "chat", "Chat", same, now, 200);
+    assert_eq!(
+        rows(&center)[0],
+        ("ada mentioned you".into(), 2, false, 200),
+        "a repeat of this device's own was taken for a copy"
+    );
+}
+
+/// What this device's run posted first is not logged again when the OS
+/// shows the push server's copy of it; a newer notice under the tag folds
+/// in unread, and an older one takes its place by its time. Opening it
+/// from the OS reads the row. A blocked program's notices and links that
+/// are no `duck://` link are dropped.
+#[test]
+fn the_os_copy_of_a_posted_notice_is_not_logged_twice() {
+    let now = Instant::now();
+    let silent = settings(Some(Permission::Silent));
+    let mut center = Center::default();
+    center.post(&silent, "chat", "Chat", post("first", "#room"), now, 100);
+    assert!(!center.carried(&silent, &carried("first", "#room", ""), 101, false));
+    assert_eq!(rows(&center), [("first".into(), 1, false, 100)]);
+
+    center.mark_all_read();
+    assert!(center.carried(&silent, &carried("second", "#room", ""), 102, false));
+    assert!(center.carried(&silent, &carried("early", "", ""), 50, false));
+    assert_eq!(
+        rows(&center),
+        [
+            ("second".into(), 2, false, 102),
+            ("early".into(), 1, false, 50)
+        ]
+    );
+    assert!(center.carried(&silent, &carried("second", "#room", ""), 102, true));
+    assert_eq!(
+        center.unread(),
+        1,
+        "opening it from the OS left the row unread"
+    );
+
+    let blocked = settings(Some(Permission::Block));
+    assert!(!center.carried(&blocked, &carried("no", "#x", ""), 300, false));
+    let elsewhere = carried("no", "#y", "https://example.com");
+    assert!(!center.carried(&silent, &elsewhere, 300, false));
+    assert_eq!(center.entries().count(), 2);
+}
+
+/// A carried notice is written as it is logged, so the next launch's
+/// connect reads it back off disk.
+#[test]
+fn a_carried_notice_is_on_disk_for_the_next_launch() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dev.json");
+    let _off = crate::perf::off_for_test();
+    let mut center = Center::default();
+    center.open_log("dev", Some(path.clone()));
+    let silent = settings(Some(Permission::Silent));
+    center.carried(&silent, &carried("kept", "#room", ""), 100, false);
+    settled(&path);
+    let mut relaunched = Center::default();
+    relaunched.open_log("dev", Some(path));
+    assert_eq!(rows(&relaunched), [("kept".into(), 1, false, 100)]);
+}
