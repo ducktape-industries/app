@@ -1046,9 +1046,13 @@ impl Windows {
     }
 
     /// A notification centre row picked: its link opened, else its view's
-    /// seat brought forward.
+    /// seat brought forward; one of the host's, Settings › Updates.
     pub(crate) fn open_notice(&mut self, entry: &Entry, cx: &mut Context<Self>) {
-        if !entry.link.is_empty() {
+        // the host's own rows are its update notices: Settings › Updates,
+        // as their banner opens
+        if entry.host() {
+            self.open_settings(Some(SettingsPage::Updates), cx);
+        } else if !entry.link.is_empty() {
             self.open_link(&entry.link, None, cx);
         } else if self.shared.rail.read(cx).lists(&entry.program) {
             self.open_seat(crate::runtime::intern(&entry.program), None, None, cx);
@@ -1126,7 +1130,13 @@ impl Windows {
             }
             Posted::Url(url) => cx.open_url(&url),
             Posted::OpenUpdates => self.open_settings(Some(SettingsPage::Updates), cx),
-            Posted::UpdatesMoved => cx.refresh_windows(),
+            Posted::UpdatesMoved => {
+                // its notices' rows too: the bell's count and list
+                self.shared
+                    .notifications
+                    .update(cx, |notifications, cx| notifications.refresh(cx));
+                cx.refresh_windows()
+            }
         }
     }
 
@@ -1326,7 +1336,8 @@ pub(crate) enum Posted {
     Url(String),
     /// Settings › Updates, on the console: the update notice was clicked.
     OpenUpdates,
-    /// The updater's reading moved: whatever shows it draws again.
+    /// The updater's reading moved, or its notices' rows: whatever shows
+    /// them draws again.
     UpdatesMoved,
 }
 
