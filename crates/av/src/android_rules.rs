@@ -172,8 +172,9 @@ pub(crate) struct Input {
 
 /// BGRA into the encoder's 4:2:0 layout (BT.601, studio range): `width`
 /// by `height` (even) of picture in rows `input.stride` apart, the chroma
-/// after `input.slice` rows, as one semi-planar plane (NV12) or two
-/// planar ones (I420, each half the stride).
+/// after `input.slice` rows, as MediaCodec lays it out: one semi-planar
+/// plane (NV12) or two planar ones (I420, each half the stride, V's a
+/// quarter of the luma's size after U's).
 #[cfg(feature = "call")]
 pub(crate) fn bgra_to_yuv(
     bgra: &[u8],
@@ -186,11 +187,16 @@ pub(crate) fn bgra_to_yuv(
     out.clear();
     out.resize(stride * slice * 3 / 2, 0);
     let (y_plane, chroma) = out.split_at_mut(stride * slice);
-    let half = stride / 2;
-    // planar: U's plane, then V's; semi-planar: the one chroma plane
-    let (u_plane, v_plane) = match input.color {
-        I420 => chroma.split_at_mut(half * (slice / 2)),
-        _ => (chroma, &mut [][..]),
+    // where U and V of the pixels at (x, y) go in the chroma
+    let at = |x: usize, y: usize| match input.color {
+        I420 => {
+            let u = (y / 2) * (stride / 2) + x / 2;
+            (u, stride * slice / 4 + u)
+        }
+        _ => {
+            let u = (y / 2) * stride + x;
+            (u, u + 1)
+        }
     };
     for (y, row) in bgra.chunks_exact(width * 4).take(height).enumerate() {
         for (x, pixel) in row.chunks_exact(4).enumerate() {
@@ -201,20 +207,9 @@ pub(crate) fn bgra_to_yuv(
             );
             y_plane[y * stride + x] = (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16) as u8;
             if y % 2 == 0 && x % 2 == 0 {
-                let u = (((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128) as u8;
-                let v = (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128) as u8;
-                match input.color {
-                    I420 => {
-                        u_plane[(y / 2) * half + x / 2] = u;
-                        v_plane[(y / 2) * half + x / 2] = v;
-                    }
-                    _ => {
-                        // U then V a pixel, rows the stride apart
-                        let at = (y / 2) * stride + x;
-                        u_plane[at] = u;
-                        u_plane[at + 1] = v;
-                    }
-                }
+                let (u, v) = at(x, y);
+                chroma[u] = (((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128) as u8;
+                chroma[v] = (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128) as u8;
             }
         }
     }
@@ -412,15 +407,35 @@ mod tests {
         assert!(yuv420_to_bgra(planes(&luma[..3], vu), 2, 2, 0, false).is_none());
     }
 
-    /// A picture fills an encoder's input at any stride and slice height
-    /// the encoder names, ladder size or not (330 x 270), odd ones too:
-    /// the luma, then U and V each where MediaCodec reads them.
+    /// A picture fills an encoder's input where MediaCodec reads it, at any
+    /// stride and slice height the encoder names, ladder size or not
+    /// (330 x 270), odd ones too. Android's layout (AOSP's
+    /// DescribeDefaultColorFormat, and Codec2's the same): luma rows
+    /// `stride` apart, the chroma from `stride * slice` on; semi-planar, U
+    /// then V a pixel, rows `stride` apart; planar, U's plane, then V's
+    /// `stride * slice / 4` later, rows `stride / 2` apart.
     #[cfg(feature = "call")]
     #[test]
     fn a_picture_fills_the_encoders_input_at_any_stride() {
-        // blue, BT.601 studio range: Y 41, U 240, V 110
+        // each 2 x 2 block its own colour, blue its column and red its
+        // row, so a plane read from the wrong place shows anywhere
         let (width, height) = (330, 270);
-        let bgra = [255, 0, 0, 255].repeat(width * height);
+        let colour = |x: usize, y: usize| ((x / 2) as i32, (y / 2) as i32);
+        let bgra: Vec<u8> = (0..height)
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
+            .flat_map(|(x, y)| {
+                let (b, r) = colour(x, y);
+                [b as u8, 0, r as u8, 255]
+            })
+            .collect();
+        // BT.601 studio range, green none
+        let luma = |(b, r): (i32, i32)| (((66 * r + 25 * b + 128) >> 8) + 16) as u8;
+        let chroma = |(b, r): (i32, i32)| {
+            (
+                (((-38 * r + 112 * b + 128) >> 8) + 128) as u8,
+                (((112 * r - 18 * b + 128) >> 8) + 128) as u8,
+            )
+        };
         for color in [NV12, I420] {
             for (stride, slice) in [(330, 270), (334, 270), (331, 271), (333, 275), (352, 272)] {
                 let mut out = Vec::new();
@@ -431,25 +446,25 @@ mod tests {
                 };
                 bgra_to_yuv(&bgra, width, height, input, &mut out);
                 assert_eq!(out.len(), stride * slice * 3 / 2);
-                let (luma, chroma) = out.split_at(stride * slice);
-                let half = stride / 2;
+                let (y_plane, uv) = out.split_at(stride * slice);
+                let place = |x, y| format!("{color} at {stride} x {slice}, ({x}, {y})");
+                for y in 0..height {
+                    for x in 0..width {
+                        let got = y_plane[y * stride + x];
+                        assert_eq!(got, luma(colour(x, y)), "{}", place(x, y));
+                    }
+                }
                 for y in (0..height).step_by(2) {
                     for x in (0..width).step_by(2) {
-                        let place = || format!("{color} at {stride} x {slice}, ({x}, {y})");
-                        assert_eq!(luma[y * stride + x], 41, "{}", place());
                         let (u, v) = match color {
-                            // U's plane, then V's, rows half the stride apart
-                            I420 => {
-                                let at = (y / 2) * half + x / 2;
-                                (chroma[at], chroma[half * (slice / 2) + at])
-                            }
-                            // U then V a pixel, rows the stride apart
+                            NV12 => (y / 2 * stride + x, y / 2 * stride + x + 1),
                             _ => {
-                                let at = (y / 2) * stride + x;
-                                (chroma[at], chroma[at + 1])
+                                let u = y / 2 * (stride / 2) + x / 2;
+                                (u, stride * slice / 4 + u)
                             }
                         };
-                        assert_eq!((u, v), (240, 110), "{}", place());
+                        let got = (uv[u], uv[v]);
+                        assert_eq!(got, chroma(colour(x, y)), "{}", place(x, y));
                     }
                 }
             }

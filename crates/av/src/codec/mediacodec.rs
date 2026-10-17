@@ -387,9 +387,10 @@ impl Layout {
         // U and V at (x, y) of the picture, for the two layouts
         let uv: Box<dyn Fn(usize, usize) -> (u8, u8)> = match self.color {
             I420 => {
-                let half = (self.stride / 2, self.slice / 2);
-                let (u, v) = chroma.split_at(half.0 * half.1);
-                Box::new(move |x, y| (u[(y / 2) * half.0 + x / 2], v[(y / 2) * half.0 + x / 2]))
+                // V's plane a quarter of the luma's size after U's
+                let half = self.stride / 2;
+                let (u, v) = chroma.split_at(self.stride * self.slice / 4);
+                Box::new(move |x, y| (u[(y / 2) * half + x / 2], v[(y / 2) * half + x / 2]))
             }
             _ => {
                 let stride = self.stride;
