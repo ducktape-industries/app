@@ -1,0 +1,9 @@
+# The SPEC §13.1 rows for this crate (the workspace has no clippy.toml):
+# tests may unwrap; the pass never sleeps, spawns or reads the environment.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+disallowed-methods = [
+    { path = "std::process::Command::new", reason = "the pass runs inside the app; it names no OS" },
+    { path = "std::thread::sleep", reason = "the pass runs on the loader thread; it never waits" },
+    { path = "std::env::var", reason = "the pass is configured by its arguments only" },
+]

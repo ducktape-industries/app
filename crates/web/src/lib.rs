@@ -53,9 +53,6 @@ use futures::channel::mpsc;
 use futures::{FutureExt as _, StreamExt as _};
 use gpui_kit::{App, AsyncApp, SharedString, WeakEntity};
 
-/// The longest address a page loads, in bytes.
-pub const MAX_URL_BYTES: usize = 2048;
-
 /// The pump's inbox: `on_schedule_message_pump_work` delays, from any thread.
 static PUMP: OnceLock<mpsc::UnboundedSender<i64>> = OnceLock::new();
 /// `on_context_initialized` has run: browsers may be created.
@@ -75,12 +72,12 @@ pub fn origin(address: &str) -> Option<String> {
 
 /// Whether a page may load `address`: `https://` with a host, or `http://`
 /// on this machine (`localhost`, a loopback address), never with a user
-/// name or password, at most [`MAX_URL_BYTES`], no control characters.
+/// name or password, no control characters.
 /// Read with the WHATWG parser, as Chromium reads it, so the host checked
 /// is the host loaded. The one rule every load and every navigation of a
 /// page is held to.
 pub fn loadable(address: &str) -> bool {
-    if address.len() > MAX_URL_BYTES || address.contains(char::is_control) {
+    if address.contains(char::is_control) {
         return false;
     }
     let Ok(url) = url::Url::parse(address) else {
@@ -129,10 +126,7 @@ pub fn shutdown() {
     for (_, shared) in &pages {
         shared.close();
     }
-    let started = Instant::now();
-    while pages.iter().any(|(_, shared)| shared.open())
-        && started.elapsed() < Duration::from_secs(3)
-    {
+    while pages.iter().any(|(_, shared)| shared.open()) {
         cef::do_message_loop_work();
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -316,7 +310,7 @@ mod tests {
 
     #[test]
     fn an_origin_names_the_site_and_nothing_else() {
-        let long = format!("https://example.com/{}", "a".repeat(super::MAX_URL_BYTES));
+        let long = format!("https://example.com/{}", "a".repeat(4096));
         for (address, expected) in [
             (long.as_str(), Some("https://example.com/")),
             (
@@ -398,7 +392,9 @@ mod tests {
             assert!(!loadable(address), "{address}");
         }
         let long = |n: usize| format!("https://example.com/{}", "a".repeat(n));
-        assert!(loadable(&long(super::MAX_URL_BYTES - 20)));
-        assert!(!loadable(&long(super::MAX_URL_BYTES - 19)));
+        assert!(
+            loadable(&long(1 << 20)),
+            "a long address is the engine's to refuse"
+        );
     }
 }

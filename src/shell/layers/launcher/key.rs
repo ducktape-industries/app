@@ -89,7 +89,7 @@ impl LauncherLayer {
                 "unlock",
                 text,
                 Kind::Primary,
-                self.with_field(&self.fields.password, Account::unlock),
+                self.with_field(&self.fields.password, crate::shell::sign_in::unlock),
                 busy,
                 &ink,
             )])

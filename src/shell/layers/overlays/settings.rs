@@ -136,7 +136,7 @@ impl OverlayLayer {
             SettingsPage::Notifications => self.notifications_page(&ink, cx),
             SettingsPage::Networks => self.networks_page(&ink, cx),
             SettingsPage::Updates => self.updates_page(&ink, cx),
-            SettingsPage::About => about_page(&ink),
+            SettingsPage::About => self.about_page(&ink),
         };
         let page = &mut self.settings_rows;
         while page.rows.len() < rows.len() {
@@ -630,9 +630,11 @@ impl OverlayLayer {
         }))
     }
 
-    /// Settings › Updates: what runs, the channel it follows, and where the
-    /// updater is, with "Restart to update" once a release waits. A copy
-    /// that is not an installed one updates nothing and says so.
+    /// Settings › Updates: what runs, the channel it follows, whether it
+    /// updates automatically, and where the updater is, with "Update now"
+    /// when that is off and something is newer, and "Restart to update" once
+    /// a release waits. A copy that is not an installed one updates nothing
+    /// and says so.
     fn updates_page(&mut self, ink: &Ink, cx: &gpui_kit::App) -> Vec<gpui_kit::Div> {
         use crate::update::{Channel, Updates};
         use gpui_kit::*;
@@ -697,23 +699,41 @@ impl OverlayLayer {
             ink,
             cx,
         );
-        let windows = self.app.windows.clone();
-        let restart = crate::a11y::keyboard(
+        let on = shown.automatic;
+        let automatic = self.switch(
+            "updates/automatic",
+            "Update automatically",
+            on,
+            Rc::new(move |cx| {
+                crate::update::automate(!on);
+                cx.refresh_windows();
+            }),
+            ink,
+        );
+        // the status row's one action, outlined in ink
+        let button = |id: &'static str, label: &'static str| {
             sans(500, 14.)
-                .id("updates/restart")
-                .control(Role::Button, "Restart to update")
+                .id(id)
+                .control(Role::Button, label)
                 .px(px(12.))
                 .py(px(6.))
                 .border_1()
                 .border_color(ink.ink)
                 .cursor_pointer()
-                .on_click(move |_, _, cx| {
-                    // the waiter starts the next start once this one is gone
-                    if crate::update::restart().is_ok() {
-                        windows.update(cx, |windows, cx| windows.quit(cx));
-                    }
-                })
-                .child("Restart to update"),
+                .child(label)
+        };
+        let windows = self.app.windows.clone();
+        let restart = crate::a11y::keyboard(
+            button("updates/restart", "Restart to update").on_click(move |_, _, cx| {
+                // the waiter starts the next start once this one is gone
+                if crate::update::restart().is_ok() {
+                    windows.update(cx, |windows, cx| windows.quit(cx));
+                }
+            }),
+            ink.ink,
+        );
+        let update_now = crate::a11y::keyboard(
+            button("updates/now", "Update now").on_click(|_, _, _| crate::update::update_now()),
             ink.ink,
         );
         rows.push(setting(
@@ -722,9 +742,21 @@ impl OverlayLayer {
             channel,
             ink,
         ));
-        rows.push(status(shown.status).when(shown.restart, |row| {
-            row.child(div().flex_shrink_0().child(restart))
-        }));
+        rows.push(setting(
+            "Update automatically",
+            "Off still checks and says what is newer, and downloads or installs nothing until you press Update now.",
+            automatic,
+            ink,
+        ));
+        rows.push(
+            status(shown.status)
+                .when(shown.restart, |row| {
+                    row.child(div().flex_shrink_0().child(restart))
+                })
+                .when(shown.update_now, |row| {
+                    row.child(div().flex_shrink_0().child(update_now))
+                }),
+        );
         rows
     }
 
@@ -854,22 +886,59 @@ fn line(key: &'static str, value: String, ink: &Ink) -> gpui_kit::Div {
         )
 }
 
-fn about_page(ink: &Ink) -> Vec<gpui_kit::Div> {
-    use gpui_kit::*;
-    let log = crate::backend::app_log_path()
-        .map(|path| path.display().to_string())
-        .unwrap_or_default();
-    vec![
-        heading("About", ink),
-        sans(400, 22.)
-            .pb(px(12.))
-            .child(words("product", "Ducktape")),
-        line("Version", env!("CARGO_PKG_VERSION").into(), ink),
-        line(
-            "Node contract",
-            format!("v{}", noded_client::wire::NODE_CONTRACT),
-            ink,
-        ),
-        line("Log", log, ink),
-    ]
+impl OverlayLayer {
+    /// Settings › About: the product, its version and log; and on a
+    /// machine whose call picture is Cisco's OpenH264 binary, the switch
+    /// that fetches and uses it, with Cisco's line (its licence's terms).
+    fn about_page(&self, ink: &Ink) -> Vec<gpui_kit::Div> {
+        use gpui_kit::*;
+        let log = crate::backend::app_log_path()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+        let mut rows = vec![
+            heading("About", ink),
+            sans(400, 22.)
+                .pb(px(12.))
+                .child(words("product", "Ducktape")),
+            line("Version", env!("CARGO_PKG_VERSION").into(), ink),
+            line(
+                "Node contract",
+                format!("v{}", noded_client::wire::NODE_CONTRACT),
+                ink,
+            ),
+            line("Log", log, ink),
+        ];
+        #[cfg(all(feature = "call", target_os = "linux"))]
+        {
+            use crate::backend::openh264;
+            let on = openh264::enabled();
+            let switch = self.switch(
+                "about/openh264",
+                "Video calls with H.264",
+                on,
+                Rc::new(move |cx| {
+                    openh264::set_enabled(!on);
+                    cx.refresh_windows();
+                }),
+                ink,
+            );
+            rows.push(setting(
+                "Video calls with H.264",
+                openh264::ATTRIBUTION,
+                switch,
+                ink,
+            ));
+            rows.push(
+                sans(400, 13.)
+                    .pt(px(8.))
+                    .text_color(ink.muted)
+                    .child(words(
+                        "about/openh264/hint",
+                        "Fetched from Cisco onto this machine the first time a call sends or shows a picture; off, calls go on by voice.",
+                    )),
+            );
+            rows.push(line("H.264 licence", openh264::license_path(), ink));
+        }
+        rows
+    }
 }

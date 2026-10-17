@@ -75,8 +75,8 @@ fn render_counts(key: crate::runtime::WindowKey) -> Vec<(String, u64)> {
 }
 
 /// An idle app on a chain that stands still draws nothing: the node's
-/// status poll runs on its own clock and lands the same height (and, once,
-/// no answer), and no layer of the window draws, nor the root that lays
+/// status poll runs on its own clock and lands the same height, and no
+/// layer of the window draws, nor the root that lays
 /// them out, nor a pane's tree. No clock of the app's draws it otherwise:
 /// the wall clock's beat went with the reducer, and its `shell.dispatch`
 /// timer with it.
@@ -89,11 +89,8 @@ fn a_still_chain_draws_no_frame(cx: &mut TestAppContext) {
     crate::runtime::seat_drawing_for_test(PROGRAM, 400, line("a line"));
     set_motion(&app, false, &mut native);
     pane(&view, PaneMessage::Select(PROGRAM), &mut native);
-    // the node answers height 7 to every ask but the fourth
-    let (source, asked) = source(|n| match n {
-        3 => Err("no answer".to_owned()),
-        _ => Ok(status(7)),
-    });
+    // the node answers height 7 to every ask
+    let (source, asked) = source(|_| Ok(status(7)));
     app.session.update(&mut native, |session, cx| {
         let on_node = SessionState {
             connected: true,

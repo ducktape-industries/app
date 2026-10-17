@@ -1,7 +1,7 @@
 //! One window's desk moved by its methods (desk.rs): each a compared edit
 //! of the layout, framed and settled.
+use super::Desk;
 use super::tests::notifies;
-use super::{Desk, Slice};
 use crate::ui::layout::{Frame, Layout};
 use gpui_kit::{AppContext as _, Entity, TestAppContext};
 
@@ -10,7 +10,7 @@ const DESK: (f32, f32) = (1280., 764.);
 /// A measured desk with "chat" on it, as the console's first frame lands
 /// it: sized, then seeded with the active program.
 fn desk(cx: &mut TestAppContext) -> Entity<Desk> {
-    let desk = cx.new(|_| Slice::new(Layout::default()));
+    let desk = cx.new(|_| Desk::new(Layout::default()));
     desk.update(cx, |desk, cx| {
         desk.resize(DESK, cx);
         desk.seed("chat", cx);
@@ -90,7 +90,7 @@ fn a_window_widens_to_its_view_once_the_view_is_seated(cx: &mut TestAppContext) 
         ("seated-console-view", 720., 640, (144., 432.), (78., 642.)),
         ("seated-cramped-view", 600., 680, (120., 360.), (0., 600.)),
     ] {
-        let desk = cx.new(|_| Slice::new(Layout::default()));
+        let desk = cx.new(|_| Desk::new(Layout::default()));
         desk.update(cx, |desk, cx| {
             desk.resize((width, 700.), cx);
             desk.seed(program, cx);

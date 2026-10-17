@@ -1,0 +1,6 @@
+/.gradle/
+/build/
+/app/build/
+/local.properties
+# the owner's Firebase project (phone/android/app/build.gradle.kts applies it when present)
+/app/google-services.json

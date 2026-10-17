@@ -8,7 +8,28 @@ use super::Slice;
 use crate::ui::layout::{Frame, Layout, Pane, PaneMessage};
 use gpui_kit::Context;
 
-pub(crate) type Desk = Slice<Layout>;
+/// One window's layout, a compared write (`Slice`) with the moves below.
+pub(crate) struct Desk(Slice<Layout>);
+
+impl Desk {
+    pub(crate) fn new(layout: Layout) -> Self {
+        Self(Slice::new(layout))
+    }
+}
+
+impl std::ops::Deref for Desk {
+    type Target = Slice<Layout>;
+
+    fn deref(&self) -> &Slice<Layout> {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Desk {
+    fn deref_mut(&mut self) -> &mut Slice<Layout> {
+        &mut self.0
+    }
+}
 
 /// Every write here is timed as `reducer.pane` (docs/perf.md: a
 /// `reducer.*` sample past 250 ms is a hang).
@@ -16,7 +37,7 @@ fn timed() -> Option<crate::perf::Timer> {
     crate::perf::time(crate::perf::Key::Shell, "reducer.pane")
 }
 
-impl Slice<Layout> {
+impl Desk {
     /// A move of the panes: `edit` on the layout, then frames for what has
     /// none and the hold checked against the front. A desk something was
     /// done to no longer opens the active program on its own.
@@ -46,7 +67,7 @@ impl Slice<Layout> {
 
     /// Another pane showing `program`.
     pub(crate) fn split(&mut self, program: &'static str, cx: &mut Context<Self>) {
-        self.moved(|layout| _ = layout.split(program), cx);
+        self.moved(|layout| layout.split(program), cx);
     }
 
     pub(crate) fn focus(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -62,7 +83,7 @@ impl Slice<Layout> {
 
     /// A pane from another window onto this desk.
     pub(crate) fn popin(&mut self, pane: Pane, cx: &mut Context<Self>) {
-        self.moved(|layout| _ = layout.popin(pane), cx);
+        self.moved(|layout| layout.popin(pane), cx);
     }
 
     /// ⌘` / ⌘⇧` / ctrl-tab.

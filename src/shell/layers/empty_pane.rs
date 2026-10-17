@@ -724,8 +724,10 @@ mod tests {
             program,
             label: label.into(),
             icon: String::new(),
+            description: String::new(),
             note: None,
             empty,
+            pending: false,
         }
     }
 

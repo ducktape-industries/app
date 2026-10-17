@@ -27,10 +27,11 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use futures::{Stream, StreamExt as _};
 use reqwest::StatusCode;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 use wire::{
-    BlockRef, Blocks, Change, Finalized, Layer, Located, Network, Page, Query, Receipt, Status,
-    TxAsk, route,
+    BlockAsk, Blocks, Change, Finalized, Layer, Located, Network, Page, Preconfirm, Query, Receipt,
+    Status, Submit, Submitted, TxAsk, route,
 };
 
 /// What signs a frame or a consent: an ed25519 key, wherever it is kept.
@@ -79,33 +80,19 @@ impl Signer for commonware_cryptography::ed25519::PrivateKey {
     }
 }
 
-/// The most one node answer may carry, unless the call names its own cap
-/// (a blob's): a view's reply budget holds no more, so a bigger body is
-/// refused before it is read, not after.
-pub const MAX_BODY_BYTES: usize = 32 << 20;
-
-/// How long a connection to a node (or the auth host) may take to open.
-const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// How long a caller waits for one node answer before it stops waiting. Not
-/// the client's own timeout, and above the hold a recovering node puts on a
-/// request: it accepts the connection and answers once it has recovered
-/// (app#189's run held its queries ~94 s: node up 13:14:49.9, recovered
-/// 13:16:22.0, serving 13:16:23.6), so this is that hold and as much again.
-pub const ANSWER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(180);
-
-/// Every HTTP client this crate builds: the opening bounded, the answer not
-/// (see [`ANSWER_DEADLINE`]), and no redirect followed. A redirect would
-/// send the same signed frame on to whatever host the answer names; it is
-/// the answer instead, a status this client does not read
+/// Every HTTP client this crate builds: no redirect followed. A redirect
+/// would send the same signed frame on to whatever host the answer names;
+/// it is the answer instead, a status this client does not read
 /// ([`Error::Failed`]).
 fn http() -> reqwest::Client {
     reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("the HTTP client")
 }
+
+/// [`Error::Failed`]'s sentence when what answered is not a node: its body is someone else's page.
+pub const NOT_A_NODE: &str = "this address does not answer as a ducktape node";
 
 #[derive(Debug)]
 pub enum Error {
@@ -120,8 +107,6 @@ pub enum Error {
     Transport(String),
     /// the body did not decode as the type asked for
     Decode(Refusal),
-    /// the answer is longer than the call reads: refused, never buffered
-    TooLarge { cap: usize },
 }
 
 impl std::fmt::Display for Error {
@@ -132,11 +117,6 @@ impl std::fmt::Display for Error {
             }
             Error::Failed { status, sentence } => write!(f, "node answered {status}: {sentence}"),
             Error::Unreachable(sentence) | Error::Transport(sentence) => write!(f, "{sentence}"),
-            Error::TooLarge { cap } => write!(
-                f,
-                "The node's answer is over the {} MiB this app reads.",
-                cap >> 20
-            ),
         }
     }
 }
@@ -184,9 +164,26 @@ impl Client {
         self.fetch(route::NETWORK).await
     }
 
-    /// A signed frame, as bytes; the node answers the receipt of its execute.
-    pub async fn submit(&self, frame: Vec<u8>) -> Result<Receipt> {
-        self.post_raw(route::SUBMIT, frame).await
+    /// The UDP port the node takes live sessions on (QUIC, ALPN
+    /// `ducktape-live`), at the host of its `/v1` address; `None` when it
+    /// bound no UDP, and a client takes the websocket at `/v1/live`. A node
+    /// that serves no live tracks answers 404.
+    pub async fn live_port(&self) -> Result<Option<u16>> {
+        self.fetch(route::LIVE_PORT).await
+    }
+
+    pub async fn preconfirm(&self, frame: Vec<u8>) -> Result<Receipt> {
+        let submit = Submit {
+            frame,
+            preconfirm: Preconfirm::On,
+        };
+        match self.post(route::SUBMIT, &submit).await? {
+            Submitted::Preconfirmed(receipt) => Ok(receipt),
+            Submitted::Pooled => Err(Error::Decode(Refusal::new(
+                abi::reason::PROTOCOL,
+                "the node pooled a frame this app asked it to preconfirm",
+            ))),
+        }
     }
 
     /// A signed frame whose target answers a query; the reply is whatever
@@ -195,26 +192,43 @@ impl Client {
         self.post(route::QUERY, &Query { layer, frame }).await
     }
 
-    /// The framed bytes (`kind len\0body`) of a blob the node holds; an
-    /// answer over `cap` bytes is refused [`Error::TooLarge`].
-    pub async fn blob(&self, id: BlobId, cap: usize) -> Result<Option<Vec<u8>>> {
+    /// The framed bytes (`kind len\0body`) of a blob the node holds.
+    pub async fn blob(&self, id: BlobId) -> Result<Option<Vec<u8>>> {
         answered(
             self.http
                 .post(self.url(route::BLOB_GET))
                 .body(abi::encode(&id)),
-            cap,
         )
         .await
     }
 
-    /// Finalized blocks, newest first: below `before` (the tip when
-    /// `None`), at most `limit` (the node caps it).
+    /// A blob upload: `frame`, a signed blobs-role `Put` naming each blob's
+    /// id, length and kind, then each blob it names, framed
+    /// (`kind len\0body`), in its order, sent as `blobs` yields them, so
+    /// neither side holds the bundle whole. The node stages the bytes and
+    /// pools the frame unpredicted ([`Submitted::Pooled`]): the bundle is put
+    /// once a block carries the frame.
+    pub async fn put_blobs(
+        &self,
+        frame: Vec<u8>,
+        blobs: impl Stream<Item = std::io::Result<Vec<u8>>> + Send + 'static,
+    ) -> Result<Submitted> {
+        let opening = [&(frame.len() as u32).to_le_bytes()[..], &frame].concat();
+        let body = futures::stream::once(async { Ok(opening) }).chain(blobs);
+        answered(
+            self.http
+                .post(self.url(route::BLOB_PUT))
+                .body(reqwest::Body::wrap_stream(body)),
+        )
+        .await
+    }
+
     pub async fn blocks(&self, page: &Blocks) -> Result<Page> {
         self.post(route::BLOCKS, page).await
     }
 
-    pub async fn block(&self, by: &BlockRef) -> Result<Option<Finalized>> {
-        self.post(route::BLOCK, by).await
+    pub async fn block(&self, ask: &BlockAsk) -> Result<Option<Finalized>> {
+        self.post(route::BLOCK, ask).await
     }
 
     pub async fn tx(&self, ask: &TxAsk) -> Result<Option<Located>> {
@@ -230,11 +244,14 @@ impl Client {
             self.base.replacen("http", "ws", 1),
             route::CHANGES
         );
-        let (socket, _) =
-            tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(url))
-                .await
-                .map_err(|_| Error::Transport("the changes socket did not open in time".into()))?
-                .map_err(|error| Error::Transport(error.to_string()))?;
+        let unbounded = WebSocketConfig {
+            max_message_size: None,
+            max_frame_size: None,
+            ..WebSocketConfig::default()
+        };
+        let (socket, _) = tokio_tungstenite::connect_async_with_config(url, Some(unbounded), false)
+            .await
+            .map_err(|error| Error::Transport(error.to_string()))?;
         Ok(socket.filter_map(|message| {
             let change = match message {
                 Ok(Message::Binary(bytes)) => Some(abi::decode(&bytes).map_err(Error::Decode)),
@@ -250,7 +267,7 @@ impl Client {
     }
 
     async fn fetch<T: BorshDeserialize>(&self, route: &str) -> Result<T> {
-        answered(self.http.get(self.url(route)), MAX_BODY_BYTES).await
+        answered(self.http.get(self.url(route))).await
     }
 
     async fn post<B: BorshSerialize, T: BorshDeserialize>(
@@ -262,35 +279,31 @@ impl Client {
     }
 
     async fn post_raw<T: BorshDeserialize>(&self, route: &str, body: Vec<u8>) -> Result<T> {
-        answered(self.http.post(self.url(route)).body(body), MAX_BODY_BYTES).await
+        answered(self.http.post(self.url(route)).body(body)).await
     }
 }
 
-/// `request`'s answer, read a chunk at a time and never past `cap` bytes:
-/// a `Content-Length` over it is refused before the body is read, a body
-/// that streams past it as soon as it does.
-async fn answered<T: BorshDeserialize>(request: reqwest::RequestBuilder, cap: usize) -> Result<T> {
-    let mut response = request.send().await?;
+/// `request`'s answer, read whole.
+async fn answered<T: BorshDeserialize>(request: reqwest::RequestBuilder) -> Result<T> {
+    let response = request.send().await?;
     let status = response.status();
-    if response
-        .content_length()
-        .is_some_and(|length| length > cap as u64)
-    {
-        return Err(Error::TooLarge { cap });
-    }
-    let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        if body.len() + chunk.len() > cap {
-            return Err(Error::TooLarge { cap });
-        }
-        body.extend_from_slice(&chunk);
-    }
+    // A node's failure is its own sentence in plain text (noded answers `(status, sentence)`); whatever else answers
+    // (a proxy's page, a redirect to https) is not a node's word, and its body never reaches a sentence.
+    let plain = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/plain"));
+    let body = response.bytes().await?;
     match status {
         StatusCode::OK => abi::decode(&body).map_err(Error::Decode),
         StatusCode::BAD_REQUEST => Err(Error::Refused(abi::decode(&body).map_err(Error::Decode)?)),
         status => Err(Error::Failed {
             status: status.as_u16(),
-            sentence: String::from_utf8_lossy(&body).into_owned(),
+            sentence: match plain || body.is_empty() {
+                true => String::from_utf8_lossy(&body).into_owned(),
+                false => NOT_A_NODE.into(),
+            },
         }),
     }
 }
@@ -313,6 +326,71 @@ impl Signer for FixedSigner {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// One request off a socket, its body read whole whether sent by
+    /// length or chunked (an upload is chunked), then `answer` with 200.
+    async fn served_once(listener: tokio::net::TcpListener, answer: Vec<u8>) -> (String, Vec<u8>) {
+        use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _};
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut stream = tokio::io::BufReader::new(stream);
+        let mut head = String::new();
+        let (mut length, mut chunked) = (0, false);
+        loop {
+            let mut line = String::new();
+            stream.read_line(&mut line).await.unwrap();
+            if line == "\r\n" {
+                break;
+            }
+            let lower = line.to_ascii_lowercase();
+            if let Some(value) = lower.strip_prefix("content-length:") {
+                length = value.trim().parse().unwrap();
+            }
+            chunked |= lower.starts_with("transfer-encoding:") && lower.contains("chunked");
+            head.push_str(&line);
+        }
+        let mut body = vec![0; length];
+        stream.read_exact(&mut body).await.unwrap();
+        while chunked {
+            let mut size = String::new();
+            stream.read_line(&mut size).await.unwrap();
+            let size = usize::from_str_radix(size.trim(), 16).unwrap();
+            let mut chunk = vec![0; size + 2];
+            stream.read_exact(&mut chunk).await.unwrap();
+            body.extend_from_slice(&chunk[..size]);
+            chunked = size > 0;
+        }
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+            answer.len()
+        );
+        stream.write_all(reply.as_bytes()).await.unwrap();
+        stream.write_all(&answer).await.unwrap();
+        (head, body)
+    }
+
+    /// An upload is the frame's length (u32 LE), the frame, then each blob
+    /// as it came, in order, to `/v1/blob/put`; the node's `Submitted` is
+    /// the answer.
+    #[tokio::test]
+    async fn a_blob_upload_is_the_frame_by_its_length_then_each_blob_in_order() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = Client::new(format!("http://{}", listener.local_addr().unwrap()));
+        let served = tokio::spawn(served_once(listener, abi::encode(&Submitted::Pooled)));
+        let blobs = [b"chunk 3\0abc".to_vec(), b"chunk 0\0".to_vec()];
+        let submitted = client
+            .put_blobs(vec![7; 300], futures::stream::iter(blobs.clone().map(Ok)))
+            .await
+            .unwrap();
+        assert_eq!(submitted, Submitted::Pooled);
+        let (head, body) = served.await.unwrap();
+        assert!(head.starts_with("POST /v1/blob/put "), "{head}");
+        let mut sent = 300u32.to_le_bytes().to_vec();
+        sent.extend([7; 300]);
+        sent.extend(blobs.concat());
+        assert_eq!(body, sent);
+    }
+
     #[tokio::test]
     async fn wss_gets_tls_not_a_missing_feature() {
         // A port that hangs up: the TLS handshake fails, but only after the

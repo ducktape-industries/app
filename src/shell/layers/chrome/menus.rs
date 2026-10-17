@@ -213,7 +213,10 @@ impl Chrome {
                 .child(self.menu_row(
                     "recovery-key",
                     "Make a recovery key…",
-                    self.closing(menu, self.on_account(Account::recovery_key_start)),
+                    self.closing(
+                        menu,
+                        self.on_account(crate::shell::sign_in::recovery_key_start),
+                    ),
                     ink,
                 ));
         }

@@ -164,6 +164,30 @@ fn connect_screen_exposes_the_endpoint_and_names_its_error(cx: &mut TestAppConte
     );
 }
 
+/// An old password-locked key (`OsServices::device_key` answered `None`)
+/// reaches the Unlock screen with its password field and its Unlock
+/// button, never "Opening this device's key…" with no button
+/// (`Account::device_key_answered` is the one place that says so).
+#[gpui_kit::test]
+fn an_old_password_key_reaches_unlock_with_its_button(cx: &mut TestAppContext) {
+    let mut seed = Seed::boot();
+    seed.screen = Screen::Unlock { awaiting: false };
+    let (view, mut native) = open(seed, cx);
+    let entities = entities(&view, &mut native);
+    native.update(|_, cx| {
+        entities
+            .account
+            .update(cx, |account, cx| account.device_key_answered(Ok(None), cx))
+    });
+    let nodes = native.update(draw);
+    find(&nodes, "Button", "Unlock");
+    find(&nodes, "PasswordInput", "Password");
+    assert!(
+        !nodes.to_string().contains("Opening this device"),
+        "the key screen still waits: {nodes}"
+    );
+}
+
 #[gpui_kit::test]
 fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContext) {
     let mut seed = Seed::boot();
@@ -680,6 +704,7 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
         in_front: false,
         burst: 6,
         views: [("chat".to_owned(), Permission::Silent)].into(),
+        unasked: None,
     };
     let now = crate::runtime::notify::wall();
     let post = |title: &str, tag: &str| view_wire::methods::Notification {
@@ -687,6 +712,7 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
         body: "@grace look".into(),
         tag: tag.into(),
         link: "duck://chat/design".into(),
+        ..Default::default()
     };
     {
         let mut center = center.lock();

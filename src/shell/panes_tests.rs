@@ -87,7 +87,8 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
             "missing {id}: {nodes}"
         );
     }
-    for expected in 2..=layout::MAX_PANES {
+    const MANY: usize = 12;
+    for expected in 2..=MANY {
         native.update(|window, cx| press("pane/0/split", window, cx));
         native.update(|window, cx| {
             draw(window, cx);
@@ -103,14 +104,14 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
             .find(|node| node["id"] == "console:pane/0/split")
             .unwrap();
         assert!(
-            split["state"]
+            !split["state"]
                 .as_array()
-                .unwrap()
-                .iter()
+                .into_iter()
+                .flatten()
                 .any(|state| state == "disabled")
         );
         press("pane/0/split", window, cx);
-        assert_eq!(view.read(cx).layout(cx).panes.len(), layout::MAX_PANES);
+        assert_eq!(view.read(cx).layout(cx).panes.len(), MANY + 1);
     });
     let instance = native.update(|_, cx| view.read(cx).layout(cx).panes[0].instance);
     // the pane leaves for a window of its own, which `Windows` opens
@@ -118,7 +119,7 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
     native.run_until_parked();
     let (popped_key, popped_handle, popped) = popped(&app, key, &mut native);
     native.update(|_, cx| {
-        assert_eq!(view.read(cx).layout(cx).panes.len(), layout::MAX_PANES - 1);
+        assert_eq!(view.read(cx).layout(cx).panes.len(), MANY);
         assert_eq!(popped.read(cx).layout(cx).panes[0].instance, instance);
     });
     native.update(|_, cx| {
@@ -129,11 +130,8 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
     native.run_until_parked();
     native.update(|window, cx| {
         draw(window, cx);
-        assert_eq!(view.read(cx).layout(cx).panes.len(), layout::MAX_PANES);
-        assert_eq!(
-            view.read(cx).layout(cx).panes[layout::MAX_PANES - 1].instance,
-            instance
-        );
+        assert_eq!(view.read(cx).layout(cx).panes.len(), MANY + 1);
+        assert_eq!(view.read(cx).layout(cx).panes[MANY].instance, instance);
         assert!(popped.read(cx).layout(cx).panes.is_empty());
         // its window went with it, and `Windows` heard so
         assert!(
@@ -141,7 +139,7 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
             "the pop-out's window is still listed"
         );
     });
-    for remaining in (0..layout::MAX_PANES).rev() {
+    for remaining in (0..=MANY).rev() {
         native.update(|window, cx| press("pane/0/close", window, cx));
         native.update(|window, cx| {
             draw(window, cx);
@@ -1057,6 +1055,7 @@ fn a_bell_row_opens_the_notices_program(cx: &mut TestAppContext) {
             body: "From the bell".into(),
             tag: String::new(),
             link: String::new(),
+            ..Default::default()
         };
         let _ = notifications.center().lock().post(
             &settings,

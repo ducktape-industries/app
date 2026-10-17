@@ -2,8 +2,8 @@
 # Sign a staged Ducktape.app inside-out, image it as a DMG, sign the DMG and —
 # with all three DUCKTAPE_NOTARY_* set — notarize it and staple the DMG and the
 # bundle. bundle-app-macos.sh's local path signs through here, and so does
-# release.yml's macos-sign job: main's copy of this script over the build
-# job's bundle, so the commit being built never runs beside the certificate.
+# release.yml's macos-sign job, over the build job's bundle: nothing is
+# built beside the certificate.
 #
 #   ops/sign-app-macos.sh <Ducktape.app> <out.dmg>
 #

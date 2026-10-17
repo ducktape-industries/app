@@ -162,6 +162,7 @@ fn a_start_with_a_staged_release_execs_it_in_the_same_process_with_its_link() {
         display: "0.0.0+next".into(),
         channel: "stable".into(),
         refused: None,
+        asked: false,
     }));
     let (pid, record) = rig.start(&["duck://garage/chat/dm 1", "--flag"]);
     assert_eq!(record, format!("{pid} duck://garage/chat/dm 1 --flag"));
