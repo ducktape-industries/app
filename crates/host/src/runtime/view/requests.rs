@@ -164,6 +164,7 @@ impl View {
         notify::center().lock().flush();
         for id in std::mem::take(&mut self.frame.cancels) {
             self.clipboard.cancel(id);
+            self.picker.cancel(id);
             self.widget_commands.retain(|(request, _)| *request != id);
             if self.props_subscription == Some(id) {
                 self.props_subscription = None;

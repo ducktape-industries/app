@@ -151,7 +151,7 @@ pub fn row(
     hint: Option<SharedString>,
     palette: Palette,
 ) -> Stateful<Div> {
-    let label = label.into();
+    let (id, label) = (id.into(), label.into());
     let icon = match icon {
         Some(icon) => svg()
             .path(icon)
@@ -165,8 +165,9 @@ pub fn row(
             .into_any_element(),
     };
     let mut row = div()
-        .id(id.into())
+        .id(id.clone())
         .control(Role::Button, label.clone())
+        .debug_selector(move || id.to_string())
         .h(px(look::SHEET_ROW))
         .flex()
         .items_center()

@@ -218,6 +218,9 @@ pub(super) struct View {
     /// the kernel opened for it: retired with the cancel, and with the view.
     pub tasks: Vec<(u64, kernel::NodeTask)>,
     pub clipboard: clipboard::Clipboard,
+    /// The `file.pick`s asked since the last turn, the picker opened for
+    /// each after it; and the files of the latest pick, held open.
+    pub picker: picker::Picker,
     /// The view's `clock.ticks` subscriptions: the period it asked for and
     /// the instant its next item is due. A view has no clock of its own,
     /// so periodic view subscriptions use this list — driven from the window

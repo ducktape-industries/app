@@ -64,12 +64,17 @@ gpui-pre-ios.workspace = true
 # the log on the simulator's console (Android's goes to logcat through gm's
 # `android_logger`, which tracing's `log` records reach)
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+# the system's version App settings names (`os::phone`); gpui_ios's own
+# Foundation bindings
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSProcessInfo"] }
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
 ducktape-host = { path = "../host", features = ["wasmtime"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
-gpui-pre-mobile.workspace = true
+# `device_info`: the model and the system's version App settings names
+# (`os::android::phone`), read from the properties Android's `Build` reads
+gpui-pre-mobile = { workspace = true, features = ["device_info"] }
 # gpui-mobile's own JNI and NDK versions: one of each in the graph
 jni = "0.22"
 # gm's NativeActivity glue, which names `android_main` (os/android/jni.rs)

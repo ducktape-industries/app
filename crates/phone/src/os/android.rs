@@ -50,6 +50,20 @@ pub fn insets(window: &Window) -> WindowInsets {
     }
 }
 
+/// This phone as App settings names it (Expo `platform.phone`, React
+/// Native's `Build.MODEL` and `Build.VERSION.RELEASE`): the model and the
+/// system's version, from the properties those two read.
+pub fn phone() -> String {
+    let info = gpui_mobile::packages::device_info::get_device_info().ok();
+    let (model, release) = info.map_or_else(Default::default, |info| (info.model, info.os_version));
+    let model = if model.is_empty() {
+        "Android".to_owned()
+    } else {
+        model
+    };
+    format!("{model} · Android {release}")
+}
+
 /// Raises the keyboard the focused field asks for, or lowers it.
 pub fn soft_keyboard(want: SoftKeyboard) {
     use gpui_kit::VirtualKeyboard as Asked;

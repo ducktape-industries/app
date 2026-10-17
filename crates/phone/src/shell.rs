@@ -7,11 +7,13 @@
 //! The window draws the join ([`join`]) until the phone is on a network
 //! with an account, then the [`stack`]: a tab root (Home, Open) under the
 //! tab bar, or the program on top, its view seated full screen under the
-//! capsule; a program's page (its capabilities, from the capsule's About)
-//! over either; a sheet over all (the account menu, the capsule's menu,
-//! the consent sheet). Each program opened keeps one seat, placed with the
-//! safe body and in front only while it is on top and the window is: a
-//! program left stays warm where it was (wasm-mobile SPEC §7.1).
+//! capsule; the shell's own pages over either (a program's page, its
+//! capabilities, from the capsule's About; App settings and Switch network
+//! from the account menu); a sheet over all (the account menu, the
+//! capsule's menu, the consent sheet). Each program opened keeps one seat,
+//! placed with the safe body and in front only while it is on top and the
+//! window is: a program left stays warm where it was (wasm-mobile SPEC
+//! §7.1).
 //!
 //! It moves as the Expo build's moves (`ducktape_host::motion`): a program
 //! (or its page) pushed slides in from the right over the screen it left,
@@ -26,11 +28,12 @@ mod home;
 mod join;
 mod look;
 mod running;
+mod settings;
 mod sheet;
 pub mod stack;
 
 use ducktape_host::a11y::Control as _;
-use ducktape_host::contract::{Boot, OsServices, Signal, SoftKeyboard};
+use ducktape_host::contract::{Boot, KeyStorage, OsServices, Signal, SoftKeyboard};
 use ducktape_host::motion::{self, Shown, Slide, Tween};
 use ducktape_host::runtime::notify::{Opened as Banner, Permission};
 use ducktape_host::runtime::{Back, Placed, consent};
@@ -301,13 +304,16 @@ fn open_door(cx: &mut App) {
     .detach();
 }
 
-/// What the stack shows full screen: a tab root, the program on top, or a
-/// program's page over it.
+/// What the stack shows full screen: a tab root, the program on top, or
+/// one of the shell's own pages pushed over them (a program's page, App
+/// settings, Switch network).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Page {
     Root(Tab),
     Program(&'static str),
     About(&'static str),
+    Settings,
+    Switch,
 }
 
 impl Page {
@@ -319,6 +325,8 @@ impl Page {
             Page::Root(Tab::Open) => "screen::open".into(),
             Page::Program(program) => format!("screen::program/{program}").into(),
             Page::About(program) => format!("screen::about/{program}").into(),
+            Page::Settings => "screen::settings".into(),
+            Page::Switch => "screen::switch".into(),
         }
     }
 
@@ -326,8 +334,13 @@ impl Page {
     fn program(self) -> Option<&'static str> {
         match self {
             Page::Program(program) => Some(program),
-            Page::Root(_) | Page::About(_) => None,
+            Page::Root(_) | Page::About(_) | Page::Settings | Page::Switch => None,
         }
+    }
+
+    /// One of the shell's own pages, pushed over the stack.
+    fn pushed(self) -> bool {
+        matches!(self, Page::About(_) | Page::Settings | Page::Switch)
     }
 }
 
@@ -355,8 +368,13 @@ pub struct Root {
     /// An alert over everything but the consent sheet (Expo `Alert`): its
     /// title and its sentence, dismissed by OK or Back.
     alert: Option<(&'static str, String)>,
-    /// The program whose page is over the stack.
-    about: Option<&'static str>,
+    /// The shell's own pages over the stack, the top last: a program's
+    /// page, App settings, Switch network (over App settings, or alone).
+    pages: Vec<Page>,
+    /// Where this phone's key is kept, as the store said when App settings
+    /// opened (Expo reads it once per keyring): its words, or why the store
+    /// did not say.
+    storage: Option<Result<KeyStorage, String>>,
     /// The title each seat's view gave its window, by its instance.
     titles: BTreeMap<u64, String>,
     /// What `Seats` was last told: each open program's place, and the seat
@@ -408,11 +426,19 @@ impl Root {
             cx.subscribe(&shared.seats, |root, _, event: &SeatsEvent, cx| {
                 root.seats_said(event, cx)
             }),
-            cx.subscribe(&shared.session, |root, _, event: &SessionEvent, cx| {
-                if let SessionEvent::LeftNetwork = event {
-                    root.left_network(cx);
-                }
-            }),
+            cx.subscribe(
+                &shared.session,
+                |root, _, event: &SessionEvent, cx| match event {
+                    SessionEvent::LeftNetwork => root.left_network(cx),
+                    // the same chain answered (another chain left it first);
+                    // only the host's `connect_answered` sends it today, a
+                    // new sender would pop Switch network too
+                    SessionEvent::Connected => root.switched(cx),
+                    // only the host's `connect_failed` sends it (a reach
+                    // failed while on a network): taken as the switch's
+                    SessionEvent::Toast(said) => root.switch_failed(said.clone(), cx),
+                },
+            ),
             cx.subscribe_in(&search, window, |_, _, event: &InputEvent, _, cx| {
                 if let InputEvent::Change = event {
                     cx.notify();
@@ -439,6 +465,7 @@ impl Root {
         subscriptions.extend(crate::os::follow(window, cx));
         gpui_kit::component::Theme::sync_system_appearance(Some(window), cx);
         let join = cx.new(|cx| join::Join::new(shared.clone(), window, cx));
+        subscriptions.push(cx.subscribe(&join, |root, _, _: &join::Stayed, cx| root.switched(cx)));
         Self {
             shared,
             join,
@@ -446,7 +473,8 @@ impl Root {
             sheet: None,
             consent: None,
             alert: None,
-            about: None,
+            pages: Vec::new(),
+            storage: None,
             titles: BTreeMap::new(),
             placed: Default::default(),
             waiting: Vec::new(),
@@ -482,7 +510,7 @@ impl Root {
     fn open(&mut self, program: &'static str, cx: &mut Context<Self>) -> u64 {
         self.sheet = None;
         let from = self.page(cx);
-        self.about = None;
+        self.pages.clear();
         let instance = self.stack.update(cx, |stack, cx| {
             let instance = stack.push(program);
             cx.notify();
@@ -492,43 +520,94 @@ impl Root {
         instance
     }
 
-    /// `program`'s page pushed over the stack.
-    fn show_about(&mut self, program: &'static str, cx: &mut Context<Self>) {
+    /// One of the shell's own pages pushed over the screen, the sheet it
+    /// came from closed.
+    fn push_page(&mut self, page: Page, cx: &mut Context<Self>) {
         self.sheet = None;
         let from = self.page(cx);
-        self.about = Some(program);
+        self.pages.push(page);
         self.moved(from, false, cx);
         cx.notify();
     }
 
-    /// The program's page popped.
-    fn close_about(&mut self, cx: &mut Context<Self>) {
+    /// The shell's page on top popped.
+    fn pop_page(&mut self, cx: &mut Context<Self>) {
         let from = self.page(cx);
-        self.about = None;
+        self.pages.pop();
         self.moved(from, true, cx);
         cx.notify();
     }
 
-    /// What the stack shows now: a program's page (while the network lists
-    /// it), else the program on top, else the tab's root.
+    /// `program`'s page pushed over the stack.
+    fn show_about(&mut self, program: &'static str, cx: &mut Context<Self>) {
+        self.push_page(Page::About(program), cx);
+    }
+
+    /// App settings pushed (Expo `you.tsx`'s and `settings.tsx`'s), where
+    /// this phone's key is kept read once from the store as it opens.
+    fn show_settings(&mut self, cx: &mut Context<Self>) {
+        let keyring = self.shared.account.read(cx).keyring().to_owned();
+        self.storage = (!keyring.is_empty()).then(|| {
+            ducktape_host::contract::os()
+                .key_storage(&keyring)
+                .map_err(|refused| refused.sentence())
+        });
+        self.push_page(Page::Settings, cx);
+    }
+
+    /// Switch network pushed, its field holding the last node reached.
+    fn show_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.join
+            .update(cx, |join, cx| join.open_switch(window, cx));
+        self.push_page(Page::Switch, cx);
+    }
+
+    /// The switch landed on the chain in hand (another node of it, or the
+    /// node in hand itself): Switch network goes back where the reader
+    /// was. Another chain left the network first, which took the page.
+    fn switched(&mut self, cx: &mut Context<Self>) {
+        if self.page(cx) == Page::Switch {
+            self.pop_page(cx);
+        }
+    }
+
+    /// The switch did not land: on Switch network its words go under the
+    /// field (Expo 75), not over the screen in the notice the host put up.
+    fn switch_failed(&mut self, said: String, cx: &mut Context<Self>) {
+        if self.page(cx) != Page::Switch {
+            return;
+        }
+        self.join
+            .update(cx, |join, cx| join.switch_failed(said, cx));
+        // deferred: the notice is down after the host's `Toast` put it up,
+        // whichever of the two heard the session first
+        let toast = self.shared.toast.clone();
+        cx.defer(move |cx| toast.update(cx, |toast, cx| toast.dismiss(cx)));
+    }
+
+    /// What the stack shows now: the shell's page on top (a program's page
+    /// while the network lists it), else the program on top, else the
+    /// tab's root.
     fn page(&self, cx: &App) -> Page {
-        if let Some(program) = self
-            .about
-            .filter(|program| home::row_of(&self.shared, program, cx).is_some())
-        {
-            return Page::About(program);
+        let listed = |page: &&Page| match page {
+            Page::About(program) => home::row_of(&self.shared, program, cx).is_some(),
+            _ => true,
+        };
+        if let Some(&page) = self.pages.last().filter(listed) {
+            return page;
         }
         let stack = self.stack.read(cx);
         stack.top().map_or(Page::Root(stack.tab()), Page::Program)
     }
 
-    /// The screen a pop would show: the one under the page or the program
-    /// on top; `None` on a root.
+    /// The screen a pop would show: the page under the shell's page on
+    /// top, else the one under the program on top; `None` on a root.
     fn under(&self, cx: &App) -> Option<Page> {
         let stack = self.stack.read(cx);
         let root = Page::Root(stack.tab());
-        if let Page::About(_) = self.page(cx) {
-            return Some(stack.top().map_or(root, Page::Program));
+        if self.page(cx).pushed() {
+            let below = self.pages.len().checked_sub(2).map(|at| self.pages[at]);
+            return Some(below.unwrap_or_else(|| stack.top().map_or(root, Page::Program)));
         }
         stack.top()?;
         Some(stack.under().map_or(root, Page::Program))
@@ -584,7 +663,7 @@ impl Root {
         if covered || joining || motion::reduced(cx) || self.under(cx).is_none() {
             return false;
         }
-        matches!(self.page(cx), Page::About(_))
+        self.page(cx).pushed()
             || self
                 .top_seat(cx)
                 .is_none_or(|seat| !seat.read(cx).hears_back())
@@ -697,8 +776,8 @@ impl Root {
     /// Back (Android's button, iOS's edge): on the join, the code goes back
     /// to the address on Android (iOS's swipe does nothing there) and the
     /// address is the OS's own; else the consent
-    /// sheet's ask is refused, an alert dismissed, a sheet closed, a
-    /// program's page closed, each first; else the view on top goes back
+    /// sheet's ask is refused, an alert dismissed, a sheet closed, the
+    /// shell's page on top popped, each first; else the view on top goes back
     /// inside itself when its last frame's root asks to hear it; else the
     /// stack pops; at Home, the OS's own (SPEC §7.6). A drag under way
     /// that this Back does not pop springs back.
@@ -728,8 +807,8 @@ impl Root {
         if self.sheet.is_some() {
             return self.close_sheet(cx);
         }
-        if self.about.is_some() {
-            return self.close_about(cx);
+        if !self.pages.is_empty() {
+            return self.pop_page(cx);
         }
         if let Some(seat) = self.top_seat(cx)
             && seat.update(cx, |seat, cx| seat.back(cx)) == Back::Heard
@@ -769,7 +848,7 @@ impl Root {
         self.sheet = None;
         self.alert = None;
         self.titles.clear();
-        self.about = None;
+        self.pages.clear();
         self.waiting.clear();
         cx.notify();
     }
@@ -912,11 +991,11 @@ impl Root {
         .and_then(Page::program);
         let stack = self.stack.read(cx);
         let left = left.and_then(|program| stack.instance(program));
-        // a program's page covers the program on top
+        // the shell's pages cover the program on top
         let top = stack
             .top()
             .and_then(|program| stack.instance(program))
-            .filter(|_| self.about.is_none());
+            .filter(|_| self.pages.is_empty());
         let wanted: BTreeMap<u64, Place> = stack
             .open()
             .iter()
@@ -1078,8 +1157,9 @@ impl Root {
             .into_any_element()
     }
 
-    /// The account menu (the shell boards' 40): who is reading, and the
-    /// account's own program (the `programs` view), opened by name.
+    /// The account menu (the shell boards' 40, Expo `you.tsx`): who is
+    /// reading, the account's own program (the `programs` view) opened by
+    /// name, App settings and Switch network.
     fn account_menu(&mut self, palette: look::Palette, cx: &mut Context<Self>) -> AnyElement {
         let network = self.shared.session.read(cx).get().network.clone();
         // Expo `you.tsx`: the account's name, else "No account yet"; the
@@ -1128,7 +1208,27 @@ impl Root {
                 })),
             );
         }
-        menu.into_any_element()
+        menu.child(
+            sheet::row(
+                "sheet/settings",
+                Some("icons/settings.svg"),
+                "App settings",
+                Some("node · this phone · about".into()),
+                palette,
+            )
+            .on_click(cx.listener(|root, _, _, cx| root.show_settings(cx))),
+        )
+        .child(
+            sheet::row(
+                "sheet/switch",
+                Some("icons/refresh-cw.svg"),
+                "Switch network",
+                None,
+                palette,
+            )
+            .on_click(cx.listener(|root, _, window, cx| root.show_switch(window, cx))),
+        )
+        .into_any_element()
     }
 
     /// The capsule's menu (the shell boards' 30): the program, then its
@@ -1323,6 +1423,22 @@ impl Root {
                     about::page(&row, listing, palette, cx)
                 });
                 let body = safe().flex().flex_col().pb(edges.bottom).children(page);
+                (layer.child(body), edges.bottom + px(look::gap::LG))
+            }
+            Page::Settings => {
+                let page = settings::page(&self.shared, self.storage.as_ref(), palette, cx);
+                let body = safe().flex().flex_col().pb(edges.bottom).child(page);
+                (layer.child(body), edges.bottom + px(look::gap::LG))
+            }
+            Page::Switch => {
+                let back = cx.listener(|root, _, _, cx| root.pop_page(cx));
+                let header = look::header("switch/back", back, palette);
+                let body = safe()
+                    .flex()
+                    .flex_col()
+                    .pb(edges.bottom)
+                    .child(header)
+                    .child(self.join.clone());
                 (layer.child(body), edges.bottom + px(look::gap::LG))
             }
             Page::Program(program) => {
@@ -1819,6 +1935,138 @@ mod tests {
         assert!(frames(cx) > 0, "a toast coming asked for no frame");
         run_out(cx);
         assert_eq!(frames(cx), 0, "a toast up asked for a frame");
+    }
+
+    /// The account sheet's App settings and Switch network close it and
+    /// push their pages over the screen it was on (Expo `you.tsx`'s
+    /// `leave`).
+    #[gpui_kit::test]
+    fn the_account_sheets_rows_open_app_settings_and_switch_network(cx: &mut TestAppContext) {
+        let (root, _, cx) = phone(cx);
+        for (row, page) in [
+            ("sheet/settings", Page::Settings),
+            ("sheet/switch", Page::Switch),
+        ] {
+            root.update(cx, |root, cx| root.account_sheet(cx));
+            run_out(cx);
+            let at = cx.debug_bounds(row).expect("the row drawn");
+            cx.simulate_click(at.center(), gpui_kit::Modifiers::none());
+            cx.run_until_parked();
+            let shown = root.read_with(cx, |root, cx| (root.sheet, root.page(cx)));
+            assert_eq!(shown, (None, page), "{row}");
+            run_out(cx);
+            root.update(cx, |root, cx| root.back(cx));
+            run_out(cx);
+        }
+    }
+
+    /// Back on Switch network closes an alert over it first, as on any
+    /// page, then pops it, to App settings when it came from there, then
+    /// App settings off to where the sheet was: never the address screen's
+    /// own Back, which puts the app behind the others.
+    #[gpui_kit::test]
+    fn back_on_switch_network_closes_an_alert_first_then_pops_it_and_never_leaves_the_app(
+        cx: &mut TestAppContext,
+    ) {
+        let (root, _, cx) = phone(cx);
+        root.update(cx, |root, cx| root.show_settings(cx));
+        run_out(cx);
+        cx.update(|window, cx| root.update(cx, |root, cx| root.show_switch(window, cx)));
+        run_out(cx);
+        let pages = |cx: &mut VisualTestContext| root.read_with(cx, |root, _| root.pages.clone());
+        assert_eq!(pages(cx), [Page::Settings, Page::Switch]);
+        root.update(cx, |root, cx| root.alert("Another network", "x".into(), cx));
+        root.update(cx, |root, cx| root.back(cx));
+        let alert = root.read_with(cx, |root, _| root.alert.is_some());
+        assert_eq!(
+            (alert, pages(cx)),
+            (false, vec![Page::Settings, Page::Switch]),
+            "Back did not close the alert alone"
+        );
+        run_out(cx);
+        root.update(cx, |root, cx| root.back(cx));
+        assert_eq!(
+            pages(cx),
+            [Page::Settings],
+            "Back did not pop Switch network"
+        );
+        run_out(cx);
+        root.update(cx, |root, cx| root.back(cx));
+        assert_eq!(pages(cx), [], "Back did not pop App settings");
+        let page = root.read_with(cx, |root, cx| root.page(cx));
+        assert_eq!(page, Page::Root(Tab::Home));
+    }
+
+    /// On a network, Continue on the node in hand (the field holds it) pops
+    /// Switch network at once; a switch whose node does not answer says why
+    /// under the field, not in a notice over it, and the page stays; one
+    /// the chain in hand answers pops the page back where the reader was.
+    #[gpui_kit::test]
+    fn a_switch_that_stays_or_lands_pops_the_page_and_a_failed_one_says_why_under_the_field(
+        cx: &mut TestAppContext,
+    ) {
+        use ducktape_host::backend::RecentEndpoint;
+        use ducktape_host::session::SessionState;
+        use ducktape_host::session::tests::{source, status};
+        use join::tests::until;
+        const ORIGIN: &str = "http://127.0.0.1:1";
+        let _seat = ducktape_host::backend::seat_serial();
+        let (root, _, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        shared.account.update(cx, |account, _| {
+            account.seed_network(ORIGIN, "testkit", "testkit")
+        });
+        let connected = SessionState {
+            connected: true,
+            connected_rpc: ORIGIN.into(),
+            network: "testkit".into(),
+            recent_endpoints: vec![RecentEndpoint {
+                url: ORIGIN.into(),
+                network: "testkit".into(),
+                ..RecentEndpoint::default()
+            }],
+            ..SessionState::default()
+        };
+        shared
+            .session
+            .update(cx, |session, cx| session.seed(connected, cx));
+        let switch = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| root.update(cx, |root, cx| root.show_switch(window, cx)));
+            run_out(cx);
+        };
+        switch(cx);
+        let at = cx.debug_bounds("join/connect").expect("Continue drawn");
+        cx.simulate_click(at.center(), gpui_kit::Modifiers::none());
+        cx.run_until_parked();
+        let pages = root.read_with(cx, |root, _| root.pages.clone());
+        assert_eq!(pages, [], "Continue on the node in hand stayed on the page");
+        switch(cx);
+
+        let (silent, _) =
+            source(|_| Err("error sending request for url (http://127.0.0.1:9/v1/status)".into()));
+        shared.session.update(cx, |session, cx| {
+            session.connect_through("http://127.0.0.1:9".into(), silent, cx)
+        });
+        let join = root.read_with(cx, |root, _| root.join.clone());
+        until(cx, |cx| {
+            join.read_with(cx, |join, _| join.refused.is_some())
+        });
+        let said = join.read_with(cx, |join, _| join.refused.clone().unwrap_or_default());
+        assert!(
+            said.starts_with("Nothing answered at 127.0.0.1:9."),
+            "{said}"
+        );
+        let notice = shared.toast.read_with(cx, |toast, _| toast.get().clone());
+        assert_eq!(notice, "", "the failure was also said over the page");
+        assert_eq!(root.read_with(cx, |root, cx| root.page(cx)), Page::Switch);
+
+        let (answers, _) = source(|_| Ok(status(1)));
+        shared.session.update(cx, |session, cx| {
+            session.connect_through("http://127.0.0.1:2".into(), answers, cx)
+        });
+        until(cx, |cx| root.read_with(cx, |root, _| root.pages.is_empty()));
+        let page = root.read_with(cx, |root, cx| root.page(cx));
+        assert_eq!(page, Page::Root(Tab::Home), "the switch did not land here");
     }
 
     /// The window over a phone on a network with an account (the stack, not
