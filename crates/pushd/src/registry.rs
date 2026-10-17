@@ -279,7 +279,12 @@ impl Door {
             &*self.reader,
         )
         .await
-        .map_err(|error| Refused(503, format!("the node did not answer: {error}")))?;
+        // the reply goes to the internet: the node's own words (its
+        // address among them) only to the log
+        .map_err(|error| {
+            tracing::warn!(target: "pushd", network = network.name, %error, "identity not asked");
+            Refused(503, "the network's node did not answer".into())
+        })?;
         if acts.map(|(number, _)| number) != Some(registration.account) {
             return Err(Refused(403, "the key does not act as this account".into()));
         }
@@ -294,10 +299,10 @@ impl Door {
         if !kept {
             return Err(bad("an older registration of this key and kind"));
         }
-        network
-            .devices
-            .save(&network.file)
-            .map_err(|error| Refused(500, format!("devices not saved: {error}")))?;
+        network.devices.save(&network.file).map_err(|error| {
+            tracing::warn!(target: "pushd", network = network.name, %error, "devices not saved");
+            Refused(500, "the registration was not kept".into())
+        })?;
         Ok(())
     }
 
