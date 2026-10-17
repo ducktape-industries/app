@@ -11,13 +11,14 @@
 //! moved. A pointer window never moves, and its frames carry no mark.
 //!
 //! The page a push covered stays kept, at its depth, until a pop reaches
-//! it: iOS's edge swipe (the shell routes it here) drags the page on top
+//! it: iOS's swipe back (the shell routes it here) drags the page on top
 //! off the page kept under it, under the finger, as UIKit's stack does.
 //! Let go short, the page slides back and the view hears nothing. Let go
 //! as a Back the view hears, the page holds where the finger left it until
 //! the view answers: a shallower page pops from there, any other answer
-//! slides it back. The page under the finger is as it was left; the view's
-//! own frame takes its place on the pop.
+//! slides it back. Either starts at the speed the finger let go at. The
+//! page under the finger is as it was left; the view's own frame takes its
+//! place on the pop.
 use super::*;
 use crate::motion::{self, Motion, Slide, Tween};
 
@@ -34,17 +35,22 @@ pub(super) struct PageMotion {
     motion: Motion,
     /// Where it starts, 0 to 1: where a finger let the page go, else 0.
     from: f32,
+    /// How fast it starts, its whole way per second: the finger's speed as
+    /// it let go, else 0.
+    velocity: f32,
     /// From the first frame that draws it, not the frame's arrival: a new
     /// page slow to lay out still moves its whole way.
     tween: Option<Tween>,
     slide: Slide,
 }
 
-/// iOS's edge swipe on the page on top.
+/// iOS's swipe back on the page on top.
 #[derive(Clone, Copy)]
 pub(super) struct Finger {
     /// How far the page is dragged off, a share of the width.
     pub(super) progress: f32,
+    /// How fast it moves off, shares of the width per second.
+    pub(super) speed: f32,
     /// Let go as a Back the view hears: held there for its answer.
     pub(super) back: bool,
 }
@@ -101,9 +107,9 @@ impl ViewTree {
         }
         let pop = to < depth;
         self.kept.retain(|kept, _| *kept < to.min(depth));
-        let start = match (pop, self.finger.take()) {
-            (true, Some(finger)) => finger.progress,
-            _ => 0.,
+        let (start, velocity) = match (pop, self.finger.take()) {
+            (true, Some(finger)) => (finger.progress, finger.speed),
+            _ => (0., 0.),
         };
         let mut leaving = None;
         commands::walk_authored_paths(&self.root, None, &mut Vec::new(), &mut |node, path| {
@@ -171,18 +177,19 @@ impl ViewTree {
             pop,
             motion,
             from: start,
+            velocity,
             tween: None,
             slide,
         });
     }
 
-    /// iOS's edge swipe, `progress` (a share of the width) in: the page on
-    /// top follows the finger off the page kept under it, and the finger
-    /// moves it (no frame is asked for). A swipe begins only over a still
-    /// page above the view's root with a page kept under it, no sheet or
-    /// dialog over it, and motion not reduced. Whether the page follows:
-    /// else the swipe is the shell's own, and its release a Back as ever.
-    pub fn drag_page(&mut self, progress: f32, cx: &mut Context<Self>) -> bool {
+    /// iOS's swipe back, `progress` (a share of the width) in and moving
+    /// at `speed` (shares per second): the page on top follows the finger
+    /// off the page kept under it, and the finger moves it (no frame is
+    /// asked for). A swipe begins only where [`Self::can_drag_page`] says.
+    /// Whether the page follows: else the swipe is the shell's own, and its
+    /// release a Back as ever.
+    pub fn drag_page(&mut self, progress: f32, speed: f32, cx: &mut Context<Self>) -> bool {
         let progress = progress.clamp(0., 1.);
         match self.finger {
             // let go already, waiting for the view's answer
@@ -196,10 +203,19 @@ impl ViewTree {
         }
         self.finger = Some(Finger {
             progress,
+            speed,
             back: false,
         });
         cx.notify();
         true
+    }
+
+    /// Whether a swipe back beginning now drags the page on top: no finger
+    /// holds it (one let go is still waiting for the view's answer), and
+    /// the page is still, above the view's root with a page kept under it,
+    /// with no sheet or dialog over it and motion not reduced.
+    pub fn can_drag_page(&self, cx: &App) -> bool {
+        self.finger.is_none() && self.can_follow(cx)
     }
 
     fn can_follow(&self, cx: &App) -> bool {
@@ -245,7 +261,8 @@ impl ViewTree {
     }
 
     /// The page under the finger goes back into place over the one kept
-    /// under it, from where the finger left it, as a push's rest.
+    /// under it, from where the finger left it and at its speed, as a
+    /// push's rest.
     fn slide_back(&mut self, cx: &mut Context<Self>) {
         let Some(finger) = self.finger.take() else {
             return;
@@ -261,6 +278,8 @@ impl ViewTree {
             pop: false,
             motion,
             from: 1. - finger.progress,
+            // back into place is the other way to the finger's
+            velocity: -finger.speed,
             tween: None,
             slide,
         });
@@ -285,9 +304,9 @@ impl ViewTree {
         // where the screens are, the other page, and whether it is the one
         // on top
         let (placed, other, over) = if let Some(moving) = self.page_motion.as_mut() {
-            let tween = *moving
-                .tween
-                .get_or_insert_with(|| Tween::between(moving.from, 1., moving.motion, cx));
+            let tween = *moving.tween.get_or_insert_with(|| {
+                Tween::thrown(moving.from, 1., moving.velocity, moving.motion, cx)
+            });
             let now = motion::now(cx);
             if tween.done(now) {
                 self.page_motion = None;
@@ -346,6 +365,13 @@ impl ViewTree {
     #[cfg(any(test, feature = "test-support"))]
     pub fn page_moving(&self) -> bool {
         self.page_motion.is_some()
+    }
+
+    /// How fast the page change under way started, its whole way per
+    /// second.
+    #[cfg(test)]
+    pub(super) fn page_velocity(&self) -> Option<f32> {
+        self.page_motion.as_ref().map(|moving| moving.velocity)
     }
 
     /// The tree the page going is drawn in, while it moves.

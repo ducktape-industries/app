@@ -318,15 +318,22 @@ pub enum Signal {
     Lifecycle(AppLifecyclePhase),
     /// iOS `didReceiveMemoryWarning` / Android `onTrimMemory`.
     MemoryWarning,
-    /// Android BACK from the Activity's dispatcher; iOS from the capsule
-    /// or the edge pan.
+    /// Android BACK from the Activity's dispatcher.
     Back,
-    /// iOS's left-edge pan under way, its finger this many points in from
-    /// where it started: the shell lets the screen on top follow it. A
-    /// release that goes back is `Back`; one that does not,
-    /// `BackDragCancelled`.
-    BackDrag(f32),
-    /// The edge pan let go without going back.
+    /// iOS's swipe back under way (from the left edge, or from anywhere
+    /// the shell lets one begin): the shell lets the screen on top follow
+    /// it.
+    BackDrag {
+        /// How far its finger is, in points, from where it started.
+        x: f32,
+        /// How fast it moves, in points per second to the right.
+        speed: f32,
+    },
+    /// That swipe let go where and as fast as its last `BackDrag` says: the
+    /// shell judges whether it goes back.
+    BackLetGo,
+    /// That swipe ended without going back (UIKit cancelled it, or
+    /// something it does not reach was over the screen).
     BackDragCancelled,
     /// The insets changed: re-read `OsServices::insets`, re-place.
     InsetsChanged,

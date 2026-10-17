@@ -15,20 +15,25 @@ enum App {
     let files = FileManager.default
     let documents = files.urls(for: .documentDirectory, in: .userDomainMask)[0].path
     let caches = files.urls(for: .cachesDirectory, in: .userDomainMask)[0].path
-    EdgeBack.shared.follow()
+    SwipeBack.shared.follow()
     Ring.shared.follow()
     ducktape_phone_main(documents, caches)
   }
 }
 
-/// Back on iOS (SPEC §7.6): a swipe in from the left edge, as UIKit's own stacks take it. gpui_ios hands the app raw
-/// touches and no edge gesture, so the launcher puts one on gpui's window when it becomes key and tells Rust: where the
-/// finger is while it moves (`ducktape_phone_back_drag`, the screen on top follows it), then Back
-/// (`ducktape_phone_back`) or not (`ducktape_phone_back_cancel`). The touches it takes are cancelled for the view under
-/// it.
-final class EdgeBack: NSObject {
-  static let shared = EdgeBack()
+/// Back on iOS (SPEC §7.6): a swipe to the right, as iOS 26's own stacks take it: in from the left edge, over anything,
+/// and from anywhere else on the screen when Rust says it begins there (`ducktape_phone_back_begins`: something to go
+/// back to, nothing over the screen, nothing under the finger that takes a sideways drag itself, the move clearly
+/// rightward). gpui_ios hands the app raw touches and no gesture of the system's, so the launcher puts both pans on
+/// gpui's window when it becomes key, the edge's first: the other waits for it to fail, so the edge always wins. Either
+/// tells Rust where the finger is and how fast it moves while it moves (`ducktape_phone_back_drag`, the screen on top
+/// follows it), then that it let go (`ducktape_phone_back_let_go`: Rust judges Back) or ended
+/// (`ducktape_phone_back_cancel`). The touches a swipe takes are cancelled for the view under it.
+final class SwipeBack: NSObject, UIGestureRecognizerDelegate {
+  static let shared = SwipeBack()
   private var observer: NSObjectProtocol?
+  /// When the finger the swipe from anywhere would follow came down, on the touches' clock.
+  private var down: TimeInterval = 0
 
   func follow() {
     observer = NotificationCenter.default.addObserver(
@@ -37,29 +42,53 @@ final class EdgeBack: NSObject {
       guard let self, let window = note.object as? UIWindow,
         !(window.gestureRecognizers ?? []).contains(where: { $0 is UIScreenEdgePanGestureRecognizer })
       else { return }
-      let pan = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(self.swiped(_:)))
-      pan.edges = .left
-      window.addGestureRecognizer(pan)
+      let edge = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(self.swiped(_:)))
+      edge.edges = .left
+      window.addGestureRecognizer(edge)
+      let anywhere = UIPanGestureRecognizer(target: self, action: #selector(self.swiped(_:)))
+      anywhere.maximumNumberOfTouches = 1
+      anywhere.delegate = self
+      anywhere.require(toFail: edge)
+      window.addGestureRecognizer(anywhere)
     }
   }
 
-  /// A swipe let go past half the width, its speed counted for 0.3 s of travel, is Back; one short of it is not
-  /// (react-native-screens' own rule, `RNSScreenStack.mm`).
-  @objc private func swiped(_ pan: UIScreenEdgePanGestureRecognizer) {
-    // a presented controller (a link's Safari view) takes its own edge swipe; the stack behind stays
-    let presented = pan.view?.window?.rootViewController?.presentedViewController != nil
-    let x = pan.translation(in: pan.view).x
+  func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+    down = touch.timestamp
+    return true
+  }
+
+  /// The swipe from anywhere, as UIKit is about to start it (at the finger's first move of a point or two): where its
+  /// finger came down, how fast it moves, how long it rested first, for Rust to judge.
+  func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
+    guard let pan = recognizer as? UIPanGestureRecognizer, let view = pan.view, !SwipeBack.presented(view) else {
+      return false
+    }
+    let at = pan.location(in: view)
+    let moved = pan.translation(in: view)
+    let moving = pan.velocity(in: view)
+    let held = ProcessInfo.processInfo.systemUptime - down
+    return ducktape_phone_back_begins(
+      Double(at.x - moved.x), Double(at.y - moved.y), Double(moving.x), Double(moving.y), held) != 0
+  }
+
+  /// A presented controller (a link's Safari view) takes its own swipe; the stack behind stays.
+  private static func presented(_ view: UIView) -> Bool {
+    view.window?.rootViewController?.presentedViewController != nil
+  }
+
+  @objc private func swiped(_ pan: UIPanGestureRecognizer) {
+    guard let view = pan.view else { return }
+    let presented = SwipeBack.presented(view)
+    let x = Double(max(pan.translation(in: view).x, 0))
+    let speed = Double(pan.velocity(in: view).x)
     switch pan.state {
     case .began, .changed:
-      if !presented { ducktape_phone_back_drag(Double(max(x, 0))) }
-    case .ended:
-      let width = pan.view?.bounds.width ?? 0
-      if !presented && x + 0.3 * pan.velocity(in: pan.view).x > width / 2 {
-        ducktape_phone_back()
-      } else {
-        ducktape_phone_back_cancel()
-      }
-    case .cancelled, .failed:
+      if !presented { ducktape_phone_back_drag(x, speed) }
+    case .ended where !presented:
+      ducktape_phone_back_drag(x, speed)
+      ducktape_phone_back_let_go()
+    case .ended, .cancelled, .failed:
       ducktape_phone_back_cancel()
     default:
       break

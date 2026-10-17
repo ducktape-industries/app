@@ -108,6 +108,8 @@ impl ViewTree {
                 .track_scroll(&handle)
                 .child(over_padding(&style.padding, vertical_bar(&handle)));
         }
+        let wheel = interactivity.on_scroll_wheel.is_some();
+        element = self.mark_sideways(element, &style, id.is_some(), wheel);
         #[cfg(any(test, feature = "test-support"))]
         let element = {
             use gpui_kit::test::TestSupportExt as _;

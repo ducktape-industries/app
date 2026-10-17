@@ -4,11 +4,15 @@
 // container's Documents and Caches paths, and never returns.
 void ducktape_phone_main(const char *documents, const char *caches);
 
-// Back, as the left edge's swipe asks it (`App.swift` `EdgeBack`); main thread.
-void ducktape_phone_back(void);
+// Whether the swipe from anywhere on the screen begins (`App.swift` `SwipeBack`): its finger came down at (x, y) in the
+// window's points, moves at (vx, vy) points per second, rested `held` seconds first; 1 when it begins. Main thread,
+// inside UIKit's touch handling: it reads only what the last draw published.
+uint8_t ducktape_phone_back_begins(double x, double y, double vx, double vy, double held);
 
-// The left edge's swipe under way, `x` points in from where it started; then, let go short of Back. Main thread.
-void ducktape_phone_back_drag(double x);
+// A swipe back under way, `x` points in from where it started, moving `speed` points per second to the right; then
+// let go (Rust judges Back), or ended without going back. Main thread.
+void ducktape_phone_back_drag(double x, double speed);
+void ducktape_phone_back_let_go(void);
 void ducktape_phone_back_cancel(void);
 
 // A call's Answer (`App.swift` `Ring`): its `duck://` link, opened as a link the OS hands over. Main thread.
