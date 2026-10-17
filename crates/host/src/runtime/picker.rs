@@ -1,14 +1,15 @@
-//! `file.pick` and `file.read`: files the person picks on this device, in
-//! the system's own picker, read by one view a slice at a time. Only the
-//! person's press or key opens the picker (`needs_gesture`), as with the
-//! clipboard; it opens on the window thread after the tick. The files
-//! picked are opened on a blocking thread and held open for the view, by
-//! handle, until it picks files again (a cancelled pick keeps them) or goes
-//! away; each `file.read` reads at most [`FILE_READ_MOST`] of one, so
-//! neither side ever holds a file whole. A view gets each file's own name,
-//! never its path.
+//! `file.pick`: files the person picks on this device, in the system's own
+//! picker, for one view to put on the network (`op.put`, a
+//! `BlobBody::Picked` naming a slice of one). Only the person's press or
+//! key opens the picker (`needs_gesture`), as with the clipboard; it opens
+//! on the window thread after the tick. The files picked are opened on a
+//! blocking thread and held open for the view, by handle, until it picks
+//! files again (a cancelled pick keeps them) or goes away; `op.put` reads
+//! them a slice at a time ([`slice`]), at most `BLOB_MOST` each, and the
+//! bytes go to the node, never through the view. A view gets each file's
+//! own name, never its path.
 use super::kernel::{self, Answer};
-use super::wire::methods::{self, Capability, FILE_READ_MOST, refusal};
+use super::wire::methods::{self, Capability, refusal};
 use super::{Seat, View, wire};
 use gpui_kit::{Context, PathPromptOptions};
 use std::collections::HashMap;
@@ -32,17 +33,33 @@ struct Open {
 }
 
 /// One file picked, open.
-struct Picked {
+pub(super) struct Picked {
     name: String,
     /// its size as picked: a file of another size since is not the one
     /// the person picked
-    size: u64,
+    pub(super) size: u64,
     file: Mutex<File>,
 }
 
 impl Picker {
     pub(super) fn cancel(&mut self, id: u64) {
         self.pending.retain(|(pending, _)| *pending != id);
+    }
+
+    /// The file of the latest pick `handle` names, if it names one.
+    pub(super) fn picked(&self, handle: u64) -> Option<Arc<Picked>> {
+        self.open
+            .lock()
+            .expect("picked files")
+            .files
+            .get(&handle)
+            .cloned()
+    }
+
+    /// `paths` picked, as the system's picker would answer them.
+    #[cfg(test)]
+    pub(super) fn pick(&self, paths: Vec<PathBuf>) -> Vec<methods::Picked> {
+        methods::decode(&opened(paths, &self.open).expect("opened")).expect("decodes")
     }
 }
 
@@ -55,7 +72,6 @@ pub(super) fn answer(
 ) -> bool {
     match (capability, operation) {
         (Capability::File, "pick") => pick(view, id, payload),
-        (Capability::File, "read") => read(view, id, payload),
         _ => return false,
     }
     true
@@ -73,33 +89,6 @@ fn pick(view: &mut View, id: u64, payload: &[u8]) {
         Ok(pick) => view.picker.pending.push((id, pick)),
         Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
     }
-}
-
-fn read(view: &mut View, id: u64, payload: &[u8]) {
-    let ask = match methods::decode::<methods::ReadFile>(payload) {
-        Ok(ask) => ask,
-        Err(error) => return view.refuse(id, refusal::MALFORMED_REQUEST, error),
-    };
-    let picked = view
-        .picker
-        .open
-        .lock()
-        .expect("picked files")
-        .files
-        .get(&ask.file)
-        .cloned();
-    let Some(picked) = picked else {
-        return view.refuse(
-            id,
-            refusal::MALFORMED_REQUEST,
-            format!("file {} is not of the latest pick", ask.file),
-        );
-    };
-    kernel::spawn_reply(view, id, async move {
-        tokio::task::spawn_blocking(move || slice(&picked, ask.offset, ask.len))
-            .await
-            .unwrap_or_else(|error| Err(fault(error.to_string())))
-    });
 }
 
 /// Opens the system's picker for each pick asked since the last turn; each
@@ -176,10 +165,10 @@ fn opened(paths: Vec<PathBuf>, open: &Mutex<Open>) -> Answer {
     Ok(methods::encode(&picked))
 }
 
-/// At most [`FILE_READ_MOST`] of `len` bytes of a file picked, from
-/// `offset`; fewer only where it ends. A file whose size changed since it
-/// was picked is refused: its slices would mix two files.
-fn slice(picked: &Picked, offset: u64, len: u64) -> Answer {
+/// The `len` bytes of a file picked from `offset` (the caller keeps them
+/// within its size as picked). A file whose size changed since it was
+/// picked is refused: its slices would mix two files.
+pub(super) fn slice(picked: &Picked, offset: u64, len: u64) -> Result<Vec<u8>, wire::Error> {
     let named = |error: std::io::Error| fault(format!("{}: {error}", picked.name));
     let file = &mut *picked.file.lock().expect("a picked file");
     if file.metadata().map_err(named)?.len() != picked.size {
@@ -189,11 +178,9 @@ fn slice(picked: &Picked, offset: u64, len: u64) -> Answer {
         )));
     }
     file.seek(SeekFrom::Start(offset)).map_err(named)?;
-    let mut bytes = Vec::new();
-    file.take(len.min(FILE_READ_MOST))
-        .read_to_end(&mut bytes)
-        .map_err(named)?;
-    Ok(methods::encode(&bytes))
+    let mut bytes = vec![0; len as usize];
+    file.read_exact(&mut bytes).map_err(named)?;
+    Ok(bytes)
 }
 
 fn fault(message: String) -> wire::Error {
@@ -210,14 +197,15 @@ mod tests {
 
     fn read(open: &Mutex<Open>, file: u64, offset: u64, len: u64) -> Vec<u8> {
         let picked = open.lock().unwrap().files[&file].clone();
-        methods::decode(&slice(&picked, offset, len).expect("read")).expect("decodes")
+        slice(&picked, offset, len).expect("read")
     }
 
     #[test]
     fn a_file_is_named_without_its_folder_and_read_a_slice_at_a_time() {
+        const MOST: u64 = methods::BLOB_MOST;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tape.png");
-        let bytes: Vec<u8> = (0..FILE_READ_MOST + 5).map(|at| at as u8).collect();
+        let bytes: Vec<u8> = (0..MOST + 5).map(|at| at as u8).collect();
         std::fs::write(&path, &bytes).unwrap();
         let open = Mutex::default();
         let picked = picked(opened(vec![path], &open));
@@ -229,14 +217,8 @@ mod tests {
                 file: 1,
             }]
         );
-        assert_eq!(
-            read(&open, 1, 0, u64::MAX),
-            bytes[..FILE_READ_MOST as usize]
-        );
-        assert_eq!(
-            read(&open, 1, FILE_READ_MOST, FILE_READ_MOST),
-            bytes[FILE_READ_MOST as usize..]
-        );
+        assert_eq!(read(&open, 1, 0, MOST), bytes[..MOST as usize]);
+        assert_eq!(read(&open, 1, MOST, 5), bytes[MOST as usize..]);
     }
 
     #[test]
