@@ -604,6 +604,10 @@ pub(super) fn reopen(view: &mut View, id: u64, follows: LiveFollow) {
 /// that is not a wait for the node's announce (no session, the node's
 /// refusal of the ask).
 const HOLD: Duration = Duration::from_secs(2);
+/// How long a publication refused `duplicate_track` waits before it asks
+/// again: the piece that held the track before is on its way out (its
+/// thread sees its stop within a frame or two).
+const REOPEN: Duration = Duration::from_millis(100);
 /// Objects a host-consumed subscription holds for the thread that decodes
 /// them: the session's own backlog, once more.
 const CONSUMED_BACKLOG: usize = 64;
@@ -624,19 +628,11 @@ pub struct HostLive {
     fixed: Option<(Arc<dyn Session>, String)>,
 }
 
-/// What a host-run track hears, as the piece's `MediaState.track` says
-/// it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TrackHeard {
-    /// The room's program has not granted it yet.
-    Waiting,
-    /// The node took it; `subscribers` of a published track, 0 on a
-    /// subscription.
-    Up { subscribers: u32 },
-    /// The node's refusal, or the ending; the track opens again by itself
-    /// (on the node's announce of it, or after [`HOLD`]).
-    Ended { code: String },
-}
+/// What a host-run track hears: the piece's `MediaState.track`
+/// ([`TrackState`]); `Ended` is the node's refusal or the ending, and the
+/// track opens again by itself (on the node's announce of it, or after
+/// [`HOLD`]).
+pub type TrackHeard = wire::TrackState;
 
 /// A track the host publishes for a piece: objects go in, what the node
 /// says of it comes out, until dropped.
@@ -780,18 +776,25 @@ impl HostLive {
             };
             let mut request = match session.open(open).await {
                 Ok(request) => request,
+                // the piece's last publication is still closing
+                Err(refusal) if refusal.code == refusal::DUPLICATE_TRACK => {
+                    tokio::time::sleep(REOPEN).await;
+                    continue;
+                }
                 Err(refusal) => {
                     let _ = tell.send(ended(&refusal.code));
                     tokio::time::sleep(HOLD).await;
                     continue;
                 }
             };
+            let mut closed = false;
             while let Some(heard) = request.heard.recv().await {
                 let item = match heard {
                     Heard::Published => TrackHeard::Up { subscribers: 0 },
                     Heard::Subscribers(count) => TrackHeard::Up { subscribers: count },
                     Heard::Waiting => TrackHeard::Waiting,
                     Heard::Closed(refusal) => {
+                        closed = true;
                         let _ = tell.send(ended(&refusal.code));
                         tokio::time::sleep(HOLD).await;
                         break;
@@ -804,7 +807,11 @@ impl HostLive {
                     return;
                 }
             }
-            // the session went: opened again on the one the app has now
+            // the session went: told (the piece starts over, with a
+            // keyframe), and opened again on the one the app has now
+            if !closed && tell.send(ended(refusal::NOT_CONNECTED)).is_err() {
+                return;
+            }
         }
     }
 
@@ -847,24 +854,31 @@ impl HostLive {
                 from,
             };
             let refused = match session.open(open).await {
-                Ok(mut request) => loop {
-                    let item = tokio::select! {
-                        biased;
-                        heard = request.heard.recv() => match heard {
-                            Some(Heard::Subscribed { .. }) => tell(TrackHeard::Up { subscribers: 0 }),
-                            Some(Heard::Waiting) => tell(TrackHeard::Waiting),
-                            Some(Heard::Closed(refusal)) => break Some(refusal),
-                            Some(_) => continue,
-                            // the session went
-                            None => break None,
-                        },
-                        Some(data) = request.data.recv() => Subscribed::Data(data),
-                        data = request.latest.take() => Subscribed::Data(data),
-                    };
-                    if give.send(item).await.is_err() {
-                        return;
+                Ok(mut request) => {
+                    // the host reads on its own thread, paced by the
+                    // speaker: a datagram burst is queued for it, not
+                    // thinned to the newest as for a view
+                    request.latest.queue(CONSUMED_BACKLOG);
+                    loop {
+                        let item = tokio::select! {
+                            biased;
+                            heard = request.heard.recv() => match heard {
+                                Some(Heard::Subscribed { .. }) => tell(TrackHeard::Up { subscribers: 0 }),
+                                Some(Heard::Waiting) => tell(TrackHeard::Waiting),
+                                Some(Heard::Closed(refusal)) => break Some(refusal),
+                                Some(_) => continue,
+                                // the session went: told, and opened again on
+                                // the one the app has now
+                                None => break Some(wire::Error::new(refusal::NOT_CONNECTED, "the session went")),
+                            },
+                            Some(data) = request.data.recv() => Subscribed::Data(data),
+                            data = request.latest.take() => Subscribed::Data(data),
+                        };
+                        if give.send(item).await.is_err() {
+                            return;
+                        }
                     }
-                },
+                }
                 Err(refusal) => Some(refusal),
             };
             let Some(refusal) = refused else {

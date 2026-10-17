@@ -194,6 +194,9 @@ impl Reassembler {
             });
         }
         let Some(gathering) = &mut self.gathering else {
+            // a later part with no first: that frame is lost, and so is
+            // everything until the next keyframe
+            self.armed = false;
             return None;
         };
         if gathering.group != group || gathering.next_part != part {
@@ -423,6 +426,38 @@ mod tests {
     /// Each keyframe closes the open group with an empty end and opens the
     /// next; a delta before the first keyframe sends nothing; a cut group
     /// takes no delta.
+    /// A later part that comes with no first part (the first was lost)
+    /// loses that frame and every delta after it until a keyframe.
+    #[test]
+    fn a_part_with_no_first_waits_for_the_next_keyframe() {
+        let mut frames = Reassembler::default();
+        let key = Frame {
+            ts_ms: 0,
+            keyframe: true,
+            data: vec![1; 10],
+        };
+        let delta = Frame {
+            ts_ms: 40,
+            keyframe: false,
+            data: vec![2; 10],
+        };
+        let object = |body: Vec<u8>| Data::Object {
+            group: 0,
+            object: 0,
+            body,
+        };
+        assert!(frames.push(object(chunk(&key).remove(0))).is_some());
+        // a second part of a frame whose first part never came
+        let mut orphan = chunk(&delta).remove(0);
+        orphan[5] = 1;
+        assert!(frames.push(object(orphan)).is_none());
+        assert!(
+            frames.push(object(chunk(&delta).remove(0))).is_none(),
+            "disarmed"
+        );
+        assert!(frames.push(object(chunk(&key).remove(0))).is_some());
+    }
+
     #[test]
     fn a_keyframe_opens_a_group_and_closes_the_last() {
         let now = Instant::now();

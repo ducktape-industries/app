@@ -655,9 +655,93 @@ fn a_first_live_request_puts_the_line_on_the_window() {
 /// A [`HostLive`] on a fake session for program `huddle` on chain `net#1`:
 /// it, and each request it opens as the fake sees it.
 fn host_live() -> (HostLive, std_mpsc::Receiver<(Ask, Ends)>) {
+    host_live_refusing(Vec::new())
+}
+
+/// [`host_live`], its fake refusing the first opens with `refusing`.
+fn host_live_refusing(refusing: Vec<wire::Error>) -> (HostLive, std_mpsc::Receiver<(Ask, Ends)>) {
     let (opened, opens) = std_mpsc::channel();
-    let session: Arc<dyn Session> = Arc::new(Fake(Mutex::new(opened), Mutex::new(Vec::new())));
+    let session: Arc<dyn Session> = Arc::new(Fake(Mutex::new(opened), Mutex::new(refusing)));
     (HostLive::on(session, "net#1", "huddle"), opens)
+}
+
+/// A publication refused `duplicate_track` (the piece's last one still
+/// closing) is asked again within a moment, and nothing is told of it.
+#[test]
+fn a_duplicate_track_refusal_is_asked_again_soon_and_not_told() {
+    let (live, opens) = host_live_refusing(vec![wire::Error::new(
+        refusal::DUPLICATE_TRACK,
+        "still held",
+    )]);
+    let mut publication = live.publish(&track("mic/7"), Mode::Datagram, 64);
+    let (asked, ends) = opens
+        .recv_timeout(REOPEN * 5)
+        .expect("published again within a moment");
+    assert!(matches!(asked, Ask::Publish { .. }));
+    ends.heard.send(Heard::Published).unwrap();
+    assert_eq!(
+        heard_soon(&mut publication),
+        TrackHeard::Up { subscribers: 0 },
+        "the refusal was not told as an ending"
+    );
+}
+
+/// The session going under a publication is told as `not_connected` (the
+/// piece starts over with a keyframe on the next one), which opens at
+/// once on the session the app has.
+#[test]
+fn a_publication_losing_its_session_is_told_and_opened_again() {
+    let (live, opens) = host_live();
+    let mut publication = live.publish(&track("cam/7"), Mode::Stream, 128);
+    let (_, ends) = opened(&opens);
+    ends.heard.send(Heard::Published).unwrap();
+    assert_eq!(
+        heard_soon(&mut publication),
+        TrackHeard::Up { subscribers: 0 }
+    );
+    drop(ends);
+    assert_eq!(
+        heard_soon(&mut publication),
+        TrackHeard::Ended {
+            code: refusal::NOT_CONNECTED.into()
+        }
+    );
+    let (again, _ends) = opens
+        .recv_timeout(std::time::Duration::from_secs(3))
+        .expect("published again");
+    assert!(matches!(again, Ask::Publish { .. }));
+}
+
+/// A host-run subscription reads datagrams on its own thread: a burst
+/// of them reaches it whole and in order, not thinned to the newest as a
+/// view's slot is.
+#[test]
+fn a_host_subscription_queues_a_datagram_burst() {
+    let (live, opens) = host_live();
+    let mut subscription = live.subscribe(&track("mic/7"), Start::Next);
+    let (_, ends) = opened(&opens);
+    ends.heard
+        .send(Heard::Subscribed {
+            by: 9,
+            mode: Mode::Datagram,
+            latest: None,
+        })
+        .unwrap();
+    assert_eq!(
+        subscription.recv(),
+        Some(Subscribed::Heard(TrackHeard::Up { subscribers: 0 }))
+    );
+    let object = |object: u32| Data::Object {
+        group: 0,
+        object,
+        body: vec![object as u8],
+    };
+    for n in 0..3 {
+        ends.latest.put(object(n));
+    }
+    for n in 0..3 {
+        assert_eq!(subscription.recv(), Some(Subscribed::Data(object(n))));
+    }
 }
 
 fn heard_soon(publication: &mut HostPublication) -> TrackHeard {

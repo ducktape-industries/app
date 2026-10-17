@@ -120,7 +120,7 @@ impl ViewTree {
 #[cfg(feature = "call")]
 mod inner {
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
     use super::*;
@@ -144,12 +144,15 @@ mod inner {
     const LESS_PICTURE: &str = "sending less picture";
     const NO_PICTURE: &str = "this build sends no picture";
 
-    /// What a publishing piece's thread says of its track.
+    /// What a piece's thread says of its track (and, a remote piece's, of
+    /// its playback).
     #[derive(Clone, Default, PartialEq)]
     pub(super) struct Standing {
+        /// A remote piece's playback: Live once something played.
+        pub(super) status: Status,
         pub(super) track: wire::TrackState,
         pub(super) detail: String,
-        /// This build encodes nothing of the kind: `Unsupported`.
+        /// This build encodes or decodes nothing of the kind: `Unsupported`.
         pub(super) unsupported: bool,
     }
 
@@ -183,19 +186,11 @@ mod inner {
         }
     }
 
-    /// What a remote piece's thread says of its track.
-    #[derive(Clone, Default, PartialEq)]
-    struct RemoteStanding {
-        status: Status,
-        track: wire::TrackState,
-        unsupported: bool,
-    }
-
     /// A remote piece: what plays it, and its thread's word.
     pub(in crate::render) struct Remote {
         track: LiveTrack,
         plays: Plays,
-        standing: Arc<Mutex<RemoteStanding>>,
+        standing: Arc<Mutex<Standing>>,
         speaking: Speaking,
         told: Option<wire::MediaState>,
         on_state: Option<u32>,
@@ -212,9 +207,14 @@ mod inner {
         }
     }
 
+    /// A remote audio piece's voice on the speaker, with the voice I/O it
+    /// plays through, once its thread made them (`None` when this build
+    /// decodes none).
+    type Played = Arc<OnceLock<Option<(Arc<voice::Io>, Arc<voice::Voice>)>>>;
+
     enum Plays {
         Video(Entity<ducktape_av::Camera>),
-        Audio(Option<Arc<voice::Voice>>),
+        Audio(Played),
         /// Nothing: the view has [`MAX_REMOTE`] open.
         Refused,
     }
@@ -423,7 +423,21 @@ mod inner {
                 if standing.unsupported {
                     state.status = wire::MediaStatus::Unsupported;
                 }
-                if let Plays::Audio(Some(voice)) = &remote.plays {
+                if let Plays::Audio(played) = &remote.plays
+                    && let Some(Some((io, voice))) = played.get()
+                {
+                    // the speaker that would not open is the piece's fault
+                    let speaker = io.speaker();
+                    if !matches!(speaker, Status::Starting | Status::Live) {
+                        state = super::av::told(
+                            &ducktape_av::State {
+                                status: speaker,
+                                ..Default::default()
+                            },
+                            ducktape_av::Kind::Microphone,
+                        );
+                        state.track = standing.track.clone();
+                    }
                     let live = state.status == wire::MediaStatus::Live;
                     state.speaking = live && remote.speaking.heard(voice.level(), now);
                 }
@@ -470,7 +484,7 @@ mod inner {
         live: &HostLive,
         cx: &mut Context<ViewTree>,
     ) -> Remote {
-        let standing: Arc<Mutex<RemoteStanding>> = Arc::default();
+        let standing: Arc<Mutex<Standing>> = Arc::default();
         // a picture from the group the node holds (its keyframe); a voice
         // from the next packet, never a second of stale voice first
         let from = match media {
@@ -496,19 +510,23 @@ mod inner {
                 Plays::Video(camera)
             }
             wire::RemoteMedia::Audio { output } => {
-                let io = voice::hold(None, output.clone());
-                let voice = match io.voice() {
-                    Ok(voice) => Some(Arc::new(voice)),
-                    Err(_) => {
-                        lock(&standing).unsupported = true;
-                        None
-                    }
-                };
-                let (word, heard) = (standing.clone(), voice.clone());
+                let played: Played = Arc::default();
+                let (word, heard, output) = (standing.clone(), played.clone(), output.clone());
                 spawn("call-audio", move || {
-                    play_audio(&mut subscription, heard, word);
+                    // the voice I/O is made here, off the window thread
+                    // (its echo canceller is the cost)
+                    let io = voice::hold(None, output);
+                    let voice = match io.voice() {
+                        Ok(voice) => Some((io, Arc::new(voice))),
+                        Err(_) => {
+                            lock(&word).unsupported = true;
+                            None
+                        }
+                    };
+                    let voice = heard.get_or_init(|| voice).clone();
+                    play_audio(&mut subscription, voice.map(|(_, voice)| voice), word);
                 });
-                Plays::Audio(voice)
+                Plays::Audio(played)
             }
         };
         Remote {
@@ -534,11 +552,11 @@ mod inner {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn track_state(heard: TrackHeard) -> wire::TrackState {
-        match heard {
-            TrackHeard::Waiting => wire::TrackState::Waiting,
-            TrackHeard::Up { subscribers } => wire::TrackState::Up { subscribers },
-            TrackHeard::Ended { code } => wire::TrackState::Ended { code },
+    /// One line onto a proof tap (`DUCKTAPE_AV_FAKE_TAP`), nothing without.
+    fn tap(tap: &mut Option<std::fs::File>, line: std::fmt::Arguments) {
+        if let Some(tap) = tap {
+            use std::io::Write as _;
+            let _ = tap.write_fmt(line).and_then(|()| tap.write_all(b"\n"));
         }
     }
 
@@ -588,7 +606,7 @@ mod inner {
                     }
                     TrackHeard::Waiting | TrackHeard::Ended { .. } => up = false,
                 }
-                word.track = track_state(heard);
+                word.track = heard;
             }
             let now = Instant::now();
             if let Some(rung) = ladder.tick(now)
@@ -630,10 +648,9 @@ mod inner {
                 data: packet.data,
             };
             let objects = chunker.push(&frame, now);
-            if let Some(sent) = &mut sent {
-                use std::io::Write as _;
-                let _ = writeln!(
-                    sent,
+            tap(
+                &mut sent,
+                format_args!(
                     "frame {} key {} bytes {} objects {} rung {}x{}",
                     frame.ts_ms,
                     frame.keyframe,
@@ -641,16 +658,13 @@ mod inner {
                     objects.len(),
                     ladder.rung().width,
                     ladder.rung().height
-                );
-            }
+                ),
+            );
             for object in objects {
                 match publication.push(object) {
                     Pushed::Queued | Pushed::Dropped => {}
                     Pushed::Cut(_) => {
-                        if let Some(sent) = &mut sent {
-                            use std::io::Write as _;
-                            let _ = writeln!(sent, "cut");
-                        }
+                        tap(&mut sent, format_args!("cut"));
                         chunker.cut();
                         if let Some(rung) = ladder.cut(now) {
                             apply(encoder, rung);
@@ -706,7 +720,7 @@ mod inner {
         while !stop.load(Ordering::Relaxed) {
             while let Some(heard) = publication.heard() {
                 up = matches!(heard, TrackHeard::Up { .. });
-                lock(&standing).track = track_state(heard);
+                lock(&standing).track = heard;
             }
             let (status, name) = io.status();
             *feed.status.lock().expect("feed status") = (status, name);
@@ -754,28 +768,24 @@ mod inner {
     fn play_video(
         subscription: &mut crate::runtime::HostSubscription,
         feed: Arc<CameraFeed>,
-        standing: Arc<Mutex<RemoteStanding>>,
+        standing: Arc<Mutex<Standing>>,
     ) {
         let mut decoder = VideoDecoder::new().ok();
         if decoder.is_none() {
             lock(&standing).unsupported = true;
         }
-        let tap = ducktape_av::fake::tap("video.log");
+        let mut shown = ducktape_av::fake::tap("video.log");
         let mut got = ducktape_av::fake::tap("recv.log");
         let mut frames = Reassembler::default();
         while let Some(item) = subscription.recv() {
-            if let Some(got) = &mut got {
-                use std::io::Write as _;
-                let line = match &item {
-                    Subscribed::Heard(heard) => format!("heard {heard:?}"),
-                    Subscribed::Data(Data::Object { group, body, .. }) => {
-                        format!("object {group} {}", body.len())
-                    }
-                    Subscribed::Data(Data::GroupEnd { group, complete }) => {
-                        format!("end {group} {complete}")
-                    }
-                };
-                let _ = writeln!(got, "{line}");
+            match &item {
+                Subscribed::Heard(heard) => tap(&mut got, format_args!("heard {heard:?}")),
+                Subscribed::Data(Data::Object { group, body, .. }) => {
+                    tap(&mut got, format_args!("object {group} {}", body.len()));
+                }
+                Subscribed::Data(Data::GroupEnd { group, complete }) => {
+                    tap(&mut got, format_args!("end {group} {complete}"));
+                }
             }
             match item {
                 Subscribed::Heard(heard) => {
@@ -788,7 +798,7 @@ mod inner {
                         frames.reset();
                         decoder = decoder.and_then(|_| VideoDecoder::new().ok());
                     }
-                    word.track = track_state(heard);
+                    word.track = heard;
                 }
                 Subscribed::Data(data) => {
                     let Some(frame) = frames.push(data) else {
@@ -799,11 +809,10 @@ mod inner {
                     };
                     match decoder.decode(&frame.data) {
                         Ok(Some(picture)) => {
-                            if let Some(mut tap) = tap.as_ref()
+                            if shown.is_some()
                                 && let Some(n) = ducktape_av::fake::read_stamp(&picture)
                             {
-                                use std::io::Write as _;
-                                let _ = writeln!(tap, "{n}");
+                                tap(&mut shown, format_args!("{n}"));
                             }
                             *feed.picture.lock().expect("feed picture") = Some(picture);
                             feed.status.lock().expect("feed status").0 = Status::Live;
@@ -821,7 +830,7 @@ mod inner {
     fn play_audio(
         subscription: &mut crate::runtime::HostSubscription,
         voice: Option<Arc<voice::Voice>>,
-        standing: Arc<Mutex<RemoteStanding>>,
+        standing: Arc<Mutex<Standing>>,
     ) {
         while let Some(item) = subscription.recv() {
             match item {
@@ -830,7 +839,7 @@ mod inner {
                     if let TrackHeard::Ended { code } = &heard {
                         word.status = Status::Gone(code.clone());
                     }
-                    word.track = track_state(heard);
+                    word.track = heard;
                 }
                 Subscribed::Data(Data::Object {
                     group,
