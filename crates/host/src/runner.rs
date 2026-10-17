@@ -7,7 +7,7 @@
 mod wasmtime;
 
 #[cfg(feature = "wasmtime")]
-pub use self::wasmtime::{WasmtimeInstance, WasmtimeRunner};
+pub use self::wasmtime::{COMPILE_APART, WasmtimeInstance, WasmtimeRunner, compile_child};
 
 #[cfg(test)]
 pub mod deferred;

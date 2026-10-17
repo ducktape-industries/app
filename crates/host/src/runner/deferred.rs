@@ -152,6 +152,7 @@ impl Default for DeferredRunner {
             inner: WasmtimeRunner::new(crate::contract::RunnerConfig {
                 signals_based_traps: true,
                 cache_dir: None,
+                compile_apart: None,
             }),
             pump: Pump::default(),
         }

@@ -365,6 +365,7 @@ pub fn runner() -> &'static Arc<dyn ViewRunner> {
             Arc::new(crate::runner::WasmtimeRunner::new(RunnerConfig {
                 signals_based_traps: true,
                 cache_dir: Some(os().dirs().cache.join("view-code")),
+                compile_apart: None,
             }))
         })
     }
@@ -650,6 +651,12 @@ pub struct RunnerConfig {
     pub signals_based_traps: bool,
     /// Where compiled code is kept across launches; `None` keeps none.
     pub cache_dir: Option<PathBuf>,
+    /// This binary, run as a child ([`crate::runner::COMPILE_APART`]) for
+    /// each compile, which lands in `cache_dir` for this process to read:
+    /// a compile's peak (200-315 MB) then leaves with the child, where the
+    /// allocator would keep it here on loader threads that go idle. Needs
+    /// `cache_dir`. `None` compiles in this process (the phone, pushd).
+    pub compile_apart: Option<PathBuf>,
 }
 
 /// Instruction budget for one call into a view, on every runner: a ceiling
