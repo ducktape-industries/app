@@ -2059,7 +2059,7 @@ mod tests {
     /// The Notifications tab lists the host's centre, newest first, a dot on
     /// the tab while one is unread; a row pressed is read and opens its
     /// program (no link: as a tapped system notice does); Mark all read
-    /// reads the rest and the dot goes.
+    /// reads the rest and the dot goes; Clear read empties the list.
     #[gpui_kit::test]
     fn the_notifications_tab_lists_the_centre_and_opens_a_notice(cx: &mut TestAppContext) {
         use ducktape_host::runtime::notify::Settings;
@@ -2129,6 +2129,8 @@ mod tests {
         click("notifications/mark-all", cx);
         assert_eq!(read(cx), [true, true]);
         assert!(!dot(cx), "the dot stayed with nothing unread");
+        click("notifications/clear-read", cx);
+        assert_eq!(read(cx), [] as [bool; 0], "Clear read kept a read row");
     }
 
     /// App settings' Light and dark row opens Appearance; the palette (and

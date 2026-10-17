@@ -611,7 +611,8 @@ pub fn open(
 /// program's name and how long ago it came, an unread one in medium with a
 /// dot; a press reads it and opens what it is about as a tapped system
 /// notice does ([`Root::open_notice`]). "Mark all read" at the header's
-/// right while any is unread. Which notices there are, their words, their
+/// right while any is unread, "Clear read" under the rows while any is
+/// read. Which notices there are, their words, their
 /// grouping and their links are each program's own; this list carries
 /// them and decides none of it.
 pub fn notifications(shared: &Shared, palette: Palette, cx: &mut Context<Root>) -> Div {
@@ -661,6 +662,28 @@ pub fn notifications(shared: &Shared, palette: Palette, cx: &mut Context<Root>) 
         ));
     }
     let now = wall();
+    // the log keeps every row until it is cleared: read ones go here, as
+    // the desktop bell's footer clears them
+    let clear = entries.iter().any(|entry| entry.read).then(|| {
+        div()
+            .id("notifications/clear-read")
+            .control(Role::Button, "Clear read")
+            .debug_selector(|| "notifications/clear-read".to_owned())
+            .h(px(look::HIT))
+            .px(px(look::GUTTER))
+            .flex()
+            .items_center()
+            .active(|style| style.opacity(look::PRESSED))
+            .child(
+                look::text(look::SECONDARY, FontWeight::MEDIUM, palette.muted())
+                    .child("Clear read"),
+            )
+            .on_click(cx.listener(|root, _, _, cx| {
+                root.shared
+                    .notifications
+                    .update(cx, |notifications, cx| notifications.clear_read(cx));
+            }))
+    });
     let rows: Vec<_> = entries
         .into_iter()
         .map(|entry| notice(shared, entry, now, palette, cx))
@@ -671,7 +694,8 @@ pub fn notifications(shared: &Shared, palette: Palette, cx: &mut Context<Root>) 
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .children(rows),
+            .children(rows)
+            .children(clear),
     )
 }
 
