@@ -48,12 +48,12 @@ impl Mixer {
     /// with nothing to play adds silence. How many voices were mixed.
     pub fn pull(&self, out: &mut [f32; FRAME]) -> usize {
         out.fill(0.);
-        let sources: Vec<Arc<Shared>> = lock(&self.sources)
-            .iter()
-            .filter_map(Weak::upgrade)
-            .collect();
+        // ponytail: decoded here, on the speaker's callback (an Opus frame
+        // is tens of microseconds); the upgrade is the voice thread
+        // decoding into a ring the callback only copies from
+        let sources = lock(&self.sources);
         let mut mixed = 0;
-        for source in &sources {
+        for source in sources.iter().filter_map(Weak::upgrade) {
             let popped = lock(&source.jitter).pop();
             let frame = match popped {
                 Pop::Empty => {

@@ -37,12 +37,45 @@ const TICK: Duration = Duration::from_millis(10);
 /// out, when `DUCKTAPE_AEC_DELAY_MS` names none: two 20 ms device buffers
 /// and the mixer's frame. A real device drifts from it; the knob stays.
 const DELAY_MS: i32 = 60;
+/// How long after a device would not open (or was taken) before it is
+/// asked again.
+const RETRY: Duration = Duration::from_secs(2);
+
+/// When a device that failed is opened again: after [`RETRY`], except one
+/// the system refused (Denied), which waits until nothing wants it, so
+/// the phones' permission prompt is not raised over and over.
+#[derive(Default)]
+struct Retry {
+    until: Option<Instant>,
+    denied: bool,
+}
+
+impl Retry {
+    fn may(&self, now: Instant) -> bool {
+        !self.denied && self.until.is_none_or(|until| now >= until)
+    }
+
+    fn failed(&mut self, now: Instant, status: &Status) {
+        match status {
+            Status::Denied => self.denied = true,
+            _ => self.until = Some(now + RETRY),
+        }
+    }
+
+    /// Nothing wants the device: the next want opens it at once.
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
 
 /// The app's voice I/O while anything holds it.
 pub struct Io {
     /// The microphone's status and name (Live while open; Starting while
     /// no capture asks for it).
     status: Mutex<(Status, String)>,
+    /// The speaker's status (Live while open; Starting while no voice
+    /// asks for it).
+    speaker: Mutex<Status>,
     /// What the phone's audio session tells of the microphone (an
     /// interruption, a route moved): read each tick, told as the status.
     feed: Arc<MicFeed>,
@@ -78,6 +111,7 @@ pub fn hold(device: Option<String>, output: Option<String>) -> Arc<Io> {
         .unwrap_or(DELAY_MS);
     let io = Arc::new(Io {
         status: Mutex::new((Status::Starting, String::new())),
+        speaker: Mutex::new(Status::Starting),
         feed: Arc::new(MicFeed::default()),
         apm: Mutex::new(apm()),
         mixer: Mixer::default(),
@@ -145,14 +179,9 @@ impl Io {
         f32::from_bits(self.level.load(Ordering::Relaxed))
     }
 
-    /// Whether the echo canceller has converged on the speaker's sound
-    /// in the microphone: false before it has, on a fake, and while the
-    /// speaker plays nothing.
-    pub fn echo_cancelled(&self) -> bool {
-        lock(&self.apm)
-            .statistics()
-            .echo_return_loss_enhancement
-            .is_some_and(|erle| erle > 0.)
+    /// The speaker's status.
+    pub fn speaker(&self) -> Status {
+        lock(&self.speaker).clone()
     }
 
     /// What the microphone hears, echo-cancelled, in 20 ms frames: the
@@ -205,6 +234,10 @@ impl Io {
     pub(crate) fn set_status(&self, status: Status, name: impl Into<String>) {
         *lock(&self.status) = (status, name.into());
     }
+
+    fn set_speaker(&self, status: Status) {
+        *lock(&self.speaker) = status;
+    }
 }
 
 /// A publishing microphone piece's hold on the microphone: its frames.
@@ -214,19 +247,9 @@ pub struct Capture {
 }
 
 impl Capture {
-    /// The next frame, waited for on the calling thread; `None` once the
-    /// I/O is gone.
-    pub fn recv(&self) -> Option<[f32; FRAME]> {
-        self.frames.recv().ok()
-    }
-
     /// The next frame, waited for at most `wait`.
     pub fn recv_timeout(&self, wait: Duration) -> Option<[f32; FRAME]> {
         self.frames.recv_timeout(wait).ok()
-    }
-
-    pub fn io(&self) -> &Arc<Io> {
-        &self.io
     }
 }
 
@@ -255,56 +278,67 @@ impl Voice {
 }
 
 /// The I/O's thread: the microphone open while a capture lives, the
-/// speaker while a voice does, until the last holder lets go.
+/// speaker while a voice does, until the last holder lets go. The phones'
+/// call mode (`platform::call`) is on for the thread's life.
 fn run(io: Weak<Io>) {
     let host = cpal::default_host();
     let mut input: Option<(cpal::Stream, backend::Holding, platform::Active)> = None;
-    let mut output: Option<cpal::Stream> = None;
-    // a microphone that would not open is not asked again until every
-    // capture went and one came back
-    let mut tried = false;
+    let mut output: Option<(cpal::Stream, platform::Active)> = None;
+    let (mut retry_in, mut retry_out) = (Retry::default(), Retry::default());
+    platform::call(true);
     loop {
         let Some(io) = io.upgrade() else { break };
         if io.stopped() {
             break;
         }
+        let now = Instant::now();
         // the phone's session ended the microphone under the I/O: told,
-        // the device let go, and opened again only with a fresh capture
+        // the device let go, and asked again after the retry
         if input.is_some()
             && let Some(why) = io.feed.take_ended()
         {
             input = None;
-            platform::call(false);
+            retry_in.failed(now, &why);
             io.set_status(why, String::new());
         }
-        let want_in = io.capturing();
-        match (want_in, input.is_some()) {
-            (true, false) if !tried => {
-                tried = true;
-                match open_input(&host, &io) {
-                    Ok(opened) => input = Some(opened),
-                    Err(status) => {
-                        platform::call(false);
-                        io.set_status(status, String::new());
-                    }
+        match (io.capturing(), input.is_some()) {
+            (true, false) if retry_in.may(now) => match open_input(&host, &io) {
+                Ok(opened) => input = Some(opened),
+                Err(status) => {
+                    retry_in.failed(now, &status);
+                    io.set_status(status, String::new());
                 }
-            }
+            },
             (false, true) => {
                 input = None;
-                platform::call(false);
+                io.set_status(Status::Starting, String::new());
             }
-            (false, false) => tried = false,
+            (false, false) => retry_in.reset(),
             _ => {}
         }
-        let want_out = io.mixer.any();
-        match (want_out, output.is_some()) {
-            (true, false) => output = open_output(&host, &io).ok(),
-            (false, true) => output = None,
+        match (io.mixer.any(), output.is_some()) {
+            (true, false) if retry_out.may(now) => match open_output(&host, &io) {
+                Ok(opened) => {
+                    output = Some(opened);
+                    io.set_speaker(Status::Live);
+                }
+                Err(status) => {
+                    retry_out.failed(now, &status);
+                    io.set_speaker(status);
+                }
+            },
+            (false, true) => {
+                output = None;
+                io.set_speaker(Status::Starting);
+            }
+            (false, false) => retry_out.reset(),
             _ => {}
         }
         drop(io);
         std::thread::sleep(TICK);
     }
+    drop((input, output));
+    platform::call(false);
 }
 
 /// The microphone opened: Live, its frames processed and handed to the
@@ -319,7 +353,6 @@ fn open_input(
     if !platform::microphone_allowed() {
         return Err(Status::Denied);
     }
-    platform::call(true);
     let session = platform::activate(Some((&io.feed, io.device.as_deref())))?;
     let config = device
         .default_input_config()
@@ -411,9 +444,14 @@ fn open_input(
 }
 
 /// The speaker opened: the mixer's frames played, each told to the echo
-/// canceller as what the microphone will hear.
-fn open_output(host: &cpal::Host, io: &Arc<Io>) -> Result<cpal::Stream, Status> {
+/// canceller as what the microphone will hear; the system's audio session
+/// (a phone's) held while it plays, as for the chime.
+fn open_output(
+    host: &cpal::Host,
+    io: &Arc<Io>,
+) -> Result<(cpal::Stream, platform::Active), Status> {
     let device = platform::find(host, io.output.as_deref(), false).ok_or(Status::NoDevice)?;
+    let session = platform::activate(None)?;
     let config = device
         .default_output_config()
         .map_err(|error| backend::audio_fault(&error, false))?;
@@ -475,7 +513,7 @@ fn open_output(host: &cpal::Host, io: &Arc<Io>) -> Result<cpal::Stream, Status> 
     stream
         .play()
         .map_err(|error| backend::audio_fault(&error, false))?;
-    Ok(stream)
+    Ok((stream, session))
 }
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -488,4 +526,26 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// ticks the fake and the tests: `n` frames in.
 pub(crate) fn frame_due(started: Instant, n: u64) -> Instant {
     started + Duration::from_millis(20 * n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A device that failed is not asked again before the retry passes,
+    /// one the system refused not until nothing wants it; both open at
+    /// once after a reset.
+    #[test]
+    fn a_failed_device_is_asked_again_after_the_retry_a_denied_one_after_a_reset() {
+        let now = Instant::now();
+        let mut retry = Retry::default();
+        assert!(retry.may(now));
+        retry.failed(now, &Status::Busy);
+        assert!(!retry.may(now + RETRY / 2));
+        assert!(retry.may(now + RETRY));
+        retry.failed(now, &Status::Denied);
+        assert!(!retry.may(now + RETRY * 10));
+        retry.reset();
+        assert!(retry.may(now));
+    }
 }
