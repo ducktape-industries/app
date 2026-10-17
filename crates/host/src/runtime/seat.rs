@@ -212,7 +212,7 @@ pub(super) enum Slot {
 /// roster lists (none for the developer's override, which a pane reads
 /// again), and what its manifest says: the name
 /// the rail lists it by, the icon its tab draws folded (empty: it declares
-/// none), the narrowest it is laid out, its capabilities and its targets.
+/// none), the tint of its tile on a phone's Home, the narrowest it is laid out, its capabilities and its targets.
 /// All a pane needs to start it, with nothing fetched or compiled again.
 #[derive(Clone)]
 pub(super) struct ViewCode {
@@ -223,6 +223,7 @@ pub(super) struct ViewCode {
     pub(super) _hold: Arc<dyn std::any::Any + Send + Sync>,
     pub(super) name: String,
     pub(super) icon: String,
+    pub(super) tint: Tint,
     pub(super) description: String,
     pub(super) min_width: u32,
     pub(super) capabilities: Vec<Capability>,
@@ -242,6 +243,7 @@ impl ViewCode {
             _hold: Arc::new(()),
             name: name.into(),
             icon: icon.into(),
+            tint: Tint::None,
             description: String::new(),
             min_width,
             capabilities: Vec::new(),

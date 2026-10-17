@@ -585,12 +585,14 @@ fn a_stalled_load_does_not_hold_the_roster_read() {
     eventually("the load is held by the node", || node.held().0 == 1);
 }
 
-/// A view whose manifest says `name`, `icon` (none when empty) and a 320px
-/// minimum, its `init` the instructions given; its other exports trap.
-fn view_declaring(name: &str, icon: &str, init: &str) -> Vec<u8> {
+/// A view whose manifest says `name`, `icon` (none when empty), `tint`
+/// and a 320px minimum, its `init` the instructions given; its other
+/// exports trap.
+fn view_declaring(name: &str, icon: &str, tint: Tint, init: &str) -> Vec<u8> {
     let manifest = format!(
-        "ducktape.view.manifest\\n{name}\\n\\n\\n320\\n{}\\n\\n{icon}",
-        wire::WIRE_ID
+        "ducktape.view.manifest\\n{name}\\n\\n\\n320\\n{}\\n\\n{icon}\\n{}",
+        wire::WIRE_ID,
+        tint.as_str()
     );
     wat::parse_str(format!(
         r#"(module
@@ -613,7 +615,7 @@ fn view_declaring(name: &str, icon: &str, init: &str) -> Vec<u8> {
 /// `init`, and fails on it.
 #[test]
 fn an_unopened_program_runs_no_init() {
-    let view = view_declaring("Lazy", "", "unreachable");
+    let view = view_declaring("Lazy", "", Tint::None, "unreachable");
     let code = blob_id(&view);
     let listed = ::programs::View {
         name: "lazy-view".into(),
@@ -672,15 +674,18 @@ fn an_unopened_program_runs_no_init() {
     let _ = std::fs::remove_file(&kept);
 }
 
-/// A rail row's icon is the one its view's manifest declares, read with its
-/// name as the seat lands compiled and kept once a pane has started the
-/// view; a view that declares none has none.
+/// A rail row's icon and tint are the ones its view's manifest declares,
+/// read with its name as the seat lands compiled and kept once a pane has
+/// started the view; a view that declares none has none.
 #[test]
-fn a_rail_row_carries_the_icon_its_views_manifest_declares() {
+fn a_rail_row_carries_the_icon_and_tint_its_views_manifest_declares() {
     const ICON: &str = "icons/hammer.svg";
     let views = [
-        ("iconed-view", view_declaring("Iconed", ICON, "")),
-        ("plain-view", view_declaring("Plain", "", "")),
+        (
+            "iconed-view",
+            view_declaring("Iconed", ICON, Tint::Orange, ""),
+        ),
+        ("plain-view", view_declaring("Plain", "", Tint::None, "")),
     ];
     let listed = views
         .iter()
@@ -702,10 +707,19 @@ fn a_rail_row_carries_the_icon_its_views_manifest_declares() {
     let icon = |program: &str| {
         let rows = roster.rail();
         let row = rows.iter().find(|row| row.program == program);
-        row.expect("a listed view").icon.clone()
+        let row = row.expect("a listed view");
+        (row.icon.clone(), row.tint)
     };
-    assert_eq!(icon("iconed-view"), ICON, "compiled, not started");
-    assert_eq!(icon("plain-view"), "", "its manifest declares none");
+    assert_eq!(
+        icon("iconed-view"),
+        (ICON.into(), Tint::Orange),
+        "compiled, not started"
+    );
+    assert_eq!(
+        icon("plain-view"),
+        (String::new(), Tint::None),
+        "its manifest declares none"
+    );
     // a pane claims the seat: the view its load starts is that manifest's
     let seat = lock(&seats)[&("iconed-view", 0)].clone();
     let generation = {
@@ -724,7 +738,7 @@ fn a_rail_row_carries_the_icon_its_views_manifest_declares() {
     eventually("the claiming pane's load started the view", || {
         matches!(lock(&seat).slot, Slot::Ready(_))
     });
-    assert_eq!(icon("iconed-view"), ICON, "started");
+    assert_eq!(icon("iconed-view"), (ICON.into(), Tint::Orange), "started");
     for (program, view) in &views {
         lock(registry()).remove(&(*program, 0));
         // the fetch kept the blob in the developer's own cache: it goes
@@ -765,7 +779,7 @@ fn a_program_read_once_is_read_off_the_disk() {
 /// the disk by then, so a load that fetched would fail.
 #[test]
 fn a_claimed_seat_starts_the_code_it_compiled() {
-    let view = view_declaring("Quick", "", "");
+    let view = view_declaring("Quick", "", Tint::None, "");
     let code = blob_id(&view);
     let listed = ::programs::View {
         name: "quick-view".into(),
@@ -828,7 +842,7 @@ fn a_claimed_seat_starts_the_code_it_compiled() {
 #[test]
 fn a_pane_opens_its_compiled_view_at_once() {
     const PROGRAM: &str = "opened-at-once";
-    let view = view_declaring("At once", "", "");
+    let view = view_declaring("At once", "", Tint::None, "");
     let code = blob_id(&view);
     let listed = ::programs::View {
         name: PROGRAM.into(),
@@ -876,7 +890,7 @@ fn a_pane_opens_its_compiled_view_at_once() {
 #[test]
 fn a_seat_let_go_steps_back_to_its_code_and_stays_listed() {
     const PROGRAM: &str = "let-go";
-    let view = view_declaring("Let go", "", "");
+    let view = view_declaring("Let go", "", Tint::None, "");
     let code = blob_id(&view);
     let listed = ::programs::View {
         name: PROGRAM.into(),

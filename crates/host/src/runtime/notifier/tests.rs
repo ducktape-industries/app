@@ -37,7 +37,7 @@ fn notifier_asking(name: &str, capabilities: &str, requests: Vec<wire::Request>)
     let (first, first_len) = turn(requests);
     let (then, then_len) = turn(Vec::new());
     let manifest = format!(
-        "ducktape.view.manifest\\n{name}\\n\\n{capabilities}\\n1\\n{}\\nchat,\\n",
+        "ducktape.view.manifest\\n{name}\\n\\n{capabilities}\\n1\\n{}\\nchat,\\n\\nnone",
         wire::WIRE_ID
     );
     wat::parse_str(format!(

@@ -104,6 +104,9 @@ pub(super) struct View {
     /// The manifest's icon: what the view's tab draws on a folded menu bar;
     /// empty when the view declares none.
     pub icon: String,
+    /// The manifest's tint: the colour of the program's tile where a phone
+    /// lists it; `Tint::None` when the view declares none.
+    pub tint: Tint,
     /// The manifest's description: what Home's tile and product page say.
     pub description: String,
     /// The capabilities the manifest declares: a method whose capability is

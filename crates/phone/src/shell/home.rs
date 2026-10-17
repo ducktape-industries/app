@@ -1,7 +1,8 @@
 //! The tab roots: Home (the network's programs, IA B, wasm-mobile SPEC
-//! §7.2), Open (the programs open, where they were left), and the tab bar
-//! under them. Drawn in the Expo kit's measures ([`look`]); the words are
-//! the shell boards' (`design/canvas/shell`), English as the Expo app's.
+//! §7.2: a tinted grid, four across, the ones with news first), Open (the
+//! programs open, where they were left), and the tab bar under them. Drawn
+//! in the Expo kit's measures ([`look`]); the words are the shell boards'
+//! (`design/canvas/shell`), English as the Expo app's.
 
 use super::Root;
 use super::look::{self, Palette};
@@ -12,14 +13,15 @@ use ducktape_host::session::Shared;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::{
     App, Context, Div, Entity, FontWeight, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
-    div, px, relative, svg,
+    ParentElement as _, Pixels, Role, SharedString, Stateful, StatefulInteractiveElement as _,
+    Styled as _, div, px, relative, svg,
 };
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-/// Home's title: the store's shape, never the store's word (SPEC §7.2).
-pub const HOME_TITLE: &str = "Programs on this network";
+/// The label over Home's grid of every program: the store's shape, never
+/// the store's word (SPEC §7.2, App Store 4.7), on screen whenever Home is.
+pub const ON_THIS_NETWORK: &str = "Programs on this network";
 
 /// A program's name before its view's manifest names it: its id with a
 /// capital ("chat" -> "Chat"), as the desktop's bar shows it.
@@ -93,30 +95,10 @@ pub fn avatar(name: &str, side: f32, palette: Palette) -> Div {
         )
 }
 
-/// The 56 header of a tab root (Expo `Header` with `root`): the reader's
-/// avatar in a 44 hit, which opens the account sheet; the 22 title, a 12
-/// caption under it.
-fn root_header(
-    title: &'static str,
-    caption: String,
-    name: &str,
-    palette: Palette,
-    cx: &mut Context<Root>,
-) -> Div {
-    let avatar = div()
-        .id("header/account")
-        .control(Role::Button, "Account")
-        .size(px(look::HIT))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .active(|style| style.opacity(look::PRESSED))
-        .child(avatar(name, look::AVATAR, palette))
-        .on_click(cx.listener(|root, _, window, cx| {
-            window.blur(cx);
-            root.account_sheet(cx);
-        }));
+/// The 56 header of a tab root (Expo `Header` with `root`): the 22 title,
+/// a 12 caption under it; what the root adds (Home's filter) at the right.
+/// No avatar: the Account tab opens the account sheet.
+fn root_header(title: String, caption: String, palette: Palette) -> Div {
     let words = div()
         .flex_1()
         .min_w_0()
@@ -141,21 +123,17 @@ fn root_header(
         .items_center()
         .gap(px(look::gap::XXS))
         .px(px(look::gap::SM))
-        .child(avatar)
         .child(words)
 }
 
-/// The caption under a root's title: the network in hand and the reader's
-/// name ("testkit · Dev"), or where the phone is trying to get to.
-fn caption(shared: &Shared, cx: &App) -> String {
+/// The caption under a root's title: `on` while on the network, else
+/// where the phone is trying to get to.
+fn caption(shared: &Shared, on: String, cx: &App) -> String {
     let session = shared.session.read(cx).get();
     if session.connected && session.reconnecting {
         format!("{} · reconnecting", session.network)
     } else if session.connected {
-        match me(shared, cx) {
-            Some((_, name)) if !name.is_empty() => format!("{} · {name}", session.network),
-            _ => session.network.clone(),
-        }
+        on
     } else if session.connecting {
         format!("Connecting to {}…", session.reaching)
     } else if !session.error.is_empty() {
@@ -165,44 +143,39 @@ fn caption(shared: &Shared, cx: &App) -> String {
     }
 }
 
-/// A section's head (Expo `SectionHead`): 12 medium muted label, its count
-/// at the right.
-fn section_head(label: &str, count: usize, palette: Palette) -> Div {
+/// A section's head (Expo `SectionHead`): 12 medium muted label.
+fn section_head(label: &'static str, palette: Palette) -> Div {
     div()
         .min_h(px(40.))
         .flex()
         .items_center()
-        .justify_between()
         .pt(px(look::gap::LG))
         .pb(px(look::gap::XXS))
         .px(px(look::GUTTER))
-        .child(
-            look::text(look::CAPTION, FontWeight::MEDIUM, palette.muted()).child(label.to_owned()),
-        )
-        .child(
-            look::text(look::CAPTION, FontWeight::NORMAL, palette.muted()).child(count.to_string()),
-        )
+        .child(look::text(look::CAPTION, FontWeight::MEDIUM, palette.muted()).child(label))
 }
 
-/// A program's glyph: the icon its view's manifest declares, monochrome, or
-/// its name's initial when it declares none (SPEC §7.7).
+/// A program's glyph: the icon its view's manifest declares, or its name's
+/// initial when it declares none, in the ink of the tint the manifest names
+/// on that tint's ground (SPEC §7.7; no tint: the neutral filled tile).
 pub fn glyph(row: &RailRow, side: f32, icon: f32, palette: Palette) -> Div {
+    let (ground, ink) = palette.tint(row.tint);
     let tile = div()
         .size(px(side))
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
-        .bg(palette.surface_raised());
+        .bg(ground);
     if row.icon.is_empty() {
         let initial = initial(&name_of(row));
-        tile.child(look::text(look::BODY, FontWeight::MEDIUM, palette.foreground()).child(initial))
+        tile.child(look::text(look::BODY, FontWeight::MEDIUM, ink).child(initial))
     } else {
         tile.child(
             svg()
                 .path(SharedString::from(row.icon.clone()))
                 .size(px(icon))
-                .text_color(palette.foreground()),
+                .text_color(ink),
         )
     }
 }
@@ -250,14 +223,86 @@ fn search(field: &Entity<InputState>, focused: bool, palette: Palette) -> Div {
     )
 }
 
-/// Home: the network's programs that answer the filter, three across, each
-/// tile coming as its program's code is read; a tile opens its program;
-/// one a view asked about shows a dot (never a count, Expo `Dot`). While
-/// no tile is there and programs are still on their way, a `Loading` line
-/// stands where the tiles go.
+/// The programs of `rows` with news (a view asked about it: a dot), in
+/// `rows`' order: Home's New section, which repeats their tiles above the
+/// grid of every program; empty while no program has news.
+fn with_news<'a>(rows: &'a [RailRow], badges: &BTreeMap<&'static str, i64>) -> Vec<&'a RailRow> {
+    rows.iter()
+        .filter(|row| badges.get(row.program).is_some_and(|count| *count > 0))
+        .collect()
+}
+
+/// One program's tile in Home's grid, four across: its glyph on its tint's
+/// ground, a dot when it has news (never a count, Expo `Dot`), the name
+/// under it and the stage it is at while on its way. `section` keeps the
+/// New section's copy apart from the grid's (`new/chat`, `home/chat`).
+fn tile(
+    row: &RailRow,
+    section: &'static str,
+    news: bool,
+    palette: Palette,
+    cx: &mut Context<Root>,
+) -> Stateful<Div> {
+    let program = row.program;
+    let name = name_of(row);
+    let mut face = glyph(row, 60., 30., palette).relative();
+    if news {
+        // the board's dot: 10 in a 2 ring of the ground, at -5 / -5
+        face = face.child(
+            dot(palette)
+                .size(px(14.))
+                .border_2()
+                .border_color(palette.background())
+                .absolute()
+                .top(px(-5.))
+                .right(px(-5.)),
+        );
+    }
+    let mut tile = div()
+        .id(SharedString::from(format!("{section}/{program}")))
+        .control(Role::Button, name.clone())
+        .w(relative(1. / 4.))
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(look::gap::SM))
+        .pt(px(look::gap::SM))
+        .pb(px(look::gap::MD))
+        .px(px(look::gap::XXS))
+        .active(|style| style.opacity(look::PRESSED))
+        .child(face)
+        .child(
+            look::text(look::SECONDARY, FontWeight::NORMAL, palette.foreground())
+                .max_w_full()
+                .truncate()
+                .child(name),
+        )
+        .on_click(cx.listener(move |root, _, window, cx| {
+            window.blur(cx);
+            root.open(program, cx);
+        }));
+    if let Some(stage) = row.note {
+        tile = tile.child(
+            look::text(look::TINY, FontWeight::NORMAL, palette.muted())
+                .mt(px(-look::gap::XS))
+                .child(stage),
+        );
+    }
+    tile
+}
+
+/// Home: the network's name over who reads and how many programs it
+/// lists, a magnifier that opens the filter; then, while some program has
+/// news, those programs' tiles under "New"; then every program the filter
+/// answers in the roster's order, four across, under "Programs on this
+/// network". New repeats a tile, it never moves one, so the grid's places
+/// stay put. Each tile comes as its program's code is read; while none is
+/// there and programs are still on their way, a `Loading` line stands where
+/// the tiles go.
 pub fn home(
     shared: &Shared,
     field: &Entity<InputState>,
+    filtering: bool,
     searching: bool,
     palette: Palette,
     cx: &mut Context<Root>,
@@ -267,76 +312,42 @@ pub fn home(
     let loading = all.is_empty() || all.iter().any(|row| row.pending);
     // a program still on its way may ship no view: not a tile until its
     // code is read
-    let rows: Vec<RailRow> = all
+    let shown: Vec<RailRow> = all.into_iter().filter(|row| !row.pending).collect();
+    let count = shown.len();
+    let rows: Vec<RailRow> = shown
         .into_iter()
-        .filter(|row| !row.pending && answers(row, &query))
+        .filter(|row| answers(row, &query))
         .collect();
     let badges: BTreeMap<&'static str, i64> = shared.rail.read(cx).badges().clone();
-    let tiles = rows.iter().map(|row| {
-        let program = row.program;
-        let name = name_of(row);
-        let mut face = glyph(row, 56., 28., palette).relative();
-        // the board's tile dot: 8 in a 2 ring of the ground, at -2 / -6
-        if badges.get(program).is_some_and(|count| *count > 0) {
-            face = face.child(
-                dot(palette)
-                    .size(px(12.))
-                    .border_2()
-                    .border_color(palette.background())
-                    .absolute()
-                    .top(px(-2.))
-                    .right(px(-6.)),
-            );
-        }
-        let mut tile = div()
-            .id(SharedString::from(format!("home/{program}")))
-            .control(Role::Button, name.clone())
-            .w(relative(1. / 3.))
-            .min_h(px(112.))
+    let grid = |rows: &[&RailRow], section: &'static str, cx: &mut Context<Root>| {
+        let tiles: Vec<_> = rows
+            .iter()
+            .map(|row| {
+                let news = badges.get(row.program).is_some_and(|count| *count > 0);
+                tile(row, section, news, palette, cx)
+            })
+            .collect();
+        div()
             .flex()
-            .flex_col()
-            .items_center()
-            .gap(px(look::gap::SM))
-            .pt(px(look::gap::MD))
-            .pb(px(look::gap::LG))
-            .px(px(look::gap::XXS))
-            .active(|style| style.opacity(look::PRESSED))
-            .child(face)
-            .child(
-                look::text(look::SECONDARY, FontWeight::NORMAL, palette.foreground())
-                    .max_w_full()
-                    .truncate()
-                    .child(name),
-            )
-            .on_click(cx.listener(move |root, _, window, cx| {
-                window.blur(cx);
-                root.open(program, cx);
-            }));
-        if let Some(stage) = row.note {
-            tile = tile.child(
-                look::text(look::TINY, FontWeight::NORMAL, palette.muted())
-                    .mt(px(-look::gap::XXS))
-                    .child(stage),
-            );
-        }
-        tile
-    });
-    let body = div()
-        .id("home")
-        .flex_1()
-        .min_h_0()
-        .overflow_y_scroll()
-        .child(search(field, searching, palette));
+            .flex_wrap()
+            .px(px(look::gap::SM))
+            .py(px(look::gap::LG))
+            .children(tiles)
+    };
+    let new = with_news(&rows, &badges);
+    let mut body = div().id("home").flex_1().min_h_0().overflow_y_scroll();
+    if filtering {
+        body = body.child(search(field, searching, palette));
+    }
+    if !new.is_empty() {
+        body = body
+            .child(section_head("New", palette))
+            .child(grid(&new, "new", cx));
+    }
+    body = body.child(section_head(ON_THIS_NETWORK, palette));
     let body = if !rows.is_empty() || !loading {
-        body.child(section_head("Programs", rows.len(), palette))
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .px(px(look::GUTTER - look::gap::XXS))
-                    .py(px(look::gap::SM))
-                    .children(tiles),
-            )
+        let every: Vec<&RailRow> = rows.iter().collect();
+        body.child(grid(&every, "home", cx))
     } else {
         body.child(
             look::text(look::SECONDARY, FontWeight::NORMAL, palette.muted())
@@ -345,19 +356,44 @@ pub fn home(
                 .child("Loading"),
         )
     };
-    let name = me(shared, cx).map(|(_, name)| name).unwrap_or_default();
+    let (title, on) = {
+        let network = shared.session.read(cx).get().network.clone();
+        let programs = match count {
+            1 => "1 program".to_owned(),
+            count => format!("{count} programs"),
+        };
+        let on = match me(shared, cx) {
+            Some((_, name)) if !name.is_empty() => format!("{name} · {programs}"),
+            _ => programs,
+        };
+        (network, on)
+    };
+    let (icon, label) = match filtering {
+        true => ("icons/x.svg", "Close the filter"),
+        false => ("icons/search.svg", "Filter by name"),
+    };
+    let filter = div()
+        .id("home/filter")
+        .control(Role::Button, label)
+        .size(px(look::HIT))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .active(|style| style.opacity(look::PRESSED))
+        .child(
+            svg()
+                .path(icon)
+                .size(px(look::ICON_HIT))
+                .text_color(palette.foreground()),
+        )
+        .on_click(cx.listener(move |root, _, window, cx| root.filter(!filtering, window, cx)));
     div()
         .flex_1()
         .min_h_0()
         .flex()
         .flex_col()
-        .child(root_header(
-            HOME_TITLE,
-            caption(shared, cx),
-            &name,
-            palette,
-            cx,
-        ))
+        .child(root_header(title, caption(shared, on, cx), palette).child(filter))
         .child(body)
 }
 
@@ -392,8 +428,15 @@ pub fn open(
     palette: Palette,
     cx: &mut Context<Root>,
 ) -> Div {
-    let name = me(shared, cx).map(|(_, name)| name).unwrap_or_default();
-    let header = root_header("Open", caption(shared, cx), &name, palette, cx);
+    // the network in hand and the reader's name ("garage · phone test")
+    let on = {
+        let network = shared.session.read(cx).get().network.clone();
+        match me(shared, cx) {
+            Some((_, name)) if !name.is_empty() => format!("{network} · {name}"),
+            _ => network,
+        }
+    };
+    let header = root_header("Open".into(), caption(shared, on, cx), palette);
     if opened.is_empty() {
         return div()
             .flex_1()
@@ -622,7 +665,7 @@ pub fn tab_bar(on: Tab, inset: Pixels, palette: Palette, cx: &mut Context<Root>)
         .border_color(palette.border())
         .bg(palette.background())
         .child(
-            item("tab/home", "Home", "icons/square.svg", on == Tab::Home).on_click(cx.listener(
+            item("tab/home", "Home", "icons/house.svg", on == Tab::Home).on_click(cx.listener(
                 |root, _, window, cx| {
                     window.blur(cx);
                     root.pick(Tab::Home, cx);
@@ -650,12 +693,14 @@ pub fn tab_bar(on: Tab, inset: Pixels, palette: Palette, cx: &mut Context<Root>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use view_wire::manifest::Tint;
 
     fn row(label: &str, note: Option<&'static str>) -> RailRow {
         RailRow {
             program: "chat",
             label: label.into(),
             icon: String::new(),
+            tint: Tint::None,
             description: String::new(),
             note,
             empty: false,
@@ -669,6 +714,29 @@ mod tests {
     fn a_tile_names_its_program_by_manifest_else_by_id() {
         assert_eq!(name_of(&row("Chat rooms", None)), "Chat rooms");
         assert_eq!(name_of(&row("forge-view", Some("Loading"))), "Forge view");
+    }
+
+    /// New holds the programs with news, in the roster's order, and only
+    /// those: none while no program has a dot (a count of 0 is none). The
+    /// grid is every program as it was: New repeats a tile, never moves it.
+    #[test]
+    fn new_holds_the_programs_with_news_and_the_grid_keeps_its_order() {
+        let rows: Vec<RailRow> = ["arcade", "chat", "files", "forge"]
+            .into_iter()
+            .map(|program| RailRow {
+                program,
+                ..row(program, None)
+            })
+            .collect();
+        let programs = |rows: Vec<&RailRow>| rows.iter().map(|row| row.program).collect::<Vec<_>>();
+        assert!(with_news(&rows, &BTreeMap::new()).is_empty());
+        assert!(with_news(&rows, &BTreeMap::from([("chat", 0)])).is_empty());
+        let badges = BTreeMap::from([("forge", 2), ("chat", 1)]);
+        assert_eq!(programs(with_news(&rows, &badges)), ["chat", "forge"]);
+        assert_eq!(
+            programs(rows.iter().collect()),
+            ["arcade", "chat", "files", "forge"]
+        );
     }
 
     /// The filter reads a name or an id, in any case.
