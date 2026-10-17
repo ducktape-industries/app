@@ -77,9 +77,12 @@ final class EdgeBack: NSObject {
 /// audio session is the host's own (it activates it for the voice and lets it go after); CallKit's activation of the
 /// same session (`didActivate`) is only logged, and a voice opened before CallKit's activation lands is retried by the
 /// host. A call with no voice (another program's video-only call) never ends by this route: a CallKit ring is a voice
-/// call. Not yet: a withdraw (the call seen or answered elsewhere) takes no ring down here. It comes as a regular
-/// background push, and gpui_ios's app delegate hands the app neither that token nor that push (a gpui-pre hook to
-/// come), so a call rings on until its `until`. Hanging up from CallKit's own screen ends no call in the app.
+/// call. A withdraw (the call answered, declined or ended elsewhere, or over) is a background push to the regular
+/// remote-notification token: the launcher asks UIKit for it beside PushKit's, and gpui_ios's app delegate hands Rust
+/// the token (kind `apns`, to the device registry as PushKit's goes) and the push, which comes back here as JSON
+/// (`ducktape_phone_remote_notification`): `{"kind": "withdraw", "tag"}` stops the ring under `tag`, and only a ring
+/// (a call answered here is CallKit's until its voice goes). An app the person force-quit gets no background push:
+/// `until` stays the ring's end there. Hanging up from CallKit's own screen ends no call in the app.
 final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
   static let shared = Ring()
   /// The huddle program's ring, for a payload that carries no `until`: a call always carries one (SPEC §5).
@@ -118,6 +121,8 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
     registry.delegate = self
     registry.desiredPushTypes = [.voIP]
     self.registry = registry
+    // the regular token, which a withdraw is pushed to; silent pushes need no permission prompt
+    UIApplication.shared.registerForRemoteNotifications()
     if let mode = ProcessInfo.processInfo.environment["DUCKTAPE_RING_TEST"] { test(mode) }
   }
 
@@ -172,6 +177,19 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
         }
       }
     }
+  }
+
+  /// A background push: a withdrawn call's ring under `tag` stops, if it still rings. Whether the push was taken.
+  func remote(_ payload: [String: Any]) -> Bool {
+    guard payload["kind"] as? String == "withdraw", let tag = payload["tag"] as? String else { return false }
+    let id = Ring.id(tag)
+    guard ringing.removeValue(forKey: id) != nil else {
+      NSLog("ducktape ring: withdraw of \(tag), which does not ring here")
+      return true
+    }
+    NSLog("ducktape ring: \(tag) withdrawn")
+    provider.reportCall(with: id, endedAt: nil, reason: .remoteEnded)
+    return true
   }
 
   /// The call under `id` stops ringing unanswered, if it still rings.
@@ -269,6 +287,17 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
 @_cdecl("ducktape_phone_call_voice")
 public func ducktapePhoneCallVoice(_ active: UInt8) {
   DispatchQueue.main.async { Ring.shared.voice(active != 0) }
+}
+
+/// A background push from Rust (gpui_ios's app delegate), its payload as JSON; 1 when the ring took it. Main thread.
+@_cdecl("ducktape_phone_remote_notification")
+public func ducktapePhoneRemoteNotification(_ json: UnsafePointer<CChar>) -> UInt8 {
+  let data = Data(bytes: json, count: strlen(json))
+  guard let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+    NSLog("ducktape ring: a push's payload was not a JSON object")
+    return 0
+  }
+  return Ring.shared.remote(payload) ? 1 : 0
 }
 
 /// Where the key under `alias` is kept, for Rust (`crates/phone/src/key/ios.rs`): `sealed` set to 1 or 0, `level`

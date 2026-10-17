@@ -69,7 +69,8 @@ pub fn link(url: String) {
     }
 }
 
-/// This device's push tokens by kind (`voip`: PushKit's, as hex; `fcm`:
+/// This device's push tokens by kind (`voip`: PushKit's, as hex; `apns`:
+/// the remote-notification token a withdraw is pushed to, as hex; `fcm`:
 /// Firebase's), as the OS last handed them over, for the device registry
 /// that hands them to the push server (pushd M2, not built: until then
 /// they are only logged).
