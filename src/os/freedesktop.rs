@@ -153,6 +153,7 @@ fn declined(banner: u32) {
         .map(|(tag, _)| tag.clone());
     if let Some(tag) = tag {
         withdraw(&tag);
+        ducktape_host::runtime::notify::declined(&tag);
     }
 }
 

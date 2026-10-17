@@ -36,9 +36,9 @@ pub enum NoticeKind {
     /// standing until `notify.seen` of its tag or its `until`. Not held
     /// back by the burst limit but one call stands per program: another
     /// while it rings, under any tag, is logged only (a default the owner
-    /// may veto; a call declined on its banner still counts until its
-    /// `until`). Raised once before the person said anything about its
-    /// view. A call needs a tag and an `until`: without either it is a
+    /// may veto). It stops standing at its `until`, on `notify.seen` of
+    /// its tag, or declined on its banner ([`Center::declined`]). Raised
+    /// once before the person said anything about its view. A call needs a tag and an `until`: without either it is a
     /// plain notice.
     Call,
 }
@@ -273,6 +273,13 @@ impl Center {
             self.until.remove(tag);
         }
         over
+    }
+
+    /// The call raised under `tag` declined on its banner (this device
+    /// alone, SPEC D11): it stands no more, so its program's next call
+    /// rings at once, and its timer finds nothing to take down.
+    pub fn declined(&mut self, tag: &str) {
+        self.until.remove(tag);
     }
 
     /// Into the log: a notice under a tag the view already has a row for

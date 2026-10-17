@@ -90,6 +90,7 @@ declare_class!(
             let action = action.to_string();
             if action == DECLINE {
                 withdraw(&tag);
+                ducktape_host::runtime::notify::declined(&tag);
             } else if let Some(click) = click.filter(|_| default || action == ANSWER) {
                 super::clicked(click);
             }
