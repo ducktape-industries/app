@@ -69,6 +69,8 @@ pub(in crate::shell) struct OverlayLayer {
     spotlight_rows: gpui_kit::ScrollHandle,
     /// Settings' page: the row holding the keys scrolls into view.
     settings_rows: settings::Page,
+    /// Where Settings' title strip put it, and the pointer holding it.
+    settings_moved: settings::Moved,
     /// The one Tab stop of each tab list and radio group drawn here, by
     /// the composite's id: its active item tracks it (`a11y::roving`).
     stops: HashMap<gpui_kit::SharedString, FocusHandle>,
@@ -170,6 +172,7 @@ impl OverlayLayer {
             approve_code,
             spotlight_rows: Default::default(),
             settings_rows: Default::default(),
+            settings_moved: Default::default(),
             stops: HashMap::new(),
             covered: None,
             refocus: None,

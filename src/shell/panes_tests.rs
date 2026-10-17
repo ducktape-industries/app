@@ -731,6 +731,73 @@ fn tab_stays_in_a_modal_dialog(cx: &mut TestAppContext) {
     assert!(seen.len() > 2, "Tab went round Settings' controls");
 }
 
+/// Settings moves by its title strip: a drag there carries the dialog by
+/// the drag's delta, and it opens there again; a press on its close or on
+/// a page in its nav carries nothing. However far it is dragged, or however
+/// small the window gets, its strip stays inside the window, and the next
+/// drag carries it on from where it shows.
+#[gpui_kit::test]
+fn settings_moves_by_its_title_strip_and_its_strip_stays_inside(cx: &mut TestAppContext) {
+    let (_, _, view, mut native) = console(cx);
+    let settings = Some(Overlay::Settings(SettingsPage::Appearance));
+    show(&view, settings, &mut native);
+    settle(&mut native);
+    let card = |native: &mut VisualTestContext| bounds(native, "settings-window");
+    // on the strip, clear of its close
+    let strip = |[x0, y0, ..]: [i64; 4]| ((x0 + 200) as f32, (y0 + 17) as f32);
+    let centre = |[x0, y0, x1, y1]: [i64; 4]| (((x0 + x1) / 2) as f32, ((y0 + y1) / 2) as f32);
+    let [x0, y0, x1, y1] = card(&mut native);
+    let from = strip([x0, y0, x1, y1]);
+    drag(&mut native, from, (from.0 - 150., from.1 + 40.));
+    let moved = card(&mut native);
+    assert_eq!(
+        moved,
+        [x0 - 150, y0 + 40, x1 - 150, y1 + 40],
+        "moved by the drag"
+    );
+    for handle in ["settings-close", "settings/notifications"] {
+        let at = centre(bounds(&mut native, handle));
+        drag(&mut native, at, (at.0 - 300., at.1 + 100.));
+        assert_eq!(
+            card(&mut native),
+            moved,
+            "a press on {handle} moved Settings"
+        );
+    }
+    show(&view, None, &mut native);
+    show(&view, settings, &mut native);
+    settle(&mut native);
+    assert_eq!(card(&mut native), moved, "reopened where it was put");
+    // past the top left: 12px inside the scrim's corner, as far as it goes
+    drag(&mut native, strip(moved), (-5000., -5000.));
+    let [x0, y0, ..] = card(&mut native);
+    assert_eq!([x0, y0], [12, layers::BAR as i64 + 12]);
+    // past the bottom: the strip stays 12px above it, the body below
+    let (width, height) = layers::tests::WINDOW;
+    let from = strip(card(&mut native));
+    drag(&mut native, from, (0., 5000.));
+    assert_eq!(card(&mut native)[1], height as i64 - 12 - 34);
+    // the window shrunk under it: no room across, the strip still inside
+    native.simulate_resize(size(px(width - 600.), px(height - 300.)));
+    settle(&mut native);
+    let [x0, y0, x1, _] = card(&mut native);
+    assert_eq!(
+        [x0, y0, x1],
+        [
+            12,
+            (height - 300.) as i64 - 12 - 34,
+            (width - 600.) as i64 - 12
+        ]
+    );
+    let from = strip(card(&mut native));
+    drag(&mut native, from, (from.0, from.1 - 100.));
+    assert_eq!(
+        card(&mut native)[1],
+        y0 - 100,
+        "carried on from where it shows"
+    );
+}
+
 /// An empty window's field has the keys as soon as the window opens: what
 /// is typed narrows the programs, ↓ picks the next, Enter opens it there.
 #[gpui_kit::test]
