@@ -5,6 +5,7 @@
 //! (`design/canvas/shell`), English as the Expo app's.
 
 use super::Root;
+use super::debug::Readout;
 use super::look::{self, Palette};
 use super::stack::{Opened, Tab};
 use ducktape_host::a11y::Control as _;
@@ -223,13 +224,19 @@ fn search(field: &Entity<InputState>, focused: bool, palette: Palette) -> Div {
     )
 }
 
-/// The programs of `rows` with news (a view asked about it: a dot), in
-/// `rows`' order: Home's New section, which repeats their tiles above the
-/// grid of every program; empty while no program has news.
-fn with_news<'a>(rows: &'a [RailRow], badges: &BTreeMap<&'static str, i64>) -> Vec<&'a RailRow> {
-    rows.iter()
+/// Home's two sections of `rows`: New, the programs with news (a view
+/// asked about it: a dot) in `rows`' order, empty while none has news; and
+/// the grid, every program of `rows` in its order, those with news too:
+/// New repeats a tile above the grid, never moves it.
+fn sections<'a>(
+    rows: &'a [RailRow],
+    badges: &BTreeMap<&'static str, i64>,
+) -> (Vec<&'a RailRow>, Vec<&'a RailRow>) {
+    let new = rows
+        .iter()
         .filter(|row| badges.get(row.program).is_some_and(|count| *count > 0))
-        .collect()
+        .collect();
+    (new, rows.iter().collect())
 }
 
 /// One program's tile in Home's grid, four across: its glyph on its tint's
@@ -334,7 +341,7 @@ pub fn home(
             .py(px(look::gap::LG))
             .children(tiles)
     };
-    let new = with_news(&rows, &badges);
+    let (new, every) = sections(&rows, &badges);
     let mut body = div().id("home").flex_1().min_h_0().overflow_y_scroll();
     if filtering {
         body = body.child(search(field, searching, palette));
@@ -346,7 +353,6 @@ pub fn home(
     }
     body = body.child(section_head(ON_THIS_NETWORK, palette));
     let body = if !rows.is_empty() || !loading {
-        let every: Vec<&RailRow> = rows.iter().collect();
         body.child(grid(&every, "home", cx))
     } else {
         body.child(
@@ -420,14 +426,23 @@ pub fn ago(since: Duration) -> String {
 
 /// Open: the programs open, the latest first, each with the title its view
 /// gave its window and when it was last on screen; a press goes back to
-/// where it was left, the × lets it go (it stays on Home).
+/// where it was left, the × lets it go (it stays on Home). In debug mode
+/// (`readout`) each says what it costs under its name, and the app's own
+/// memory heads the list.
 pub fn open(
     shared: &Shared,
     opened: &[Opened],
     titles: &BTreeMap<u64, String>,
+    readout: Option<&Readout>,
     palette: Palette,
     cx: &mut Context<Root>,
 ) -> Div {
+    let mono = |text: String| {
+        look::text(look::CAPTION, FontWeight::NORMAL, palette.muted())
+            .font_family(ducktape_host::fonts::FAMILY_MONO)
+            .truncate()
+            .child(text)
+    };
     // the network in hand and the reader's name ("garage · phone test")
     let on = {
         let network = shared.session.read(cx).get().network.clone();
@@ -437,6 +452,17 @@ pub fn open(
         }
     };
     let header = root_header("Open".into(), caption(shared, on, cx), palette);
+    // the whole app, over the list (debug mode)
+    let app = readout.map(|readout| {
+        div()
+            .id("open/app")
+            .debug_selector(|| "open/app".to_owned())
+            .px(px(look::GUTTER))
+            .py(px(look::gap::SM))
+            .border_b_1()
+            .border_color(palette.border())
+            .child(mono(readout.app()))
+    });
     if opened.is_empty() {
         return div()
             .flex_1()
@@ -444,6 +470,7 @@ pub fn open(
             .flex()
             .flex_col()
             .child(header)
+            .children(app)
             .child(empty(
                 "icons/archive.svg",
                 "Nothing open",
@@ -468,6 +495,21 @@ pub fn open(
             .as_ref()
             .map(|row| row.icon.clone())
             .filter(|icon| !icon.is_empty());
+        let cost = readout.map(|readout| {
+            let seat = shared.seats.read(cx).seat(opened.instance);
+            let memory = seat.and_then(|seat| seat.read(cx).memory_bytes());
+            let id = format!("open/{program}/cost");
+            div()
+                .id(SharedString::from(id.clone()))
+                .debug_selector(move || id.clone())
+                .pt(px(look::gap::XXS))
+                .children(
+                    readout
+                        .cost(program, opened.instance, memory)
+                        .lines()
+                        .map(mono),
+                )
+        });
         let mut line = div()
             .id(SharedString::from(format!("open/{program}")))
             .control(Role::Button, name.clone())
@@ -507,7 +549,8 @@ pub fn open(
                         look::text(look::CAPTION, FontWeight::NORMAL, palette.muted())
                             .truncate()
                             .child(caption),
-                    ),
+                    )
+                    .children(cost),
             )
             .on_click(cx.listener(move |root, _, window, cx| {
                 window.blur(cx);
@@ -549,6 +592,7 @@ pub fn open(
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
+                .children(app)
                 .children(rows)
                 .child(
                     look::text(look::SECONDARY, FontWeight::NORMAL, palette.muted())
@@ -729,14 +773,12 @@ mod tests {
             })
             .collect();
         let programs = |rows: Vec<&RailRow>| rows.iter().map(|row| row.program).collect::<Vec<_>>();
-        assert!(with_news(&rows, &BTreeMap::new()).is_empty());
-        assert!(with_news(&rows, &BTreeMap::from([("chat", 0)])).is_empty());
+        assert!(sections(&rows, &BTreeMap::new()).0.is_empty());
+        assert!(sections(&rows, &BTreeMap::from([("chat", 0)])).0.is_empty());
         let badges = BTreeMap::from([("forge", 2), ("chat", 1)]);
-        assert_eq!(programs(with_news(&rows, &badges)), ["chat", "forge"]);
-        assert_eq!(
-            programs(rows.iter().collect()),
-            ["arcade", "chat", "files", "forge"]
-        );
+        let (new, grid) = sections(&rows, &badges);
+        assert_eq!(programs(new), ["chat", "forge"]);
+        assert_eq!(programs(grid), ["arcade", "chat", "files", "forge"]);
     }
 
     /// The filter reads a name or an id, in any case.

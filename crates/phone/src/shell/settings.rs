@@ -5,12 +5,15 @@
 //! section is not here: a phone build is never one.
 //!
 //! It reads the session (the node, the network), the chain (the network's
-//! founding time), the account (this phone's key) and what the key store
-//! said as the page opened; it writes nothing.
+//! founding time), the account (this phone's key), the prefs and what the
+//! key store said as the page opened; it writes two prefs, debug mode's
+//! switch here and the appearance on its own page (the Expo build had
+//! neither: it followed the system).
 
 use super::look::{self, Palette};
-use super::{Root, about, join};
+use super::{Page, Root, about, join};
 use ducktape_host::a11y::Control as _;
+use ducktape_host::backend::Appearance;
 use ducktape_host::contract::{KeyLevel, KeyStorage};
 use ducktape_host::session::Shared;
 use gpui_kit::{
@@ -63,13 +66,7 @@ pub fn page(
     )
     .control(Role::Button, "Switch network…")
     .active(|style| style.opacity(look::PRESSED))
-    .child(
-        svg()
-            .path("icons/chevron-right.svg")
-            .size(px(look::ICON_ROW))
-            .flex_none()
-            .text_color(palette.faint()),
-    )
+    .child(chevron(palette))
     .on_click(cx.listener(|root, _, window, cx| root.show_switch(window, cx)));
     let account = shared.account.read(cx);
     let key = noded_client::hex::hex_decode(&account.get().signer_key)
@@ -110,16 +107,40 @@ pub fn page(
     if ok {
         storage = storage.child(badge("OK", palette));
     }
+    let chosen = shared.prefs.read(cx).get().appearance;
     let appearance = row(
         "settings/appearance",
         "icons/sun-moon.svg",
-        "Follows the system",
+        "Light and dark",
+        Some(caption(chosen_words(chosen), palette)),
+        palette,
+    )
+    .control(Role::Button, "Light and dark")
+    .debug_selector(|| "settings/appearance".to_owned())
+    .active(|style| style.opacity(look::PRESSED))
+    .child(chevron(palette))
+    .on_click(cx.listener(|root, _, _, cx| root.push_page(Page::Appearance, cx)));
+    let on = shared.prefs.read(cx).get().debug;
+    let debug = row(
+        "settings/debug",
+        "icons/gauge.svg",
+        "Debug mode",
         Some(caption(
-            format!("Light and dark come from {}'s setting.", crate::os::SYSTEM),
+            "What each program costs, on the Open tab.",
             palette,
         )),
         palette,
-    );
+    )
+    .control(Role::Switch, "Debug mode")
+    .aria_toggled(on.into())
+    .debug_selector(|| "settings/debug".to_owned())
+    .active(|style| style.opacity(look::PRESSED))
+    .child(toggle(on, palette))
+    .on_click(cx.listener(move |root, _, _, cx| {
+        root.shared
+            .prefs
+            .update(cx, |prefs, cx| prefs.set_debug(!on, cx));
+    }));
     let version = row(
         "settings/about",
         "icons/info.svg",
@@ -140,6 +161,8 @@ pub fn page(
         .child(storage)
         .child(about::section("Appearance", None, palette))
         .child(appearance)
+        .child(about::section("Debug", None, palette))
+        .child(debug)
         .child(about::section("About", None, palette))
         .child(version);
     div()
@@ -157,6 +180,133 @@ pub fn page(
             ),
         )
         .child(body)
+}
+
+/// Appearance (pushed from App settings' Light and dark row, as iOS
+/// Settings' choice pages are): System, Light and Dark, the one in force
+/// checked. A press saves it, and the app, every program and the system
+/// bars take it at once (the shell's prefs observer puts it on the theme).
+pub fn appearance(shared: &Shared, palette: Palette, cx: &mut Context<Root>) -> Div {
+    let back = cx.listener(|root, _, _, cx| root.pop_page(cx));
+    let now = shared.prefs.read(cx).get().appearance;
+    let system = format!("Light and dark come from {}'s setting.", crate::os::SYSTEM);
+    let choices = [
+        (
+            Appearance::System,
+            "appearance/system",
+            "icons/sun-moon.svg",
+            "System",
+        ),
+        (
+            Appearance::Light,
+            "appearance/light",
+            "icons/sun.svg",
+            "Light",
+        ),
+        (
+            Appearance::Dark,
+            "appearance/dark",
+            "icons/moon.svg",
+            "Dark",
+        ),
+    ]
+    .map(|(mode, id, icon, title)| {
+        let words = (mode == Appearance::System).then(|| caption(system.clone(), palette));
+        let chosen = mode == now;
+        let mut choice = row(id, icon, title, words, palette)
+            .control(Role::RadioButton, title)
+            .aria_toggled(chosen.into())
+            .debug_selector(move || id.to_owned())
+            .active(|style| style.opacity(look::PRESSED))
+            .on_click(cx.listener(move |root, _, _, cx| {
+                root.shared
+                    .prefs
+                    .update(cx, |prefs, cx| prefs.set_appearance(mode, cx));
+            }));
+        if chosen {
+            choice = choice.child(
+                svg()
+                    .path("icons/check.svg")
+                    .size(px(look::ICON_ROW))
+                    .flex_none()
+                    .text_color(palette.foreground()),
+            );
+        }
+        choice
+    });
+    div()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .child(
+            look::header("appearance/back", back, palette).child(
+                div().flex_1().min_w_0().px(px(look::gap::SM)).child(
+                    look::text(look::TITLE, FontWeight::MEDIUM, palette.foreground())
+                        .truncate()
+                        .child("Appearance"),
+                ),
+            ),
+        )
+        .child(
+            div()
+                .id("appearance")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(about::section("Light and dark", None, palette))
+                .children(choices)
+                .child(
+                    look::text(look::SECONDARY, FontWeight::NORMAL, palette.muted())
+                        .px(px(look::GUTTER))
+                        .py(px(look::gap::LG))
+                        .child("Every program follows it too."),
+                ),
+        )
+}
+
+/// The appearance chosen, as App settings' row says it.
+fn chosen_words(appearance: Appearance) -> String {
+    match appearance {
+        Appearance::System => format!("System: as {} is set", crate::os::SYSTEM),
+        Appearance::Light => "Always light".to_owned(),
+        Appearance::Dark => "Always dark".to_owned(),
+    }
+}
+
+/// The Expo `Switch` (kit `Toggle.tsx`): a 40 × 24 pill, `primary` when
+/// on and `border_strong` off, its 18 knob in `background` at the left or
+/// the right; the row around it is the press.
+fn toggle(on: bool, palette: Palette) -> Div {
+    let ground = match on {
+        true => palette.primary(),
+        false => palette.border_strong(),
+    };
+    div()
+        .relative()
+        .w(px(40.))
+        .h(px(24.))
+        .flex_none()
+        .rounded(px(12.))
+        .bg(ground)
+        .child(
+            div()
+                .absolute()
+                .top(px(3.))
+                .left(px(if on { 19. } else { 3. }))
+                .size(px(18.))
+                .rounded(px(9.))
+                .bg(palette.background()),
+        )
+}
+
+/// A row's chevron (Expo `Row`'s `chevron`): the row pushes a page.
+fn chevron(palette: Palette) -> gpui_kit::Svg {
+    svg()
+        .path("icons/chevron-right.svg")
+        .size(px(look::ICON_ROW))
+        .flex_none()
+        .text_color(palette.faint())
 }
 
 /// A list row (Expo `Row`): the 24 lead column with its 18 muted icon, the

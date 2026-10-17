@@ -19,6 +19,10 @@ pub struct Prefs {
     pub layout: Option<Layout>,
     /// Read off disk once, and again only after a notice setting was saved.
     pub notify: notify::Settings,
+    /// Debug mode (the phone's App settings): the perf counters on
+    /// (`perf::switch`) and what each program costs shown. The shell
+    /// switches the counters on at launch when it is.
+    pub debug: bool,
 }
 
 impl Prefs {
@@ -31,6 +35,7 @@ impl Prefs {
             motion: backend::load_motion(),
             layout: backend::load_layout(),
             notify: notify::Settings::load(),
+            debug: backend::load_debug(),
         }
     }
 
@@ -71,6 +76,14 @@ impl Slice<Prefs> {
         let _timed = timed();
         backend::save_layout(layout);
         self.edit(|prefs| prefs.layout = Some(layout), cx);
+    }
+
+    /// Debug mode on or off, and the perf counters with it.
+    pub fn set_debug(&mut self, on: bool, cx: &mut Context<Self>) {
+        let _timed = timed();
+        backend::save_debug(on);
+        crate::perf::switch(on);
+        self.edit(|prefs| prefs.debug = on, cx);
     }
 
     /// What the theme says the OS is: written by whoever syncs the theme.
@@ -115,6 +128,7 @@ impl Slice<Prefs> {
                 prefs.motion = loaded.motion;
                 prefs.layout = loaded.layout;
                 prefs.notify = loaded.notify;
+                prefs.debug = loaded.debug;
             },
             cx,
         );

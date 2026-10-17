@@ -131,6 +131,18 @@ pub fn save_motion(on: bool) -> bool {
     edit_prefs(|prefs| prefs["motion"] = serde_json::json!(on))
 }
 
+/// Whether debug mode is on (the phone's App settings: the perf counters
+/// on, what each program costs shown); off unless turned on.
+pub fn load_debug() -> bool {
+    read_prefs().unwrap_or_default()["debug"]
+        .as_bool()
+        .unwrap_or(false)
+}
+
+pub fn save_debug(on: bool) -> bool {
+    edit_prefs(|prefs| prefs["debug"] = serde_json::json!(on))
+}
+
 const DEFAULT_VIEW_BYTES: u64 = 64 << 20;
 const DEFAULT_PICTURE_BYTES: u64 = 64 << 20;
 const DEFAULT_SVG_RASTER_BYTES: u64 = 256 << 20;
@@ -176,6 +188,30 @@ mod tests {
                 ..defaults
             }
         );
+    }
+
+    /// No `appearance` key is System; Light and Dark read back as saved,
+    /// and System takes the key away again.
+    #[test]
+    fn the_appearance_reads_back_as_saved_and_system_is_no_key() {
+        assert_eq!(load_appearance(), Appearance::System);
+        for mode in [Appearance::Dark, Appearance::Light] {
+            assert!(save_appearance(mode));
+            assert_eq!(load_appearance(), mode);
+        }
+        assert!(save_appearance(Appearance::System));
+        assert_eq!(load_appearance(), Appearance::System);
+        assert!(read_prefs().unwrap().get("appearance").is_none());
+    }
+
+    /// Debug mode is off until turned on, and reads back as saved.
+    #[test]
+    fn debug_mode_is_off_until_turned_on_and_reads_back_as_saved() {
+        assert!(!load_debug());
+        assert!(save_debug(true));
+        assert!(load_debug());
+        assert!(save_debug(false));
+        assert!(!load_debug());
     }
 
     /// No `layout` key is "not chosen yet"; each choice reads back as

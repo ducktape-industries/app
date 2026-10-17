@@ -30,7 +30,8 @@
 //!   no NativeActivity is declared (see its own doc).
 //!
 //! Called from here, through gm's own attached `Env` and the Activity reference
-//! gm keeps: `Activity.moveTaskToBack(boolean)` on gm's render thread, and
+//! gm keeps: `Activity.moveTaskToBack(boolean)` and
+//! `MainActivity.systemBars(dark)` on gm's render thread, and
 //! `MainActivity.ask(permission)` (blocking until the person answers) and
 //! `MainActivity.openSettings(page)` on a camera's or a microphone's thread.
 #![allow(unsafe_code, reason = "the JNI entries the Android Activity calls")]
@@ -377,6 +378,26 @@ fn ask(permission: &str) -> bool {
         tracing::error!(target: "ducktape::phone", %error, "the permission was not asked");
         false
     })
+}
+
+/// The system bars' icons over the app's appearance, through the Activity
+/// (`MainActivity.systemBars`): light icons over a `dark` app, dark ones
+/// over a light one.
+pub fn system_bars(dark: bool) {
+    let set = gpui_mobile::android::jni::with_env(|env| {
+        let activity = gpui_mobile::android::jni::activity(env)?;
+        env.call_method(
+            &activity,
+            jni::jni_str!("systemBars"),
+            jni::jni_sig!("(Z)V"),
+            &[JValue::Bool(dark)],
+        )
+        .map(drop)
+        .map_err(|error| error.to_string())
+    });
+    if let Err(error) = set {
+        tracing::error!(target: "ducktape::phone", %error, "the system bars did not follow the appearance");
+    }
 }
 
 /// Brings up the app's own page in Settings, `page` being its `package:`

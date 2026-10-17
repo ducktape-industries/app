@@ -9,7 +9,7 @@ use ducktape_host::a11y::Control as _;
 use ducktape_host::fonts::FAMILY_UI;
 use gpui_kit::{
     App, ClickEvent, Div, FontWeight, Hsla, InteractiveElement as _, ParentElement as _, Rgba,
-    StatefulInteractiveElement as _, Styled as _, Window, WindowAppearance, div, px, svg,
+    StatefulInteractiveElement as _, Styled as _, Window, div, px, rgb, svg,
 };
 use view_wire::manifest::Tint;
 
@@ -179,15 +179,16 @@ pub fn header(
         .child(back)
 }
 
-/// The palette of the system's appearance: no in-app toggle (Expo
-/// Settings → Appearance "Follows the system").
-pub fn palette(window: &Window) -> Palette {
-    match window.appearance() {
-        WindowAppearance::Dark | WindowAppearance::VibrantDark => Palette {
+/// The palette of the kit theme's mode: the appearance App settings chose,
+/// or under System the system's (`shell::sync_appearance` sets the theme,
+/// which the views and the host's own chrome read too).
+pub fn palette(cx: &App) -> Palette {
+    match gpui_kit::component::Theme::global(cx).is_dark() {
+        true => Palette {
             colours: &design::DARK,
             dark: true,
         },
-        WindowAppearance::Light | WindowAppearance::VibrantLight => Palette {
+        false => Palette {
             colours: &design::LIGHT,
             dark: false,
         },
@@ -218,7 +219,7 @@ impl Palette {
         // [ground, ink], light then dark
         let pair = |light: [u32; 2], dark: [u32; 2]| {
             let [ground, ink] = if self.dark { dark } else { light };
-            (hex(ground), hex(ink))
+            (rgb(ground).into(), rgb(ink).into())
         };
         match tint {
             Tint::None => (self.surface_raised(), self.foreground()),
@@ -245,18 +246,6 @@ impl Palette {
         }
         .into()
     }
-}
-
-/// `0xRRGGBB`, opaque.
-fn hex(rgb: u32) -> Hsla {
-    let channel = |shift: u32| ((rgb >> shift) & 0xFF) as f32 / 255.;
-    Rgba {
-        r: channel(16),
-        g: channel(8),
-        b: channel(0),
-        a: 1.,
-    }
-    .into()
 }
 
 macro_rules! colours {
@@ -309,8 +298,14 @@ mod tests {
     /// where it has one; no tint is the neutral filled tile.
     #[test]
     fn a_tint_is_its_pair_and_none_is_the_neutral_tile() {
-        assert_eq!(LIGHT.tint(Tint::Blue), (hex(0xD8EDFF), hex(0x1762B6)));
-        assert_eq!(DARK.tint(Tint::Blue), (hex(0x182E4B), hex(0x99CEFF)));
+        assert_eq!(
+            LIGHT.tint(Tint::Blue),
+            (rgb(0xD8EDFF).into(), rgb(0x1762B6).into())
+        );
+        assert_eq!(
+            DARK.tint(Tint::Blue),
+            (rgb(0x182E4B).into(), rgb(0x99CEFF).into())
+        );
         assert_eq!(DARK.tint(Tint::Violet), (DARK.agent_soft(), DARK.agent()));
         for palette in [LIGHT, DARK] {
             assert_eq!(

@@ -25,6 +25,7 @@
 //! changes: a frame is asked for only while something is under way.
 
 mod about;
+mod debug;
 mod home;
 mod join;
 mod look;
@@ -34,6 +35,7 @@ mod sheet;
 pub mod stack;
 
 use ducktape_host::a11y::Control as _;
+use ducktape_host::backend::Appearance;
 use ducktape_host::contract::{Boot, KeyStorage, OsServices, Signal, SoftKeyboard};
 use ducktape_host::motion::{self, Shown, Slide, Tween};
 use ducktape_host::render::ViewTree;
@@ -118,6 +120,11 @@ pub fn launch(os: Arc<dyn OsServices>, cx: &mut App) {
     };
     let (host, inbound) = ducktape_host::start::start(boot, cx);
     crate::os::install_inbound(inbound);
+    // debug mode left on: the counters on from the start (never turned off
+    // here, where `DUCKTAPE_PERF=1` may have turned them on)
+    if host.shared.prefs.read(cx).get().debug {
+        ducktape_host::perf::switch(true);
+    }
     if let Some(target) = Session::boot_target() {
         host.shared
             .session
@@ -264,6 +271,21 @@ fn let_go_closed(stack: &Entity<Stack>, seats: &Entity<Seats>, cx: &mut App) {
     seats.update(cx, |seats, cx| seats.place(kept, cx));
 }
 
+/// `appearance` (App settings › Appearance) onto the kit theme, which the
+/// phone's palette (`look::palette`), every view's theme and the host's own
+/// chrome read; under System, the window's own; then the system bars over
+/// it. Called as the window opens, when the choice moves and when the
+/// system's does.
+fn sync_appearance(appearance: Appearance, window: &mut Window, cx: &mut App) {
+    use gpui_kit::component::{Theme, ThemeMode};
+    match appearance {
+        Appearance::Light => Theme::change(ThemeMode::Light, Some(window), cx),
+        Appearance::Dark => Theme::change(ThemeMode::Dark, Some(window), cx),
+        Appearance::System => Theme::sync_system_appearance(Some(window), cx),
+    }
+    crate::os::system_bars(Theme::global(cx).is_dark());
+}
+
 /// The AX door over the phone's window, on [`DOOR_PORT`]; the door file in
 /// `Dirs::runtime` for the walk to read its token from.
 #[cfg(feature = "ax-door")]
@@ -313,13 +335,14 @@ fn open_door(cx: &mut App) {
 
 /// What the stack shows full screen: a tab root, the program on top, or
 /// one of the shell's own pages pushed over them (a program's page, App
-/// settings, Switch network).
+/// settings, its Appearance, Switch network).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Page {
     Root(Tab),
     Program(&'static str),
     About(&'static str),
     Settings,
+    Appearance,
     Switch,
 }
 
@@ -333,6 +356,7 @@ impl Page {
             Page::Program(program) => format!("screen::program/{program}").into(),
             Page::About(program) => format!("screen::about/{program}").into(),
             Page::Settings => "screen::settings".into(),
+            Page::Appearance => "screen::appearance".into(),
             Page::Switch => "screen::switch".into(),
         }
     }
@@ -341,13 +365,18 @@ impl Page {
     fn program(self) -> Option<&'static str> {
         match self {
             Page::Program(program) => Some(program),
-            Page::Root(_) | Page::About(_) | Page::Settings | Page::Switch => None,
+            Page::Root(_) | Page::About(_) | Page::Settings | Page::Appearance | Page::Switch => {
+                None
+            }
         }
     }
 
     /// One of the shell's own pages, pushed over the stack.
     fn pushed(self) -> bool {
-        matches!(self, Page::About(_) | Page::Settings | Page::Switch)
+        matches!(
+            self,
+            Page::About(_) | Page::Settings | Page::Appearance | Page::Switch
+        )
     }
 }
 
@@ -389,6 +418,10 @@ pub struct Root {
     placed: (BTreeMap<u64, Place>, Option<u64>),
     /// Links that came before the network's program list did, in order.
     waiting: Vec<String>,
+    /// The appearance last put on the theme (`sync_appearance`).
+    appearance: Appearance,
+    /// Debug mode's numbers, read while the Open tab is on screen.
+    readout: debug::Readout,
     /// Home's filter, and whether it is open (its magnifier pressed).
     search: Entity<InputState>,
     filtering: bool,
@@ -430,7 +463,14 @@ impl Root {
             cx.observe(&shared.screen, |_, _, cx| cx.notify()),
             cx.observe(&shared.account, |_, _, cx| cx.notify()),
             cx.observe(&shared.toast, |_, _, cx| cx.notify()),
-            cx.observe(&shared.prefs, |_, _, cx| cx.notify()),
+            cx.observe_in(&shared.prefs, window, |root, prefs, window, cx| {
+                let appearance = prefs.read(cx).get().appearance;
+                if appearance != root.appearance {
+                    root.appearance = appearance;
+                    sync_appearance(appearance, window, cx);
+                }
+                cx.notify();
+            }),
             cx.observe(&stack, |_, _, cx| cx.notify()),
             cx.observe(&shared.seats, |root, _, cx| root.watch_seats(cx)),
             cx.subscribe(&shared.seats, |root, _, event: &SeatsEvent, cx| {
@@ -467,13 +507,14 @@ impl Root {
             }),
             // in front only while the window is
             cx.observe_window_activation(window, |_, _, cx| cx.notify()),
-            cx.observe_window_appearance(window, |_, window, cx| {
-                gpui_kit::component::Theme::sync_system_appearance(Some(window), cx);
+            cx.observe_window_appearance(window, |root, window, cx| {
+                sync_appearance(root.appearance, window, cx);
                 cx.notify();
             }),
         ];
         subscriptions.extend(crate::os::follow(window, cx));
-        gpui_kit::component::Theme::sync_system_appearance(Some(window), cx);
+        let appearance = shared.prefs.read(cx).get().appearance;
+        sync_appearance(appearance, window, cx);
         let join = cx.new(|cx| join::Join::new(shared.clone(), window, cx));
         subscriptions.push(cx.subscribe(&join, |root, _, _: &join::Stayed, cx| root.switched(cx)));
         Self {
@@ -488,6 +529,8 @@ impl Root {
             titles: BTreeMap::new(),
             placed: Default::default(),
             waiting: Vec::new(),
+            appearance,
+            readout: debug::Readout::default(),
             search,
             filtering: false,
             watched: BTreeMap::new(),
@@ -1499,6 +1542,11 @@ impl Root {
                 let body = safe().flex().flex_col().pb(edges.bottom).child(page);
                 (layer.child(body), edges.bottom + px(look::gap::LG))
             }
+            Page::Appearance => {
+                let page = settings::appearance(&self.shared, palette, cx);
+                let body = safe().flex().flex_col().pb(edges.bottom).child(page);
+                (layer.child(body), edges.bottom + px(look::gap::LG))
+            }
             Page::Switch => {
                 let back = cx.listener(|root, _, _, cx| root.pop_page(cx));
                 let header = look::header("switch/back", back, palette);
@@ -1536,7 +1584,9 @@ impl Root {
                     }
                     Tab::Open => {
                         let opened = self.stack.read(cx).open().to_vec();
-                        home::open(&self.shared, &opened, &self.titles, palette, cx)
+                        let debug = self.shared.prefs.read(cx).get().debug;
+                        let readout = debug.then_some(&self.readout);
+                        home::open(&self.shared, &opened, &self.titles, readout, palette, cx)
                     }
                 };
                 let body = safe().flex().flex_col().child(screen).child(home::tab_bar(
@@ -1555,7 +1605,7 @@ impl Root {
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let edges = ducktape_host::contract::os().insets(window).effective();
-        let palette = look::palette(window);
+        let palette = look::palette(cx);
         let viewport = window.viewport_size();
         // the safe body every seat is laid out in: the screen less its
         // insets (the keyboard's among them), at its own width whatever a
@@ -1571,6 +1621,11 @@ impl Render for Root {
             self.moving = None;
         }
         self.place(window, body, cx);
+        // debug mode's numbers: read while the Open tab is on screen
+        let open = join::step(*self.shared.screen.read(cx).get()).is_none()
+            && self.page(cx) == Page::Root(Tab::Open);
+        let shown = open && self.shared.prefs.read(cx).get().debug && window.is_window_active();
+        self.readout.follow(shown, window, cx);
         let mut root = div()
             .size_full()
             .relative()
@@ -2037,6 +2092,73 @@ mod tests {
             root.update(cx, |root, cx| root.back(cx));
             run_out(cx);
         }
+    }
+
+    /// App settings' Light and dark row opens Appearance; the palette (and
+    /// the kit theme every view reads) follows the choice made there, not
+    /// the system's, and System hands it back to the window's own.
+    #[gpui_kit::test]
+    fn the_palette_follows_the_appearance_chosen_not_the_system(cx: &mut TestAppContext) {
+        let (root, _, cx) = phone(cx);
+        let click = |id: &'static str, cx: &mut VisualTestContext| {
+            let at = cx.debug_bounds(id).expect(id);
+            cx.simulate_click(at.center(), gpui_kit::Modifiers::none());
+            run_out(cx);
+        };
+        root.update(cx, |root, cx| root.show_settings(cx));
+        run_out(cx);
+        click("settings/appearance", cx);
+        assert_eq!(
+            root.read_with(cx, |root, cx| root.page(cx)),
+            Page::Appearance
+        );
+        let system = cx.update(|window, _| {
+            gpui_kit::component::ThemeMode::from(window.appearance()).is_dark()
+        });
+        let dark = |cx: &mut VisualTestContext| {
+            cx.update(|_, cx| {
+                let theme = gpui_kit::component::Theme::global(cx).is_dark();
+                (look::palette(cx).dark(), theme)
+            })
+        };
+        for (choice, chosen) in [
+            ("appearance/dark", true),
+            ("appearance/light", false),
+            ("appearance/system", system),
+        ] {
+            click(choice, cx);
+            assert_eq!(dark(cx), (chosen, chosen), "{choice}");
+        }
+    }
+
+    /// Debug mode off: no cost on Open and the perf counters off; on, each
+    /// open program's cost under its name and the app's line over the
+    /// list, the counters on; off again, both gone.
+    #[gpui_kit::test]
+    fn debug_mode_draws_costs_and_counts_only_while_on(cx: &mut TestAppContext) {
+        let _perf = ducktape_host::perf::off_for_test();
+        let (root, _, cx) = phone(cx);
+        root.update(cx, |root, cx| _ = root.open(PROGRAM, cx));
+        run_out(cx);
+        root.update(cx, |root, cx| root.go_home(cx));
+        run_out(cx);
+        root.update(cx, |root, cx| root.pick(Tab::Open, cx));
+        run_out(cx);
+        let prefs = root.read_with(cx, |root, _| root.shared.prefs.clone());
+        let shown = |cx: &mut VisualTestContext| {
+            (
+                cx.debug_bounds("open/phone-root-test/cost").is_some(),
+                cx.debug_bounds("open/app").is_some(),
+                ducktape_host::perf::on(),
+            )
+        };
+        assert_eq!(shown(cx), (false, false, false), "off");
+        prefs.update(cx, |prefs, cx| prefs.set_debug(true, cx));
+        run_out(cx);
+        assert_eq!(shown(cx), (true, true, true), "on");
+        prefs.update(cx, |prefs, cx| prefs.set_debug(false, cx));
+        run_out(cx);
+        assert_eq!(shown(cx), (false, false, false), "off again");
     }
 
     /// Back on Switch network closes an alert over it first, as on any

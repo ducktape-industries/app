@@ -342,7 +342,7 @@ impl Join {
     /// Join a network (board 02), or on a network Switch network (Expo
     /// `join/node.tsx` connected, under the window's Back header).
     fn node_step(&self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let palette = look::palette(window);
+        let palette = look::palette(cx);
         let session = self.shared.session.read(cx).get().clone();
         let account = self.shared.account.read(cx).get();
         let switching = self.switching(cx);
@@ -583,7 +583,7 @@ impl Join {
     /// empty name's included) in a notice under the field; under the form,
     /// for an account that exists, the way to this phone's code.
     fn name_step(&self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let palette = look::palette(window);
+        let palette = look::palette(cx);
         let session = self.shared.session.read(cx).get();
         let account = self.shared.account.read(cx).get();
         let busy = account.busy;
@@ -672,8 +672,8 @@ impl Join {
     /// computer's "Add a device…" types, the key's fingerprint both screens
     /// show, the time left; a failure says why, and New code starts over
     /// with the same key.
-    fn code_step(&self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let palette = look::palette(window);
+    fn code_step(&self, cx: &mut Context<Self>) -> Div {
+        let palette = look::palette(cx);
         let session = self.shared.session.read(cx).get();
         let account = self.shared.account.read(cx).get();
         let failure = (!account.error.is_empty()).then(|| account.error.clone());
@@ -836,7 +836,7 @@ impl EventEmitter<Stayed> for Join {}
 impl Render for Join {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         match self.shown(cx) {
-            Some(Step::Code) => self.code_step(window, cx),
+            Some(Step::Code) => self.code_step(cx),
             Some(Step::Name) => self.name_step(window, cx),
             Some(Step::Node) | None => self.node_step(window, cx),
         }
