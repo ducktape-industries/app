@@ -122,7 +122,7 @@ impl Registrar {
                 let Some(registrar) = woken.upgrade() else {
                     return;
                 };
-                let _ = cx.update(|cx| registrar.update(cx, |this, cx| this.sync(cx)));
+                cx.update(|cx| registrar.update(cx, |this, cx| this.sync(cx)));
             }
         })
         .detach();
@@ -158,7 +158,7 @@ impl Registrar {
         };
         self.busy = Some(cx.spawn(async move |this, cx| {
             let (want, sent) = on_runtime(work).await;
-            let _ = this.update(cx, |this, cx| this.landed(want, sent, cx));
+            this.update(cx, |this, cx| this.landed(want, sent, cx)).ok();
         }));
     }
 
@@ -179,10 +179,11 @@ impl Registrar {
                 tracing::warn!(target: "ducktape::phone", kind = want.kind, %error, "push registration not taken");
                 self.busy = Some(cx.spawn(async move |this, cx| {
                     cx.background_executor().timer(RETRY).await;
-                    let _ = this.update(cx, |this, cx| {
+                    this.update(cx, |this, cx| {
                         this.busy = None;
                         this.sync(cx);
-                    });
+                    })
+                    .ok();
                 }));
             }
         }

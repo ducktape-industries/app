@@ -245,7 +245,9 @@ fn supervise(config: &Path, data: &Path, networks: &[Network]) -> Result<(), Str
 }
 
 /// The credentials loaded, as `run` and `probe` take them.
-fn credentials(config: &Config) -> Result<(Option<Arc<Apns>>, Option<Arc<Fcm>>), String> {
+type Credentials = (Option<Arc<Apns>>, Option<Arc<Fcm>>);
+
+fn credentials(config: &Config) -> Result<Credentials, String> {
     let apns = config
         .apns
         .as_ref()

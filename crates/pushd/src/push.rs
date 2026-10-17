@@ -374,6 +374,10 @@ pub struct Push {
     standing: Mutex<HashMap<String, u64>>,
 }
 
+/// One APNs send: the credential, its provider token and the tokens (each
+/// with its env) to push to.
+type ApnsSend<'a> = (&'a Apns, String, Vec<(String, String)>);
+
 /// The two priorities a push is sent at.
 const LOUD: &str = "10";
 const QUIET: &str = "5";
@@ -405,7 +409,7 @@ impl Push {
     }
 
     /// The APNs provider token, when there are tokens of `kind` to push to.
-    fn apns_for(&self, kind: &str, now: u64) -> Option<(&Apns, String, Vec<(String, String)>)> {
+    fn apns_for(&self, kind: &str, now: u64) -> Option<ApnsSend<'_>> {
         let apns = self.apns.as_deref()?;
         let tokens = self.tokens(kind);
         if tokens.is_empty() {

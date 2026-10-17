@@ -132,7 +132,8 @@ pub fn push_token(kind: &str, token: String) {
         }
     };
     if moved {
-        let _ = push_moved().0.try_send(());
+        // a full channel already holds a wake
+        push_moved().0.try_send(()).ok();
     }
 }
 
