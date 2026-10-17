@@ -7,7 +7,10 @@
 //! validators, identity) from a view whose own program is not: an account
 //! with a grant may change that view's code (no vote reviews it), and the
 //! card says what the op does in the target program's own words
-//! (`program.describe`). The app is a blind host, but it already names
+//! (`program.describe`). The one exception is `op.put`: the host builds
+//! that blobs-role `Put` itself (`kernel::node::put`) from the bytes the
+//! view hands it, so the view never writes the op and no card asks. The
+//! app is a blind host, but it already names
 //! `identity` (`backend/identity.rs`, `passkey.rs`, `join.rs`): this is the
 //! one more place, and the one place these ops are named; every other
 //! program it knows only by its role (`roles`).

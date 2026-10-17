@@ -678,16 +678,37 @@ async fn read_http(stream: &mut tokio::io::BufReader<tokio::net::TcpStream>) -> 
 /// so a put that names the role instead of its program goes nowhere.
 const KEEPER: &str = "keeper";
 
-/// A node an `op.put` meets: one blob upload taken (its body kept), its
-/// frame carried at block 8 (bundle 5, receipted there), and the bundle
-/// held at 9 once `hold` lets it.
+/// A node an `op.put` meets: one blob upload taken (its body kept). With
+/// `carried`, block 8 carries the upload's frame with that outcome (bundle
+/// 5, receipted there) and the bundle is held at 9 once `hold` lets it;
+/// without, block 8 + the anchor window (the frame's `until`) comes and no
+/// block carries it.
 struct PutNode {
     node: Node,
-    upload: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+    upload: Upload,
     hold: std::sync::Arc<tokio::sync::Notify>,
 }
 
-fn put_node() -> PutNode {
+type Upload = std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>;
+
+/// What every connection to a [`put_node`] shares.
+#[derive(Clone)]
+struct Put {
+    upload: Upload,
+    hold: std::sync::Arc<tokio::sync::Notify>,
+    landed: std::sync::Arc<tokio::sync::watch::Sender<bool>>,
+    landing: tokio::sync::watch::Receiver<bool>,
+    carried: Option<abi::Outcome>,
+}
+
+/// [`put_node`]'s block 8 carrying the frame as applied, putting bundle 5.
+fn bundle_five() -> Option<abi::Outcome> {
+    Some(abi::Outcome::Applied {
+        output: abi::encode(&5u64),
+    })
+}
+
+fn put_node(carried: Option<abi::Outcome>) -> PutNode {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let node = Node {
@@ -699,33 +720,31 @@ fn put_node() -> PutNode {
         upload: Default::default(),
         hold: Default::default(),
     };
-    let (upload, hold) = (fake.upload.clone(), fake.hold.clone());
     let (landed, landing) = tokio::sync::watch::channel(false);
-    let landed = std::sync::Arc::new(landed);
+    let put = Put {
+        upload: fake.upload.clone(),
+        hold: fake.hold.clone(),
+        landed: std::sync::Arc::new(landed),
+        landing,
+        carried,
+    };
     handle().spawn(async move {
         let listener = tokio::net::TcpListener::from_std(listener).unwrap();
         while let Ok((stream, _)) = listener.accept().await {
-            let put = (
-                upload.clone(),
-                hold.clone(),
-                landed.clone(),
-                landing.clone(),
-            );
-            tokio::spawn(serve_put(stream, put));
+            tokio::spawn(serve_put(stream, put.clone()));
         }
     });
     fake
 }
 
-type Put = (
-    std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>,
-    std::sync::Arc<tokio::sync::Notify>,
-    std::sync::Arc<tokio::sync::watch::Sender<bool>>,
-    tokio::sync::watch::Receiver<bool>,
-);
+/// The frame an upload carried: its length, then the frame.
+fn uploaded_frame(upload: &[u8]) -> noded::Frame {
+    let len = u32::from_le_bytes(upload[..4].try_into().unwrap()) as usize;
+    abi::decode(&upload[4..4 + len]).unwrap()
+}
 
 /// One connection to a [`put_node`]: a changes socket, or one request.
-async fn serve_put(stream: tokio::net::TcpStream, (upload, hold, landed, mut landing): Put) {
+async fn serve_put(stream: tokio::net::TcpStream, mut put: Put) {
     use futures::{SinkExt as _, StreamExt as _};
     use tokio::io::AsyncWriteExt as _;
     let mut head = [0; 64];
@@ -734,7 +753,7 @@ async fn serve_put(stream: tokio::net::TcpStream, (upload, hold, landed, mut lan
     if let Some(program) = line.strip_prefix("GET /v1/changes/") {
         let blocks = program.starts_with(noded::RECENT) || program.starts_with("%24recent");
         let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-        landing.wait_for(|landed| *landed).await.unwrap();
+        put.landing.wait_for(|landed| *landed).await.unwrap();
         let change = |height, key: Vec<u8>, value| {
             let writes = vec![(key, Some(value))];
             let change = noded::Change {
@@ -753,18 +772,20 @@ async fn serve_put(stream: tokio::net::TcpStream, (upload, hold, landed, mut lan
             })
         };
         let key = blob::contract::bundle_key(5);
+        let height = match put.carried {
+            Some(_) => 8,
+            None => TIP.height + noded::ANCHOR_WINDOW,
+        };
         if blocks {
-            socket
-                .send(change(8, b"8".to_vec(), Vec::new()))
-                .await
-                .unwrap();
-        } else {
+            let block = change(height, b"tip".to_vec(), Vec::new());
+            socket.send(block).await.unwrap();
+        } else if put.carried.is_some() {
             let receipted = blob::contract::Custody::Receipted(Vec::new());
             socket
                 .send(change(8, key.clone(), bundle(receipted)))
                 .await
                 .unwrap();
-            hold.notified().await;
+            put.hold.notified().await;
             let held = blob::contract::Custody::Held { since: 9 };
             socket.send(change(9, key, bundle(held))).await.unwrap();
         }
@@ -780,35 +801,36 @@ async fn serve_put(stream: tokio::net::TcpStream, (upload, hold, landed, mut lan
             abi::encode(&status)
         }
         noded::route::BLOB_PUT => {
-            *upload.lock().unwrap() = Some(body);
-            landed.send_replace(true);
+            *put.upload.lock().unwrap() = Some(body);
+            put.landed.send_replace(true);
             abi::encode(&noded::Submitted::Pooled)
         }
-        // asked once block 8 came, which carried the frame
+        // block 8 carried the uploaded frame, and only that one
         noded::route::TX => {
-            let receipt = noded::Receipt {
-                program: KEEPER.into(),
-                outcome: abi::Outcome::Applied {
-                    output: abi::encode(&5u64),
-                },
-                events: Vec::new(),
-                nested: Vec::new(),
-            };
-            let tx = noded::Tx {
-                hash: [0; 32],
-                signer: Vec::new(),
-                anchor: TIP,
-                target: KEEPER.into(),
-                size: 0,
-                payload: None,
-                receipt: Some(receipt),
-            };
-            abi::encode(&Some(noded::Located {
+            let ask: noded::TxAsk = abi::decode(&body).unwrap();
+            let upload = put.upload.lock().unwrap().clone().unwrap();
+            let id = uploaded_frame(&upload).body.id();
+            let carried = put.carried.filter(|_| ask.tx == noded::TxRef::Hash(id));
+            let located = carried.map(|outcome| noded::Located {
                 height: 8,
                 position: 0,
                 time: 0,
-                tx,
-            }))
+                tx: noded::Tx {
+                    hash: id,
+                    signer: Vec::new(),
+                    anchor: TIP,
+                    target: KEEPER.into(),
+                    size: 0,
+                    payload: None,
+                    receipt: Some(noded::Receipt {
+                        program: KEEPER.into(),
+                        outcome,
+                        events: Vec::new(),
+                        nested: Vec::new(),
+                    }),
+                },
+            });
+            abi::encode(&located)
         }
         other => panic!("{other}"),
     };
@@ -873,7 +895,7 @@ async fn a_put_answers_each_framed_blobs_sha256_once_the_bundle_is_held() {
         bytes("note", b"hi"),
     ];
     let blobs = put_of(&view, blobs);
-    let fake = put_node();
+    let fake = put_node(bundle_five());
     let mut answer = std::pin::pin!(put(fake.node.clone(), blobs));
     let waited = tokio::time::timeout(std::time::Duration::from_millis(500), &mut answer).await;
     assert!(waited.is_err(), "answered before the bundle was held");
@@ -904,7 +926,7 @@ async fn a_put_answers_each_framed_blobs_sha256_once_the_bundle_is_held() {
     );
     let upload = fake.upload.lock().unwrap().take().unwrap();
     let len = u32::from_le_bytes(upload[..4].try_into().unwrap()) as usize;
-    let frame: noded::Frame = abi::decode(&upload[4..4 + len]).unwrap();
+    let frame = uploaded_frame(&upload);
     assert_eq!(frame.body.target, KEEPER, "to the program the role binds");
     assert_eq!(frame.body.anchor, TIP);
     assert_eq!(
@@ -916,6 +938,50 @@ async fn a_put_answers_each_framed_blobs_sha256_once_the_bundle_is_held() {
         upload[4 + len..],
         framed.concat(),
         "each blob framed, in order"
+    );
+}
+
+/// `op.put` against a [`put_node`] whose blocks carry the frame as
+/// `carried` says, answered within five seconds.
+async fn put_meeting(carried: Option<abi::Outcome>, seed: u64) -> Answer {
+    use commonware_cryptography::Signer as _;
+    let _seat = backend::seat_serial();
+    backend::seat_key(std::sync::Arc::new(
+        commonware_cryptography::ed25519::PrivateKey::from_seed(seed),
+    ))
+    .await;
+    let blobs = put_of(&view(), vec![bytes("chunk", b"tape")]);
+    let fake = put_node(carried);
+    let answer = put(fake.node.clone(), blobs);
+    tokio::time::timeout(std::time::Duration::from_secs(5), answer)
+        .await
+        .expect("answered")
+}
+
+/// The block that carries the put rejects it: the program's refusal is
+/// the answer, as it said it.
+#[tokio::test]
+async fn a_put_the_program_rejects_answers_its_refusal() {
+    let rejected = abi::Refusal::new(abi::reason::UNAUTHORIZED, "no account puts here");
+    let refusal = put_meeting(Some(abi::Outcome::Rejected(rejected)), 45)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (refusal.code.as_str(), refusal.message.as_str()),
+        (abi::reason::UNAUTHORIZED, "no account puts here")
+    );
+}
+
+/// No block carries the put by its frame's `until`: refused `anchor`,
+/// saying so, not waited on forever.
+#[tokio::test]
+async fn a_put_no_block_carries_by_its_until_is_refused_anchor() {
+    let refusal = put_meeting(None, 46).await.unwrap_err();
+    assert_eq!(refusal.code, abi::reason::ANCHOR);
+    let until = TIP.height + noded::ANCHOR_WINDOW;
+    assert_eq!(
+        refusal.message,
+        format!("no block carried the put by block {until}, the last its frame may land at")
     );
 }
 
@@ -982,7 +1048,7 @@ fn a_put_waiting_for_its_bundle_goes_with_the_view() {
     futures::executor::block_on(backend::seat_key(std::sync::Arc::new(
         commonware_cryptography::ed25519::PrivateKey::from_seed(44),
     )));
-    let fake = put_node();
+    let fake = put_node(bundle_five());
     let mut view = view();
     let blobs = put_of(&view, vec![bytes("chunk", b"tape")]);
     let replies = view.replies.clone();
