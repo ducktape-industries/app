@@ -6,9 +6,11 @@
 //! process the session started IS the app. On macOS it starts as a new
 //! launch of the installed bundle and this process exits
 //! ([`super::macos::open_new`]): an `exec`ed image would be judged by the
-//! bundle this process was launched as, the release before. A `duck://`
-//! link that started an app with a flip pending goes with this process: its
-//! Apple Event is read only once AppKit runs, after this step.
+//! bundle this process was launched as, the release before. What goes with
+//! this process: a `duck://` link that started an app with a flip pending
+//! (its Apple Event is read only once AppKit runs, after this step), and a
+//! terminal launch's terminal and environment (the new launch is
+//! LaunchServices', with launchd's, as from the Dock).
 //!
 //! The image a flip starts runs this same step first: it finds
 //! `PendingHealthy{boots: 0}`, counts itself (`boots: 1`) and goes on. If it
@@ -18,9 +20,9 @@
 //! ([`super::install::rebuild`]), as an install would have written it.
 //!
 //! When the update machinery cannot be trusted (a link where a file should
-//! be, a flip that refused, an `exec` or launch that failed) the process goes on as the
-//! app with the updater off and says why under `ducktape::update`: the boot
-//! step's one job is to never strand the user.
+//! be, a flip that refused, an `exec` or launch that failed) the process
+//! goes on as the app with the updater off and says why under
+//! `ducktape::update`: the boot step's one job is to never strand the user.
 
 use std::io::Read as _;
 use std::os::fd::AsRawFd as _;
@@ -53,8 +55,8 @@ pub(super) enum Boot {
     Exec(PathBuf),
 }
 
-/// Decide, then `exec` or arm the updater. Returns when this process goes
-/// on as the app.
+/// Decide, then run the release the install path names in this process's
+/// place or arm the updater. Returns when this process goes on as the app.
 pub(crate) fn boot() {
     let (Some(layout), Ok(own)) = (Layout::host(), std::env::current_exe()) else {
         return;
