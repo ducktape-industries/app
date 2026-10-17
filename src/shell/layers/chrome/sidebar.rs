@@ -482,6 +482,7 @@ mod tests {
             program,
             label: label.into(),
             icon: String::new(),
+            tint: view_wire::manifest::Tint::None,
             description: String::new(),
             note: None,
             empty: false,

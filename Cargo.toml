@@ -34,16 +34,16 @@ version = "0.1.0"
 [workspace.dependencies]
 
 # --- sdk-line: crates/sdk of ducktape-industries/programs (abi, view-wire, program, ducklink, design, describe). Every crate of that repo here and below sits on ONE rev, and the views this app seats are built at that rev. One whose manifest's wire_id is not `view_wire::WIRE_ID` runs all the same, and a failure of it names both wires and the node (`View::failure`). Which rev and why is in `git log -- Cargo.toml`. ---
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "619fa145ab994dbaf8d4c704cab44ecd1a770b40", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "619fa145ab994dbaf8d4c704cab44ecd1a770b40", package = "view-wire" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "d5482a037d9026fae49d5d99b1b0cbc065a747cf", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "d5482a037d9026fae49d5d99b1b0cbc065a747cf", package = "view-wire" }
 # `program::is_name`: the one spelling of a program id
-program = { git = "https://github.com/ducktape-industries/programs", rev = "619fa145ab994dbaf8d4c704cab44ecd1a770b40", package = "program" }
-ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "619fa145ab994dbaf8d4c704cab44ecd1a770b40", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/programs", rev = "619fa145ab994dbaf8d4c704cab44ecd1a770b40", package = "design" }
+program = { git = "https://github.com/ducktape-industries/programs", rev = "d5482a037d9026fae49d5d99b1b0cbc065a747cf", package = "program" }
+ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "d5482a037d9026fae49d5d99b1b0cbc065a747cf", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/programs", rev = "d5482a037d9026fae49d5d99b1b0cbc065a747cf", package = "design" }
 # `program.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/programs", rev = "619fa145ab994dbaf8d4c704cab44ecd1a770b40", package = "describe" }
+describe = { git = "https://github.com/ducktape-industries/programs", rev = "d5482a037d9026fae49d5d99b1b0cbc065a747cf", package = "describe" }
 # the identity program's own types: the app's passkey lane and `crates/noded-client`'s flows
-identity = { git = "https://github.com/ducktape-industries/programs", rev = "619fa145ab994dbaf8d4c704cab44ecd1a770b40", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/programs", rev = "d5482a037d9026fae49d5d99b1b0cbc065a747cf", package = "identity" }
 
 # --- node-side: ducktape-industries/ducktape at the rev the programs rev above pins ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a0151a411c3558453c34bb8272b93dfc428cb74", package = "ducktape-home" }
@@ -129,7 +129,7 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a0151a411c3558453c34bb8272b93dfc428cb74", package = "keyscheme" }
 identity.workspace = true
-valset = { git = "https://github.com/ducktape-industries/programs", rev = "619fa145ab994dbaf8d4c704cab44ecd1a770b40", package = "valset" }
+valset = { git = "https://github.com/ducktape-industries/programs", rev = "d5482a037d9026fae49d5d99b1b0cbc065a747cf", package = "valset" }
 base64.workspace = true
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -196,7 +196,7 @@ keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a
 p256 = "0.13"
 
 [patch."https://github.com/ducktape-industries/ducktape"]
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "619fa145ab994dbaf8d4c704cab44ecd1a770b40", package = "abi" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "d5482a037d9026fae49d5d99b1b0cbc065a747cf", package = "abi" }
 
 [patch.crates-io]
 gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "eb488ba7fb40ae38cd56c4289f97360c37b2469d" }

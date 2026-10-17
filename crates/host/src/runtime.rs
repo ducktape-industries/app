@@ -105,6 +105,7 @@ use crate::contract::{
 use gpui_kit::AppContext as _;
 use pictures::Pictures;
 use view_wire as wire;
+use wire::manifest::Tint;
 use wire::methods::{Capability, refusal};
 
 /// One desktop window, as the shell and the notification policy (which
@@ -229,7 +230,7 @@ mod display_diagnostics;
 pub mod pictures;
 
 /// What a view's manifest says, read before any of its code runs: the
-/// name, icon and description the rail and Home list it by, the narrowest
+/// name, icon, tint and description the rail and Home list it by, the narrowest
 /// it is laid out, the capabilities it declares, its targets, and the wire
 /// it was built against (another than this app's runs all the same, and
 /// whatever then fails says so: `View::failure`).
@@ -237,6 +238,7 @@ pub mod pictures;
 pub struct Listing {
     pub name: String,
     pub icon: String,
+    pub tint: Tint,
     pub description: String,
     pub min_width: u32,
     pub capabilities: Vec<Capability>,
@@ -251,6 +253,7 @@ fn manifest_of(bytes: &[u8]) -> Listing {
         .map(|manifest| Listing {
             name: manifest.name,
             icon: manifest.icon,
+            tint: manifest.tint,
             description: manifest.description,
             min_width: manifest.min_width,
             capabilities: manifest.capabilities,
@@ -271,6 +274,7 @@ pub fn listing(program: &str) -> Option<Listing> {
             Listing {
                 name: $held.name.clone(),
                 icon: $held.icon.clone(),
+                tint: $held.tint,
                 description: $held.description.clone(),
                 min_width: $held.min_width,
                 capabilities: $held.capabilities.clone(),

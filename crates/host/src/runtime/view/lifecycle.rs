@@ -297,6 +297,7 @@ impl View {
         crate::perf::record(key, "fuel.instantiate", fresh.fuel_used());
         fresh.name = view.name.clone();
         fresh.icon = view.icon.clone();
+        fresh.tint = view.tint;
         fresh.description = view.description.clone();
         fresh.capabilities = view.capabilities.clone();
         fresh.targets = view.targets.clone();
@@ -645,6 +646,7 @@ impl View {
             instance,
             name,
             icon,
+            tint,
             description,
             capabilities,
             targets,
@@ -709,6 +711,7 @@ impl View {
             Self::seated(program, *instance, runner, running.code_hash(), shown).await?;
         sibling.name = name.clone();
         sibling.icon = icon.clone();
+        sibling.tint = *tint;
         sibling.description = description.clone();
         sibling.capabilities = capabilities.clone();
         sibling.targets = targets.clone();
@@ -867,6 +870,7 @@ impl View {
         let listing = manifest_of(bytes);
         view.name = listing.name;
         view.icon = listing.icon;
+        view.tint = listing.tint;
         view.description = listing.description;
         view.capabilities = listing.capabilities;
         view.targets = listing.targets;
@@ -948,6 +952,7 @@ impl View {
             instance,
             name: String::new(),
             icon: String::new(),
+            tint: Tint::None,
             description: String::new(),
             capabilities: Vec::new(),
             targets: Vec::new(),
@@ -1108,6 +1113,7 @@ fn view_code(
         _hold: hold,
         name: listing.name,
         icon: listing.icon,
+        tint: listing.tint,
         description: listing.description,
         min_width: listing.min_width,
         capabilities: listing.capabilities,
