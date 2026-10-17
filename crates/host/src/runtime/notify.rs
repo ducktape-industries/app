@@ -177,6 +177,13 @@ fn seen(view: &mut View, id: u64, payload: &[u8]) {
     view.reply(id, Ok(methods::encode(&())));
 }
 
+/// The person declined the call raised under `tag` on its banner: the
+/// app's centre lets its program ring again ([`center::Center::declined`]).
+/// From the OS's own thread.
+pub fn declined(tag: &str) {
+    center().lock().declined(tag);
+}
+
 /// The banner raised under `tag` taken down at `until` (Unix seconds),
 /// from where it went (`recipient`'s channel, or the OS's), queued behind
 /// `program`'s other banners, unless a later one stands there by then or

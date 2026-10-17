@@ -756,6 +756,35 @@ fn a_program_rings_one_call_at_a_time() {
     assert_eq!(plain(ring("chat", "", 300, 101)), Some(NoticeKind::Notice));
 }
 
+/// A call declined on its banner stands no more: its program's next call
+/// rings at once, not at the declined one's `until`, and the declined
+/// one's timer takes nothing down.
+#[test]
+fn a_declined_call_lets_its_program_ring_again() {
+    let now = Instant::now();
+    let mut center = Center::default();
+    let allowed = settings(Some(Permission::Allow));
+    center.post(&allowed, "chat", "Chat", call("call/1", 100), now, 0);
+    assert_eq!(
+        center
+            .post(&allowed, "chat", "Chat", call("call/2", 100), now, 1)
+            .0,
+        Delivery::Logged
+    );
+    center.declined("chat/call/1");
+    assert_eq!(
+        center
+            .post(&allowed, "chat", "Chat", call("call/2", 100), now, 2)
+            .0,
+        Delivery::Banner,
+        "the declined call still held its program"
+    );
+    assert!(
+        !center.ring_over("chat/call/1", 100),
+        "declined, it is down"
+    );
+}
+
 /// An `until` past any time the clock can name sets no timer: adding it
 /// panicked, and a phone's panic aborts the app.
 #[test]
