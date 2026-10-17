@@ -186,12 +186,17 @@ pub fn launch(os: Arc<dyn OsServices>, cx: &mut App) {
 /// the app was in front on its chain goes: this phone runs its program's
 /// notifier then, and that run decides whether it is a notice here (it
 /// says nothing of what is on screen, which the push server cannot see).
+/// The OS's list is handed over again at every return to the front: one
+/// already waiting waits once.
 fn os_notice(notice: crate::os::OsNotice, cx: &mut App) {
     let session = cx.global::<Phone>().shared.session.read(cx).get();
     if notice.front && session.connected && session.chain == notice.chain {
         return;
     }
-    cx.global_mut::<Phone>().notices.push(notice);
+    let waiting = &mut cx.global_mut::<Phone>().notices;
+    if !waiting.contains(&notice) {
+        waiting.push(notice);
+    }
     log_os_notices(cx);
 }
 
@@ -2299,7 +2304,7 @@ mod tests {
     /// unread to a screen reader in the desktop bell's words; opened from
     /// the OS, its row is read. One that came while the app was in front on
     /// its chain is left to this phone's own run of the notifier; another
-    /// chain's waits for that chain.
+    /// chain's waits for that chain, once however often it is handed over.
     #[gpui_kit::test]
     fn a_pushed_notice_is_one_row_in_the_notifications_tab(cx: &mut TestAppContext) {
         use ducktape_host::session::SessionState;
@@ -2360,10 +2365,16 @@ mod tests {
 
         shown("garage#1", "In front", 200, true, cx);
         shown("other#2", "Elsewhere", 200, false, cx);
+        // the OS's list handed over again while it waits
+        shown("other#2", "Elsewhere", 200, false, cx);
         let read = ("Hello".to_owned(), "room".to_owned(), 100, true);
         assert_eq!(rows(cx), [read], "logged one this phone's run decides");
         let waiting = cx.update(|_, cx| cx.global::<Phone>().notices.clone());
-        assert_eq!(waiting.len(), 1, "the other chain's did not wait for it");
+        assert_eq!(
+            waiting.len(),
+            1,
+            "the other chain's did not wait, or waited twice"
+        );
     }
 
     /// A Home tile is drawn pressed (`look::PRESSED`) while a touch is
