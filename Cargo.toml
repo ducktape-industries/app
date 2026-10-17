@@ -33,16 +33,16 @@ version = "0.1.0"
 [workspace.dependencies]
 
 # --- sdk-line: crates/sdk of ducktape-industries/programs (abi, view-wire, program, ducklink, design, describe). Every crate of that repo here and below sits on ONE rev, and the views this app seats are built at that rev. One whose manifest's wire_id is not `view_wire::WIRE_ID` runs all the same, and a failure of it names both wires and the node (`View::failure`). Which rev and why is in `git log -- Cargo.toml`. ---
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "a58e1c3ccbe0e9a0a76de6baed33da56638d25f0", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "a58e1c3ccbe0e9a0a76de6baed33da56638d25f0", package = "view-wire" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "24217143f1cd826a65db34eb74b33a2bfd63846a", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/programs", rev = "24217143f1cd826a65db34eb74b33a2bfd63846a", package = "view-wire" }
 # `program::is_name`: the one spelling of a program id
-program = { git = "https://github.com/ducktape-industries/programs", rev = "a58e1c3ccbe0e9a0a76de6baed33da56638d25f0", package = "program" }
-ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "a58e1c3ccbe0e9a0a76de6baed33da56638d25f0", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/programs", rev = "a58e1c3ccbe0e9a0a76de6baed33da56638d25f0", package = "design" }
+program = { git = "https://github.com/ducktape-industries/programs", rev = "24217143f1cd826a65db34eb74b33a2bfd63846a", package = "program" }
+ducklink = { git = "https://github.com/ducktape-industries/programs", rev = "24217143f1cd826a65db34eb74b33a2bfd63846a", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/programs", rev = "24217143f1cd826a65db34eb74b33a2bfd63846a", package = "design" }
 # `program.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/programs", rev = "a58e1c3ccbe0e9a0a76de6baed33da56638d25f0", package = "describe" }
+describe = { git = "https://github.com/ducktape-industries/programs", rev = "24217143f1cd826a65db34eb74b33a2bfd63846a", package = "describe" }
 # the identity program's own types: the app's passkey lane and `crates/noded-client`'s flows
-identity = { git = "https://github.com/ducktape-industries/programs", rev = "a58e1c3ccbe0e9a0a76de6baed33da56638d25f0", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/programs", rev = "24217143f1cd826a65db34eb74b33a2bfd63846a", package = "identity" }
 
 # --- node-side: ducktape-industries/ducktape at the rev the programs rev above pins ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a0151a411c3558453c34bb8272b93dfc428cb74", package = "ducktape-home" }
@@ -99,11 +99,20 @@ web = ["ducktape-host/web"]
 # compiles none of it: the pieces say the build has no camera or
 # microphone and their methods are refused `unknown_request`.
 av = ["ducktape-host/av"]
-default = ["av"]
+# Calls: the pieces above publish into and play from live tracks
+# (`crates/host/src/render/call.rs`, `crates/av` with `call`). On by
+# default: the app's own build makes and takes calls. The picture codec
+# is each OS's own licensed H.264; on Linux Cisco's prebuilt OpenH264,
+# fetched onto this machine by `src/backend/openh264.rs` and switched in
+# Settings › About. libopus is built from its vendored source.
+call = ["av", "ducktape-host/call", "dep:ducktape-av", "dep:bzip2", "ducktape-av/call"]
+default = ["av", "call"]
 
 [dependencies]
 # the blind host core, shared with the phone
 ducktape-host = { path = "crates/host" }
+# feature `call`: where Cisco's OpenH264 binary is (`codec::cisco`)
+ducktape-av = { path = "crates/av", optional = true }
 gpui-kit = "=0.7.3"
 gpui-base = "=0.7.3"
 futures.workspace = true
@@ -119,7 +128,7 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a0151a411c3558453c34bb8272b93dfc428cb74", package = "keyscheme" }
 identity.workspace = true
-valset = { git = "https://github.com/ducktape-industries/programs", rev = "a58e1c3ccbe0e9a0a76de6baed33da56638d25f0", package = "valset" }
+valset = { git = "https://github.com/ducktape-industries/programs", rev = "24217143f1cd826a65db34eb74b33a2bfd63846a", package = "valset" }
 base64.workspace = true
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -167,6 +176,9 @@ zbus = "5"
 # XCB connection. Already in the graph under gpui-pre-linux, with this feature.
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
+# feature `call`: Cisco serves its OpenH264 binary bzip2-packed (pure
+# Rust, libbz2-rs-sys)
+bzip2 = { version = "0.6", optional = true }
 
 [dev-dependencies]
 # the host core's test helpers (`*_for_test`, `test_style`, the door)
@@ -177,7 +189,7 @@ keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "8a
 p256 = "0.13"
 
 [patch."https://github.com/ducktape-industries/ducktape"]
-abi = { git = "https://github.com/ducktape-industries/programs", rev = "a58e1c3ccbe0e9a0a76de6baed33da56638d25f0", package = "abi" }
+abi = { git = "https://github.com/ducktape-industries/programs", rev = "24217143f1cd826a65db34eb74b33a2bfd63846a", package = "abi" }
 
 [patch.crates-io]
 gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "ef025a323b35dae1f64b9de0304f15aff020ad46" }
@@ -233,6 +245,17 @@ opt-level = 1
 # sha256 over a whole app binary (the self-update's install, and every
 # archive it stages): half a minute unoptimized, under a second optimized.
 [profile.dev.package.sha2]
+opt-level = 3
+
+# A call's codecs (ducktape-av's `call`) optimized in a dev build too:
+# unoptimized, the openh264 crate's picture conversions (the H.264 itself
+# is Cisco's binary, or the OS's) and ducktape-av's own scaling take tens
+# to hundreds of ms a picture (a 720p picture scaled to 360p: 565 ms,
+# 10.8 ms optimized). libopus sets its own, in crates/av/build.rs.
+[profile.dev.package.openh264]
+opt-level = 3
+
+[profile.dev.package.ducktape-av]
 opt-level = 3
 
 # Optimize the native render and text stack without slowing unrelated workspace crates.

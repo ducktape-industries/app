@@ -37,6 +37,26 @@ impl Meter {
         let feed = Arc::new(MicFeed::default());
         *feed.output.lock().expect("feed output") = output;
         backend::start_microphone(device, feed.clone());
+        Self::on(feed, color, cx)
+    }
+
+    /// A meter over a feed the caller fills (a call's voice I/O: its
+    /// status and level, `crate::voice`): no device opens here, and a
+    /// recording or the monitor asked of it is never served.
+    #[cfg(feature = "call")]
+    pub fn fed(color: Hsla, cx: &mut Context<Self>) -> (Self, Arc<MicFeed>) {
+        let feed = Arc::new(MicFeed::default());
+        let meter = Self::on(feed.clone(), color, cx);
+        (meter, feed)
+    }
+
+    /// The feed a [`Meter::fed`] meter reads.
+    #[cfg(feature = "call")]
+    pub fn feed(&self) -> &Arc<MicFeed> {
+        &self.feed
+    }
+
+    fn on(feed: Arc<MicFeed>, color: Hsla, cx: &mut Context<Self>) -> Self {
         let _poll = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(crate::POLL).await;
@@ -149,9 +169,10 @@ impl Meter {
 
 /// "Speaking", from the level with hysteresis: on after the level has held
 /// over -40 dBFS for 150 ms, off after 600 ms under it, so a breath between
-/// words does not flicker it and a click does not raise it.
+/// words does not flicker it and a click does not raise it. A remote
+/// voice's piece reads the same off its level.
 #[derive(Default)]
-struct Speaking {
+pub struct Speaking {
     on: bool,
     /// Since when the level has said the other thing.
     crossed: Option<std::time::Instant>,
@@ -163,7 +184,8 @@ const SPEAKING_ON: std::time::Duration = std::time::Duration::from_millis(150);
 const SPEAKING_OFF: std::time::Duration = std::time::Duration::from_millis(600);
 
 impl Speaking {
-    fn heard(&mut self, level: f32, now: std::time::Instant) -> bool {
+    /// Whether the person speaks, given `level` (0 to 1) heard at `now`.
+    pub fn heard(&mut self, level: f32, now: std::time::Instant) -> bool {
         let loud = level >= SPEAKING_LEVEL;
         if loud == self.on {
             self.crossed = None;

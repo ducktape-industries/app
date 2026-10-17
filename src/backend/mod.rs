@@ -5,7 +5,8 @@
 //! through [`auth_page`] and [`loopback`]) and a recovery key
 //! ([`recovery`]) onto an account; invites minted with the key of the node
 //! this machine runs ([`invite`]); the desktop's own directories
-//! ([`app_dirs`]: the platform rule behind `Dirs`).
+//! ([`app_dirs`]: the platform rule behind `Dirs`); with feature `call`,
+//! Cisco's OpenH264 binary fetched onto this machine ([`openh264`]).
 
 pub(crate) mod app_dirs;
 pub(crate) mod auth_page;
@@ -13,6 +14,8 @@ pub(crate) mod device_key;
 pub(crate) mod invite;
 mod key_dir;
 mod loopback;
+#[cfg(all(feature = "call", target_os = "linux"))]
+pub(crate) mod openh264;
 pub(crate) mod passkey;
 pub(crate) mod recovery;
 

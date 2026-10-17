@@ -14,6 +14,7 @@ fn post(title: &str, tag: &str) -> Notification {
         body: "b".into(),
         tag: tag.into(),
         link: String::new(),
+        ..Default::default()
     }
 }
 
@@ -258,6 +259,7 @@ fn a_post_is_words_a_tag_and_a_duck_link() {
         body: "b".into(),
         tag: "t".into(),
         link: "duck://chat/room".into(),
+        ..Default::default()
     };
     let mut bytes = methods::encode(&full);
     assert_eq!(methods::decode::<Notification>(&bytes).unwrap(), full);

@@ -189,6 +189,7 @@ mod tests {
             body: "b".into(),
             tag: String::new(),
             link: String::new(),
+            ..Default::default()
         };
         let now = std::time::Instant::now();
         let _ = center.lock().post(&settings, "chat", "Chat", post, now, 0);

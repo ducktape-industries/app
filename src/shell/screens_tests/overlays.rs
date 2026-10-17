@@ -248,6 +248,7 @@ fn a_menu_keeps_the_keys_that_move_inside_it(cx: &mut TestAppContext) {
             body: "look".into(),
             tag: String::new(),
             link: String::new(),
+            ..Default::default()
         },
         std::time::Instant::now(),
         crate::runtime::notify::wall(),

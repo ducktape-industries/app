@@ -153,6 +153,11 @@ pub(crate) fn heard() -> Option<Device> {
 /// ([`activate`]).
 pub(crate) struct Active;
 
+/// A call's voice I/O coming (`on`) or going: nothing to set here, the
+/// echo canceller is the app's own.
+#[cfg(feature = "call")]
+pub(crate) fn call(_on: bool) {}
+
 /// Nothing to activate: each device opens by itself, and its stream
 /// tells its own moves and ends.
 pub(crate) fn activate(
