@@ -42,8 +42,8 @@ use openh264 as h264;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use videotoolbox as h264;
 
-/// Where Cisco's OpenH264 binary is, on an OS whose H.264 it is (Linux;
-/// [`WANTED`]). Cisco's patent licence covers only the build Cisco made,
+/// Where Cisco's OpenH264 binary is, on an OS whose H.264 it is (Linux).
+/// Cisco's patent licence covers only the build Cisco made,
 /// fetched by the user's own device, which the user can turn off: the app
 /// owns that (the download, the switch) and [`supply`]s the path; an
 /// encoder or decoder asks for it when made, so a switch turned off holds
@@ -52,9 +52,6 @@ use videotoolbox as h264;
 pub mod cisco {
     use std::path::PathBuf;
     use std::sync::OnceLock;
-
-    /// This OS's H.264 is Cisco's binary.
-    pub const WANTED: bool = cfg!(target_os = "linux");
 
     type Provider = dyn Fn() -> Result<PathBuf, String> + Send + Sync;
 
@@ -772,7 +769,7 @@ mod tests {
             }
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             let packed = dir.join(format!("{name}.part.bz2"));
-            let url = format!("http://ciscobinary.openh264.org/{name}.bz2");
+            let url = format!("https://ciscobinary.openh264.org/{name}.bz2");
             let run = |program: &str, args: &[&str]| -> Result<(), String> {
                 let status = Command::new(program)
                     .args(args)
@@ -1045,6 +1042,26 @@ mod tests {
         assert_eq!(nal_units(&[0, 0, 1]).count(), 0);
         assert_eq!(nal_units(&[1, 2, 3]).count(), 0);
         assert_eq!(nal_type(&[]), 0);
+    }
+
+    /// A slice of a peer's garbage after a good keyframe: whatever the
+    /// decoder says of it, the next keyframe decodes.
+    #[test]
+    fn a_bad_slice_does_not_end_the_decoder() {
+        ready();
+        let (_, stream) = GOLDENS[0];
+        let packets = golden_packets(stream);
+        let mut decoder = VideoDecoder::new().unwrap();
+        assert!(decoder.decode(packets[0]).unwrap().is_some());
+        let mut bad = vec![0, 0, 0, 1, 0x41];
+        bad.extend(noise(16, 16, 3).bgra);
+        let _ = decoder.decode(&bad);
+        let _ = decoder.decode(packets[1]);
+        let mut again = None;
+        for packet in &packets[..2] {
+            again = decoder.decode(packet).unwrap().or(again);
+        }
+        assert!(again.is_some(), "no picture after a bad slice");
     }
 
     #[test]

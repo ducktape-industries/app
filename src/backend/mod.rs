@@ -14,7 +14,7 @@ pub(crate) mod device_key;
 pub(crate) mod invite;
 mod key_dir;
 mod loopback;
-#[cfg(feature = "call")]
+#[cfg(all(feature = "call", target_os = "linux"))]
 pub(crate) mod openh264;
 pub(crate) mod passkey;
 pub(crate) mod recovery;

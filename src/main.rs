@@ -67,7 +67,7 @@ fn main() {
     }
     let os = install_os();
     // a call's picture codec on Linux is Cisco's binary: where it is
-    #[cfg(feature = "call")]
+    #[cfg(all(feature = "call", target_os = "linux"))]
     backend::openh264::supply();
     // the sampler reads the OS facts: after them
     perf::start();

@@ -5,9 +5,11 @@
 //! call needs a picture, into the data dir, its sha256 checked against
 //! the build this app knows before anything is written, its licence text
 //! written beside it. Settings › About switches it off and on (`openh264`
-//! in prefs.json; on until turned off) and shows Cisco's line. Off, not
-//! fetched, or offline: a call goes on by voice.
-use std::path::PathBuf;
+//! in prefs.json; on until turned off), shows Cisco's line and where the
+//! licence is. Off, not fetched, or offline: a call goes on by voice.
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use sha2::Digest as _;
 
@@ -31,15 +33,9 @@ const BUILD: (&str, &str) = ("", "");
 pub(crate) const ATTRIBUTION: &str = "OpenH264 Video Codec provided by Cisco Systems, Inc.";
 const LICENSE: &str = include_str!("openh264-license.txt");
 
-/// This machine's H.264 is Cisco's binary (Linux): the switch is shown
-/// and the library supplied.
-pub(crate) const WANTED: bool = ducktape_av::codec::cisco::WANTED;
-
 /// Tells the codecs where the library is, once at start.
 pub(crate) fn supply() {
-    if WANTED {
-        ducktape_av::codec::cisco::supply(library);
-    }
+    ducktape_av::codec::cisco::supply(library);
 }
 
 /// Whether the binary may be fetched and used: on until turned off.
@@ -53,6 +49,31 @@ pub(crate) fn set_enabled(on: bool) {
     super::edit_prefs(|prefs| prefs["openh264"] = serde_json::json!(on));
 }
 
+/// Where the licence text is saved, beside the binary (once fetched).
+pub(crate) fn license_path() -> String {
+    super::data_dir()
+        .map(|dir| {
+            dir.join("openh264")
+                .join("LICENSE.txt")
+                .display()
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
+/// How long a fetch that failed is not tried again: a ladder step or a
+/// new encoder in the same call does not knock on Cisco's door each time.
+const RETRY_AFTER: Duration = Duration::from_secs(60);
+
+/// One fetch at a time (a call's publishing and playing threads ask
+/// together), and the last failure, held back for a while.
+#[derive(Default)]
+struct Fetching {
+    failed: Option<(Instant, String)>,
+}
+
+static FETCHING: Mutex<Fetching> = Mutex::new(Fetching { failed: None });
+
 /// Where the library is, fetched now if it is not yet; why not, when it is
 /// turned off or cannot be fetched. Called on a call's own thread, the
 /// first time a picture is to be sent or shown.
@@ -65,31 +86,73 @@ fn library() -> Result<PathBuf, String> {
         return Err(format!("no Cisco build for {}", std::env::consts::ARCH));
     }
     let dir = super::data_dir()?.join("openh264");
+    let path = fetched(&FETCHING, &dir, name, || {
+        let packed = fetch(&format!("https://ciscobinary.openh264.org/{name}.bz2"))?;
+        unpack(&packed, sha256)
+    })?;
+    Ok(path)
+}
+
+/// `dir/name`, fetched by `fetch` and written (its licence beside it)
+/// when it is not there yet: once, however many threads ask at once; a
+/// failure is answered again, without fetching, for [`RETRY_AFTER`].
+fn fetched(
+    fetching: &Mutex<Fetching>,
+    dir: &Path,
+    name: &str,
+    fetch: impl FnOnce() -> Result<Vec<u8>, String>,
+) -> Result<PathBuf, String> {
     let path = dir.join(name);
     if path.exists() {
         return Ok(path);
     }
-    let packed = fetch(&format!("https://ciscobinary.openh264.org/{name}.bz2"))?;
-    let library = unpack(&packed, sha256)?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let part = dir.join(format!("{name}.part"));
-    std::fs::write(&part, library)
-        .and_then(|()| std::fs::write(dir.join("LICENSE.txt"), LICENSE))
-        .and_then(|()| std::fs::rename(&part, &path))
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    tracing::info!(target: "ducktape::call", path = %path.display(), version = VERSION, "Cisco's OpenH264 fetched");
-    Ok(path)
+    let mut fetching = fetching
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // another thread fetched it while this one waited
+    if path.exists() {
+        return Ok(path);
+    }
+    if let Some((when, error)) = &fetching.failed
+        && when.elapsed() < RETRY_AFTER
+    {
+        return Err(error.clone());
+    }
+    let written = fetch().and_then(|library| {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let part = dir.join(format!("{name}.part"));
+        std::fs::write(&part, library)
+            .and_then(|()| std::fs::write(dir.join("LICENSE.txt"), LICENSE))
+            .and_then(|()| std::fs::rename(&part, &path))
+            .map_err(|e| format!("{}: {e}", path.display()))
+    });
+    match written {
+        Ok(()) => {
+            fetching.failed = None;
+            tracing::info!(target: "ducktape::call", path = %path.display(), version = VERSION, "Cisco's OpenH264 fetched");
+            Ok(path)
+        }
+        Err(error) => {
+            tracing::warn!(target: "ducktape::call", %error, "Cisco's OpenH264 not fetched");
+            fetching.failed = Some((Instant::now(), error.clone()));
+            Err(error)
+        }
+    }
 }
 
 /// The whole of `url`, on a runtime of this thread's own (a call's
-/// thread has none).
+/// thread has none); 10 s to connect, 60 s for the whole.
 fn fetch(url: &str) -> Result<Vec<u8>, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
     runtime.block_on(async {
-        reqwest::Client::new()
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(60))
+            .build()
+            .map_err(|e| e.to_string())?
             .get(url)
             .send()
             .await
@@ -143,5 +206,46 @@ mod tests {
                 .collect::<String>()
         };
         assert_eq!(unpack(&packed, &sha).unwrap(), b"not a library");
+    }
+
+    /// Two threads asking at once fetch once and both get the file; a
+    /// fetch that failed is not tried again at once, and the file, once
+    /// there, is answered without the lock's say.
+    #[test]
+    fn a_first_fetch_happens_once_for_every_thread_asking() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir =
+            std::env::temp_dir().join(format!("ducktape-openh264-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let fetching = Mutex::new(Fetching::default());
+        let fetches = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    let path = fetched(&fetching, &dir, "lib.so", || {
+                        fetches.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(50));
+                        Ok(b"library".to_vec())
+                    })
+                    .unwrap();
+                    assert_eq!(std::fs::read(path).unwrap(), b"library");
+                });
+            }
+        });
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+        assert!(dir.join("LICENSE.txt").exists());
+
+        let failing = Mutex::new(Fetching::default());
+        let tries = AtomicUsize::new(0);
+        let attempt = || {
+            fetched(&failing, &dir, "missing.so", || {
+                tries.fetch_add(1, Ordering::SeqCst);
+                Err("offline".to_string())
+            })
+        };
+        assert_eq!(attempt().unwrap_err(), "offline");
+        assert_eq!(attempt().unwrap_err(), "offline");
+        assert_eq!(tries.load(Ordering::SeqCst), 1, "a failure is held back");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
