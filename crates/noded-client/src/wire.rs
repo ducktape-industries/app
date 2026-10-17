@@ -24,6 +24,8 @@ pub mod route {
     pub const SUBMIT: &str = "/v1/submit";
     pub const QUERY: &str = "/v1/query";
     pub const BLOB_GET: &str = "/v1/blob/get";
+    /// A blob upload: a signed blobs-role `Put` and the bytes it names.
+    pub const BLOB_PUT: &str = "/v1/blob/put";
     pub const CHANGES: &str = "/v1/changes";
     pub const BLOCKS: &str = "/v1/blocks";
     pub const BLOCK: &str = "/v1/block";
@@ -32,6 +34,10 @@ pub mod route {
     /// The UDP port the node takes live sessions on (`live_wire::PORT_ROUTE`).
     pub const LIVE_PORT: &str = "/v1/live/port";
 }
+
+/// The kernel's table of recent blocks (`host::RECENT`): every block
+/// writes it, so its changes (`/v1/changes/$recent`) come once a block.
+pub const RECENT: &str = "$recent";
 
 /// `host::Layer`: which state a read sees.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]

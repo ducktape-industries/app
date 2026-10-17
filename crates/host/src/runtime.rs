@@ -292,7 +292,9 @@ pub fn allows(capability: Capability) -> &'static str {
         Capability::Microphone => {
             "uses your microphone and speakers: the app records and plays, the view never hears it"
         }
-        Capability::File => "reads only the files you pick on this device, never where they are",
+        Capability::File => {
+            "lets you pick files on this device: it sees their names and sizes, never where they are"
+        }
     }
 }
 

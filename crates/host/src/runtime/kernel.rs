@@ -56,6 +56,12 @@
 //!   fail, a node restart) with no word to anyone; a view shows what
 //!   `program.query` reads. A lost answer is reported
 //!   ([`refusal::NODE_FAILED`]), never followed by a second submission.
+//! - `op.put` `PutBlobs` — blobs put on the network as one bundle in the
+//!   person's name, through the node's blob upload: the host frames and
+//!   hashes each (a picked file's slice read where it is), signs the
+//!   blobs-role `Put` naming only ids, lengths and kinds, streams the bytes
+//!   after it, and answers the ids once the network holds the bundle
+//!   (`Held`). No card asks: the host builds the op itself.
 //! - `chain.status` — node status as `NodeStatus`.
 //! - `chain.blocks` `BlockPage` — finalized blocks, newest first, as the
 //!   node lists them (`/v1/blocks`): each transaction's size, its payload
@@ -89,9 +95,9 @@
 //! In a sibling module [`answer`] asks first:
 //! - `clipboard.read`, `clipboard.write` — `clipboard`, run on the window
 //!   thread after the tick.
-//! - `file.pick`, `file.read` — `picker`: the system's picker opened on
-//!   the window thread after the tick, the files picked held open and read
-//!   a slice at a time on a blocking thread.
+//! - `file.pick` — `picker`: the system's picker opened on the window
+//!   thread after the tick, the files picked held open for `op.put`, which
+//!   reads them a slice at a time on a blocking thread.
 //! - `notify.post`, `notify.seen` — `notify`, the notification centre.
 //! - `store.get`, `store.set` — `store`, the view's file on this device;
 //!   `store.changes` — a subscription to the keys another instance of the
@@ -136,7 +142,7 @@ pub(super) mod screen;
 pub(super) use node::{NodeTask, reconnected, spawn_host_subscription, spawn_reply};
 use node::{
     blob_get, blob_manifest, block, blocks, changes, heads, invite, network, query, spawn_asked,
-    spawn_submit, status, tx,
+    spawn_put, spawn_submit, status, tx,
 };
 pub(super) use replies::Replies;
 use replies::{Claim, InFlight};
@@ -399,6 +405,13 @@ pub(super) fn answer(
                 Some(words) => node::spawn_consented(view, id, payload, call, words),
             }
         }
+        // blobs put in the person's name, with no card: the host builds
+        // the blobs-role op itself from the bytes the view hands it
+        // (`node::put`), so a view can only ask it to keep bytes, never
+        // craft a blobs op (a `Receipt`). The card's reason, a view
+        // crafting an op to a role's program (`consent::needed`), does not
+        // arise.
+        (Capability::Op, "put") => spawn_put(view, id, payload),
         (Capability::Blob, "get") => spawn_asked(view, id, payload, blob_get, "host_call.blob.get"),
         (Capability::Blob, "manifest") => {
             spawn_asked(view, id, payload, blob_manifest, "host_call.blob.manifest")
