@@ -967,8 +967,8 @@ fn a_carried_notice_is_one_row_whoever_logs_it_again() {
 /// What this device's run posted first is not logged again when the OS
 /// shows the push server's copy of it; a newer notice under the tag folds
 /// in unread, and an older one takes its place by its time. Opening it
-/// from the OS reads the row. A blocked program's notices and links that
-/// are no `duck://` link are dropped.
+/// from the OS reads the row. A blocked program's notices, links that are
+/// no `duck://` link and the push server's "N more" banner are dropped.
 #[test]
 fn the_os_copy_of_a_posted_notice_is_not_logged_twice() {
     let now = Instant::now();
@@ -999,6 +999,12 @@ fn the_os_copy_of_a_posted_notice_is_not_logged_twice() {
     assert!(!center.carried(&blocked, &carried("no", "#x", ""), 300, false));
     let elsewhere = carried("no", "#y", "https://example.com");
     assert!(!center.carried(&silent, &elsewhere, 300, false));
+    // the push server's centre past its burst: a banner, not a notice
+    let more = Notice {
+        tag: "more/chat".into(),
+        ..carried("3 more from Chat", "", "")
+    };
+    assert!(!center.carried(&silent, &more, 300, false));
     assert_eq!(center.entries().count(), 2);
 }
 

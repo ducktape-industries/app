@@ -353,8 +353,10 @@ impl Center {
     /// of the OS's notices, or this device's own run of the notifier since)
     /// or is unread and says the same; opened, that row is read. A blocked
     /// program's is dropped, as its post is; so is one whose link is no
-    /// `duck://` link. Written now: no view's redraw follows it. Whether the
-    /// log moved.
+    /// `duck://` link, and one under a tag that is not the program's (that
+    /// centre's own "N more" past the burst, which counts notices this
+    /// device never got and no centre logs). Written now: no view's redraw
+    /// follows it. Whether the log moved.
     pub fn carried(&mut self, settings: &Settings, notice: &Notice, at: i64, opened: bool) -> bool {
         let program = notice.program.as_str();
         let permission = settings.views.get(program).copied().or(settings.unasked);
@@ -362,8 +364,13 @@ impl Center {
         if program.is_empty() || permission == Some(Permission::Block) || !linked {
             return false;
         }
-        let tag = notice.tag.strip_prefix(&format!("{program}/"));
-        let tag = tag.unwrap_or(&notice.tag);
+        let tag = match notice.tag.is_empty() {
+            true => Some(""),
+            false => notice.tag.strip_prefix(&format!("{program}/")),
+        };
+        let Some(tag) = tag else {
+            return false;
+        };
         let says = |entry: &Entry| {
             (&entry.title, &entry.body, &entry.link) == (&notice.title, &notice.body, &notice.link)
         };
