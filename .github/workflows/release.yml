@@ -199,12 +199,16 @@ jobs:
           rm -f "$RUNNER_TEMP/certificate.p12"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
           # codesign reaches the private key through the search list: this
-          # keychain joins it until the cleanup step
-          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '" ')
+          # keychain joins it until the cleanup step deletes it (which takes
+          # it off the list); a list read as empty would drop the login one
+          searched=$(security list-keychains -d user | tr -d '" ')
+          [ -n "$searched" ] || { echo "::error::the user keychain search list read empty"; exit 1; }
+          # shellcheck disable=SC2086 # one keychain path per word
+          security list-keychains -d user -s "$keychain" $searched
           identity=$(security find-identity -v -p codesigning "$keychain" \
             | awk '/Developer ID Application/ { print $2; exit }')
           [ -n "$identity" ] || { echo "::error::no Developer ID Application identity in MACOS_CERTIFICATE_P12"; exit 1; }
-          printf '%s' "$APPLE_NOTARY_KEY" > "$RUNNER_TEMP/notary.p8"
+          (umask 077 && printf '%s' "$APPLE_NOTARY_KEY" > "$RUNNER_TEMP/notary.p8")
           {
             echo "DUCKTAPE_CODESIGN_KEYCHAIN=$keychain"
             echo "DUCKTAPE_CODESIGN_IDENTITY=$identity"
@@ -225,7 +229,6 @@ jobs:
         if: always()
         run: |
           keychain="$RUNNER_TEMP/signing.keychain-db"
-          security list-keychains -d user -s $(security list-keychains -d user | tr -d '" ' | grep -vxF "$keychain")
           security delete-keychain "$keychain" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/certificate.p12"
       - name: publish
@@ -248,8 +251,8 @@ jobs:
   # Sign the channel's manifest over both archives and upload: archives
   # first (immutable, named by their sha256), then the channel's one file,
   # so a client never reads a manifest whose archive is not there, nor a
-  # manifest beside another one's signature. The one job in the `release`
-  # environment: `main`'s signer over the build jobs' archives. No cache:
+  # manifest beside another one's signature. In the `release` environment
+  # with macos-sign: `main`'s signer over the build jobs' archives. No cache:
   # the build jobs build whatever commit they are given, and nothing they
   # leave behind reaches the job that holds the key.
   publish:
