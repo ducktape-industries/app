@@ -267,6 +267,7 @@ fn tile(
     }
     let mut tile = div()
         .id(SharedString::from(format!("{section}/{program}")))
+        .debug_selector(move || format!("{section}/{program}"))
         .control(Role::Button, name.clone())
         .w(relative(1. / 4.))
         .flex()

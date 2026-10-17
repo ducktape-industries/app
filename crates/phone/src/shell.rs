@@ -2096,6 +2096,92 @@ mod tests {
         }
     }
 
+    /// A Home tile is drawn pressed (`look::PRESSED`) while a touch is
+    /// held on it: Home scrolls, so the look waits the content-touch hold
+    /// (a scroll begun on a tile never flashes it), then dims under the
+    /// finger until it lifts; a touch that is cancelled lifts the look and
+    /// opens nothing, a tap opens the program at lift.
+    #[gpui_kit::test]
+    fn a_tile_is_drawn_pressed_while_a_touch_is_held_on_it(cx: &mut TestAppContext) {
+        let _seat = ducktape_host::backend::seat_serial();
+        let (root, stack, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        ducktape_host::runtime::seat_for_test(PROGRAM, 320);
+        shared.rail.update(cx, |rail, cx| {
+            rail.read_off(Roster::listing(&[PROGRAM]), cx)
+        });
+        run_out(cx);
+
+        // `home/{PROGRAM}`, the tile in Home's grid
+        const TILE: &str = "home/phone-root-test";
+        // the tile's glyph (60 square on its tint's ground), as drawn now
+        let glyph_alpha = |cx: &mut VisualTestContext| -> f32 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let tile = cx.debug_bounds(TILE).expect("the tile drawn");
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let tile = tile.scale(scale);
+                let side = gpui_kit::ScaledPixels(60. * scale);
+                let glyph = window
+                    .painted_quads()
+                    .into_iter()
+                    .find(|quad| {
+                        tile.contains(&quad.bounds.origin) && quad.bounds.size.width == side
+                    })
+                    .expect("the tile's glyph drawn");
+                glyph.background.as_solid().expect("a solid ground").a
+            })
+        };
+        let pressed = |cx: &mut VisualTestContext| (glyph_alpha(cx) - look::PRESSED).abs() < 1e-3;
+        let at = cx.debug_bounds(TILE).expect("the tile drawn").center();
+        let touch = |id: u64, phase: gpui_kit::TouchPhase, cx: &mut VisualTestContext| {
+            cx.simulate_event(gpui_kit::TouchEvent {
+                id: gpui_kit::TouchId(id),
+                phase,
+                position: at,
+                predicted_position: None,
+                force: None,
+            });
+        };
+        let hold = |cx: &mut VisualTestContext| {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(150));
+            cx.run_until_parked();
+        };
+        assert_eq!(glyph_alpha(cx), 1., "dimmed before any touch");
+
+        touch(1, gpui_kit::TouchPhase::Started, cx);
+        assert!(
+            !pressed(cx),
+            "pressed at touch-down inside the scrolling Home"
+        );
+        hold(cx);
+        assert!(pressed(cx), "not drawn pressed under the held finger");
+        assert_eq!(top(&stack, cx), None, "opened at touch-down");
+        touch(1, gpui_kit::TouchPhase::Cancelled, cx);
+        assert_eq!(
+            glyph_alpha(cx),
+            1.,
+            "still pressed after the touch was cancelled"
+        );
+        assert_eq!(
+            top(&stack, cx),
+            None,
+            "a cancelled touch opened the program"
+        );
+
+        touch(2, gpui_kit::TouchPhase::Started, cx);
+        hold(cx);
+        assert!(pressed(cx), "not drawn pressed under the second finger");
+        touch(2, gpui_kit::TouchPhase::Ended, cx);
+        cx.run_until_parked();
+        assert_eq!(
+            top(&stack, cx),
+            Some(PROGRAM),
+            "the tap did not open the program at lift"
+        );
+    }
+
     /// App settings' Light and dark row opens Appearance; the palette (and
     /// the kit theme every view reads) follows the choice made there, not
     /// the system's, and System hands it back to the window's own.
