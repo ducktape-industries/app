@@ -43,9 +43,13 @@
 //!   when its [`Release`] is: its thread sees the feed's stop and closes
 //!   the device (the camera's light off).
 //!
-//! - with feature `call`, [`codec`]'s encoders and decoders turn a
-//!   microphone's samples and a camera's [`Picture`]s into packets and
-//!   back, for the host's call pipeline; they touch no device.
+//! - with feature `call`: [`codec`] turns a microphone's samples and a
+//!   camera's [`Picture`]s into packets and back; [`voice`] is the one
+//!   full-duplex 48 kHz voice I/O of the app, echo-cancelled, whose
+//!   playback is [`mixer`]'s sum of every remote voice (each through
+//!   [`jitter`]); [`fake`] stands in for every device when
+//!   `DUCKTAPE_AV_FAKE=1` (a proof with no camera and no sound card).
+//!   [`Camera::remote`] draws a picture someone else's camera sent.
 //!
 //! Without feature `capture` the crate is empty (`Cargo.toml` says why).
 #![cfg(feature = "capture")]
@@ -72,13 +76,21 @@ mod camera;
 pub mod codec;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod devices;
+#[cfg(feature = "call")]
+pub mod fake;
 #[cfg(target_os = "ios")]
 mod ios;
+#[cfg(feature = "call")]
+pub mod jitter;
 #[cfg(target_os = "macos")]
 mod mac;
 mod meter;
+#[cfg(feature = "call")]
+pub mod mixer;
 #[cfg(target_os = "linux")]
 mod v4l2;
+#[cfg(feature = "call")]
+pub mod voice;
 
 #[cfg(target_os = "android")]
 use android as platform;
@@ -93,13 +105,15 @@ use v4l2 as platform;
 pub use android::{Asker, asks_through};
 #[cfg(feature = "test-support")]
 pub use backend::Ask;
-#[cfg(feature = "call")]
-pub use backend::Picture;
 pub use backend::{
     AudioDevice, AudioKind, CameraDevice, Device, Facing, Playback, Release, Status,
 };
+#[cfg(feature = "call")]
+pub use backend::{CameraFeed, MicFeed, Picture};
 pub use camera::Camera;
 pub use meter::Meter;
+#[cfg(feature = "call")]
+pub use meter::Speaking;
 
 /// What a phone's microphone the system took is told (iOS's interrupted
 /// session, Android's silenced recording): neither says which took it.

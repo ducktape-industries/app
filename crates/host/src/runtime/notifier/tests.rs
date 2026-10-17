@@ -85,6 +85,7 @@ fn mention() -> Notification {
         body: "look".into(),
         tag: "#general".into(),
         link: String::new(),
+        ..Default::default()
     }
 }
 
