@@ -293,9 +293,14 @@ fn finger(tree: &Entity<ViewTree>, native: &gpui_kit::VisualTestContext) -> Opti
     tree.read_with(native, |tree, _| tree.page_finger())
 }
 
-/// The frames the last draw asked for, delivered: how many.
+/// The frames a draw now asks for: the ones earlier draws asked for (a
+/// test draws without delivering them) are delivered first.
 fn frames(native: &mut gpui_kit::VisualTestContext) -> usize {
-    native.update(|window, cx| window.simulate_next_frame(cx))
+    native.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.render_frame(cx);
+        window.simulate_next_frame(cx)
+    })
 }
 
 fn near(drawn: f32, expected: f32, what: &str) {
