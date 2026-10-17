@@ -331,10 +331,17 @@ fn programs_swapping(program: &str, at: u64) -> (::program::MockHost, abi::BlobI
         params: Vec::new(),
     };
     let running = blob_id(b"running code");
+    let roles = MockHost::roles();
+    let seated = roles.iter().map(|(_, seat)| Entry {
+        program: seat.clone(),
+        code: blob_id(seat.as_bytes()),
+        params: Vec::new(),
+    });
     let genesis = Genesis {
-        programs: vec![entry(running)],
+        programs: std::iter::once(entry(running)).chain(seated).collect(),
         views: Vec::new(),
         hooks: Vec::new(),
+        roles,
     };
     Programs::init(
         &store.exec(programs_env(0, Origin::Root)),
