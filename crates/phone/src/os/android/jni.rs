@@ -36,7 +36,8 @@
 //! gm keeps: `Activity.moveTaskToBack(boolean)` and
 //! `MainActivity.systemBars(dark)` on gm's render thread, and
 //! `MainActivity.ask(permission)` (blocking until the person answers) and
-//! `MainActivity.openSettings(page)` on a camera's or a microphone's thread.
+//! `MainActivity.openSettings(page)` on a camera's or a microphone's thread,
+//! and `MainActivity.withdrawNotice(tag)` on any.
 #![allow(unsafe_code, reason = "the JNI entries the Android Activity calls")]
 
 use gpui_mobile::android::host::{self, Pointer};
@@ -420,6 +421,26 @@ pub fn system_bars(dark: bool) {
     });
     if let Err(error) = set {
         tracing::error!(target: "ducktape::phone", %error, "the system bars did not follow the appearance");
+    }
+}
+
+/// The shade's notice under `tag` (the push server's) taken down, through
+/// the Activity (`MainActivity.withdrawNotice`, `Ring.withdraw`).
+pub fn withdraw_notice(tag: &str) {
+    let withdrawn = gpui_mobile::android::jni::with_env(|env| {
+        let activity = gpui_mobile::android::jni::activity(env)?;
+        let tag = env.new_string(tag).map_err(|error| error.to_string())?;
+        env.call_method(
+            &activity,
+            jni::jni_str!("withdrawNotice"),
+            jni::jni_sig!("(Ljava/lang/String;)V"),
+            &[JValue::Object(&tag)],
+        )
+        .map(drop)
+        .map_err(|error| error.to_string())
+    });
+    if let Err(error) = withdrawn {
+        tracing::error!(target: "ducktape::phone", %error, "a notice stayed in the shade");
     }
 }
 

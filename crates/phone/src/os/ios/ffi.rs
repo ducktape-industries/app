@@ -26,6 +26,8 @@
 //! - `ducktape_phone_remote_notification(json) -> taken`: a background push
 //!   the app delegate (gpui_ios) handed over, its payload as JSON: a
 //!   withdrawn call's ring stops. Main thread.
+//! - `ducktape_phone_withdraw_notice(tag)`: the OS's notice under the push
+//!   server's `tag` out of its list. Any thread.
 //!
 //! The regular remote-notification token (kind `apns`, the one a withdraw
 //! is pushed to) comes through gpui_ios's delegate hooks, set on the
@@ -45,6 +47,18 @@ unsafe extern "C" {
 
 unsafe extern "C" {
     fn ducktape_phone_remote_notification(json: *const c_char) -> u8;
+    fn ducktape_phone_withdraw_notice(tag: *const c_char);
+}
+
+/// The OS's notice under `tag` out of its list, through the launcher
+/// (`crate::os::withdraw_notice`).
+pub(crate) fn withdraw_notice(tag: &str) {
+    match std::ffi::CString::new(tag) {
+        // SAFETY: a Swift `@_cdecl` entry taking a C string alive for the
+        // call; any thread (it hands on to the main queue).
+        Ok(tag) => unsafe { ducktape_phone_withdraw_notice(tag.as_ptr()) },
+        Err(_) => tracing::error!(target: "ducktape::phone", "a notice's tag held a NUL"),
+    }
 }
 
 /// A background push, as the app delegate hands it over: to the

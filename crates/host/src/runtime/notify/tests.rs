@@ -1009,7 +1009,9 @@ fn the_os_copy_of_a_posted_notice_is_not_logged_twice() {
 }
 
 /// A carried notice is written as it is logged, so the next launch's
-/// connect reads it back off disk.
+/// connect reads it back off disk; so is the copy waiting for this
+/// device's own run of its notifier, so a notice opened from the OS stays
+/// read and counted once when that run only posts it after a relaunch.
 #[test]
 fn a_carried_notice_is_on_disk_for_the_next_launch() {
     let dir = tempfile::tempdir().unwrap();
@@ -1018,11 +1020,54 @@ fn a_carried_notice_is_on_disk_for_the_next_launch() {
     let mut center = Center::default();
     center.open_log("dev", Some(path.clone()));
     let silent = settings(Some(Permission::Silent));
-    center.carried(&silent, &carried("kept", "#room", ""), 100, false);
+    center.carried(&silent, &carried("kept", "#room", ""), 100, true);
     settled(&path);
+    settled(&dir.path().join("dev@carried.json"));
     let mut relaunched = Center::default();
     relaunched.open_log("dev", Some(path));
-    assert_eq!(rows(&relaunched), [("kept".into(), 1, false, 100)]);
+    assert_eq!(rows(&relaunched), [("kept".into(), 1, true, 100)]);
+    let now = Instant::now();
+    relaunched.post(&silent, "chat", "Chat", post("kept", "#room"), now, 160);
+    assert_eq!(
+        rows(&relaunched),
+        [("kept".into(), 1, true, 100)],
+        "opened from the OS, then unread again after a relaunch"
+    );
+    // the copy is used up on disk too: the next post saying the same is new
+    flushed(&mut relaunched, &dir.path().join("dev@carried.json"));
+    let mut again = Center::default();
+    again.open_log("dev", Some(dir.path().join("dev.json")));
+    again.post(&silent, "chat", "Chat", post("kept", "#room"), now, 170);
+    assert_eq!(rows(&again), [("kept".into(), 2, false, 170)]);
+}
+
+/// The copies waiting for this device's run are the newest few: past the
+/// bound the oldest goes, and its program's post of it is a notice again.
+#[test]
+fn the_copies_waiting_for_this_devices_run_are_bounded() {
+    let silent = settings(Some(Permission::Silent));
+    let mut center = Center::default();
+    for nth in 0..=super::center::CARRIED_KEPT {
+        let notice = carried(&format!("n{nth}"), &format!("#{nth}"), "");
+        center.carried(&silent, &notice, 100, false);
+    }
+    let now = Instant::now();
+    center.post(&silent, "chat", "Chat", post("n0", "#0"), now, 200);
+    let last = super::center::CARRIED_KEPT;
+    center.post(
+        &silent,
+        "chat",
+        "Chat",
+        post(&format!("n{last}"), &format!("#{last}")),
+        now,
+        200,
+    );
+    let count = |title: &str| {
+        let entry = center.entries().find(|entry| entry.title == title).unwrap();
+        entry.count
+    };
+    assert_eq!(count("n0"), 2, "the oldest copy outlived the bound");
+    assert_eq!(count(&format!("n{last}")), 1);
 }
 
 /// The host's own rows are the device's: there before any network is in

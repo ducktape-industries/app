@@ -218,6 +218,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         }
     }
 
+    /** The shade's notice under [tag] taken down (Rust: its row read or cleared, or its program saw it). Any thread. */
+    fun withdrawNotice(tag: String) = runOnUiThread { Ring.withdraw(this, tag) }
+
     /** The app's own page in Settings, [page] its `package:` URI: where a refused camera or microphone is allowed. */
     fun openSettings(page: String) = runOnUiThread {
         try {

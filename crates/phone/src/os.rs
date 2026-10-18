@@ -174,6 +174,25 @@ pub fn os_notice(payload: &str, at: i64, front: bool, opened: bool) {
     }
 }
 
+/// Takes the OS's notice under `tag` (the push server's banner tag,
+/// `<program>/<tag>`) out of its list: its row was read or cleared here, or
+/// its program said it was seen. Nothing when none stands there. Any
+/// thread.
+pub fn withdraw_notice(tag: &str) {
+    #[cfg(target_os = "ios")]
+    ios::ffi::withdraw_notice(tag);
+    #[cfg(target_os = "android")]
+    android::jni::withdraw_notice(tag);
+    #[cfg(test)]
+    WITHDRAWN.with(|withdrawn| withdrawn.borrow_mut().push(tag.to_owned()));
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What [`withdraw_notice`] took out of the OS's list, in a test.
+    pub static WITHDRAWN: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// The OS's notices to log, in the order they came.
 pub(crate) fn os_notices() -> async_channel::Receiver<OsNotice> {
     os_notice_channel().1.clone()
@@ -308,7 +327,9 @@ impl PhoneOs {
     }
 }
 
-/// Banners are not posted yet: `post` answers that nothing went up.
+/// Banners are not posted yet: `post` answers that nothing went up. A
+/// withdraw (its program saw it, or its `until`) takes the push server's
+/// copy under the tag out of the OS's list ([`withdraw_notice`]).
 struct NoBanners;
 
 impl Banners for NoBanners {
@@ -316,7 +337,9 @@ impl Banners for NoBanners {
         false
     }
 
-    fn withdraw(&self, _: &str) {}
+    fn withdraw(&self, tag: &str) {
+        withdraw_notice(tag);
+    }
 }
 
 impl OsServices for PhoneOs {

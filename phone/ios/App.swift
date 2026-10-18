@@ -407,6 +407,14 @@ public func ducktapePhoneCallVoice(_ active: UInt8) {
   DispatchQueue.main.async { Ring.shared.voice(active != 0) }
 }
 
+/// The OS's notice under the push server's `tag` out of its list (Rust: its row read or cleared, or its program saw
+/// it), by its id (`Ring.collapse`). Any thread.
+@_cdecl("ducktape_phone_withdraw_notice")
+public func ducktapePhoneWithdrawNotice(_ tag: UnsafePointer<CChar>) {
+  let id = Ring.collapse(String(cString: tag))
+  DispatchQueue.main.async { UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [id]) }
+}
+
 /// A background push from Rust (gpui_ios's app delegate), its payload as JSON; 1 when the ring took it. Main thread.
 @_cdecl("ducktape_phone_remote_notification")
 public func ducktapePhoneRemoteNotification(_ json: UnsafePointer<CChar>) -> UInt8 {

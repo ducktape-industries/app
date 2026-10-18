@@ -650,11 +650,7 @@ pub fn notifications(shared: &Shared, palette: Palette, cx: &mut Context<Root>) 
                     look::text(look::BODY, FontWeight::MEDIUM, palette.foreground())
                         .child("Mark all read"),
                 )
-                .on_click(cx.listener(|root, _, _, cx| {
-                    root.shared
-                        .notifications
-                        .update(cx, |notifications, cx| notifications.mark_all_read(cx));
-                })),
+                .on_click(cx.listener(|root, _, _, cx| root.mark_all_read(cx))),
         );
     }
     let screen = div().flex_1().min_h_0().flex().flex_col().child(header);
@@ -683,11 +679,7 @@ pub fn notifications(shared: &Shared, palette: Palette, cx: &mut Context<Root>) 
                 look::text(look::SECONDARY, FontWeight::MEDIUM, palette.muted())
                     .child("Clear read"),
             )
-            .on_click(cx.listener(|root, _, _, cx| {
-                root.shared
-                    .notifications
-                    .update(cx, |notifications, cx| notifications.clear_read(cx));
-            }))
+            .on_click(cx.listener(|root, _, _, cx| root.clear_read(cx)))
     });
     let rows: Vec<_> = entries
         .into_iter()

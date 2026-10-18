@@ -42,7 +42,7 @@ use ducktape_host::backend::Appearance;
 use ducktape_host::contract::{Boot, KeyStorage, OsServices, Signal, SoftKeyboard};
 use ducktape_host::motion::{self, Shown, Slide, Tween};
 use ducktape_host::render::ViewTree;
-use ducktape_host::runtime::notify::{Opened as Banner, Permission};
+use ducktape_host::runtime::notify::{Entry, Opened as Banner, Permission};
 use ducktape_host::runtime::{Back, Placed, consent};
 use ducktape_host::session::{Opening, Place, Seats, SeatsEvent, Session, SessionEvent, Shared};
 use futures::StreamExt as _;
@@ -198,6 +198,19 @@ fn os_notice(notice: crate::os::OsNotice, cx: &mut App) {
         waiting.push(notice);
     }
     log_os_notices(cx);
+}
+
+/// The OS's copy of each of `entries` out of its list, as its row is read
+/// or cleared here: a notice the push server carried stands there under its
+/// banner tag (`<program>/<tag>`), and the next read of the list
+/// ([`os_notice`]) would log it again. The OS's list then says what the tab
+/// says. A row with no tag has no name there to take it down by.
+fn withdraw_shown<'a>(entries: impl IntoIterator<Item = &'a Entry>) {
+    for entry in entries {
+        if !entry.tag.is_empty() && !entry.host() {
+            crate::os::withdraw_notice(&format!("{}/{}", entry.program, entry.tag));
+        }
+    }
 }
 
 /// A chain taken up opens its log: the OS's notices waiting for it go in.
@@ -1147,11 +1160,30 @@ impl Root {
         else {
             return;
         };
+        withdraw_shown([&entry]);
         let link = match entry.link.is_empty() {
             true => format!("duck://{}", entry.program),
             false => entry.link,
         };
         self.take_link(link, cx);
+    }
+
+    /// "Mark all read" in the Notifications tab: every row read, and the
+    /// OS's copy of each unread one out of its list ([`withdraw_shown`]).
+    fn mark_all_read(&mut self, cx: &mut Context<Self>) {
+        let notifications = self.shared.notifications.clone();
+        let entries = notifications.read(cx).entries();
+        withdraw_shown(entries.iter().filter(|entry| !entry.read));
+        notifications.update(cx, |notifications, cx| notifications.mark_all_read(cx));
+    }
+
+    /// "Clear read" in the Notifications tab: the read rows gone, and the
+    /// OS's copy of each out of its list too ([`withdraw_shown`]).
+    fn clear_read(&mut self, cx: &mut Context<Self>) {
+        let notifications = self.shared.notifications.clone();
+        let entries = notifications.read(cx).entries();
+        withdraw_shown(entries.iter().filter(|entry| entry.read));
+        notifications.update(cx, |notifications, cx| notifications.clear_read(cx));
     }
 
     /// A link, read as every shell reads it (`Rail::opening`): this chain's
@@ -2374,6 +2406,103 @@ mod tests {
             waiting.len(),
             1,
             "the other chain's did not wait, or waited twice"
+        );
+    }
+
+    /// A pushed notice's row read or cleared in the Notifications tab takes
+    /// the OS's copy out of its list, so the next read of the list (each
+    /// return to the front) does not log it again: "Clear read" takes the
+    /// read ones (read elsewhere: its program saw it), a row opened and
+    /// "Mark all read" take theirs as they are read.
+    #[gpui_kit::test]
+    fn a_row_read_or_cleared_here_leaves_the_os_list_too(cx: &mut TestAppContext) {
+        use ducktape_host::session::SessionState;
+        let _seat = ducktape_host::backend::seat_serial();
+        let (root, _, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        ducktape_host::runtime::seat_for_test(PROGRAM, 320);
+        shared.rail.update(cx, |rail, cx| {
+            rail.read_off(Roster::listing(&[PROGRAM]), cx)
+        });
+        shared.session.update(cx, |session, cx| {
+            let state = SessionState {
+                connected: true,
+                chain: "garage#1".into(),
+                ..Default::default()
+            };
+            session.seed(state, cx);
+        });
+        crate::os::WITHDRAWN.with(|withdrawn| withdrawn.borrow_mut().clear());
+        // the OS's list: what it shows, by the push server's tag
+        let list = [("room", 100), ("desk", 110), ("hall", 120)];
+        let withdrawn = || crate::os::WITHDRAWN.with(|withdrawn| withdrawn.borrow().clone());
+        let read_list = |cx: &mut VisualTestContext| {
+            let withdrawn = withdrawn();
+            for (tag, at) in list {
+                let tag = format!("{PROGRAM}/{tag}");
+                if withdrawn.contains(&tag) {
+                    continue;
+                }
+                let payload = serde_json::json!({
+                    "kind": "notice", "chain": "garage#1", "program": PROGRAM, "tag": tag,
+                    "title": tag, "body": "said", "link": "", "until": 0,
+                });
+                let notice = crate::os::OsNotice::of(&payload.to_string(), at, false, false);
+                cx.update(|_, cx| os_notice(notice.expect("a notice"), cx));
+            }
+            run_out(cx);
+            let entries = shared.notifications.read_with(cx, |it, _| it.entries());
+            entries
+                .iter()
+                .map(|entry| (entry.tag.clone(), entry.read))
+                .collect::<Vec<_>>()
+        };
+        let click = |id: &'static str, cx: &mut VisualTestContext| {
+            let at = cx.debug_bounds(id).expect(id);
+            cx.simulate_click(at.center(), gpui_kit::Modifiers::none());
+            run_out(cx);
+        };
+        let unread = |tag: &str| (tag.to_owned(), false);
+        assert_eq!(
+            read_list(cx),
+            [unread("hall"), unread("desk"), unread("room")]
+        );
+        // its program saw "room" (`notify.seen`) where no withdraw reached this list
+        let center = shared
+            .notifications
+            .read_with(cx, |it, _| it.center().clone());
+        center.lock().read_tag(PROGRAM, "room");
+        shared.notifications.update(cx, |it, cx| _ = it.refresh(cx));
+        click("tab/notifications", cx);
+        click("notifications/clear-read", cx);
+        assert_eq!(
+            read_list(cx),
+            [unread("hall"), unread("desk")],
+            "cleared, then back from the OS's list"
+        );
+        let entries = shared.notifications.read_with(cx, |it, _| it.entries());
+        let hall = entries
+            .iter()
+            .find(|entry| entry.tag == "hall")
+            .expect("hall")
+            .id;
+        click(format!("notifications/{hall}").leak(), cx);
+        assert!(
+            withdrawn().contains(&format!("{PROGRAM}/hall")),
+            "opened, still in the OS's list"
+        );
+        root.update(cx, |root, cx| root.back(cx));
+        run_out(cx);
+        click("notifications/mark-all", cx);
+        assert!(
+            withdrawn().contains(&format!("{PROGRAM}/desk")),
+            "read, still in the OS's list"
+        );
+        click("notifications/clear-read", cx);
+        assert_eq!(
+            read_list(cx),
+            [],
+            "read and cleared, then back from the OS's list"
         );
     }
 

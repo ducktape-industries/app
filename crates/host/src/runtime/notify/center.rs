@@ -66,6 +66,11 @@ pub const HOST: &str = "ducktape";
 /// logs number their rows apart.
 const DEVICE: u64 = 1 << 63;
 
+/// How many carried notices wait for this device's own run of their
+/// notifier ([`Center::carried`]): its catch-up after a launch posts what
+/// came while nothing ran, far fewer than this; older ones go first.
+pub(super) const CARRIED_KEPT: usize = 128;
+
 impl Entry {
     /// One of the host's own rows, the device's ([`Center::post_host`]),
     /// not a view's.
@@ -115,11 +120,15 @@ pub struct Center {
     calls: HashMap<String, String>,
     /// The notices the push server carried here ([`Center::carried`]) that
     /// this device's own run of their notifier has not posted yet: its
-    /// post of one is that notice again ([`Center::log`]).
+    /// post of one is that notice again ([`Center::log`]). Saved beside the
+    /// log, so a run that only starts after a relaunch still finds them;
+    /// the newest [`CARRIED_KEPT`].
     // ponytail: one the run here never posts (the program skipped it, on
-    // screen here) waits until the network changes and takes one later
+    // screen here) waits until newer ones push it out and takes one later
     // post saying the same; a carried notice's seq in the payload if felt
     carried: Vec<Entry>,
+    /// The copies moved since they were last handed to the disk.
+    carried_moved: bool,
     /// Moves with every change to the log: the bell's list is read again.
     rev: u64,
     /// The `rev` last handed to the disk ([`Center::flush`]).
@@ -301,7 +310,9 @@ impl Center {
                 && (&copy.title, &copy.body, &copy.link) == (&post.title, &post.body, &post.link)
         });
         if let Some(twin) = twin {
-            self.carried.swap_remove(twin);
+            self.carried.remove(twin);
+            // the copies are saved with the log
+            (self.carried_moved, self.rev) = (true, self.rev + 1);
             return;
         }
         let folded = (!post.tag.is_empty())
@@ -414,6 +425,10 @@ impl Center {
                     read: opened,
                 };
                 self.carried.push(entry.clone());
+                if self.carried.len() > CARRIED_KEPT {
+                    self.carried.remove(0);
+                }
+                self.carried_moved = true;
                 // newest last, as `entries` reads them: it may be older than rows logged since
                 let place = self
                     .entries
@@ -636,6 +651,7 @@ impl Center {
             ..Center::default()
         };
         if let Some((entries, path)) = path.and_then(|path| Some((opened(&path)?, path))) {
+            self.carried = opened(&carried_path(&path)).unwrap_or_default();
             (self.entries, self.log) = (entries, Some(path));
         }
         self.next = self.entries.iter().map(|entry| entry.id).max().unwrap_or(0);
@@ -677,6 +693,9 @@ impl Center {
         self.saved = self.rev;
         if let Some(path) = &self.log {
             save(path.clone(), self.entries.clone());
+            if std::mem::take(&mut self.carried_moved) {
+                save(carried_path(path), self.carried.clone());
+            }
         }
     }
 }
@@ -729,6 +748,14 @@ fn log_path(network: &str) -> Option<PathBuf> {
         )
         .collect();
     Some(notifications_dir().join(format!("{file}.json")))
+}
+
+/// Where the copies waiting beside the chain log at `log` are saved
+/// ([`Center::carried`]): `<chain>@carried.json` (`@` is in no chain's file
+/// name, [`log_path`]).
+fn carried_path(log: &Path) -> PathBuf {
+    let chain = log.file_stem().unwrap_or_default().to_string_lossy();
+    log.with_file_name(format!("{chain}@carried.json"))
 }
 
 /// `<config>/notifications`, where every log is.
