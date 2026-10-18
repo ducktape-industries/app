@@ -219,27 +219,44 @@ pub struct RailRow {
     pub note: Option<&'static str>,
     /// The program ships no view: the rail leaves it out.
     pub empty: bool,
-    /// Its code not read yet (no seat, or the bytes still coming): whether
-    /// it ships a view is not known, so `empty` is `false` meanwhile and
-    /// the row says `Loading`. Home lists no program before this is known.
+    /// Its code not read yet (no seat, the bytes still coming, or read and
+    /// not shown until the rest of its roster read's are): whether it ships
+    /// a view is not known, so `empty` is `false` meanwhile and the row says
+    /// `Loading`. Home lists no program before this is known.
     pub pending: bool,
     /// How far its code has come on this device (its readiest seat's):
     /// what a count of the programs being prepared reads.
     pub prep: Prep,
 }
 
-/// How far a program's code has come on this device ([`RailRow::prep`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// How far a program's code has come on this device ([`RailRow::prep`]),
+/// least far first. A roster read reads every program's bytes before any is
+/// prepared ([`super::seat::read_ahead`]): `Reading` is that first half,
+/// `Waiting` and `Working` the second.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Prep {
+    /// Its bytes not read yet (asked for, or coming).
+    Reading,
+    /// Its bytes here, no loader at its code yet.
+    Waiting,
+    /// A loader compiling its code.
+    Working,
     /// Drawn, compiled, found to ship no view, or failed: nothing more is
     /// coming.
     Settled,
-    /// Asked for (or new code the network named over what is drawn), no
-    /// loader at it yet.
-    Waiting,
-    /// A loader at it: its bytes coming, its manifest read, its code
-    /// compiling.
-    Working,
+}
+
+impl Prep {
+    /// How far a load showing `stage` has come; settled once it landed.
+    pub(super) fn of(stage: &Slot) -> Prep {
+        match stage {
+            Slot::Loading => Prep::Reading,
+            Slot::Fetching { received, total } if *total != Some(*received) => Prep::Reading,
+            Slot::Fetching { .. } | Slot::Listed(_) => Prep::Waiting,
+            Slot::Compiling(_) => Prep::Working,
+            _ => Prep::Settled,
+        }
+    }
 }
 
 /// How far a seat's view has come, readiest first: the rail names a
@@ -305,7 +322,7 @@ impl Roster {
                     seat.as_ref().map(|seat| &seat.slot),
                     None | Some(Slot::Loading | Slot::Fetching { .. })
                 );
-                let prep = seat.as_ref().map_or(Prep::Waiting, |seat| seat.prep());
+                let prep = seat.as_ref().map_or(Prep::Reading, |seat| seat.prep());
                 // the manifest's, as the name is: none before it is read
                 let (icon, tint, description) = match seat.as_ref().map(|seat| &seat.slot) {
                     Some(Slot::Ready(view)) => {
@@ -532,7 +549,7 @@ pub(super) fn read_roster(
             // the network moved the program to other code: what the seat
             // holds stays up until it lands, and the rail counts it meanwhile
             if !same_code && !locked.slot.loading() {
-                locked.replacing = Some((generation, Prep::Waiting));
+                locked.replacing = Some((generation, Prep::Reading));
             }
             loads.push(Load {
                 program,
@@ -545,10 +562,15 @@ pub(super) fn read_roster(
         loads
     };
     // the registry let go first: a load that cannot get a thread installs
-    // its failure under the seat's lock
-    for load in loads {
+    // its failure under the seat's lock. A pane's goes straight to the
+    // loaders; the preloads' bytes are all read first
+    let (claimed, preloads): (Vec<Load>, Vec<Load>) = loads
+        .into_iter()
+        .partition(|load| lock(&load.seat).instance != 0);
+    for load in claimed {
         queue(load);
     }
+    super::seat::read_ahead(preloads);
     Some(programs)
 }
 
@@ -813,7 +835,7 @@ mod rail_tests {
         assert_eq!(row.note, Some("Loading"));
         assert!(!row.empty);
         assert!(row.pending, "whether it ships a view is not known yet");
-        assert_eq!(row.prep, Prep::Waiting, "no seat yet: waiting for one");
+        assert_eq!(row.prep, Prep::Reading, "no seat yet: its bytes not read");
     }
 
     /// A seat preloaded only as far as compiled is a row ready to open,
@@ -835,8 +857,10 @@ mod rail_tests {
         assert!(!row.empty && !row.pending);
     }
 
-    /// A program whose bytes are still coming is pending; once read and
-    /// found to ship no view it is empty, and no longer pending.
+    /// A program whose bytes are still coming is pending, and so is one whose
+    /// bytes are all here and not shown yet (the rest of its roster read's
+    /// still coming), read now; once found to ship no view it is empty, and
+    /// no longer pending.
     #[test]
     fn a_program_is_pending_until_its_code_is_read() {
         let program = "rail-tests-pending";
@@ -852,7 +876,12 @@ mod rail_tests {
             received: 1,
             total: Some(2),
         };
-        assert_eq!(row(&seat, fetching), (false, true, Prep::Working));
+        assert_eq!(row(&seat, fetching), (false, true, Prep::Reading));
+        let read = Slot::Fetching {
+            received: 2,
+            total: Some(2),
+        };
+        assert_eq!(row(&seat, read), (false, true, Prep::Waiting));
         assert_eq!(row(&seat, Slot::Empty), (true, false, Prep::Settled));
     }
 

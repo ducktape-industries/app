@@ -2854,39 +2854,76 @@ mod tests {
         );
     }
 
-    /// While programs are being prepared Home's caption counts them, the
-    /// one a loader is at by name, and a tile being prepared is ringed with
-    /// no word under it, the ring running as the clock does (held still
-    /// under Reduce Motion); the caption comes back once all are settled,
-    /// and nothing redraws Home after.
+    /// Home over a roster read: while the programs' bytes are read the
+    /// caption counts them read and no tile stands; once every one is read
+    /// (the host shows them all at once) every tile with a view comes in the
+    /// same frame, dimmed and with no word, only the one a loader compiles
+    /// ringed, the ring running as the clock does (held still under Reduce
+    /// Motion); the caption counts the views as they are prepared and is the
+    /// normal one once all are settled, and nothing redraws Home after.
     #[gpui_kit::test]
-    fn home_counts_the_programs_being_prepared_and_rings_their_tiles(cx: &mut TestAppContext) {
-        use ducktape_host::runtime::{seat_compiled_for_test, seat_listed_for_test};
+    fn home_shows_every_tile_at_once_once_read_and_counts_them_prepared(cx: &mut TestAppContext) {
+        use ducktape_host::runtime::{
+            seat_compiled_for_test, seat_empty_for_test, seat_listed_for_test,
+            seat_reading_for_test,
+        };
         let (root, _, cx) = phone(cx);
         let shared = root.read_with(cx, |root, _| root.shared.clone());
-        // one with its manifest read and its code not compiled, one with no
-        // seat yet: neither is settled
-        let (listed, coming) = ("phone-prep-listed", "phone-prep-coming");
-        seat_listed_for_test(listed, "Listed");
+        let (alpha, beta, none) = ("phone-prep-alpha", "phone-prep-beta", "phone-prep-none");
+        seat_reading_for_test(alpha, false);
+        seat_reading_for_test(beta, false);
+        seat_reading_for_test(none, true);
         shared.rail.update(cx, |rail, cx| {
-            rail.read_off(Roster::listing(&[listed, coming]), cx)
+            rail.read_off(Roster::listing(&[alpha, beta, none]), cx)
         });
         run_out(cx);
+        let refresh = |cx: &mut VisualTestContext| {
+            shared.rail.update(cx, |rail, cx| _ = rail.refresh(cx));
+            run_out(cx);
+        };
         let caption = |cx: &mut VisualTestContext| {
             root.read_with(cx, |root, cx| {
                 root.run.caption(root.shared.rail.read(cx).rows())
             })
         };
-        const RING: &str = "home/phone-prep-listed/ring";
-        const RUN: &str = "home/phone-prep-listed/ring/run";
-        const NOTE: &str = "home/phone-prep-listed/note";
-        assert_eq!(caption(cx).as_deref(), Some("Preparing 1/2 · Listed"));
-        assert!(
-            cx.debug_bounds(NOTE).is_none(),
-            "a word under a ringed tile"
+        let shown = |what: &str, cx: &mut VisualTestContext| {
+            [alpha, beta].map(|program| {
+                let id = format!("home/{program}{what}").leak();
+                cx.debug_bounds(id).is_some()
+            })
+        };
+        assert_eq!(caption(cx).as_deref(), Some("Loading 2/3"));
+        assert_eq!(shown("", cx), [false; 2], "a tile before all are read");
+        seat_reading_for_test(alpha, true);
+        refresh(cx);
+        assert_eq!(caption(cx).as_deref(), Some("Loading 3/3"));
+        assert_eq!(shown("", cx), [false; 2], "a tile before all are read");
+
+        seat_listed_for_test(alpha, "Alpha", false);
+        seat_listed_for_test(beta, "Beta", false);
+        seat_empty_for_test(none);
+        refresh(cx);
+        assert_eq!(shown("", cx), [true; 2], "the tiles came apart");
+        assert_eq!(caption(cx).as_deref(), Some("Preparing 1/2"));
+        assert_eq!(shown("/ring", cx), [false; 2], "a waiting tile ringed");
+        assert_eq!(
+            shown("/note", cx),
+            [false; 2],
+            "a word under a tile on its way"
         );
-        let tile = cx.debug_bounds("home/phone-prep-listed").expect("the tile");
-        let ring = cx.debug_bounds(RING).expect("no ring on the tile");
+
+        seat_listed_for_test(alpha, "Alpha", true);
+        refresh(cx);
+        assert_eq!(caption(cx).as_deref(), Some("Preparing 1/2 · Alpha"));
+        assert_eq!(
+            shown("/ring", cx),
+            [true, false],
+            "not the one compiling ringed"
+        );
+        const RING: &str = "home/phone-prep-alpha/ring";
+        const RUN: &str = "home/phone-prep-alpha/ring/run";
+        let tile = cx.debug_bounds("home/phone-prep-alpha").expect("the tile");
+        let ring = cx.debug_bounds(RING).expect("the ring");
         assert_eq!(
             ring.size.width,
             gpui_kit::px(64.),
@@ -2902,7 +2939,6 @@ mod tests {
             before != cx.debug_bounds(RUN).expect("the ring's running part")
         };
         assert!(step(cx) && step(cx), "the ring stood still");
-
         cx.update(|_, cx| cx.set_reduce_motion(true));
         cx.update(|window, _| window.refresh());
         run_out(cx);
@@ -2910,18 +2946,14 @@ mod tests {
         assert!(!step(cx), "the ring ran under Reduce Motion");
         cx.update(|_, cx| cx.set_reduce_motion(false));
 
-        seat_compiled_for_test(listed, "Listed", "");
-        shared.rail.update(cx, |rail, cx| _ = rail.refresh(cx));
-        run_out(cx);
-        assert_eq!(caption(cx).as_deref(), Some("Preparing 2/2"));
-        assert!(
-            cx.debug_bounds(RING).is_none(),
-            "a settled tile still ringed"
-        );
+        seat_compiled_for_test(alpha, "Alpha", "");
+        seat_listed_for_test(beta, "Beta", true);
+        refresh(cx);
+        assert_eq!(caption(cx).as_deref(), Some("Preparing 2/2 · Beta"));
+        assert_eq!(shown("/ring", cx), [false, true]);
 
-        seat_compiled_for_test(coming, "Coming", "");
-        shared.rail.update(cx, |rail, cx| _ = rail.refresh(cx));
-        run_out(cx);
+        seat_compiled_for_test(beta, "Beta", "");
+        refresh(cx);
         assert_eq!(caption(cx), None, "the count stayed once all settled");
         let renders = root.read_with(cx, |root, _| root.renders);
         run_out(cx);

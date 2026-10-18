@@ -32,11 +32,12 @@ fn a_roster_read_reloads_by_code_node_and_hold_off() {
     }
 }
 
-/// Claim: a seat is being prepared while it waits for a loader or a loader
-/// is at it, and settled once drawn, compiled, none or failed; new code the
-/// network named over a settled seat counts as being prepared, waiting and
-/// then a loader at it, until its load lands, the view held staying up
-/// meanwhile; a load that moved on since leaves it settled.
+/// Claim: a seat's code is being read while its bytes come, waits once they
+/// are all here (shown or not) and is prepared while a loader compiles it,
+/// and is settled once drawn, compiled, none or failed; new code the network
+/// named over a settled seat goes the same way, never back, the view held
+/// staying up, until its load lands; a load that moved on since leaves it
+/// settled.
 #[test]
 fn a_seat_is_prepared_by_its_stage_and_by_new_code_on_its_way() {
     let seat = Mounted::seat();
@@ -45,18 +46,12 @@ fn a_seat_is_prepared_by_its_stage_and_by_new_code_on_its_way() {
         locked.slot = slot;
         locked.prep()
     };
-    assert_eq!(prep(Slot::Loading), Prep::Waiting);
-    let fetching = Slot::Fetching {
-        received: 0,
-        total: None,
-    };
-    for slot in [
-        fetching,
-        Slot::Listed(Box::default()),
-        Slot::Compiling(Box::default()),
-    ] {
-        assert_eq!(prep(slot), Prep::Working);
-    }
+    let fetching = |received, total| Slot::Fetching { received, total };
+    assert_eq!(prep(Slot::Loading), Prep::Reading);
+    assert_eq!(prep(fetching(1, Some(2))), Prep::Reading);
+    assert_eq!(prep(fetching(2, Some(2))), Prep::Waiting);
+    assert_eq!(prep(Slot::Listed(Box::default())), Prep::Waiting);
+    assert_eq!(prep(Slot::Compiling(Box::default())), Prep::Working);
     let compiled = || Slot::Compiled(ViewCode::for_test("Held", "", 320));
     for slot in [
         compiled(),
@@ -67,18 +62,16 @@ fn a_seat_is_prepared_by_its_stage_and_by_new_code_on_its_way() {
     }
     locked.slot = compiled();
     let generation = locked.start();
-    locked.replacing = Some((generation, Prep::Waiting));
-    assert_eq!(
-        locked.prep(),
-        Prep::Waiting,
-        "new code coming, no loader yet"
-    );
-    let fetching = Slot::Fetching {
-        received: 0,
-        total: None,
-    };
-    locked.show(generation, fetching);
-    assert_eq!(locked.prep(), Prep::Working, "a loader at the new code");
+    locked.replacing = Some((generation, Prep::Reading));
+    assert_eq!(locked.prep(), Prep::Reading, "new code coming");
+    for (stage, prep) in [
+        (fetching(2, Some(2)), Prep::Waiting),
+        (fetching(0, None), Prep::Waiting),
+        (Slot::Compiling(Box::default()), Prep::Working),
+    ] {
+        locked.show(generation, stage);
+        assert_eq!(locked.prep(), prep, "the new code's stage");
+    }
     assert!(
         matches!(locked.slot, Slot::Compiled(_)),
         "the view held went"
@@ -101,6 +94,116 @@ fn a_seat_is_prepared_by_its_stage_and_by_new_code_on_its_way() {
     locked.replacing = Some((generation, Prep::Working));
     locked.start();
     assert_eq!(locked.prep(), Prep::Settled, "a load that moved on");
+}
+
+/// Claim: a load's stage never steps back (its loader reading again the
+/// bytes the read ahead read leaves it listed), and a load that starts over
+/// begins at `Loading`, none of the last one's stages its own.
+#[test]
+fn a_loads_stage_never_steps_back_and_a_new_load_starts_over() {
+    let seat = Mounted::seat();
+    let mut locked = seat.lock().unwrap();
+    let generation = locked.start();
+    locked.show(generation, Slot::Listed(Box::default()));
+    let fetching = Slot::Fetching {
+        received: 0,
+        total: None,
+    };
+    locked.show(generation, fetching);
+    assert!(
+        matches!(locked.slot, Slot::Listed(_)),
+        "the stage stepped back"
+    );
+    locked.show(generation, Slot::Compiling(Box::default()));
+    assert!(matches!(locked.slot, Slot::Compiling(_)));
+    locked.start();
+    assert!(
+        matches!(locked.slot, Slot::Loading),
+        "the new load began where the last one was"
+    );
+}
+
+/// Claim: a load a pane claimed while it waited (a tap on a tile still
+/// waiting) goes ahead of the preloads queued before it.
+#[test]
+fn a_load_a_pane_claimed_goes_first() {
+    let load = |instance| {
+        let seat = Mounted::seat();
+        lock(&seat).instance = instance;
+        Load {
+            program: "seat-tests-next",
+            seat,
+            generation: 1,
+            asked_of: Connection::default(),
+            code: None,
+        }
+    };
+    assert_eq!(
+        next_of(&VecDeque::from([load(0), load(0), load(3), load(0)])),
+        2
+    );
+    assert_eq!(next_of(&VecDeque::from([load(0), load(0)])), 0);
+}
+
+/// Claim: a roster read reads every preload's bytes before any is prepared,
+/// a view's kept as its manifest and the bytes let go; until the last is
+/// read none is shown (each counts as read, still on its way), and then all
+/// are, at once under the registry's lock the rail reads under: one listed
+/// and prepared off the disk, one with no view none, and one whose bytes did
+/// not come failed, holding none of the others.
+#[test]
+fn a_roster_read_reads_every_program_before_it_prepares_any() {
+    let view = view_declaring("Alpha", "", Tint::None, "");
+    let code = blob_id(&view);
+    let listed_view = ::programs::View {
+        name: "ahead-view".into(),
+        view: code,
+    };
+    let viewless = b"\0asm\x01\0\0\0".to_vec();
+    let none = ::programs::Entry {
+        program: "ahead-none".into(),
+        code: blob_id(&viewless),
+        params: Vec::new(),
+    };
+    let node = FakeNode::new(
+        vec![none, listed("ahead-held", "never-served")],
+        vec![listed_view],
+        vec![view, viewless],
+    );
+    let (roster, registry) = (Roster::default(), Registry::default());
+    read_roster(node.asked_of.clone(), &roster, &registry);
+    let seat = |program| lock(&registry)[&(program, 0)].clone();
+    let (view, none, held) = (seat("ahead-view"), seat("ahead-none"), seat("ahead-held"));
+    eventually("the two served read", || {
+        lock(&view).prep() == Prep::Waiting && lock(&none).prep() == Prep::Waiting
+    });
+    eventually("the third asked of the node", || node.held().0 == 1);
+    assert!(
+        matches!(lock(&view).slot, Slot::Fetching { .. }),
+        "shown or prepared before every program was read"
+    );
+    assert!(
+        matches!(lock(&none).slot, Slot::Fetching { .. }),
+        "landed before every program was read"
+    );
+    assert_eq!(lock(&held).prep(), Prep::Reading);
+    // the node lets the third go unanswered, under the rail's lock
+    let answers = node.held.clone();
+    let rail = lock(super::registry());
+    drop(node);
+    eventually("the third answered", || answers.lock().unwrap().now == 0);
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(
+        matches!(lock(&view).slot, Slot::Fetching { .. }),
+        "shown while the rail's lock was held"
+    );
+    drop(rail);
+    eventually("all landed", || {
+        !lock(&view).slot.loading() && !lock(&none).slot.loading() && !lock(&held).slot.loading()
+    });
+    assert!(matches!(&lock(&view).slot, Slot::Compiled(code) if code.name == "Alpha"));
+    assert!(matches!(lock(&none).slot, Slot::Empty));
+    assert!(matches!(lock(&held).slot, Slot::Failed(_)));
 }
 
 /// Claim: a roster read that finds a program moved to new code over a view
@@ -148,9 +251,9 @@ fn new_code_over_a_held_view_counts_as_being_prepared() {
         Prep::Settled,
         "the same code counted"
     );
-    eventually("a loader at the new code", || {
-        lock(&moved_seat).prep() == Prep::Working
-    });
+    // both asked of the node, which holds them: neither has landed
+    eventually("both asked of the node", || node.held().0 == 2);
+    assert_eq!(lock(&moved_seat).prep(), Prep::Reading);
     assert!(
         matches!(lock(&moved_seat).slot, Slot::Compiled(_)),
         "the view held went"

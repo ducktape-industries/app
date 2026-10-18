@@ -84,37 +84,40 @@ impl Mounted {
 
     /// Load `generation`'s stage, shown only while the seat shows a load and
     /// still waits for this one: a view drawn, the network's "none" and a
-    /// failure stay up until the load lands, and the rail hears only that
-    /// a loader is at their replacement. Either way the rail is told.
+    /// failure stay up until the load lands, and the rail hears only how far
+    /// their replacement has come. A stage never steps back: the loader
+    /// reading again the bytes the roster's read ahead read
+    /// ([`read_ahead`]) leaves them read. Either way the rail is told.
     pub(super) fn show(&mut self, generation: u64, stage: Slot) {
         if self.generation != generation {
             return;
         }
+        let far = Prep::of(&stage);
         if self.slot.loading() {
+            if far < Prep::of(&self.slot) {
+                return;
+            }
             self.slot = stage;
             self.wake.send_replace(());
         } else if let Some((replacing, prep)) = &mut self.replacing
             && *replacing == generation
+            && far > *prep
         {
-            *prep = Prep::Working;
+            *prep = far;
         } else {
             return;
         }
         rail_moved();
     }
 
-    /// How far the seat's code has come on this device: waiting for a
-    /// loader, a loader at it (its bytes coming, its manifest read, its code
-    /// compiling), or settled (drawn, compiled, none, failed), unless new
-    /// code the roster named is on its way over what it holds.
+    /// How far the seat's code has come on this device ([`Prep`]), settled
+    /// once it is drawn, compiled, none or failed, unless new code the roster
+    /// named is on its way over what it holds.
     pub(super) fn prep(&self) -> Prep {
-        match &self.slot {
-            Slot::Loading => Prep::Waiting,
-            Slot::Fetching { .. } | Slot::Listed(_) | Slot::Compiling(_) => Prep::Working,
-            _ => match self.replacing {
-                Some((generation, prep)) if generation == self.generation => prep,
-                _ => Prep::Settled,
-            },
+        match self.replacing {
+            _ if self.slot.loading() => Prep::of(&self.slot),
+            Some((generation, prep)) if generation == self.generation => prep,
+            _ => Prep::Settled,
         }
     }
 
@@ -172,8 +175,12 @@ impl Mounted {
     }
 
     /// Opens the next load generation, so an older load still on its way
-    /// lands nowhere, and names it.
+    /// lands nowhere, and names it. A load already on its way starts over
+    /// at `Loading`: none of its stages is this one's.
     pub(super) fn start(&mut self) -> u64 {
+        if self.slot.loading() {
+            self.slot = Slot::Loading;
+        }
         self.generation += 1;
         self.generation
     }
@@ -536,14 +543,171 @@ pub(super) fn queue(load: Load) {
     }
 }
 
-/// The next waiting load, or none, and the loader asking stops.
+/// The next waiting load, or none, and the loader asking stops. A seat a
+/// pane claimed while its preload waited (a tap on a tile still waiting)
+/// goes first: the pane waits for it.
 fn next_load() -> Option<Load> {
     let mut loaders = lock(&LOADING);
-    let load = loaders.waiting.pop_front();
+    let next = next_of(&loaders.waiting);
+    let load = loaders.waiting.remove(next);
     if load.is_none() {
         loaders.running -= 1;
     }
     load
+}
+
+/// Where in `waiting` the next load is: the first a pane claimed, else the
+/// first.
+fn next_of(waiting: &VecDeque<Load>) -> usize {
+    (waiting.iter())
+        .position(|load| lock(&load.seat).instance != 0)
+        .unwrap_or(0)
+}
+
+/// How many preloads' bytes a read ahead reads at once ([`read_ahead`]):
+/// each is its program's blob in memory (a few MB, framed and not) until its
+/// manifest is read and the bytes let go.
+const READ_AHEAD: usize = 4;
+
+/// What a read ahead learnt of one preload's code ([`read_ahead`]).
+enum Read {
+    /// Its view's manifest: a loader prepares it, its bytes read again off
+    /// the disk.
+    View(Box<Listing>),
+    /// It ships no view.
+    None,
+    /// Its bytes did not come.
+    Failed(Failure),
+    /// Not the network's bytes to read (the developer's file, no node, not
+    /// listed): its loader asks, as any load does.
+    Loader,
+}
+
+/// The first half of a roster read's preloads, every one's before any is
+/// prepared: its bytes read, a few at a time (the cache's copy, else the
+/// node's, which the cache keeps from then on), whether it ships a view and
+/// its view's manifest kept and the bytes let go. Once every one is read,
+/// all are shown at once, under the registry's lock the rail reads under:
+/// each listed by its manifest, none, or failed, so a failure holds none of
+/// the others. Then the loaders prepare the ones with a view. On a task of
+/// its own: the roster read that asked is over.
+// ponytail: a blob the node never answers (no request timeout) holds the
+// second half of every preload, as it held the phone's one loader before;
+// a timeout on the read when it does
+pub(super) fn read_ahead(loads: Vec<Load>) {
+    if loads.is_empty() {
+        return;
+    }
+    handle().spawn(async move {
+        use futures::StreamExt as _;
+        let began = Instant::now();
+        let read: Vec<(Load, Read, LoadTiming)> = futures::stream::iter(loads)
+            .map(read_one)
+            .buffer_unordered(READ_AHEAD)
+            .collect()
+            .await;
+        let (programs, from_node) = (
+            read.len(),
+            (read.iter())
+                .filter(|(_, _, timing)| timing.blob == "node")
+                .count(),
+        );
+        let mut prepare = Vec::new();
+        {
+            let _rail = lock(registry());
+            for (load, read, timing) in read {
+                match read {
+                    Read::View(listing) => {
+                        lock(&load.seat).show(load.generation, Slot::Listed(listing));
+                        prepare.push(load);
+                    }
+                    Read::Loader => prepare.push(load),
+                    Read::None => load.land(move |_, landed| {
+                        *landed = timing;
+                        Ok(Loaded::Empty)
+                    }),
+                    Read::Failed(failure) => load.land(move |_, landed| {
+                        *landed = timing;
+                        Err(Unloaded {
+                            hash: None,
+                            failure,
+                        })
+                    }),
+                }
+            }
+        }
+        tracing::info!(
+            target: "ducktape::perf",
+            programs,
+            from_node,
+            views = prepare.len(),
+            read_ms = began.elapsed().as_millis(),
+            "view_read"
+        );
+        for load in prepare {
+            queue(load);
+        }
+    });
+}
+
+/// One preload's bytes read ahead ([`read_ahead`]), shown read once they
+/// are (`Fetching` all of them: the rail counts it read, still on its way).
+async fn read_one(load: Load) -> (Load, Read, LoadTiming) {
+    let mut timing = LoadTiming::default();
+    let (Some((blob, bare)), Some(client), None) = (
+        load.code,
+        load.asked_of.client.clone(),
+        view_override(load.program),
+    ) else {
+        return (load, Read::Loader, timing);
+    };
+    let show = |stage: Slot| lock(&load.seat).show(load.generation, stage);
+    timing.started = Some(Instant::now());
+    timing.path = "read";
+    let bytes = match crate::contract::os().bundled_view(&blob) {
+        Some(view) => Ok(Some((view, "bundle"))),
+        None => {
+            show(Slot::Fetching {
+                received: 0,
+                total: None,
+            });
+            crate::backend::views::view_of(&client, &blob, bare).await
+        }
+    };
+    timing.fetch = timing
+        .started
+        .map_or_else(Duration::default, |started| started.elapsed());
+    let read = match bytes {
+        Ok(Some((view, from))) => {
+            timing.blob = from;
+            let listing = manifest_of(&view);
+            let size = view.len() as u64;
+            drop(view);
+            show(Slot::Fetching {
+                received: size,
+                total: Some(size),
+            });
+            Read::View(Box::new(listing))
+        }
+        Ok(None) => {
+            let hash = code_digest(&blob);
+            log_source(load.program, Some(&hash), "Missing", load.generation, "");
+            (timing.hash, timing.outcome) = (Some(hash), "Missing");
+            show(Slot::Fetching {
+                received: 0,
+                total: Some(0),
+            });
+            Read::None
+        }
+        Err(error) => {
+            let failure = Failure::of(error);
+            let reason = failure.to_string();
+            log_source(load.program, None, "Failed", load.generation, &reason);
+            timing.outcome = "Failed";
+            Read::Failed(failure)
+        }
+    };
+    (load, read, timing)
 }
 
 impl Load {

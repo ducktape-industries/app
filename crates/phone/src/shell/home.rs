@@ -231,13 +231,15 @@ fn search(field: &Entity<InputState>, focused: bool, palette: Palette) -> Div {
     )
 }
 
-/// The programs Home's caption counts while they are being prepared: the
-/// ones being prepared when the run begins, until every one of them is
-/// settled. On a first join that is every program the roster lists, those
-/// that ship no view too (whether one does is known only once its bytes are
-/// here); later, the ones the network moved to new code. The count never
-/// grows: a program that starts while a run is on waits for the next run,
-/// and its tile rings meanwhile.
+/// The programs Home's caption counts while they are on their way: the
+/// ones not settled when the run begins, until every one of them is. The
+/// host reads every one's bytes before it prepares any: while some are still
+/// being read the caption counts those read (`Loading 7/18`: on a first join
+/// every program the roster lists, those that ship no view too, since
+/// whether one does is known only once its bytes are here), then the ones
+/// with a view as they are prepared (`Preparing 3/11 · Forge`). Later, the
+/// ones the network moved to new code. The count never grows: a program
+/// that starts while a run is on waits for the next run.
 #[derive(Default)]
 pub struct Run(Vec<&'static str>);
 
@@ -254,24 +256,30 @@ impl Run {
         }
     }
 
-    /// The caption while a run is on (`Preparing 7/13 · Forge`): the place
-    /// of the program in hand among those it counts (the settled ones before
-    /// it), and that program's name while a loader is at it.
+    /// The caption while a run is on: `Loading 7/18` while some of its
+    /// programs' bytes are being read (the place of the next one to come
+    /// among them), then `Preparing 3/11 · Forge` (the place of the one in
+    /// hand among those with a view, the settled ones before it, and that
+    /// one's name while a loader is at it).
     pub fn caption(&self, rows: &[RailRow]) -> Option<String> {
-        let left = self
-            .0
+        let run: Vec<&RailRow> = (rows.iter())
+            .filter(|row| self.0.contains(&row.program))
+            .collect();
+        if run
             .iter()
-            .filter(|program| preparing(rows, program))
-            .count();
+            .any(|row| row.pending || row.prep == Prep::Reading)
+        {
+            let read = run.iter().filter(|row| row.prep != Prep::Reading).count();
+            let total = run.len();
+            return Some(format!("Loading {}/{total}", (read + 1).min(total)));
+        }
+        let views: Vec<&RailRow> = run.into_iter().filter(|row| !row.empty).collect();
+        let left = views.iter().filter(|row| row.prep != Prep::Settled).count();
         if left == 0 {
             return None;
         }
-        let total = self.0.len();
-        let place = total - left + 1;
-        let working = rows
-            .iter()
-            .find(|row| row.prep == Prep::Working && self.0.contains(&row.program));
-        Some(match working {
+        let (total, place) = (views.len(), views.len() - left + 1);
+        Some(match views.iter().find(|row| row.prep == Prep::Working) {
             Some(row) => format!("Preparing {place}/{total} · {}", name_of(row)),
             None => format!("Preparing {place}/{total}"),
         })
@@ -284,12 +292,12 @@ fn preparing(rows: &[RailRow], program: &str) -> bool {
         .any(|row| row.program == program && row.prep != Prep::Settled)
 }
 
-/// The ring around a tile's glyph while its program is being prepared (the
+/// The ring around a tile's glyph while a loader prepares its program (the
 /// shell boards' opening spinner, `.opening .gl .spin`): a 2 line in
 /// `border` just outside the 60 square, sharp, with one side's length of it
 /// in the foreground running round once in [`RING_LAP`]; held still on the
 /// top side when the system asks for less motion. It paces itself at 30 fps
-/// (the desktop's status dot does too) and is drawn only on a tile being
+/// (the desktop's status dot does too) and is drawn only on the tile being
 /// prepared, so nothing redraws for it while none is. `id` is its selector,
 /// `{id}/run` its running part's.
 fn ring(id: String, moving: bool, palette: Palette) -> AnyElement {
@@ -378,8 +386,9 @@ fn sections<'a>(
 
 /// One program's tile in Home's grid, four across: its glyph on its tint's
 /// ground, a dot when it has news (never a count, Expo `Dot`), the name
-/// under it; while it is being prepared, the glyph dimmed in a running
-/// [`ring`] and no word; a failure says so under the name. `section` keeps
+/// under it; while it is on its way, the glyph dimmed and no word, in a
+/// running [`ring`] while a loader prepares it; a failure says so under the
+/// name. `section` keeps
 /// the New section's copy apart from the grid's (`new/chat`, `home/chat`).
 fn tile(
     row: &RailRow,
@@ -393,12 +402,11 @@ fn tile(
     let prepared = row.prep == Prep::Settled;
     let mut face = glyph(row, 60., 30., palette);
     if !prepared {
+        face = div().child(face.opacity(look::PREPARING));
+    }
+    if row.prep == Prep::Working {
         let id = format!("{section}/{program}/ring");
-        face = div().child(face.opacity(look::PREPARING)).child(ring(
-            id,
-            !cx.reduce_motion(),
-            palette,
-        ));
+        face = face.child(ring(id, !cx.reduce_motion(), palette));
     }
     let mut face = face.relative();
     if news {
@@ -453,9 +461,10 @@ fn tile(
 /// news, those programs' tiles under "New"; then every program the filter
 /// answers in the roster's order, four across, under "Programs on this
 /// network". New repeats a tile, it never moves one, so the grid's places
-/// stay put. Each tile comes as its program's code is read; while none is
-/// there and programs are still on their way, a `Loading` line stands where
-/// the tiles go. While a `run` of preparing is on, the caption counts it.
+/// stay put. A tile comes once its program's code is read, and the host
+/// shows every program a roster read read at once, so they come together;
+/// while none is there and programs are still on their way, a `Loading` line
+/// stands where the tiles go. While a `run` is on, the caption counts it.
 pub fn home(
     shared: &Shared,
     run: &Run,
@@ -1226,53 +1235,83 @@ mod tests {
         assert_eq!(programs(grid), ["arcade", "chat", "files", "forge"]);
     }
 
-    /// A run counts the programs being prepared when it begins, the place
-    /// of the one in hand and its name while a loader is at it; it never
-    /// grows: one that starts meanwhile waits for the next run, which
-    /// begins as this one ends; none is on once every one is settled.
+    /// A run counts the programs on its way when it begins: those read while
+    /// some are still being read or not shown yet, then the ones with a view
+    /// as they are prepared, the one a loader is at by name; it never grows
+    /// (one that starts meanwhile waits for the next run, which begins as
+    /// this one ends); new code over a view held is read, then prepared; none
+    /// is on once every one is settled.
     #[test]
-    fn a_run_counts_what_it_began_with_and_ends_when_all_are_settled() {
-        let rows = |preps: &[(&'static str, Prep)]| -> Vec<RailRow> {
-            preps
-                .iter()
-                .map(|&(program, prep)| RailRow {
-                    program,
-                    prep,
-                    ..row(program, (prep != Prep::Settled).then_some("Loading"))
+    fn a_run_counts_them_read_then_prepared_and_ends_when_all_are_settled() {
+        // R its bytes coming, r read and not shown yet, W waiting for a
+        // loader, K a loader at it, S settled, N settled with no view, H a
+        // view held with new code coming
+        let rows = |states: &[(&'static str, char)]| -> Vec<RailRow> {
+            (states.iter())
+                .map(|&(program, state)| {
+                    let (prep, pending) = match state {
+                        'R' => (Prep::Reading, true),
+                        'r' => (Prep::Waiting, true),
+                        'W' => (Prep::Waiting, false),
+                        'K' => (Prep::Working, false),
+                        'H' => (Prep::Reading, false),
+                        _ => (Prep::Settled, false),
+                    };
+                    RailRow {
+                        program,
+                        prep,
+                        pending,
+                        empty: state == 'N',
+                        ..row(program, (prep != Prep::Settled).then_some("Loading"))
+                    }
                 })
                 .collect()
         };
-        let (s, w, k) = (Prep::Settled, Prep::Waiting, Prep::Working);
         let mut run = Run::default();
-        let mut step = |preps: &[(&'static str, Prep)]| {
-            let rows = rows(preps);
+        let mut step = |states: &[(&'static str, char)]| {
+            let rows = rows(states);
             run.follow(&rows);
             run.caption(&rows)
         };
         let at = |caption: &str| Some(caption.to_owned());
-        assert_eq!(step(&[("chat", s), ("forge", s)]), None, "all settled");
+        assert_eq!(step(&[("chat", 'S'), ("forge", 'S')]), None, "all settled");
         assert_eq!(
-            step(&[("chat", w), ("forge", w), ("files", w)]),
-            at("Preparing 1/3")
+            step(&[("chat", 'R'), ("forge", 'R'), ("none", 'R')]),
+            at("Loading 1/3")
         );
         assert_eq!(
-            step(&[("chat", k), ("forge", w), ("files", w)]),
-            at("Preparing 1/3 · Chat")
+            step(&[("chat", 'r'), ("forge", 'R'), ("none", 'r')]),
+            at("Loading 3/3")
         );
         assert_eq!(
-            step(&[("chat", s), ("forge", k), ("files", w), ("trade", w)]),
-            at("Preparing 2/3 · Forge"),
+            step(&[("chat", 'r'), ("forge", 'r'), ("none", 'r')]),
+            at("Loading 3/3"),
+            "prepared before the tiles came"
+        );
+        assert_eq!(
+            step(&[("chat", 'W'), ("forge", 'W'), ("none", 'N')]),
+            at("Preparing 1/2")
+        );
+        assert_eq!(
+            step(&[("chat", 'K'), ("forge", 'W'), ("none", 'N'), ("trade", 'R')]),
+            at("Preparing 1/2 · Chat"),
             "grew with a program that started meanwhile"
         );
         assert_eq!(
-            step(&[("chat", s), ("forge", s), ("files", s), ("trade", k)]),
-            at("Preparing 1/1 · Trade"),
-            "the next run did not begin as this one ended"
+            step(&[("chat", 'S'), ("forge", 'K'), ("none", 'N'), ("trade", 'R')]),
+            at("Preparing 2/2 · Forge")
         );
         assert_eq!(
-            step(&[("chat", s), ("forge", s), ("files", s), ("trade", s)]),
-            None
+            step(&[("chat", 'S'), ("forge", 'S'), ("none", 'N'), ("trade", 'R')]),
+            at("Loading 1/1"),
+            "the next run did not begin as this one ended"
         );
+        assert_eq!(step(&[("trade", 'S'), ("chat", 'H')]), at("Loading 1/1"));
+        assert_eq!(
+            step(&[("trade", 'S'), ("chat", 'K')]),
+            at("Preparing 1/1 · Chat")
+        );
+        assert_eq!(step(&[("trade", 'S'), ("chat", 'S')]), None);
     }
 
     /// The ring's running part is one side long wherever it is, on the top
