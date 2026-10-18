@@ -31,9 +31,10 @@ import org.json.JSONObject
  * it is answered, declined, withdrawn or past its `until`. The payload is the carrier's (pushd): `tag` names the call,
  * `title` is who calls, `link` is what Answer opens (an `ACTION_VIEW` intent to [MainActivity], the link path any
  * `duck://` link takes), `until` is Unix seconds. Decline is this phone's alone (SPEC D11): nothing is sent.
- * Any other notice (`kind: notice`, the same payload) is an ordinary notification under its tag ([notice]), replaced
- * in place by the next under that tag (quietly when the carrier says `quiet`), opened to its link, taken down by the
- * same withdraw a call is. What is a notice, its words and when it goes are the program's; this only shows them.
+ * Any other notice (`kind: notice`, the same payload and its `id`) is an ordinary notification under its id ([notice]),
+ * replaced in place only by the same notice posted again; a tag's notices stack in one group (quietly when the
+ * carrier says `quiet`), each opened to its link, all taken down by the same withdraw a call is. What is a notice, its
+ * words and when it goes are the program's; this only shows them.
  * Firebase is the owner's project: without its `google-services.json` the build has no Firebase app, and nothing here
  * asks it for anything.
  * Every notice shown goes to Rust for the Notifications tab ([Native.notice], its payload as JSON and when it was
@@ -60,8 +61,10 @@ object Ring {
     var inFront = false
     private const val CHANNEL = "calls"
     private const val NOTICES = "notices"
-    /** Every call's and notice's notification is this id under its own tag. */
+    /** Every call's and notice's notification is this id under its own tag (a notice's: its `id`). */
     private const val ID = 1
+    /** A tag's group summary is this id under the tag. */
+    private const val SUMMARY = 0
     /** [MainActivity]'s request code for the notification permission, apart from a view's asks. */
     const val ASK_NOTIFY = 2
 
@@ -121,11 +124,12 @@ object Ring {
     }
 
     /**
-     * `notice` shown under its tag; one already there is replaced, without a second sound when it is `quiet`. With
+     * `notice` shown under its id in its tag's group; the same one already there is replaced; `quiet`: no sound. With
      * the app in front it is handed to Rust instead, and nothing is shown.
      */
     fun notice(context: Context, notice: Map<String, String>) {
         val tag = notice["tag"] ?: return
+        val id = notice["id"] ?: return
         val until = notice["until"]?.toLongOrNull() ?: 0
         val now = System.currentTimeMillis()
         val left = until * 1000 - now
@@ -149,13 +153,26 @@ object Ring {
             .setContentTitle(notice["title"].orEmpty())
             .setContentText(notice["body"].orEmpty())
             .setStyle(Notification.BigTextStyle().bigText(notice["body"].orEmpty()))
-            .setGroup(notice["program"].orEmpty())
+            .setGroup(tag)
+            // quiet: a child that leaves alerting to its summary, which never alerts
+            .setGroupAlertBehavior(
+                if (notice["quiet"] == "1") Notification.GROUP_ALERT_SUMMARY else Notification.GROUP_ALERT_ALL,
+            )
             .setContentIntent(opened)
             .setAutoCancel(true)
-            .setOnlyAlertOnce(notice["quiet"] == "1")
             .apply { if (until != 0L) setTimeoutAfter(left) }
             .build()
-        manager.notify(tag, ID, notification)
+        manager.notify(id, ID, notification)
+        // Android stacks a group only under a summary of it
+        val summary = Notification.Builder(context, NOTICES)
+            .setSmallIcon(android.R.drawable.ic_dialog_email)
+            .setContentTitle(notice["title"].orEmpty())
+            .setGroup(tag)
+            .setGroupSummary(true)
+            .setGroupAlertBehavior(Notification.GROUP_ALERT_CHILDREN)
+            .setAutoCancel(true)
+            .build()
+        manager.notify(tag, SUMMARY, summary)
     }
 
     /** The notices still in the shade, each to Rust as it was shown ([Native.notice]). */
@@ -167,9 +184,11 @@ object Ring {
         }
     }
 
-    /** The call or notice under [tag] goes; a call's screen with it. */
+    /** The call under [tag], or every notice in its group with the group's summary, goes; a call's screen with it. */
     fun withdraw(context: Context, tag: String) {
-        context.getSystemService(NotificationManager::class.java).cancel(tag, ID)
+        val manager = context.getSystemService(NotificationManager::class.java)
+        manager.cancel(tag, ID)
+        manager.activeNotifications.filter { it.notification.group == tag }.forEach { manager.cancel(it.tag, it.id) }
         RingActivity.over(tag)
     }
 

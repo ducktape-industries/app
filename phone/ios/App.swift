@@ -186,6 +186,18 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate, UNUserNo
     }
   }
 
+  /// Every notice under pushd's `tag` (each its own notification, the tag in its payload) out of the OS's list,
+  /// then `done`. Any thread.
+  static func takeDown(_ tag: String, done: @escaping () -> Void = {}) {
+    let center = UNUserNotificationCenter.current()
+    center.getDeliveredNotifications { delivered in
+      center.removeDeliveredNotifications(
+        withIdentifiers: delivered.filter { $0.request.content.userInfo["tag"] as? String == tag }
+          .map { $0.request.identifier })
+      done()
+    }
+  }
+
   /// `notice` to Rust (`ducktape_phone_notice`), its payload as JSON; one that is no program's notice (no carrier's
   /// `kind: notice`) is let go there.
   static func hand(_ notice: UNNotification, front: Bool, opened: Bool) {
@@ -195,13 +207,6 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate, UNUserNo
       let json = String(data: data, encoding: .utf8)
     else { return }
     ducktape_phone_notice(json, notice.date.timeIntervalSince1970, front ? 1 : 0, opened ? 1 : 0)
-  }
-
-  /// The delivered notice's id for `tag`: pushd's `apns-collapse-id` (`collapse_id` in crates/pushd/src/push.rs),
-  /// the tag itself up to 64 bytes, else its SHA-256 in hex.
-  static func collapse(_ tag: String) -> String {
-    guard tag.utf8.count > 64 else { return tag }
-    return SHA256.hash(data: Data(tag.utf8)).map { String(format: "%02x", $0) }.joined()
   }
 
   /// CallKit's id for the call under `tag`: the same tag, the same call, whichever push names it.
@@ -265,14 +270,20 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate, UNUserNo
     }
   }
 
-  /// A background push: a withdrawn call's ring under `tag` stops, if it still rings; a withdrawn notice under
-  /// `tag` leaves the notification list. Whether the push was taken.
+  /// A background push: a withdrawn call's ring under `tag` stops, if it still rings; else every notice under
+  /// `tag` (each its own notification, pushd's `tag` in its payload) leaves the notification list. Whether the push
+  /// was taken.
   func remote(_ payload: [String: Any]) -> Bool {
     guard payload["kind"] as? String == "withdraw", let tag = payload["tag"] as? String else { return false }
     let id = Ring.id(tag)
     guard ringing.removeValue(forKey: id) != nil else {
       NSLog("ducktape ring: withdraw of \(tag), which does not ring here")
-      UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [Ring.collapse(tag)])
+      // the push is answered as this returns and iOS may suspend the app then: held awake until the list is read
+      var awake = UIBackgroundTaskIdentifier.invalid
+      awake = UIApplication.shared.beginBackgroundTask(withName: "ducktape withdraw") {
+        UIApplication.shared.endBackgroundTask(awake)
+      }
+      Ring.takeDown(tag) { UIApplication.shared.endBackgroundTask(awake) }
       return true
     }
     NSLog("ducktape ring: \(tag) withdrawn")
@@ -408,11 +419,10 @@ public func ducktapePhoneCallVoice(_ active: UInt8) {
 }
 
 /// The OS's notice under the push server's `tag` out of its list (Rust: its row read or cleared, or its program saw
-/// it), by its id (`Ring.collapse`). Any thread.
+/// it): every notice under it (`Ring.takeDown`). Any thread.
 @_cdecl("ducktape_phone_withdraw_notice")
 public func ducktapePhoneWithdrawNotice(_ tag: UnsafePointer<CChar>) {
-  let id = Ring.collapse(String(cString: tag))
-  DispatchQueue.main.async { UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [id]) }
+  Ring.takeDown(String(cString: tag))
 }
 
 /// A background push from Rust (gpui_ios's app delegate), its payload as JSON; 1 when the ring took it. Main thread.
