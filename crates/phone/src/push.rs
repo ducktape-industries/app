@@ -242,8 +242,6 @@ pub struct Registrar {
     /// The nodes not reached since the inputs last moved, or the app last
     /// came back to the front.
     missed: BTreeSet<String>,
-    /// The app in the background, as the host last said (`Backgrounded`).
-    behind: bool,
     /// The kinds the OS handed a token for this run: one taken back since
     /// is a leave, one not handed yet is no word at all.
     heard: BTreeSet<String>,
@@ -270,10 +268,12 @@ impl Registrar {
                 cx.observe(&shared.session, |this: &mut Self, _, cx| this.sync(cx)),
                 cx.observe(&shared.account, |this: &mut Self, _, cx| this.sync(cx)),
                 // back in front, the nodes missed (a launch offline, or on
-                // a locked phone) are tried again
+                // a locked phone) are tried again: on each word of it, not
+                // only a change, since a scene let go behind says "not
+                // behind" before the front does, and a launch behind may
+                // say nothing before it
                 cx.observe_global::<Backgrounded>(|this: &mut Self, cx| {
-                    let behind = cx.global::<Backgrounded>().0;
-                    if std::mem::replace(&mut this.behind, behind) && !behind {
+                    if !cx.global::<Backgrounded>().0 {
                         this.missed.clear();
                         this.sync(cx);
                     }
@@ -286,7 +286,6 @@ impl Registrar {
                 nodes,
                 reached: BTreeMap::new(),
                 missed: BTreeSet::new(),
-                behind: false,
                 heard: BTreeSet::new(),
                 stopped: Sent::new(),
                 again: BTreeMap::new(),
@@ -1223,20 +1222,49 @@ mod tests {
         });
     }
 
-    /// A node missed is tried again once the app comes back to the front
-    /// (a launch offline, or on a locked phone), not while it is behind.
+    /// A node missed is reached again each time the app comes to the front
+    /// (a launch offline, or on a locked phone), not while it is behind:
+    /// at the first word of the front, with none of the back before it (a
+    /// launch behind), and at a second (a scene let go behind said "not
+    /// behind" first).
     #[gpui_kit::test]
     fn a_missed_node_is_tried_again_back_in_front(cx: &mut gpui_kit::TestAppContext) {
-        let (_, registrar) = registrar(cx);
-        cx.run_until_parked();
+        use ducktape_host::backend::RecentEndpoint;
+        use ducktape_host::session::SessionState;
+        let (shared, registrar) = registrar(cx);
         let node = "http://127.0.0.1:1".to_owned();
-        let missed = |cx: &mut gpui_kit::TestAppContext| {
-            registrar.read_with(cx, |this, _| this.missed.contains(&node))
+        let listed = SessionState {
+            recent_endpoints: vec![RecentEndpoint {
+                url: node.clone(),
+                network: "away".into(),
+                ..Default::default()
+            }],
+            ..SessionState::default()
         };
-        registrar.update(cx, |this, _| this.missed.insert(node.clone()));
-        cx.update(|cx| cx.set_global(Backgrounded(true)));
-        assert!(missed(cx), "tried again behind");
+        shared
+            .session
+            .update(cx, |session, cx| session.seed(listed, cx));
+        // the node missed and no reach out
+        let missed = |cx: &mut gpui_kit::TestAppContext| {
+            registrar.update(cx, |this, _| {
+                this.busy = None;
+                this.missed.insert(node.clone());
+            })
+        };
+        let reaching = |cx: &mut gpui_kit::TestAppContext| {
+            registrar.read_with(cx, |this, _| {
+                this.busy.is_some() && !this.missed.contains(&node)
+            })
+        };
+        missed(cx);
         cx.update(|cx| cx.set_global(Backgrounded(false)));
-        assert!(!missed(cx), "not tried again back in front");
+        assert!(reaching(cx), "not tried again at the first front");
+        missed(cx);
+        cx.update(|cx| cx.set_global(Backgrounded(true)));
+        assert!(!reaching(cx), "tried again behind");
+        cx.update(|cx| cx.set_global(Backgrounded(false)));
+        missed(cx);
+        cx.update(|cx| cx.set_global(Backgrounded(false)));
+        assert!(reaching(cx), "not tried again back in front");
     }
 }

@@ -620,8 +620,8 @@ impl Push {
     }
 
     /// Sends each request; whether any was taken. A token the answer calls
-    /// gone loses its row (that kind and token, on this network), and the
-    /// log says so in one line.
+    /// gone is cleared (that kind and token, on this network); its row stays
+    /// a tombstone. The log says so in one line.
     fn send(&self, requests: Vec<Request>) -> bool {
         let mut taken = false;
         for request in requests {
@@ -1568,9 +1568,9 @@ mod tests {
     }
 
     /// A token APNs calls gone (410 `Unregistered`, or `BadDeviceToken`)
-    /// or FCM calls gone (`UNREGISTERED`) loses its row, in the registry's
-    /// file too; that row only: another token, and one whose push failed
-    /// for another reason, stay.
+    /// or FCM calls gone (`UNREGISTERED`) is cleared, in the registry's
+    /// file too; its row stays a tombstone. That token only: another
+    /// token, and one whose push failed for another reason, stay.
     #[test]
     fn a_token_called_gone_is_dropped() {
         struct Answers;
