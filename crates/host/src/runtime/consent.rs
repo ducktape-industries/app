@@ -445,7 +445,6 @@ pub fn needed(
             | identity::Op::SetProfile { .. }
             | identity::Op::Resume { .. }
             | identity::Op::SetOwnership { .. }
-            | identity::Op::Migrate
             | identity::Op::SetScript {
                 script: Some(_), ..
             } => None,
