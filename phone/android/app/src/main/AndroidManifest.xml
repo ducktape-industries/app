@@ -45,6 +45,14 @@
             </intent-filter>
         </activity>
 
+        <!-- MainActivity as only this app starts it (Ring.kt, RingActivity.kt): a call's Answer or tap, and a notice
+             opened from the shade, come in by it. The one way a ring is taken down or a notice's payload reaches the
+             Notifications tab (MainActivity reads neither from any other intent): no other app can start it -->
+        <activity-alias
+            android:name=".Own"
+            android:exported="false"
+            android:targetActivity=".MainActivity" />
+
         <!-- the ring (Ring.kt): a call's screen over a locked phone (its own task, out of Recents), its Decline, and
              the owner's Firebase project's messages -->
         <activity

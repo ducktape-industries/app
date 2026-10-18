@@ -24,6 +24,9 @@
 //! - `link(url)`: a `duck://` or `ducktape://` intent's data.
 //! - `pushToken(kind, token)`: this device's push token (`fcm`), for the
 //!   device registry; empty when withdrawn.
+//! - `notice(payload, at, front, opened)`: a program's notice `Ring.kt`
+//!   showed, opened or handed over in front; from Firebase's own thread
+//!   for one that came in front (it only hands on, through a channel).
 //!
 //! - `android_main(app)`: the entry gm's NativeActivity glue (android-activity,
 //!   which gm links whatever path a host takes) names; never called, since
@@ -33,7 +36,8 @@
 //! gm keeps: `Activity.moveTaskToBack(boolean)` and
 //! `MainActivity.systemBars(dark)` on gm's render thread, and
 //! `MainActivity.ask(permission)` (blocking until the person answers) and
-//! `MainActivity.openSettings(page)` on a camera's or a microphone's thread.
+//! `MainActivity.openSettings(page)` on a camera's or a microphone's thread,
+//! and `MainActivity.withdrawNotice(tag)` on any.
 #![allow(unsafe_code, reason = "the JNI entries the Android Activity calls")]
 
 use gpui_mobile::android::host::{self, Pointer};
@@ -294,6 +298,26 @@ pub extern "system" fn Java_industries_ducktape_mobile_Native_pushToken<'caller>
     .resolve::<Policy>();
 }
 
+/// `Native.notice`: a program's notice the OS showed (`Ring.kt`), its
+/// payload as JSON, the Unix seconds it was shown at; `front` when it came
+/// while the app was in front (nothing was shown), `opened` when the
+/// person opened it ([`crate::os::os_notice`]).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_notice<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _: JClass<'caller>,
+    payload: JString<'caller>,
+    at: jlong,
+    front: jboolean,
+    opened: jboolean,
+) {
+    env.with_env(|_: &mut Env| -> jni::errors::Result<()> {
+        crate::os::os_notice(&payload.to_string(), at, front, opened);
+        Ok(())
+    })
+    .resolve::<Policy>();
+}
+
 /// The entry android-activity's NativeActivity glue calls. gm links that
 /// glue on every path (its `android-activity` dependency has no feature to
 /// leave it out), so the library must define the symbol to load at all;
@@ -397,6 +421,26 @@ pub fn system_bars(dark: bool) {
     });
     if let Err(error) = set {
         tracing::error!(target: "ducktape::phone", %error, "the system bars did not follow the appearance");
+    }
+}
+
+/// The shade's notices under `tag` (the push server's) taken down, through
+/// the Activity (`MainActivity.withdrawNotice`, `Ring.withdraw`).
+pub fn withdraw_notice(tag: &str) {
+    let withdrawn = gpui_mobile::android::jni::with_env(|env| {
+        let activity = gpui_mobile::android::jni::activity(env)?;
+        let tag = env.new_string(tag).map_err(|error| error.to_string())?;
+        env.call_method(
+            &activity,
+            jni::jni_str!("withdrawNotice"),
+            jni::jni_sig!("(Ljava/lang/String;)V"),
+            &[JValue::Object(&tag)],
+        )
+        .map(drop)
+        .map_err(|error| error.to_string())
+    });
+    if let Err(error) = withdrawn {
+        tracing::error!(target: "ducktape::phone", %error, "a notice stayed in the shade");
     }
 }
 

@@ -102,6 +102,102 @@ pub fn link(url: String) {
     }
 }
 
+/// A program's notice the OS showed (`App.swift`'s `Ring`, `Ring.kt`), as
+/// the push server carried it: its payload is `Push::payload`'s in
+/// `crates/pushd` (`kind`, `chain`, `program`, `tag`, `title`, `body`,
+/// `link`, `until`; on Android every value a string, FCM's data), the
+/// banner its centre let through.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OsNotice {
+    /// The chain whose log it goes into, as links spell it.
+    pub chain: String,
+    /// The banner the push server's centre let through.
+    pub notice: Notice,
+    /// Unix seconds the OS showed it at.
+    pub at: i64,
+    /// Handed over as it came while the app was in front: the OS showed
+    /// nothing.
+    pub front: bool,
+    /// The person opened it from the OS.
+    pub opened: bool,
+}
+
+impl OsNotice {
+    /// `payload` (JSON) as the OS kept it; `None` for one that is no
+    /// program's notice (a call, a withdraw, not the carrier's).
+    pub fn of(payload: &str, at: i64, front: bool, opened: bool) -> Option<Self> {
+        let payload: serde_json::Value = serde_json::from_str(payload).ok()?;
+        let text = |key: &str| payload[key].as_str().unwrap_or_default().to_owned();
+        if text("kind") != "notice" || text("chain").is_empty() || text("program").is_empty() {
+            return None;
+        }
+        Some(Self {
+            chain: text("chain"),
+            notice: Notice {
+                title: text("title"),
+                body: text("body"),
+                tag: text("tag"),
+                program: text("program"),
+                link: text("link"),
+                ..Notice::default()
+            },
+            at,
+            front,
+            opened,
+        })
+    }
+}
+
+/// The OS's notices handed over ([`os_notice`]), from any thread, for the
+/// shell to log; those that come before the shell is up wait here.
+static OS_NOTICES: OnceLock<(
+    async_channel::Sender<OsNotice>,
+    async_channel::Receiver<OsNotice>,
+)> = OnceLock::new();
+
+fn os_notice_channel() -> &'static (
+    async_channel::Sender<OsNotice>,
+    async_channel::Receiver<OsNotice>,
+) {
+    OS_NOTICES.get_or_init(async_channel::unbounded)
+}
+
+/// Hands the OS's notice `payload` (JSON), shown at `at`, to the shell
+/// ([`os_notices`]); one that is no program's notice is let go.
+pub fn os_notice(payload: &str, at: i64, front: bool, opened: bool) {
+    let Some(notice) = OsNotice::of(payload, at, front, opened) else {
+        tracing::debug!(target: "ducktape::phone", "an OS notice that is no program's");
+        return;
+    };
+    if let Err(error) = os_notice_channel().0.try_send(notice) {
+        tracing::error!(target: "ducktape::phone", %error, "an OS notice was lost");
+    }
+}
+
+/// Takes the OS's notices under `tag` (the push server's banner tag,
+/// `<program>/<tag>`; each notice is its own notification there) out of its
+/// list: their row was read or cleared here, or its program said it was
+/// seen. Nothing when none stands there. Any thread.
+pub fn withdraw_notice(tag: &str) {
+    #[cfg(target_os = "ios")]
+    ios::ffi::withdraw_notice(tag);
+    #[cfg(target_os = "android")]
+    android::jni::withdraw_notice(tag);
+    #[cfg(test)]
+    WITHDRAWN.with(|withdrawn| withdrawn.borrow_mut().push(tag.to_owned()));
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What [`withdraw_notice`] took out of the OS's list, in a test.
+    pub static WITHDRAWN: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The OS's notices to log, in the order they came.
+pub(crate) fn os_notices() -> async_channel::Receiver<OsNotice> {
+    os_notice_channel().1.clone()
+}
+
 /// This device's push tokens by kind (`voip`: PushKit's, as hex; `apns`:
 /// the remote-notification token alerts and a withdraw are pushed to, as
 /// hex; `fcm`: Firebase's), as the OS last handed them over, for the
@@ -231,7 +327,9 @@ impl PhoneOs {
     }
 }
 
-/// Banners are not posted yet: `post` answers that nothing went up.
+/// Banners are not posted yet: `post` answers that nothing went up. A
+/// withdraw (its program saw it, or its `until`) takes the push server's
+/// copy under the tag out of the OS's list ([`withdraw_notice`]).
 struct NoBanners;
 
 impl Banners for NoBanners {
@@ -239,7 +337,9 @@ impl Banners for NoBanners {
         false
     }
 
-    fn withdraw(&self, _: &str) {}
+    fn withdraw(&self, tag: &str) {
+        withdraw_notice(tag);
+    }
 }
 
 impl OsServices for PhoneOs {
@@ -648,6 +748,41 @@ mod tests {
         assert!(
             push_tokens_moved().try_recv().is_err(),
             "an unmoved token woke it"
+        );
+    }
+
+    /// The carrier's notice reads the same as Android keeps it (FCM's
+    /// strings) as iOS does (JSON values); its call and its withdraw are no
+    /// notice for the list, nor is a payload that is not the carrier's.
+    #[test]
+    fn only_the_carriers_notice_payload_is_a_notice() {
+        let fcm = r#"{"kind":"notice","chain":"c#1","program":"chat","tag":"chat/#general",
+            "title":"ada","body":"hey","link":"duck://c/chat/general/7","until":"0","quiet":"1"}"#;
+        let shown = OsNotice::of(fcm, 5, false, true).expect("a notice");
+        assert_eq!(
+            (
+                shown.chain.as_str(),
+                shown.notice.program.as_str(),
+                shown.notice.tag.as_str()
+            ),
+            ("c#1", "chat", "chat/#general")
+        );
+        assert_eq!(shown.notice.link, "duck://c/chat/general/7");
+        assert!((shown.at, shown.front, shown.opened) == (5, false, true));
+        let call = r#"{"kind":"call","chain":"c#1","program":"huddle","tag":"huddle/call/1"}"#;
+        assert_eq!(OsNotice::of(call, 5, false, false), None);
+        assert_eq!(
+            OsNotice::of(
+                r#"{"kind":"withdraw","tag":"chat/#general"}"#,
+                5,
+                false,
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            OsNotice::of(r#"{"aps":{"alert":"hi"}}"#, 5, false, false),
+            None
         );
     }
 

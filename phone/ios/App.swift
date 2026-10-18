@@ -116,11 +116,19 @@ final class SwipeBack: NSObject, UIGestureRecognizerDelegate {
 /// `end_link`): what that hang-up means is the program's, as Answer's link is; a decline opens nothing. A call that
 /// comes while one answered here is CallKit's is reported and ended at once, missed (busy). A tap on a program's
 /// notice (an alert to the regular token) opens its `link`, as Answer does.
+///
+/// Every program's notice the OS shows goes to Rust for the Notifications tab (`ducktape_phone_notice`, its payload
+/// as JSON and when the OS showed it): those still in the OS's list at launch and each time the app comes to the
+/// front, one opened from the list (before its link), and one that comes while the app is in front, which the OS
+/// shows nothing of (this phone's own notifiers run then, and post what is a notice here themselves). One the person
+/// swiped away before the app came to the front is not in the list: what the program's notifier here posts when it
+/// runs again is what the tab gets of it.
 final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate, UNUserNotificationCenterDelegate {
   static let shared = Ring()
   /// The huddle program's ring, for a payload that carries no `until`: a call always carries one (SPEC §5).
   private static let ringSeconds: TimeInterval = 45
   private var observer: NSObjectProtocol?
+  private var foreground: NSObjectProtocol?
   private var registry: PKPushRegistry?
   /// Made on first use, which is `start`, after launch.
   private lazy var provider: CXProvider = {
@@ -147,6 +155,9 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate, UNUserNo
     observer = NotificationCenter.default.addObserver(
       forName: UIApplication.didFinishLaunchingNotification, object: nil, queue: .main
     ) { [weak self] _ in self?.start() }
+    foreground = NotificationCenter.default.addObserver(
+      forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
+    ) { [weak self] _ in self?.delivered() }
   }
 
   private func start() {
@@ -165,6 +176,38 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate, UNUserNo
       NSLog("ducktape ring: alerts \(allowed ? "allowed" : "not allowed")\(error.map { ": \($0)" } ?? "")")
     }
     if let mode = ProcessInfo.processInfo.environment["DUCKTAPE_RING_TEST"] { test(mode) }
+    delivered()
+  }
+
+  /// The notices still in the OS's list, each to Rust as the OS showed it, oldest first.
+  private func delivered() {
+    UNUserNotificationCenter.current().getDeliveredNotifications { notices in
+      let oldest = notices.sorted { $0.date < $1.date }
+      DispatchQueue.main.async { oldest.forEach { Ring.hand($0, front: false, opened: false) } }
+    }
+  }
+
+  /// Every notice under pushd's `tag` (each its own notification, the tag in its payload) out of the OS's list,
+  /// then `done`. Any thread.
+  static func takeDown(_ tag: String, done: @escaping () -> Void = {}) {
+    let center = UNUserNotificationCenter.current()
+    center.getDeliveredNotifications { delivered in
+      center.removeDeliveredNotifications(
+        withIdentifiers: delivered.filter { $0.request.content.userInfo["tag"] as? String == tag }
+          .map { $0.request.identifier })
+      done()
+    }
+  }
+
+  /// `notice` to Rust (`ducktape_phone_notice`), its payload as JSON; one that is no program's notice (no carrier's
+  /// `kind: notice`) is let go there.
+  static func hand(_ notice: UNNotification, front: Bool, opened: Bool) {
+    let payload = notice.request.content.userInfo
+    guard JSONSerialization.isValidJSONObject(payload),
+      let data = try? JSONSerialization.data(withJSONObject: payload),
+      let json = String(data: data, encoding: .utf8)
+    else { return }
+    ducktape_phone_notice(json, notice.date.timeIntervalSince1970, front ? 1 : 0, opened ? 1 : 0)
   }
 
   /// CallKit's id for the call under `tag`: the same tag, the same call, whichever push names it.
@@ -241,13 +284,7 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate, UNUserNo
       awake = UIApplication.shared.beginBackgroundTask(withName: "ducktape withdraw") {
         UIApplication.shared.endBackgroundTask(awake)
       }
-      let center = UNUserNotificationCenter.current()
-      center.getDeliveredNotifications { delivered in
-        center.removeDeliveredNotifications(
-          withIdentifiers: delivered.filter { $0.request.content.userInfo["tag"] as? String == tag }
-            .map { $0.request.identifier })
-        UIApplication.shared.endBackgroundTask(awake)
-      }
+      Ring.takeDown(tag) { UIApplication.shared.endBackgroundTask(awake) }
       return true
     }
     NSLog("ducktape ring: \(tag) withdrawn")
@@ -255,16 +292,27 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate, UNUserNo
     return true
   }
 
-  /// A notice tapped: its link opens (a dismissal opens nothing).
+  /// A notice tapped: its row read, then its link opens (a dismissal opens nothing).
   func userNotificationCenter(
     _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
     withCompletionHandler completionHandler: @escaping () -> Void
   ) {
     let link = response.notification.request.content.userInfo["link"] as? String ?? ""
-    if response.actionIdentifier == UNNotificationDefaultActionIdentifier && !link.isEmpty {
-      ducktape_phone_link(link)
+    if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+      Ring.hand(response.notification, front: false, opened: true)
+      if !link.isEmpty { ducktape_phone_link(link) }
     }
     completionHandler()
+  }
+
+  /// A notice while the app is in front: to Rust, and nothing shown (the app's own notifiers post what is a notice
+  /// here, and the tab shows it).
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+    withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+  ) {
+    Ring.hand(notification, front: true, opened: false)
+    completionHandler([])
   }
 
   /// The call under `id` stops ringing unanswered, if it still rings.
@@ -369,6 +417,13 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate, UNUserNo
 @_cdecl("ducktape_phone_call_voice")
 public func ducktapePhoneCallVoice(_ active: UInt8) {
   DispatchQueue.main.async { Ring.shared.voice(active != 0) }
+}
+
+/// The OS's notice under the push server's `tag` out of its list (Rust: its row read or cleared, or its program saw
+/// it): every notice under it (`Ring.takeDown`). Any thread.
+@_cdecl("ducktape_phone_withdraw_notice")
+public func ducktapePhoneWithdrawNotice(_ tag: UnsafePointer<CChar>) {
+  Ring.takeDown(String(cString: tag))
 }
 
 /// A background push from Rust (gpui_ios's app delegate), its payload as JSON; 1 when the ring took it. Main thread.

@@ -84,10 +84,21 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun handOn(intent: Intent?) {
+        // a call's ring and a notice's row are this app's own word, read only by the entry no other app can start: no
+        // other app takes a ring down or writes a row
+        val own = intent?.component?.className == Ring.OWN
+        if (!own && (intent?.hasExtra(Ring.TAG) == true || intent?.hasExtra(Ring.PAYLOAD) == true)) {
+            Log.w("ducktape", "a ring's or a notice's extra on an intent this app did not make: not read")
+        }
         // a call's Answer, or a tap on its notification: its ring goes
-        intent?.getStringExtra(Ring.TAG)?.let {
+        intent?.getStringExtra(Ring.TAG)?.takeIf { own }?.let {
             Log.i("ducktape", "a call's ring taken down: $it")
             Ring.withdraw(this, it)
+        }
+        // a program's notice opened from the shade: its row read, before its link opens
+        intent?.getStringExtra(Ring.PAYLOAD)?.takeIf { own }?.let {
+            Log.i("ducktape", "a notice opened from the shade: its row read")
+            Native.notice(it, intent.getLongExtra(Ring.AT, 0), false, true)
         }
         val url = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.dataString ?: return
         Native.link(url)
@@ -161,10 +172,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     override fun onResume() {
         super.onResume()
+        Ring.inFront = true
         Native.resumed(host)
+        Ring.shown(this)
     }
 
     override fun onPause() {
+        Ring.inFront = false
         Native.paused(host)
         super.onPause()
     }
@@ -203,6 +217,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             Ring.askFullScreenOnce(this)
         }
     }
+
+    /** The shade's notices under [tag] taken down (Rust: its row read or cleared, or its program saw it). Any thread. */
+    fun withdrawNotice(tag: String) = runOnUiThread { Ring.withdraw(this, tag) }
 
     /** The app's own page in Settings, [page] its `package:` URI: where a refused camera or microphone is allowed. */
     fun openSettings(page: String) = runOnUiThread {
