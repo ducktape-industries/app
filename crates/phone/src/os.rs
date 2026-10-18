@@ -252,6 +252,9 @@ pub fn withdraw_notice(tag: &str) {
     android::jni::withdraw_notice(tag);
     #[cfg(test)]
     WITHDRAWN.with(|withdrawn| withdrawn.borrow_mut().push(tag.to_owned()));
+    // a Linux build keeps no OS list
+    #[cfg(not(any(target_os = "ios", target_os = "android", test)))]
+    let _ = tag;
 }
 
 #[cfg(test)]
