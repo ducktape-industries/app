@@ -30,9 +30,11 @@
 //!   program show on screen, sorted, the first item at once (`screen`).
 //! - `host.badge` — the tab's unread count; `host.title` — the name of the
 //!   view's window, cleaned ([`shown_title`]); `host.id` — a minted id under a
-//!   prefix word; `link.open` — the one way out: a `duck://` link, or an
-//!   `https://` one for the system browser; `clock.ticks` — a periodic
-//!   empty item, at most one per redraw ([`ticked`]).
+//!   prefix word; `link.open` — a `duck://` link, or an `https://` one
+//!   for the system browser; `link.window` — the same, a `duck://` link's
+//!   view in a window of its own where the shell has windows (the
+//!   shell does it); `clock.ticks` — a periodic empty item, at most one
+//!   per redraw ([`ticked`]).
 //! - `camera.devices`, `microphone.devices` — the devices the system lists
 //!   now (`render/av.rs`), listed on a blocking thread; `microphone.chime`
 //!   — the test chime on a speaker, at a press or key, answered once it
@@ -118,7 +120,7 @@ use std::sync::{Mutex, OnceLock};
 
 use super::{Intent, View, wire};
 use crate::backend::{self, RpcClient, refused};
-use wire::methods::{self, Capability, refusal};
+use wire::methods::{self, Capability, Method as _, refusal};
 
 fn host_fault(error: impl std::fmt::Display) -> wire::Error {
     wire::Error::new(refusal::HOST_FAULT, error.to_string())
@@ -425,32 +427,16 @@ pub(super) fn answer(
         ),
         (Capability::Program, "changes") => changes(view, id, payload),
         (Capability::Chain, "heads") => heads(view, id, payload),
-        // the one way out: a `duck://` link, or an `https://` one for the
-        // system browser (and where they open, the two privacy settings
-        // pages a refused camera or microphone points at, `render/av.rs`);
-        // any other scheme is refused here, at the method.
-        // Only the person's activation opens one, taken by the ask: a view
-        // on a clock never opens a tab or reseats the desk
-        (Capability::Link, "open") => match methods::decode::<String>(payload) {
-            Ok(link) if openable(&link) => {
-                if !view.take_activation() {
-                    view.refuse(
-                        id,
-                        refusal::NEEDS_GESTURE,
-                        "`link.open` needs a press or key",
-                    );
-                    return true;
-                }
-                view.intents.push(Intent::OpenLink(link));
-                view.reply(id, Ok(Vec::new()));
-            }
-            Ok(_) => view.refuse(
-                id,
-                refusal::MALFORMED_REQUEST,
-                "`link.open` opens a duck:// or https:// link",
-            ),
-            Err(error) => view.refuse(id, refusal::MALFORMED_REQUEST, error),
-        },
+        (Capability::Link, "open") => {
+            open_link(view, id, payload, methods::LinkOpen::KIND, Intent::OpenLink)
+        }
+        (Capability::Link, "window") => open_link(
+            view,
+            id,
+            payload,
+            methods::LinkWindow::KIND,
+            Intent::OpenWindow,
+        ),
         // one of the host's own places, as a link: only the person's press
         // or key brings one up. The reader's account is shown only where
         // there is one (`roster::props`), a refused camera's or
@@ -597,6 +583,29 @@ pub fn plain(c: &char) -> bool {
 /// display it opens on.
 fn floatable(float: &methods::Float) -> bool {
     (1..=float.width).contains(&float.min_width) && (1..=float.height).contains(&float.min_height)
+}
+
+fn open_link(
+    view: &mut View,
+    id: u64,
+    payload: &[u8],
+    kind: &'static str,
+    opened: fn(String) -> Intent,
+) {
+    let link = match methods::decode::<String>(payload) {
+        Ok(link) => link,
+        Err(error) => return view.refuse(id, refusal::MALFORMED_REQUEST, error),
+    };
+    if !openable(&link) {
+        let refused = format!("`{kind}` opens a duck:// or https:// link");
+        return view.refuse(id, refusal::MALFORMED_REQUEST, refused);
+    }
+    if !view.take_activation() {
+        let refused = format!("`{kind}` needs a press or key");
+        return view.refuse(id, refusal::NEEDS_GESTURE, refused);
+    }
+    view.intents.push(opened(link));
+    view.reply(id, Ok(Vec::new()));
 }
 
 /// Whether `link.open` may open `link`: `duck://` or `https://` with

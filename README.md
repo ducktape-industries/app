@@ -74,7 +74,7 @@ tar xzf /tmp/ducktape.tar.gz -C /tmp
   every method a borsh type in `view_wire::methods`, named `<capability>.<op>`:
   `program.query`/`op.submit` `Call{target, body}`, `program.changes <program>`,
   `program.describe`, `chain.status`/`block`/`blocks`/`heads`, `invite.create`,
-  `blob.get`, `blob.manifest`, `link.open`, `host.widget` (the one MessagePack method: a tree
+  `blob.get`, `blob.manifest`, `link.open`, `link.window`, `host.widget` (the one MessagePack method: a tree
   command), `live.*` (`publish`/`send`/`subscribe`/`tracks`: a view's live
   tracks through the node's relay, off consensus, on one QUIC or websocket
   session per connection, `src/backend/live.rs`), and the app's own
@@ -139,7 +139,7 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 
 ## Dependency line
 
-`ducktape-industries/programs` (rev `a46d082dc55d7c8ec7cf5a3117f1c2c6a672a750`): `abi`, `view-wire`, `program`, `ducklink`, `design`, `describe`, `identity`, `valset`, `programs`, `blobs`, and the `abi` patch over ducktape's.
+`ducktape-industries/programs` (rev `f375edd060d7588cff79b429967bee31a5cd54b2`): `abi`, `view-wire`, `program`, `ducklink`, `design`, `describe`, `identity`, `valset`, `programs`, `blobs`, and the `abi` patch over ducktape's.
 `ducktape-industries/ducktape` (rev `7f72b1a49d4fa3078fab42de42b71d8d73402a42`, the rev that programs rev pins): `blob`, `keyscheme`, `ducktape-home`, `keystore`, `live-wire`.
 `ducktape-industries/gpui-pre` (rev `c698ed2c7e8eeed46641e5ea9622ee55b84b1486`, the rev that programs rev pins): `gpui-pre` and the crates it patches.
 

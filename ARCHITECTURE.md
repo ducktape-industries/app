@@ -264,7 +264,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    onto `view.pending` and turns. The listeners also stamp the tree's
    **transient activation** (`ViewTree::activate`: a press, a key but
    Escape, typing, an AT press), which the turn carries to
-   `view.activation`: `link.open` and
+   `view.activation`: `link.open`, `link.window` and
    `clipboard.read`/`write` need it fresh (5 s) and take it, one input
    admitting one call. Every focus-moving `host.widget` command and a
    dialog's auto-focus need the pane's keys free instead (`Seat::keys_free`),
@@ -354,7 +354,7 @@ its meaning; the host and the views name the const, never the string.
    tries `clipboard::answer`, `notify::answer`, `store::answer`, then its own
    arms: host methods (`host.visible`, `host.badge`, `host.title`,
    `host.route`, `host.showing`, `host.screen`, `host.offset`, `host.id`,
-   `link.open`, `clock.ticks`) are answered at once from app state
+   `link.open`, `link.window`, `clock.ticks`) are answered at once from app state
    (`host.screen` is a subscription to the routes the program's views show
    on screen, `kernel/screen.rs`); node methods are spawned. Three kinds
    never reach the kernel and are handled in `View::answer` after it
@@ -852,7 +852,8 @@ House words, and where one word means several things.
   (`ViewTree::activate`; tooltips forward it to their source tree), carried
   to `view.activation` by the seat's turn, fresh for `ACTIVATION_EXPIRY`
   (5 s) and taken by the first gated call (`View::take_activation`):
-  `link.open` and the clipboard are refused `needs_gesture` without it.
+  `link.open`, `link.window` and the clipboard are refused `needs_gesture`
+  without it.
 - **widget command** — a `host.widget` request acting on a native control
   (focus, next/previous, scroll, cursor, a field's edit); its **target** is
   a whole authored path, as the view SDK names it from the frame it
