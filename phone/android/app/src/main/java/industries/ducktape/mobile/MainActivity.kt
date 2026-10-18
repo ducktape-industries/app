@@ -20,7 +20,9 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.VelocityTracker
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
@@ -35,6 +37,7 @@ import android.window.OnBackInvokedDispatcher
 import industries.ducktape.devicekey.DeviceKeyStore
 import java.io.File
 import java.util.concurrent.ArrayBlockingQueue
+import kotlin.math.hypot
 
 /**
  * The phone's one Activity: a `SurfaceView` gpui draws into (gm's host-driven path), and everything the OS tells
@@ -240,13 +243,80 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (swiped(event)) return true
+        return Native.touch(event.actionMasked, event.actionIndex, pointers(event)) || super.dispatchTouchEvent(event)
+    }
+
+    /** [event]'s pointers as [Native.touch] takes them: `[id, x, y]` each, in index order. */
+    private fun pointers(event: MotionEvent): FloatArray {
         val pointers = FloatArray(event.pointerCount * 3)
         for (i in 0 until event.pointerCount) {
             pointers[i * 3] = event.getPointerId(i).toFloat()
             pointers[i * 3 + 1] = event.getX(i)
             pointers[i * 3 + 2] = event.getY(i)
         }
-        return Native.touch(event.actionMasked, event.actionIndex, pointers) || super.dispatchTouchEvent(event)
+        return pointers
+    }
+
+    /** The finger the tabs' swipe follows: its speed, where and when it came down, and where it stands. */
+    private val tracker: VelocityTracker = VelocityTracker.obtain()
+    private val slop by lazy { ViewConfiguration.get(this).scaledTouchSlop }
+    private var downX = 0f
+    private var downY = 0f
+    private var downAt = 0L
+    /** One finger down, not yet past the touch slop. */
+    private var deciding = false
+    /** The finger is the swipe's: gpui hears nothing more of it. */
+    private var swiping = false
+
+    /**
+     * The tabs' swipe (`crates/phone/src/shell/swipe.rs`), as the iOS launcher's pan takes it: one finger that moves
+     * past the touch slop asks Rust whether it begins ([Native.swipeBegins]: a tab root on screen, nothing over it,
+     * the move clearly sideways). Then gpui's touch is cancelled and the finger's way across and speed go to Rust
+     * ([Native.swipeDrag]) until it lifts ([Native.swipeLetGo]) or is cancelled ([Native.swipeCancel]). True while
+     * the swipe holds the finger. Back stays the system's: no swipe back begins here.
+     */
+    private fun swiped(event: MotionEvent): Boolean {
+        val action = event.actionMasked
+        if (action == MotionEvent.ACTION_DOWN) {
+            tracker.clear()
+            downX = event.x
+            downY = event.y
+            downAt = event.eventTime
+            deciding = true
+            swiping = false
+        }
+        if (!deciding && !swiping) return false
+        tracker.addMovement(event)
+        tracker.computeCurrentVelocity(1000)
+        val dp = resources.displayMetrics.density
+        val x = (event.x - downX) / dp
+        val speed = tracker.xVelocity / dp
+        when (action) {
+            MotionEvent.ACTION_POINTER_DOWN -> deciding = false
+            MotionEvent.ACTION_MOVE -> if (deciding && hypot(event.x - downX, event.y - downY) > slop) {
+                deciding = false
+                val held = (event.eventTime - downAt) / 1000f
+                swiping = Native.swipeBegins(downX / dp, downY / dp, speed, tracker.yVelocity / dp, held)
+                if (swiping) Native.touch(MotionEvent.ACTION_CANCEL, 0, pointers(event))
+            }
+        }
+        val taken = swiping
+        if (swiping) {
+            when (action) {
+                MotionEvent.ACTION_MOVE -> Native.swipeDrag(x, speed)
+                MotionEvent.ACTION_UP -> {
+                    Native.swipeDrag(x, speed)
+                    Native.swipeLetGo()
+                }
+                MotionEvent.ACTION_CANCEL -> Native.swipeCancel()
+            }
+        }
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            deciding = false
+            swiping = false
+        }
+        return taken
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {

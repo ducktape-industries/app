@@ -24,11 +24,12 @@ enum App {
 /// Back on iOS (SPEC §7.6): a swipe to the right, as iOS 26's own stacks take it: in from the left edge, over anything,
 /// and from anywhere else on the screen when Rust says it begins there (`ducktape_phone_back_begins`: something to go
 /// back to, nothing over the screen, nothing under the finger that takes a sideways drag itself, the move clearly
-/// rightward). gpui_ios hands the app raw touches and no gesture of the system's, so the launcher puts both pans on
-/// gpui's window when it becomes key, the edge's first: the other waits for it to fail, so the edge always wins. Either
-/// tells Rust where the finger is and how fast it moves while it moves (`ducktape_phone_back_drag`, the screen on top
-/// follows it), then that it let go (`ducktape_phone_back_let_go`: Rust judges Back) or ended
-/// (`ducktape_phone_back_cancel`). The touches a swipe takes are cancelled for the view under it.
+/// rightward). At a tab root the same swipe, either way, pages the tabs (Rust says so too). gpui_ios hands the app raw
+/// touches and no gesture of the system's, so the launcher puts both pans on gpui's window when it becomes key, the
+/// edge's first: the other waits for it to fail, so the edge always wins. Either tells Rust where the finger is (its
+/// way across, negative to the left) and how fast it moves while it moves (`ducktape_phone_back_drag`, the screen on
+/// top follows it), then that it let go (`ducktape_phone_back_let_go`: Rust judges Back, or the tab it lands on) or
+/// ended (`ducktape_phone_back_cancel`). The touches a swipe takes are cancelled for the view under it.
 final class SwipeBack: NSObject, UIGestureRecognizerDelegate {
   static let shared = SwipeBack()
   private var observer: NSObjectProtocol?
@@ -80,7 +81,7 @@ final class SwipeBack: NSObject, UIGestureRecognizerDelegate {
   @objc private func swiped(_ pan: UIPanGestureRecognizer) {
     guard let view = pan.view else { return }
     let presented = SwipeBack.presented(view)
-    let x = Double(max(pan.translation(in: view).x, 0))
+    let x = Double(pan.translation(in: view).x)
     let speed = Double(pan.velocity(in: view).x)
     switch pan.state {
     case .began, .changed:

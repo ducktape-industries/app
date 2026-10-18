@@ -58,4 +58,18 @@ object Native {
 
     /** This device's push token of [kind] (`fcm`), for the device registry; empty when withdrawn. */
     @JvmStatic external fun pushToken(kind: String, token: String)
+
+    /**
+     * Whether the tabs' swipe begins: its finger came down at ([x], [y]) in dp, moves at ([vx], [vy]) dp per second,
+     * and came down [held] seconds ago; read against what the last draw showed.
+     */
+    @JvmStatic external fun swipeBegins(x: Float, y: Float, vx: Float, vy: Float, held: Float): Boolean
+
+    /** The tabs' swipe under way: [x] dp to the right of where it came down (negative to the left), [speed] dp/s. */
+    @JvmStatic external fun swipeDrag(x: Float, speed: Float)
+
+    /** That swipe let go (Rust judges the tab it lands on), or ended without going on. */
+    @JvmStatic external fun swipeLetGo()
+
+    @JvmStatic external fun swipeCancel()
 }

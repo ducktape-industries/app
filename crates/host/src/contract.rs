@@ -327,17 +327,18 @@ pub enum Signal {
     MemoryWarning,
     /// Android BACK from the Activity's dispatcher.
     Back,
-    /// iOS's swipe back under way (from the left edge, or from anywhere
-    /// the shell lets one begin): the shell lets the screen on top follow
-    /// it.
+    /// A sideways swipe under way: iOS's swipe back (from the left edge,
+    /// or from anywhere the shell lets one begin), the screen on top
+    /// following it; or, on either OS, the tabs' at a tab root.
     BackDrag {
-        /// How far its finger is, in points, from where it started.
+        /// How far its finger is, in points to the right (negative to the
+        /// left), from where it started.
         x: f32,
         /// How fast it moves, in points per second to the right.
         speed: f32,
     },
     /// That swipe let go where and as fast as its last `BackDrag` says: the
-    /// shell judges whether it goes back.
+    /// shell judges whether it goes back, or which tab it lands on.
     BackLetGo,
     /// That swipe ended without going back (UIKit cancelled it, or
     /// something it does not reach was over the screen).

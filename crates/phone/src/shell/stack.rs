@@ -26,6 +26,22 @@ pub enum Tab {
     Account,
 }
 
+impl Tab {
+    /// The tabs as the bar lists them, left to right.
+    const BAR: [Tab; 4] = [Tab::Home, Tab::Open, Tab::Notifications, Tab::Account];
+
+    /// The tab beside this one in the bar: the one to its right when
+    /// `right`, else the one to its left; none past either end.
+    pub fn beside(self, right: bool) -> Option<Tab> {
+        let at = Self::BAR.iter().position(|tab| *tab == self)?;
+        let at = match right {
+            true => at + 1,
+            false => at.checked_sub(1)?,
+        };
+        Self::BAR.get(at).copied()
+    }
+}
+
 /// A program opened, in its one seat.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Opened {
@@ -210,6 +226,16 @@ mod tests {
         assert!(stack.back(now));
         assert_eq!(stack.tab(), Tab::Home);
         assert!(!stack.back(now));
+    }
+
+    /// Each tab's neighbours are the bar's, and nothing is past its ends.
+    #[test]
+    fn a_tab_has_the_bars_neighbours_and_none_past_its_ends() {
+        assert_eq!(Tab::Home.beside(false), None);
+        assert_eq!(Tab::Home.beside(true), Some(Tab::Open));
+        assert_eq!(Tab::Open.beside(false), Some(Tab::Home));
+        assert_eq!(Tab::Notifications.beside(true), Some(Tab::Account));
+        assert_eq!(Tab::Account.beside(true), None);
     }
 
     /// The capsule's × lands on Home with the programs still open, the

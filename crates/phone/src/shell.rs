@@ -22,9 +22,12 @@
 //! screen on top off under the finger (inside a program above its root
 //! page, that page, by the view's own tree), and its release carries the
 //! finger's speed into the rest of the move; a sheet slides up
-//! over a fading scrim and down again; the alert and the toast fade. Tab
-//! switches do not move (Expo's tabs do not). Nothing moves while nothing
-//! changes: a frame is asked for only while something is under way.
+//! over a fading scrim and down again; the alert and the toast fade. A tab
+//! picked in the bar does not move (Expo's tabs do not); a sideways swipe
+//! at a tab root pages the tabs under the finger, the tab beside sliding
+//! in with it, and its release goes on as a pop's does. Nothing moves
+//! while nothing changes: a frame is asked for only while something is
+//! under way.
 
 mod about;
 mod debug;
@@ -489,6 +492,22 @@ struct Move {
     tween: Tween,
 }
 
+/// How far a tab's swipe settles once let go: as UIKit's pop, so it keeps
+/// the finger's speed (`Curve::thrown`), on Android too, whose pager
+/// (`ViewPager`) carries the fling into its settle as well.
+const PAGER: motion::Motion = motion::IOS.push;
+
+/// The tab roots moving sideways at a tab root ([`Root::drag`]).
+#[derive(Clone, Copy, Debug)]
+enum Paging {
+    /// Under the finger, as [`Root::swipe`] says.
+    Held,
+    /// Let go: the tab on screen settling into place from where the finger
+    /// left it (`tween`, its offset to the right as a share of the width,
+    /// to 0), `beside` it the tab it came from, or would have gone to.
+    Settling { beside: Option<Tab>, tween: Tween },
+}
+
 /// The window's root: the join, or the stack over the host's entities, the
 /// seats of the programs open, and the sheet over them.
 pub struct Root {
@@ -535,10 +554,12 @@ pub struct Root {
     /// How far in (points) iOS's swipe back has come while it drags the
     /// screen on top off.
     dragged: Option<f32>,
-    /// The swipe back under way, whoever it drags: how far in its finger
-    /// is (points) and how fast it moves (points per second, rightward),
-    /// as last told.
+    /// The swipe under way, whoever it drags: how far in its finger is
+    /// (points, rightward) and how fast it moves (points per second,
+    /// rightward), as last told.
     swipe: Option<(f32, f32)>,
+    /// The tabs' swipe, under the finger or settling.
+    paging: Option<Paging>,
     /// The view's tree whose page the swipe drags instead, until let go.
     swiped: Option<WeakEntity<ViewTree>>,
     /// The window's width at the last draw: a drag's share of it.
@@ -644,6 +665,7 @@ impl Root {
             moving: None,
             dragged: None,
             swipe: None,
+            paging: None,
             swiped: None,
             width: 0.,
             drawn_sheet: None,
@@ -842,8 +864,17 @@ impl Root {
     /// (`ViewTree::drag_page`), and that tree hears the release, whatever is
     /// on top by then. Under Reduce Motion nothing follows; the
     /// release is Back as before. A swipe begun while the stack moves does
-    /// not follow either.
+    /// not follow either. At a tab root the swipe pages the tabs instead,
+    /// either way, until let go.
     fn drag(&mut self, x: f32, speed: f32, cx: &mut Context<Self>) {
+        let paging = matches!(self.paging, Some(Paging::Held));
+        if paging || (self.dragged.is_none() && self.swiped.is_none() && self.can_page(cx)) {
+            self.swipe = Some((x, speed));
+            self.paging = Some(Paging::Held);
+            return cx.notify();
+        }
+        // a swipe back goes only to the right
+        let x = x.max(0.);
         self.swipe = Some((x, speed));
         let progress = x / self.width.max(1.);
         let shares = speed / self.width.max(1.);
@@ -854,8 +885,7 @@ impl Root {
             }
             self.swiped = None;
         }
-        let now = motion::now(cx);
-        let busy = self.moving.is_some_and(|moving| !moving.tween.done(now));
+        let busy = self.sliding(cx);
         if self.dragged.is_none() && (busy || !self.can_drag(cx)) {
             if !busy
                 && let Some(tree) = self.view_swiped(cx)
@@ -867,20 +897,87 @@ impl Root {
         }
         // a move that has ended may not be cleared yet: it is over
         self.moving = None;
-        self.dragged = Some(x.max(0.));
+        self.dragged = Some(x);
         cx.notify();
     }
 
-    /// The swipe let go: Back, or short of it ([`swipe::pops`]) the screen
-    /// on top springs back.
+    /// The swipe let go: Back, or short of it ([`swipe::crosses`]) the
+    /// screen on top springs back; paging the tabs, [`Root::paged_let_go`].
     fn let_go(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.paging, Some(Paging::Held)) {
+            return self.paged_let_go(true, cx);
+        }
         let Some((x, speed)) = self.swipe else {
             return;
         };
-        match swipe::pops(x, speed, self.width) {
+        match swipe::crosses(x, speed, self.width) {
             true => self.back(cx),
             false => self.drag_cancelled(cx),
         }
+    }
+
+    /// The tabs' swipe let go (`goes`; else ended short of its release):
+    /// past the rule ([`swipe::crosses`]) toward a tab beside, that tab is
+    /// chosen and slides the rest of the way in at the finger's speed;
+    /// short of it, the tab on screen slides back into place, and at the
+    /// bar's ends, back from the rubber band.
+    fn paged_let_go(&mut self, goes: bool, cx: &mut Context<Self>) {
+        let (x, speed) = self.swipe.take().unwrap_or_default();
+        let tab = self.stack.read(cx).tab();
+        let (at, beside) = self.held_at(x, cx);
+        let width = self.width.max(1.);
+        // the way the finger went, the way the screens move
+        let way = if x < 0. { -1. } else { 1. };
+        let (beside, from, velocity) = match beside {
+            Some(next) if goes && swipe::crosses(x * way, speed * way, width) => {
+                self.pick(next, cx);
+                (Some(tab), at - way, speed / width)
+            }
+            Some(_) => (beside, at, speed / width),
+            None => (None, at, 0.),
+        };
+        let tween = Tween::thrown(from, 0., velocity, PAGER, cx);
+        self.paging = Some(Paging::Settling { beside, tween });
+        cx.notify();
+    }
+
+    /// Where a finger `x` points in has the tab on screen, its share of the
+    /// width to the right, and the tab beside it that comes in from the
+    /// other side: past the bar's ends none, and the screen resists.
+    fn held_at(&self, x: f32, cx: &App) -> (f32, Option<Tab>) {
+        let width = self.width.max(1.);
+        match self.stack.read(cx).tab().beside(x < 0.) {
+            Some(beside) => ((x / width).clamp(-1., 1.), Some(beside)),
+            None => (swipe::resisted(x, width) / width, None),
+        }
+    }
+
+    /// Where the tabs' swipe has the tab on screen, and the tab beside it,
+    /// this frame ([`Root::held_at`]); the next frame asked for while they
+    /// settle.
+    fn paged(&self, window: &Window, cx: &App) -> Option<(f32, Option<Tab>)> {
+        match self.paging? {
+            Paging::Held => Some(self.held_at(self.swipe?.0, cx)),
+            Paging::Settling { beside, tween } => Some((tween.frame(window, cx), beside)),
+        }
+    }
+
+    /// Whether the stack, or the tabs, still slide.
+    fn sliding(&self, cx: &App) -> bool {
+        let now = motion::now(cx);
+        let settling =
+            matches!(self.paging, Some(Paging::Settling { tween, .. }) if !tween.done(now));
+        settling || self.moving.is_some_and(|moving| !moving.tween.done(now))
+    }
+
+    /// Whether a swipe now pages the tabs: a tab root on screen, nothing
+    /// over it, nothing sliding. Under Reduce Motion nothing follows a
+    /// finger, so none does.
+    fn can_page(&self, cx: &App) -> bool {
+        matches!(self.page(cx), Page::Root(_))
+            && !self.covered(cx)
+            && !motion::reduced(cx)
+            && !self.sliding(cx)
     }
 
     /// Whether a swipe back beginning now from anywhere on the screen
@@ -888,9 +985,7 @@ impl Root {
     /// moves, no swipe is under way, and the screen on top follows a drag,
     /// or the view's page on top does inside it.
     fn swipe_opens(&self, cx: &App) -> bool {
-        let now = motion::now(cx);
-        let busy = self.moving.is_some_and(|moving| !moving.tween.done(now));
-        if busy || self.swipe.is_some() {
+        if self.sliding(cx) || self.swipe.is_some() {
             return false;
         }
         self.can_drag(cx)
@@ -918,6 +1013,7 @@ impl Root {
                     };
                     swipe::Shown {
                         open: root.swipe_opens(cx),
+                        tabs: root.swipe.is_none() && root.can_page(cx),
                         claimed: tree.map_or_else(Vec::new, |tree| tree.read(cx).sideways()),
                     }
                 });
@@ -961,6 +1057,9 @@ impl Root {
     /// place over the one under it, or the view's page inside it, at the
     /// finger's speed.
     fn drag_cancelled(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.paging, Some(Paging::Held)) {
+            return self.paged_let_go(false, cx);
+        }
         let speed = self.swipe.take().map_or(0., |(_, speed)| speed);
         if let Some(tree) = self.swiped.take().and_then(|tree| tree.upgrade()) {
             tree.update(cx, |tree, cx| tree.drag_page_cancelled(cx));
@@ -1077,8 +1176,12 @@ impl Root {
     /// inside itself when its last frame's root asks to hear it; else the
     /// stack pops; at Home, the OS's own (SPEC §7.6). A drag under way
     /// that this Back does not pop springs back; a view's page under the
-    /// finger that the view does not hear it for slides back.
+    /// finger that the view does not hear it for slides back, and tabs
+    /// under it go back into place.
     fn back(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.paging, Some(Paging::Held)) {
+            self.paged_let_go(false, cx);
+        }
         let swiped = self.swiped.take().and_then(|tree| tree.upgrade());
         self.walk_back(cx);
         if let Some(tree) = swiped {
@@ -1147,6 +1250,7 @@ impl Root {
         let_go_closed(&self.stack, &self.shared.seats, cx);
         self.moving = None;
         self.dragged = None;
+        self.paging = None;
         self.sheet = None;
         self.alert = None;
         self.titles.clear();
@@ -1745,33 +1849,72 @@ impl Root {
                 (layer, edges.bottom + px(look::gap::LG))
             }
             Page::Root(tab) => {
-                let screen = match tab {
-                    Tab::Home => {
-                        let searching = self.search.read(cx).focus_handle(cx).is_focused(window);
-                        home::home(
-                            &self.shared,
-                            &self.search,
-                            self.filtering,
-                            searching,
-                            palette,
-                            cx,
-                        )
-                    }
-                    Tab::Open => {
-                        let opened = self.stack.read(cx).open().to_vec();
-                        let debug = self.shared.prefs.read(cx).get().debug;
-                        let readout = debug.then_some(&self.readout);
-                        home::open(&self.shared, &opened, &self.titles, readout, palette, cx)
-                    }
-                    Tab::Notifications => home::notifications(&self.shared, palette, cx),
-                    Tab::Account => home::account(&self.shared, palette, cx),
-                };
+                let mut screen = self.tab_screen(tab, window, palette, cx);
+                // the tabs' swipe: the tab on screen `at` its share of the
+                // width to the right, the tab beside it next to it, the bar
+                // still under both
+                if let Some((at, beside)) = self.paged(window, cx) {
+                    let slot = |screen: gpui_kit::Div, at: f32| {
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(gpui_kit::relative(at))
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .child(screen)
+                    };
+                    let beside = beside.map(|beside| {
+                        let other = self.tab_screen(beside, window, palette, cx);
+                        // taking no press, as the page a stack's move left
+                        slot(other, at - at.signum()).child(div().absolute().inset_0().occlude())
+                    });
+                    screen = div()
+                        .flex_1()
+                        .min_h_0()
+                        .relative()
+                        .overflow_hidden()
+                        .child(slot(screen, at))
+                        .children(beside);
+                }
                 let unread = self.shared.notifications.read(cx).unread();
                 let bar = home::tab_bar(tab, unread, edges.bottom, palette, cx);
                 let body = safe().flex().flex_col().child(screen).child(bar);
                 let bottom = edges.bottom + px(look::TAB_BAR + look::gap::LG);
                 (layer.child(body), bottom)
             }
+        }
+    }
+
+    /// `tab`'s root screen, over the tab bar.
+    fn tab_screen(
+        &mut self,
+        tab: Tab,
+        window: &Window,
+        palette: look::Palette,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Div {
+        match tab {
+            Tab::Home => {
+                let searching = self.search.read(cx).focus_handle(cx).is_focused(window);
+                home::home(
+                    &self.shared,
+                    &self.search,
+                    self.filtering,
+                    searching,
+                    palette,
+                    cx,
+                )
+            }
+            Tab::Open => {
+                let opened = self.stack.read(cx).open().to_vec();
+                let debug = self.shared.prefs.read(cx).get().debug;
+                let readout = debug.then_some(&self.readout);
+                home::open(&self.shared, &opened, &self.titles, readout, palette, cx)
+            }
+            Tab::Notifications => home::notifications(&self.shared, palette, cx),
+            Tab::Account => home::account(&self.shared, palette, cx),
         }
     }
 }
@@ -1793,6 +1936,11 @@ impl Render for Root {
         let now = motion::now(cx);
         if self.moving.is_some_and(|moving| moving.tween.done(now)) {
             self.moving = None;
+        }
+        if let Some(Paging::Settling { tween, .. }) = self.paging
+            && tween.done(now)
+        {
+            self.paging = None;
         }
         self.place(window, body, cx);
         // debug mode's numbers: read while the Open tab is on screen
@@ -3326,6 +3474,195 @@ mod tests {
         run_out(cx);
         assert!(!swipe::published().open, "a swipe began under an alert");
         ducktape_host::contract::testing::touch_first_for_test(false);
+    }
+
+    /// The tabs' swipe under way: the tab it settles beside, its offset at
+    /// the start and its speed there.
+    fn settling(
+        root: &Entity<Root>,
+        cx: &mut VisualTestContext,
+    ) -> Option<(Option<Tab>, f32, f32)> {
+        root.read_with(cx, |root, _| match root.paging {
+            Some(Paging::Settling { beside, tween }) => Some((beside, tween.from, tween.velocity)),
+            _ => None,
+        })
+    }
+
+    /// At Home's root a sideways swipe let go past the rule lands on Open,
+    /// which slides the rest of the way in and then asks for no frame; the
+    /// same swipe on a program pushed over Open goes back to Open, not to a
+    /// tab, and one the other way there does nothing.
+    #[gpui_kit::test]
+    fn a_sideways_swipe_at_a_tab_root_lands_beside_and_on_a_pushed_page_goes_back(
+        cx: &mut TestAppContext,
+    ) {
+        let (root, stack, cx) = phone(cx);
+        run_out(cx);
+        let shown = swipe::published();
+        assert!(shown.tabs && !shown.open, "no tabs' swipe begins at Home");
+        let width = root.read_with(cx, |root, _| root.width);
+        let tab = |cx: &mut VisualTestContext| stack.read_with(cx, |stack, _| stack.tab());
+        let swipe = |x: f32, cx: &mut VisualTestContext| {
+            root.update(cx, |root, cx| root.drag(x, 0., cx));
+            root.update(cx, |root, cx| root.let_go(cx));
+            cx.run_until_parked();
+        };
+
+        swipe(-width * 0.75, cx);
+        assert_eq!(tab(cx), Tab::Open, "the swipe did not land on Open");
+        assert_eq!(settling(&root, cx), Some((Some(Tab::Home), 0.25, 0.)));
+        assert!(frames(cx) > 0, "Open settling asked for no frame");
+        assert!(!swipe::published().tabs, "a swipe began as Open settled");
+        run_out(cx);
+        assert_eq!(settling(&root, cx), None, "Open settled for ever");
+        assert_eq!(frames(cx), 0, "a frame asked for once Open was still");
+
+        root.update(cx, |root, cx| _ = root.open(PROGRAM, cx));
+        run_out(cx);
+        assert!(
+            !swipe::published().tabs,
+            "the tabs' swipe began over a program"
+        );
+        root.update(cx, |root, cx| root.drag(-width * 0.75, 0., cx));
+        assert_eq!(
+            root.read_with(cx, |root, _| root.dragged),
+            Some(0.),
+            "dragged leftward"
+        );
+        root.update(cx, |root, cx| root.let_go(cx));
+        run_out(cx);
+        assert_eq!((tab(cx), top(&stack, cx)), (Tab::Open, Some(PROGRAM)));
+        swipe(width * 0.75, cx);
+        assert_eq!(
+            (tab(cx), top(&stack, cx)),
+            (Tab::Open, None),
+            "the swipe on the program did not go back to Open"
+        );
+        run_out(cx);
+    }
+
+    /// The tab beside slides in next to the one on screen under the finger,
+    /// the bar staying still under both; let go short (or ended by the OS),
+    /// the tab on screen slides back from the finger at its speed; a short
+    /// fast flick goes
+    /// on; past the bar's end the screen resists and settles back from
+    /// rest; a Back under the finger puts the tabs back first. Nothing
+    /// pages under an alert or Reduce Motion.
+    #[gpui_kit::test]
+    fn the_tabs_follow_the_finger_and_settle_as_a_pop_does(cx: &mut TestAppContext) {
+        let (root, stack, cx) = phone(cx);
+        let width = root.read_with(cx, |root, _| root.width);
+        let tab = |cx: &mut VisualTestContext| stack.read_with(cx, |stack, _| stack.tab());
+        let drawn = |id: &'static str, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| window.render_frame(cx));
+            cx.debug_bounds(id)
+        };
+        let pick = |tab: Tab, cx: &mut VisualTestContext| {
+            root.update(cx, |root, cx| root.pick(tab, cx));
+            run_out(cx);
+        };
+        pick(Tab::Account, cx);
+        let (row, bar) = (drawn("account/settings", cx), drawn("tab/account", cx));
+        let (row, bar) = (row.expect("Account drawn"), bar.expect("the bar drawn"));
+        pick(Tab::Notifications, cx);
+        assert_eq!(
+            drawn("account/settings", cx),
+            None,
+            "Account drawn under Notifications"
+        );
+
+        root.update(cx, |root, cx| root.drag(-width / 4., 0., cx));
+        let beside = drawn("account/settings", cx).expect("Account not drawn beside");
+        let shift = f32::from(beside.left() - row.left());
+        assert!(
+            (shift - width * 0.75).abs() < 1.,
+            "Account {shift} in, not {}",
+            width * 0.75
+        );
+        assert_eq!(
+            drawn("tab/account", cx),
+            Some(bar),
+            "the bar moved with the tabs"
+        );
+        root.update(cx, |root, cx| root.drag(-width / 4., width / 2., cx));
+        root.update(cx, |root, cx| root.let_go(cx));
+        assert_eq!(
+            tab(cx),
+            Tab::Notifications,
+            "let go short and moving back, it went on"
+        );
+        assert_eq!(settling(&root, cx), Some((Some(Tab::Account), -0.25, 0.5)));
+        run_out(cx);
+
+        // ended by UIKit past the rule: back into place all the same
+        root.update(cx, |root, cx| root.drag(-width * 0.75, 0., cx));
+        root.update(cx, |root, cx| root.drag_cancelled(cx));
+        assert_eq!(tab(cx), Tab::Notifications, "a cancelled swipe went on");
+        run_out(cx);
+
+        // a width and a half a second, let go an eighth in
+        root.update(cx, |root, cx| root.drag(-width / 8., -width * 1.5, cx));
+        root.update(cx, |root, cx| root.let_go(cx));
+        assert_eq!(tab(cx), Tab::Account, "a fast short flick did not go on");
+        assert_eq!(
+            settling(&root, cx),
+            Some((Some(Tab::Notifications), 0.875, -1.5))
+        );
+        run_out(cx);
+
+        // past Account, the bar's end: Account resists, and nothing comes in
+        root.update(cx, |root, cx| root.drag(-width / 2., -width, cx));
+        let resisted = swipe::resisted(-width / 2., width);
+        let drawn_at = drawn("account/settings", cx).expect("Account drawn").left();
+        let moved = f32::from(drawn_at - row.left());
+        assert!(
+            (moved - resisted).abs() < 1.,
+            "Account {moved} in, not {resisted}"
+        );
+        assert!(
+            resisted > -width / 2.,
+            "Account did not resist past the end"
+        );
+        root.update(cx, |root, cx| root.let_go(cx));
+        let back = Some((None, resisted / width, 0.));
+        assert_eq!((tab(cx), settling(&root, cx)), (Tab::Account, back));
+        run_out(cx);
+
+        pick(Tab::Open, cx);
+        root.update(cx, |root, cx| root.drag(width * 0.75, 0., cx));
+        root.update(cx, |root, cx| root.back(cx));
+        assert_eq!(
+            settling(&root, cx),
+            Some((Some(Tab::Home), 0.75, 0.)),
+            "a Back under the finger"
+        );
+        assert_eq!(tab(cx), Tab::Home);
+        run_out(cx);
+
+        root.update(cx, |root, cx| {
+            root.alert("Alert", "Over the tab".into(), cx)
+        });
+        run_out(cx);
+        assert!(!swipe::published().tabs, "a swipe began under an alert");
+        root.update(cx, |root, cx| root.drag(-width / 4., 0., cx));
+        assert!(
+            root.read_with(cx, |root, _| root.paging.is_none()),
+            "paged under an alert"
+        );
+        root.update(cx, |root, cx| root.back(cx));
+        run_out(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        run_out(cx);
+        assert!(
+            !swipe::published().tabs,
+            "a swipe began under Reduce Motion"
+        );
+        root.update(cx, |root, cx| root.drag(-width / 4., 0., cx));
+        assert!(
+            root.read_with(cx, |root, _| root.paging.is_none()),
+            "paged under Reduce Motion"
+        );
+        cx.update(|_, cx| cx.set_reduce_motion(false));
     }
 
     /// No swipe from anywhere begins while a program slides in; once it is

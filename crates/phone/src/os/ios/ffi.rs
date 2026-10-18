@@ -8,11 +8,13 @@
 //!   UTF-8 paths the caller owns, read before anything else runs.
 //! - `ducktape_phone_back_begins(x, y, vx, vy, held) -> begins`: whether
 //!   the launcher's swipe from anywhere starts (the left edge's always
-//!   does). Called from inside UIKit's touch handling.
-//! - `ducktape_phone_back_drag(x, speed)`: a swipe back under way, `x`
-//!   points in, `speed` points per second; `ducktape_phone_back_let_go()`:
-//!   let go, the shell judges whether it goes back;
-//!   `ducktape_phone_back_cancel()`: ended without going back.
+//!   does): back, or at a tab root the tabs'. Called from inside UIKit's
+//!   touch handling.
+//! - `ducktape_phone_back_drag(x, speed)`: a swipe under way, `x` points
+//!   to the right (negative to the left), `speed` points per second;
+//!   `ducktape_phone_back_let_go()`: let go, the shell judges whether it
+//!   goes back, or which tab it lands on; `ducktape_phone_back_cancel()`:
+//!   ended without going on.
 //! - `ducktape_phone_link(url)`: a call's Answer (CallKit), its link.
 //! - `ducktape_phone_push_token(kind, token)`: PushKit's token, as hex.
 //! - `ducktape_phone_notice(payload, at, front, opened) -> shows`: a
@@ -151,7 +153,8 @@ pub unsafe extern "C" fn ducktape_phone_main(documents: *const c_char, caches: *
 }
 
 /// Whether the launcher's swipe from anywhere on the screen begins
-/// (`App.swift`, as UIKit is about to start it): its finger came down at
+/// (`App.swift`, as UIKit is about to start it), back or at a tab root the
+/// tabs' (`shell::swipe::begins`): its finger came down at
 /// (`x`, `y`) in the window's points, moves at (`vx`, `vy`) points per
 /// second, and rested `held` seconds before it moved; 1 when it begins.
 /// Read against what the last draw showed (`shell::swipe`): UIKit asks
@@ -165,9 +168,10 @@ pub extern "C" fn ducktape_phone_back_begins(x: f64, y: f64, vx: f64, vy: f64, h
     u8::from(crate::shell::swipe::begins(start, moving, held))
 }
 
-/// A swipe back under way (`App.swift`: from the left edge, or from
-/// anywhere it began), `x` points in from where it started, moving `speed`
-/// points per second to the right: the screen on top follows the finger.
+/// A swipe under way (`App.swift`: from the left edge, or from anywhere it
+/// began), `x` points to the right of where it started (negative to the
+/// left), moving `speed` points per second to the right: the screen on
+/// top follows the finger, or at a tab root the tabs do.
 /// gpui_ios hands no gesture of the system's to the app, so Back has no
 /// other source on iOS. It ends with [`ducktape_phone_back_let_go`] or
 /// [`ducktape_phone_back_cancel`].
@@ -179,8 +183,9 @@ pub extern "C" fn ducktape_phone_back_drag(x: f64, speed: f64) {
     });
 }
 
-/// The swipe let go, where and as fast as its last drag said: Back when it
-/// went far or fast enough, else the screen on top goes back into place.
+/// The swipe let go, where and as fast as its last drag said: Back (or the
+/// tab beside) when it went far or fast enough, else the screen on top
+/// goes back into place.
 #[unsafe(no_mangle)]
 pub extern "C" fn ducktape_phone_back_let_go() {
     crate::os::send(ducktape_host::contract::Signal::BackLetGo);
