@@ -411,7 +411,11 @@ pub(super) fn mounted(program: &'static str, instance: u64) -> Arc<Mutex<Mounted
     // and its `init`, on the one tick's fuel every tick here runs on
     let compiled = matches!(locked.slot, Slot::Compiled(_));
     let here = locked.slot.startable(code);
-    let load = (first && asked || compiled).then(|| {
+    // its preload still reading its bytes, in a roster read's read ahead
+    // that waits for every program's (`read_ahead`): this pane's own load
+    // reads them now, ahead of every other
+    let reading = !first && matches!(locked.slot, Slot::Loading | Slot::Fetching { .. });
+    let load = (first && asked || compiled || reading).then(|| {
         locked.rev = snapshot.rev;
         Load {
             program,
@@ -616,6 +620,11 @@ pub(super) fn read_ahead(loads: Vec<Load>) {
         {
             let _rail = lock(registry());
             for (load, read, timing) in read {
+                // a pane claimed the seat meanwhile and loads it itself
+                // (`mounted`), or a newer roster read asked again
+                if lock(&load.seat).generation != load.generation {
+                    continue;
+                }
                 match read {
                     Read::View(listing) => {
                         lock(&load.seat).show(load.generation, Slot::Listed(listing));
@@ -652,14 +661,38 @@ pub(super) fn read_ahead(loads: Vec<Load>) {
 
 /// One preload's bytes read ahead ([`read_ahead`]), shown read once they
 /// are (`Fetching` all of them: the rail counts it read, still on its way).
+/// A panic in the read is its failure, as a loader's is (`Load::land`): the
+/// read ahead goes on, and every other program with it.
 async fn read_one(load: Load) -> (Load, Read, LoadTiming) {
+    use futures::FutureExt as _;
     let mut timing = LoadTiming::default();
+    let read = std::panic::AssertUnwindSafe(read_bytes(&load, &mut timing))
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|panic| {
+            let failure = panicked("reading", &*panic);
+            let reason = failure.to_string();
+            log_source(load.program, None, "Failed", load.generation, &reason);
+            timing.outcome = "Failed";
+            Read::Failed(failure)
+        });
+    (load, read, timing)
+}
+
+/// A program a seat test's read panics on ([`read_bytes`]).
+#[cfg(test)]
+const PANICS_READING: &str = "seat-tests-panics-reading";
+
+/// [`read_one`]'s read itself.
+async fn read_bytes(load: &Load, timing: &mut LoadTiming) -> Read {
+    #[cfg(test)]
+    assert_ne!(load.program, PANICS_READING, "the read panicked");
     let (Some((blob, bare)), Some(client), None) = (
         load.code,
         load.asked_of.client.clone(),
         view_override(load.program),
     ) else {
-        return (load, Read::Loader, timing);
+        return Read::Loader;
     };
     let show = |stage: Slot| lock(&load.seat).show(load.generation, stage);
     timing.started = Some(Instant::now());
@@ -677,7 +710,7 @@ async fn read_one(load: Load) -> (Load, Read, LoadTiming) {
     timing.fetch = timing
         .started
         .map_or_else(Duration::default, |started| started.elapsed());
-    let read = match bytes {
+    match bytes {
         Ok(Some((view, from))) => {
             timing.blob = from;
             let listing = manifest_of(&view);
@@ -706,8 +739,7 @@ async fn read_one(load: Load) -> (Load, Read, LoadTiming) {
             timing.outcome = "Failed";
             Read::Failed(failure)
         }
-    };
-    (load, read, timing)
+    }
 }
 
 impl Load {

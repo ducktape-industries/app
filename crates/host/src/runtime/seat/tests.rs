@@ -149,8 +149,10 @@ fn a_load_a_pane_claimed_goes_first() {
 /// a view's kept as its manifest and the bytes let go; until the last is
 /// read none is shown (each counts as read, still on its way), and then all
 /// are, at once under the registry's lock the rail reads under: one listed
-/// and prepared off the disk, one with no view none, and one whose bytes did
-/// not come failed, holding none of the others.
+/// and prepared, one with no view none, and one whose bytes did not come
+/// failed, holding none of the others. (That the loader's second read is
+/// off the disk is not seen here: a test thread's files are its own, and
+/// the read ahead runs on the runtime's threads.)
 #[test]
 fn a_roster_read_reads_every_program_before_it_prepares_any() {
     let view = view_declaring("Alpha", "", Tint::None, "");
@@ -204,6 +206,68 @@ fn a_roster_read_reads_every_program_before_it_prepares_any() {
     assert!(matches!(&lock(&view).slot, Slot::Compiled(code) if code.name == "Alpha"));
     assert!(matches!(lock(&none).slot, Slot::Empty));
     assert!(matches!(lock(&held).slot, Slot::Failed(_)));
+}
+
+/// Claim: a pane that claims a seat whose preload is still in a read ahead
+/// (a link opened at a cold start) loads it itself at once, while another
+/// read of the batch hangs; the batch's load of it is let go when it flips.
+#[test]
+fn a_seat_claimed_mid_read_is_loaded_while_another_read_hangs() {
+    const PROGRAM: &str = "seat-tests-claimed-mid-read";
+    let view = view_declaring("Claimed", "", Tint::None, "");
+    let code = blob_id(&view);
+    let listed_view = ::programs::View {
+        name: PROGRAM.into(),
+        view: code,
+    };
+    let node = FakeNode::new(
+        vec![listed("seat-tests-hangs", "never-served")],
+        vec![listed_view],
+        vec![view],
+    );
+    let (roster, registry) = (Roster::default(), Registry::default());
+    read_roster(node.asked_of.clone(), &roster, &registry);
+    let seat = lock(&registry)[&(PROGRAM, 0)].clone();
+    eventually("its bytes read and the other's hanging", || {
+        lock(&seat).prep() == Prep::Waiting && node.held().0 == 1
+    });
+    lock(super::registry()).insert((PROGRAM, 0), seat);
+    let opened = mounted(PROGRAM, 7401);
+    // with no node in a test, the pane's own load fails, offering Retry
+    eventually("the pane's own load ran", || {
+        matches!(lock(&opened).slot, Slot::Failed(_))
+    });
+    assert_eq!(node.held().0, 1, "the other read stopped hanging");
+    lock(super::registry()).remove(&(PROGRAM, 7401));
+}
+
+/// Claim: a read that panics is that program's failure, as a loader's
+/// panic is, and the read ahead flips with every other program shown.
+#[test]
+fn a_read_that_panics_lands_failed_and_the_batch_flips() {
+    let view = view_declaring("Beside", "", Tint::None, "");
+    let code = blob_id(&view);
+    let listed_view = ::programs::View {
+        name: "seat-tests-beside-a-panic".into(),
+        view: code,
+    };
+    let node = FakeNode::new(
+        vec![listed(PANICS_READING, "panics")],
+        vec![listed_view],
+        vec![view],
+    );
+    let (roster, registry) = (Roster::default(), Registry::default());
+    read_roster(node.asked_of.clone(), &roster, &registry);
+    let seat = |program| lock(&registry)[&(program, 0)].clone();
+    let (panics, beside) = (seat(PANICS_READING), seat("seat-tests-beside-a-panic"));
+    eventually("the read ahead flipped", || {
+        !lock(&panics).slot.loading() && !lock(&beside).slot.loading()
+    });
+    assert!(
+        matches!(&lock(&panics).slot, Slot::Failed(failure) if failure.to_string().contains("stopped reading")),
+        "the panic not its failure"
+    );
+    assert!(matches!(&lock(&beside).slot, Slot::Compiled(code) if code.name == "Beside"));
 }
 
 /// Claim: a roster read that finds a program moved to new code over a view
