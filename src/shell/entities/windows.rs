@@ -6,10 +6,12 @@
 //! Top), move a pane between two desks (pop-out, pop-in), float a view's
 //! pane at its view's ask (`float`, `unfloat`), open links and
 //! programs on the console's desk (a program in a pop-out comes forward
-//! there), and resize the console as the launcher gives way to the desk
-//! and back. Notifies when the list, the front or the active program
-//! moved; a window's own entities notify on their own, and `Popped` (the
-//! pop-outs' windows, as the console's chrome lists them) when it moved.
+//! there) or, at a view's ask, a link in a pop-out of its own
+//! (`open_link_window`), and resize the console as the launcher gives way
+//! to the desk and back. Notifies when the list, the front or the active
+//! program moved; a window's own entities notify on their own, and
+//! `Popped` (the pop-outs' windows, as the console's chrome lists them)
+//! when it moved.
 //! Keep on Top moves only the macOS menu bar's check (`sync_menu`); Search
 //! reads it as it draws.
 //!
@@ -29,7 +31,8 @@ use crate::runtime::notify::{CenterHandle, Entry};
 use crate::shell::layers::{self, WindowRoot};
 use crate::shell::windows::{release_window_input, remove};
 use crate::shell::{WindowKind, theme, windows};
-use crate::ui::layout::{self, Layout};
+use crate::ui::layout::{self, Layout, Pane};
+use ducktape_host::runtime::Link;
 use ducktape_host::session::Opening;
 use futures::StreamExt as _;
 use futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -69,6 +72,7 @@ pub(crate) struct Windows {
     /// Where each program's float was last, for its next float in this
     /// run. Not saved, as Keep on Top is not.
     left: BTreeMap<&'static str, Bounds<Pixels>>,
+    linked: BTreeMap<u64, (&'static str, Option<String>)>,
     /// The macOS Window menu's Keep on Top check, as last set: the front
     /// window's state (`sync_menu`).
     menu_on_top: bool,
@@ -99,6 +103,12 @@ struct Floated {
     /// Keeps where the window is, for the next float (`watch_float`);
     /// it goes with the float.
     moves: Option<Subscription>,
+}
+
+#[derive(Clone, Copy)]
+enum Opens {
+    Desk(Option<(&'static str, u64)>),
+    Window,
 }
 
 impl Windows {
@@ -166,6 +176,7 @@ impl Windows {
             pending_on_top: BTreeMap::new(),
             floats: BTreeMap::new(),
             left: BTreeMap::new(),
+            linked: BTreeMap::new(),
             menu_on_top: false,
             popped: cx.new(|_| Slice::new(Popped::default())),
             active: None,
@@ -1019,6 +1030,24 @@ impl Windows {
         from: Option<(&'static str, u64)>,
         cx: &mut Context<Self>,
     ) {
+        self.open_link_into(link, Opens::Desk(from), cx);
+    }
+
+    pub(crate) fn open_link_window(
+        &mut self,
+        link: &str,
+        from: Option<(&'static str, u64)>,
+        cx: &mut Context<Self>,
+    ) {
+        let web = matches!(self.shared.rail.read(cx).parse_link(link), Link::Web(_));
+        let opens = match web {
+            true => Opens::Desk(from),
+            false => Opens::Window,
+        };
+        self.open_link_into(link, opens, cx);
+    }
+
+    fn open_link_into(&mut self, link: &str, opens: Opens, cx: &mut Context<Self>) {
         let _timed = timed();
         let chain = self.shared.session.read(cx).get().chain.clone();
         match self.shared.rail.read(cx).opening(link, &chain) {
@@ -1027,14 +1056,14 @@ impl Windows {
                 route,
                 notice,
             } => {
-                self.open_seat(program, route, from, cx);
+                self.seat_opens(program, route, opens, cx);
                 if let Some(said) = notice {
                     self.notice(said, cx);
                 }
             }
             // another chain's page is not this chain's to show
             Opening::Elsewhere { program, chain } => {
-                self.open_seat(program, None, from, cx);
+                self.seat_opens(program, None, opens, cx);
                 self.notice(
                     format!("That link is to {chain}, not this network; opened {program}."),
                     cx,
@@ -1056,6 +1085,70 @@ impl Windows {
             self.open_link(&entry.link, None, cx);
         } else if self.shared.rail.read(cx).lists(&entry.program) {
             self.open_seat(crate::runtime::intern(&entry.program), None, None, cx);
+        }
+    }
+
+    fn seat_opens(
+        &mut self,
+        program: &'static str,
+        route: Option<String>,
+        opens: Opens,
+        cx: &mut Context<Self>,
+    ) {
+        match opens {
+            Opens::Desk(from) => self.open_seat(program, route, from, cx),
+            Opens::Window => self.open_window_seat(program, route, cx),
+        }
+    }
+
+    fn open_window_seat(
+        &mut self,
+        program: &'static str,
+        route: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let popped: BTreeMap<u64, WindowKey> = self
+            .by_window
+            .iter()
+            .filter(|(key, _)| self.console != Some(**key))
+            .flat_map(|(key, own)| {
+                let layout = own.desk.read(cx).get();
+                layout
+                    .panes
+                    .iter()
+                    .map(|pane| (pane.instance, *key))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        self.linked
+            .retain(|instance, _| popped.contains_key(instance));
+        let open = self
+            .linked
+            .iter()
+            .filter(|(_, (linked, at))| *linked == program && *at == route)
+            .find_map(|(instance, _)| Some((*popped.get(instance)?, *instance)));
+        if self.active != Some(program) {
+            self.active = Some(program);
+            cx.notify();
+        }
+        let instance = match open {
+            Some((key, instance)) => {
+                self.raise(key, cx);
+                instance
+            }
+            None => {
+                let pane = Pane::new(program);
+                let instance = pane.instance;
+                let key = self.open(WindowKind::View { program }, None, None, cx);
+                self.by_window[&key]
+                    .desk
+                    .update(cx, |desk, cx| desk.popin(pane, cx));
+                self.linked.insert(instance, (program, route.clone()));
+                instance
+            }
+        };
+        if let Some(route) = route {
+            crate::runtime::route_to(program, instance, route);
         }
     }
 

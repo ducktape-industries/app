@@ -8,9 +8,9 @@
 //! with an account, then the [`stack`]: a tab root (Home, Open,
 //! Notifications, Account) under the tab bar, or the program on top, its
 //! view seated full screen under the capsule; the shell's own pages over
-//! either (a program's page, its capabilities, from the capsule's About;
-//! App settings, Switch network and Add a device from the Account tab); a
-//! sheet over all (the capsule's menu, the consent sheet). Each program
+//! either (a program's page, its capabilities, from the capsule's About); a
+//! sheet over all (the capsule's menu, the Account tab's Add a device and
+//! Switch network, the consent sheet). Each program
 //! opened keeps one seat, placed with the safe body and in front only
 //! while it is on top and the window is: a program left stays warm where
 //! it was (wasm-mobile SPEC §7.1).
@@ -22,7 +22,8 @@
 //! screen on top off under the finger (inside a program above its root
 //! page, that page, by the view's own tree), and its release carries the
 //! finger's speed into the rest of the move; a sheet slides up
-//! over a fading scrim and down again; the alert and the toast fade. A tab
+//! over a fading scrim and down again, or down under a finger
+//! ([`sheet`]); the alert and the toast fade. A tab
 //! picked in the bar does not move (Expo's tabs do not); a sideways swipe
 //! at a tab root pages the tabs under the finger, the tab beside sliding
 //! in with it, and its release goes on as a pop's does. Nothing moves
@@ -30,13 +31,13 @@
 //! under way.
 
 mod about;
+mod account;
 mod approve;
 mod debug;
 mod home;
 mod join;
 mod look;
 mod running;
-mod settings;
 mod sheet;
 pub mod stack;
 pub mod swipe;
@@ -383,7 +384,7 @@ fn let_go_closed(stack: &Entity<Stack>, seats: &Entity<Seats>, cx: &mut App) {
     seats.update(cx, |seats, cx| seats.place(kept, cx));
 }
 
-/// `appearance` (App settings › Appearance) onto the app's iOS windows,
+/// `appearance` (the Account tab's Appearance) onto the app's iOS windows,
 /// which UIKit's keyboard and alerts follow (`os::interface_style`), and
 /// onto the kit theme, which the phone's palette (`look::palette`), every
 /// view's theme and the host's own chrome read; under System, the window's
@@ -448,17 +449,12 @@ fn open_door(cx: &mut App) {
 }
 
 /// What the stack shows full screen: a tab root, the program on top, or
-/// one of the shell's own pages pushed over them (a program's page, App
-/// settings, its Appearance, Switch network, Add a device).
+/// the shell's own page pushed over them (a program's page).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Page {
     Root(Tab),
     Program(&'static str),
     About(&'static str),
-    Settings,
-    Appearance,
-    Switch,
-    Approve,
 }
 
 impl Page {
@@ -472,10 +468,6 @@ impl Page {
             Page::Root(Tab::Account) => "screen::account".into(),
             Page::Program(program) => format!("screen::program/{program}").into(),
             Page::About(program) => format!("screen::about/{program}").into(),
-            Page::Settings => "screen::settings".into(),
-            Page::Appearance => "screen::appearance".into(),
-            Page::Switch => "screen::switch".into(),
-            Page::Approve => "screen::approve".into(),
         }
     }
 
@@ -483,21 +475,13 @@ impl Page {
     fn program(self) -> Option<&'static str> {
         match self {
             Page::Program(program) => Some(program),
-            Page::Root(_)
-            | Page::About(_)
-            | Page::Settings
-            | Page::Appearance
-            | Page::Switch
-            | Page::Approve => None,
+            Page::Root(_) | Page::About(_) => None,
         }
     }
 
     /// One of the shell's own pages, pushed over the stack.
     fn pushed(self) -> bool {
-        matches!(
-            self,
-            Page::About(_) | Page::Settings | Page::Appearance | Page::Switch | Page::Approve
-        )
+        matches!(self, Page::About(_))
     }
 }
 
@@ -545,13 +529,12 @@ pub struct Root {
     /// title and its sentence, dismissed by OK or Back.
     alert: Option<(&'static str, String)>,
     /// The shell's own pages over the stack, the top last: a program's
-    /// page, App settings, Switch network (over App settings, or alone),
-    /// Add a device.
+    /// page.
     pages: Vec<Page>,
-    /// Where this phone's key is kept, as the store said when App settings
-    /// opened (Expo reads it once per keyring): its words, or why the store
+    /// Where this phone's key is kept, as the store said for the keyring
+    /// named (Expo reads it once per keyring): its words, or why the store
     /// did not say.
-    storage: Option<Result<KeyStorage, String>>,
+    storage: Option<(String, Result<KeyStorage, String>)>,
     /// The title each seat's view gave its window, by its instance.
     titles: BTreeMap<u64, String>,
     /// What `Seats` was last told: each open program's place, and the seat
@@ -571,9 +554,9 @@ pub struct Root {
     /// Home's filter, and whether it is open (its magnifier pressed).
     search: Entity<InputState>,
     filtering: bool,
-    /// Add a device's code, as typed (`approve::field`), and what the page
-    /// showed as it was left: drawn so while it slides off, as a screen
-    /// leaving keeps its look (what it found is forgotten at once).
+    /// Add a device's code, as typed (`approve::field`), and what its sheet
+    /// showed as it went: drawn so while it slides off (what it found is
+    /// forgotten at once, and the sheet going keeps only which it was).
     code: Entity<InputState>,
     approve_left: AccountState,
     /// Each placed seat, observed: a tree, a standin or a fault that moved
@@ -601,6 +584,8 @@ pub struct Root {
     drawn_alert: Option<Shown<(&'static str, String)>>,
     drawn_toast: Option<Shown<String>>,
     sheet_height: Rc<Cell<Option<gpui_kit::Pixels>>>,
+    /// A finger dragging the sheet down, until let go.
+    sheet_drag: Option<sheet::Drag>,
     consent_height: Rc<Cell<Option<gpui_kit::Pixels>>>,
     /// Draws so far: a test tells a still window from one a timer redraws.
     #[cfg(test)]
@@ -641,7 +626,9 @@ impl Root {
             cx.subscribe(
                 &shared.account,
                 |root, _, event: &AccountEvent, cx| match event {
-                    AccountEvent::Approved if root.page(cx) == Page::Approve => root.pop_page(cx),
+                    AccountEvent::Approved if root.sheet == Some(Sheet::AddDevice) => {
+                        root.close_sheet(cx)
+                    }
                     AccountEvent::Approved | AccountEvent::Toast(_) | AccountEvent::Welcome => {}
                 },
             ),
@@ -649,9 +636,9 @@ impl Root {
                 &shared.session,
                 |root, _, event: &SessionEvent, cx| match event {
                     SessionEvent::LeftNetwork => root.left_network(cx),
-                    // the same chain answered (another chain left it first);
+                    // a switch landed (another chain left the network first);
                     // only the host's `connect_answered` sends it today, a
-                    // new sender would pop Switch network too
+                    // new sender would close Switch network too
                     SessionEvent::Connected => root.switched(cx),
                     // only the host's `connect_failed` sends it (a reach
                     // failed while on a network): taken as the switch's
@@ -720,6 +707,7 @@ impl Root {
             drawn_alert: None,
             drawn_toast: None,
             sheet_height: Rc::default(),
+            sheet_drag: None,
             consent_height: Rc::default(),
             #[cfg(test)]
             renders: 0,
@@ -758,7 +746,7 @@ impl Root {
     /// `program` on top, in its seat, pushed over the screen it was on; the
     /// seat's instance.
     fn open(&mut self, program: &'static str, cx: &mut Context<Self>) -> u64 {
-        self.sheet = None;
+        self.set_sheet(None, cx);
         let from = self.page(cx);
         self.pages.clear();
         let instance = self.stack.update(cx, |stack, cx| {
@@ -773,7 +761,7 @@ impl Root {
     /// One of the shell's own pages pushed over the screen, the sheet it
     /// came from closed.
     fn push_page(&mut self, page: Page, cx: &mut Context<Self>) {
-        self.sheet = None;
+        self.set_sheet(None, cx);
         let from = self.page(cx);
         self.pages.push(page);
         self.moved(from, false, cx);
@@ -793,28 +781,36 @@ impl Root {
         self.push_page(Page::About(program), cx);
     }
 
-    /// App settings pushed (Expo `you.tsx`'s and `settings.tsx`'s), where
-    /// this phone's key is kept read once from the store as it opens.
-    fn show_settings(&mut self, cx: &mut Context<Self>) {
-        let keyring = self.shared.account.read(cx).keyring().to_owned();
-        self.storage = (!keyring.is_empty()).then(|| {
-            ducktape_host::contract::os()
-                .key_storage(&keyring)
-                .map_err(|refused| refused.sentence())
-        });
-        self.push_page(Page::Settings, cx);
+    /// Where this phone's key is kept, read from the store for the keyring
+    /// in hand when it is not the one last read (Expo reads it once per
+    /// keyring); none with no keyring.
+    fn read_storage(&mut self, cx: &App) {
+        let keyring = self.shared.account.read(cx).keyring();
+        if keyring.is_empty() {
+            self.storage = None;
+        } else if self
+            .storage
+            .as_ref()
+            .is_none_or(|(read, _)| read != keyring)
+        {
+            let kept = ducktape_host::contract::os()
+                .key_storage(keyring)
+                .map_err(|refused| refused.sentence());
+            self.storage = Some((keyring.to_owned(), kept));
+        }
     }
 
-    /// Switch network pushed, its field holding the last node reached.
+    /// Switch network over the Account tab, its field holding the last node
+    /// reached, the keys in it.
     fn show_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.join
             .update(cx, |join, cx| join.open_switch(window, cx));
-        self.push_page(Page::Switch, cx);
+        self.show(Sheet::Switch, cx);
     }
 
-    /// Add a device pushed (the desktop's "Add a device…" opening): what
-    /// the last one found and typed gone, the keys in its field (Expo
-    /// `autoFocus`).
+    /// Add a device over the Account tab (the desktop's "Add a device…"
+    /// opening): what the last one found and typed gone, the keys in its
+    /// field (Expo `autoFocus`).
     fn show_approve(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.shared
             .account
@@ -823,19 +819,20 @@ impl Root {
             code.set_value("", window, cx);
             code.focus(window, cx);
         });
-        self.push_page(Page::Approve, cx);
+        self.show(Sheet::AddDevice, cx);
     }
 
-    /// The switch landed on the chain in hand (another node of it, or the
-    /// node in hand itself): Switch network goes back where the reader
-    /// was. Another chain left the network first, which took the page. A
-    /// switch a link of another network's made: the link opens here, once
-    /// the network lists its programs; a node that answered for another
-    /// chain says whose link it is, as before. Another node landed (a
-    /// switch of the reader's own took over): the link is let go, unsaid.
+    /// A switch landed (another node of the chain in hand, the node in hand
+    /// itself, or another chain, which left the network first): Switch
+    /// network goes, before the screen goes where the host sends it (with
+    /// no account there, the join, whole). A switch a link of another
+    /// network's made: the link opens here, once the network lists its
+    /// programs; a node that answered for another chain says whose link it
+    /// is, as before. Another node landed (a switch of the reader's own
+    /// took over): the link is let go, unsaid.
     fn switched(&mut self, cx: &mut Context<Self>) {
-        if self.page(cx) == Page::Switch {
-            self.pop_page(cx);
+        if self.sheet == Some(Sheet::Switch) {
+            self.close_sheet(cx);
         }
         let Some((chain, link, node)) = self.switching.take() else {
             return;
@@ -850,12 +847,13 @@ impl Root {
         }
     }
 
-    /// The switch did not land: on Switch network its words go under the
-    /// field (Expo 75), not over the screen in the notice the host put up.
-    /// A link that waited on it is dropped; the notice says why.
+    /// The switch did not land: while Switch network is up its words go
+    /// under the field (Expo 75), not over the screen in the notice the
+    /// host put up. A link that waited on it is dropped; the notice says
+    /// why.
     fn switch_failed(&mut self, said: String, cx: &mut Context<Self>) {
         self.switching = None;
-        if self.page(cx) != Page::Switch {
+        if self.sheet != Some(Sheet::Switch) {
             return;
         }
         self.join
@@ -900,19 +898,7 @@ impl Root {
     /// this one undoes it (Back during a push): that turns back from where
     /// it is. A pop the finger let go of goes on from where it let go, at
     /// the finger's speed. Tab switches do not move.
-    ///
-    /// Add a device left, by any way that moves the stack (Back, Cancel,
-    /// a swipe, a program or a tab's root opened over it, its approval),
-    /// forgets what it found and drops its call, as the desktop's dialog
-    /// closing does; a network left forgets it in the host already
-    /// (`Account::leave_network`).
     fn moved(&mut self, from: Page, pop: bool, cx: &mut Context<Self>) {
-        if from == Page::Approve && !self.pages.contains(&Page::Approve) {
-            self.approve_left = self.shared.account.read(cx).get().clone();
-            self.shared
-                .account
-                .update(cx, |account, cx| account.approve_closed(cx));
-        }
         let dragged = self.dragged.take();
         let to = self.page(cx);
         if from == to || matches!((from, to), (Page::Root(_), Page::Root(_))) {
@@ -1217,8 +1203,7 @@ impl Root {
             cx.write_to_clipboard(ClipboardItem::new_string(link));
             self.notice("Copied".into(), cx);
         }
-        self.sheet = None;
-        cx.notify();
+        self.set_sheet(None, cx);
     }
 
     /// `tab`'s root, whatever is over it popped off (the program left
@@ -1228,7 +1213,7 @@ impl Root {
         let now = Self::now(cx);
         let from = self.page(cx);
         self.paging = None;
-        self.sheet = None;
+        self.set_sheet(None, cx);
         self.pages.clear();
         self.stack.update(cx, |stack, cx| {
             stack.pick(tab, now);
@@ -1247,19 +1232,37 @@ impl Root {
 
     /// `sheet` over the screen (under the consent sheet, when one is up).
     fn show(&mut self, sheet: Sheet, cx: &mut Context<Self>) {
-        self.sheet = Some(sheet);
-        cx.notify();
+        self.set_sheet(Some(sheet), cx);
     }
 
     fn capsule_menu(&mut self, program: &'static str, cx: &mut Context<Self>) {
         self.show(Sheet::Capsule(program), cx);
     }
 
-    /// The sheet goes (the scrim, Back).
+    /// The sheet goes (the scrim, Back, a drag down, Cancel).
     fn close_sheet(&mut self, cx: &mut Context<Self>) {
-        if self.sheet.take().is_some() {
-            cx.notify();
+        self.set_sheet(None, cx);
+    }
+
+    /// `sheet` over the screen now, or none: every change of the sheet
+    /// comes through here. Add a device going, by any way (the scrim, Back,
+    /// a drag down, Cancel, a program or a tab's root opened over it, its
+    /// approval, the network left), forgets what it found and drops its
+    /// call, as the desktop's dialog closing does; what it showed is kept
+    /// to draw it going. A finger on the sheet lets go of it.
+    fn set_sheet(&mut self, sheet: Option<Sheet>, cx: &mut Context<Self>) {
+        if self.sheet == sheet {
+            return;
         }
+        if self.sheet == Some(Sheet::AddDevice) {
+            self.approve_left = self.shared.account.read(cx).get().clone();
+            self.shared
+                .account
+                .update(cx, |account, cx| account.approve_closed(cx));
+        }
+        self.sheet = sheet;
+        self.sheet_drag = None;
+        cx.notify();
     }
 
     /// The consent sheet goes (its scrim, Back): its ask is refused, as
@@ -1370,7 +1373,7 @@ impl Root {
         self.moving = None;
         self.dragged = None;
         self.paging = None;
-        self.sheet = None;
+        self.set_sheet(None, cx);
         self.alert = None;
         self.titles.clear();
         self.pages.clear();
@@ -1535,7 +1538,9 @@ impl Root {
                 self.titles.insert(*instance, title.clone());
                 cx.notify();
             }
-            SeatsEvent::OpenLink(_, _, link) => self.open_link(link, cx),
+            SeatsEvent::OpenLink(_, _, link) | SeatsEvent::OpenWindow(_, _, link) => {
+                self.open_link(link, cx)
+            }
             // the reader's account: the Account tab, as from a header's avatar
             SeatsEvent::Show(_, _, view_wire::methods::Place::Account) => {
                 self.go_to(Tab::Account, cx)
@@ -1636,11 +1641,12 @@ impl Root {
     }
 
     /// The sheet up, drawn where `at` says: the frame over the window with
-    /// its content.
+    /// its content. Add a device going draws what it showed as it went.
     fn sheet(
         &mut self,
         sheet: Sheet,
         at: sheet::At,
+        window: &Window,
         palette: look::Palette,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
@@ -1649,6 +1655,27 @@ impl Root {
             Sheet::Notifications(program) => (
                 "Notifications",
                 self.notifications_sheet(program, palette, cx),
+            ),
+            Sheet::AddDevice => {
+                let shown = match at.leaving {
+                    true => self.approve_left.clone(),
+                    false => self.shared.account.read(cx).get().clone(),
+                };
+                let focused = self.code.read(cx).focus_handle(cx).is_focused(window);
+                let code = &self.code;
+                let content = approve::content(&self.shared, &shown, code, focused, palette, cx);
+                ("Add a device", content.into_any_element())
+            }
+            // the address screen's own scroller shrinks under the room
+            Sheet::Switch => (
+                "Switch network",
+                div()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .child(sheet::title("Switch network", palette))
+                    .child(self.join.clone())
+                    .into_any_element(),
             ),
         };
         let close = Self::close_sheet;
@@ -1819,10 +1846,9 @@ impl Root {
                 word,
                 palette,
             )
-            .on_click(cx.listener(move |root, _, _, cx| {
-                root.sheet = Some(Sheet::Notifications(program));
-                cx.notify();
-            })),
+            .on_click(
+                cx.listener(move |root, _, _, cx| root.show(Sheet::Notifications(program), cx)),
+            ),
         );
         if ducklink::mint(&chain, program, &[]).is_some() {
             menu = menu.child(
@@ -1869,8 +1895,7 @@ impl Root {
                         permission,
                         cx,
                     );
-                    root.sheet = None;
-                    cx.notify();
+                    root.close_sheet(cx);
                 },
             ))
         });
@@ -1944,37 +1969,6 @@ impl Root {
                     about::page(&row, listing, palette, cx)
                 });
                 let body = safe().flex().flex_col().pb(edges.bottom).children(page);
-                (layer.child(body), edges.bottom + px(look::gap::LG))
-            }
-            Page::Settings => {
-                let page = settings::page(&self.shared, self.storage.as_ref(), palette, cx);
-                let body = safe().flex().flex_col().pb(edges.bottom).child(page);
-                (layer.child(body), edges.bottom + px(look::gap::LG))
-            }
-            Page::Appearance => {
-                let page = settings::appearance(&self.shared, palette, cx);
-                let body = safe().flex().flex_col().pb(edges.bottom).child(page);
-                (layer.child(body), edges.bottom + px(look::gap::LG))
-            }
-            Page::Approve => {
-                let shown = match self.pages.contains(&Page::Approve) {
-                    true => self.shared.account.read(cx).get().clone(),
-                    false => self.approve_left.clone(),
-                };
-                let focused = self.code.read(cx).focus_handle(cx).is_focused(window);
-                let page = approve::page(&self.shared, &shown, &self.code, focused, palette, cx);
-                let body = safe().flex().flex_col().pb(edges.bottom).child(page);
-                (layer.child(body), edges.bottom + px(look::gap::LG))
-            }
-            Page::Switch => {
-                let back = cx.listener(|root, _, _, cx| root.pop_page(cx));
-                let header = look::header("switch/back", back, palette);
-                let body = safe()
-                    .flex()
-                    .flex_col()
-                    .pb(edges.bottom)
-                    .child(header)
-                    .child(self.join.clone());
                 (layer.child(body), edges.bottom + px(look::gap::LG))
             }
             Page::Program(program) => {
@@ -2055,7 +2049,11 @@ impl Root {
                 home::open(&self.shared, &opened, &self.titles, readout, palette, cx)
             }
             Tab::Notifications => home::notifications(&self.shared, palette, cx),
-            Tab::Account => home::account(&self.shared, palette, cx),
+            Tab::Account => {
+                self.read_storage(cx);
+                let storage = self.storage.as_ref().map(|(_, kept)| kept);
+                account::tab(&self.shared, storage, palette, cx)
+            }
         }
     }
 }
@@ -2102,6 +2100,10 @@ impl Render for Root {
             .text_color(palette.foreground());
         if join::step(*self.shared.screen.read(cx).get()).is_some() {
             swipe::publish(swipe::Shown::default());
+            // nothing of the network left stays over the join, nor comes
+            // back sliding off the next one
+            self.drawn_sheet = None;
+            self.set_sheet(None, cx);
             return root.child(
                 div()
                     .flex_1()
@@ -2172,29 +2174,32 @@ impl Render for Root {
         let room = viewport.height - edges.top;
         let sheet = motion::idiom().sheet;
         let sheets = (sheet, sheet);
-        let at = |(progress, slides, leaving), height: &Rc<Cell<_>>| sheet::At {
+        let at = |(progress, slides, leaving), height: &Rc<Cell<_>>, drags| sheet::At {
             bottom: edges.bottom,
             room,
             progress,
             slides,
             leaving,
             height: height.clone(),
+            drags,
         };
         if self.drawn_sheet.is_none() {
             self.sheet_height.set(None);
         }
         if let Some(shown) = motion::follow(&mut self.drawn_sheet, self.sheet, sheets, window, cx) {
-            let at = at(shown.at(), &self.sheet_height);
-            match self.sheet(shown.what, at, palette, cx) {
+            let mut at = at(shown.at(), &self.sheet_height, true);
+            // under the finger, where it has it
+            if let Some(held) = self.sheet_held(cx).filter(|_| !shown.leaving) {
+                at.progress = held;
+            }
+            match self.sheet(shown.what, at, window, palette, cx) {
                 Some(sheet) => root = root.child(sheet),
                 // what a sheet was over is gone (a program no longer
                 // listed): `place` withheld the keys for it this draw, so
                 // the window draws again
                 None => {
                     self.drawn_sheet = None;
-                    if self.sheet.take().is_some() {
-                        cx.notify();
-                    }
+                    self.set_sheet(None, cx);
                 }
             }
         }
@@ -2218,7 +2223,7 @@ impl Render for Root {
             self.consent_height.set(None);
         }
         if let Some(shown) = motion::follow(&mut self.drawn_consent, asked, sheets, window, cx) {
-            let at = at(shown.at(), &self.consent_height);
+            let at = at(shown.at(), &self.consent_height, false);
             root = root.child(self.consent_sheet(shown.what, at, palette, cx));
         }
         root.child(Self::swipe_shown(cx))
@@ -2572,46 +2577,106 @@ mod tests {
             .read_with(cx, |account, _| account.get().clone())
     }
 
-    /// Add a device pushed, as its row pushes it.
+    /// Add a device over the Account tab, as its row opens it.
     fn show_approve(root: &Entity<Root>, cx: &mut VisualTestContext) {
         cx.update(|window, cx| root.update(cx, |root, cx| root.show_approve(window, cx)));
         run_out(cx);
     }
 
-    /// The Account tab is a tab: picked, it is the root on screen with no
-    /// sheet over it; its Add a device (only while this phone holds an
-    /// account), App settings and Switch network push their pages over it
-    /// and Back comes back to it; Add a device opens with nothing the last
-    /// one found. A view asking for the reader's account (a header's
-    /// avatar) picks it too, the program left open where it was.
+    /// Switch network over the Account tab, as its row opens it.
+    fn show_switch(root: &Entity<Root>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| root.update(cx, |root, cx| root.show_switch(window, cx)));
+        run_out(cx);
+    }
+
+    /// A press in the middle of what `id` names, and its motion run out.
+    fn click(id: &'static str, cx: &mut VisualTestContext) {
+        let at = cx.debug_bounds(id).expect(id);
+        cx.simulate_click(at.center(), gpui_kit::Modifiers::none());
+        run_out(cx);
+    }
+
+    /// The sheet up, and whether it is going.
+    fn sheet_up(root: &Entity<Root>, cx: &mut VisualTestContext) -> (Option<Sheet>, bool) {
+        root.read_with(cx, |root, _| {
+            let going = root.drawn_sheet.as_ref().is_some_and(|shown| shown.leaving);
+            (root.sheet, going)
+        })
+    }
+
+    /// A finger's pan on the sheet as gpui hands it on: every step where it
+    /// began (10 under the panel's top edge), the first past the touch
+    /// slop, each drawn and `gap` apart, then its release.
+    fn pan(steps: &[f32], gap: std::time::Duration, cx: &mut VisualTestContext) {
+        use gpui_kit::{ScrollDelta, ScrollWheelEvent, TouchPhase};
+        let panel = cx.debug_bounds("sheet").expect("a sheet up");
+        let at = point(panel.center().x, panel.top() + px(10.));
+        let event = |step: f32, touch_phase| ScrollWheelEvent {
+            position: at,
+            delta: ScrollDelta::Pixels(point(px(0.), px(step))),
+            modifiers: gpui_kit::Modifiers::none(),
+            touch_phase,
+        };
+        for (at, &step) in steps.iter().enumerate() {
+            let phase = match at {
+                0 => TouchPhase::Started,
+                _ => TouchPhase::Moved,
+            };
+            cx.simulate_event(event(step, phase));
+            frames(cx);
+            cx.executor().advance_clock(gap);
+        }
+        cx.simulate_event(event(0., TouchPhase::Ended));
+        cx.run_until_parked();
+    }
+
+    /// The Account tab is one page: picked, it is the root on screen with
+    /// nothing pushed over it, its sections drawn under the big title down
+    /// to the version at the foot; Add a device only while this phone holds
+    /// an account. Add a device opens its sheet over the tab with nothing
+    /// the last one found, Switch network its own; Back closes each, back
+    /// to the tab. A view asking for the reader's account (a header's
+    /// avatar) picks the tab too, the program left open where it was.
     #[gpui_kit::test]
-    fn the_account_tab_is_a_root_its_rows_push_over_it(cx: &mut TestAppContext) {
+    fn the_account_tab_is_one_page_and_its_two_typing_rows_open_sheets(cx: &mut TestAppContext) {
         let (root, stack, cx) = phone(cx);
         let shared = root.read_with(cx, |root, _| root.shared.clone());
-        let click = |id: &'static str, cx: &mut VisualTestContext| {
-            let at = cx.debug_bounds(id).expect(id);
-            cx.simulate_click(at.center(), gpui_kit::Modifiers::none());
-            run_out(cx);
+        let shown = |cx: &mut VisualTestContext| {
+            root.read_with(cx, |root, cx| (root.sheet, root.page(cx), root.pages.len()))
         };
-        let shown =
-            |cx: &mut VisualTestContext| root.read_with(cx, |root, cx| (root.sheet, root.page(cx)));
-        let account = (None, Page::Root(Tab::Account));
+        let account = (None, Page::Root(Tab::Account), 0);
         click("tab/account", cx);
         assert_eq!(shown(cx), account, "the Account tab");
+        for id in [
+            "account/phone",
+            "account/key-storage",
+            "account/network",
+            "account/switch",
+            "appearance/system",
+            "appearance/light",
+            "appearance/dark",
+            "account/debug",
+            "account/version",
+        ] {
+            assert!(cx.debug_bounds(id).is_some(), "{id} not on the tab");
+        }
         assert!(
             cx.debug_bounds("account/add-device").is_none(),
             "Add a device with no account to approve for"
         );
         seed_found(&shared, Some("A1F3 09C2"), false, cx);
         run_out(cx);
-        for (row, page) in [
-            ("account/add-device", Page::Approve),
-            ("account/settings", Page::Settings),
-            ("account/switch", Page::Switch),
+        for (row, sheet) in [
+            ("account/add-device", Sheet::AddDevice),
+            ("account/switch", Sheet::Switch),
         ] {
             click(row, cx);
-            assert_eq!(shown(cx), (None, page), "{row}");
-            if page == Page::Approve {
+            assert_eq!(
+                shown(cx),
+                (Some(sheet), Page::Root(Tab::Account), 0),
+                "{row}"
+            );
+            if sheet == Sheet::AddDevice {
                 let state = approve_state(&shared, cx);
                 assert_eq!(
                     (state.approve, state.error.as_str()),
@@ -2658,37 +2723,43 @@ mod tests {
             !drawn("approve/next", cx),
             "the code step under the fingerprint"
         );
+        assert_eq!(sheet_up(&root, cx), (Some(Sheet::AddDevice), false));
     }
 
-    /// Add a device left by Back, iOS's swipe or Cancel forgets what it
-    /// found: Approve after it asks nothing of the host.
+    /// Add a device closed by a press on the scrim, Back, a drag down,
+    /// Cancel or a program opened over it forgets what it found: Approve
+    /// after it asks nothing of the host.
     #[gpui_kit::test]
-    fn leaving_add_a_device_any_way_forgets_what_it_found(cx: &mut TestAppContext) {
+    fn add_a_device_closed_any_way_forgets_what_it_found(cx: &mut TestAppContext) {
         let (root, _, cx) = phone(cx);
         let shared = root.read_with(cx, |root, _| root.shared.clone());
-        type Leave = fn(&Entity<Root>, f32, &mut VisualTestContext);
-        let ways: [(&str, Leave); 3] = [
-            ("Back", |root, _, cx| {
-                root.update(cx, |root, cx| root.back(cx))
+        type Leave = fn(&Entity<Root>, &mut VisualTestContext);
+        let ways: [(&str, Leave); 5] = [
+            ("the scrim", |_, cx| {
+                let panel = cx.debug_bounds("sheet").expect("the sheet");
+                let over = point(panel.center().x, panel.top() - px(40.));
+                cx.simulate_click(over, gpui_kit::Modifiers::none());
             }),
-            ("the swipe", |root, width, cx| {
-                root.update(cx, |root, cx| root.drag(width * 0.75, 0., cx));
-                let_go(root, cx);
+            ("Back", |root, cx| root.update(cx, |root, cx| root.back(cx))),
+            ("a drag down", |_, cx| {
+                pan(&[40., 300.], std::time::Duration::from_millis(16), cx)
             }),
-            ("Cancel", |_, _, cx| {
-                let at = cx.debug_bounds("approve/cancel").expect("Cancel drawn");
-                cx.simulate_click(at.center(), gpui_kit::Modifiers::none());
+            ("Cancel", |_, cx| click("approve/cancel", cx)),
+            ("a program opened", |root, cx| {
+                root.update(cx, |root, cx| _ = root.open(PROGRAM, cx))
             }),
         ];
         for (way, leave) in ways {
             show_approve(&root, cx);
             seed_found(&shared, Some("A1F3 09C2"), true, cx);
             run_out(cx);
-            let width = root.read_with(cx, |root, _| root.width);
-            leave(&root, width, cx);
+            leave(&root, cx);
             run_out(cx);
-            let page = root.read_with(cx, |root, cx| root.page(cx));
-            assert_eq!(page, Page::Root(Tab::Home), "{way} stayed on the page");
+            assert_eq!(
+                sheet_up(&root, cx),
+                (None, false),
+                "{way} left the sheet up"
+            );
             shared
                 .account
                 .update(cx, |account, cx| account.approve_confirm(cx));
@@ -2698,19 +2769,13 @@ mod tests {
         }
     }
 
-    /// An approval landing pops Add a device, and the host's notice says
-    /// so; one landing while another page is on top leaves that page.
+    /// An approval landing closes Add a device, drawn as it was while it
+    /// goes, and the host's notice says so; one landing while Switch
+    /// network is up leaves it.
     #[gpui_kit::test]
-    fn an_approval_pops_add_a_device_and_says_so(cx: &mut TestAppContext) {
+    fn an_approval_closes_add_a_device_and_says_so(cx: &mut TestAppContext) {
         let (root, _, cx) = phone(cx);
         let shared = root.read_with(cx, |root, _| root.shared.clone());
-        let approved = |cx: &mut VisualTestContext| {
-            shared
-                .account
-                .update(cx, |account, cx| account.approve_done(Ok(()), cx));
-            run_out(cx);
-        };
-        let pages = |cx: &mut VisualTestContext| root.read_with(cx, |root, _| root.pages.clone());
         show_approve(&root, cx);
         seed_found(&shared, Some("A1F3 09C2"), true, cx);
         run_out(cx);
@@ -2718,28 +2783,31 @@ mod tests {
             .account
             .update(cx, |account, cx| account.approve_done(Ok(()), cx));
         frames(cx);
+        assert_eq!(sheet_up(&root, cx), (None, true), "the approval left it up");
         assert!(
             cx.debug_bounds("approve/fingerprint").is_some(),
-            "the page slid off without what it showed"
+            "the sheet went without what it showed"
         );
         run_out(cx);
-        assert_eq!(pages(cx), [], "the approval left the page up");
+        assert_eq!(sheet_up(&root, cx), (None, false));
         let notice = shared.toast.read_with(cx, |toast, _| toast.get().clone());
         assert_eq!(notice, "Approved. The new device finishes on its own.");
-        root.update(cx, |root, cx| root.show_settings(cx));
+        show_switch(&root, cx);
+        shared
+            .account
+            .update(cx, |account, cx| account.approve_done(Ok(()), cx));
         run_out(cx);
-        approved(cx);
         assert_eq!(
-            pages(cx),
-            [Page::Settings],
-            "an approval popped App settings"
+            sheet_up(&root, cx),
+            (Some(Sheet::Switch), false),
+            "an approval closed Switch network"
         );
     }
 
-    /// What the person does: Add a device from the Account tab, a code
-    /// typed into its field (the keys in it as it opens) and Next; the
-    /// host is asked, and its refusal shows under the field until the next
-    /// keystroke; return asks again.
+    /// What the person does: Account tab, Add a device, a code typed into
+    /// its field (the keys in it as the sheet opens) and Next; the host is
+    /// asked, and its refusal shows under the field in the sheet until the
+    /// next keystroke; return asks again.
     #[gpui_kit::test]
     fn a_code_typed_and_next_asks_the_host_and_its_refusal_shows_under_the_field(
         cx: &mut TestAppContext,
@@ -2748,11 +2816,6 @@ mod tests {
         const REFUSED: &str = "A code is 8 letters and digits, like KQ4M-9XPT.";
         let (root, _, cx) = phone(cx);
         let shared = root.read_with(cx, |root, _| root.shared.clone());
-        let click = |id: &'static str, cx: &mut VisualTestContext| {
-            let at = cx.debug_bounds(id).expect(id);
-            cx.simulate_click(at.center(), gpui_kit::Modifiers::none());
-            run_out(cx);
-        };
         let error = |cx: &mut VisualTestContext| approve_state(&shared, cx).error;
         seed_found(&shared, None, false, cx);
         click("tab/account", cx);
@@ -2768,6 +2831,7 @@ mod tests {
             cx.debug_bounds("approve/problem").is_some(),
             "the refusal was not under the field"
         );
+        assert_eq!(sheet_up(&root, cx), (Some(Sheet::AddDevice), false));
         cx.simulate_input("9");
         assert_eq!(error(cx), "", "a keystroke left the refusal up");
         cx.simulate_keystrokes("enter");
@@ -2775,6 +2839,143 @@ mod tests {
         assert_eq!(error(cx), REFUSED, "return asked nothing");
     }
 
+    /// A finger drags a sheet: held, it is drawn where the finger has it;
+    /// let go short and slowly it springs back up from there; let go past
+    /// half its height it goes on down from there and closes, and so does
+    /// a short quick flick. A pan begun upward leaves it be; under Reduce
+    /// Motion nothing follows the finger, and a release that goes closes
+    /// it all the same.
+    #[gpui_kit::test]
+    fn a_sheet_dragged_down_past_half_closes_and_a_short_drag_springs_back(
+        cx: &mut TestAppContext,
+    ) {
+        use std::time::Duration;
+        let (root, _, cx) = phone(cx);
+        let up = Sheet::Notifications(PROGRAM);
+        let show = |cx: &mut VisualTestContext| {
+            root.update(cx, |root, cx| root.show(up, cx));
+            run_out(cx);
+        };
+        let tween = |cx: &mut VisualTestContext| {
+            root.read_with(cx, |root, _| {
+                root.drawn_sheet
+                    .as_ref()
+                    .map(|it| (it.tween.from, it.tween.to))
+            })
+        };
+        let slow = Duration::from_millis(200);
+        show(cx);
+        let height = root.read_with(cx, |root, _| root.sheet_height.get());
+        let height = f32::from(height.expect("the sheet laid out"));
+        let top = cx.debug_bounds("sheet").expect("the sheet").top();
+        // a short slow drag: under the finger while held, then back up
+        pan(&[20.], slow, cx);
+        assert_eq!(
+            sheet_up(&root, cx),
+            (Some(up), false),
+            "a short drag closed it"
+        );
+        let (from, to) = tween(cx).expect("the sheet");
+        assert_eq!(to, 1., "it did not spring back");
+        assert!(
+            (from - (1. - 20. / height)).abs() < 1e-3,
+            "{from}: not from the finger"
+        );
+        run_out(cx);
+        assert_eq!(cx.debug_bounds("sheet").map(|it| it.top()), Some(top));
+
+        let held = |cx: &mut VisualTestContext| root.read_with(cx, |root, cx| root.sheet_held(cx));
+        let at = cx.debug_bounds("sheet").expect("the sheet");
+        let start = point(at.center().x, at.top() + px(10.));
+        let step = |step: f32, touch_phase, cx: &mut VisualTestContext| {
+            cx.simulate_event(gpui_kit::ScrollWheelEvent {
+                position: start,
+                delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(step))),
+                modifiers: gpui_kit::Modifiers::none(),
+                touch_phase,
+            });
+            frames(cx);
+        };
+        step(30., gpui_kit::TouchPhase::Started, cx);
+        step(30., gpui_kit::TouchPhase::Moved, cx);
+        let moved = cx.debug_bounds("sheet").expect("the sheet").top();
+        assert_eq!(moved, top + px(60.), "the sheet is not under the finger");
+        assert!(held(cx).is_some());
+        step(0., gpui_kit::TouchPhase::Cancelled, cx);
+        assert_eq!(held(cx), None);
+        assert_eq!(
+            sheet_up(&root, cx),
+            (Some(up), false),
+            "a cancelled drag closed it"
+        );
+        run_out(cx);
+
+        // past half: closed, going on down from where it was left
+        pan(&[height * 0.3, height * 0.3], slow, cx);
+        assert_eq!(sheet_up(&root, cx), (None, true), "past half kept it");
+        let (from, to) = tween(cx).expect("the sheet going");
+        assert_eq!(to, 0.);
+        assert!((from - 0.4).abs() < 1e-3, "{from}: not from the finger");
+        run_out(cx);
+        assert_eq!(sheet_up(&root, cx), (None, false));
+
+        // a short quick flick closes it too
+        show(cx);
+        pan(&[10., 10.], Duration::from_millis(16), cx);
+        assert_eq!(sheet_up(&root, cx), (None, true), "a flick kept it");
+        run_out(cx);
+
+        // a pan begun upward is not a drag, even come back down past half
+        show(cx);
+        pan(&[-40., height * 0.9], slow, cx);
+        assert_eq!(
+            sheet_up(&root, cx),
+            (Some(up), false),
+            "an upward pan closed it"
+        );
+
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        step(20., gpui_kit::TouchPhase::Started, cx);
+        assert_eq!(held(cx), None, "the sheet followed under Reduce Motion");
+        assert_eq!(cx.debug_bounds("sheet").map(|it| it.top()), Some(top));
+        step(0., gpui_kit::TouchPhase::Cancelled, cx);
+        pan(&[height * 0.6], slow, cx);
+        frames(cx);
+        let fade = root.read_with(cx, |root, _| {
+            root.drawn_sheet.as_ref().map(|it| it.tween.motion)
+        });
+        assert_eq!(sheet_up(&root, cx).0, None, "a release past half kept it");
+        assert_eq!(
+            fade,
+            Some(motion::FADE),
+            "it did not fade under Reduce Motion"
+        );
+    }
+
+    /// The join takes the sheet with it: a switch landing on a network
+    /// with no account for this phone shows the join whole, and back on a
+    /// network no sheet comes sliding off the stack.
+    #[gpui_kit::test]
+    fn the_join_takes_the_sheet_with_it(cx: &mut TestAppContext) {
+        let (root, _, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        show_switch(&root, cx);
+        let step = ducktape_host::session::AccountStep::Name;
+        shared.screen.update(cx, |screen, cx| {
+            screen.set(Screen::Account { step }, cx);
+        });
+        run_out(cx);
+        assert_eq!(
+            sheet_up(&root, cx),
+            (None, false),
+            "the sheet stayed over the join"
+        );
+        shared.screen.update(cx, |screen, cx| {
+            screen.set(Screen::Desk, cx);
+        });
+        frames(cx);
+        assert!(cx.debug_bounds("sheet").is_none(), "a sheet came back");
+    }
     /// The Notifications tab lists the host's centre, newest first, a dot on
     /// the tab while one is unread; a row pressed is read and opens its
     /// program (no link: as a tapped system notice does); Mark all read
@@ -3230,24 +3431,15 @@ mod tests {
         assert_eq!(redrawn, 0, "Home redrew with nothing preparing");
     }
 
-    /// App settings' Light and dark row opens Appearance; the palette (and
-    /// the kit theme every view reads) follows the choice made there, not
-    /// the system's, and System hands it back to the window's own.
+    /// The Account tab's System / Light / Dark sets the appearance at a
+    /// press; the palette (and the kit theme every view reads) follows the
+    /// choice, not the system's, and System hands it back to the window's
+    /// own.
     #[gpui_kit::test]
     fn the_palette_follows_the_appearance_chosen_not_the_system(cx: &mut TestAppContext) {
         let (root, _, cx) = phone(cx);
-        let click = |id: &'static str, cx: &mut VisualTestContext| {
-            let at = cx.debug_bounds(id).expect(id);
-            cx.simulate_click(at.center(), gpui_kit::Modifiers::none());
-            run_out(cx);
-        };
-        root.update(cx, |root, cx| root.show_settings(cx));
-        run_out(cx);
-        click("settings/appearance", cx);
-        assert_eq!(
-            root.read_with(cx, |root, cx| root.page(cx)),
-            Page::Appearance
-        );
+        let prefs = root.read_with(cx, |root, _| root.shared.prefs.clone());
+        click("tab/account", cx);
         let system = cx.update(|window, _| {
             gpui_kit::component::ThemeMode::from(window.appearance()).is_dark()
         });
@@ -3257,12 +3449,14 @@ mod tests {
                 (look::palette(cx).dark(), theme)
             })
         };
-        for (choice, chosen) in [
-            ("appearance/dark", true),
-            ("appearance/light", false),
-            ("appearance/system", system),
+        for (choice, mode, chosen) in [
+            ("appearance/dark", Appearance::Dark, true),
+            ("appearance/light", Appearance::Light, false),
+            ("appearance/system", Appearance::System, system),
         ] {
             click(choice, cx);
+            let saved = prefs.read_with(cx, |prefs, _| prefs.get().appearance);
+            assert_eq!(saved, mode, "{choice} did not set the pref");
             assert_eq!(dark(cx), (chosen, chosen), "{choice}");
         }
     }
@@ -3297,49 +3491,38 @@ mod tests {
         assert_eq!(shown(cx), (false, false, false), "off again");
     }
 
-    /// Back on Switch network closes an alert over it first, as on any
-    /// page, then pops it, to App settings when it came from there, then
-    /// App settings off to where the sheet was: never the address screen's
-    /// own Back, which puts the app behind the others.
+    /// Back on Switch network closes an alert over it first, then the
+    /// sheet, back to the screen under it: never the address screen's own
+    /// Back, which puts the app behind the others.
     #[gpui_kit::test]
-    fn back_on_switch_network_closes_an_alert_first_then_pops_it_and_never_leaves_the_app(
+    fn back_on_switch_network_closes_an_alert_first_then_the_sheet_and_never_leaves_the_app(
         cx: &mut TestAppContext,
     ) {
         let (root, _, cx) = phone(cx);
-        root.update(cx, |root, cx| root.show_settings(cx));
-        run_out(cx);
-        cx.update(|window, cx| root.update(cx, |root, cx| root.show_switch(window, cx)));
-        run_out(cx);
-        let pages = |cx: &mut VisualTestContext| root.read_with(cx, |root, _| root.pages.clone());
-        assert_eq!(pages(cx), [Page::Settings, Page::Switch]);
+        show_switch(&root, cx);
+        let sheet = |cx: &mut VisualTestContext| root.read_with(cx, |root, _| root.sheet);
+        assert_eq!(sheet(cx), Some(Sheet::Switch));
         root.update(cx, |root, cx| root.alert("Another network", "x".into(), cx));
         root.update(cx, |root, cx| root.back(cx));
         let alert = root.read_with(cx, |root, _| root.alert.is_some());
         assert_eq!(
-            (alert, pages(cx)),
-            (false, vec![Page::Settings, Page::Switch]),
+            (alert, sheet(cx)),
+            (false, Some(Sheet::Switch)),
             "Back did not close the alert alone"
         );
         run_out(cx);
         root.update(cx, |root, cx| root.back(cx));
-        assert_eq!(
-            pages(cx),
-            [Page::Settings],
-            "Back did not pop Switch network"
-        );
-        run_out(cx);
-        root.update(cx, |root, cx| root.back(cx));
-        assert_eq!(pages(cx), [], "Back did not pop App settings");
+        assert_eq!(sheet(cx), None, "Back did not close Switch network");
         let page = root.read_with(cx, |root, cx| root.page(cx));
         assert_eq!(page, Page::Root(Tab::Home));
     }
 
-    /// On a network, Continue on the node in hand (the field holds it) pops
-    /// Switch network at once; a switch whose node does not answer says why
-    /// under the field, not in a notice over it, and the page stays; one
-    /// the chain in hand answers pops the page back where the reader was.
+    /// On a network, Continue on the node in hand (the field holds it, the
+    /// keys in it, the sheet at its top) closes Switch network at once; a
+    /// switch whose node does not answer says why under the field, not in a
+    /// notice over it, and the sheet stays; one that lands closes it.
     #[gpui_kit::test]
-    fn a_switch_that_stays_or_lands_pops_the_page_and_a_failed_one_says_why_under_the_field(
+    fn a_switch_that_stays_or_lands_closes_the_sheet_and_a_failed_one_says_why_under_the_field(
         cx: &mut TestAppContext,
     ) {
         use ducktape_host::backend::RecentEndpoint;
@@ -3367,24 +3550,41 @@ mod tests {
         shared
             .session
             .update(cx, |session, cx| session.seed(connected, cx));
-        let switch = |cx: &mut VisualTestContext| {
-            cx.update(|window, cx| root.update(cx, |root, cx| root.show_switch(window, cx)));
-            run_out(cx);
-        };
-        switch(cx);
+        let sheet = |cx: &mut VisualTestContext| root.read_with(cx, |root, _| root.sheet);
+        let join = root.read_with(cx, |root, _| root.join.clone());
+        // left scrolled down (the last time, or the join's own screen)
+        let scrolled = point(px(0.), px(-50.));
+        join.read_with(cx, |join, _| join.scroll.set_offset(scrolled));
+        // read before a draw, which would clamp it to this short list
+        let top = cx.update(|window, cx| {
+            root.update(cx, |root, cx| root.show_switch(window, cx));
+            join.read(cx).scroll.offset().y
+        });
+        assert_eq!(top, px(0.), "Switch network opened scrolled down");
+        run_out(cx);
+        let focused = cx.update(|window, cx| {
+            join.read(cx)
+                .node
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+        });
+        assert!(focused, "the keys were not in the field");
         let at = cx.debug_bounds("join/connect").expect("Continue drawn");
         cx.simulate_click(at.center(), gpui_kit::Modifiers::none());
         cx.run_until_parked();
-        let pages = root.read_with(cx, |root, _| root.pages.clone());
-        assert_eq!(pages, [], "Continue on the node in hand stayed on the page");
-        switch(cx);
+        assert_eq!(
+            sheet(cx),
+            None,
+            "Continue on the node in hand kept the sheet"
+        );
+        show_switch(&root, cx);
 
         let (silent, _) =
             source(|_| Err("error sending request for url (http://127.0.0.1:9/v1/status)".into()));
         shared.session.update(cx, |session, cx| {
             session.connect_through("http://127.0.0.1:9".into(), silent, cx)
         });
-        let join = root.read_with(cx, |root, _| root.join.clone());
         until(cx, |cx| {
             join.read_with(cx, |join, _| join.refused.is_some())
         });
@@ -3394,16 +3594,45 @@ mod tests {
             "{said}"
         );
         let notice = shared.toast.read_with(cx, |toast, _| toast.get().clone());
-        assert_eq!(notice, "", "the failure was also said over the page");
-        assert_eq!(root.read_with(cx, |root, cx| root.page(cx)), Page::Switch);
+        assert_eq!(notice, "", "the failure was also said over the sheet");
+        run_out(cx);
+        assert_eq!(sheet(cx), Some(Sheet::Switch));
+        assert!(
+            cx.debug_bounds("join/connect").is_some(),
+            "the failure took the field away"
+        );
 
         let (answers, _) = source(|_| Ok(status(1)));
         shared.session.update(cx, |session, cx| {
             session.connect_through("http://127.0.0.1:2".into(), answers, cx)
         });
-        until(cx, |cx| root.read_with(cx, |root, _| root.pages.is_empty()));
+        until(cx, |cx| sheet(cx).is_none());
         let page = root.read_with(cx, |root, cx| root.page(cx));
         assert_eq!(page, Page::Root(Tab::Home), "the switch did not land here");
+    }
+
+    #[gpui_kit::test]
+    fn a_views_link_window_opens_as_its_link_open_does(cx: &mut TestAppContext) {
+        const LINKED: &str = "phone-link-window-target";
+        let (root, stack, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        shared
+            .rail
+            .update(cx, |rail, cx| rail.read_off(Roster::listing(&[LINKED]), cx));
+        run_out(cx);
+        let link = format!("duck://{LINKED}/room/7");
+        let asked = SeatsEvent::OpenWindow("phone-link-window-view", 0, link);
+        root.update(cx, |root, cx| root.seats_said(&asked, cx));
+        run_out(cx);
+        assert_eq!(top(&stack, cx), Some(LINKED));
+        let instance = stack.read_with(cx, |stack, _| stack.instance(LINKED));
+        let Some(instance) = instance else {
+            panic!("the link opened nothing");
+        };
+        assert_eq!(
+            ducktape_host::runtime::take_route(LINKED, instance).as_deref(),
+            Some("room/7")
+        );
     }
 
     /// A tapped notice of another network in the list switches to that
@@ -4181,17 +4410,17 @@ mod tests {
             run_out(cx);
         };
         pick(Tab::Account, cx);
-        let (row, bar) = (drawn("account/settings", cx), drawn("tab/account", cx));
+        let (row, bar) = (drawn("account/switch", cx), drawn("tab/account", cx));
         let (row, bar) = (row.expect("Account drawn"), bar.expect("the bar drawn"));
         pick(Tab::Notifications, cx);
         assert_eq!(
-            drawn("account/settings", cx),
+            drawn("account/switch", cx),
             None,
             "Account drawn under Notifications"
         );
 
         root.update(cx, |root, cx| root.drag(-width / 4., 0., cx));
-        let beside = drawn("account/settings", cx).expect("Account not drawn beside");
+        let beside = drawn("account/switch", cx).expect("Account not drawn beside");
         let shift = f32::from(beside.left() - row.left());
         assert!(
             (shift - width * 0.75).abs() < 1.,
@@ -4232,7 +4461,7 @@ mod tests {
         // past Account, the bar's end: Account resists, and nothing comes in
         root.update(cx, |root, cx| root.drag(-width / 2., -width, cx));
         let resisted = swipe::resisted(-width / 2., width);
-        let drawn_at = drawn("account/settings", cx).expect("Account drawn").left();
+        let drawn_at = drawn("account/switch", cx).expect("Account drawn").left();
         let moved = f32::from(drawn_at - row.left());
         assert!(
             (moved - resisted).abs() < 1.,

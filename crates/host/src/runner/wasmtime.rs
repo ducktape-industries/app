@@ -5,8 +5,8 @@
 //! compiled module by the code's sha256 while anything holds it, and runs
 //! each instance on the
 //! calling thread: every `begin_*` lands its answer on the seat's
-//! [`Landing`] before it returns. Fuel ([`FUEL_PER_TICK`]) bounds each
-//! call; `ViewLimits` bounds memory and tables at the `memory.view_bytes`
+//! [`Landing`] before it returns. A call runs until it returns or traps;
+//! `ViewLimits` bounds memory and tables at the `memory.view_bytes`
 //! setting `prepare` was given; a grow past it traps as [`Fault::Memory`].
 //!
 //! Compiled code is kept across launches as one file per code
@@ -19,8 +19,8 @@
 //! exports the bytes cross through (`wire::abi`).
 
 use crate::contract::{
-    CodeSource, FUEL_PER_TICK, Failure, Fault, Landed, Landing, Prepared, RunnerConfig, SeatId,
-    ViewInstance, ViewRunner,
+    CodeSource, Failure, Fault, Landed, Landing, Prepared, RunnerConfig, SeatId, ViewInstance,
+    ViewRunner,
 };
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -410,12 +410,6 @@ impl WasmtimeInstance {
             return Fault::Panicked(words);
         }
         let root = error.root_cause();
-        let trap = error
-            .downcast_ref::<wasmtime::Trap>()
-            .or_else(|| root.downcast_ref::<wasmtime::Trap>());
-        if trap == Some(&wasmtime::Trap::OutOfFuel) {
-            return Fault::OutOfFuel;
-        }
         if error.downcast_ref::<PastViewMemory>().is_some()
             || root.downcast_ref::<PastViewMemory>().is_some()
         {
@@ -469,7 +463,7 @@ impl ViewInstance for WasmtimeInstance {
     }
 
     fn fuel_used(&self) -> u64 {
-        FUEL_PER_TICK - self.store.get_fuel().unwrap_or(0)
+        u64::MAX - self.store.get_fuel().unwrap_or(0)
     }
 
     fn memory_bytes(&self) -> usize {
@@ -489,9 +483,8 @@ impl ViewInstance for WasmtimeInstance {
     }
 }
 
-/// Reset the instruction allowance before entering the view.
 fn arm(store: &mut Store<HostState>) {
-    let _ = store.set_fuel(FUEL_PER_TICK);
+    let _ = store.set_fuel(u64::MAX);
 }
 
 /// What a view's store holds: its limits, and the message its panic hook

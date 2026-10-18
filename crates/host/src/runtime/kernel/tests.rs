@@ -938,6 +938,52 @@ fn a_readers_press_on_a_link_opens_it_once(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(view.intents.len(), 1);
 }
 
+#[test]
+fn link_window_asks_for_a_window_on_a_press_and_is_refused_without_one() {
+    let window = |id, link: &str| wire::Request {
+        id,
+        kind: "link.window".into(),
+        payload: methods::encode(&link.to_owned()),
+    };
+    let room = "duck://chat/room/7";
+    let mut view = view();
+    view.answer(window(1, room), &None);
+    assert_eq!(
+        refusal_code(&mut view).as_deref(),
+        Some(refusal::NEEDS_GESTURE)
+    );
+    assert!(view.intents.is_empty(), "a window opened with no press");
+    view.activation = Some(Instant::now());
+    view.answer(window(2, room), &None);
+    assert_eq!(refusal_code(&mut view), None);
+    assert_eq!(view.intents, [Intent::OpenWindow(room.into())]);
+    view.answer(window(3, room), &None);
+    assert_eq!(
+        refusal_code(&mut view).as_deref(),
+        Some(refusal::NEEDS_GESTURE),
+        "a second window on the same press"
+    );
+    for link in ["http://example.com", "javascript:alert(1)", "duck://", ""] {
+        view.activation = Some(Instant::now());
+        view.answer(window(4, link), &None);
+        assert_eq!(
+            refusal_code(&mut view).as_deref(),
+            Some(refusal::MALFORMED_REQUEST),
+            "{link}"
+        );
+    }
+    view.activation = Some(Instant::now());
+    view.answer(window(5, "https://example.com/a"), &None);
+    assert_eq!(refusal_code(&mut view), None);
+    assert_eq!(
+        view.intents,
+        [
+            Intent::OpenWindow(room.into()),
+            Intent::OpenWindow("https://example.com/a".into())
+        ]
+    );
+}
+
 /// Every link opened on its own activation goes through.
 #[test]
 fn link_open_admits_every_link_on_its_own_activation() {

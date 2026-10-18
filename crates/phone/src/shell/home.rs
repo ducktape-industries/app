@@ -1,15 +1,15 @@
 //! The tab roots: Home (the network's programs, IA B, wasm-mobile SPEC
 //! §7.2: a tinted grid, four across, the ones with news first), Open (the
 //! programs open, where they were left), Notifications (the notices the
-//! programs posted, as the host's centre logs them), Account (who is
-//! reading, and the account's rows), and the tab bar under them. Drawn
-//! in the Expo kit's measures ([`look`]); the words are the shell boards'
-//! (`design/canvas/shell`), English as the Expo app's.
+//! programs posted, as the host's centre logs them), and the tab bar under
+//! them (the Account tab is `account`'s). Drawn in the Expo kit's measures
+//! ([`look`]); the words are the shell boards' (`design/canvas/shell`),
+//! English as the Expo app's.
 
+use super::Root;
 use super::debug::Readout;
 use super::look::{self, Palette};
 use super::stack::{Opened, Tab};
-use super::{ACCOUNT_PROGRAM, Root, settings};
 use ducktape_host::a11y::Control as _;
 use ducktape_host::runtime::notify::{Entry, wall};
 use ducktape_host::runtime::{Prep, RailRow};
@@ -136,7 +136,7 @@ fn root_header(title: String, caption: String, palette: Palette) -> Div {
 
 /// The caption under a root's title: `on` while on the network, else
 /// where the phone is trying to get to.
-fn caption(shared: &Shared, on: String, cx: &App) -> String {
+pub(super) fn caption(shared: &Shared, on: String, cx: &App) -> String {
     let session = shared.session.read(cx).get();
     if session.connected && session.reconnecting {
         format!("{} · reconnecting", session.network)
@@ -934,119 +934,6 @@ fn notice(
             window.blur(cx);
             root.open_notice(id, cx);
         }))
-}
-
-/// Account (the shell boards' 40, Expo `you.tsx`; the Account tab's root):
-/// who is reading on which network, then the account's own program (the
-/// `programs` view, opened by name, while the network lists it), Add a
-/// device (while this phone holds an account: the one it approves for),
-/// App settings and Switch network, each pushed over the tab.
-pub fn account(shared: &Shared, palette: Palette, cx: &mut Context<Root>) -> Div {
-    let network = shared.session.read(cx).get().network.clone();
-    // Expo `you.tsx`: the account's name, else "No account yet"; the
-    // avatar draws the name's initial, or none
-    let (face, name, about) = match me(shared, cx) {
-        Some((number, name)) => (name.clone(), name, format!("account {number} · {network}")),
-        None => (String::new(), "No account yet".to_owned(), network.clone()),
-    };
-    let card = div()
-        .flex()
-        .items_center()
-        .gap(px(look::gap::LG))
-        .px(px(look::GUTTER))
-        .py(px(look::gap::LG))
-        .border_b_1()
-        .border_color(palette.border())
-        .child(avatar(&face, 40., palette))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .child(
-                    look::text(look::BODY, FontWeight::MEDIUM, palette.foreground())
-                        .truncate()
-                        .child(name),
-                )
-                .child(
-                    look::text(look::CAPTION, FontWeight::NORMAL, palette.muted())
-                        .font_family(ducktape_host::fonts::FAMILY_MONO)
-                        .truncate()
-                        .child(about),
-                ),
-        );
-    let push = |id: &'static str, icon, title: &'static str, hint: Option<&'static str>| {
-        settings::row(
-            id,
-            icon,
-            title,
-            hint.map(|hint| settings::caption(hint, palette)),
-            palette,
-        )
-        .control(Role::Button, title)
-        .debug_selector(move || id.to_owned())
-        .active(|style| style.opacity(look::PRESSED))
-        .child(settings::chevron(palette))
-    };
-    let program = row_of(shared, ACCOUNT_PROGRAM, cx).map(|_| {
-        push(
-            "account/program",
-            "icons/circle-user.svg",
-            "Account",
-            Some("keys · agents · invites"),
-        )
-        .on_click(cx.listener(|root, _, _, cx| {
-            root.open(ACCOUNT_PROGRAM, cx);
-        }))
-    });
-    // Expo's row under the Keys list, in the `programs` view here, which
-    // the shell does not draw into: the desktop's account menu holds it too
-    let add = me(shared, cx).map(|_| {
-        push(
-            "account/add-device",
-            "icons/smartphone.svg",
-            "Add a device",
-            None,
-        )
-        .on_click(cx.listener(|root, _, window, cx| root.show_approve(window, cx)))
-    });
-    let settings = push(
-        "account/settings",
-        "icons/settings.svg",
-        "App settings",
-        Some("node · this phone · about"),
-    )
-    .on_click(cx.listener(|root, _, _, cx| root.show_settings(cx)));
-    let switch = push(
-        "account/switch",
-        "icons/refresh-cw.svg",
-        "Switch network",
-        None,
-    )
-    .on_click(cx.listener(|root, _, window, cx| root.show_switch(window, cx)));
-    div()
-        .flex_1()
-        .min_h_0()
-        .flex()
-        .flex_col()
-        .child(root_header(
-            "Account".into(),
-            caption(shared, network, cx),
-            palette,
-        ))
-        .child(
-            div()
-                .id("account")
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .child(card)
-                .children(program)
-                .children(add)
-                .child(settings)
-                .child(switch),
-        )
 }
 
 /// Nothing to show yet (Expo `EmptyState`): a 28 faint icon, what is
