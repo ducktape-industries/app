@@ -22,6 +22,10 @@
 //! ring) and `kind: withdraw` to Android, both naming the tag. Past its
 //! `until` a notice is dropped. Every notice is also one `log` line.
 //!
+//! A notice's title and body are cut to fit: APNs takes a payload of 4 KB
+//! at most, and FCM a message's data of 4 KB ([`fitted`]). A token APNs or
+//! FCM calls gone is dropped from the registry ([`gone`]).
+//!
 //! An APNs token is sent to the server its `env` names: Apple's sandbox for
 //! a build signed for development, production for the rest. Both carry one
 //! payload, `{kind, chain, program, tag, title, body, link, until}`, a
@@ -73,6 +77,9 @@ pub struct Request {
     pub url: String,
     pub headers: Vec<(&'static str, String)>,
     pub body: String,
+    /// The device's row it goes to, by kind and token: the one dropped when
+    /// the answer says the token is gone. None for a request to no device.
+    pub device: Option<(&'static str, String)>,
 }
 
 /// What sends a [`Request`]: the status and the body that came back.
@@ -187,12 +194,11 @@ impl Apns {
         })
     }
 
-    /// One push of `body` to `token` (of `env`) with `headers` and the
-    /// provider token.
+    /// One push of `body` to `token` (a `kind` token of `env`) with
+    /// `headers` and the provider token.
     fn request(
         &self,
-        token: &str,
-        env: &str,
+        (kind, token, env): (&'static str, &str, &str),
         bearer: &str,
         mut headers: Vec<(&'static str, String)>,
         body: &serde_json::Value,
@@ -202,6 +208,7 @@ impl Apns {
             url: format!("{}/3/device/{token}", self.host(env)),
             headers,
             body: body.to_string(),
+            device: Some((kind, token.to_owned())),
         }
     }
 }
@@ -291,6 +298,7 @@ impl Fcm {
                 body: format!(
                     "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion={assertion}"
                 ),
+                device: None,
             })?;
             #[derive(serde::Deserialize)]
             struct Granted {
@@ -457,8 +465,7 @@ impl Push {
         if let Some((apns, bearer, tokens)) = self.apns_for("voip", now) {
             requests.extend(tokens.iter().map(|(token, env)| {
                 apns.request(
-                    token,
-                    env,
+                    ("voip", token, env),
                     &bearer,
                     vec![
                         ("apns-push-type", "voip".into()),
@@ -476,41 +483,55 @@ impl Push {
     }
 
     /// The requests that show `notice` on every device, at `now`; `quiet`
-    /// when one under its tag already stands there.
+    /// when one under its tag already stands there. Its title and body cut
+    /// to fit each channel ([`fitted`]).
     fn show(&self, notice: &Notice, now: u64, quiet: bool) -> Vec<Request> {
         let id = notice.os_id();
-        let mut payload = self.payload(notice, "notice");
-        payload["id"] = id.clone().into();
+        let payload = |notice: &Notice| {
+            let mut payload = self.payload(notice, "notice");
+            payload["id"] = id.clone().into();
+            payload
+        };
         let mut requests = Vec::new();
         if let Some((apns, bearer, tokens)) = self.apns_for("apns", now) {
-            let mut aps = serde_json::json!({
-                "alert": { "title": notice.title, "body": notice.body },
-                "thread-id": notice.tag,
-            });
-            if !quiet {
-                aps["sound"] = "default".into();
-            }
-            let mut body = payload.clone();
-            body["aps"] = aps;
+            // the title and body twice: the alert iOS shows, and the payload
+            // the app reads
+            let body = |notice: &Notice| {
+                let mut aps = serde_json::json!({
+                    "alert": { "title": notice.title, "body": notice.body },
+                    "thread-id": notice.tag,
+                });
+                if !quiet {
+                    aps["sound"] = "default".into();
+                }
+                let mut body = payload(notice);
+                body["aps"] = aps;
+                body
+            };
+            let body = body(&fitted(notice, |notice| body(notice).to_string().len()));
             let mut headers = vec![
                 ("apns-push-type", "alert".into()),
                 ("apns-topic", apns.topic.clone()),
                 ("apns-priority", if quiet { QUIET } else { LOUD }.into()),
-                ("apns-collapse-id", id),
+                ("apns-collapse-id", id.clone()),
             ];
             if notice.until != 0 {
                 headers.push(("apns-expiration", notice.until.to_string()));
             }
-            requests.extend(
-                tokens
-                    .iter()
-                    .map(|(token, env)| apns.request(token, env, &bearer, headers.clone(), &body)),
-            );
+            requests.extend(tokens.iter().map(|(token, env)| {
+                apns.request(("apns", token, env), &bearer, headers.clone(), &body)
+            }));
         }
-        let mut data = strings(&payload);
-        if quiet {
-            data.insert("quiet".into(), "1".into());
-        }
+        let data = |notice: &Notice| {
+            let mut data = strings(&payload(notice));
+            if quiet {
+                data.insert("quiet".into(), "1".into());
+            }
+            data
+        };
+        let data = data(&fitted(notice, |notice| {
+            serde_json::Value::Object(data(notice)).to_string().len()
+        }));
         // no collapse key: FCM keeps four per device at most, and the
         // phone replaces the notification under its id itself
         requests.extend(self.fcm(data, None, notice.until, now, "high"));
@@ -535,11 +556,9 @@ impl Push {
             if until != 0 {
                 headers.push(("apns-expiration", until.to_string()));
             }
-            requests.extend(
-                tokens
-                    .iter()
-                    .map(|(token, env)| apns.request(token, env, &bearer, headers.clone(), &body)),
-            );
+            requests.extend(tokens.iter().map(|(token, env)| {
+                apns.request(("apns", token, env), &bearer, headers.clone(), &body)
+            }));
         }
         let data = serde_json::json!({ "kind": "withdraw", "tag": tag });
         let data = data.as_object().cloned().unwrap_or_default();
@@ -594,23 +613,33 @@ impl Push {
                         "message": { "token": token, "data": data, "android": android },
                     })
                     .to_string(),
+                    device: Some(("fcm", token.clone())),
                 }
             })
             .collect()
     }
 
-    /// Sends each request; whether any was taken.
+    /// Sends each request; whether any was taken. A token the answer calls
+    /// gone loses its row (that kind and token, on this network), and the
+    /// log says so in one line.
     fn send(&self, requests: Vec<Request>) -> bool {
         let mut taken = false;
         for request in requests {
             match self.http.send(&request) {
                 Ok((200, _)) => taken = true,
-                // ponytail: a token APNs or FCM says is gone stays listed
-                // until the phone registers again or its key leaves the
-                // account; dropped on `410 Unregistered` if felt
                 Ok((status, body)) => {
                     let to = shown(&request.url);
-                    tracing::warn!(target: "pushd", to, status, body, "push refused")
+                    match &request.device {
+                        Some((kind, token)) if gone(kind, status, &body) => {
+                            match self.devices.drop_token(kind, token) {
+                                Ok(_) => tracing::info!(target: "pushd", to, kind, status, body,
+                                    "a token APNs or FCM calls gone: dropped"),
+                                Err(error) => tracing::warn!(target: "pushd", to, kind, status,
+                                    body, %error, "a token APNs or FCM calls gone: not dropped"),
+                            }
+                        }
+                        _ => tracing::warn!(target: "pushd", to, status, body, "push refused"),
+                    }
                 }
                 Err(error) => {
                     let to = shown(&request.url);
@@ -626,6 +655,49 @@ impl Push {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
+
+/// Whether APNs's or FCM's answer (`status`, `body`) to a push to a `kind`
+/// token says the token is gone: APNs's 410 or its reasons `Unregistered`
+/// and `BadDeviceToken` (a token Apple's server for its env does not
+/// know), FCM's `UNREGISTERED`.
+fn gone(kind: &str, status: u16, body: &str) -> bool {
+    match kind {
+        "fcm" => body.contains("UNREGISTERED"),
+        _ => status == 410 || body.contains("Unregistered") || body.contains("BadDeviceToken"),
+    }
+}
+
+/// The most an APNs payload, or the data of an FCM message, may be.
+const MOST: usize = 4096;
+
+/// `notice` cut so `size` of it is at most [`MOST`]: its body, then its
+/// title, each to its longest start that fits, cut on a char and ended with
+/// `…` (or emptied, when not even that fits). Its link, tag, `until` and
+/// the rest are never cut: a notice too big without its words goes as it
+/// is, and APNs or FCM refuses it.
+fn fitted(notice: &Notice, size: impl Fn(&Notice) -> usize) -> Notice {
+    let words: [fn(&mut Notice) -> &mut String; 2] =
+        [|notice| &mut notice.body, |notice| &mut notice.title];
+    let mut fit = notice.clone();
+    for words in words {
+        if size(&fit) <= MOST {
+            break;
+        }
+        let whole = std::mem::take(words(&mut fit));
+        let ends: Vec<usize> = whole.char_indices().map(|(at, _)| at).collect();
+        let cut = |end: usize| format!("{}…", &whole[..end]);
+        let fits = ends.partition_point(|&end| {
+            let mut tried = fit.clone();
+            *words(&mut tried) = cut(end);
+            size(&tried) <= MOST
+        });
+        *words(&mut fit) = match fits {
+            0 => String::new(),
+            fits => cut(ends[fits - 1]),
+        };
+    }
+    fit
 }
 
 /// `payload`'s fields as strings: FCM's data values.
@@ -763,17 +835,19 @@ mod tests {
         let http = Arc::new(Recorded::default());
         let registry = Arc::new(Devices::default());
         for (at, (kind, token)) in devices.iter().enumerate() {
-            registry.put(crate::registry::Row {
-                account: 2,
-                key: format!("key{at}"),
-                kind: (*kind).into(),
-                token: (*token).into(),
-                env: match *kind {
-                    "fcm" => String::new(),
-                    _ => "production".into(),
-                },
-                at: 1,
-            });
+            registry
+                .put(crate::registry::Row {
+                    account: 2,
+                    key: format!("key{at}"),
+                    kind: (*kind).into(),
+                    token: (*token).into(),
+                    env: match *kind {
+                        "fcm" => String::new(),
+                        _ => "production".into(),
+                    },
+                    at: 1,
+                })
+                .unwrap();
         }
         let push = Push::new(
             Log {
@@ -1016,6 +1090,7 @@ mod tests {
             url: format!("http://{at}/3/device/ab12cd34"),
             headers: Vec::new(),
             body: "{}".into(),
+            device: None,
         };
         let (done, finished) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -1346,14 +1421,16 @@ mod tests {
     #[test]
     fn an_apns_token_goes_to_the_server_its_env_names() {
         let (push, http) = push(&[("apns", "cd34")]);
-        push.devices.put(crate::registry::Row {
-            account: 2,
-            key: "dev-key".into(),
-            kind: "apns".into(),
-            token: "ef56".into(),
-            env: "sandbox".into(),
-            at: 1,
-        });
+        push.devices
+            .put(crate::registry::Row {
+                account: 2,
+                key: "dev-key".into(),
+                kind: "apns".into(),
+                token: "ef56".into(),
+                env: "sandbox".into(),
+                at: 1,
+            })
+            .unwrap();
         push.post(
             &Notice {
                 kind: NoticeKind::Notice,
@@ -1394,14 +1471,16 @@ mod tests {
         };
         assert!(!push.post(&notice, None));
         assert!(http.0.lock().unwrap().is_empty());
-        push.devices.put(crate::registry::Row {
-            account: 2,
-            key: "key9".into(),
-            kind: "apns".into(),
-            token: "cd34".into(),
-            env: "production".into(),
-            at: 1,
-        });
+        push.devices
+            .put(crate::registry::Row {
+                account: 2,
+                key: "key9".into(),
+                kind: "apns".into(),
+                token: "cd34".into(),
+                env: "production".into(),
+                at: 1,
+            })
+            .unwrap();
         assert!(push.post(&notice, None));
         let sent = http.0.lock().unwrap().clone();
         let [apns] = &sent[..] else {
@@ -1410,6 +1489,134 @@ mod tests {
         assert_eq!(header(apns, "apns-priority"), "10");
         let body: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
         assert_eq!(body["aps"]["sound"], "default");
+    }
+
+    /// A notice too long for APNs's 4 KB payload or FCM's 4 KB of data has
+    /// its body cut to fit each, on a char and ended with `…`; its title
+    /// too when the body alone is not enough. The link, tag, id and `until`
+    /// stand whole, and a call is not cut.
+    #[test]
+    fn a_long_notice_is_cut_to_fit_four_kilobytes() {
+        let (push, http) = push(&[("apns", "cd34"), ("fcm", "fcm-token")]);
+        // three bytes a char: a cut anywhere but on a char would not parse
+        let long = Notice {
+            body: "가".repeat(3000),
+            ..message(1)
+        };
+        assert!(push.post(&long, None));
+        let (apns, fcm) = sent(&http);
+        let id = long.os_id();
+        // the body twice in an alert: a char less is six bytes less
+        assert_eq!(apns.body.len(), 4091);
+        let alert: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
+        let body = alert["body"].as_str().unwrap();
+        assert!(body.ends_with('…'), "{body}");
+        assert!(long.body.starts_with(body.trim_end_matches('…')));
+        assert_eq!(alert["aps"]["alert"]["body"], body);
+        assert_eq!(alert["title"], long.title);
+        for (field, whole) in [("link", &long.link), ("tag", &long.tag), ("id", &id)] {
+            assert_eq!(alert[field], **whole, "{field} was cut");
+            assert_eq!(fcm["data"][field], **whole, "{field} was cut");
+        }
+        assert_eq!(alert["until"], 0);
+        let data = serde_json::to_string(&fcm["data"]).unwrap();
+        assert_eq!(data.len(), 4096);
+        assert!(fcm["data"]["body"].as_str().unwrap().ends_with('…'));
+
+        // a title too long to fit beside an empty body: cut as well
+        let longer = Notice {
+            title: "t".repeat(5000),
+            body: "b".repeat(5000),
+            ..message(2)
+        };
+        assert!(push.post(&longer, None));
+        let (apns, fcm) = sent(&http);
+        // the title twice: a char less is two bytes less
+        assert_eq!(apns.body.len(), 4095);
+        let alert: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
+        assert_eq!(alert["body"], "");
+        assert!(alert["title"].as_str().unwrap().ends_with("t…"));
+        assert_eq!(serde_json::to_string(&fcm["data"]).unwrap().len(), 4096);
+
+        // a notice that fits goes whole
+        assert!(push.post(&message(3), None));
+        let (apns, _) = sent(&http);
+        let alert: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
+        assert_eq!(alert["body"], "hey @bob");
+
+        // a call is never cut
+        let ring = Notice {
+            body: "c".repeat(5000),
+            ..call(now() + 45)
+        };
+        assert!(push.post(&ring, None));
+        let sent = std::mem::take(&mut *http.0.lock().unwrap());
+        let message: serde_json::Value = serde_json::from_str(&sent[0].body).unwrap();
+        assert_eq!(message["message"]["data"]["body"], ring.body);
+    }
+
+    /// A token APNs calls gone (410 `Unregistered`, or `BadDeviceToken`)
+    /// or FCM calls gone (`UNREGISTERED`) loses its row, in the registry's
+    /// file too; that row only: another token, and one whose push failed
+    /// for another reason, stay.
+    #[test]
+    fn a_token_called_gone_is_dropped() {
+        struct Answers;
+        impl Http for Answers {
+            fn send(&self, request: &Request) -> Result<(u16, String), String> {
+                if request.url.contains("oauth2") {
+                    let token = r#"{"access_token":"ya29.test","expires_in":3600}"#;
+                    return Ok((200, token.into()));
+                }
+                let to = request.device.as_ref().map_or("", |(_, token)| token);
+                Ok(match to {
+                    "dead" => (410, r#"{"reason":"Unregistered","timestamp":1700000000000}"#),
+                    "bad0" => (400, r#"{"reason":"BadDeviceToken"}"#),
+                    "fcm-dead" => (
+                        404,
+                        r#"{"error":{"code":404,"status":"NOT_FOUND","details":[{"@type":"type.googleapis.com/google.firebase.fcm.v1.FcmError","errorCode":"UNREGISTERED"}]}}"#,
+                    ),
+                    "fcm-busy" => (503, r#"{"error":{"code":503,"status":"UNAVAILABLE"}}"#),
+                    _ => (200, "{}"),
+                })
+                .map(|(status, body)| (status, body.to_owned()))
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("testkit").join("devices.json");
+        let (mut push, _) = push(&[]);
+        push.devices = Devices::load(&file).unwrap();
+        push.http = Arc::new(Answers);
+        let rows = [
+            ("k1", "apns", "dead"),
+            ("k2", "apns", "bad0"),
+            ("k3", "apns", "cd34"),
+            ("k4", "fcm", "fcm-dead"),
+            ("k5", "fcm", "fcm-busy"),
+        ];
+        for (key, kind, token) in rows {
+            let env = if kind == "fcm" { "" } else { "production" };
+            push.devices
+                .put(crate::registry::Row {
+                    account: 2,
+                    key: key.into(),
+                    kind: kind.into(),
+                    token: token.into(),
+                    env: env.into(),
+                    at: 1,
+                })
+                .unwrap();
+        }
+        assert!(push.post(&message(1), None));
+        let left = |devices: &Devices, kind: &str| -> Vec<String> {
+            let tokens = devices.tokens(2, kind).into_iter();
+            tokens.map(|(token, _)| token).collect()
+        };
+        assert_eq!(left(&push.devices, "apns"), ["cd34"]);
+        assert_eq!(left(&push.devices, "fcm"), ["fcm-busy"]);
+        let kept = Devices::load(&file).unwrap();
+        assert_eq!(left(&kept, "apns"), ["cd34"]);
+        assert_eq!(left(&kept, "fcm"), ["fcm-busy"]);
     }
 
     /// A tag past APNs's 64 bytes collapses by its hash.

@@ -192,11 +192,9 @@ fn open_door(config: &Config, data: &Path) -> Result<(), String> {
         .networks
         .iter()
         .map(|network| {
-            let file = devices_file(data, &network.name);
             Ok(Arc::new(Followed {
                 name: network.name.clone(),
-                devices: Devices::load(&file)?,
-                file,
+                devices: Devices::load(&devices_file(data, &network.name))?,
                 client: backend::rpc_client(network.node_url.clone()),
                 chain: Mutex::default(),
             }))
@@ -370,11 +368,12 @@ fn probe(config: &Config) -> Result<(), String> {
     };
     if apns.is_some() {
         // two tokens: one token is one install's, kept on one row
-        devices.put(row("apns", &"0".repeat(64), "production"));
-        devices.put(row("apns", &"1".repeat(64), "sandbox"));
+        // in memory: the probe's rows are written nowhere
+        let _ = devices.put(row("apns", &"0".repeat(64), "production"));
+        let _ = devices.put(row("apns", &"1".repeat(64), "sandbox"));
     }
     if fcm.is_some() {
-        devices.put(row("fcm", "probe-token-that-is-no-device", ""));
+        let _ = devices.put(row("fcm", "probe-token-that-is-no-device", ""));
     }
     if apns.is_none() && fcm.is_none() {
         return Err("the config names no [apns] or [fcm] credential".into());
