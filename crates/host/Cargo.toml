@@ -61,7 +61,7 @@ identity.workspace = true
 blob.workspace = true
 # a notifier's answers and turn (`view_wire::notifier`); the tests' borsh too
 borsh.workspace = true
-programs = { git = "https://github.com/ducktape-industries/programs", rev = "bdfc7e3a53b242816667f453489d69d927b21368", package = "programs" }
+programs = { git = "https://github.com/ducktape-industries/programs", rev = "c272c4d643d0e92db766afc52c0e3be805a6e90a", package = "programs" }
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -114,7 +114,7 @@ rcgen = { version = "0.14", default-features = false, features = ["crypto", "rin
 # the live tests' node: its key's verifier, as the handshake pins it
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape", rev = "89f3cf55570df68f7f66f9b31814dcc555673abb", package = "keyscheme", features = ["testkit"] }
 # the consent card's words for a validators' vote
-valset = { git = "https://github.com/ducktape-industries/programs", rev = "bdfc7e3a53b242816667f453489d69d927b21368", package = "valset" }
+valset = { git = "https://github.com/ducktape-industries/programs", rev = "c272c4d643d0e92db766afc52c0e3be805a6e90a", package = "valset" }
 # the tests' keys: commonware's ed25519, through noded-client's impl
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -125,7 +125,7 @@ gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tempfile.workspace = true
 # a fake node's changes socket (`runtime/kernel/node/tests.rs`)
 tokio-tungstenite.workspace = true
-blobs = { git = "https://github.com/ducktape-industries/programs", rev = "bdfc7e3a53b242816667f453489d69d927b21368", package = "blobs" }
+blobs = { git = "https://github.com/ducktape-industries/programs", rev = "c272c4d643d0e92db766afc52c0e3be805a6e90a", package = "blobs" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # test-support: its headless renderer, which `render/tests/picture_pixels.rs`
