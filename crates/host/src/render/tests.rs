@@ -309,6 +309,7 @@ mod page_motion;
 #[cfg(target_os = "linux")]
 pub(super) mod picture_pixels;
 mod picture_presentation;
+mod press_release;
 mod primitives;
 mod rich_tooltip;
 mod selection;
