@@ -311,7 +311,8 @@ fn cached_section(path: &Path, code: &BlobId, name: &str) -> Option<Option<Vec<u
     }
     let mut found = None;
     while let Some(id) = read.byte() {
-        let end = read.leb()? + read.at;
+        let size = read.leb()?;
+        let end = read.at + size;
         if id == 0 && found.is_none() && read.leb()? == name.len() as u64 {
             let mut named = vec![0; name.len()];
             read.read_exact(&mut named).ok()?;
