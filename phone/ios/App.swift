@@ -167,13 +167,6 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate, UNUserNo
     if let mode = ProcessInfo.processInfo.environment["DUCKTAPE_RING_TEST"] { test(mode) }
   }
 
-  /// The delivered notice's id for `tag`: pushd's `apns-collapse-id` (`collapse_id` in crates/pushd/src/push.rs),
-  /// the tag itself up to 64 bytes, else its SHA-256 in hex.
-  static func collapse(_ tag: String) -> String {
-    guard tag.utf8.count > 64 else { return tag }
-    return SHA256.hash(data: Data(tag.utf8)).map { String(format: "%02x", $0) }.joined()
-  }
-
   /// CallKit's id for the call under `tag`: the same tag, the same call, whichever push names it.
   static func id(_ tag: String) -> UUID {
     NSUUID(uuidBytes: Array(Insecure.MD5.hash(data: Data(tag.utf8)))) as UUID
@@ -235,14 +228,26 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate, UNUserNo
     }
   }
 
-  /// A background push: a withdrawn call's ring under `tag` stops, if it still rings; a withdrawn notice under
-  /// `tag` leaves the notification list. Whether the push was taken.
+  /// A background push: a withdrawn call's ring under `tag` stops, if it still rings; else every notice under
+  /// `tag` (each its own notification, pushd's `tag` in its payload) leaves the notification list. Whether the push
+  /// was taken.
   func remote(_ payload: [String: Any]) -> Bool {
     guard payload["kind"] as? String == "withdraw", let tag = payload["tag"] as? String else { return false }
     let id = Ring.id(tag)
     guard ringing.removeValue(forKey: id) != nil else {
       NSLog("ducktape ring: withdraw of \(tag), which does not ring here")
-      UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [Ring.collapse(tag)])
+      // the push is answered as this returns and iOS may suspend the app then: held awake until the list is read
+      var awake = UIBackgroundTaskIdentifier.invalid
+      awake = UIApplication.shared.beginBackgroundTask(withName: "ducktape withdraw") {
+        UIApplication.shared.endBackgroundTask(awake)
+      }
+      let center = UNUserNotificationCenter.current()
+      center.getDeliveredNotifications { delivered in
+        center.removeDeliveredNotifications(
+          withIdentifiers: delivered.filter { $0.request.content.userInfo["tag"] as? String == tag }
+            .map { $0.request.identifier })
+        UIApplication.shared.endBackgroundTask(awake)
+      }
       return true
     }
     NSLog("ducktape ring: \(tag) withdrawn")
