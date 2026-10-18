@@ -620,8 +620,8 @@ impl Push {
     }
 
     /// Sends each request; whether any was taken. A token the answer calls
-    /// gone loses its row (that kind and token, on this network), and the
-    /// log says so in one line.
+    /// gone is cleared (that kind and token, on this network); its row stays
+    /// a tombstone. The log says so in one line.
     fn send(&self, requests: Vec<Request>) -> bool {
         let mut taken = false;
         for request in requests {
@@ -658,13 +658,25 @@ impl Push {
 }
 
 /// Whether APNs's or FCM's answer (`status`, `body`) to a push to a `kind`
-/// token says the token is gone: APNs's 410 or its reasons `Unregistered`
-/// and `BadDeviceToken` (a token Apple's server for its env does not
-/// know), FCM's `UNREGISTERED`.
+/// token says the token is gone: APNs's 410 or its `reason` exactly
+/// `Unregistered` or `BadDeviceToken` (a token Apple's server for its env
+/// does not know), FCM's `errorCode` exactly `UNREGISTERED`. Anything else,
+/// a credential refused among it, leaves the token be.
 fn gone(kind: &str, status: u16, body: &str) -> bool {
+    let said: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
     match kind {
-        "fcm" => body.contains("UNREGISTERED"),
-        _ => status == 410 || body.contains("Unregistered") || body.contains("BadDeviceToken"),
+        "fcm" => said["error"]["details"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|detail| detail["errorCode"] == "UNREGISTERED"),
+        _ => {
+            status == 410
+                || matches!(
+                    said["reason"].as_str(),
+                    Some("Unregistered" | "BadDeviceToken")
+                )
+        }
     }
 }
 
@@ -1556,9 +1568,9 @@ mod tests {
     }
 
     /// A token APNs calls gone (410 `Unregistered`, or `BadDeviceToken`)
-    /// or FCM calls gone (`UNREGISTERED`) loses its row, in the registry's
-    /// file too; that row only: another token, and one whose push failed
-    /// for another reason, stay.
+    /// or FCM calls gone (`UNREGISTERED`) is cleared, in the registry's
+    /// file too; its row stays a tombstone. That token only: another
+    /// token, and one whose push failed for another reason, stay.
     #[test]
     fn a_token_called_gone_is_dropped() {
         struct Answers;
@@ -1617,6 +1629,41 @@ mod tests {
         let kept = Devices::load(&file).unwrap();
         assert_eq!(left(&kept, "apns"), ["cd34"]);
         assert_eq!(left(&kept, "fcm"), ["fcm-busy"]);
+    }
+
+    /// Gone is read off the answer's own field, never a word anywhere in
+    /// it: a credential refused, or a message that names the word, keeps
+    /// the token.
+    #[test]
+    fn gone_is_the_answers_reason_exactly() {
+        assert!(gone("apns", 410, r#"{"reason":"Unregistered"}"#));
+        assert!(gone("voip", 400, r#"{"reason":"BadDeviceToken"}"#));
+        let fcm_gone = r#"{"error":{"code":404,"details":[{"errorCode":"UNREGISTERED"}]}}"#;
+        assert!(gone("fcm", 404, fcm_gone));
+        for (kind, status, body) in [
+            ("apns", 403, r#"{"reason":"InvalidProviderToken"}"#),
+            (
+                "apns",
+                400,
+                r#"{"reason":"BadTopic","note":"BadDeviceToken"}"#,
+            ),
+            ("apns", 400, "Unregistered"),
+            (
+                "fcm",
+                403,
+                r#"{"error":{"code":403,"message":"not UNREGISTERED","details":[{"errorCode":"SENDER_ID_MISMATCH"}]}}"#,
+            ),
+            (
+                "fcm",
+                401,
+                r#"{"error":{"code":401,"status":"UNAUTHENTICATED"}}"#,
+            ),
+        ] {
+            assert!(
+                !gone(kind, status, body),
+                "{kind} {status} {body} called gone"
+            );
+        }
     }
 
     /// A tag past APNs's 64 bytes collapses by its hash.

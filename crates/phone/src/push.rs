@@ -7,7 +7,7 @@
 //! account; each other listed node is reached lightly ([`reach`]: its
 //! status, this phone's key there, the account identity says the key acts
 //! as; no session, no views), once a run, and one that does not answer is
-//! skipped until the inputs move.
+//! skipped until the inputs move or the app comes back to the front.
 //!
 //! Each is sent once a run, so a row the server lost comes back at the
 //! next launch, and again when any of it moves (another token, another
@@ -26,6 +26,7 @@
 //! (`ducktape_host::push::server`).
 
 use ducktape_host::push::{self, Registration};
+use ducktape_host::runtime::Backgrounded;
 use ducktape_host::session::{Shared, on_runtime};
 use futures::future::Either;
 use gpui_kit::{App, AppContext as _, Context, Entity, Subscription, Task};
@@ -176,6 +177,26 @@ pub fn plan(
     due
 }
 
+/// The first of `listed` to reach: not heard from this run, not missed
+/// since the inputs moved, and not on a chain another node of which
+/// answered this run (`nodes`: the chain each served when last heard).
+fn unheard(
+    listed: &[String],
+    reached: &BTreeMap<String, Network>,
+    missed: &BTreeSet<String>,
+    nodes: &BTreeMap<String, String>,
+) -> Option<String> {
+    listed
+        .iter()
+        .filter(|url| !reached.contains_key(*url) && !missed.contains(*url))
+        .find(|url| {
+            nodes
+                .get(*url)
+                .is_none_or(|chain| reached.values().all(|network| &network.chain != chain))
+        })
+        .cloned()
+}
+
 /// Why a send did not land.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Failed {
@@ -218,7 +239,8 @@ pub struct Registrar {
     /// What each node said this run, by its URL; the node in hand's is read
     /// off the session and the account.
     reached: BTreeMap<String, Network>,
-    /// The nodes not reached since the inputs last moved.
+    /// The nodes not reached since the inputs last moved, or the app last
+    /// came back to the front.
     missed: BTreeSet<String>,
     /// The kinds the OS handed a token for this run: one taken back since
     /// is a leave, one not handed yet is no word at all.
@@ -245,6 +267,17 @@ impl Registrar {
             let observing = vec![
                 cx.observe(&shared.session, |this: &mut Self, _, cx| this.sync(cx)),
                 cx.observe(&shared.account, |this: &mut Self, _, cx| this.sync(cx)),
+                // back in front, the nodes missed (a launch offline, or on
+                // a locked phone) are tried again: on each word of it, not
+                // only a change, since a scene let go behind says "not
+                // behind" before the front does, and a launch behind may
+                // say nothing before it
+                cx.observe_global::<Backgrounded>(|this: &mut Self, cx| {
+                    if !cx.global::<Backgrounded>().0 {
+                        this.missed.clear();
+                        this.sync(cx);
+                    }
+                }),
             ];
             Self {
                 shared,
@@ -277,16 +310,25 @@ impl Registrar {
         registrar
     }
 
-    /// The listed node on `chain`, the most recent first: where a tapped
-    /// notice of another network's switches to.
+    /// The listed node on `chain` where a tapped notice of another
+    /// network's switches to: one that answered this run first, then one
+    /// not tried yet, then one that missed; the most recent first among
+    /// each.
     pub fn node_of(&self, chain: &str, cx: &App) -> Option<String> {
         let session = self.shared.session.read(cx).get();
         session
             .recent_endpoints
             .iter()
             .map(|node| &node.url)
-            .find(|url| self.nodes.get(*url).is_some_and(|known| known == chain))
+            .filter(|url| self.nodes.get(*url).is_some_and(|known| known == chain))
+            .min_by_key(|url| (!self.reached.contains_key(*url), self.missed.contains(*url)))
             .cloned()
+    }
+
+    /// `url` heard serving `chain` last, for a shell's test.
+    #[cfg(test)]
+    pub(crate) fn heard(&mut self, url: &str, chain: &str) {
+        self.nodes.insert(url.into(), chain.into());
     }
 
     /// What is due, the first of it sent; the rest follows as each lands.
@@ -346,10 +388,7 @@ impl Registrar {
         if let Some(want) = self.next(due) {
             return self.send(want, cx);
         }
-        let unheard = listed
-            .into_iter()
-            .find(|url| !self.reached.contains_key(url) && !self.missed.contains(url));
-        if let Some(url) = unheard {
+        if let Some(url) = unheard(&listed, &self.reached, &self.missed, &self.nodes) {
             self.reach(url, cx);
         }
     }
@@ -910,17 +949,63 @@ mod tests {
         assert!(plan(&here, &have, "production", &kept, &sent_of(&due)).is_empty());
     }
 
-    /// The key store's work runs off the calling (window) thread.
+    /// A send and a reach each open this phone's key off the thread that
+    /// polls them (the window thread, in the app): a key store may take its
+    /// time or prompt.
     #[test]
     fn a_key_is_opened_off_the_window_thread() {
+        use std::io::{BufRead as _, Write as _};
         let caller = std::thread::current().id();
-        let ran = ducktape_host::runtime::handle()
-            .block_on(off_window(|| std::thread::current().id()))
-            .unwrap();
-        assert_ne!(
-            ran, caller,
-            "the key store's work ran on the calling thread"
-        );
+        let opened_on = |keyring: &str| -> Vec<std::thread::ThreadId> {
+            let opened = ducktape_host::contract::testing::keys_opened();
+            let opened = opened.into_iter().filter(|(ring, _)| ring == keyring);
+            opened.map(|(_, on)| on).collect()
+        };
+        let runtime = ducktape_host::runtime::handle();
+
+        // a send: its key opened, and found another, before anything is posted
+        let to_send = Wanted {
+            keyring: "send-off-window".into(),
+            ..want("away#0b0b0b0b", "a1")
+        };
+        let http = reqwest::Client::new();
+        runtime
+            .block_on(send(&http, "http://127.0.0.1:1", &to_send))
+            .unwrap_err();
+        let sent = opened_on("send-off-window");
+        assert!(!sent.is_empty(), "the send opened no key");
+        assert!(!sent.contains(&caller), "the send opened its key here");
+
+        // a reach: a node that answers its status, then is gone (the
+        // identity query after the key is not answered)
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let status = ducktape_host::backend::NodeStatus {
+            network: "reach-off-window".into(),
+            ..ducktape_host::session::tests::status(1)
+        };
+        let body = abi::encode(&status);
+        let node = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            // the request read first: a socket closed on unread bytes
+            // resets the connection under the answer
+            let mut reader = std::io::BufReader::new(&stream);
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 2 {
+                line.clear();
+            }
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            (&stream).write_all(head.as_bytes()).unwrap();
+            (&stream).write_all(&body).unwrap();
+        });
+        runtime.block_on(reach(url)).unwrap_err();
+        node.join().unwrap();
+        let reached = opened_on("reach-off-window");
+        assert!(!reached.is_empty(), "the reach opened no key");
+        assert!(!reached.contains(&caller), "the reach opened its key here");
     }
 
     /// A key that would not open, is not there, or would not sign is tried
@@ -967,6 +1052,29 @@ mod tests {
 
     fn hex_encode(bytes: &[u8]) -> String {
         noded_client::hex::hex_encode(bytes)
+    }
+
+    /// A listed node on a chain another node of which answered this run is
+    /// not reached (a status and an identity query saved); one on another
+    /// chain, or never heard, is.
+    #[test]
+    fn a_second_node_of_a_reached_chain_is_not_reached() {
+        let reached = BTreeMap::from([("http://a".to_owned(), on("away#0b0b0b0b", Some(3), "bb"))]);
+        let nodes = BTreeMap::from([
+            ("http://a2".to_owned(), "away#0b0b0b0b".to_owned()),
+            ("http://c".to_owned(), "far#0c0c0c0c".to_owned()),
+        ]);
+        let listed = ["http://a", "http://a2", "http://c", "http://d"].map(String::from);
+        let none = BTreeSet::new();
+        assert_eq!(
+            unheard(&listed, &reached, &none, &nodes).as_deref(),
+            Some("http://c")
+        );
+        let missed = BTreeSet::from(["http://c".to_owned()]);
+        assert_eq!(
+            unheard(&listed, &reached, &missed, &nodes).as_deref(),
+            Some("http://d")
+        );
     }
 
     /// A registrar over a session of the test's own.
@@ -1075,5 +1183,88 @@ mod tests {
             !kept.contains_key(&at),
             "the prefs still hold the refused leave"
         );
+    }
+
+    /// A tapped notice of another network switches to a node of it that
+    /// answered this run, not to a more recent one that did not; with none
+    /// answered, to one not tried yet before one that missed.
+    #[gpui_kit::test]
+    fn a_tap_switches_to_a_node_that_answered(cx: &mut gpui_kit::TestAppContext) {
+        use ducktape_host::backend::RecentEndpoint;
+        use ducktape_host::session::SessionState;
+        let (shared, registrar) = registrar(cx);
+        let [b1, b2, b3] = [
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:2",
+            "http://127.0.0.1:3",
+        ];
+        let listed = SessionState {
+            recent_endpoints: [b1, b2, b3]
+                .map(|url| RecentEndpoint {
+                    url: url.into(),
+                    network: "away".into(),
+                    ..Default::default()
+                })
+                .into(),
+            ..SessionState::default()
+        };
+        shared
+            .session
+            .update(cx, |session, cx| session.seed(listed, cx));
+        let away = "away#0b0b0b0b";
+        registrar.update(cx, |this, cx| {
+            this.nodes = [b1, b2, b3].map(|url| (url.into(), away.into())).into();
+            this.reached = BTreeMap::from([(b3.into(), on(away, Some(4), "b3"))]);
+            this.missed = BTreeSet::from([b1.into()]);
+            assert_eq!(this.node_of(away, cx).as_deref(), Some(b3));
+            this.reached.clear();
+            assert_eq!(this.node_of(away, cx).as_deref(), Some(b2));
+        });
+    }
+
+    /// A node missed is reached again each time the app comes to the front
+    /// (a launch offline, or on a locked phone), not while it is behind:
+    /// at the first word of the front, with none of the back before it (a
+    /// launch behind), and at a second (a scene let go behind said "not
+    /// behind" first).
+    #[gpui_kit::test]
+    fn a_missed_node_is_tried_again_back_in_front(cx: &mut gpui_kit::TestAppContext) {
+        use ducktape_host::backend::RecentEndpoint;
+        use ducktape_host::session::SessionState;
+        let (shared, registrar) = registrar(cx);
+        let node = "http://127.0.0.1:1".to_owned();
+        let listed = SessionState {
+            recent_endpoints: vec![RecentEndpoint {
+                url: node.clone(),
+                network: "away".into(),
+                ..Default::default()
+            }],
+            ..SessionState::default()
+        };
+        shared
+            .session
+            .update(cx, |session, cx| session.seed(listed, cx));
+        // the node missed and no reach out
+        let missed = |cx: &mut gpui_kit::TestAppContext| {
+            registrar.update(cx, |this, _| {
+                this.busy = None;
+                this.missed.insert(node.clone());
+            })
+        };
+        let reaching = |cx: &mut gpui_kit::TestAppContext| {
+            registrar.read_with(cx, |this, _| {
+                this.busy.is_some() && !this.missed.contains(&node)
+            })
+        };
+        missed(cx);
+        cx.update(|cx| cx.set_global(Backgrounded(false)));
+        assert!(reaching(cx), "not tried again at the first front");
+        missed(cx);
+        cx.update(|cx| cx.set_global(Backgrounded(true)));
+        assert!(!reaching(cx), "tried again behind");
+        cx.update(|cx| cx.set_global(Backgrounded(false)));
+        missed(cx);
+        cx.update(|cx| cx.set_global(Backgrounded(false)));
+        assert!(reaching(cx), "not tried again back in front");
     }
 }
