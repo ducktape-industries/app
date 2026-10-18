@@ -88,8 +88,8 @@ struct Phone {
     /// The OS's notices waiting for their chain's log ([`os_notice`]).
     notices: Vec<crate::os::OsNotice>,
     /// This phone's push tokens kept registered with the push server, for
-    /// as long as the app runs.
-    _registrar: Entity<crate::push::Registrar>,
+    /// as long as the app runs; it knows which listed node serves a chain.
+    registrar: Entity<crate::push::Registrar>,
 }
 
 impl Global for Phone {}
@@ -145,7 +145,7 @@ pub fn launch(os: Arc<dyn OsServices>, cx: &mut App) {
         window: None,
         waiting: Vec::new(),
         notices: Vec::new(),
-        _registrar: registrar,
+        registrar,
     });
     cx.spawn(async move |cx: &mut AsyncApp| {
         while let Ok(signal) = signals.recv().await {
@@ -517,6 +517,9 @@ pub struct Root {
     placed: (BTreeMap<u64, Place>, Option<u64>),
     /// Links that came before the network's program list did, in order.
     waiting: Vec<String>,
+    /// A link of another listed network's, and its chain, until the switch
+    /// to that network lands.
+    switching: Option<(ducklink::ChainId, String)>,
     /// The appearance last put on the theme (`sync_appearance`).
     appearance: Appearance,
     /// Debug mode's numbers, read while the Open tab is on screen.
@@ -632,6 +635,7 @@ impl Root {
             titles: BTreeMap::new(),
             placed: Default::default(),
             waiting: Vec::new(),
+            switching: None,
             appearance,
             readout: debug::Readout::default(),
             search,
@@ -737,16 +741,27 @@ impl Root {
 
     /// The switch landed on the chain in hand (another node of it, or the
     /// node in hand itself): Switch network goes back where the reader
-    /// was. Another chain left the network first, which took the page.
+    /// was. Another chain left the network first, which took the page. A
+    /// switch a link of another network's made: the link opens here, once
+    /// the network lists its programs; a node that answered for another
+    /// chain says whose link it is, as before.
     fn switched(&mut self, cx: &mut Context<Self>) {
         if self.page(cx) == Page::Switch {
             self.pop_page(cx);
+        }
+        if let Some((chain, link)) = self.switching.take() {
+            match self.shared.session.read(cx).get().chain == chain.to_string() {
+                true => self.take_link(link, cx),
+                false => self.said_elsewhere(&chain.label, cx),
+            }
         }
     }
 
     /// The switch did not land: on Switch network its words go under the
     /// field (Expo 75), not over the screen in the notice the host put up.
+    /// A link that waited on it is dropped; the notice says why.
     fn switch_failed(&mut self, said: String, cx: &mut Context<Self>) {
+        self.switching = None;
         if self.page(cx) != Page::Switch {
             return;
         }
@@ -1202,11 +1217,19 @@ impl Root {
     }
 
     /// A link, read as every shell reads it (`Rail::opening`): this chain's
-    /// program comes on top and its view is handed the route; another
-    /// chain's is said and not opened, as the Expo app says it.
+    /// program comes on top and its view is handed the route. Another
+    /// chain's switches to the listed node on that chain and opens there
+    /// once the switch lands; with none listed it is said and not opened,
+    /// as the Expo app says it.
     fn open_link(&mut self, link: &str, cx: &mut Context<Self>) {
-        let session = self.shared.session.read(cx).get();
-        let (chain, network) = (session.chain.clone(), session.network.clone());
+        let chain = self.shared.session.read(cx).get().chain.clone();
+        if let Some((other, node)) = self.elsewhere(link, &chain, cx) {
+            self.switching = Some((other, link.to_owned()));
+            self.shared
+                .session
+                .update(cx, |session, cx| session.switch(node, cx));
+            return;
+        }
         match self.shared.rail.read(cx).opening(link, &chain) {
             Opening::Seat {
                 program,
@@ -1221,22 +1244,43 @@ impl Root {
                     self.notice(said, cx);
                 }
             }
-            // Expo's `Alert` (mobile `src/kit/navigate.ts`), its words
-            Opening::Elsewhere { chain, .. } => {
-                let here = if network.is_empty() {
-                    "another network".to_owned()
-                } else {
-                    network
-                };
-                self.alert(
-                    "Another network",
-                    format!("This link is for {chain}, you're on {here}."),
-                    cx,
-                );
-            }
+            Opening::Elsewhere { chain, .. } => self.said_elsewhere(&chain, cx),
             Opening::Browser(url) => cx.open_url(&url),
             Opening::Nothing(said) => self.notice(said, cx),
         }
+    }
+
+    /// The chain `link` names when it is a chain link of another chain
+    /// than `here`, and the listed node on that chain, the most recent
+    /// first (`push::Registrar::node_of`).
+    fn elsewhere(&self, link: &str, here: &str, cx: &App) -> Option<(ducklink::ChainId, String)> {
+        let ducktape_host::runtime::Link::Chain(parsed) =
+            self.shared.rail.read(cx).parse_link(link)
+        else {
+            return None;
+        };
+        if parsed.chain.to_string() == here {
+            return None;
+        }
+        let registrar = &cx.try_global::<Phone>()?.registrar;
+        let node = registrar.read(cx).node_of(&parsed.chain.to_string(), cx)?;
+        Some((parsed.chain, node))
+    }
+
+    /// Another network's link, with no listed node on its chain: Expo's
+    /// `Alert` (mobile `src/kit/navigate.ts`), its words.
+    fn said_elsewhere(&mut self, chain: &str, cx: &mut Context<Self>) {
+        let network = self.shared.session.read(cx).get().network.clone();
+        let here = if network.is_empty() {
+            "another network".to_owned()
+        } else {
+            network
+        };
+        self.alert(
+            "Another network",
+            format!("This link is for {chain}, you're on {here}."),
+            cx,
+        );
     }
 
     /// A one-line notice; the same one again while it is up says nothing
@@ -1934,7 +1978,7 @@ mod tests {
                 window: None,
                 waiting: Vec::new(),
                 notices: Vec::new(),
-                _registrar: registrar,
+                registrar,
             })
         });
         let (root, cx) =
@@ -2766,6 +2810,120 @@ mod tests {
         assert_eq!(page, Page::Root(Tab::Home), "the switch did not land here");
     }
 
+    /// A tapped notice of another network in the list switches to that
+    /// network and opens there once it lists its programs, at a cold start
+    /// too (the link held until the network first reached lists its own).
+    /// One whose network is not in the list says whose it is, as before,
+    /// and reaches nothing.
+    #[gpui_kit::test]
+    fn another_listed_networks_link_switches_to_it_and_opens_there(cx: &mut TestAppContext) {
+        use ducktape_host::backend::RecentEndpoint;
+        use ducktape_host::session::SessionState;
+        use ducktape_host::session::tests::{source, status};
+        use join::tests::until;
+        const HERE: &str = "http://127.0.0.1:1";
+        const THERE: &str = "http://127.0.0.1:2";
+        // the switch leaves the network in hand: the seat is one for the process
+        let _seat = ducktape_host::backend::seat_serial();
+        let (root, stack, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        let node = |url: &str, network: &str| RecentEndpoint {
+            url: url.into(),
+            network: network.into(),
+            ..RecentEndpoint::default()
+        };
+        let on = |url: &str, network: &str, chain: &str, recent| SessionState {
+            connected: true,
+            connected_rpc: url.into(),
+            network: network.into(),
+            chain: chain.into(),
+            recent_endpoints: recent,
+            ..SessionState::default()
+        };
+        // there is testkit as `status` answers it; the phone was on it
+        // before, and is on home now
+        let there = ducklink::ChainId::of("testkit", &[0; 32])
+            .unwrap()
+            .to_string();
+        let before = on(THERE, "testkit", &there, vec![node(THERE, "testkit")]);
+        shared
+            .session
+            .update(cx, |session, cx| session.seed(before, cx));
+        cx.run_until_parked();
+        let recent = vec![node(HERE, "home"), node(THERE, "testkit")];
+        let now = on(HERE, "home", "home#0a0a0a0a", recent);
+        shared
+            .session
+            .update(cx, |session, cx| session.seed(now, cx));
+        cx.run_until_parked();
+
+        // the tap launched the app: held until home lists its programs
+        let link = ducklink::mint(&there, PROGRAM, &["room"]).unwrap();
+        root.update(cx, |root, cx| root.take_link(link.clone(), cx));
+        cx.run_until_parked();
+        let reaching = |cx: &mut VisualTestContext| {
+            shared
+                .session
+                .read_with(cx, |session, _| session.get().reaching.clone())
+        };
+        assert_eq!(reaching(cx), "", "a switch before home listed its programs");
+        ducktape_host::runtime::seat_for_test(PROGRAM, 320);
+        shared.rail.update(cx, |rail, cx| {
+            rail.read_off(Roster::listing(&[PROGRAM]), cx)
+        });
+        assert_eq!(
+            reaching(cx),
+            THERE,
+            "the link did not switch to its network"
+        );
+        assert!(root.read_with(cx, |root, _| root.alert.is_none()));
+        assert_eq!(top(&stack, cx), None, "the link opened on home");
+
+        // testkit answers (in place of the node the switch asked)
+        let (answers, _) = source(|_| Ok(status(1)));
+        shared.session.update(cx, |session, cx| {
+            session.connect_through(THERE.into(), answers, cx)
+        });
+        until(cx, |cx| {
+            shared
+                .session
+                .read_with(cx, |session, _| session.get().chain == there)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            top(&stack, cx),
+            None,
+            "the link opened before testkit listed"
+        );
+        shared.rail.update(cx, |rail, cx| {
+            rail.read_off(Roster::listing(&[PROGRAM]), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            top(&stack, cx),
+            Some(PROGRAM),
+            "the link did not open on testkit"
+        );
+
+        // a network not in the list: said, not reached
+        let far = ducklink::mint("far#0c0c0c0c", PROGRAM, &[]).unwrap();
+        root.update(cx, |root, cx| root.take_link(far, cx));
+        cx.run_until_parked();
+        let alert = root.read_with(cx, |root, _| root.alert.clone());
+        assert_eq!(
+            alert,
+            Some((
+                "Another network",
+                "This link is for far, you're on testkit.".to_owned()
+            ))
+        );
+        assert_eq!(
+            reaching(cx),
+            "",
+            "a link of no listed network reached a node"
+        );
+    }
+
     /// The window over a phone on a network with an account (the stack, not
     /// the join), its root, through the host's own entities: a link held
     /// until the program list comes, then opened; the program on top placed
@@ -2791,7 +2949,7 @@ mod tests {
                 window: None,
                 waiting: Vec::new(),
                 notices: Vec::new(),
-                _registrar: registrar,
+                registrar,
             })
         });
         let (root, cx) =

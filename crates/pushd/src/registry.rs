@@ -26,7 +26,9 @@
 //! written whole and renamed into place. The process that runs a network's
 //! notifiers ([`Devices::follow`]) reads the file again when it moved, so
 //! the door and the notifiers need not share a process: with several
-//! networks the supervisor holds the door and each child its network.
+//! networks the supervisor holds the door and each child its network. Both
+//! write it (the door a registration, the child a token APNs or FCM calls
+//! gone), so each write is one [`Devices::edit`] under the file's lock.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -80,6 +82,9 @@ pub struct Devices {
     rows: Mutex<Vec<Row>>,
     /// The file's modification time as last read ([`Devices::follow`]).
     seen: Mutex<Option<SystemTime>>,
+    /// Where the rows are kept; none for a test's rows or the probe's,
+    /// which live in memory only.
+    file: Option<PathBuf>,
 }
 
 impl Devices {
@@ -97,6 +102,7 @@ impl Devices {
         Ok(Arc::new(Self {
             rows: Mutex::new(rows),
             seen: Mutex::new(seen),
+            file: Some(file.to_owned()),
         }))
     }
 
@@ -158,43 +164,78 @@ impl Devices {
     }
 
     /// `row` kept in place of the one of its key and kind, when it is newer;
-    /// whether it was. A token is one install's, on the key seated there
-    /// now: the same token kept under another key (the phone seated another
-    /// account, and the key it left signs no leave) becomes a tombstone,
-    /// whose own `at` still refuses a replay.
-    pub(crate) fn put(&self, row: Row) -> bool {
-        let mut rows = lock(&self.rows);
-        let at = rows
-            .iter()
-            .position(|kept| kept.key == row.key && kept.kind == row.kind);
-        if at.is_some_and(|at| rows[at].at >= row.at) {
-            return false;
-        }
-        if !row.token.is_empty() {
-            rows.iter_mut()
-                .filter(|kept| kept.kind == row.kind && kept.token == row.token)
-                .for_each(|kept| kept.token.clear());
-        }
-        match at {
-            Some(at) => rows[at] = row,
-            None => rows.push(row),
-        }
-        true
+    /// whether it was ([`put`]).
+    pub(crate) fn put(&self, row: Row) -> std::io::Result<bool> {
+        self.edit(|rows| put(rows, row))
     }
 
-    /// The rows as the file holds them, written whole and renamed into place.
-    /// The rows stay held throughout: two saves at once (two registrations,
-    /// or one and the recheck) would write one temporary file together and
-    /// rename a torn one into place.
-    fn save(&self, file: &Path) -> std::io::Result<()> {
-        let rows = lock(&self.rows);
+    /// The row of `kind` holding `token` dropped: APNs or FCM said the token
+    /// is gone. Whether one was there.
+    pub(crate) fn drop_token(&self, kind: &str, token: &str) -> std::io::Result<bool> {
+        self.edit(|rows| {
+            let before = rows.len();
+            rows.retain(|row| !(row.kind == kind && row.token == token));
+            rows.len() != before
+        })
+    }
+
+    /// `change` made to the rows as the file holds them now, and the file
+    /// written whole and renamed into place. The door and a network's
+    /// process each write it, so each holds `<file>.lock` from its read to
+    /// its rename: a write never lands over one it did not read. The rows
+    /// stay held throughout too: two writes from one process would write one
+    /// temporary file together and rename a torn one into place. Rows with
+    /// no file are changed in memory only.
+    pub(crate) fn edit<T>(&self, change: impl FnOnce(&mut Vec<Row>) -> T) -> std::io::Result<T> {
+        let mut rows = lock(&self.rows);
+        let Some(file) = &self.file else {
+            return Ok(change(&mut rows));
+        };
         if let Some(dir) = file.parent() {
             std::fs::create_dir_all(dir)?;
         }
+        let held = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(file.with_extension("json.lock"))?;
+        held.lock()?;
+        let mut fresh = match std::fs::read(file) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(std::io::Error::other)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        let answer = change(&mut fresh);
         let tmp = file.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(&*rows)?)?;
-        std::fs::rename(&tmp, file)
+        std::fs::write(&tmp, serde_json::to_vec_pretty(&fresh)?)?;
+        std::fs::rename(&tmp, file)?;
+        *rows = fresh;
+        Ok(answer)
     }
+}
+
+/// `row` kept in `rows` in place of the one of its key and kind, when it is
+/// newer; whether it was. A token is one install's, on the key seated there
+/// now: the same token kept under another key (the phone seated another
+/// account, and the key it left signs no leave) becomes a tombstone, whose
+/// own `at` still refuses a replay.
+fn put(rows: &mut Vec<Row>, row: Row) -> bool {
+    let at = rows
+        .iter()
+        .position(|kept| kept.key == row.key && kept.kind == row.kind);
+    if at.is_some_and(|at| rows[at].at >= row.at) {
+        return false;
+    }
+    if !row.token.is_empty() {
+        rows.iter_mut()
+            .filter(|kept| kept.kind == row.kind && kept.token == row.token)
+            .for_each(|kept| kept.token.clear());
+    }
+    match at {
+        Some(at) => rows[at] = row,
+        None => rows.push(row),
+    }
+    true
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -256,12 +297,11 @@ fn hex(text: &str) -> Result<Vec<u8>, Refused> {
     noded_client::hex::hex_decode(text).map_err(|_| bad("not hex"))
 }
 
-/// What the door knows of one network: its rows, where they are kept, and
-/// the node that answers which account a key acts as.
+/// What the door knows of one network: its rows and the node that answers
+/// which account a key acts as.
 pub struct Followed {
     pub name: String,
     pub devices: Arc<Devices>,
-    pub file: PathBuf,
     pub client: noded_client::Client,
     /// The chain id (`<network>#<salt>`) and the network's name as frames
     /// name it, once the node answered.
@@ -361,17 +401,24 @@ impl Door {
     /// `registration` taken, or why not.
     pub async fn register(&self, registration: Registration) -> Result<(), Refused> {
         let key = checked(&registration, crate::push::now_ms())?;
-        let mut followed = None;
+        let (mut followed, mut unknown) = (None, false);
         for network in &self.networks {
-            if let Some((chain, name)) = network.chain().await
-                && chain == registration.chain
-            {
-                followed = Some((network.clone(), name));
-                break;
+            match network.chain().await {
+                Some((chain, name)) if chain == registration.chain => {
+                    followed = Some((network.clone(), name));
+                    break;
+                }
+                Some(_) => {}
+                None => unknown = true,
             }
         }
+        // a 404 is final to a phone, which tries no more: said only when
+        // every node followed named its chain, and none is this one
         let Some((network, name)) = followed else {
-            return Err(Refused(404, "pushd does not follow this chain".into()));
+            return Err(match unknown {
+                true => Refused(503, "the network's node did not answer".into()),
+                false => Refused(404, "pushd does not follow this chain".into()),
+            });
         };
         let acts = noded_client::identity::account_of_key(
             &network.client,
@@ -389,21 +436,23 @@ impl Door {
         if acts.map(|(number, _)| number) != Some(registration.account) {
             return Err(Refused(403, "the key does not act as this account".into()));
         }
-        let kept = network.devices.put(Row {
-            account: registration.account,
-            key: registration.key,
-            kind: registration.kind,
-            token: registration.token,
-            env: registration.env,
-            at: registration.at,
-        });
+        let kept = network
+            .devices
+            .put(Row {
+                account: registration.account,
+                key: registration.key,
+                kind: registration.kind,
+                token: registration.token,
+                env: registration.env,
+                at: registration.at,
+            })
+            .map_err(|error| {
+                tracing::warn!(target: "pushd", network = network.name, %error, "devices not saved");
+                Refused(500, "the registration was not kept".into())
+            })?;
         if !kept {
             return Err(bad("an older registration of this key and kind"));
         }
-        network.devices.save(&network.file).map_err(|error| {
-            tracing::warn!(target: "pushd", network = network.name, %error, "devices not saved");
-            Refused(500, "the registration was not kept".into())
-        })?;
         Ok(())
     }
 
@@ -441,12 +490,13 @@ impl Door {
             if dropped.is_empty() {
                 continue;
             }
-            lock(&network.devices.rows)
-                .retain(|row| !dropped.contains(&(row.key.clone(), row.kind.clone())));
-            tracing::info!(target: "pushd", network = network.name, dropped = dropped.len(),
-                "devices whose key left the account dropped");
-            if let Err(error) = network.devices.save(&network.file) {
-                tracing::warn!(target: "pushd", %error, "devices not saved");
+            let edited = network.devices.edit(|rows| {
+                rows.retain(|row| !dropped.contains(&(row.key.clone(), row.kind.clone())))
+            });
+            match edited {
+                Ok(()) => tracing::info!(target: "pushd", network = network.name,
+                    dropped = dropped.len(), "devices whose key left the account dropped"),
+                Err(error) => tracing::warn!(target: "pushd", %error, "devices not saved"),
             }
         }
     }
@@ -662,40 +712,44 @@ mod tests {
             env: "production".into(),
             at,
         };
-        assert!(devices.put(row("bb", "voip", "t1", 10)));
-        assert!(devices.put(row("bb", "apns", "t2", 10)));
-        assert!(devices.put(row("aa", "fcm", "t3", 10)));
+        assert!(devices.put(row("bb", "voip", "t1", 10)).unwrap());
+        assert!(devices.put(row("bb", "apns", "t2", 10)).unwrap());
+        assert!(devices.put(row("aa", "fcm", "t3", 10)).unwrap());
         assert_eq!(devices.accounts(), vec![(15, "aa".into())]);
         // a rotation
-        assert!(devices.put(row("bb", "voip", "t1b", 11)));
+        assert!(devices.put(row("bb", "voip", "t1b", 11)).unwrap());
         // the old token replayed
-        assert!(!devices.put(row("bb", "voip", "t1", 10)));
+        assert!(!devices.put(row("bb", "voip", "t1", 10)).unwrap());
         assert_eq!(
             devices.tokens(15, "voip"),
             vec![("t1b".to_owned(), "production".to_owned())]
         );
         // aa leaves: bb is the signer now
-        assert!(devices.put(row("aa", "fcm", "", 12)));
-        assert!(!devices.put(row("aa", "fcm", "t3", 10)));
+        assert!(devices.put(row("aa", "fcm", "", 12)).unwrap());
+        assert!(!devices.put(row("aa", "fcm", "t3", 10)).unwrap());
         assert!(devices.tokens(15, "fcm").is_empty());
         assert_eq!(devices.accounts(), vec![(15, "bb".into())]);
-        assert!(devices.put(row("bb", "voip", "", 13)));
-        assert!(devices.put(row("bb", "apns", "", 13)));
+        assert!(devices.put(row("bb", "voip", "", 13)).unwrap());
+        assert!(devices.put(row("bb", "apns", "", 13)).unwrap());
         assert!(devices.accounts().is_empty());
         // one install's token registered under another key (the phone
         // seated another account): the old key's row is a tombstone, and
         // its registration replayed changes nothing
-        assert!(devices.put(row("dd", "apns", "t4", 20)));
-        assert!(devices.put(Row {
-            account: 16,
-            ..row("ee", "apns", "t4", 21)
-        }));
+        assert!(devices.put(row("dd", "apns", "t4", 20)).unwrap());
+        assert!(
+            devices
+                .put(Row {
+                    account: 16,
+                    ..row("ee", "apns", "t4", 21)
+                })
+                .unwrap()
+        );
         assert!(devices.tokens(15, "apns").is_empty());
         assert_eq!(
             devices.tokens(16, "apns"),
             vec![("t4".to_owned(), "production".to_owned())]
         );
-        assert!(!devices.put(row("dd", "apns", "t4", 20)));
+        assert!(!devices.put(row("dd", "apns", "t4", 20)).unwrap());
         assert_eq!(devices.accounts(), vec![(16, "ee".into())]);
     }
 
@@ -707,35 +761,27 @@ mod tests {
         let file = dir.path().join("testkit").join("devices.json");
         let devices = Devices::load(&file).unwrap();
         assert!(devices.accounts().is_empty());
-        devices.put(Row {
-            account: 2,
-            key: "aa".into(),
+        let fcm = |account, key: &str, token: &str| Row {
+            account,
+            key: key.into(),
             kind: "fcm".into(),
-            token: "t2".into(),
+            token: token.into(),
             env: String::new(),
             at: 1,
-        });
-        devices.save(&file).unwrap();
+        };
+        devices.put(fcm(2, "aa", "t2")).unwrap();
         let follower = Devices::load(&file).unwrap();
         assert_eq!(follower.accounts(), vec![(2, "aa".into())]);
         assert!(!follower.follow(&file));
-        devices.put(Row {
-            account: 3,
-            key: "bb".into(),
-            kind: "fcm".into(),
-            token: "t3".into(),
-            env: String::new(),
-            at: 1,
-        });
         // a second within the same instant would read as unmoved on a
         // coarse filesystem clock
         std::thread::sleep(Duration::from_millis(20));
-        devices.save(&file).unwrap();
+        devices.put(fcm(3, "bb", "t3")).unwrap();
         assert!(follower.follow(&file));
         assert_eq!(follower.accounts().len(), 2);
     }
 
-    /// Registrations saved at once leave the file whole, with every row.
+    /// Registrations kept at once leave the file whole, with every row.
     #[test]
     fn saves_at_once_leave_the_file_whole() {
         let dir = tempfile::tempdir().unwrap();
@@ -743,23 +789,81 @@ mod tests {
         let devices = Devices::load(&file).unwrap();
         std::thread::scope(|scope| {
             for account in 0..8 {
-                let (devices, file) = (&devices, &file);
+                let devices = &devices;
                 scope.spawn(move || {
                     for at in 1..=20 {
-                        devices.put(Row {
-                            account,
-                            key: format!("key{account}"),
-                            kind: "fcm".into(),
-                            token: account.to_string().repeat(200),
-                            env: String::new(),
-                            at,
-                        });
-                        devices.save(file).unwrap();
+                        devices
+                            .put(Row {
+                                account,
+                                key: format!("key{account}"),
+                                kind: "fcm".into(),
+                                token: account.to_string().repeat(200),
+                                env: String::new(),
+                                at,
+                            })
+                            .unwrap();
                     }
                 });
             }
         });
         assert_eq!(Devices::load(&file).unwrap().accounts().len(), 8);
+    }
+
+    /// The door and a network's process each hold the rows and each write
+    /// the file: a token the process drops takes no registration the door
+    /// kept since the process last read the file, and the door's next write
+    /// does not bring the dropped token back.
+    #[test]
+    fn two_writers_keep_each_others_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("testkit").join("devices.json");
+        let row = |key: &str, token: &str| Row {
+            account: 15,
+            key: key.into(),
+            kind: "apns".into(),
+            token: token.into(),
+            env: "production".into(),
+            at: 1,
+        };
+        let door = Devices::load(&file).unwrap();
+        door.put(row("aa", "dead")).unwrap();
+        let child = Devices::load(&file).unwrap();
+        door.put(row("bb", "new")).unwrap();
+        assert!(child.drop_token("apns", "dead").unwrap());
+        assert!(
+            !child.drop_token("voip", "new").unwrap(),
+            "another kind's row went"
+        );
+        door.put(row("cc", "newer")).unwrap();
+        let kept = Devices::load(&file).unwrap().tokens(15, "apns");
+        let tokens: Vec<_> = kept.iter().map(|(token, _)| token.as_str()).collect();
+        assert_eq!(tokens, ["new", "newer"]);
+    }
+
+    /// A chain pushd does not follow is a 404, which a phone takes as final;
+    /// while a followed node has not named its chain yet, the chain may be
+    /// that one's: a 503, which the phone tries again.
+    #[test]
+    fn an_unfollowed_chain_is_a_404_only_once_every_node_named_its_chain() {
+        let network = |chain: Option<&str>| {
+            Arc::new(Followed {
+                name: "testkit".into(),
+                devices: Arc::new(Devices::default()),
+                // nothing listens: a chain not named yet stays unnamed
+                client: noded_client::Client::new("http://127.0.0.1:1"),
+                chain: Mutex::new(chain.map(|chain| (chain.into(), "testkit".into()))),
+            })
+        };
+        let registration = signed(voip(), &key(), crate::push::now_ms());
+        let answer = |networks| {
+            let door = Door::new(networks, Arc::new(key()));
+            let refused =
+                ducktape_host::runtime::handle().block_on(door.register(registration.clone()));
+            refused.unwrap_err().0
+        };
+        let elsewhere = Some("elsewhere-0a1b2c3d");
+        assert_eq!(answer(vec![network(elsewhere)]), 404);
+        assert_eq!(answer(vec![network(elsewhere), network(None)]), 503);
     }
 
     /// A door on a loopback port, giving a client `deadline` for its
@@ -906,21 +1010,22 @@ mod tests {
         });
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("devices.json");
-        let devices = Arc::new(Devices::default());
+        let devices = Devices::load(&file).unwrap();
         for (account, key) in [(15, "aa"), (16, "bb"), (17, "cc")] {
-            devices.put(Row {
-                account,
-                key: key.repeat(32),
-                kind: "fcm".into(),
-                token: format!("t{account}"),
-                env: String::new(),
-                at: 1,
-            });
+            devices
+                .put(Row {
+                    account,
+                    key: key.repeat(32),
+                    kind: "fcm".into(),
+                    token: format!("t{account}"),
+                    env: String::new(),
+                    at: 1,
+                })
+                .unwrap();
         }
         let network = Followed {
             name: "testkit".into(),
             devices: devices.clone(),
-            file: file.clone(),
             client: noded_client::Client::new(url),
             chain: Mutex::new(Some(("testkit-0a1b2c3d".into(), "testkit".into()))),
         };
