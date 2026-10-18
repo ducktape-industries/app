@@ -87,6 +87,35 @@ tar xzf /tmp/ducktape.tar.gz -C /tmp
   anchored at the tip `/v1/status` reports and salted with a random number,
   so the node runs it once and only while that block is recent.
 
+## Sending a transaction from the terminal
+
+```bash
+ducktape-app send <network> <program> <hex>
+```
+
+This sends one transaction, signed with the key this device holds for the
+network: the same key the app's own screens sign with. It opens no window.
+
+- `<network>` is a network from the app's Recent list. A bare name
+  (`duckpond`) goes to the node the app last used for that name, and signs
+  for the chain that node runs now. A name with its founding time
+  (`duckpond+1792250296000`) picks that one chain.
+- `<program>` is the program's name on the chain (`identity`).
+- `<hex>` is the call's bytes, hex-encoded, exactly as the program decodes
+  them (a borsh `identity::Op`, for example).
+
+The key opens the way it does in the app. The OS may ask to unlock its key
+store, or for Touch ID. A password-locked key from before keys moved into
+the OS asks for its password on the terminal, without echo.
+
+The node preconfirms the frame. The command then waits for the block that
+carries it and prints the frame's id, the block height, and `applied` with
+any output as hex, or `refused <code>: <sentence>`. It exits 0 when the
+call applied, 1 when it was refused or did not land, and 2 when the
+arguments are wrong. When the network is not in the Recent list, its node
+does not answer, or this device holds no key for the chain it runs, the
+command also lists the networks it can send to.
+
 ## Layout
 
 New to the code? Start with [ARCHITECTURE.md](ARCHITECTURE.md): the map of
@@ -104,7 +133,7 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 | `crates/host/src/backend/live.rs`, `crates/host/src/runtime/kernel/live.rs` | the live session with the node's relay (core's `live-wire`: QUIC, or the websocket) and the `live.*` methods over it |
 | `crates/host/src/runtime.rs`, `runtime/` | the wasm view runtime: seats, loads, swaps, the kernel relay |
 | `crates/host/src/render.rs`, `render/` | the wire tree presenter, its text fields the kit's engine holds (IME, caret, clipboard, undo) |
-| `src/os.rs`, `src/backend/` | the desktop's `OsServices` impl (its directories, the freedesktop / macOS banners, invites with the node this machine runs) and what only the desktop runs: the device key, passkeys, recovery keys |
+| `src/os.rs`, `src/backend/` | the desktop's `OsServices` impl (its directories, the freedesktop / macOS banners, invites with the node this machine runs) and what only the desktop runs: the device key, passkeys, recovery keys, `ducktape-app send` (`src/backend/send.rs`) |
 | `src/shell.rs`, `shell/` | the native chrome: the app's state as entities (`shell/entities/`, each written by its own methods) and each window's root with its layers (`shell/layers/`: launcher, menu bar, panes, dialogs, footer) |
 | `src/ui/layout.rs`, `src/shell/entities/{desk,windows}.rs` | panes floating on the desk, popped out into their own windows and back |
 
