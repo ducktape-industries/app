@@ -69,7 +69,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # A view SVG's own size, which sets the height gpui rasterises it at
 # (`render/svg_limits.rs`): gpui's own parser, already in the graph.
 usvg = { version = "0.46.0", default-features = false, optional = true }
-tokio = { version = "1", features = ["fs", "macros", "net", "rt", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
 tokio-tungstenite.workspace = true
 # The live lane (`backend/live.rs`): QUIC to the UDP port the node's
 # `/v1/live/port` names, the node's key pinned by reading it out of its

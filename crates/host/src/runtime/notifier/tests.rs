@@ -204,6 +204,26 @@ fn one_notifier_runs_per_program_until_its_code_moves() {
     assert!(notifiers.running().is_empty());
 }
 
+/// The programs a roster read lists are looked into one after another, on
+/// one thread: however many it lists, the node is asked for one blob at a
+/// time (each held back here until the node goes), never one per program
+/// at once.
+#[test]
+fn a_rosters_programs_are_looked_into_one_at_a_time() {
+    let node = FakeNode::new(Vec::new(), Vec::new(), Vec::new());
+    let programs: Vec<Program> = (0..3)
+        .map(|n| {
+            let program = format!("notifier-tests-one-at-a-time-{n}");
+            listed(&program, program.as_bytes())
+        })
+        .collect();
+    let notifiers = Notifiers::default();
+    notifiers.reconcile(&node.asked_of, &programs);
+    eventually("a blob asked of the node", || node.held().0 > 0);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(node.held(), (1, 1), "one blob asked at a time");
+}
+
 /// A program whose notices the person blocked runs no notifier; one let
 /// through again does.
 #[test]

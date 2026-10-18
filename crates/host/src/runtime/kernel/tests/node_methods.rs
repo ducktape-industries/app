@@ -558,7 +558,7 @@ async fn blob_manifest_reads_only_code_the_roster_names() {
     let mut framed = format!("program {}\0", program.len()).into_bytes();
     framed.extend_from_slice(&program);
     let id = abi::BlobId::Sha256(sha2::Sha256::digest(&framed).into());
-    let kept = crate::backend::views::cache_path(&id).unwrap();
+    let kept = crate::backend::views::cache_path(&id);
     let _ = std::fs::remove_file(&kept);
     let scheduled = |items: Vec<::programs::Pending>| {
         let reply = ::programs::Reply::Scheduled(::programs::PageResponse {
