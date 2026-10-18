@@ -32,7 +32,7 @@ use noded_client::identity::{account_by_number, admission, ask, submit};
 use noded_client::wire::{Body, FRAME_NAMESPACE, Frame, Tip, salt};
 
 use super::auth_page::{Assertion, Request, asserted, created};
-use super::identity::{create_seated, submit_seated, user};
+use super::identity::{create_seated, submit_seated};
 use super::{RpcClient, anchor, query_signer, seated_key, seated_sign};
 
 // ---------- the flows ----------
@@ -56,10 +56,7 @@ pub(crate) async fn create_account(
     )
     .await?
     {
-        Reply::Number(Some(number)) => {
-            user(&account_by_number(client, network, number, &*query_signer()).await?)?;
-            number
-        }
+        Reply::Number(Some(number)) => number,
         _ => create_seated(client, network, name).await?,
     };
     let passkey = created(Request::Create {
@@ -106,7 +103,6 @@ pub(crate) async fn sign_in(client: &RpcClient, network: &str) -> Result<(), Str
     let hint = asserted(rand::random(), "1/2").await?;
     let number = account_of_handle(network, hint.user_handle.as_deref())?;
     let account = account_by_number(client, network, number, &*query_signer()).await?;
-    user(&account)?;
     let device = seated_key().await.map_err(|refusal| refusal.message)?;
     let admission = admission(
         client,
