@@ -675,7 +675,7 @@ pub struct RunnerConfig {
     /// each compile, which lands in `cache_dir` for this process to read:
     /// a compile's peak (200-315 MB) then leaves with the child, where the
     /// allocator would keep it here on loader threads that go idle. Needs
-    /// `cache_dir`. `None` compiles in this process (the phone, pushd).
+    /// `cache_dir`. `None` compiles in this process (the phone).
     pub compile_apart: Option<PathBuf>,
 }
 
