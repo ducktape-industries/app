@@ -107,8 +107,9 @@ fn code_file(dir: &Path, hash: &[u8; 32], settings: u64) -> PathBuf {
 }
 
 /// The compiled code at `file`, mapped; none when there is no file, or
-/// wasmtime refuses it. A map is touched, so the file's time is its last
-/// use ([`prune`]).
+/// wasmtime refuses it (another engine's file, or an OS that will not map
+/// a file as code), which is logged. A map is touched, so the file's time
+/// is its last use ([`prune`]).
 fn mapped(engine: &Engine, file: &Path) -> Option<Module> {
     // SAFETY: wasmtime checks the file's header (its version, the target,
     // every compile setting) and refuses a mismatch, but trusts the code in
@@ -118,7 +119,19 @@ fn mapped(engine: &Engine, file: &Path) -> Option<Module> {
     // renamed into place, never written in place again, so no mapping
     // changes under a module (a prune unlinks it, which leaves a mapping
     // whole).
-    let module = unsafe { Module::deserialize_file(engine, file) }.ok()?;
+    let module = match unsafe { Module::deserialize_file(engine, file) } {
+        Ok(module) => module,
+        // no file: the first look before every compile
+        Err(_) if !file.exists() => return None,
+        Err(error) => {
+            tracing::warn!(
+                reason = "view_code_refused",
+                file = %file.display(),
+                error = %first_line(&error),
+            );
+            return None;
+        }
+    };
     let _ = std::fs::File::options()
         .write(true)
         .open(file)
@@ -128,7 +141,8 @@ fn mapped(engine: &Engine, file: &Path) -> Option<Module> {
 
 /// `compiled` written to `file` whole or not at all: a sibling of its own,
 /// synced, renamed into place. A reader never maps half a file, and a crash
-/// never leaves one for the next launch to run.
+/// never leaves one for the next launch to run. A write that fails (no
+/// room, a dir not writable) is logged: the code compiles again next time.
 fn keep(file: &Path, compiled: &[u8]) {
     static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -142,7 +156,8 @@ fn keep(file: &Path, compiled: &[u8]) {
             kept.sync_all()
         })
         .and_then(|()| std::fs::rename(&partial, file));
-    if written.is_err() {
+    if let Err(error) = written {
+        tracing::warn!(reason = "view_code_unkept", file = %file.display(), %error);
         let _ = std::fs::remove_file(&partial);
     }
 }
@@ -864,6 +879,57 @@ mod tests {
             mapped(&here.engine, &file).is_some(),
             "compiled again over it"
         );
+    }
+
+    /// What `run` logged at `warn` and above on this thread, as `fmt`
+    /// prints it.
+    fn warned(run: impl FnOnce()) -> String {
+        #[derive(Clone, Default)]
+        struct Lines(Arc<Mutex<Vec<u8>>>);
+        impl Write for Lines {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                lock(&self.0).extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let lines = Lines::default();
+        let writer = lines.clone();
+        let logger = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(logger, run);
+        String::from_utf8_lossy(&lock(&lines.0)).into_owned()
+    }
+
+    /// A file at code's name that is not mapped says why (a platform that
+    /// refuses to map a file as code, or another engine's file): before,
+    /// the reason was dropped, and only `compile_apart_missed` showed. No
+    /// file at all is the first look before every compile, and says
+    /// nothing.
+    #[test]
+    fn code_whose_file_is_refused_says_why() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("refused.cwasm");
+        let engine = engine(true);
+        assert_eq!(warned(|| assert!(mapped(&engine, &file).is_none())), "");
+        std::fs::write(&file, b"not compiled code").expect("write");
+        let said = warned(|| assert!(mapped(&engine, &file).is_none()));
+        assert!(said.contains("view_code_refused"), "{said}");
+    }
+
+    /// Code that cannot be kept (no room, a dir not writable) says why:
+    /// before, every launch compiled every view again without a word.
+    #[test]
+    fn code_that_cannot_be_kept_says_why() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let not_a_dir = dir.path().join("not-a-dir");
+        std::fs::write(&not_a_dir, b"a file").expect("write");
+        let said = warned(|| keep(&not_a_dir.join("code.cwasm"), b"compiled"));
+        assert!(said.contains("view_code_unkept"), "{said}");
     }
 
     /// The upkeep: code mapped least recently goes first until the rest

@@ -194,9 +194,10 @@ pub async fn view_of(
 }
 
 /// A program's blob: the cache's copy, else the node's, streamed into the
-/// cache ([`fetched`]) and read from there. Only code the roster names is
-/// read here (a seat's, `program.describe`'s, `blob.manifest`'s), so the
-/// cache holds at most what the network runs or has scheduled.
+/// cache ([`fetched`]) and read from there, or read whole off the node
+/// when the cache cannot keep it (a full disk). Only code the roster names
+/// is read here (a seat's, `program.describe`'s, `blob.manifest`'s), so
+/// the cache holds at most what the network runs or has scheduled.
 pub async fn program_bytes(
     client: &RpcClient,
     code: &BlobId,
@@ -209,11 +210,26 @@ pub async fn program_bytes(
         framed.drain(..body);
         return Ok((framed, "disk"));
     }
-    fetched(client, code, &path).await?;
-    // hashed as it landed: read back as it is
-    let mut framed = tokio::fs::read(&path)
-        .await
-        .map_err(|error| Fetch::Unreadable(format!("the program's code was not kept: {error}")))?;
+    let mut framed = match fetched(client, code, &path).await {
+        // hashed as it landed: read back as it is
+        Ok(landed) => {
+            landed?;
+            tokio::fs::read(&path).await.map_err(|error| {
+                Fetch::Unreadable(format!("the program's code was not kept: {error}"))
+            })?
+        }
+        Err(_) => {
+            let framed = client
+                .blob(*code)
+                .await
+                .map_err(fetch_error)?
+                .ok_or(Fetch::NotHeld)?;
+            if !hashes_to(&framed, code)? {
+                return Err(Fetch::Corrupt);
+            }
+            framed
+        }
+    };
     let body = body_at(&framed)
         .ok_or_else(|| Fetch::Unreadable("the blob carries no git header".into()))?;
     framed.drain(..body);
@@ -222,43 +238,49 @@ pub async fn program_bytes(
 
 /// `code`'s blob streamed off the node into the cache at `path`, hashed as
 /// it lands, never held whole: renamed into place once all of it came and
-/// it hashes to `code`. A short or bad stream leaves no file.
-// ponytail: a cache that cannot be written (a full disk) fails the read;
-// read into memory then, if a device ever needs a view with no room left
-async fn fetched(client: &RpcClient, code: &BlobId, path: &Path) -> Result<(), Fetch> {
+/// it hashes to `code`. A short or bad stream leaves no file. The outer
+/// error is the cache's (it could not keep the blob: a full disk), the
+/// inner one the node's. The landing file is named by this process too,
+/// so another instance of the app landing the same code never truncates
+/// it.
+async fn fetched(
+    client: &RpcClient,
+    code: &BlobId,
+    path: &Path,
+) -> std::io::Result<Result<(), Fetch>> {
     use tokio::io::AsyncWriteExt as _;
-    let mut blob = client
-        .blob_stream(*code)
-        .await
-        .map_err(fetch_error)?
-        .ok_or(Fetch::NotHeld)?;
+    let mut blob = match client.blob_stream(*code).await {
+        Ok(Some(blob)) => blob,
+        Ok(None) => return Ok(Err(Fetch::NotHeld)),
+        Err(error) => return Ok(Err(fetch_error(error))),
+    };
     static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let landing = path.with_extension(format!("{n}.partial"));
-    let unkept = |error: std::io::Error| {
-        Fetch::Unreadable(format!("the program's code could not be kept: {error}"))
-    };
+    let landing = path.with_extension(format!("{}-{n}.partial", std::process::id()));
     let landed = async {
         if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(unkept)?;
+            tokio::fs::create_dir_all(parent).await?;
         }
-        let mut file = tokio::fs::File::create(&landing).await.map_err(unkept)?;
+        let mut file = tokio::fs::File::create(&landing).await?;
         let mut hasher = blob::Hasher::new(code.kind());
-        while let Some(piece) = blob.next().await.map_err(fetch_error)? {
+        loop {
+            let piece = match blob.next().await {
+                Ok(Some(piece)) => piece,
+                Ok(None) => break,
+                Err(error) => return Ok(Err(fetch_error(error))),
+            };
             hasher.update(&piece);
-            file.write_all(&piece).await.map_err(unkept)?;
+            file.write_all(&piece).await?;
         }
-        file.flush().await.map_err(unkept)?;
-        match hasher.finish() {
-            Ok(landed) if landed == *code => {
-                tokio::fs::rename(&landing, path).await.map_err(unkept)
-            }
+        file.flush().await?;
+        Ok(match hasher.finish() {
+            Ok(landed) if landed == *code => Ok(tokio::fs::rename(&landing, path).await?),
             Ok(_) => Err(Fetch::Corrupt),
             Err(_) => Err(Fetch::Collision(*code)),
-        }
+        })
     }
     .await;
-    if landed.is_err() {
+    if !matches!(landed, Ok(Ok(()))) {
         let _ = tokio::fs::remove_file(&landing).await;
     }
     landed
@@ -297,6 +319,8 @@ pub fn view_section(bytes: &[u8]) -> Option<Vec<u8>> {
 /// asked, to find the few that carry one, and a blob is megabytes, most of
 /// it the view: it is streamed into the cache ([`fetched`]) and read
 /// through in pieces there, the notifier alone kept ([`cached_section`]).
+/// A cache that cannot keep it (a full disk) fails the read: a notifier is
+/// not worth a whole blob held.
 pub async fn notifier_of(client: &RpcClient, code: &BlobId) -> Result<Option<Vec<u8>>, Fetch> {
     let path = cache_path(code);
     let cached = || {
@@ -306,7 +330,9 @@ pub async fn notifier_of(client: &RpcClient, code: &BlobId) -> Result<Option<Vec
     if let Ok(Some(notifier)) = cached().await {
         return Ok(notifier);
     }
-    fetched(client, code, &path).await?;
+    fetched(client, code, &path).await.map_err(|error| {
+        Fetch::Unreadable(format!("the program's code could not be kept: {error}"))
+    })??;
     if let Ok(Some(notifier)) = cached().await {
         return Ok(notifier);
     }

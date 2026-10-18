@@ -1073,19 +1073,39 @@ fn a_program_read_once_is_read_off_the_disk() {
     assert_eq!(again.unwrap(), (body, "disk"), "the node was asked again");
 }
 
+/// A program's code the cache cannot keep (a full disk; here a file where
+/// its folder goes) is read all the same: whole off the node, hashed, as
+/// before there was a cache. Before, the view did not open.
+#[test]
+fn a_program_the_cache_cannot_keep_is_read_all_the_same() {
+    let body = b"\0asm\x01\0\0\0 a program with no room to keep".to_vec();
+    let code = blob_id(&body);
+    let programs = crate::backend::dirs().cache.join("programs");
+    let _ = std::fs::remove_dir_all(&programs);
+    std::fs::create_dir_all(programs.parent().unwrap()).unwrap();
+    std::fs::write(&programs, b"not a folder").unwrap();
+    let node = FakeNode::new(Vec::new(), Vec::new(), vec![body.clone()]);
+    let client = node.asked_of.client.clone().unwrap();
+    let read = handle().block_on(crate::backend::views::program_bytes(&client, &code));
+    let _ = std::fs::remove_file(&programs);
+    assert_eq!(read.unwrap(), (body, "node"));
+}
+
 /// A program's code is streamed off the node into the cache as it lands,
 /// never held whole: half of it is on the disk while the node still holds
-/// the rest back. It is kept only whole and hashing to its id: other bytes,
-/// or fewer than the answer said, leave nothing behind.
+/// the rest back, in a file named by this process (another instance of the
+/// app landing the same code never truncates it). It is kept only whole
+/// and hashing to its id: other bytes, or fewer than the answer said,
+/// leave nothing behind.
 #[test]
 fn a_program_is_streamed_into_the_cache_and_kept_only_whole() {
     use super::super::kernel::tests::{read_request, respond};
     use std::io::Write as _;
     let body = vec![7; 64 << 10];
     let code = blob_id(&body);
-    // the files `kept` is written beside, as they land
+    // the files `kept` is written beside, as they land, by this process
     let landing = |kept: &std::path::Path| {
-        let name = abi::hex(code.digest());
+        let name = format!("{}.{}-", abi::hex(code.digest()), std::process::id());
         std::fs::read_dir(kept.parent().unwrap())
             .into_iter()
             .flatten()

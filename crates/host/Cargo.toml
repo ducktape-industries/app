@@ -123,6 +123,8 @@ noded-client = { path = "../noded-client", features = ["commonware"] }
 wat = "1"
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tempfile.workspace = true
+# what a test reads back of the warnings a cache problem logs (`runner/wasmtime.rs`)
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
 # a fake node's changes socket (`runtime/kernel/node/tests.rs`)
 tokio-tungstenite.workspace = true
 blobs = { git = "https://github.com/ducktape-industries/programs", rev = "f375edd060d7588cff79b429967bee31a5cd54b2", package = "blobs" }
