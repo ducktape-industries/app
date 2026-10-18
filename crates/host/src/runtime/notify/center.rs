@@ -39,6 +39,20 @@ pub struct Notice {
     pub end_link: String,
 }
 
+impl Notice {
+    /// Its id in a phone OS's list (APNs's collapse id, a local
+    /// notification's identifier, Android's notification tag), whoever
+    /// raises it there: the same tag and link, the same notice, which
+    /// replaces itself; any other stands beside it. Always hashed: 64
+    /// bytes, APNs's limit, and a header value whatever the program's tag
+    /// holds.
+    pub fn os_id(&self) -> String {
+        use sha2::Digest as _;
+        let digest = sha2::Sha256::digest(format!("{}\n{}", self.tag, self.link));
+        digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+}
+
 /// One row of the centre.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Entry {
@@ -171,7 +185,9 @@ impl Center {
     /// may veto), and also before the person said anything about its view.
     /// It stands until its `until`, `notify.seen` of its tag, or a decline
     /// on its banner ([`Center::declined`]); without a tag or an `until` it
-    /// is a plain notice. A notice past its `until` is logged only.
+    /// is a plain notice. A notice past its `until` is logged only, and so
+    /// is this device's run of one the push server carried here: the OS
+    /// showed that one already ([`Center::carried`]).
     pub fn post(
         &mut self,
         settings: &Settings,
@@ -206,8 +222,8 @@ impl Center {
             until,
             end_link: post.end_link.clone(),
         };
-        self.log(program, view, post, wall);
-        if until != 0 && until <= seconds {
+        let shown = self.log(program, view, post, wall);
+        if shown || (until != 0 && until <= seconds) {
             return (Delivery::Logged, None);
         }
         let call = kind == NoticeKind::Call;
@@ -302,8 +318,9 @@ impl Center {
     /// Written at the end of the view's redraw ([`Center::flush`]). A post
     /// saying what a notice the push server carried here said, under its
     /// tag ([`Center::carried`]), is this device's run of that same notice:
-    /// its row stands as it is, read or not, counted once.
-    fn log(&mut self, program: &str, view: &str, post: Notification, wall: i64) {
+    /// its row stands as it is, read or not, counted once. Whether it was
+    /// that: the OS showed it.
+    fn log(&mut self, program: &str, view: &str, post: Notification, wall: i64) -> bool {
         let twin = self.carried.iter().position(|copy| {
             copy.program == program
                 && copy.tag == post.tag
@@ -313,7 +330,7 @@ impl Center {
             self.carried.remove(twin);
             // the copies are saved with the log
             (self.carried_moved, self.rev) = (true, self.rev + 1);
-            return;
+            return true;
         }
         let folded = (!post.tag.is_empty())
             .then(|| {
@@ -352,6 +369,7 @@ impl Center {
         };
         self.entries.push(entry);
         self.rev += 1;
+        false
     }
 
     /// A notice its program's notifier posted for this person on a host

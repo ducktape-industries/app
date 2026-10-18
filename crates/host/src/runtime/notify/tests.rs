@@ -273,15 +273,28 @@ fn the_log_keeps_every_row_until_cleared() {
 
 #[test]
 fn prefs_read_back_as_settings() {
-    let read = Settings::of(&serde_json::json!({}));
+    let read = Settings::of(&serde_json::json!({}), false);
     assert_eq!((read.banners, read.in_front, read.burst), (true, false, 6));
-    let read = Settings::of(&serde_json::json!({
-        NOTIFY_PREF: false, FRONT_PREF: "show", BURST_PREF: 12,
-        VIEWS_PREF: { "chat": "Silent", "forge": "nonsense" },
-    }));
+    assert_eq!(read.unasked, None, "a desktop asks per program");
+    let read = Settings::of(
+        &serde_json::json!({
+            NOTIFY_PREF: false, FRONT_PREF: "show", BURST_PREF: 12,
+            VIEWS_PREF: { "chat": "Silent", "forge": "nonsense" },
+        }),
+        false,
+    );
     assert_eq!((read.banners, read.in_front, read.burst), (false, true, 12));
     assert_eq!(read.views.len(), 1);
-    assert_eq!(Settings::of(&serde_json::json!({ BURST_PREF: 7 })).burst, 6);
+    assert_eq!(
+        Settings::of(&serde_json::json!({ BURST_PREF: 7 }), false).burst,
+        6
+    );
+    let phone = Settings::of(&serde_json::json!({}), true);
+    assert_eq!(
+        phone.unasked,
+        Some(Permission::Allow),
+        "the OS asked for the whole app, and a program unasked here was held back"
+    );
 }
 
 /// A post round-trips as borsh and trailing bytes are refused; a post
@@ -962,6 +975,22 @@ fn a_carried_notice_is_one_row_whoever_logs_it_again() {
         ("ada mentioned you".into(), 2, false, 200),
         "a repeat of this device's own was taken for a copy"
     );
+}
+
+/// The OS showed what the push server carried here: this device's run of
+/// the same notice after raises no second banner, while a notice the OS
+/// never showed still raises its own.
+#[test]
+fn a_carried_notice_raises_no_second_banner() {
+    let now = Instant::now();
+    let allow = settings(Some(Permission::Allow));
+    let mut center = Center::default();
+    assert!(center.carried(&allow, &carried("ada", "#room", ""), 100, false));
+    let (posted, banner) = center.post(&allow, "chat", "Chat", post("ada", "#room"), now, 160);
+    assert_eq!((posted, banner), (Delivery::Logged, None), "bannered twice");
+    let (posted, banner) = center.post(&allow, "chat", "Chat", post("bob", "#room"), now, 170);
+    assert_eq!(posted, Delivery::Banner);
+    assert_eq!(banner.map(|banner| banner.title), Some("bob".to_owned()));
 }
 
 /// What this device's run posted first is not logged again when the OS

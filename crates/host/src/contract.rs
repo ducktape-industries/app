@@ -235,6 +235,13 @@ pub struct OsFacts {
     /// [`motion::ANDROID`]. A pointer window never moves, so the desktop's
     /// is never read.
     pub motion: motion::Idiom,
+    /// The OS asks the person once whether the app may show notices at all
+    /// (a phone's own prompt, and its Settings switch after), and no
+    /// permission bar asks per program: a program they said nothing of
+    /// here shows its banners, as the push server shows them for the same
+    /// person while the app is closed (`notify::Settings::unasked`). The
+    /// desktop asks per program.
+    pub os_asks_notices: bool,
 }
 
 /// Values that differ by device and have a measured owner (SPEC §4.5).
@@ -920,6 +927,7 @@ pub mod testing {
                 one_layout: false,
                 floats: true,
                 motion: crate::motion::IOS,
+                os_asks_notices: false,
             }
         }
 

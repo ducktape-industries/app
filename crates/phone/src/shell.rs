@@ -214,9 +214,24 @@ fn withdraw_shown<'a>(entries: impl IntoIterator<Item = &'a Entry>) {
 }
 
 /// A chain taken up opens its log: the OS's notices waiting for it go in.
+/// The chain in hand is published for the OS's own threads
+/// ([`crate::os::hold_chain`]) now and on each move of the session.
 fn log_on_connect(shared: &Shared, cx: &mut App) {
-    cx.observe(&shared.session, |_, cx| log_os_notices(cx))
-        .detach();
+    hold_chain(&shared.session, cx);
+    cx.observe(&shared.session, |session, cx| {
+        hold_chain(&session, cx);
+        log_os_notices(cx);
+    })
+    .detach();
+}
+
+/// The chain `session` is connected to, or none, published.
+fn hold_chain(session: &Entity<Session>, cx: &App) {
+    let session = session.read(cx).get();
+    crate::os::hold_chain(match session.connected {
+        true => &session.chain,
+        false => "",
+    });
 }
 
 /// The OS's notices waiting for the chain in hand, logged.
@@ -1547,7 +1562,8 @@ impl Root {
     }
 
     /// The three words for a program's notices, the one in force checked
-    /// (the desktop's Allow, Silent, Block).
+    /// (the desktop's Allow, Silent, Block): with none said, the phone's
+    /// (`Settings::unasked`).
     fn notifications_sheet(
         &mut self,
         program: &'static str,
@@ -1556,15 +1572,8 @@ impl Root {
     ) -> AnyElement {
         let name = home::row_of(&self.shared, program, cx)
             .map_or_else(|| program.to_owned(), |row| home::name_of(&row));
-        let now = self
-            .shared
-            .prefs
-            .read(cx)
-            .get()
-            .notify
-            .views
-            .get(program)
-            .copied();
+        let notify = &self.shared.prefs.read(cx).get().notify;
+        let now = notify.views.get(program).copied().or(notify.unasked);
         let head = sheet::head(palette).child(
             look::text(look::BODY, FontWeight::MEDIUM, palette.foreground())
                 .child(format!("Notifications from {name}")),

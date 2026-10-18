@@ -129,6 +129,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         }
     }
 
+    /** This phone's own banner of a program's notice (Rust's `Banners::post`, the app in front): [Ring.banner]. */
+    fun banner(payload: String): Boolean = Ring.banner(this, payload)
+
     /**
      * The system bars' icons over the app's appearance (Rust `os::system_bars`, from App settings › Appearance or
      * the system's): light icons over a [dark] app, dark ones over a light one. The theme's `values-night` sets them

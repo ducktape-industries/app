@@ -574,6 +574,8 @@ impl OsServices for Headless {
             one_layout: true,
             floats: false,
             motion: ducktape_host::motion::IOS,
+            // its recipients' settings answer for them (`unasked`)
+            os_asks_notices: false,
         }
     }
 

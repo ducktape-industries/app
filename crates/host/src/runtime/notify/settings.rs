@@ -56,7 +56,9 @@ pub struct Settings {
     pub views: BTreeMap<String, Permission>,
     /// The word on a program `views` holds none for: `None` logs its
     /// notices, rings its calls and asks the person (the permission bar); a
-    /// host with no one to ask answers for them (`crates/pushd`).
+    /// host with no one to ask answers for them (`crates/pushd`), and so
+    /// does a device whose OS asks for the whole app
+    /// (`OsFacts::os_asks_notices`): Allow.
     pub unasked: Option<Permission>,
 }
 
@@ -85,7 +87,8 @@ fn kept<R>(change: impl FnOnce(&mut Option<Settings>) -> R) -> R {
 impl Settings {
     /// Off the prefs file, and kept for [`Settings::kept`].
     pub fn load() -> Self {
-        let settings = Self::of(&read_prefs().unwrap_or_default());
+        let asks = crate::contract::os().facts().os_asks_notices;
+        let settings = Self::of(&read_prefs().unwrap_or_default(), asks);
         kept(|kept| *kept = Some(settings.clone()));
         settings
     }
@@ -96,7 +99,8 @@ impl Settings {
         kept(|kept| kept.clone()).unwrap_or_else(Self::load)
     }
 
-    pub(super) fn of(prefs: &serde_json::Value) -> Self {
+    /// `prefs` as settings; `os_asks`: the OS asked for the whole app.
+    pub(super) fn of(prefs: &serde_json::Value, os_asks: bool) -> Self {
         let burst = prefs[BURST_PREF]
             .as_u64()
             .and_then(|burst| BURSTS.into_iter().find(|it| u64::from(*it) == burst))
@@ -112,7 +116,7 @@ impl Settings {
             in_front: prefs[FRONT_PREF].as_str() == Some("show"),
             burst,
             views,
-            unasked: None,
+            unasked: os_asks.then_some(Permission::Allow),
         }
     }
 }

@@ -6,9 +6,8 @@
 //!
 //! Directories are the app container's, handed in by the launcher (as the
 //! Expo core takes its `data_dir`); keys are the Expo build's ([`crate::key`]);
-//! banners are not posted yet (a later cut posts them through
-//! `UNUserNotificationCenter` / `NotificationManager`); no node runs here, so
-//! no invite is minted.
+//! banners are the OS's own while the app is in front ([`PhoneBanners`]); no
+//! node runs here, so no invite is minted.
 
 #[cfg(target_os = "android")]
 pub mod android;
@@ -57,10 +56,11 @@ use ducktape_host::contract::{
 };
 use ducktape_host::motion;
 use ducktape_host::runtime::Answered;
-use ducktape_host::runtime::notify::{Click, Notice};
-use gpui_kit::{App, Context, Subscription, Window, WindowInsets};
+use ducktape_host::runtime::notify::{Click, Notice, NoticeKind};
+use gpui_kit::{App, AppLifecyclePhase, Context, Subscription, Window, WindowInsets};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 /// What the phone feeds the host after start (`contract::Inbound`), kept
 /// for the OS callbacks that arrive outside gpui (Android's Java thread).
@@ -78,6 +78,48 @@ pub fn send(signal: Signal) {
     if let Some(inbound) = INBOUND.get() {
         inbound.send(signal);
     }
+}
+
+/// The chain in hand while the session is connected, empty while none is,
+/// as the shell last published it ([`hold_chain`]): what the OS's own
+/// threads read (a push that comes while the app is in front, a banner's
+/// payload) without reaching the app.
+static IN_HAND: Mutex<String> = Mutex::new(String::new());
+
+/// The app in front of the person, as the OS's lifecycle last said
+/// ([`follow`]); it starts there.
+static IN_FRONT: AtomicBool = AtomicBool::new(true);
+
+/// The chain in hand now (`chain`), `""` while the session is not
+/// connected: the shell's word, on each move of the session.
+pub(crate) fn hold_chain(chain: &str) {
+    let mut held = IN_HAND.lock().unwrap_or_else(PoisonError::into_inner);
+    if *held != chain {
+        *held = chain.to_owned();
+    }
+}
+
+fn in_hand() -> String {
+    IN_HAND
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+}
+
+/// The app's place on screen, to the host and kept for the banners
+/// ([`IN_FRONT`]): in front until it is in the background or its scene
+/// is gone (an inactive app, under Control Centre, is still on screen).
+#[cfg_attr(
+    not(any(target_os = "ios", target_os = "android")),
+    expect(dead_code, reason = "only a phone's lifecycle calls it")
+)]
+fn lifecycle(phase: AppLifecyclePhase) {
+    let front = !matches!(
+        phase,
+        AppLifecyclePhase::Background | AppLifecyclePhase::Disconnected
+    );
+    IN_FRONT.store(front, Ordering::Relaxed);
+    send(Signal::Lifecycle(phase));
 }
 
 /// Links the OS handed the app (an Android intent's data, an iOS scene's
@@ -106,7 +148,8 @@ pub fn link(url: String) {
 /// the push server carried it: its payload is `Push::payload`'s in
 /// `crates/pushd` (`kind`, `chain`, `program`, `tag`, `title`, `body`,
 /// `link`, `until`; on Android every value a string, FCM's data), the
-/// banner its centre let through.
+/// banner its centre let through. This phone's own banner carries the same
+/// ([`banner_payload`]), and `at`, its row's time.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OsNotice {
     /// The chain whose log it goes into, as links spell it.
@@ -115,22 +158,27 @@ pub struct OsNotice {
     pub notice: Notice,
     /// Unix seconds the OS showed it at.
     pub at: i64,
-    /// Handed over as it came while the app was in front: the OS showed
-    /// nothing.
+    /// Handed over as it came while the app was in front, and the OS
+    /// showed nothing: this phone's own notifier banners it
+    /// ([`OsNotice::shows_in_front`]).
     pub front: bool,
     /// The person opened it from the OS.
     pub opened: bool,
 }
 
 impl OsNotice {
-    /// `payload` (JSON) as the OS kept it; `None` for one that is no
-    /// program's notice (a call, a withdraw, not the carrier's).
+    /// `payload` (JSON) as the OS kept it, shown at `at` unless it names
+    /// its own time (this phone's banner: its row's, which the OS's comes a
+    /// moment after); `None` for one that is no program's notice (a call, a
+    /// withdraw, "N more", not the carrier's).
     pub fn of(payload: &str, at: i64, front: bool, opened: bool) -> Option<Self> {
         let payload: serde_json::Value = serde_json::from_str(payload).ok()?;
         let text = |key: &str| payload[key].as_str().unwrap_or_default().to_owned();
         if text("kind") != "notice" || text("chain").is_empty() || text("program").is_empty() {
             return None;
         }
+        let own = payload["at"].as_i64().or_else(|| text("at").parse().ok());
+        let at = own.unwrap_or(at);
         Some(Self {
             chain: text("chain"),
             notice: Notice {
@@ -145,6 +193,18 @@ impl OsNotice {
             front,
             opened,
         })
+    }
+
+    /// Whether the OS shows one that came while the app was in front by
+    /// the OS's word: unless this phone banners it itself, which it does
+    /// with the app `in_front` by its own lifecycle on the chain of the
+    /// notice in hand (`in_hand`, `""`: none connected). Those are the
+    /// notifiers this phone runs, and what they post is the banner
+    /// ([`PhoneBanners`]: the same two words); they also leave alone what
+    /// the person is looking at (`host.screen`), which the push server
+    /// cannot see.
+    fn shows_in_front(&self, in_hand: &str, in_front: bool) -> bool {
+        self.front && !(in_front && self.chain == in_hand)
     }
 }
 
@@ -163,15 +223,22 @@ fn os_notice_channel() -> &'static (
 }
 
 /// Hands the OS's notice `payload` (JSON), shown at `at`, to the shell
-/// ([`os_notices`]); one that is no program's notice is let go.
-pub fn os_notice(payload: &str, at: i64, front: bool, opened: bool) {
-    let Some(notice) = OsNotice::of(payload, at, front, opened) else {
+/// ([`os_notices`]); one that is no program's notice is let go. Whether the
+/// OS shows one that came while the app is in front
+/// ([`OsNotice::shows_in_front`]). From the OS's own thread: it reads only
+/// what the shell published.
+pub fn os_notice(payload: &str, at: i64, front: bool, opened: bool) -> bool {
+    let Some(mut notice) = OsNotice::of(payload, at, front, opened) else {
         tracing::debug!(target: "ducktape::phone", "an OS notice that is no program's");
-        return;
+        return false;
     };
+    let shows = notice.shows_in_front(&in_hand(), IN_FRONT.load(Ordering::Relaxed));
+    // shown, it is logged as any the OS showed
+    notice.front &= !shows;
     if let Err(error) = os_notice_channel().0.try_send(notice) {
         tracing::error!(target: "ducktape::phone", %error, "an OS notice was lost");
     }
+    shows
 }
 
 /// Takes the OS's notices under `tag` (the push server's banner tag,
@@ -312,6 +379,28 @@ pub struct PhoneOs {
 }
 
 impl PhoneOs {
+    /// The phone's [`OsFacts`].
+    fn facts_of() -> OsFacts {
+        OsFacts {
+            mac_modifiers: false,
+            // `getrusage`'s `ru_maxrss`: bytes on Darwin, kibibytes on Linux
+            rss_unit: if cfg!(target_os = "ios") { 1 } else { 1024 },
+            touch_first: true,
+            // the Expo build's label for this key (mobile `node.rs:344`)
+            device_label: "Phone",
+            device_noun: "phone",
+            one_layout: true,
+            floats: false,
+            motion: if cfg!(target_os = "android") {
+                motion::ANDROID
+            } else {
+                motion::IOS
+            },
+            // iOS's alert prompt, Android 13's POST_NOTIFICATIONS
+            os_asks_notices: true,
+        }
+    }
+
     /// The services over the container's `documents` and `caches`, every
     /// directory made. A sentence when a directory cannot be made or the
     /// OS gives no randomness for the reader key.
@@ -327,18 +416,93 @@ impl PhoneOs {
     }
 }
 
-/// Banners are not posted yet: `post` answers that nothing went up. A
-/// withdraw (its program saw it, or its `until`) takes the push server's
-/// copy under the tag out of the OS's list ([`withdraw_notice`]).
-struct NoBanners;
+/// The OS's own banners (iOS's, Android's notification), for what this
+/// phone's notifiers post while the app is in front (owner 10-17): what is
+/// a notice, for whom, its words, tag, link and withdrawal are each
+/// program's, decided in its notifier; the host's centre lets it through
+/// (the person's word, the burst); this only shows it. While the app is
+/// not in front, the push server shows the same notices: none here then,
+/// so none shows twice. A call is the ring's (CallKit, `Ring.kt`), never a
+/// banner. A withdraw (its program saw it, or its `until`) takes what
+/// stands under the tag out of the OS's list, this phone's and the push
+/// server's ([`withdraw_notice`]).
+struct PhoneBanners;
 
-impl Banners for NoBanners {
-    fn post(&self, _: &Notice, _: Option<Click>) -> bool {
-        false
+impl Banners for PhoneBanners {
+    fn post(&self, notice: &Notice, click: Option<Click>) -> bool {
+        let row = match click {
+            Some(Click::Row(id)) => Some(row_at(id)),
+            _ => None,
+        };
+        let front = IN_FRONT.load(Ordering::Relaxed);
+        match banner_payload(notice, row, &in_hand(), front) {
+            Some(payload) => show_banner(&payload.to_string()),
+            None => false,
+        }
     }
 
     fn withdraw(&self, tag: &str) {
         withdraw_notice(tag);
+    }
+}
+
+/// When the app's centre logged row `id` (now, if it is gone).
+fn row_at(id: u64) -> i64 {
+    let center = ducktape_host::runtime::notify::center().lock();
+    let row = center.entries().find(|entry| entry.id == id);
+    row.map_or_else(ducktape_host::runtime::notify::wall, |entry| entry.at)
+}
+
+/// What this phone's banner of `notice` carries (its `userInfo`, its
+/// notification's extras): the push server's payload for it
+/// (`Push::show` in crates/pushd) on `chain`, so a tap on it is read and
+/// opened as a pushed one's is ([`OsNotice`]), under the same id (a late
+/// push of it replaces it, never stands beside it), and `at`, the time of `row`,
+/// the row it opens. "N more" opens no row: no program's notice, a tap on
+/// it only brings the app up. None for a call, with no chain in hand, or
+/// with the app not in `front`.
+fn banner_payload(
+    notice: &Notice,
+    row: Option<i64>,
+    chain: &str,
+    front: bool,
+) -> Option<serde_json::Value> {
+    if !front || chain.is_empty() || notice.kind == NoticeKind::Call {
+        return None;
+    }
+    let mut payload = serde_json::json!({
+        "kind": "more",
+        "chain": chain,
+        "program": notice.program,
+        "tag": notice.tag,
+        "title": notice.title,
+        "body": notice.body,
+        "id": notice.os_id(),
+    });
+    if let Some(at) = row {
+        payload["kind"] = "notice".into();
+        payload["link"] = notice.link.clone().into();
+        payload["until"] = notice.until.into();
+        payload["at"] = at.into();
+    }
+    Some(payload)
+}
+
+/// `payload` ([`banner_payload`]) up as the OS's own banner; whether it
+/// was handed to the OS.
+fn show_banner(payload: &str) -> bool {
+    #[cfg(target_os = "ios")]
+    {
+        ios::ffi::banner(payload)
+    }
+    #[cfg(target_os = "android")]
+    {
+        android::jni::banner(payload)
+    }
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    {
+        let _ = payload;
+        false
     }
 }
 
@@ -387,7 +551,7 @@ impl OsServices for PhoneOs {
     }
 
     fn banners(&self) -> &dyn Banners {
-        &NoBanners
+        &PhoneBanners
     }
 
     /// gpui_ios answers the safe area and the keyboard itself; gm's host
@@ -415,22 +579,7 @@ impl OsServices for PhoneOs {
     }
 
     fn facts(&self) -> OsFacts {
-        OsFacts {
-            mac_modifiers: false,
-            // `getrusage`'s `ru_maxrss`: bytes on Darwin, kibibytes on Linux
-            rss_unit: if cfg!(target_os = "ios") { 1 } else { 1024 },
-            touch_first: true,
-            // the Expo build's label for this key (mobile `node.rs:344`)
-            device_label: "Phone",
-            device_noun: "phone",
-            one_layout: true,
-            floats: false,
-            motion: if cfg!(target_os = "android") {
-                motion::ANDROID
-            } else {
-                motion::IOS
-            },
-        }
+        Self::facts_of()
     }
 
     fn limits(&self) -> Limits {
@@ -543,7 +692,7 @@ pub fn follow<T: 'static>(window: &mut Window, cx: &mut Context<T>) -> Vec<Subsc
     #[cfg(target_os = "ios")]
     {
         vec![
-            cx.on_app_lifecycle(|phase, _| send(Signal::Lifecycle(phase))),
+            cx.on_app_lifecycle(|phase, _| lifecycle(phase)),
             cx.on_memory_warning(|_| send(Signal::MemoryWarning)),
         ]
     }
@@ -552,11 +701,11 @@ pub fn follow<T: 'static>(window: &mut Window, cx: &mut Context<T>) -> Vec<Subsc
         // the window active is the app in the foreground (SPEC §7.5): the
         // session's status poll starts again on it
         vec![cx.observe_window_activation(window, |_, window, _| {
-            send(Signal::Lifecycle(if window.is_window_active() {
-                gpui_kit::AppLifecyclePhase::Foreground
+            lifecycle(if window.is_window_active() {
+                AppLifecyclePhase::Foreground
             } else {
-                gpui_kit::AppLifecyclePhase::Background
-            }))
+                AppLifecyclePhase::Background
+            })
         })]
     }
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
@@ -783,6 +932,192 @@ mod tests {
         assert_eq!(
             OsNotice::of(r#"{"aps":{"alert":"hi"}}"#, 5, false, false),
             None
+        );
+    }
+
+    /// The push server's payload for a direct message from `title` on
+    /// `chain` (`Push::payload`, as the OS keeps it), under chat's tag for
+    /// that room.
+    fn pushed(chain: &str, title: &str) -> String {
+        serde_json::json!({
+            "kind": "notice", "chain": chain, "program": "chat", "tag": format!("chat/@{title}"),
+            "title": title, "body": "said", "link": "", "until": 0,
+        })
+        .to_string()
+    }
+
+    /// A push the OS hands over as in front shows unless this phone
+    /// banners it itself: the app in front by its own lifecycle, on the
+    /// push's chain. Another chain's, one with none connected, and one the
+    /// app's lifecycle already put behind (iOS asks a moment after a move
+    /// to the background) show. Delivered or opened, it is no front's.
+    #[test]
+    fn a_push_in_front_shows_unless_this_phone_banners_it() {
+        let shows = |chain: &str, in_hand: &str, front: bool, in_front: bool| {
+            let notice = OsNotice::of(&pushed(chain, "ada"), 5, front, false).expect("a notice");
+            notice.shows_in_front(in_hand, in_front)
+        };
+        assert!(
+            !shows("garage#1", "garage#1", true, true),
+            "shown over its own notifier's banner"
+        );
+        assert!(
+            shows("other#2", "garage#1", true, true),
+            "another chain's was hidden"
+        );
+        assert!(
+            shows("garage#1", "", true, true),
+            "hidden with no chain connected"
+        );
+        assert!(
+            shows("garage#1", "garage#1", true, false),
+            "hidden with the app behind, where this phone banners nothing"
+        );
+        assert!(
+            !shows("other#2", "garage#1", false, true),
+            "a delivered one shown again"
+        );
+    }
+
+    /// This phone's banner carries the push server's payload on the chain
+    /// in hand and its row's time, so the OS's copy of it and a tap on it
+    /// read as a pushed one's at that time (not the OS's, a moment later);
+    /// "N more" opens no row and is no program's notice. A call, the app
+    /// not in front, or no chain in hand: no banner.
+    #[test]
+    fn this_phones_banner_is_the_pushs_payload_at_its_rows_time() {
+        let notice = Notice {
+            title: "ada".into(),
+            body: "said".into(),
+            tag: "chat/#room".into(),
+            program: "chat".into(),
+            link: "duck://garage/chat/room/7".into(),
+            ..Notice::default()
+        };
+        let payload = banner_payload(&notice, Some(100), "garage#1", true).expect("a banner");
+        let opened = OsNotice::of(&payload.to_string(), 101, false, true).expect("a notice");
+        assert_eq!((opened.chain.as_str(), opened.at), ("garage#1", 100));
+        assert_eq!(opened.notice, notice);
+        // the push's own id for it (Android shows none without one)
+        assert_eq!(payload["id"], notice.os_id(), "not the push's id");
+        // Android keeps every value a string (`Ring.banner`)
+        let strings = payload.as_object().unwrap().iter();
+        let strings: serde_json::Map<_, _> = strings
+            .map(|(key, value)| (key.clone(), value.to_string().trim_matches('"').into()))
+            .collect();
+        let shade = OsNotice::of(
+            &serde_json::Value::Object(strings).to_string(),
+            101,
+            false,
+            false,
+        );
+        assert_eq!(
+            shade.map(|it| it.at),
+            Some(100),
+            "the shade's copy at the OS's time"
+        );
+        assert_eq!(
+            OsNotice::of(&pushed("garage#1", "ada"), 101, false, false).map(|it| it.at),
+            Some(101)
+        );
+
+        let more = banner_payload(&notice, None, "garage#1", true).expect("a banner");
+        assert_eq!(
+            OsNotice::of(&more.to_string(), 101, false, true),
+            None,
+            "N more opened a row"
+        );
+        let call = Notice {
+            kind: NoticeKind::Call,
+            ..notice.clone()
+        };
+        assert_eq!(
+            banner_payload(&call, Some(100), "garage#1", true),
+            None,
+            "a call bannered"
+        );
+        assert_eq!(
+            banner_payload(&notice, Some(100), "garage#1", false),
+            None,
+            "bannered behind"
+        );
+        assert_eq!(
+            banner_payload(&notice, Some(100), "", true),
+            None,
+            "bannered with no chain"
+        );
+    }
+
+    /// What the person sees while the app is in front on a chain, with the
+    /// phone's word on a program they said nothing of (`os_asks_notices`):
+    /// each notice is one banner of the OS's. A push for the chain in hand
+    /// shows nothing, and this phone's notifier's post of it is the banner;
+    /// one for another chain shows itself; one the OS showed before the app
+    /// came up is not bannered again when the notifier here catches up; a
+    /// tap on this phone's banner reads its row.
+    #[test]
+    fn in_front_each_notice_is_one_os_banner() {
+        use ducktape_host::runtime::notify::{CenterHandle, Permission, Settings};
+        assert!(PhoneOs::facts_of().os_asks_notices);
+        let settings = Settings {
+            banners: true,
+            in_front: false,
+            burst: 6,
+            views: Default::default(),
+            unasked: Some(Permission::Allow),
+        };
+        let handle = CenterHandle::default();
+        let mut center = handle.lock();
+        let now = std::time::Instant::now();
+        let post = |title: &str| view_wire::methods::Notification {
+            title: title.into(),
+            body: "said".into(),
+            tag: format!("@{title}"),
+            ..Default::default()
+        };
+        let mut banners = Vec::new();
+
+        // in front on garage#1: ada's push and this phone's run of it
+        let push = OsNotice::of(&pushed("garage#1", "ada"), 100, true, false).unwrap();
+        if push.shows_in_front("garage#1", true) {
+            banners.push("ada, pushed");
+        }
+        let (_, raised) = center.post(&settings, "chat", "Chat", post("ada"), now, 100);
+        let row = center.entries().next().map(|row| (row.id, row.at));
+        let ours = raised
+            .and_then(|notice| banner_payload(&notice, row.map(|row| row.1), "garage#1", true));
+        if ours.is_some() {
+            banners.push("ada, this phone's");
+        }
+        // another chain's push
+        if OsNotice::of(&pushed("other#2", "bob"), 110, true, false)
+            .unwrap()
+            .shows_in_front("garage#1", true)
+        {
+            banners.push("bob, pushed");
+        }
+        // cy's push the OS showed while the app was away, then the catch-up
+        let shown = OsNotice::of(&pushed("garage#1", "cy"), 150, false, false).unwrap();
+        center.carried(&settings, &shown.notice, shown.at, false);
+        let (_, raised) = center.post(&settings, "chat", "Chat", post("cy"), now, 160);
+        if raised.is_some() {
+            banners.push("cy, this phone's");
+        }
+        assert_eq!(banners, ["ada, this phone's", "bob, pushed"]);
+
+        // ada's banner tapped, the OS's time a moment after its row's
+        let tapped = OsNotice::of(&ours.unwrap().to_string(), 101, false, true).unwrap();
+        center.carried(&settings, &tapped.notice, tapped.at, tapped.opened);
+        let ada = center
+            .entries()
+            .find(|entry| Some(entry.id) == row.map(|row| row.0));
+        assert!(ada.is_some_and(|ada| ada.read), "tapped, and still unread");
+        assert_eq!(
+            center
+                .entries()
+                .filter(|entry| entry.title == "ada")
+                .count(),
+            1
         );
     }
 

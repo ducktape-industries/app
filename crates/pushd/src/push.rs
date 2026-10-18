@@ -8,7 +8,7 @@
 //! remote-notification token as an alert and to an Android phone as a
 //! high-priority data message the app shows (`Ring.kt`). Each notice is
 //! its own notification under its id, the hash of its tag and link
-//! (`notice_id`: APNs's collapse id, Android's notification tag), and
+//! (`Notice::os_id`: APNs's collapse id, Android's notification tag), and
 //! a tag's notices stack together (iOS's `thread-id` and Android's group
 //! are the tag): a chat room's messages stand side by side, and the same
 //! notice posted again (a run restarted) replaces itself. The "N more"
@@ -478,7 +478,7 @@ impl Push {
     /// The requests that show `notice` on every device, at `now`; `quiet`
     /// when one under its tag already stands there.
     fn show(&self, notice: &Notice, now: u64, quiet: bool) -> Vec<Request> {
-        let id = notice_id(&notice.tag, &notice.link);
+        let id = notice.os_id();
         let mut payload = self.payload(notice, "notice");
         payload["id"] = id.clone().into();
         let mut requests = Vec::new();
@@ -661,14 +661,6 @@ fn collapse_id(tag: &str) -> String {
         true => tag.to_owned(),
         false => sha256(tag),
     }
-}
-
-/// A notice's id on the phones (its APNs collapse id, Android's
-/// notification tag): the same tag and link, the same notice, which replaces
-/// itself; any other stands beside it. Always hashed: 64 bytes, APNs's
-/// limit, and a header value whatever the program's tag holds.
-fn notice_id(tag: &str, link: &str) -> String {
-    sha256(&format!("{tag}\n{link}"))
 }
 
 /// `text`'s SHA-256, in hex.
