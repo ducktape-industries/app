@@ -193,50 +193,103 @@ pub async fn view_of(
     })
 }
 
-/// A program's blob: the cache's copy, else the node's, which the cache
-/// keeps from then on. Only code the roster names is read here (a seat's,
-/// `program.describe`'s, `blob.manifest`'s), so the cache holds at most
-/// what the network runs or has scheduled.
+/// A program's blob: the cache's copy, else the node's, streamed into the
+/// cache ([`fetched`]) and read from there, or read whole off the node
+/// when the cache cannot keep it (a full disk). Only code the roster names
+/// is read here (a seat's, `program.describe`'s, `blob.manifest`'s), so
+/// the cache holds at most what the network runs or has scheduled.
 pub async fn program_bytes(
     client: &RpcClient,
     code: &BlobId,
 ) -> Result<(Vec<u8>, &'static str), Fetch> {
-    let cached = cache_path(code);
-    if let Some(path) = &cached
-        && let Ok(mut framed) = tokio::fs::read(path).await
+    let path = cache_path(code);
+    if let Ok(mut framed) = tokio::fs::read(&path).await
         && hashes_to(&framed, code)?
         && let Some(body) = body_at(&framed)
     {
         framed.drain(..body);
         return Ok((framed, "disk"));
     }
-    let mut framed = client
-        .blob(*code)
-        .await
-        .map_err(fetch_error)?
-        .ok_or(Fetch::NotHeld)?;
+    let mut framed = match fetched(client, code, &path).await {
+        // hashed as it landed: read back as it is
+        Ok(landed) => {
+            landed?;
+            tokio::fs::read(&path).await.map_err(|error| {
+                Fetch::Unreadable(format!("the program's code was not kept: {error}"))
+            })?
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "ducktape::app",
+                reason = "program_code_unkept",
+                %error,
+                "the cache could not keep a program's code; it is read whole from the node"
+            );
+            let framed = client
+                .blob(*code)
+                .await
+                .map_err(fetch_error)?
+                .ok_or(Fetch::NotHeld)?;
+            if !hashes_to(&framed, code)? {
+                return Err(Fetch::Corrupt);
+            }
+            framed
+        }
+    };
     let body = body_at(&framed)
         .ok_or_else(|| Fetch::Unreadable("the blob carries no git header".into()))?;
-    if !hashes_to(&framed, code)? {
-        return Err(Fetch::Corrupt);
-    }
-    // written whole or not at all (a sibling of its own, renamed into
-    // place): a reader never meets half a blob
-    if let Some(path) = cached {
-        static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let kept = path.with_extension(format!("{n}.partial"));
-        if let Some(parent) = path.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
-        }
-        if tokio::fs::write(&kept, &framed).await.is_err()
-            || tokio::fs::rename(&kept, &path).await.is_err()
-        {
-            let _ = tokio::fs::remove_file(&kept).await;
-        }
-    }
     framed.drain(..body);
     Ok((framed, "node"))
+}
+
+/// `code`'s blob streamed off the node into the cache at `path`, hashed as
+/// it lands, never held whole: renamed into place once all of it came and
+/// it hashes to `code`. A short or bad stream leaves no file. The outer
+/// error is the cache's (it could not keep the blob: a full disk), the
+/// inner one the node's. The landing file is named by this process too,
+/// so another instance of the app landing the same code never truncates
+/// it.
+async fn fetched(
+    client: &RpcClient,
+    code: &BlobId,
+    path: &Path,
+) -> std::io::Result<Result<(), Fetch>> {
+    use tokio::io::AsyncWriteExt as _;
+    let mut blob = match client.blob_stream(*code).await {
+        Ok(Some(blob)) => blob,
+        Ok(None) => return Ok(Err(Fetch::NotHeld)),
+        Err(error) => return Ok(Err(fetch_error(error))),
+    };
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let landing = path.with_extension(format!("{}-{n}.partial", std::process::id()));
+    let landed = async {
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let mut file = tokio::fs::File::create(&landing).await?;
+        let mut hasher = blob::Hasher::new(code.kind());
+        loop {
+            let piece = match blob.next().await {
+                Ok(Some(piece)) => piece,
+                Ok(None) => break,
+                Err(error) => return Ok(Err(fetch_error(error))),
+            };
+            hasher.update(&piece);
+            file.write_all(&piece).await?;
+        }
+        file.flush().await?;
+        Ok(match hasher.finish() {
+            Ok(landed) if landed == *code => Ok(tokio::fs::rename(&landing, path).await?),
+            Ok(_) => Err(Fetch::Corrupt),
+            Err(_) => Err(Fetch::Collision(*code)),
+        })
+    }
+    .await;
+    if !matches!(landed, Ok(Ok(()))) {
+        let _ = tokio::fs::remove_file(&landing).await;
+    }
+    landed
 }
 
 /// Where `framed`'s body starts, past its `kind len\0` header: the header
@@ -247,13 +300,11 @@ fn body_at(framed: &[u8]) -> Option<usize> {
 }
 
 /// Where the cache keeps `code`'s framed bytes.
-pub(crate) fn cache_path(code: &BlobId) -> Option<PathBuf> {
-    Some(
-        super::dirs()
-            .cache
-            .join("programs")
-            .join(abi::hex(code.digest())),
-    )
+pub(crate) fn cache_path(code: &BlobId) -> PathBuf {
+    super::dirs()
+        .cache
+        .join("programs")
+        .join(abi::hex(code.digest()))
 }
 
 /// A blob id names the FRAMED bytes (`kind len\0body`), as git's does, and
@@ -272,17 +323,26 @@ pub fn view_section(bytes: &[u8]) -> Option<Vec<u8>> {
 /// The notifier inside `code`'s blob, or `None` when the program ships
 /// none (a view-only entry never does). Every listed program's blob is
 /// asked, to find the few that carry one, and a blob is megabytes, most of
-/// it the view: the cache's copy is read through in pieces, the notifier
-/// alone kept ([`cached_section`]).
+/// it the view: it is streamed into the cache ([`fetched`]) and read
+/// through in pieces there, the notifier alone kept ([`cached_section`]).
+/// A cache that cannot keep it (a full disk) fails the read: a notifier is
+/// not worth a whole blob held.
 pub async fn notifier_of(client: &RpcClient, code: &BlobId) -> Result<Option<Vec<u8>>, Fetch> {
-    if let Some(path) = cache_path(code) {
-        let id = *code;
-        let cached =
-            tokio::task::spawn_blocking(move || cached_section(&path, &id, NOTIFY_SECTION));
-        if let Ok(Some(notifier)) = cached.await {
-            return Ok(notifier);
-        }
+    let path = cache_path(code);
+    let cached = || {
+        let (path, id) = (path.clone(), *code);
+        tokio::task::spawn_blocking(move || cached_section(&path, &id, NOTIFY_SECTION))
+    };
+    if let Ok(Some(notifier)) = cached().await {
+        return Ok(notifier);
     }
+    fetched(client, code, &path).await.map_err(|error| {
+        Fetch::Unreadable(format!("the program's code could not be kept: {error}"))
+    })??;
+    if let Ok(Some(notifier)) = cached().await {
+        return Ok(notifier);
+    }
+    // a component ([`cached_section`]'s `ponytail:`), read whole
     let (bytes, _) = program_bytes(client, code).await?;
     Ok(section(&bytes, NOTIFY_SECTION).map(<[u8]>::to_vec))
 }

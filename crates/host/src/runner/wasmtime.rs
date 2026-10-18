@@ -9,6 +9,11 @@
 //! `ViewLimits` bounds memory and tables at the `memory.view_bytes`
 //! setting `prepare` was given; a grow past it traps as [`Fault::Memory`].
 //!
+//! Compiled code is kept across launches as one file per code
+//! ([`code_file`]), mapped as it is (`Module::deserialize_file`): clean
+//! pages the OS shares and drops, where a decompressed copy (wasmtime's own
+//! cache) would be this process's, and the heap its read went through.
+//!
 //! The wasm side of a view is here and nowhere else in the host: its store,
 //! the panic hook it imports (`ducktape_view.panicked`) and the five
 //! exports the bytes cross through (`wire::abi`).
@@ -25,26 +30,27 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, SystemTime};
 use view_wire as wire;
-use wasmtime::{
-    Cache, CacheConfig, Caller, Config, Engine, Linker, Memory, Module, OptLevel, Store, TypedFunc,
-};
+use wasmtime::{Caller, Config, Engine, Linker, Memory, Module, OptLevel, Store, TypedFunc};
 
-/// The one engine, its compile cache, and the code it compiled.
+/// The one engine, the compiled code kept across launches, and the code it
+/// compiled.
 pub struct WasmtimeRunner {
     engine: Engine,
-    /// A handle on the engine's disk cache: `Cache` is `Clone`, and the
-    /// clone reads the hit counters the engine's copy writes.
-    disk: Option<Cache>,
+    /// Where compiled code is kept across launches ([`code_file`]); none
+    /// keeps it in memory only.
+    dir: Option<PathBuf>,
+    /// The engine's settings, as [`code_file`] names them.
+    settings: u64,
     /// Compiled view code by the sha256 of its bytes, with the
     /// `view_bytes` it was last prepared for, while anything holds it
     /// (`Prepared::hold`, a running instance): code nothing holds is freed,
-    /// and compiled again (from the disk cache) when it is prepared again.
+    /// and mapped again (from its file) when it is prepared again.
     code: Mutex<HashMap<[u8; 32], Compiled>>,
     /// Describe modules by the sha256 of their bytes; `None` for bytes that
     /// do not compile.
     described: Mutex<HashMap<[u8; 32], Option<Arc<Module>>>>,
     /// This binary and its compile child's arguments, when compiles run
-    /// apart ([`RunnerConfig::compile_apart`]) and the disk cache is up.
+    /// apart ([`RunnerConfig::compile_apart`]) and there is a cache dir.
     apart: Option<(PathBuf, [OsString; 3])>,
 }
 
@@ -53,13 +59,11 @@ pub struct WasmtimeRunner {
 /// code on its stdin.
 pub const COMPILE_APART: &str = "--compile-view";
 
-/// What the disk cache keeps where compiles run apart: wasmtime's own
-/// soft limit. Its upkeep runs after a write, in the process that wrote,
-/// and that is now a child that exits before it starts ([`prune`]).
+/// What the cache dir keeps ([`prune`]).
 const CACHE_BYTES: u64 = 512 << 20;
 
-/// A `*.wip-*` cache file older than this is a write or a cleanup lock
-/// whose process died before finishing it (wasmtime's cleanup interval).
+/// A file in the cache dir that is not code, once it is older than this: a
+/// write a killed process left, or what an older build kept there.
 const STALE: Duration = Duration::from_secs(60 * 60);
 
 /// Compiled code, as long as something holds it, and the `view_bytes` it
@@ -72,49 +76,129 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// The engine every compile and every load runs on: Cranelift at `Speed`,
+/// fuel on, the shell's trap mode. A parent and its compile child build it
+/// alike, so the file one writes is the file the other maps.
+fn engine(signals_based_traps: bool) -> Engine {
+    let mut wasm = Config::new();
+    wasm.cranelift_opt_level(OptLevel::Speed);
+    wasm.consume_fuel(true);
+    wasm.signals_based_traps(signals_based_traps);
+    Engine::new(&wasm).expect("wasmtime engine")
+}
+
+/// `engine`'s settings as one number: wasmtime's own account of what a
+/// compiled module must match (its version, the target, every compile
+/// setting).
+fn settings(engine: &Engine) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    // fixed keys: the same number in a parent and its child
+    let mut hasher = std::hash::DefaultHasher::new();
+    engine.precompile_compatibility_hash().hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Where `dir` keeps the code compiled out of the bytes hashed `hash` by an
+/// engine with `settings`: named by both, so code another wasmtime or
+/// other settings compiled is never looked for.
+fn code_file(dir: &Path, hash: &[u8; 32], settings: u64) -> PathBuf {
+    let hash = noded_client::hex::hex_encode(hash);
+    dir.join(format!("{hash}-{settings:016x}.cwasm"))
+}
+
+/// The compiled code at `file`, mapped; none when there is no file, or
+/// wasmtime refuses it (another engine's file, or an OS that will not map
+/// a file as code), which is logged. A map is touched, so the file's time
+/// is its last use ([`prune`]).
+fn mapped(engine: &Engine, file: &Path) -> Option<Module> {
+    // SAFETY: wasmtime checks the file's header (its version, the target,
+    // every compile setting) and refuses a mismatch, but trusts the code in
+    // it: whoever writes the file runs code here. It is ours: only this
+    // binary writes it ([`keep`]), under the cache dir this user's shell
+    // gave, named by the code and the settings ([`code_file`]), whole and
+    // renamed into place, never written in place again, so no mapping
+    // changes under a module (a prune unlinks it, which leaves a mapping
+    // whole).
+    let module = match unsafe { Module::deserialize_file(engine, file) } {
+        Ok(module) => module,
+        // no file: the first look before every compile
+        Err(_) if !file.exists() => return None,
+        Err(error) => {
+            tracing::warn!(
+                reason = "view_code_refused",
+                file = %file.display(),
+                error = %first_line(&error),
+            );
+            return None;
+        }
+    };
+    let _ = std::fs::File::options()
+        .write(true)
+        .open(file)
+        .and_then(|file| file.set_modified(SystemTime::now()));
+    Some(module)
+}
+
+/// `compiled` written to `file` whole or not at all: a sibling of its own,
+/// synced, renamed into place. A reader never maps half a file, and a crash
+/// never leaves one for the next launch to run. A write that fails (no
+/// room, a dir not writable) is logged: the code compiles again next time.
+fn keep(file: &Path, compiled: &[u8]) {
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let partial = file.with_extension(format!("{}-{n}.partial", std::process::id()));
+    let written = file
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::File::create(&partial))
+        .and_then(|mut kept| {
+            kept.write_all(compiled)?;
+            kept.sync_all()
+        })
+        .and_then(|()| std::fs::rename(&partial, file));
+    if let Err(error) = written {
+        tracing::warn!(reason = "view_code_unkept", file = %file.display(), %error);
+        let _ = std::fs::remove_file(&partial);
+    }
+}
+
+/// `code` compiled by `engine` and kept at `file` ([`keep`]).
+fn compile_to(engine: &Engine, code: &[u8], file: &Path) -> wasmtime::Result<Vec<u8>> {
+    let compiled = engine.precompile_module(code)?;
+    keep(file, &compiled);
+    Ok(compiled)
+}
+
 impl WasmtimeRunner {
-    /// Cranelift at `Speed`, fuel on, the shell's trap mode, and the disk
-    /// cache under `config.cache_dir` when there is one.
+    /// The [`engine`] in the shell's trap mode, compiled code kept under
+    /// `config.cache_dir` when there is one.
     pub fn new(config: RunnerConfig) -> Self {
-        let mut wasm = Config::new();
-        wasm.cranelift_opt_level(OptLevel::Speed);
-        wasm.consume_fuel(true);
-        wasm.signals_based_traps(config.signals_based_traps);
-        let mut disk = None;
-        let mut apart = None;
-        if let Some(dir) = config.cache_dir {
-            let mut cache = CacheConfig::new();
-            cache.with_directory(&dir);
-            match Cache::new(cache) {
-                Ok(cache) => {
-                    disk = Some(cache.clone());
-                    wasm.cache(Some(cache));
-                    let traps = OsString::from(match config.signals_based_traps {
-                        true => "1",
-                        false => "0",
-                    });
-                    if let Some(exe) = config.compile_apart {
-                        let kept = dir.clone();
-                        let _ = std::thread::Builder::new()
-                            .name("view-cache-upkeep".into())
-                            .spawn(move || prune(&kept, CACHE_BYTES));
-                        apart = Some((exe, [COMPILE_APART.into(), traps, dir.into()]));
-                    }
-                }
-                Err(error) => tracing::warn!(reason = "view_cache_unavailable", %error),
-            }
+        let engine = engine(config.signals_based_traps);
+        let traps = OsString::from(match config.signals_based_traps {
+            true => "1",
+            false => "0",
+        });
+        let apart = match (&config.cache_dir, config.compile_apart) {
+            (Some(dir), Some(exe)) => Some((exe, [COMPILE_APART.into(), traps, dir.into()])),
+            _ => None,
+        };
+        if let Some(dir) = config.cache_dir.clone() {
+            let _ = std::thread::Builder::new()
+                .name("view-cache-upkeep".into())
+                .spawn(move || prune(&dir, CACHE_BYTES));
         }
         Self {
-            engine: Engine::new(&wasm).expect("wasmtime engine"),
-            disk,
+            settings: settings(&engine),
+            engine,
+            dir: config.cache_dir,
             code: Mutex::default(),
             described: Mutex::default(),
             apart,
         }
     }
 
-    /// Compiles `code` (`hash`) into the disk cache in a child of this
-    /// binary, which says whether it found it there (`Disk`) or compiled it
+    /// Compiles `code` (`hash`) into its file in a child of this binary,
+    /// which says whether it found it there (`Disk`) or compiled it
     /// (`Cold`). A child that fails is logged, and the compile happens here
     /// as it did before there was a child; code that does not compile is
     /// not logged, the compile here fails with the reason.
@@ -154,6 +238,42 @@ impl WasmtimeRunner {
                 None
             }
         }
+    }
+
+    /// `code` (sha256 `hash`) as a module, and where it came from: its file
+    /// mapped (`Disk`), else compiled into its file, by a child where there
+    /// is one, and mapped (`Cold`). With no cache dir, or no file written
+    /// (no room), it is compiled here and held in memory.
+    fn compiled(&self, hash: [u8; 32], code: &[u8]) -> Result<(Module, CodeSource), Failure> {
+        let failed = |error: wasmtime::Error| Failure::Runner(error.to_string());
+        let Some(dir) = &self.dir else {
+            return Ok((
+                Module::new(&self.engine, code).map_err(failed)?,
+                CodeSource::Cold,
+            ));
+        };
+        let file = code_file(dir, &hash, self.settings);
+        if let Some(module) = mapped(&self.engine, &file) {
+            return Ok((module, CodeSource::Disk));
+        }
+        if let Some(source) = self.compile_apart(hash, code) {
+            if let Some(module) = mapped(&self.engine, &file) {
+                return Ok((module, source));
+            }
+            // the child compiled it and it is still not there (no room, or
+            // the dir not writable): compiled here too
+            tracing::warn!(
+                reason = "compile_apart_missed",
+                hash = %noded_client::hex::hex_encode(&hash),
+            );
+        }
+        let compiled = compile_to(&self.engine, code, &file).map_err(failed)?;
+        let module = match mapped(&self.engine, &file) {
+            Some(module) => module,
+            // SAFETY: what this engine compiled just now
+            None => unsafe { Module::deserialize(&self.engine, &compiled) }.map_err(failed)?,
+        };
+        Ok((module, CodeSource::Cold))
     }
 
     /// The engine, for the tests that build a module by hand.
@@ -234,37 +354,9 @@ impl ViewRunner for WasmtimeRunner {
             });
         }
         // compiled outside the lock, so unrelated views prepare at once; a
-        // competing compile of the same code adopts the one kept first. A
-        // child compiles it first where there is one, and this compile then
-        // reads the child's from the disk cache.
-        // ponytail: without a child, the disk/cold split reads wasmtime's
-        // process-wide hit counter around the compile, and loaders compile
-        // concurrently on purpose, so a hit landing from another thread can
-        // name a cold compile `disk`.
+        // competing compile of the same code adopts the one kept first
         view_meter::accepts(code).map_err(|refusal| Failure::Unsupported(refusal.to_string()))?;
-        let apart = self.compile_apart(hash, code);
-        let before = self.disk.as_ref().map(Cache::cache_hits);
-        let module =
-            Module::new(&self.engine, code).map_err(|error| Failure::Runner(error.to_string()))?;
-        let hit = matches!(
-            (before, self.disk.as_ref().map(Cache::cache_hits)),
-            (Some(before), Some(after)) if after > before
-        );
-        let source = match (apart, hit) {
-            (Some(source), true) => source,
-            // the child compiled it and it was still not on disk (no room,
-            // or a write a killed child left blocks it): compiled here too.
-            // No hit is a miss here even with other loaders reading.
-            (Some(_), false) => {
-                tracing::warn!(
-                    reason = "compile_apart_missed",
-                    hash = %noded_client::hex::hex_encode(&hash),
-                );
-                CodeSource::Cold
-            }
-            (None, true) => CodeSource::Disk,
-            (None, false) => CodeSource::Cold,
-        };
+        let (module, source) = self.compiled(hash, code)?;
         let mut kept = lock(&self.code);
         kept.retain(|_, (module, _)| module.strong_count() > 0);
         let module = match kept.get(&hash).and_then(|(module, _)| module.upgrade()) {
@@ -296,10 +388,14 @@ impl ViewRunner for WasmtimeRunner {
         let compiled = match compiled {
             Some(compiled) => compiled,
             None => {
-                // the rule a view is taken by, as on iOS (`accepts`)
+                // the rule a view is taken by, as on iOS (`accepts`), kept
+                // as a view's code is; and the rule `describe::host::compile`
+                // takes a module by, that it imports nothing
                 let compiled = view_meter::accepts(module)
                     .ok()
-                    .and_then(|()| ::describe::host::compile(&self.engine, module))
+                    .and_then(|()| self.compiled(hash, module).ok())
+                    .map(|(compiled, _)| compiled)
+                    .filter(|compiled| compiled.imports().len() == 0)
                     .map(Arc::new);
                 lock(&self.described)
                     .entry(hash)
@@ -633,33 +729,28 @@ pub fn compile_child(args: &[OsString]) -> i32 {
     0
 }
 
-/// Compiles `code` into the disk cache at `dir` under the settings a parent
-/// with these `signals_based_traps` compiles with, so the parent's own
-/// compile of it is a hit; whether it was one here already.
+/// Compiles `code` into the file in `dir` a parent with these
+/// `signals_based_traps` maps ([`code_file`]); whether it was there already.
 fn compile_into(
     signals_based_traps: bool,
     dir: PathBuf,
     code: &[u8],
 ) -> Result<CodeSource, (i32, String)> {
-    let runner = WasmtimeRunner::new(RunnerConfig {
-        signals_based_traps,
-        cache_dir: Some(dir),
-        compile_apart: None,
-    });
-    let Some(disk) = &runner.disk else {
-        return Err((2, "no disk cache to compile into".into()));
-    };
-    Module::new(&runner.engine, code).map_err(|error| (1, first_line(&error)))?;
-    Ok(match disk.cache_hits() {
-        0 => CodeSource::Cold,
-        _ => CodeSource::Disk,
-    })
+    use sha2::Digest as _;
+    let engine = engine(signals_based_traps);
+    let file = code_file(&dir, &sha2::Sha256::digest(code).into(), settings(&engine));
+    if mapped(&engine, &file).is_some() {
+        return Ok(CodeSource::Disk);
+    }
+    compile_to(&engine, code, &file).map_err(|error| (1, first_line(&error)))?;
+    Ok(CodeSource::Cold)
 }
 
-/// The disk cache's upkeep where compiles run apart, once at start: the
-/// `*.wip-*` files a killed write or cleanup left past [`STALE`], then the
-/// code least recently read until the rest fits `limit`. Each read rewrites
-/// the `.stats` file beside the code, so that file's time is its last use.
+/// The cache dir's upkeep, once at start: what is not code there goes once
+/// it is older than [`STALE`] (a write a killed process left, what an older
+/// build kept), then the code least recently mapped goes until the rest
+/// fits `limit`. A map touches its file ([`mapped`]), so a file's time is
+/// its last use.
 fn prune(dir: &Path, limit: u64) {
     let now = SystemTime::now();
     let age = |meta: &std::fs::Metadata| {
@@ -668,39 +759,26 @@ fn prune(dir: &Path, limit: u64) {
             .and_then(|at| now.duration_since(at).ok())
             .unwrap_or_default()
     };
-    // the cleanup lock sits at the top, the code under modules/<wasmtime>/
-    let versions = std::fs::read_dir(dir.join("modules"))
-        .into_iter()
-        .flatten()
-        .flatten();
-    let files = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .chain(versions.flat_map(|version| std::fs::read_dir(version.path()).into_iter().flatten()))
-        .flatten();
     let mut code = Vec::new();
-    for file in files {
-        let (path, Ok(meta)) = (file.path(), file.metadata()) else {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let (path, Ok(meta)) = (entry.path(), entry.metadata()) else {
             continue;
         };
-        let name = file.file_name().to_string_lossy().into_owned();
-        if name.contains(".wip-") {
-            if age(&meta) > STALE {
-                let _ = std::fs::remove_file(&path);
-            }
-        } else if meta.is_file() && !name.ends_with(".stats") {
-            let stats = path.with_file_name(format!("{name}.stats"));
-            let unread = std::fs::metadata(&stats).map_or(age(&meta), |stats| age(&stats));
-            code.push((unread, meta.len(), path, stats));
+        if meta.is_file() && path.extension().is_some_and(|ext| ext == "cwasm") {
+            code.push((age(&meta), meta.len(), path));
+        } else if age(&meta) > STALE {
+            let _ = match meta.is_dir() {
+                true => std::fs::remove_dir_all(&path),
+                false => std::fs::remove_file(&path),
+            };
         }
     }
-    code.sort_by_key(|(unread, ..)| *unread);
+    code.sort_by_key(|(unused, ..)| *unused);
     let mut kept = 0;
-    for (_, bytes, path, stats) in code {
+    for (_, bytes, path) in code {
         kept += bytes;
         if kept > limit {
             let _ = std::fs::remove_file(path);
-            let _ = std::fs::remove_file(stats);
         }
     }
 }
@@ -723,12 +801,13 @@ mod tests {
 
     const PAGE: usize = 65_536;
 
-    /// The child's compile is the one this process reads: it builds its
-    /// engine from the same settings, so the cache entry it writes is a hit
-    /// here. Settings drifting apart would compile every view twice, the
-    /// second time here, and keep that compile's memory here again.
+    /// The child's compile is the one this process maps: it builds its
+    /// engine from the same settings, so the file it writes is the one
+    /// looked for here. Settings drifting apart would compile every view
+    /// twice, the second time here, and keep that compile's memory here.
     #[test]
     fn the_childs_compile_is_a_disk_hit_here() {
+        use sha2::Digest as _;
         let dir = tempfile::tempdir().expect("tempdir");
         let code = wat::parse_str(
             r#"(module
@@ -745,18 +824,120 @@ mod tests {
             cache_dir: Some(dir.path().into()),
             compile_apart: None,
         });
-        let prepared = runner.prepare([7; 32], &code, PAGE).expect("prepares");
+        let hash = sha2::Sha256::digest(&code).into();
+        let prepared = runner.prepare(hash, &code, PAGE).expect("prepares");
         assert!(matches!(prepared.source, CodeSource::Disk));
     }
 
-    /// The upkeep a child exits before: code read least recently goes
-    /// first, with its `.stats`, until the rest fits; a write or a cleanup
-    /// lock left past [`STALE`] goes, a younger one (live) stays.
+    /// Compiled code is kept as a file of its own, named by the code and
+    /// the engine's settings, and mapped as it is: the next launch reads it
+    /// off the disk. A file at that name another engine wrote (a stale
+    /// build's, other settings) is refused, never run: the code compiles
+    /// again over it.
     #[test]
-    fn upkeep_drops_the_least_read_code_and_stale_work_files() {
+    fn compiled_code_is_mapped_from_its_own_file_and_a_foreign_one_is_refused() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let code = dir.path().join("modules").join("wasmtime-x");
-        std::fs::create_dir_all(&code).expect("dirs");
+        let code = wat::parse_str(
+            r#"(module
+            (memory (export "memory") 1)
+            (func (export "alloc") (param i32) (result i32) i32.const 64)
+            (func (export "init"))
+            (func (export "tick") (param i32 i32) (result i64) i64.const 0))"#,
+        )
+        .expect("parses");
+        let hash = [5; 32];
+        let runner = |traps| {
+            WasmtimeRunner::new(RunnerConfig {
+                signals_based_traps: traps,
+                cache_dir: Some(dir.path().into()),
+                compile_apart: None,
+            })
+        };
+        let (here, other) = (runner(true), runner(false));
+        let file = code_file(dir.path(), &hash, here.settings);
+        assert_eq!(
+            here.prepare(hash, &code, PAGE).expect("compiles").source,
+            CodeSource::Cold
+        );
+        assert!(file.exists(), "kept as its own file");
+        // a later launch: nothing in memory, the file mapped
+        assert_eq!(
+            runner(true)
+                .prepare(hash, &code, PAGE)
+                .expect("maps")
+                .source,
+            CodeSource::Disk
+        );
+        // another engine's code under this engine's name
+        assert_ne!(here.settings, other.settings);
+        let _ = other.prepare(hash, &code, PAGE).expect("compiles");
+        std::fs::copy(code_file(dir.path(), &hash, other.settings), &file).expect("copies");
+        assert!(mapped(&here.engine, &file).is_none(), "refused, not run");
+        let again = runner(true).prepare(hash, &code, PAGE).expect("compiles");
+        assert_eq!(again.source, CodeSource::Cold);
+        assert!(
+            mapped(&here.engine, &file).is_some(),
+            "compiled again over it"
+        );
+    }
+
+    /// What `run` logged at `warn` and above on this thread, as `fmt`
+    /// prints it.
+    fn warned(run: impl FnOnce()) -> String {
+        #[derive(Clone, Default)]
+        struct Lines(Arc<Mutex<Vec<u8>>>);
+        impl Write for Lines {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                lock(&self.0).extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let lines = Lines::default();
+        let writer = lines.clone();
+        let logger = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(logger, run);
+        String::from_utf8_lossy(&lock(&lines.0)).into_owned()
+    }
+
+    /// A file at code's name that is not mapped says why (a platform that
+    /// refuses to map a file as code, or another engine's file): before,
+    /// the reason was dropped, and only `compile_apart_missed` showed. No
+    /// file at all is the first look before every compile, and says
+    /// nothing.
+    #[test]
+    fn code_whose_file_is_refused_says_why() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("refused.cwasm");
+        let engine = engine(true);
+        assert_eq!(warned(|| assert!(mapped(&engine, &file).is_none())), "");
+        std::fs::write(&file, b"not compiled code").expect("write");
+        let said = warned(|| assert!(mapped(&engine, &file).is_none()));
+        assert!(said.contains("view_code_refused"), "{said}");
+    }
+
+    /// Code that cannot be kept (no room, a dir not writable) says why:
+    /// before, every launch compiled every view again without a word.
+    #[test]
+    fn code_that_cannot_be_kept_says_why() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let not_a_dir = dir.path().join("not-a-dir");
+        std::fs::write(&not_a_dir, b"a file").expect("write");
+        let said = warned(|| keep(&not_a_dir.join("code.cwasm"), b"compiled"));
+        assert!(said.contains("view_code_unkept"), "{said}");
+    }
+
+    /// The upkeep: code mapped least recently goes first until the rest
+    /// fits; a write left past [`STALE`] and what an older build kept go,
+    /// a younger write (live) stays.
+    #[test]
+    fn upkeep_drops_the_least_used_code_and_stale_leftovers() {
+        let dir = tempfile::tempdir().expect("tempdir");
         let hours_ago = |hours: u64| SystemTime::now() - Duration::from_secs(hours * 3600);
         let file = |path: &Path, bytes: usize, at: SystemTime| {
             std::fs::write(path, vec![0; bytes]).expect("write");
@@ -766,21 +947,24 @@ mod tests {
                 .and_then(|file| file.set_modified(at))
                 .expect("touch");
         };
-        // written lately, read long ago; written long ago, read lately
-        file(&code.join("old"), 10, hours_ago(1));
-        file(&code.join("old.stats"), 1, hours_ago(9));
-        file(&code.join("new"), 10, hours_ago(9));
-        file(&code.join("new.stats"), 1, hours_ago(1));
-        file(&code.join("new.wip-atomic-write-mod"), 1, hours_ago(9));
-        file(&code.join("now.wip-atomic-write-mod"), 1, SystemTime::now());
-        file(&dir.path().join(".cleanup.wip-1"), 0, hours_ago(2));
+        let at = |name: &str| dir.path().join(name);
+        file(&at("old.cwasm"), 10, hours_ago(9));
+        file(&at("new.cwasm"), 10, hours_ago(1));
+        file(&at("new.1-0.partial"), 1, hours_ago(9));
+        file(&at("now.1-0.partial"), 1, SystemTime::now());
+        // wasmtime's own cache, as an older build kept it
+        let modules = at("modules").join("wasmtime-46.0.3");
+        std::fs::create_dir_all(&modules).expect("dirs");
+        file(&modules.join("code"), 1, hours_ago(9));
+        std::fs::File::open(at("modules"))
+            .and_then(|dir| dir.set_modified(hours_ago(9)))
+            .expect("touch");
         prune(dir.path(), 15);
-        let left = |path: PathBuf| path.exists();
-        assert!(!left(code.join("old")) && !left(code.join("old.stats")));
-        assert!(left(code.join("new")) && left(code.join("new.stats")));
-        assert!(!left(code.join("new.wip-atomic-write-mod")));
-        assert!(left(code.join("now.wip-atomic-write-mod")));
-        assert!(!left(dir.path().join(".cleanup.wip-1")));
+        assert!(!at("old.cwasm").exists());
+        assert!(at("new.cwasm").exists());
+        assert!(!at("new.1-0.partial").exists());
+        assert!(at("now.1-0.partial").exists());
+        assert!(!at("modules").exists());
     }
 
     /// A grow past the module's own maximum is refused and counts nothing:

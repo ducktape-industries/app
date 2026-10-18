@@ -463,7 +463,7 @@ impl FakeNode {
     }
 
     /// The blobs held now, and the most ever held at once.
-    fn held(&self) -> (usize, usize) {
+    pub(in crate::runtime) fn held(&self) -> (usize, usize) {
         let held = self.held.lock().unwrap();
         (held.now, held.most)
     }
@@ -1071,6 +1071,114 @@ fn a_program_read_once_is_read_off_the_disk() {
     let _ = std::fs::remove_file(&kept);
     assert_eq!(first.unwrap(), (body.clone(), "node"));
     assert_eq!(again.unwrap(), (body, "disk"), "the node was asked again");
+}
+
+/// A program's code the cache cannot keep (a full disk; here a file where
+/// its folder goes) is read all the same: whole off the node, hashed, as
+/// before there was a cache. Before, the view did not open.
+#[test]
+fn a_program_the_cache_cannot_keep_is_read_all_the_same() {
+    let body = b"\0asm\x01\0\0\0 a program with no room to keep".to_vec();
+    let code = blob_id(&body);
+    let programs = crate::backend::dirs().cache.join("programs");
+    let _ = std::fs::remove_dir_all(&programs);
+    std::fs::create_dir_all(programs.parent().unwrap()).unwrap();
+    std::fs::write(&programs, b"not a folder").unwrap();
+    let node = FakeNode::new(Vec::new(), Vec::new(), vec![body.clone()]);
+    let client = node.asked_of.client.clone().unwrap();
+    let read = handle().block_on(crate::backend::views::program_bytes(&client, &code));
+    let _ = std::fs::remove_file(&programs);
+    assert_eq!(read.unwrap(), (body, "node"));
+}
+
+/// A program's code is streamed off the node into the cache as it lands,
+/// never held whole: half of it is on the disk while the node still holds
+/// the rest back, in a file named by this process (another instance of the
+/// app landing the same code never truncates it). It is kept only whole
+/// and hashing to its id: other bytes, or fewer than the answer said,
+/// leave nothing behind.
+#[test]
+fn a_program_is_streamed_into_the_cache_and_kept_only_whole() {
+    use super::super::kernel::tests::{read_request, respond};
+    use std::io::Write as _;
+    let body = vec![7; 64 << 10];
+    let code = blob_id(&body);
+    // the files `kept` is written beside, as they land, by this process
+    let landing = |kept: &std::path::Path| {
+        let name = format!("{}.{}-", abi::hex(code.digest()), std::process::id());
+        std::fs::read_dir(kept.parent().unwrap())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|file| {
+                let file = file.file_name().to_string_lossy().into_owned();
+                file.starts_with(&name) && file.ends_with(".partial")
+            })
+            .map(|file| file.metadata().unwrap().len())
+            .collect::<Vec<_>>()
+    };
+    let answer = abi::encode(&Some(framed(&body)));
+    let mut other = answer.clone();
+    *other.last_mut().unwrap() ^= 1;
+    let short = answer[..answer.len() - 3].to_vec();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let client =
+        crate::backend::RpcClient::new(format!("http://{}", listener.local_addr().unwrap()));
+    let served = answer.clone();
+    std::thread::spawn(move || {
+        let mut streams = listener.incoming().flatten();
+        let mut stream = streams.next().unwrap();
+        read_request(&mut stream);
+        let (half, rest) = served.split_at(served.len() / 2);
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            served.len()
+        );
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.write_all(half).unwrap();
+        released.recv().unwrap();
+        stream.write_all(rest).unwrap();
+        for (mut stream, answer) in streams.zip([other, short]) {
+            read_request(&mut stream);
+            respond(&mut stream, "200 OK", &answer);
+        }
+    });
+    // a test thread's files are its own: the reading thread says where
+    let (path, kept) = std::sync::mpsc::channel();
+    let read = {
+        let client = client.clone();
+        std::thread::spawn(move || {
+            path.send(crate::backend::views::cache_path(&code)).unwrap();
+            handle().block_on(crate::backend::views::program_bytes(&client, &code))
+        })
+    };
+    let there = kept.recv().unwrap();
+    eventually(
+        "half the blob on the disk while the node holds the rest",
+        || {
+            landing(&there)
+                .first()
+                .is_some_and(|landed| *landed >= (answer.len() / 2 - 5) as u64)
+        },
+    );
+    release.send(()).unwrap();
+    assert_eq!(read.join().unwrap().unwrap(), (body, "node"));
+    assert!(there.exists() && landing(&there).is_empty());
+    let kept = crate::backend::views::cache_path(&code);
+    for bad in ["other bytes", "fewer bytes"] {
+        use crate::backend::views::Fetch;
+        let read = handle().block_on(crate::backend::views::program_bytes(&client, &code));
+        let refused = match bad {
+            "other bytes" => matches!(read, Err(Fetch::Corrupt)),
+            _ => matches!(read, Err(Fetch::Unreadable(_))),
+        };
+        assert!(refused, "{bad}: {read:?}");
+        assert!(
+            !kept.exists() && landing(&kept).is_empty(),
+            "{bad} left a file"
+        );
+    }
 }
 
 /// A pane that claims a seat compiled out of the blob the roster lists

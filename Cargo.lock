@@ -2814,6 +2814,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
+ "tracing-subscriber",
  "unicode-segmentation",
  "url",
  "usvg 0.46.0",
