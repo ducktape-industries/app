@@ -6,7 +6,8 @@
 //! ([`recovery`]) onto an account; invites minted with the key of the node
 //! this machine runs ([`invite`]); the desktop's own directories
 //! ([`app_dirs`]: the platform rule behind `Dirs`); with feature `call`,
-//! Cisco's OpenH264 binary fetched onto this machine ([`openh264`]).
+//! Cisco's OpenH264 binary fetched onto this machine ([`openh264`]);
+//! `ducktape-app send`, one transaction from the terminal ([`send`]).
 
 pub(crate) mod app_dirs;
 pub(crate) mod auth_page;
@@ -18,7 +19,8 @@ mod loopback;
 pub(crate) mod openh264;
 pub(crate) mod passkey;
 pub(crate) mod recovery;
+pub(crate) mod send;
 
 pub(crate) use app_dirs::{app_log_path, cache_dir, config_dir, data_dir};
 pub(crate) use ducktape_host::backend::*;
-pub(crate) use key_dir::{key_exists, keystore_root, session_key_path};
+pub(crate) use key_dir::{key_exists, keystore_root, open_password_locked};

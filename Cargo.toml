@@ -76,6 +76,7 @@ wasmtime = "=46.0.3"
 gpui-pre-ios = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "c698ed2c7e8eeed46641e5ea9622ee55b84b1486" }
 gpui-pre-mobile = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "c698ed2c7e8eeed46641e5ea9622ee55b84b1486", default-features = false }
 libc = "0.2"
+rpassword = "7"
 
 [features]
 # dev and qa builds only (owner, 2026-09-28): gpui's own frame and input
@@ -142,6 +143,7 @@ tokio = { version = "1", features = ["fs", "macros", "net", "rt", "sync", "time"
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zeroize.workspace = true
+rpassword.workspace = true
 view-wire = { workspace = true, features = ["manifest"] }
 program.workspace = true
 abi.workspace = true

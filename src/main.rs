@@ -45,6 +45,13 @@ fn main() {
         }
         // lay down a self-updating install of this binary
         Some("install") => std::process::exit(update::install_cli()),
+        Some("send") => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            std::process::exit(backend::send::cli(&args, || {
+                let _ = install_os();
+                install_log();
+            }));
+        }
         // a view's compile, in a child so its memory leaves with it
         Some(ducktape_host::runner::COMPILE_APART) => {
             let args: Vec<std::ffi::OsString> = std::env::args_os().skip(2).collect();
@@ -58,6 +65,9 @@ fn main() {
         Some("--help" | "-h") => {
             println!("usage: ducktape-app [--version | --help]");
             println!("       ducktape-app install  (install this binary; it then updates itself)");
+            println!(
+                "       ducktape-app send <network> <program> <hex>  (one transaction, signed with this device's key)"
+            );
             #[cfg(feature = "ax-door")]
             println!("       ducktape-app ax <command...>  (the AX door's client)");
             #[cfg(debug_assertions)]

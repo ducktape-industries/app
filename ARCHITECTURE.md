@@ -91,7 +91,7 @@ the core free of every shell, OS and key crate.
 | `render/av.rs`, `crates/av` | the camera and microphone pieces. With feature `av` (on by default), a camera's pictures per `Node::Camera` and a microphone's level per `Node::Microphone`, recorded and played back (`crates/av` holds every device call and every OS's words, one module per OS: V4L2 on Linux, AVFoundation on macOS, Camera2 on Android, cpal for sound everywhere; `render/av.rs` maps the pieces onto it and answers `camera.devices`, `microphone.devices` and `microphone.chime`); without it each piece draws a line and the methods are refused `unknown_request` | window thread (each device on its own thread) |
 | `render/web.rs`, `crates/web` | the web piece. With feature `web`, a page per `Node::Web` through CEF off-screen rendering (`crates/web` holds every CEF name; `render/web.rs` maps the piece onto it and picks the view that declares `web` for an https link); without it the piece draws a line and links go to the system browser | window thread (CEF's pump turns there) |
 | `backend/` (core) | what crosses the process boundary on every host: `noded` client and signed `Frame`, `session` (the seated key, any `noded_client::Signer`), `views`, `prefs`, recent nodes, `identity`, `join` (another device), `live` (the live session with the node's relay over core's `live-wire`: QUIC on the node's live port, or the websocket `/v1/live`; one per connection, on `Connection.live`, closed at quit) | async, polled where the caller polls (see below) |
-| `src/os.rs`, `src/backend/` (desktop) | the desktop's `OsServices` (`app_dirs`, the freedesktop / macOS banners, `invite`), `device_key`, `key_dir`, `passkey` through `auth_page` and `loopback`, `recovery` | same |
+| `src/os.rs`, `src/backend/` (desktop) | the desktop's `OsServices` (`app_dirs`, the freedesktop / macOS banners, `invite`), `device_key`, `key_dir`, `passkey` through `auth_page` and `loopback`, `recovery`, `send` (`ducktape-app send`: one transaction from the terminal, signed with the device key) | same |
 | `a11y.rs` | role/name/keyboard/state helpers for shell and renderer, plus the class markers the AX door reads | window thread |
 | `ax.rs`, `ax/` | the AX test door: loopback HTTP over the AccessKit tree, its CLI client; built with the `ax-door` feature only | `ax-door` accept thread; answers on the window thread |
 | `fonts.rs`, `tray.rs` | bundled faces and fallback chains; the macOS status item (`Tray`, an entity observing `Session`, `Chain` and `Prefs`) | window thread |
@@ -636,7 +636,7 @@ Connect ─► /v1/status ─► contract check ─► keyring::bind ─► devi
    `backend::seat_key` puts the key in the process-wide `SIGNER` and
    answers the public key (`signer_key`). No password, no phrase for a
    device key. The legacy file is opened once by `Account::unlock(password)`
-   and moved into the OS store (`device_key::save`, which keeps a key only
+   (`key_dir::open_password_locked`) and moved into the OS store (`device_key::save`, which keeps a key only
    where none is kept yet). `Account::lock` calls `lock_signer` and returns to
    `Screen::Unlock`; `browse_without_key` opens the desk read-only.
 3. **Account** (`backend/identity.rs` `account_of_key` →

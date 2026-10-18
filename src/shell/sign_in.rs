@@ -23,18 +23,10 @@ pub(crate) fn unlock(account: &mut Account, password: String, cx: &mut Context<A
     let password = Secret::new(password);
     let keyring = account.keyring().to_owned();
     let work = async move {
-        let opened = tokio::task::spawn_blocking(move || {
-            let path = backend::session_key_path(&keyring)?;
-            let key = keystore::userkey::open_user_key_at(&path, &password)?;
-            // kept by the OS from now on; a refusal only means the
-            // password is asked again next time
-            if let Err(error) = backend::device_key::save(&keyring, &key) {
-                tracing::info!(target: "ducktape::keys", %error, "password-locked key not moved into the OS");
-            }
-            Ok::<_, String>(key)
-        })
-        .await
-        .unwrap_or_else(|_| Err("opening this device's key did not finish".into()));
+        let opened =
+            tokio::task::spawn_blocking(move || backend::open_password_locked(&keyring, &password))
+                .await
+                .unwrap_or_else(|_| Err("opening this device's key did not finish".into()));
         match opened {
             Ok(key) => Ok(backend::seat_key(std::sync::Arc::new(key)).await),
             Err(error) => Err(backend::user_error(error)),
