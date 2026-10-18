@@ -36,6 +36,11 @@ pub(super) struct Mounted {
     /// flight on (one call in flight per instance, `ViewInstance`), sets
     /// this under the same lock, and is the only one to clear it.
     pub(super) owned: bool,
+    /// New code the roster named over what the seat holds already (a view
+    /// drawn or compiled, none, a failure), which stays up until the load
+    /// asked for it (its generation) lands: how far that load has come, as
+    /// the rail counts it ([`Self::prep`]).
+    pub(super) replacing: Option<(u64, Prep)>,
 }
 
 /// Code a load prepared and parked on the seat for the seat's thread to
@@ -73,16 +78,43 @@ impl Mounted {
             swap: None,
             to_start: None,
             owned: false,
+            replacing: None,
         }))
     }
 
     /// Load `generation`'s stage, shown only while the seat shows a load and
     /// still waits for this one: a view drawn, the network's "none" and a
-    /// failure stay up until the load lands.
+    /// failure stay up until the load lands, and the rail hears only that
+    /// a loader is at their replacement. Either way the rail is told.
     pub(super) fn show(&mut self, generation: u64, stage: Slot) {
-        if self.generation == generation && self.slot.loading() {
+        if self.generation != generation {
+            return;
+        }
+        if self.slot.loading() {
             self.slot = stage;
             self.wake.send_replace(());
+        } else if let Some((replacing, prep)) = &mut self.replacing
+            && *replacing == generation
+        {
+            *prep = Prep::Working;
+        } else {
+            return;
+        }
+        rail_moved();
+    }
+
+    /// How far the seat's code has come on this device: waiting for a
+    /// loader, a loader at it (its bytes coming, its manifest read, its code
+    /// compiling), or settled (drawn, compiled, none, failed), unless new
+    /// code the roster named is on its way over what it holds.
+    pub(super) fn prep(&self) -> Prep {
+        match &self.slot {
+            Slot::Loading => Prep::Waiting,
+            Slot::Fetching { .. } | Slot::Listed(_) | Slot::Compiling(_) => Prep::Working,
+            _ => match self.replacing {
+                Some((generation, prep)) if generation == self.generation => prep,
+                _ => Prep::Settled,
+            },
         }
     }
 
@@ -664,8 +696,9 @@ fn install(
         return false;
     }
     // a load that came back at all clears the hold-off; only a failure
-    // puts one back
+    // puts one back. What it replaces is replaced, or stays for good
     locked.retry = None;
+    locked.replacing = None;
     let loaded = match loaded {
         Ok(loaded) => loaded,
         Err(unloaded) => {

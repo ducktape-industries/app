@@ -557,6 +557,8 @@ pub struct Root {
     appearance: Appearance,
     /// Debug mode's numbers, read while the Open tab is on screen.
     readout: debug::Readout,
+    /// The programs Home's caption counts while they are being prepared.
+    run: home::Run,
     /// Home's filter, and whether it is open (its magnifier pressed).
     search: Entity<InputState>,
     filtering: bool,
@@ -673,6 +675,7 @@ impl Root {
             switching: None,
             appearance,
             readout: debug::Readout::default(),
+            run: home::Run::default(),
             search,
             filtering: false,
             watched: BTreeMap::new(),
@@ -1311,9 +1314,11 @@ impl Root {
         cx.notify();
     }
 
-    /// The network listed its programs: Home redraws, and the links kept
-    /// until then open now, in the order they came.
+    /// The network listed its programs, or one's code moved on: Home's
+    /// count follows and Home redraws, and the links kept until then open
+    /// now, in the order they came.
     fn rail_moved(&mut self, cx: &mut Context<Self>) {
+        self.run.follow(self.shared.rail.read(cx).rows());
         if !self.shared.rail.read(cx).rows().is_empty() {
             for link in std::mem::take(&mut self.waiting) {
                 self.open_link(&link, cx);
@@ -1952,6 +1957,7 @@ impl Root {
                 let searching = self.search.read(cx).focus_handle(cx).is_focused(window);
                 home::home(
                     &self.shared,
+                    &self.run,
                     &self.search,
                     self.filtering,
                     searching,

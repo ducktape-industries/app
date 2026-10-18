@@ -223,6 +223,23 @@ pub struct RailRow {
     /// it ships a view is not known, so `empty` is `false` meanwhile and
     /// the row says `Loading`. Home lists no program before this is known.
     pub pending: bool,
+    /// How far its code has come on this device (its readiest seat's):
+    /// what a count of the programs being prepared reads.
+    pub prep: Prep,
+}
+
+/// How far a program's code has come on this device ([`RailRow::prep`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Prep {
+    /// Drawn, compiled, found to ship no view, or failed: nothing more is
+    /// coming.
+    Settled,
+    /// Asked for (or new code the network named over what is drawn), no
+    /// loader at it yet.
+    Waiting,
+    /// A loader at it: its bytes coming, its manifest read, its code
+    /// compiling.
+    Working,
 }
 
 /// How far a seat's view has come, readiest first: the rail names a
@@ -288,6 +305,7 @@ impl Roster {
                     seat.as_ref().map(|seat| &seat.slot),
                     None | Some(Slot::Loading | Slot::Fetching { .. })
                 );
+                let prep = seat.as_ref().map_or(Prep::Waiting, |seat| seat.prep());
                 // the manifest's, as the name is: none before it is read
                 let (icon, tint, description) = match seat.as_ref().map(|seat| &seat.slot) {
                     Some(Slot::Ready(view)) => {
@@ -312,6 +330,7 @@ impl Roster {
                     note,
                     empty,
                     pending,
+                    prep,
                 }
             })
             .collect()
@@ -509,10 +528,16 @@ pub(super) fn read_roster(
                 continue;
             }
             locked.rev = asked_of.rev;
+            let generation = locked.start();
+            // the network moved the program to other code: what the seat
+            // holds stays up until it lands, and the rail counts it meanwhile
+            if !same_code && !locked.slot.loading() {
+                locked.replacing = Some((generation, Prep::Waiting));
+            }
             loads.push(Load {
                 program,
                 seat: seat.clone(),
-                generation: locked.start(),
+                generation,
                 asked_of: asked_of.clone(),
                 code: Some((listed.code, listed.bare)),
             });
@@ -623,6 +648,7 @@ mod local_link_tests {
             note: None,
             empty: false,
             pending: false,
+            prep: Prep::Settled,
         }];
         assert_eq!(local_seat("duck://catalog", &rows), Some("catalog"));
         assert_eq!(local_seat("duck://preferences", &rows), Some("catalog"));
@@ -663,6 +689,7 @@ mod local_link_tests {
             note: None,
             empty: false,
             pending: false,
+            prep: Prep::Settled,
         });
         assert_eq!(local_seat("duck://preferences", &rows), None);
         rows[1].empty = true;
@@ -682,6 +709,7 @@ mod local_link_tests {
             note: None,
             empty: false,
             pending: false,
+            prep: Prep::Settled,
         }];
         let view = |route: Option<&str>| Link::View {
             program: "catalog",
@@ -719,6 +747,7 @@ mod local_link_tests {
             note: None,
             empty: false,
             pending: false,
+            prep: Prep::Settled,
         }];
         for name in ["forge:web:3", "보고서 #1", "a b"] {
             let link = ducklink::mint("testkit#0a1b2c3d", "chat", &[name, "42"]).unwrap();
