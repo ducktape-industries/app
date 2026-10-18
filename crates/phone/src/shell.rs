@@ -1538,7 +1538,9 @@ impl Root {
                 self.titles.insert(*instance, title.clone());
                 cx.notify();
             }
-            SeatsEvent::OpenLink(_, _, link) => self.open_link(link, cx),
+            SeatsEvent::OpenLink(_, _, link) | SeatsEvent::OpenWindow(_, _, link) => {
+                self.open_link(link, cx)
+            }
             // the reader's account: the Account tab, as from a header's avatar
             SeatsEvent::Show(_, _, view_wire::methods::Place::Account) => {
                 self.go_to(Tab::Account, cx)
@@ -3607,6 +3609,30 @@ mod tests {
         until(cx, |cx| sheet(cx).is_none());
         let page = root.read_with(cx, |root, cx| root.page(cx));
         assert_eq!(page, Page::Root(Tab::Home), "the switch did not land here");
+    }
+
+    #[gpui_kit::test]
+    fn a_views_link_window_opens_as_its_link_open_does(cx: &mut TestAppContext) {
+        const LINKED: &str = "phone-link-window-target";
+        let (root, stack, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        shared
+            .rail
+            .update(cx, |rail, cx| rail.read_off(Roster::listing(&[LINKED]), cx));
+        run_out(cx);
+        let link = format!("duck://{LINKED}/room/7");
+        let asked = SeatsEvent::OpenWindow("phone-link-window-view", 0, link);
+        root.update(cx, |root, cx| root.seats_said(&asked, cx));
+        run_out(cx);
+        assert_eq!(top(&stack, cx), Some(LINKED));
+        let instance = stack.read_with(cx, |stack, _| stack.instance(LINKED));
+        let Some(instance) = instance else {
+            panic!("the link opened nothing");
+        };
+        assert_eq!(
+            ducktape_host::runtime::take_route(LINKED, instance).as_deref(),
+            Some("room/7")
+        );
     }
 
     /// A tapped notice of another network in the list switches to that

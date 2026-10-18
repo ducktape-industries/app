@@ -136,6 +136,7 @@ pub enum Intent {
     Title(String),
     /// `link.open`: a link it pressed.
     OpenLink(String),
+    OpenWindow(String),
     /// `host.show`: one of the host's own places, asked for by a press in
     /// the view; how it looks is each shell's (the desktop's account menu,
     /// the phone's account sheet).

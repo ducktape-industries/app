@@ -406,6 +406,105 @@ fn an_outside_link_reaches_only_the_window_it_brings_forward(cx: &mut TestAppCon
     );
 }
 
+#[gpui_kit::test]
+fn a_link_window_opens_a_window_of_its_own_and_the_same_link_raises_it(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "window-link-test";
+    let (app, console) = console(cx);
+    listed(&app, &[PROGRAM], cx);
+    let open = |link: &str, cx: &mut TestAppContext| {
+        app.windows
+            .update(cx, |windows, cx| windows.open_link_window(link, None, cx));
+        cx.run_until_parked();
+    };
+    let keys = |cx: &TestAppContext| {
+        app.windows.read_with(cx, |windows, _| {
+            windows.by_window().keys().copied().collect::<Vec<_>>()
+        })
+    };
+    let room = format!("duck://{PROGRAM}/room/9");
+    open(&room, cx);
+    assert_eq!(window_count(&app, cx), 2, "the link's window did not open");
+    assert_eq!(programs(&app, console, cx), ["chat"], "the desk opened it");
+    let first = popped(&app, console, cx);
+    assert_eq!(programs(&app, first, cx), [PROGRAM]);
+    assert_eq!(active(&app, cx), Some(PROGRAM));
+    assert_eq!(routed(&app, first, PROGRAM, cx).as_deref(), Some("room/9"));
+    open(&room, cx);
+    assert_eq!(
+        window_count(&app, cx),
+        2,
+        "the same link opened a second window"
+    );
+    assert_eq!(
+        routed(&app, first, PROGRAM, cx).as_deref(),
+        Some("room/9"),
+        "the window raised again was not handed the route"
+    );
+    open(&format!("duck://{PROGRAM}/room/10"), cx);
+    assert_eq!(
+        window_count(&app, cx),
+        3,
+        "another link took the first window"
+    );
+    open("https://example.com/a", cx);
+    assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/a"));
+    assert_eq!(window_count(&app, cx), 3, "an https link opened a window");
+    app.windows
+        .update(cx, |windows, cx| windows.pop_in(first, cx));
+    cx.run_until_parked();
+    assert_eq!(programs(&app, console, cx), ["chat", PROGRAM]);
+    let before = keys(cx);
+    open(&room, cx);
+    let after = keys(cx);
+    let opened: Vec<_> = after.iter().filter(|key| !before.contains(key)).collect();
+    let [again] = opened.as_slice() else {
+        panic!("a link whose pane went back on the desk opened {opened:?}");
+    };
+    assert_eq!(programs(&app, **again, cx), [PROGRAM]);
+    assert_eq!(
+        routed(&app, **again, PROGRAM, cx).as_deref(),
+        Some("room/9")
+    );
+    assert_eq!(
+        programs(&app, console, cx),
+        ["chat", PROGRAM],
+        "the pane on the desk moved"
+    );
+}
+
+#[gpui_kit::test]
+fn a_views_link_window_opens_its_target_in_a_window_of_its_own(cx: &mut TestAppContext) {
+    use crate::runtime::{Intent, intent_for_test};
+    const PROGRAM: &str = "link-window-view";
+    const LINKED: &str = "link-window-target";
+    let (app, console, _, mut native, instance) = floating_console(PROGRAM, cx);
+    let roster = crate::runtime::Roster::listing(&[PROGRAM, LINKED]);
+    app.rail
+        .update(&mut native, |rail, cx| rail.read_off(roster, cx));
+    let link = format!("duck://{LINKED}/room/7");
+    intent_for_test(PROGRAM, instance, Intent::OpenWindow(link));
+    turn(&app, &mut native);
+    assert_eq!(programs(&app, console, &native), [PROGRAM]);
+    let opened = app.windows.read_with(&native, |windows, _| {
+        windows
+            .by_window()
+            .keys()
+            .copied()
+            .find(|key| *key != console)
+    });
+    let Some(opened) = opened else {
+        panic!("the link opened no window of its own");
+    };
+    assert_eq!(programs(&app, opened, &native), [LINKED]);
+    let pane =
+        desk_of(&app, opened, &native).read_with(&native, |desk, _| desk.get().panes[0].instance);
+    assert_eq!(
+        crate::runtime::take_route(LINKED, pane).as_deref(),
+        Some("room/7"),
+        "the window's view was not handed its route"
+    );
+}
+
 /// The same link notice while it is up is not shown again, so a view
 /// repeating a bad link cannot keep the notice up past its time.
 #[gpui_kit::test]
