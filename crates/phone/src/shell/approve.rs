@@ -1,17 +1,17 @@
 //! Add a device (the desktop's "Add a device…", Expo
-//! `app/account/approve.tsx`), pushed from the Account tab: the code the
+//! `app/account/approve.tsx`), a sheet over the Account tab: the code the
 //! new device shows, typed; the joining key's fingerprint, to compare;
 //! this phone's yes, the consent the host signs for the account and hands
 //! the new device over the relay. The host runs the flow
-//! (`Account::approve_find`, `approve_confirm`); the page draws what it
+//! (`Account::approve_find`, `approve_confirm`); the sheet draws what it
 //! holds, and the field owns the code until Next hands it over, as the
-//! desktop's dialog does. Leaving the page, however, forgets what it found
-//! (`Root::moved`); an approval landing pops it, and the host's notice says
-//! so.
+//! desktop's dialog does. The sheet going, however, forgets what it found
+//! (`Root::set_sheet`); an approval landing closes it, and the host's
+//! notice says so.
 
-use super::Root;
 use super::join::{self, Kind};
 use super::look::{self, Palette};
+use super::{Root, sheet};
 use ducktape_host::a11y::Control as _;
 use ducktape_host::session::{AccountState, Shared};
 use gpui_kit::component::input::{InputEvent, InputState};
@@ -59,10 +59,10 @@ fn find(shared: &Shared, code: &Entity<InputState>, cx: &mut App) {
         .update(cx, |account, cx| account.approve_find(typed, cx));
 }
 
-/// The page, showing `account` (the host's, or what it held as the page
-/// was left): its Back header; the code step until the host found the
+/// The sheet's content, showing `account` (the host's, or what it held as
+/// the sheet went): its title; the code step until the host found the
 /// joining key, then its fingerprint and Approve; Cancel at the foot.
-pub fn page(
+pub fn content(
     shared: &Shared,
     account: &AccountState,
     code: &Entity<InputState>,
@@ -70,19 +70,19 @@ pub fn page(
     palette: Palette,
     cx: &mut Context<Root>,
 ) -> Div {
-    let back = cx.listener(|root, _, _, cx| root.pop_page(cx));
     let busy = account.busy;
     let problem = (!account.error.is_empty()).then(|| account.error.clone());
     let said = |words: &'static str| {
         look::text(look::SECONDARY, FontWeight::NORMAL, palette.muted()).child(words)
     };
+    // the boards' sheet body: 16 over, 20 at the sides, 8 under
     let body = div()
-        .flex_1()
-        .min_h_0()
         .flex()
         .flex_col()
         .gap(px(look::gap::LG))
-        .p(px(look::GUTTER));
+        .pt(px(look::gap::BLOCK))
+        .px(px(look::SHEET_INSET))
+        .pb(px(look::gap::SM));
     let body = match account.approve.clone() {
         None => {
             let mut next = join::button(
@@ -108,8 +108,8 @@ pub fn page(
                     .child(problem)
             });
             body.child(said(
-                "On the new device, choose \"Add this device from another device\". Type the \
-                 code it shows.",
+                "On the new device, choose \"Add this device from another device\" (on a phone, \
+                 \"Add this phone from another device\"). Type the code it shows.",
             ))
             .child(
                 join::field(
@@ -180,23 +180,10 @@ pub fn page(
         false,
         palette,
     )
-    .on_click(cx.listener(|root, _, _, cx| root.pop_page(cx)));
+    .on_click(cx.listener(|root, _, _, cx| root.close_sheet(cx)));
     div()
-        .flex_1()
-        .min_h_0()
         .flex()
         .flex_col()
-        .child(
-            look::header("approve/back", back, palette).child(
-                div().flex_1().min_w_0().px(px(look::gap::SM)).child(
-                    look::text(look::TITLE, FontWeight::MEDIUM, palette.foreground())
-                        .truncate()
-                        .child("Add a device"),
-                ),
-            ),
-        )
-        .child(
-            body.child(div().flex_1())
-                .child(div().flex().justify_center().child(cancel)),
-        )
+        .child(sheet::title("Add a device", palette))
+        .child(body.child(div().flex().justify_center().child(cancel)))
 }

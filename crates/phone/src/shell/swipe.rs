@@ -106,10 +106,11 @@ fn begins_on(
 }
 
 /// Whether a swipe let go `x` points along its way, moving at `speed`
-/// points per second along it, goes on (back, or to the tab beside) on a
-/// screen `width` wide: past half the width with its speed counted for
-/// 0.3 s of travel (react-native-screens' rule, `RNSScreenStack.mm`, which
-/// the Expo build ran).
+/// points per second along it, goes on (back, to the tab beside, or a
+/// sheet down and closed) over `width` (a screen's width, a sheet's
+/// height): past half of it with its speed counted for 0.3 s of travel
+/// (react-native-screens' rule, `RNSScreenStack.mm`, which the Expo build
+/// ran).
 pub(super) fn crosses(x: f32, speed: f32, width: f32) -> bool {
     x + 0.3 * speed > width / 2.
 }
