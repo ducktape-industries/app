@@ -9,16 +9,18 @@
 //! as; no session, no views), once a run, and one that does not answer is
 //! skipped until the inputs move.
 //!
-//! Sent again when any of that moves (another token, another account), a
-//! token the OS withdrew sent as a leave (an empty token), and so is every
-//! kind sent on a chain no listed node serves any more (the network
-//! forgotten, or pushed off the list): what was sent is kept in the prefs,
-//! so a forget after a relaunch still leaves. A switch is not a leave: a
-//! network still listed keeps its rows. A send the server did not answer,
-//! or answered 408, 429 or 5xx, is tried again after [`RETRY`]; one it
-//! refused otherwise is not sent again until its inputs move (the tokens,
-//! the account, the list). What becomes a notice is the program's; this
-//! only says where this phone is.
+//! Each is sent once a run, so a row the server lost comes back at the
+//! next launch, and again when any of it moves (another token, another
+//! account). A token the OS withdrew is sent as a leave (an empty token),
+//! and so is every kind sent on a chain no listed node serves any more (the
+//! network forgotten, or pushed off the list): what the server holds is
+//! kept in the prefs for that, so a forget after a relaunch still leaves. A
+//! switch is not a leave: a network still listed keeps its rows. A send the
+//! server did not answer, or answered 408, 429 or 5xx, is tried again after
+//! [`RETRY`], the rest going on meanwhile; one it refused otherwise is not
+//! sent again until its inputs move (the tokens, the account, the list), and
+//! a leave refused so has nothing left to leave. What becomes a notice is
+//! the program's; this only says where this phone is.
 //!
 //! The server is the phone's `push_server` pref, or the production server
 //! (`ducktape_host::push::server`).
@@ -62,8 +64,8 @@ pub struct Wanted {
     pub keyring: String,
 }
 
-/// What the registrar knows the server holds for this phone, by chain and
-/// kind, as far as its own sends went.
+/// Registrations by chain and kind: what the server holds for this phone as
+/// far as its own sends went, or what was sent this run.
 pub type Sent = BTreeMap<(String, String), Wanted>;
 
 /// A network this phone is on, as the registrar knows it.
@@ -80,10 +82,10 @@ pub struct Network {
     pub keyring: String,
 }
 
-/// The listed nodes as networks, one per chain (a chain's first node
-/// stands for it, the node in hand ahead of the rest): what each said
-/// ([`reach`]), else only the chain it served when last heard, else
-/// nothing yet.
+/// The listed nodes as networks, one per chain (the node in hand ahead of
+/// the rest): what each said ([`reach`]), else only the chain it served when
+/// last heard, else nothing yet. A chain's first node with a known account
+/// stands for it: one only remembered hides no other that answered.
 pub fn networks(
     listed: &[String],
     reached: &BTreeMap<String, Network>,
@@ -99,8 +101,13 @@ pub fn networks(
             },
             (None, None) => continue,
         };
-        if !networks.iter().any(|known| known.chain == network.chain) {
-            networks.push(network);
+        match networks
+            .iter_mut()
+            .find(|known| known.chain == network.chain)
+        {
+            Some(known) if known.account.is_none() && network.account.is_some() => *known = network,
+            Some(_) => {}
+            None => networks.push(network),
         }
     }
     networks
@@ -109,15 +116,17 @@ pub fn networks(
 /// The registrations due now. `tokens` holds each kind the OS handed a
 /// token for this run, empty for one it took back since; a kind not handed
 /// yet says nothing (a launch's tokens come after it). On each of
-/// `networks` with an account and a key: each token not registered as it
-/// stands, and a leave for each kind taken back that was sent on its chain
-/// and key. Then a leave for each kind sent on a chain none of `networks`
-/// is on, signed by the key it was sent with. Nothing on a network whose
-/// account is not known: no key acts there yet, or the node has not said.
+/// `networks` with an account and a key: each token not `sent` this run as
+/// it stands, and a leave for each kind taken back that the server holds
+/// (`kept`) on its chain and key. Then a leave for each kind kept on a chain
+/// none of `networks` is on, signed by the key it was sent with. Nothing on
+/// a network whose account is not known: no key acts there yet, or the node
+/// has not said.
 pub fn plan(
     networks: &[Network],
     tokens: &BTreeMap<String, String>,
     env: &str,
+    kept: &Sent,
     sent: &Sent,
 ) -> Vec<Wanted> {
     let mut due = Vec::new();
@@ -145,16 +154,18 @@ pub fn plan(
                 .iter()
                 .map(|(kind, token)| wanted(kind, token))
                 .filter(|want| {
-                    let was = sent.get(&(want.chain.clone(), want.kind.clone()));
+                    let at = (want.chain.clone(), want.kind.clone());
                     match want.token.is_empty() {
-                        true => was.is_some_and(|was| was.key == want.key && !was.token.is_empty()),
-                        false => was != Some(want),
+                        true => kept
+                            .get(&at)
+                            .is_some_and(|was| was.key == want.key && !was.token.is_empty()),
+                        false => sent.get(&at) != Some(want),
                     }
                 }),
         );
     }
     due.extend(
-        sent.values()
+        kept.values()
             .filter(|was| !was.token.is_empty())
             .filter(|was| networks.iter().all(|network| network.chain != was.chain))
             .map(|was| Wanted {
@@ -196,7 +207,10 @@ type Inputs = (Vec<String>, Option<u64>, BTreeMap<String, String>);
 /// has not heard from between.
 pub struct Registrar {
     shared: Shared,
-    /// What the server holds for this phone; kept in the prefs.
+    /// What the server holds for this phone, as far as its sends went; kept
+    /// in the prefs, for the leaves.
+    kept: Sent,
+    /// What was sent and taken this run: each registration goes once a run.
     sent: Sent,
     /// The chain each listed node serves, as last heard; kept in the prefs.
     /// A tapped notice finds its network by it ([`Registrar::node_of`]).
@@ -212,8 +226,11 @@ pub struct Registrar {
     /// Sends refused for good since the inputs last moved: not sent again
     /// as they stand.
     stopped: Sent,
+    /// Sends not taken for now, each with its wait: not sent again as they
+    /// stand until [`RETRY`] is up, the rest going past them.
+    again: BTreeMap<(String, String), (Wanted, Task<()>)>,
     inputs: Option<Inputs>,
-    /// The send or the reach out now, or the wait before the next try.
+    /// The send or the reach out now.
     busy: Option<Task<()>>,
     http: reqwest::Client,
     _observing: Vec<Subscription>,
@@ -223,11 +240,7 @@ impl Registrar {
     /// Started over `shared` with what the prefs kept, synced on every move
     /// of the session, the account or the tokens.
     pub fn start(shared: Shared, cx: &mut App) -> Entity<Self> {
-        // ponytail: what was sent is trusted across a relaunch, so a row
-        // the server lost (its file gone, a token it dropped) is not sent
-        // again until its token or account moves; each sent once a run if
-        // that is felt
-        let (sent, nodes) = load();
+        let (kept, nodes) = load();
         let registrar = cx.new(|cx| {
             let observing = vec![
                 cx.observe(&shared.session, |this: &mut Self, _, cx| this.sync(cx)),
@@ -235,12 +248,14 @@ impl Registrar {
             ];
             Self {
                 shared,
-                sent,
+                kept,
+                sent: Sent::new(),
                 nodes,
                 reached: BTreeMap::new(),
                 missed: BTreeSet::new(),
                 heard: BTreeSet::new(),
                 stopped: Sent::new(),
+                again: BTreeMap::new(),
                 inputs: None,
                 busy: None,
                 http: reqwest::Client::new(),
@@ -325,11 +340,10 @@ impl Registrar {
             &networks,
             &tokens,
             crate::os::push_environment(),
+            &self.kept,
             &self.sent,
-        )
-        .into_iter()
-        .find(|want| self.stopped.get(&(want.chain.clone(), want.kind.clone())) != Some(want));
-        if let Some(want) = due {
+        );
+        if let Some(want) = self.next(due) {
             return self.send(want, cx);
         }
         let unheard = listed
@@ -338,6 +352,16 @@ impl Registrar {
         if let Some(url) = unheard {
             self.reach(url, cx);
         }
+    }
+
+    /// The first of `due` neither refused for good nor waiting to be tried
+    /// again, as it stands.
+    fn next(&self, due: Vec<Wanted>) -> Option<Wanted> {
+        due.into_iter().find(|want| {
+            let at = (want.chain.clone(), want.kind.clone());
+            let waits = self.again.get(&at).map(|(waits, _)| waits);
+            self.stopped.get(&at) != Some(want) && waits != Some(want)
+        })
     }
 
     /// The chain each node reached serves, kept for the listed nodes only;
@@ -395,45 +419,62 @@ impl Registrar {
         }));
     }
 
-    /// A send came back: taken, it is what the server holds now (kept in
-    /// the prefs) and the next due one goes; refused for good, it waits on
-    /// its inputs and the next goes; not taken for now, the next try waits.
+    /// A send came back. Taken, it is what the server holds now (kept in
+    /// the prefs) and the next due one goes. Refused for good, it waits on
+    /// its inputs; a leave refused so has nothing left to leave (pushd holds
+    /// no live row: the chain unfollowed, the key off the account), and goes
+    /// from the prefs. Not taken for now, it waits [`RETRY`]. Either way the
+    /// next due one goes.
     fn landed(&mut self, want: Wanted, sent: Result<(), Failed>, cx: &mut Context<Self>) {
         self.busy = None;
         let at = (want.chain.clone(), want.kind.clone());
         match sent {
             Ok(()) => {
+                self.again.remove(&at);
                 match want.token.is_empty() {
-                    true => self.sent.remove(&at),
-                    false => self.sent.insert(at, want),
-                };
+                    true => {
+                        self.kept.remove(&at);
+                        self.sent.remove(&at);
+                    }
+                    false => {
+                        self.kept.insert(at.clone(), want.clone());
+                        self.sent.insert(at, want);
+                    }
+                }
                 self.save();
-                self.sync(cx);
             }
             Err(Failed::Stopped(error)) => {
                 tracing::warn!(target: "ducktape::phone", kind = want.kind, chain = want.chain, %error,
                     "push registration refused: not sent again until it moves");
-                self.stopped.insert(at, want);
-                self.sync(cx);
+                if want.token.is_empty() {
+                    self.kept.remove(&at);
+                    self.sent.remove(&at);
+                    self.save();
+                } else {
+                    self.stopped.insert(at, want);
+                }
             }
             Err(Failed::Again(error)) => {
                 tracing::warn!(target: "ducktape::phone", kind = want.kind, chain = want.chain, %error,
                     "push registration not taken");
-                self.busy = Some(cx.spawn(async move |this, cx| {
+                let waited = at.clone();
+                let wait = cx.spawn(async move |this, cx| {
                     cx.background_executor().timer(RETRY).await;
                     this.update(cx, |this, cx| {
-                        this.busy = None;
+                        this.again.remove(&waited);
                         this.sync(cx);
                     })
                     .ok();
-                }));
+                });
+                self.again.insert(at, (want, wait));
             }
         }
+        self.sync(cx);
     }
 
     /// What was sent and the nodes' chains, into the prefs.
     fn save(&self) {
-        let sent: Vec<serde_json::Value> = self.sent.values().map(json_of).collect();
+        let sent: Vec<serde_json::Value> = self.kept.values().map(json_of).collect();
         let kept = serde_json::json!({ "sent": sent, "nodes": self.nodes });
         if !ducktape_host::backend::edit_prefs(|prefs| prefs[PREF] = kept) {
             tracing::warn!(target: "ducktape::phone", "push registrations not kept");
@@ -441,8 +482,8 @@ impl Registrar {
     }
 }
 
-/// What the prefs kept: what was sent, and the chain each listed node
-/// served. An entry that does not read is dropped.
+/// What the prefs kept: what the server holds, and the chain each listed
+/// node served. An entry that does not read is dropped.
 fn load() -> (Sent, BTreeMap<String, String>) {
     let prefs = ducktape_host::backend::read_prefs().unwrap_or_default();
     let kept = &prefs[PREF];
@@ -500,11 +541,13 @@ async fn reach(url: String) -> Result<Network, String> {
         .map_or_else(|| status.network.clone(), |chain| chain.to_string());
     let keyring =
         noded_client::keyring::bind(&os.dirs().remotes, &status.network, status.time)?.dir;
-    let key = os
-        .device_key(&keyring)
-        .map_err(|refused| refused.sentence())?
-        .ok_or("this phone keeps no key for that network")?;
-    let public = key.public_key();
+    let opened = keyring.clone();
+    let public = off_window(move || match os.device_key(&opened) {
+        Ok(Some(key)) => Ok(key.public_key()),
+        Ok(None) => Err(NO_KEY.to_owned()),
+        Err(refused) => Err(refused.sentence()),
+    })
+    .await??;
     let account = noded_client::identity::account_of_key(
         &client,
         &status.network,
@@ -518,6 +561,47 @@ async fn reach(url: String) -> Result<Network, String> {
         key: noded_client::hex::hex_encode(&public),
         keyring,
     })
+}
+
+/// What a phone with no key for a network's keyring says.
+const NO_KEY: &str = "this phone keeps no key for that network";
+
+/// `work` on the runtime's blocking pool, off the window thread: a key
+/// store may take its time or prompt (`OsServices::device_key`), as the
+/// host's own open does (`session/account.rs`).
+async fn off_window<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    ducktape_host::runtime::handle()
+        .spawn_blocking(work)
+        .await
+        .map_err(|_| "the key store's work did not finish".to_owned())
+}
+
+/// The signature over `preimage` of the key `opened` for a registration of
+/// `key`, hex. A key that would not open or sign is tried again (an iPhone
+/// keeps it locked away while it is locked); only another key kept for the
+/// network is final.
+fn signed(
+    opened: Result<
+        Option<std::sync::Arc<dyn noded_client::Signer>>,
+        ducktape_host::contract::KeyRefusal,
+    >,
+    key: &str,
+    preimage: &[u8],
+) -> Result<String, Failed> {
+    let signer = opened
+        .map_err(|refused| Failed::Again(refused.sentence()))?
+        .ok_or_else(|| Failed::Again(NO_KEY.into()))?;
+    if noded_client::hex::hex_encode(&signer.public_key()) != key {
+        return Err(Failed::Stopped(
+            "another key is kept for that network now".into(),
+        ));
+    }
+    let signature = signer
+        .sign(push::NAMESPACE, preimage)
+        .map_err(|refused| Failed::Again(refused.0))?;
+    Ok(noded_client::hex::hex_encode(&signature))
 }
 
 /// `want` timed, signed by its network's key (opened from its keyring:
@@ -536,20 +620,21 @@ async fn send(http: &reqwest::Client, server: &str, want: &Wanted) -> Result<(),
             .map_or(0, |since| since.as_millis() as u64),
         sig: String::new(),
     };
-    // a key that will not open or sign does not on the next try either
-    let key = ducktape_host::contract::os()
-        .device_key(&want.keyring)
-        .map_err(|refused| Failed::Stopped(refused.sentence()))?
-        .ok_or_else(|| Failed::Stopped("this phone keeps no key for that network".into()))?;
-    if noded_client::hex::hex_encode(&key.public_key()) != want.key {
-        return Err(Failed::Stopped(
-            "another key is kept for that network now".into(),
-        ));
-    }
-    let signature = key
-        .sign(push::NAMESPACE, &registration.preimage())
-        .map_err(|refused| Failed::Stopped(refused.0))?;
-    registration.sig = noded_client::hex::hex_encode(&signature);
+    let (keyring, key, preimage) = (
+        want.keyring.clone(),
+        want.key.clone(),
+        registration.preimage(),
+    );
+    let signature = off_window(move || {
+        signed(
+            ducktape_host::contract::os().device_key(&keyring),
+            &key,
+            &preimage,
+        )
+    })
+    .await
+    .map_err(Failed::Again)??;
+    registration.sig = signature;
     let body =
         serde_json::to_string(&registration).map_err(|error| Failed::Stopped(error.to_string()))?;
     let answer = http
@@ -602,7 +687,7 @@ mod tests {
     fn every_token_is_due_once_the_phone_is_on_an_account() {
         let have = tokens(&[("voip", "v1"), ("apns", "a1"), ("fcm", "f1")]);
         let here = [on("testkit#0a1b2c3d", Some(15), "ab")];
-        let due = plan(&here, &have, "sandbox", &Sent::new());
+        let due = plan(&here, &have, "sandbox", &Sent::new(), &Sent::new());
         assert_eq!(due.len(), 3);
         let by_kind = |kind: &str| due.iter().find(|want| want.kind == kind).unwrap().clone();
         assert_eq!(
@@ -623,7 +708,7 @@ mod tests {
             on("testkit#0a1b2c3d", Some(15), ""),
             on("testkit#0a1b2c3d", None, "ab"),
         ] {
-            assert!(plan(&[idle], &have, "sandbox", &Sent::new()).is_empty());
+            assert!(plan(&[idle], &have, "sandbox", &Sent::new(), &Sent::new()).is_empty());
         }
     }
 
@@ -634,25 +719,31 @@ mod tests {
     fn only_what_moved_is_sent_again_and_a_withdrawn_token_leaves() {
         let here = [on("testkit#0a1b2c3d", Some(15), "ab")];
         let have = tokens(&[("voip", "v1"), ("fcm", "f1")]);
-        let sent = sent_of(&plan(&here, &have, "production", &Sent::new()));
-        assert!(plan(&here, &have, "production", &sent).is_empty());
+        let sent = sent_of(&plan(
+            &here,
+            &have,
+            "production",
+            &Sent::new(),
+            &Sent::new(),
+        ));
+        assert!(plan(&here, &have, "production", &sent, &sent).is_empty());
         let rotated = tokens(&[("voip", "v2"), ("fcm", "f1")]);
-        let due = plan(&here, &rotated, "production", &sent);
+        let due = plan(&here, &rotated, "production", &sent, &sent);
         assert_eq!(due.len(), 1);
         assert_eq!(
             (due[0].kind.as_str(), due[0].token.as_str()),
             ("voip", "v2")
         );
         let withdrawn = tokens(&[("voip", ""), ("fcm", "f1")]);
-        let due = plan(&here, &withdrawn, "production", &sent);
+        let due = plan(&here, &withdrawn, "production", &sent, &sent);
         assert_eq!(due.len(), 1);
         assert_eq!((due[0].kind.as_str(), due[0].token.as_str()), ("voip", ""));
         // a relaunch before the OS handed a kind's token: no word, no leave
         let unhanded = tokens(&[("fcm", "f1")]);
-        assert!(plan(&here, &unhanded, "production", &sent).is_empty());
+        assert!(plan(&here, &unhanded, "production", &sent, &sent).is_empty());
         // the account moved under the same key: sent again
         let moved = on("testkit#0a1b2c3d", Some(16), "ab");
-        assert_eq!(plan(&[moved], &have, "production", &sent).len(), 2);
+        assert_eq!(plan(&[moved], &have, "production", &sent, &sent).len(), 2);
     }
 
     /// Two listed networks, each with an account: every token is due on
@@ -679,7 +770,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["home#0a0a0a0a", "away#0b0b0b0b", "far#0c0c0c0c"]
         );
-        let due = plan(&networks, &have, "production", &Sent::new());
+        let due = plan(&networks, &have, "production", &Sent::new(), &Sent::new());
         let seen: Vec<_> = due
             .iter()
             .map(|want| {
@@ -721,6 +812,7 @@ mod tests {
             &have,
             "production",
             &Sent::new(),
+            &Sent::new(),
         ));
         assert_eq!(sent.len(), 2);
         let kept: Vec<_> = sent.values().map(json_of).collect();
@@ -731,7 +823,7 @@ mod tests {
         let nodes = BTreeMap::from([("http://a".to_owned(), "home#0a0a0a0a".to_owned())]);
         let reached = BTreeMap::from([("http://a".to_owned(), home.clone())]);
         let after = networks(&["http://a".to_owned()], &reached, &nodes);
-        let due = plan(&after, &have, "production", &relaunched);
+        let due = plan(&after, &have, "production", &relaunched, &relaunched);
         assert_eq!(
             due,
             [Wanted {
@@ -751,7 +843,7 @@ mod tests {
         ]);
         let listed = ["http://a", "http://b"].map(String::from);
         let still = networks(&listed, &reached, &nodes);
-        assert!(plan(&still, &have, "production", &relaunched).is_empty());
+        assert!(plan(&still, &have, "production", &relaunched, &relaunched).is_empty());
         // one of away's two nodes forgotten: the other still serves it
         let nodes = BTreeMap::from([
             ("http://a".to_owned(), "home#0a0a0a0a".to_owned()),
@@ -759,7 +851,7 @@ mod tests {
         ]);
         let listed = ["http://a", "http://b2"].map(String::from);
         let still = networks(&listed, &reached, &nodes);
-        assert!(plan(&still, &have, "production", &relaunched).is_empty());
+        assert!(plan(&still, &have, "production", &relaunched, &relaunched).is_empty());
     }
 
     /// A 4xx is final but 408 and 429; 5xx and the rest are tried again.
@@ -775,34 +867,140 @@ mod tests {
         }
     }
 
-    /// A send refused for good is not sent again while it stands as it
-    /// was, and the next due one goes; one moved (another token) goes, and
-    /// so does the refused one once an input moves. A send not taken for
-    /// now waits [`RETRY`] before anything goes.
-    #[gpui_kit::test]
-    fn a_refused_send_waits_on_its_inputs_and_an_unanswered_one_on_the_clock(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
-        use ducktape_host::session::SessionState;
+    /// A remembered node of a chain that did not answer this run hides no
+    /// node of that chain that did: the one with a known account stands for
+    /// the chain, and its tokens are due there.
+    #[test]
+    fn a_remembered_node_hides_no_reached_one_of_its_chain() {
+        let reached =
+            BTreeMap::from([("http://b2".to_owned(), on("away#0b0b0b0b", Some(4), "b2"))]);
+        let nodes = BTreeMap::from([("http://b1".to_owned(), "away#0b0b0b0b".to_owned())]);
+        let listed = ["http://b1", "http://b2"].map(String::from);
+        let networks = networks(&listed, &reached, &nodes);
+        assert_eq!(networks, [on("away#0b0b0b0b", Some(4), "b2")]);
+        let have = tokens(&[("apns", "a1")]);
+        let due = plan(&networks, &have, "production", &Sent::new(), &Sent::new());
+        assert_eq!(
+            due.len(),
+            1,
+            "nothing due on a chain one of whose nodes answered"
+        );
+    }
+
+    /// Each registration goes once a run: after a relaunch, what the server
+    /// held is sent again (a row it lost comes back), and once taken it is
+    /// not sent again in the run.
+    #[test]
+    fn a_relaunch_sends_each_registration_once_again() {
+        let have = tokens(&[("apns", "a1"), ("voip", "v1")]);
+        let here = [on("home#0a0a0a0a", Some(15), "aa")];
+        let kept = sent_of(&plan(
+            &here,
+            &have,
+            "production",
+            &Sent::new(),
+            &Sent::new(),
+        ));
+        let due = plan(&here, &have, "production", &kept, &Sent::new());
+        assert_eq!(
+            due.len(),
+            2,
+            "a relaunch did not send what the server held again"
+        );
+        assert!(plan(&here, &have, "production", &kept, &sent_of(&due)).is_empty());
+    }
+
+    /// The key store's work runs off the calling (window) thread.
+    #[test]
+    fn a_key_is_opened_off_the_window_thread() {
+        let caller = std::thread::current().id();
+        let ran = ducktape_host::runtime::handle()
+            .block_on(off_window(|| std::thread::current().id()))
+            .unwrap();
+        assert_ne!(
+            ran, caller,
+            "the key store's work ran on the calling thread"
+        );
+    }
+
+    /// A key that would not open, is not there, or would not sign is tried
+    /// again (a locked iPhone); another key kept for the network is final;
+    /// the key kept signs.
+    #[test]
+    fn a_key_that_will_not_open_or_sign_is_tried_again() {
+        use ducktape_host::contract::KeyRefusal;
+        struct Locked;
+        impl noded_client::Signer for Locked {
+            fn public_key(&self) -> [u8; 32] {
+                [1; 32]
+            }
+            fn sign(&self, _: &[u8], _: &[u8]) -> Result<[u8; 64], noded_client::SignError> {
+                Err(noded_client::SignError("the phone is locked".into()))
+            }
+        }
+        let again = |said: &str| Err(Failed::Again(said.into()));
+        let locked = KeyRefusal::Denied("the phone is locked".into());
+        assert_eq!(
+            signed(Err(locked), "ab", b"x"),
+            again("the phone is locked")
+        );
+        assert_eq!(signed(Ok(None), "ab", b"x"), again(NO_KEY));
+        let one = hex_encode(&[1; 32]);
+        let refused: std::sync::Arc<dyn noded_client::Signer> = std::sync::Arc::new(Locked);
+        assert_eq!(
+            signed(Ok(Some(refused.clone())), &one, b"x"),
+            again("the phone is locked")
+        );
+        assert_eq!(
+            signed(Ok(Some(refused)), "ab", b"x"),
+            Err(Failed::Stopped(
+                "another key is kept for that network now".into()
+            ))
+        );
+        let key = ducktape_host::contract::os()
+            .device_key("testkit")
+            .unwrap()
+            .unwrap();
+        let public = hex_encode(&key.public_key());
+        assert!(signed(Ok(Some(key)), &public, b"x").is_ok());
+    }
+
+    fn hex_encode(bytes: &[u8]) -> String {
+        noded_client::hex::hex_encode(bytes)
+    }
+
+    /// A registrar over a session of the test's own.
+    fn registrar(cx: &mut gpui_kit::TestAppContext) -> (Shared, Entity<Registrar>) {
         cx.executor().allow_parking();
         cx.update(gpui_kit::init);
         let shared = cx.update(|cx| Shared::for_test(Default::default(), Default::default(), cx));
         let registrar = cx.update(|cx| Registrar::start(shared.clone(), cx));
-        let refused = Wanted {
-            chain: "away#0b0b0b0b".into(),
+        (shared, registrar)
+    }
+
+    fn want(chain: &str, token: &str) -> Wanted {
+        Wanted {
+            chain: chain.into(),
             account: 3,
             key: "bb".into(),
             kind: "apns".into(),
-            token: "a1".into(),
+            token: token.into(),
             env: "production".into(),
             keyring: "bb-ring".into(),
-        };
+        }
+    }
+
+    /// A send refused for good is not sent again while it stands as it
+    /// was, until an input moves (here, the list).
+    #[gpui_kit::test]
+    fn a_refused_send_waits_on_its_inputs(cx: &mut gpui_kit::TestAppContext) {
+        use ducktape_host::session::SessionState;
+        let (shared, registrar) = registrar(cx);
+        let refused = want("away#0b0b0b0b", "a1");
         registrar.update(cx, |this, cx| {
             this.landed(refused.clone(), Err(Failed::Stopped("404".into())), cx);
-            assert!(this.busy.is_none(), "a refusal for good waits on the clock");
-            assert_eq!(this.stopped.values().collect::<Vec<_>>(), [&refused]);
+            assert_eq!(this.next(vec![refused.clone()]), None);
         });
-        // an input moved: the list
         shared.session.update(cx, |session, cx| {
             let moved = SessionState {
                 recent_endpoints: vec![ducktape_host::backend::RecentEndpoint {
@@ -814,15 +1012,68 @@ mod tests {
             };
             session.seed(moved, cx)
         });
-        registrar.update(cx, |this, cx| {
-            assert!(
-                this.stopped.is_empty(),
+        registrar.update(cx, |this, _| {
+            assert_eq!(
+                this.next(vec![refused.clone()]),
+                Some(refused),
                 "the list moved and the refusal stood"
             );
-            this.busy = None;
-            this.landed(refused.clone(), Err(Failed::Again("503".into())), cx);
-            assert!(this.busy.is_some(), "an unanswered send did not wait");
-            assert!(this.stopped.is_empty());
         });
+    }
+
+    /// A send not taken for now waits [`RETRY`] aside: the next pick goes
+    /// past it, to the networks after it and the leaves, and nothing is held
+    /// busy; once its wait is up it is due again.
+    #[gpui_kit::test]
+    fn a_send_waiting_to_be_tried_again_lets_the_rest_go(cx: &mut gpui_kit::TestAppContext) {
+        let (_, registrar) = registrar(cx);
+        let (first, then) = (want("away#0b0b0b0b", "a1"), want("far#0c0c0c0c", ""));
+        registrar.update(cx, |this, cx| {
+            this.landed(first.clone(), Err(Failed::Again("503".into())), cx);
+            assert!(
+                this.busy.is_none(),
+                "a send waiting to be tried again held the registrar"
+            );
+            assert_eq!(
+                this.next(vec![first.clone(), then.clone()]),
+                Some(then.clone())
+            );
+        });
+        cx.executor().advance_clock(RETRY);
+        cx.run_until_parked();
+        registrar.update(cx, |this, _| {
+            assert_eq!(
+                this.next(vec![first.clone(), then]),
+                Some(first),
+                "its wait was up and it stood aside"
+            );
+        });
+    }
+
+    /// A leave refused for good leaves nothing behind: pushd holds no live
+    /// row to take back, so it goes from what the server holds (and the
+    /// prefs), not tried again each time the inputs move.
+    #[gpui_kit::test]
+    fn a_leave_refused_for_good_is_forgotten(cx: &mut gpui_kit::TestAppContext) {
+        let (_, registrar) = registrar(cx);
+        let held = want("away#0b0b0b0b", "a1");
+        let at = (held.chain.clone(), held.kind.clone());
+        registrar.update(cx, |this, cx| {
+            this.kept.insert(at.clone(), held.clone());
+            let leave = Wanted {
+                token: String::new(),
+                ..held
+            };
+            this.landed(leave, Err(Failed::Stopped("404".into())), cx);
+            assert!(
+                !this.kept.contains_key(&at),
+                "a leave refused for good stays to be sent again"
+            );
+        });
+        let (kept, _) = load();
+        assert!(
+            !kept.contains_key(&at),
+            "the prefs still hold the refused leave"
+        );
     }
 }
