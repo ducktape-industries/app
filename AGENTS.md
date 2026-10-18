@@ -17,3 +17,11 @@ Guidance for assistant sessions in this repository; `CLAUDE.md` links here.
   setting or flag that "lifts" it.
 - A design that seems to need a new restriction is a question for the user
   before it is built.
+
+## Delivery
+
+- Accepted work merges into `dev`, on duckpond's forge (repository `app`)
+  or on GitHub, and forge-sync keeps the two in step: a push to `dev` or
+  `main` on one side moves the same branch on the other.
+- When both sides moved at once and diverged, forge wins: GitHub's branch is
+  reset to forge's, and the dropped commits are posted in duckpond's #sync.
