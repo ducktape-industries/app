@@ -321,7 +321,7 @@ pub enum Failure {
     HashMismatch(String),
     /// This network's programs role does not list the view.
     NotListed(String),
-    /// The view ran out of fuel or trapped.
+    /// The view trapped.
     Trapped(String),
     /// Bytes this build does not run as a view, a load overtaken, or a
     /// loader that stopped.
@@ -412,7 +412,7 @@ pub(super) fn mounted(program: &'static str, instance: u64) -> Arc<Mutex<Mounted
     let asked = snapshot.client.is_some() || view_override(program).is_some();
     // a seat preloaded only as far as compiled: this pane's load starts
     // it, right here when it holds the code the roster lists: an instance
-    // and its `init`, on the one tick's fuel every tick here runs on
+    // and its `init`
     let compiled = matches!(locked.slot, Slot::Compiled(_));
     let here = locked.slot.startable(code);
     // its preload still reading its bytes, in a roster read's read ahead

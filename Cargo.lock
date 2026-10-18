@@ -10868,6 +10868,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "view-meter"
 version = "0.1.0"
 dependencies = [
+ "describe",
  "flate2",
  "sha2 0.10.9",
  "wasm-encoder 0.251.0",

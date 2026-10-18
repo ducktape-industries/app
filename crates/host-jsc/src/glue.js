@@ -8,7 +8,7 @@
 //   R <gas> <memory> <base64>   the export returned: gas_left after it, the
 //                               memory's bytes, the answer's bytes
 //   T <gas> <memory> <words>    the call trapped: gas_left after it (the
-//                               runner reads OutOfFuel / Memory off it,
+//                               runner reads Memory off it,
 //                               view_meter::stop), the trap's words
 //   P <memory> <words>          the view panicked: the words its panic hook
 //                               (ducktape_view.panicked) handed over first
@@ -23,7 +23,8 @@
 "use strict";
 
 const dt = (() => {
-    let fuel = 0n;
+    let viewFuel = 0n;
+    let describeFuel = 0n;
     // compiled modules by name, as the scheme handler serves them
     const modules = new Map();
     // seated views by instance id: { e: exports, panic: words or null }
@@ -87,7 +88,7 @@ const dt = (() => {
     // it, as on wasmtime); `run` returns the answer's bytes
     function enter(seat, run) {
         const e = seat.e;
-        e.gas_left.value = fuel;
+        e.gas_left.value = viewFuel;
         let bytes;
         try {
             bytes = run(e);
@@ -142,15 +143,15 @@ const dt = (() => {
         if (!(e.gas_left instanceof WebAssembly.Global)) return "F the view is not metered";
         seat.e = e;
         seats.set(id, seat);
-        e.gas_left.value = fuel;
+        e.gas_left.value = viewFuel;
         return returned(e, new Uint8Array(0));
     }
 
-    // a describe module on `op`, in an instance of its own, bounded as a view
+    // a describe module on `op`, in an instance of its own
     async function describe(name, op) {
         const module = await compiled(name);
         const e = new WebAssembly.Instance(module, {}).exports;
-        e.gas_left.value = fuel;
+        e.gas_left.value = describeFuel;
         const bytes = answer(e, e.describe(give(e, op), op.length));
         if (bytes === null) return "F the module answered outside its memory";
         return returned(e, bytes);
@@ -162,7 +163,8 @@ const dt = (() => {
         try {
             switch (op) {
                 case "boot":
-                    fuel = BigInt(arg);
+                    viewFuel = BigInt(name);
+                    describeFuel = BigInt(arg);
                     return `R 0 0 ${btoa(typeof WebAssembly)}`;
                 case "seat":
                     return await seatView(id, name);

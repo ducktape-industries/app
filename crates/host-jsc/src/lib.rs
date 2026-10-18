@@ -8,11 +8,13 @@
 //! - **Bounds.** JavaScriptCore has no fuel and enforces no view memory
 //!   setting, and a page stuck in a wasm loop cannot be stopped from
 //!   outside. So `prepare` takes the code through `view_meter::accepts` and
-//!   `view_meter::meter`, which compile `FUEL_PER_TICK` and the
+//!   `view_meter::meter`, which compile the fuel count and the
 //!   `memory.view_bytes` setting into the module: the same numbers and the
-//!   same faults as wasmtime. The metered bytes are kept under the runner's
-//!   cache directory as `<sha256>-<view_bytes>.metered.wasm` ([`metered`]),
-//!   and served to the page by that name.
+//!   same faults as wasmtime. A view's call runs until it returns; a
+//!   describe module's stops at `program.describe`'s fuel. The metered
+//!   bytes are kept under the runner's cache directory as
+//!   `<sha256>-<view_bytes>.metered.wasm` ([`metered`]), and served to the
+//!   page by that name.
 //! - **Calls.** Every call is one `callAsyncJavaScript` round trip, its
 //!   bytes base64 both ways (SPEC §6.3), its completion on the main thread,
 //!   where it lands on the seat's `Landing`. What the page answers means
@@ -81,6 +83,18 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     allow(dead_code, reason = "the iOS runner's; tested everywhere")
 )]
 const DESCRIBE_MEMORY: u64 = 64 << 20;
+
+#[cfg_attr(
+    not(target_os = "ios"),
+    allow(dead_code, reason = "the iOS runner's; tested everywhere")
+)]
+const DESCRIBE_FUEL: u64 = 250_000_000;
+
+#[cfg_attr(
+    not(target_os = "ios"),
+    allow(dead_code, reason = "the iOS runner's; tested everywhere")
+)]
+const VIEW_FUEL: i64 = i64::MAX;
 
 /// The name the page loads metered code by, and the file it is kept in.
 #[cfg_attr(
@@ -185,6 +199,6 @@ mod tests {
     #[test]
     fn a_describe_module_is_bounded_as_program_describe_bounds_it() {
         assert_eq!(DESCRIBE_MEMORY, describe::host::MEMORY as u64);
-        assert_eq!(describe::host::FUEL, ducktape_host::contract::FUEL_PER_TICK);
+        assert_eq!(DESCRIBE_FUEL, describe::host::FUEL);
     }
 }

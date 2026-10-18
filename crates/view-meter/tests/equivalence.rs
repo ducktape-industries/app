@@ -27,8 +27,7 @@ use wasmtime::{
     WasmFeatures,
 };
 
-/// The app's budget per call (`crates/host/src/runtime.rs`).
-const FUEL_PER_TICK: u64 = 250_000_000;
+const VIEW_FUEL: u64 = i64::MAX as u64;
 /// The `memory.view_bytes` default (`crates/host/src/backend/prefs.rs`).
 const VIEW_BYTES: u64 = 64 << 20;
 
@@ -168,7 +167,7 @@ impl Compiled {
         let mut store = Store::new(engine, limits);
         store.limiter(|limits| limits);
         if !self.metered {
-            store.set_fuel(FUEL_PER_TICK).unwrap();
+            store.set_fuel(VIEW_FUEL).unwrap();
         }
         let mut linker = Linker::new(engine);
         linker
@@ -290,7 +289,7 @@ impl Both {
     /// Calls `name` at every budget from 1 to 2 past what it uses: every
     /// point the fuel can run out at must end alike.
     fn every_budget(&mut self, name: &str, args: &[i32]) {
-        let (_, total) = self.call(name, args, FUEL_PER_TICK);
+        let (_, total) = self.call(name, args, VIEW_FUEL);
         for fuel in 1..=total.unsigned_abs() + 2 {
             self.call(name, args, fuel);
         }
@@ -316,7 +315,7 @@ impl Both {
     /// through it; a range whose ends differ is split until it is one
     /// budget wide. A check placed differently shows as a different trace.
     fn bisect_budgets(&mut self, name: &str, args: &[i32]) {
-        let (_, total) = self.call(name, args, FUEL_PER_TICK);
+        let (_, total) = self.call(name, args, VIEW_FUEL);
         let high = total.unsigned_abs() + 2;
         let (at_low, at_high) = (self.reach(name, args, 1), self.reach(name, args, high));
         let mut ranges = vec![(1, at_low, high, at_high)];
@@ -426,7 +425,7 @@ impl Seat {
     }
 
     fn init(&mut self) {
-        self.0.arm(FUEL_PER_TICK);
+        self.0.arm(VIEW_FUEL);
         self.func::<(), ()>("init")
             .call(&mut self.0.store, ())
             .unwrap();
@@ -435,18 +434,18 @@ impl Seat {
     /// One tick as the app runs it (armed once for alloc + write + tick):
     /// the frame and the fuel it used.
     fn tick(&mut self, events: &[u8]) -> (Vec<u8>, u64) {
-        self.0.arm(FUEL_PER_TICK);
+        self.0.arm(VIEW_FUEL);
         let args = self.give(events);
         let packed = self
             .func::<(u32, u32), u64>("tick")
             .call(&mut self.0.store, args)
             .unwrap();
-        let used = FUEL_PER_TICK - u64::try_from(self.0.left()).unwrap();
+        let used = VIEW_FUEL - u64::try_from(self.0.left()).unwrap();
         (self.answer(packed), used)
     }
 
     fn snapshot(&mut self) -> Vec<u8> {
-        self.0.arm(FUEL_PER_TICK);
+        self.0.arm(VIEW_FUEL);
         let packed = self
             .func::<(), u64>("snapshot")
             .call(&mut self.0.store, ())
@@ -455,7 +454,7 @@ impl Seat {
     }
 
     fn restore(&mut self, body: &[u8]) -> u8 {
-        self.0.arm(FUEL_PER_TICK);
+        self.0.arm(VIEW_FUEL);
         let args = self.give(body);
         let packed = self
             .func::<(u32, u32), u64>("restore")
@@ -586,7 +585,7 @@ fn a_grow_past_the_budget_traps_as_memory_under_both() {
                 ref.null func local.get 0 table.grow 0))"#,
         budget,
     );
-    let fuel = FUEL_PER_TICK;
+    let fuel = VIEW_FUEL;
     assert_eq!(both.call("grow", &[0], fuel).0, End::Returned(vec![1]));
     assert_eq!(both.call("grow", &[2], fuel).0, End::Returned(vec![1]));
     // the budget is asked before any size limit, even past 4 GiB
@@ -624,15 +623,12 @@ fn a_grow_past_the_modules_own_maximum_answers_minus_one_under_both() {
         VIEW_BYTES,
     );
     assert_eq!(
-        both.call("grow", &[2], FUEL_PER_TICK).0,
+        both.call("grow", &[2], VIEW_FUEL).0,
         End::Returned(vec![-1])
     );
+    assert_eq!(both.call("grow", &[1], VIEW_FUEL).0, End::Returned(vec![1]));
     assert_eq!(
-        both.call("grow", &[1], FUEL_PER_TICK).0,
-        End::Returned(vec![1])
-    );
-    assert_eq!(
-        both.call("grow_table", &[2], FUEL_PER_TICK).0,
+        both.call("grow_table", &[2], VIEW_FUEL).0,
         End::Returned(vec![-1])
     );
 }
@@ -651,7 +647,7 @@ fn a_grow_the_modules_maximum_refuses_holds_nothing_of_the_budget() {
                 ref.null func local.get 0 table.grow 0))"#,
         3 * PAGE + 8,
     );
-    let call = |both: &mut Both, name, delta| both.call(name, &[delta], FUEL_PER_TICK).0;
+    let call = |both: &mut Both, name, delta| both.call(name, &[delta], VIEW_FUEL).0;
     // 3 pages asked, 2 allowed: memory stays at 1, so a second element fits
     assert_eq!(call(&mut both, "grow", 2), End::Returned(vec![-1]));
     assert_eq!(call(&mut both, "grow_table", 1), End::Returned(vec![1]));
@@ -694,8 +690,8 @@ fn size_charged_operators_cost_what_wasmtime_charges() {
     );
     // a constant length is folded into the cost (wasmtime checks only past
     // 128); the count is the same either way
-    let small = both.call("copy_16", &[], FUEL_PER_TICK).1;
-    let large = both.call("copy_1000", &[], FUEL_PER_TICK).1;
+    let small = both.call("copy_16", &[], VIEW_FUEL).1;
+    let large = both.call("copy_1000", &[], VIEW_FUEL).1;
     assert_eq!(large - small, 1000 - 16);
     for (name, sizes) in [
         ("memory_copy", [0, 1, 5000]),
@@ -708,7 +704,7 @@ fn size_charged_operators_cost_what_wasmtime_charges() {
     ] {
         let used: Vec<i64> = sizes
             .iter()
-            .map(|&size| both.call(name, &[size], FUEL_PER_TICK).1)
+            .map(|&size| both.call(name, &[size], VIEW_FUEL).1)
             .collect();
         // each element or byte is one unit of fuel, under both
         assert_eq!(used[1] - used[0], 1, "{name}");
@@ -736,7 +732,7 @@ fn fuel_runs_out_at_the_same_point_under_both() {
         ("spin", 10_003),
         ("spin_calls", 10_000),
         ("spin_calls", 10_001),
-        ("spin_calls", FUEL_PER_TICK),
+        ("spin_calls", describe::host::FUEL),
     ] {
         let start = both.global("n");
         assert_eq!(both.call(name, &[], fuel).0, End::Stopped(Stop::OutOfFuel));
@@ -766,18 +762,15 @@ fn an_import_in_a_table_is_still_reached_under_both() {
     );
     for index in [0, 1] {
         assert_eq!(
-            both.call("through", &[index], FUEL_PER_TICK).0,
+            both.call("through", &[index], VIEW_FUEL).0,
             End::Returned(vec![])
         );
     }
     assert_eq!(
-        both.call("through", &[2], FUEL_PER_TICK).0,
+        both.call("through", &[2], VIEW_FUEL).0,
         End::Stopped(Stop::Trap)
     );
-    assert_eq!(
-        both.call("direct", &[], FUEL_PER_TICK).0,
-        End::Returned(vec![])
-    );
+    assert_eq!(both.call("direct", &[], VIEW_FUEL).0, End::Returned(vec![]));
 }
 
 #[test]
@@ -789,12 +782,9 @@ fn a_view_trap_stays_the_views_under_both() {
             (func (export "panic") unreachable))"#,
         VIEW_BYTES,
     );
+    assert_eq!(both.call("oob", &[], VIEW_FUEL).0, End::Stopped(Stop::Trap));
     assert_eq!(
-        both.call("oob", &[], FUEL_PER_TICK).0,
-        End::Stopped(Stop::Trap)
-    );
-    assert_eq!(
-        both.call("panic", &[], FUEL_PER_TICK).0,
+        both.call("panic", &[], VIEW_FUEL).0,
         End::Stopped(Stop::Trap)
     );
 }
@@ -1502,10 +1492,7 @@ fn a_ref_func_of_a_function_only_its_export_declares_is_metered() {
         VIEW_BYTES,
     );
     for name in ["import", "local"] {
-        assert_eq!(
-            both.call(name, &[], FUEL_PER_TICK).0,
-            End::Returned(vec![0])
-        );
+        assert_eq!(both.call(name, &[], VIEW_FUEL).0, End::Returned(vec![0]));
     }
 }
 
@@ -1535,7 +1522,7 @@ fn an_import_used_as_a_value_is_reached_through_its_adapter_under_both() {
         VIEW_BYTES,
     );
     for name in ["element", "global", "segment"] {
-        assert_eq!(both.call(name, &[], FUEL_PER_TICK).0, End::Returned(vec![]));
+        assert_eq!(both.call(name, &[], VIEW_FUEL).0, End::Returned(vec![]));
         both.every_budget(name, &[]);
     }
 }
@@ -1562,7 +1549,7 @@ fn a_call_indirect_to_two_results_matches_under_both() {
     );
     for (arg, results) in [(0, [7, 7]), (1, [8, 8]), (5, [6, 5])] {
         assert_eq!(
-            both.call("pair", &[arg], FUEL_PER_TICK).0,
+            both.call("pair", &[arg], VIEW_FUEL).0,
             End::Returned(results.to_vec())
         );
         both.every_budget("pair", &[arg]);
@@ -1604,7 +1591,7 @@ fn a_function_past_127_locals_matches_under_both() {
     );
     let total: i64 = (1..=300).map(|i| 3 + i).sum();
     assert_eq!(
-        both.call("sum", &[3], FUEL_PER_TICK).0,
+        both.call("sum", &[3], VIEW_FUEL).0,
         End::Returned(vec![total])
     );
     both.every_budget("sum", &[3]);

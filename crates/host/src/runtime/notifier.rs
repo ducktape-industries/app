@@ -10,7 +10,7 @@
 //! kernel's runtime. It is a [`View`] with no tree (`View::notifier`),
 //! seated by the shell's runner as a view is (`contract::ViewInstance`: a
 //! module with no `snapshot`/`restore`, its tick answering a turn): a
-//! view's manifest, memory budget and fuel per tick, its requests routed as
+//! view's manifest and memory budget, its requests routed as
 //! a view's (`View::answer`, the kernel contract), its props the session
 //! every view gets. Its manifest may not declare what needs the person in
 //! front of it ([`UNATTENDED`]): it is refused before it starts.
