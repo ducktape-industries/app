@@ -80,7 +80,8 @@ pub struct Row {
 #[derive(Default)]
 pub struct Devices {
     rows: Mutex<Vec<Row>>,
-    /// The file's modification time as last read ([`Devices::follow`]).
+    /// The file's modification time as last read ([`Devices::follow`]);
+    /// none once written here, so it is read again.
     seen: Mutex<Option<SystemTime>>,
     /// Where the rows are kept; none for a test's rows or the probe's,
     /// which live in memory only.
@@ -106,7 +107,8 @@ impl Devices {
         }))
     }
 
-    /// Reads `file` again when it moved since the last read: whether it did.
+    /// Reads `file` again when it moved since the last read, or was
+    /// written here since ([`Devices::edit`]): whether it did.
     pub fn follow(&self, file: &Path) -> bool {
         let modified = std::fs::metadata(file)
             .and_then(|metadata| metadata.modified())
@@ -169,13 +171,20 @@ impl Devices {
         self.edit(|rows| put(rows, row))
     }
 
-    /// The row of `kind` holding `token` dropped: APNs or FCM said the token
-    /// is gone. Whether one was there.
+    /// The row of `kind` holding `token` made a tombstone: APNs or FCM said
+    /// the token is gone. Its `at` stays, so a replay of the registration
+    /// is still refused (as a leave's is, [`put`]). Whether one was there.
     pub(crate) fn drop_token(&self, kind: &str, token: &str) -> std::io::Result<bool> {
         self.edit(|rows| {
-            let before = rows.len();
-            rows.retain(|row| !(row.kind == kind && row.token == token));
-            rows.len() != before
+            let mut dropped = false;
+            for row in rows
+                .iter_mut()
+                .filter(|row| row.kind == kind && row.token == token && !token.is_empty())
+            {
+                row.token.clear();
+                dropped = true;
+            }
+            dropped
         })
     }
 
@@ -210,6 +219,11 @@ impl Devices {
         std::fs::write(&tmp, serde_json::to_vec_pretty(&fresh)?)?;
         std::fs::rename(&tmp, file)?;
         *rows = fresh;
+        drop(rows);
+        // moved here: the next `follow` reads the file back and says so,
+        // whatever its clock, which is what stops the notifier of an
+        // account a drop left with no token (`carry`, main.rs)
+        *lock(&self.seen) = None;
         Ok(answer)
     }
 }
@@ -838,6 +852,61 @@ mod tests {
         let kept = Devices::load(&file).unwrap().tokens(15, "apns");
         let tokens: Vec<_> = kept.iter().map(|(token, _)| token.as_str()).collect();
         assert_eq!(tokens, ["new", "newer"]);
+    }
+
+    /// A token APNs or FCM calls gone leaves a tombstone, as a leave does:
+    /// the row's `at` still refuses a replay of the registration that put
+    /// the token there.
+    #[test]
+    fn a_dropped_token_still_refuses_its_replay() {
+        let devices = Devices::default();
+        let row = Row {
+            account: 15,
+            key: "aa".into(),
+            kind: "apns".into(),
+            token: "dead".into(),
+            env: "production".into(),
+            at: 5,
+        };
+        assert!(devices.put(row.clone()).unwrap());
+        assert!(devices.drop_token("apns", "dead").unwrap());
+        assert!(devices.tokens(15, "apns").is_empty());
+        assert!(
+            !devices.put(row).unwrap(),
+            "a replay brought the dropped token back"
+        );
+    }
+
+    /// A network's process that drops a token reads its rows back at its
+    /// next look, and says they moved (what runs `carry`), even when the
+    /// file's clock did not tick between its read and its write.
+    #[test]
+    fn a_drop_here_is_a_move_the_next_look_sees() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("testkit").join("devices.json");
+        let door = Devices::load(&file).unwrap();
+        door.put(Row {
+            account: 15,
+            key: "aa".into(),
+            kind: "apns".into(),
+            token: "dead".into(),
+            env: "production".into(),
+            at: 1,
+        })
+        .unwrap();
+        let child = Devices::load(&file).unwrap();
+        let read = std::fs::metadata(&file).unwrap().modified().unwrap();
+        assert!(child.drop_token("apns", "dead").unwrap());
+        // a coarse clock: the write lands in the tick the read saw
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(read)
+            .unwrap();
+        assert!(child.follow(&file), "a drop here was no move");
+        assert!(child.accounts().is_empty());
+        assert!(!child.follow(&file));
     }
 
     /// A chain pushd does not follow is a 404, which a phone takes as final;
