@@ -24,6 +24,14 @@
 //! - `link(url)`: a `duck://` or `ducktape://` intent's data.
 //! - `pushToken(kind, token)`: this device's push token (`fcm`), for the
 //!   device registry; empty when withdrawn.
+//! - `notice(payload, at, front, opened) -> shows`: a program's notice
+//!   `Ring.kt` showed, opened or handed over in front; from Firebase's own
+//!   thread for one that came in front (it only hands on, through a
+//!   channel, and answers from what the shell published whether the shade
+//!   shows it).
+//! - `swipeBegins(x, y, dx, dy, held) -> begins`: whether the Activity's
+//!   tabs' swipe starts, read against the last draw; `swipeDrag(x, speed)`,
+//!   `swipeLetGo()`, `swipeCancel()`: that swipe under way, let go, ended.
 //!
 //! - `android_main(app)`: the entry gm's NativeActivity glue (android-activity,
 //!   which gm links whatever path a host takes) names; never called, since
@@ -33,7 +41,9 @@
 //! gm keeps: `Activity.moveTaskToBack(boolean)` and
 //! `MainActivity.systemBars(dark)` on gm's render thread, and
 //! `MainActivity.ask(permission)` (blocking until the person answers) and
-//! `MainActivity.openSettings(page)` on a camera's or a microphone's thread.
+//! `MainActivity.openSettings(page)` on a camera's or a microphone's thread,
+//! `MainActivity.banner(payload)` on the host's banner queue's, and
+//! `MainActivity.withdrawNotice(tag)` on any.
 #![allow(unsafe_code, reason = "the JNI entries the Android Activity calls")]
 
 use gpui_mobile::android::host::{self, Pointer};
@@ -41,6 +51,7 @@ use jni::objects::{JClass, JFloatArray, JObject, JString, JValue};
 use jni::sys::{jboolean, jfloat, jint, jlong};
 use jni::{Env, EnvUnowned};
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// What an entry's failure becomes for Java: a `RuntimeException` (there is
 /// none of ours; a JNI call that failed is the only way in).
@@ -229,6 +240,59 @@ pub extern "system" fn Java_industries_ducktape_mobile_Native_back(
     crate::os::send(ducktape_host::contract::Signal::Back);
 }
 
+/// `Native.swipeBegins`: whether the tabs' swipe begins (`MainActivity`, at
+/// the touch slop): its finger came down at (`x`, `y`) in the window's
+/// points, went (`dx`, `dy`) points to the slop, and came down `held`
+/// seconds ago. Android's Back is the system's: no swipe back begins here
+/// (`shell::swipe::pages`).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_swipeBegins(
+    _: EnvUnowned<'_>,
+    _: JClass<'_>,
+    x: jfloat,
+    y: jfloat,
+    dx: jfloat,
+    dy: jfloat,
+    held: jfloat,
+) -> jboolean {
+    use gpui_kit::{point, px};
+    let held = Duration::try_from_secs_f32(held).unwrap_or(Duration::MAX);
+    crate::shell::swipe::pages(point(px(x), px(y)), point(px(dx), px(dy)), held)
+}
+
+/// `Native.swipeDrag`: the tabs' swipe under way, `x` points to the right
+/// of where it began (negative to the left), moving `speed` points per
+/// second to the right.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_swipeDrag(
+    _: EnvUnowned<'_>,
+    _: JClass<'_>,
+    x: jfloat,
+    speed: jfloat,
+) {
+    crate::os::send(ducktape_host::contract::Signal::Swipe { x, speed });
+}
+
+/// `Native.swipeLetGo`: that swipe let go, where and as fast as its last
+/// drag said: the shell judges which tab it lands on.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_swipeLetGo(
+    _: EnvUnowned<'_>,
+    _: JClass<'_>,
+) {
+    crate::os::send(ducktape_host::contract::Signal::SwipeLetGo);
+}
+
+/// `Native.swipeCancel`: that swipe ended without going on (the OS
+/// cancelled the touch).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_swipeCancel(
+    _: EnvUnowned<'_>,
+    _: JClass<'_>,
+) {
+    crate::os::send(ducktape_host::contract::Signal::SwipeCancelled);
+}
+
 /// `Native.ime`: one update from the Activity's `InputConnection`, for gm's
 /// text input. `kind`: 0 composing, 1 commit, 2 delete around, 3 delete
 /// around in code points, 4 done, 5 dismissed by BACK. Java clamps the
@@ -292,6 +356,53 @@ pub extern "system" fn Java_industries_ducktape_mobile_Native_pushToken<'caller>
         Ok(())
     })
     .resolve::<Policy>();
+}
+
+/// `Native.notice`: a program's notice the OS showed (`Ring.kt`), its
+/// payload as JSON, the Unix seconds it was shown at; `front` when it came
+/// while the app was in front, `opened` when the person opened it
+/// ([`crate::os::os_notice`]). Whether the shade shows one that came in
+/// front.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_notice<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _: JClass<'caller>,
+    payload: JString<'caller>,
+    at: jlong,
+    front: jboolean,
+    opened: jboolean,
+) -> jboolean {
+    env.with_env(|_: &mut Env| -> jni::errors::Result<jboolean> {
+        Ok(crate::os::os_notice(
+            &payload.to_string(),
+            at,
+            front,
+            opened,
+        ))
+    })
+    .resolve::<Policy>()
+}
+
+/// This phone's own banner, its payload as JSON (`os::banner_payload`),
+/// up through the Activity (`MainActivity.banner`, `Ring.kt`'s notice):
+/// whether it was handed to the shade.
+pub fn banner(payload: &str) -> bool {
+    let shown = gpui_mobile::android::jni::with_env(|env| {
+        let activity = gpui_mobile::android::jni::activity(env)?;
+        let payload = env.new_string(payload).map_err(|error| error.to_string())?;
+        env.call_method(
+            &activity,
+            jni::jni_str!("banner"),
+            jni::jni_sig!("(Ljava/lang/String;)Z"),
+            &[JValue::Object(&payload)],
+        )
+        .and_then(|shown| shown.z())
+        .map_err(|error| error.to_string())
+    });
+    shown.unwrap_or_else(|error| {
+        tracing::error!(target: "ducktape::phone", %error, "a banner did not go up");
+        false
+    })
 }
 
 /// The entry android-activity's NativeActivity glue calls. gm links that
@@ -397,6 +508,26 @@ pub fn system_bars(dark: bool) {
     });
     if let Err(error) = set {
         tracing::error!(target: "ducktape::phone", %error, "the system bars did not follow the appearance");
+    }
+}
+
+/// The shade's notices under `tag` (the push server's) taken down, through
+/// the Activity (`MainActivity.withdrawNotice`, `Ring.withdraw`).
+pub fn withdraw_notice(tag: &str) {
+    let withdrawn = gpui_mobile::android::jni::with_env(|env| {
+        let activity = gpui_mobile::android::jni::activity(env)?;
+        let tag = env.new_string(tag).map_err(|error| error.to_string())?;
+        env.call_method(
+            &activity,
+            jni::jni_str!("withdrawNotice"),
+            jni::jni_sig!("(Ljava/lang/String;)V"),
+            &[JValue::Object(&tag)],
+        )
+        .map(drop)
+        .map_err(|error| error.to_string())
+    });
+    if let Err(error) = withdrawn {
+        tracing::error!(target: "ducktape::phone", %error, "a notice stayed in the shade");
     }
 }
 

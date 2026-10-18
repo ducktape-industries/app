@@ -192,22 +192,16 @@ fn open_door(config: &Config, data: &Path) -> Result<(), String> {
         .networks
         .iter()
         .map(|network| {
-            let file = devices_file(data, &network.name);
             Ok(Arc::new(Followed {
                 name: network.name.clone(),
-                devices: Devices::load(&file)?,
-                file,
+                devices: Devices::load(&devices_file(data, &network.name))?,
                 client: backend::rpc_client(network.node_url.clone()),
                 chain: Mutex::default(),
             }))
         })
         .collect::<Result<Vec<_>, String>>()?;
     tracing::info!(target: "pushd", listen, networks = networks.len(), "the door is open");
-    Arc::new(Door {
-        networks,
-        reader: Arc::new(reader_key()),
-    })
-    .serve(listener)
+    Arc::new(Door::new(networks, Arc::new(reader_key()))).serve(listener)
 }
 
 /// One pushd per network, each this binary with `--network`: until the
@@ -276,6 +270,7 @@ fn run(network: &Network, config: &Config, data: &Path) -> Result<(), String> {
         contract::RunnerConfig {
             signals_based_traps: true,
             cache_dir: Some(home.join("cache").join("view-code")),
+            compile_apart: None,
         },
     )));
     let client = backend::rpc_client(network.node_url.clone());
@@ -373,11 +368,12 @@ fn probe(config: &Config) -> Result<(), String> {
     };
     if apns.is_some() {
         // two tokens: one token is one install's, kept on one row
-        devices.put(row("apns", &"0".repeat(64), "production"));
-        devices.put(row("apns", &"1".repeat(64), "sandbox"));
+        // in memory: the probe's rows are written nowhere
+        let _ = devices.put(row("apns", &"0".repeat(64), "production"));
+        let _ = devices.put(row("apns", &"1".repeat(64), "sandbox"));
     }
     if fcm.is_some() {
-        devices.put(row("fcm", "probe-token-that-is-no-device", ""));
+        let _ = devices.put(row("fcm", "probe-token-that-is-no-device", ""));
     }
     if apns.is_none() && fcm.is_none() {
         return Err("the config names no [apns] or [fcm] credential".into());
@@ -577,6 +573,8 @@ impl OsServices for Headless {
             one_layout: true,
             floats: false,
             motion: ducktape_host::motion::IOS,
+            // its recipients' settings answer for them (`unasked`)
+            os_asks_notices: false,
         }
     }
 

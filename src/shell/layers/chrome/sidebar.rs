@@ -487,6 +487,7 @@ mod tests {
             note: None,
             empty: false,
             pending: false,
+            prep: crate::runtime::Prep::Settled,
         }
     }
 

@@ -16,9 +16,11 @@ version.workspace = true
 publish = false
 
 [dependencies]
-# the IR the S0-native pass was proven on: its output equalled wasmtime's
-# fuel tick for tick and was byte-identical run to run
-walrus = "=0.23.3"
+# the writer: each section re-encoded as wasmparser reads it (`reencode`),
+# each body operator by operator, so the pass holds the input, the output
+# and one body (walrus's IR of a whole view took 80 times its size, the
+# iPhone's peak)
+wasm-encoder = { version = "0.251", default-features = false, features = ["std", "wasmparser"] }
 # the validator wasmtime 46 itself runs: `FEATURES` is the very type its
 # `Config::wasm_features` takes
 wasmparser = "0.251"

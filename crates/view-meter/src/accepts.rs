@@ -232,7 +232,7 @@ fn body_fits(
     Ok(())
 }
 
-// What `meter_seq` (lib.rs) emits, in bytes, with every index at its widest
+// What `meter_body` (lib.rs) emits, in bytes, with every index at its widest
 // LEB128 (locals, globals and segments under 2^21: 3 bytes; functions and
 // types under 2^28: 4) and every i64 constant at 10.
 
@@ -256,13 +256,14 @@ const CHARGE_LEN: u64 = 4 * LOCAL + 2 + CHECK;
 /// `ask_budget`: `local.get`, `i64.extend_i32_u`, `i64.const`, `i64.mul`,
 /// `call`.
 const ASK_BUDGET: u64 = LOCAL + 1 + I64 + 1 + CALL;
-/// An index walrus renumbers (locals, types, functions, segments) and writes
-/// at its minimal width: from 1 byte to its widest.
+/// An index the pass renumbers (a local past the parameters, an indirect
+/// call's type) or writes again at its minimal width: from 1 byte to its
+/// widest.
 const REINDEX: u64 = 3;
 /// Per function: the entry charge and check, the closing charge, the block
 /// the body moves into (`block`, its type, `end`) and the count pushed after
-/// it, and the locals regrouped by type (at most 6 groups of a count and a
-/// type, and their number).
+/// it, and the scratch local's group of locals (counted as 6 groups of a
+/// count and a type, and their number).
 const PER_FUNCTION: u64 = CHARGE + CHECK + CHARGE + (1 + 5 + 1) + LOCAL + 6 * (3 + 1) + 3;
 
 /// The most bytes the pass adds for `op`: its charges and checks (a

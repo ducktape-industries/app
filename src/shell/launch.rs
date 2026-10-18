@@ -51,11 +51,18 @@ fn start(boot: Boot, os: Arc<dyn OsServices>) {
             ducktape_host::contract::Boot {
                 os: os.clone(),
                 // Cranelift, signal-based traps, compiled code kept across
-                // launches under the cache
+                // launches under the cache and compiled in a child of this
+                // binary
                 runner: Arc::new(ducktape_host::runner::WasmtimeRunner::new(
                     ducktape_host::contract::RunnerConfig {
                         signals_based_traps: true,
                         cache_dir: Some(os.dirs().cache.join("view-code")),
+                        // Linux: the running binary even once an update
+                        // replaced or removed its file
+                        compile_apart: match cfg!(target_os = "linux") {
+                            true => Some("/proc/self/exe".into()),
+                            false => std::env::current_exe().ok(),
+                        },
                     },
                 )),
                 open: entities::open_banner,

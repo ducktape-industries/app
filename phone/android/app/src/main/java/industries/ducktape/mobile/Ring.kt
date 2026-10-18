@@ -15,6 +15,7 @@ import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -23,25 +24,49 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
+import org.json.JSONObject
 
 /**
  * The ring (huddle call SPEC §5): a call's high-priority data message becomes a call notification that rings until
  * it is answered, declined, withdrawn or past its `until`. The payload is the carrier's (pushd): `tag` names the call,
  * `title` is who calls, `link` is what Answer opens (an `ACTION_VIEW` intent to [MainActivity], the link path any
  * `duck://` link takes), `until` is Unix seconds. Decline is this phone's alone (SPEC D11): nothing is sent.
- * Any other notice (`kind: notice`, the same payload) is an ordinary notification under its tag ([notice]), replaced
- * in place by the next under that tag (quietly when the carrier says `quiet`), opened to its link, taken down by the
- * same withdraw a call is. What is a notice, its words and when it goes are the program's; this only shows them.
+ * Any other notice (`kind: notice`, the same payload and its `id`) is an ordinary notification under its id ([notice]),
+ * replaced in place only by the same notice posted again; a tag's notices stack in one group (quietly when the
+ * carrier says `quiet`), each opened to its link, all taken down by the same withdraw a call is. What is a notice, its
+ * words and when it goes are the program's; this only shows them.
  * Firebase is the owner's project: without its `google-services.json` the build has no Firebase app, and nothing here
  * asks it for anything.
+ * Every notice shown goes to Rust for the Notifications tab ([Native.notice], its payload as JSON and when it was
+ * shown): those still in the shade each time the app comes to the front ([shown]), one opened from the shade (before
+ * its link), and one that comes while the app is in front. One the person swiped away first is not in the shade: what
+ * the program's notifier here posts when it runs again is what the tab gets of it.
+ * While the app is in front a notice is still a notification in the shade, once: this phone runs the notifiers of the
+ * chain in hand, and what they post Rust shows through [banner] (the push's payload, under its tag); a push for that
+ * chain then shows nothing, and one for another chain shows (Rust answers which).
  */
 object Ring {
     /** The intent extra naming the call an Answer came from, so the app takes its ring down. */
     const val TAG = "industries.ducktape.mobile.RING_TAG"
+    /** A notice's payload as JSON, in its notification's extras and in the intent opening it. */
+    const val PAYLOAD = "industries.ducktape.mobile.NOTICE"
+    /** When the notice was shown (Unix seconds), in the intent opening it. */
+    const val AT = "industries.ducktape.mobile.NOTICE_AT"
+    /**
+     * The entry this app's own intents to [MainActivity] come in by (`AndroidManifest.xml`): an alias no other app can
+     * start, so a [TAG] or [PAYLOAD] it reads is one this app sent.
+     */
+    const val OWN = "industries.ducktape.mobile.Own"
+
+    /** [MainActivity] is in front (resumed): a push is shown only when Rust says ([notice]). */
+    @Volatile
+    var inFront = false
     private const val CHANNEL = "calls"
     private const val NOTICES = "notices"
-    /** Every call's and notice's notification is this id under its own tag. */
+    /** Every call's and notice's notification is this id under its own tag (a notice's: its `id`). */
     private const val ID = 1
+    /** A tag's group summary is this id under the tag. */
+    private const val SUMMARY = 0
     /** [MainActivity]'s request code for the notification permission, apart from a view's asks. */
     const val ASK_NOTIFY = 2
 
@@ -65,8 +90,7 @@ object Ring {
         val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         val answer = PendingIntent.getActivity(
             context, tag.hashCode(),
-            Intent(Intent.ACTION_VIEW, Uri.parse(call["link"].orEmpty()), context, MainActivity::class.java)
-                .putExtra(TAG, tag),
+            Intent(Intent.ACTION_VIEW, Uri.parse(call["link"].orEmpty())).setClassName(context, OWN).putExtra(TAG, tag),
             flags,
         )
         val decline = PendingIntent.getBroadcast(
@@ -74,7 +98,7 @@ object Ring {
         )
         // a tap on the notification: the app, and the ring goes (the call is still the person's to answer there)
         val tapped = PendingIntent.getActivity(
-            context, tag.hashCode(), Intent(context, MainActivity::class.java).putExtra(TAG, tag), flags,
+            context, tag.hashCode(), Intent().setClassName(context, OWN).putExtra(TAG, tag), flags,
         )
         // a locked or sleeping phone: the call's own screen over the lock, never the app
         val screen = PendingIntent.getActivity(
@@ -101,38 +125,85 @@ object Ring {
         manager.notify(tag, ID, notification)
     }
 
-    /** `notice` shown under its tag; one already there is replaced, without a second sound when it is `quiet`. */
-    fun notice(context: Context, notice: Map<String, String>) {
-        val tag = notice["tag"] ?: return
+    /**
+     * `notice` shown under its id in its tag's group; the same one already there is replaced; `quiet`: no sound. A push
+     * that comes with the app in front is handed to Rust first and shown only when Rust says; this phone's own ([own],
+     * [banner]) is shown as it is. Whether it was shown.
+     */
+    fun notice(context: Context, notice: Map<String, String>, own: Boolean = false): Boolean {
+        val tag = notice["tag"] ?: return false
+        val id = notice["id"] ?: return false
         val until = notice["until"]?.toLongOrNull() ?: 0
-        val left = until * 1000 - System.currentTimeMillis()
-        if (until != 0L && left <= 0) return
+        val now = System.currentTimeMillis()
+        val left = until * 1000 - now
+        if (until != 0L && left <= 0) return false
+        val payload = JSONObject(notice).toString()
+        if (inFront && !own && !Native.notice(payload, now / 1000, true, false)) return false
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(NOTICES, "Notices", NotificationManager.IMPORTANCE_DEFAULT))
         val link = notice["link"].orEmpty()
+        // its own request code: each notice in a group opens with its own payload
         val opened = PendingIntent.getActivity(
-            context, tag.hashCode(),
-            if (link.isEmpty()) Intent(context, MainActivity::class.java)
-            else Intent(Intent.ACTION_VIEW, Uri.parse(link), context, MainActivity::class.java),
+            context, id.hashCode(),
+            (if (link.isEmpty()) Intent() else Intent(Intent.ACTION_VIEW, Uri.parse(link)))
+                .setClassName(context, OWN).putExtra(PAYLOAD, payload).putExtra(AT, now / 1000),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val notification = Notification.Builder(context, NOTICES)
+            .setWhen(now)
+            .setShowWhen(true)
+            .setExtras(Bundle().apply { putString(PAYLOAD, payload) })
             .setSmallIcon(android.R.drawable.ic_dialog_email)
             .setContentTitle(notice["title"].orEmpty())
             .setContentText(notice["body"].orEmpty())
             .setStyle(Notification.BigTextStyle().bigText(notice["body"].orEmpty()))
-            .setGroup(notice["program"].orEmpty())
+            .setGroup(tag)
+            // quiet: a child that leaves alerting to its summary, which never alerts
+            .setGroupAlertBehavior(
+                if (notice["quiet"] == "1") Notification.GROUP_ALERT_SUMMARY else Notification.GROUP_ALERT_ALL,
+            )
             .setContentIntent(opened)
             .setAutoCancel(true)
-            .setOnlyAlertOnce(notice["quiet"] == "1")
             .apply { if (until != 0L) setTimeoutAfter(left) }
             .build()
-        manager.notify(tag, ID, notification)
+        manager.notify(id, ID, notification)
+        // Android stacks a group only under a summary of it
+        val summary = Notification.Builder(context, NOTICES)
+            .setSmallIcon(android.R.drawable.ic_dialog_email)
+            .setContentTitle(notice["title"].orEmpty())
+            .setGroup(tag)
+            .setGroupSummary(true)
+            .setGroupAlertBehavior(Notification.GROUP_ALERT_CHILDREN)
+            .setAutoCancel(true)
+            .build()
+        manager.notify(tag, SUMMARY, summary)
+        return true
     }
 
-    /** The call or notice under [tag] goes; a call's screen with it. */
+    /**
+     * This phone's own banner ([MainActivity.banner]): [payload] (JSON, the push's shape, its id with it) shown as a
+     * pushed notice is, so opening it, and taking it down ([withdraw]), is a pushed one's. Whether it was shown.
+     */
+    fun banner(context: Context, payload: String): Boolean {
+        val json = JSONObject(payload)
+        return notice(context, json.keys().asSequence().associateWith { json.getString(it) }, own = true)
+    }
+
+    /** The notices still in the shade, each to Rust as it was shown ([Native.notice]), oldest first. */
+    fun shown(context: Context) {
+        val active = context.getSystemService(NotificationManager::class.java).activeNotifications
+        for (posted in active.sortedBy { it.notification.`when` }) {
+            val notification = posted.notification
+            val payload = notification.extras.getString(PAYLOAD) ?: continue
+            Native.notice(payload, notification.`when` / 1000, false, false)
+        }
+    }
+
+    /** The call under [tag], or every notice in its group with the group's summary, goes; a call's screen with it. */
     fun withdraw(context: Context, tag: String) {
-        context.getSystemService(NotificationManager::class.java).cancel(tag, ID)
+        val manager = context.getSystemService(NotificationManager::class.java)
+        manager.cancel(tag, ID)
+        manager.activeNotifications.filter { it.notification.group == tag }.forEach { manager.cancel(it.tag, it.id) }
         RingActivity.over(tag)
     }
 

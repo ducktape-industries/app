@@ -90,7 +90,7 @@ class RingActivity : Activity() {
     private fun answer(tag: String, link: String) {
         val open = {
             startActivity(
-                Intent(Intent.ACTION_VIEW, Uri.parse(link), this, MainActivity::class.java).putExtra(Ring.TAG, tag),
+                Intent(Intent.ACTION_VIEW, Uri.parse(link)).setClassName(this, Ring.OWN).putExtra(Ring.TAG, tag),
             )
             finish()
         }

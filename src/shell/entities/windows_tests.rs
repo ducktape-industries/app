@@ -300,6 +300,46 @@ fn the_update_notice_opens_settings_on_updates(cx: &mut TestAppContext) {
     );
 }
 
+/// The updater's notice put into the centre (its row, then `UpdatesMoved`
+/// as its reading moves): the bell's count follows, and the row picked
+/// opens Settings on the console, on its Updates page, as its banner does.
+#[gpui_kit::test]
+fn an_update_notices_row_reaches_the_bell_and_opens_updates(cx: &mut TestAppContext) {
+    let (app, key) = console(cx);
+    let overlays = app
+        .windows
+        .read_with(cx, |windows, _| windows.own(key).unwrap().overlays.clone());
+    let unread = |cx: &mut TestAppContext| app.notifications.read_with(cx, |it, _| it.unread());
+    let before = unread(cx);
+    app.notifications.read_with(cx, |notifications, _| {
+        let at = crate::runtime::notify::wall();
+        notifications.center().lock().post_host(
+            "Ducktape 0.2.0 is ready.",
+            "Restart to update.",
+            "update",
+            at,
+        )
+    });
+    app.windows.update(cx, |windows, cx| {
+        windows.posted(super::windows::Posted::UpdatesMoved, cx)
+    });
+    assert_eq!(unread(cx), before + 1, "the bell's count stayed");
+    let row = app.notifications.read_with(cx, |notifications, _| {
+        notifications
+            .entries()
+            .into_iter()
+            .find(|entry| entry.tag == "update")
+            .unwrap()
+    });
+    app.windows
+        .update(cx, |windows, cx| windows.open_notice(&row, cx));
+    cx.run_until_parked();
+    assert_eq!(
+        overlays.read_with(cx, |it, _| *it.get()),
+        Some(Overlay::Settings(super::SettingsPage::Updates))
+    );
+}
+
 /// Two windows of one program: a link from outside them (a notice,
 /// Spotlight, the OS) goes to the one `open_program` brings forward and
 /// to no other; with the program only in a pop-out, to the pop-out it

@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use std::path::Path;
 
-use super::center::{Center, CenterHandle, Notice, NoticeKind, read_log};
+use super::center::{Center, CenterHandle, HOST, Notice, NoticeKind, read_log};
 use super::settings::{BURST_PREF, FRONT_PREF, NOTIFY_PREF, Permission, Settings, VIEWS_PREF};
 use super::{checked, in_order};
 use crate::runtime::WindowKey;
@@ -273,15 +273,28 @@ fn the_log_keeps_every_row_until_cleared() {
 
 #[test]
 fn prefs_read_back_as_settings() {
-    let read = Settings::of(&serde_json::json!({}));
+    let read = Settings::of(&serde_json::json!({}), false);
     assert_eq!((read.banners, read.in_front, read.burst), (true, false, 6));
-    let read = Settings::of(&serde_json::json!({
-        NOTIFY_PREF: false, FRONT_PREF: "show", BURST_PREF: 12,
-        VIEWS_PREF: { "chat": "Silent", "forge": "nonsense" },
-    }));
+    assert_eq!(read.unasked, None, "a desktop asks per program");
+    let read = Settings::of(
+        &serde_json::json!({
+            NOTIFY_PREF: false, FRONT_PREF: "show", BURST_PREF: 12,
+            VIEWS_PREF: { "chat": "Silent", "forge": "nonsense" },
+        }),
+        false,
+    );
     assert_eq!((read.banners, read.in_front, read.burst), (false, true, 12));
     assert_eq!(read.views.len(), 1);
-    assert_eq!(Settings::of(&serde_json::json!({ BURST_PREF: 7 })).burst, 6);
+    assert_eq!(
+        Settings::of(&serde_json::json!({ BURST_PREF: 7 }), false).burst,
+        6
+    );
+    let phone = Settings::of(&serde_json::json!({}), true);
+    assert_eq!(
+        phone.unasked,
+        Some(Permission::Allow),
+        "the OS asked for the whole app, and a program unasked here was held back"
+    );
 }
 
 /// A post round-trips as borsh and trailing bytes are refused; a post
@@ -877,4 +890,301 @@ fn a_calls_banner_is_withdrawn_at_its_until() {
         !center.lock().ring_over(&banner.tag, until),
         "the timer left it standing"
     );
+}
+
+/// What the push server carried here for chat under `tag`, worded as its
+/// centre lets a notice through (`chat/<tag>`), linking to `link`.
+fn carried(title: &str, tag: &str, link: &str) -> Notice {
+    Notice {
+        title: title.into(),
+        body: "b".into(),
+        tag: match tag.is_empty() {
+            true => String::new(),
+            false => format!("chat/{tag}"),
+        },
+        program: "chat".into(),
+        link: link.into(),
+        ..Notice::default()
+    }
+}
+
+/// The rows as the list draws them: title, count, read, time.
+fn rows(center: &Center) -> Vec<(String, u32, bool, i64)> {
+    center
+        .entries()
+        .map(|entry| (entry.title.clone(), entry.count, entry.read, entry.at))
+        .collect()
+}
+
+/// A notice the OS shows is logged once under its program and its own tag
+/// at the OS's time, however often the OS's list is read again; this
+/// device's run of the notifier posting the same notice after leaves the
+/// row as it is, read or not. Two posts of its own saying the same are two
+/// notices: the second folds in, unread.
+#[test]
+fn a_carried_notice_is_one_row_whoever_logs_it_again() {
+    let now = Instant::now();
+    let silent = settings(Some(Permission::Silent));
+    let mut center = Center::default();
+    let notice = carried("ada mentioned you", "#room", "duck://c/chat/room/7");
+    assert!(center.carried(&silent, &notice, 100, false));
+    let entry = center.entries().next().unwrap().clone();
+    assert_eq!(
+        (entry.program.as_str(), entry.tag.as_str()),
+        ("chat", "#room"),
+        "the row is under the view's own tag"
+    );
+    assert!(
+        !center.carried(&silent, &notice, 100, false),
+        "read again, logged again"
+    );
+    assert_eq!(rows(&center), [("ada mentioned you".into(), 1, false, 100)]);
+
+    // the notifier here catches up on what came while the app was closed
+    let same = Notification {
+        link: "duck://c/chat/room/7".into(),
+        ..post("ada mentioned you", "#room")
+    };
+    center.post(&silent, "chat", "Chat", same.clone(), now, 160);
+    assert_eq!(rows(&center), [("ada mentioned you".into(), 1, false, 100)]);
+    center.mark_all_read();
+    assert!(
+        !center.carried(&silent, &notice, 100, false),
+        "read, then unread again"
+    );
+
+    // opened from the OS, then this device's run posts it: still read
+    let opened = carried("bob mentioned you", "#other", "");
+    assert!(center.carried(&silent, &opened, 120, true));
+    center.post(
+        &silent,
+        "chat",
+        "Chat",
+        post("bob mentioned you", "#other"),
+        now,
+        170,
+    );
+    assert!(
+        center.entries().next().unwrap().read,
+        "opened, then unread again"
+    );
+
+    center.post(&silent, "chat", "Chat", same, now, 200);
+    assert_eq!(
+        rows(&center)[0],
+        ("ada mentioned you".into(), 2, false, 200),
+        "a repeat of this device's own was taken for a copy"
+    );
+}
+
+/// The OS showed what the push server carried here: this device's run of
+/// the same notice after raises no second banner, while a notice the OS
+/// never showed still raises its own.
+#[test]
+fn a_carried_notice_raises_no_second_banner() {
+    let now = Instant::now();
+    let allow = settings(Some(Permission::Allow));
+    let mut center = Center::default();
+    assert!(center.carried(&allow, &carried("ada", "#room", ""), 100, false));
+    let (posted, banner) = center.post(&allow, "chat", "Chat", post("ada", "#room"), now, 160);
+    assert_eq!((posted, banner), (Delivery::Logged, None), "bannered twice");
+    let (posted, banner) = center.post(&allow, "chat", "Chat", post("bob", "#room"), now, 170);
+    assert_eq!(posted, Delivery::Banner);
+    assert_eq!(banner.map(|banner| banner.title), Some("bob".to_owned()));
+}
+
+/// What this device's run posted first is not logged again when the OS
+/// shows the push server's copy of it; a newer notice under the tag folds
+/// in unread, and an older one takes its place by its time. Opening it
+/// from the OS reads the row. A blocked program's notices, links that are
+/// no `duck://` link and the push server's "N more" banner are dropped.
+#[test]
+fn the_os_copy_of_a_posted_notice_is_not_logged_twice() {
+    let now = Instant::now();
+    let silent = settings(Some(Permission::Silent));
+    let mut center = Center::default();
+    center.post(&silent, "chat", "Chat", post("first", "#room"), now, 100);
+    assert!(!center.carried(&silent, &carried("first", "#room", ""), 101, false));
+    assert_eq!(rows(&center), [("first".into(), 1, false, 100)]);
+
+    center.mark_all_read();
+    assert!(center.carried(&silent, &carried("second", "#room", ""), 102, false));
+    assert!(center.carried(&silent, &carried("early", "", ""), 50, false));
+    assert_eq!(
+        rows(&center),
+        [
+            ("second".into(), 2, false, 102),
+            ("early".into(), 1, false, 50)
+        ]
+    );
+    assert!(center.carried(&silent, &carried("second", "#room", ""), 102, true));
+    assert_eq!(
+        center.unread(),
+        1,
+        "opening it from the OS left the row unread"
+    );
+
+    let blocked = settings(Some(Permission::Block));
+    assert!(!center.carried(&blocked, &carried("no", "#x", ""), 300, false));
+    let elsewhere = carried("no", "#y", "https://example.com");
+    assert!(!center.carried(&silent, &elsewhere, 300, false));
+    // the push server's centre past its burst: a banner, not a notice
+    let more = Notice {
+        tag: "more/chat".into(),
+        ..carried("3 more from Chat", "", "")
+    };
+    assert!(!center.carried(&silent, &more, 300, false));
+    assert_eq!(center.entries().count(), 2);
+}
+
+/// A carried notice is written as it is logged, so the next launch's
+/// connect reads it back off disk; so is the copy waiting for this
+/// device's own run of its notifier, so a notice opened from the OS stays
+/// read and counted once when that run only posts it after a relaunch.
+#[test]
+fn a_carried_notice_is_on_disk_for_the_next_launch() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dev.json");
+    let _off = crate::perf::off_for_test();
+    let mut center = Center::default();
+    center.open_log("dev", Some(path.clone()));
+    let silent = settings(Some(Permission::Silent));
+    center.carried(&silent, &carried("kept", "#room", ""), 100, true);
+    settled(&path);
+    settled(&dir.path().join("dev@carried.json"));
+    let mut relaunched = Center::default();
+    relaunched.open_log("dev", Some(path));
+    assert_eq!(rows(&relaunched), [("kept".into(), 1, true, 100)]);
+    let now = Instant::now();
+    relaunched.post(&silent, "chat", "Chat", post("kept", "#room"), now, 160);
+    assert_eq!(
+        rows(&relaunched),
+        [("kept".into(), 1, true, 100)],
+        "opened from the OS, then unread again after a relaunch"
+    );
+    // the copy is used up on disk too: the next post saying the same is new
+    flushed(&mut relaunched, &dir.path().join("dev@carried.json"));
+    let mut again = Center::default();
+    again.open_log("dev", Some(dir.path().join("dev.json")));
+    again.post(&silent, "chat", "Chat", post("kept", "#room"), now, 170);
+    assert_eq!(rows(&again), [("kept".into(), 2, false, 170)]);
+}
+
+/// The copies waiting for this device's run are the newest few: past the
+/// bound the oldest goes, and its program's post of it is a notice again.
+#[test]
+fn the_copies_waiting_for_this_devices_run_are_bounded() {
+    let silent = settings(Some(Permission::Silent));
+    let mut center = Center::default();
+    for nth in 0..=super::center::CARRIED_KEPT {
+        let notice = carried(&format!("n{nth}"), &format!("#{nth}"), "");
+        center.carried(&silent, &notice, 100, false);
+    }
+    let now = Instant::now();
+    center.post(&silent, "chat", "Chat", post("n0", "#0"), now, 200);
+    let last = super::center::CARRIED_KEPT;
+    center.post(
+        &silent,
+        "chat",
+        "Chat",
+        post(&format!("n{last}"), &format!("#{last}")),
+        now,
+        200,
+    );
+    let count = |title: &str| {
+        let entry = center.entries().find(|entry| entry.title == title).unwrap();
+        entry.count
+    };
+    assert_eq!(count("n0"), 2, "the oldest copy outlived the bound");
+    assert_eq!(count(&format!("n{last}")), 1);
+}
+
+/// The host's own rows are the device's: there before any network is in
+/// hand and through a switch to another, merged into the chain's by when
+/// they came. A newer one under the tag takes the row's place, unread and
+/// counted once; a row is picked by an id no chain row has; they are saved
+/// to their own file, never the chain's, and read back off it; withdrawn,
+/// the row goes.
+#[test]
+fn the_hosts_rows_stand_beside_every_chains_in_a_file_of_their_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let (device, chain) = (dir.path().join("@device.json"), dir.path().join("dev.json"));
+    let _off = crate::perf::off_for_test();
+    let titles = |center: &Center| {
+        center
+            .entries()
+            .map(|entry| entry.title.clone())
+            .collect::<Vec<_>>()
+    };
+    let mut center = Center::default();
+    center.open_device_log(device.clone());
+    center.post_host(
+        "Ducktape 2 is ready.",
+        "Restart to update.",
+        "update/ready",
+        10,
+    );
+    assert_eq!(
+        titles(&center),
+        ["Ducktape 2 is ready."],
+        "before any network"
+    );
+    let host = center.entries().next().unwrap().clone();
+    assert!(host.host());
+    assert_eq!(
+        (host.program.as_str(), host.tag.as_str()),
+        (HOST, "update/ready")
+    );
+
+    center.open_log("dev", Some(chain.clone()));
+    let silent = settings(Some(Permission::Silent));
+    center.post(&silent, "chat", "Chat", post("hi", ""), Instant::now(), 20);
+    assert_eq!(titles(&center), ["hi", "Ducktape 2 is ready."]);
+    center.post_host(
+        "Ducktape 3 is ready.",
+        "Restart to update.",
+        "update/ready",
+        30,
+    );
+    assert_eq!(titles(&center), ["Ducktape 3 is ready.", "hi"]);
+    let rows: Vec<_> = center.entries().cloned().collect();
+    assert_eq!(
+        (rows[0].id, rows[0].count),
+        (host.id, 1),
+        "in the row's place"
+    );
+    assert_ne!(rows[0].id, rows[1].id);
+    assert!(!rows[1].host());
+    assert_eq!(center.unread(), 2);
+    assert_eq!(
+        center.open(host.id).map(|entry| entry.title),
+        Some("Ducktape 3 is ready.".into())
+    );
+    assert_eq!(center.unread(), 1, "the chain's row is still unread");
+
+    flushed(&mut center, &device);
+    settled(&chain);
+    let kept = |path: &Path| {
+        read_log(path)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.title)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(kept(&device), ["Ducktape 3 is ready."]);
+    assert_eq!(kept(&chain), ["hi"]);
+    center.open_log("other", None);
+    assert_eq!(titles(&center), ["Ducktape 3 is ready."], "another network");
+    let mut next = Center::default();
+    next.open_device_log(device.clone());
+    assert_eq!(
+        next.entries().map(|entry| entry.read).collect::<Vec<_>>(),
+        [true],
+        "the next start reads them back"
+    );
+
+    center.withdraw_host("update/ready");
+    assert_eq!(center.entries().count(), 0);
+    flushed(&mut center, &device);
+    assert_eq!(kept(&device), Vec::<String>::new());
 }

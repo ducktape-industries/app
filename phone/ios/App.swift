@@ -15,22 +15,23 @@ enum App {
     let files = FileManager.default
     let documents = files.urls(for: .documentDirectory, in: .userDomainMask)[0].path
     let caches = files.urls(for: .cachesDirectory, in: .userDomainMask)[0].path
-    SwipeBack.shared.follow()
+    Swipe.shared.follow()
     Ring.shared.follow()
     ducktape_phone_main(documents, caches)
   }
 }
 
 /// Back on iOS (SPEC §7.6): a swipe to the right, as iOS 26's own stacks take it: in from the left edge, over anything,
-/// and from anywhere else on the screen when Rust says it begins there (`ducktape_phone_back_begins`: something to go
+/// and from anywhere else on the screen when Rust says it begins there (`ducktape_phone_swipe_begins`: something to go
 /// back to, nothing over the screen, nothing under the finger that takes a sideways drag itself, the move clearly
-/// rightward). gpui_ios hands the app raw touches and no gesture of the system's, so the launcher puts both pans on
-/// gpui's window when it becomes key, the edge's first: the other waits for it to fail, so the edge always wins. Either
-/// tells Rust where the finger is and how fast it moves while it moves (`ducktape_phone_back_drag`, the screen on top
-/// follows it), then that it let go (`ducktape_phone_back_let_go`: Rust judges Back) or ended
-/// (`ducktape_phone_back_cancel`). The touches a swipe takes are cancelled for the view under it.
-final class SwipeBack: NSObject, UIGestureRecognizerDelegate {
-  static let shared = SwipeBack()
+/// rightward). At a tab root the same swipe, either way, pages the tabs (Rust says so too). gpui_ios hands the app raw
+/// touches and no gesture of the system's, so the launcher puts both pans on gpui's window when it becomes key, the
+/// edge's first: the other waits for it to fail, so the edge always wins. Either tells Rust where the finger is (its
+/// way across, negative to the left) and how fast it moves while it moves (`ducktape_phone_swipe_drag`, the screen on
+/// top follows it), then that it let go (`ducktape_phone_swipe_let_go`: Rust judges Back, or the tab it lands on) or
+/// ended (`ducktape_phone_swipe_cancel`). The touches a swipe takes are cancelled for the view under it.
+final class Swipe: NSObject, UIGestureRecognizerDelegate {
+  static let shared = Swipe()
   private var observer: NSObjectProtocol?
   /// When the finger the swipe from anywhere would follow came down, on the touches' clock.
   private var down: TimeInterval = 0
@@ -61,14 +62,14 @@ final class SwipeBack: NSObject, UIGestureRecognizerDelegate {
   /// The swipe from anywhere, as UIKit is about to start it (at the finger's first move of a point or two): where its
   /// finger came down, how fast it moves, how long it rested first, for Rust to judge.
   func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
-    guard let pan = recognizer as? UIPanGestureRecognizer, let view = pan.view, !SwipeBack.presented(view) else {
+    guard let pan = recognizer as? UIPanGestureRecognizer, let view = pan.view, !Swipe.presented(view) else {
       return false
     }
     let at = pan.location(in: view)
     let moved = pan.translation(in: view)
     let moving = pan.velocity(in: view)
     let held = ProcessInfo.processInfo.systemUptime - down
-    return ducktape_phone_back_begins(
+    return ducktape_phone_swipe_begins(
       Double(at.x - moved.x), Double(at.y - moved.y), Double(moving.x), Double(moving.y), held) != 0
   }
 
@@ -79,17 +80,17 @@ final class SwipeBack: NSObject, UIGestureRecognizerDelegate {
 
   @objc private func swiped(_ pan: UIPanGestureRecognizer) {
     guard let view = pan.view else { return }
-    let presented = SwipeBack.presented(view)
-    let x = Double(max(pan.translation(in: view).x, 0))
+    let presented = Swipe.presented(view)
+    let x = Double(pan.translation(in: view).x)
     let speed = Double(pan.velocity(in: view).x)
     switch pan.state {
     case .began, .changed:
-      if !presented { ducktape_phone_back_drag(x, speed) }
+      if !presented { ducktape_phone_swipe_drag(x, speed) }
     case .ended where !presented:
-      ducktape_phone_back_drag(x, speed)
-      ducktape_phone_back_let_go()
+      ducktape_phone_swipe_drag(x, speed)
+      ducktape_phone_swipe_let_go()
     case .ended, .cancelled, .failed:
-      ducktape_phone_back_cancel()
+      ducktape_phone_swipe_cancel()
     default:
       break
     }
@@ -116,11 +117,23 @@ final class SwipeBack: NSObject, UIGestureRecognizerDelegate {
 /// `end_link`): what that hang-up means is the program's, as Answer's link is; a decline opens nothing. A call that
 /// comes while one answered here is CallKit's is reported and ended at once, missed (busy). A tap on a program's
 /// notice (an alert to the regular token) opens its `link`, as Answer does.
+///
+/// Every program's notice the OS shows goes to Rust for the Notifications tab (`ducktape_phone_notice`, its payload
+/// as JSON and when the OS showed it): those still in the OS's list at launch and each time the app comes to the
+/// front, one opened from the list (before its link), and one that comes while the app is in front. One the person
+/// swiped away before the app came to the front is not in the list: what the program's notifier here posts when it
+/// runs again is what the tab gets of it.
+///
+/// While the app is in front a notice is the OS's own banner all the same, once: this phone runs the notifiers of the
+/// chain in hand, and what they post Rust raises as a banner of this phone's own (`ducktape_phone_banner`, the push's
+/// payload under the notice's id); a push for that chain then shows nothing, and one for another chain shows (Rust
+/// answers which). The notifiers leave alone what the person is looking at, which the push server cannot see.
 final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate, UNUserNotificationCenterDelegate {
   static let shared = Ring()
   /// The huddle program's ring, for a payload that carries no `until`: a call always carries one (SPEC §5).
   private static let ringSeconds: TimeInterval = 45
   private var observer: NSObjectProtocol?
+  private var foreground: NSObjectProtocol?
   private var registry: PKPushRegistry?
   /// Made on first use, which is `start`, after launch.
   private lazy var provider: CXProvider = {
@@ -147,6 +160,9 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate, UNUserNo
     observer = NotificationCenter.default.addObserver(
       forName: UIApplication.didFinishLaunchingNotification, object: nil, queue: .main
     ) { [weak self] _ in self?.start() }
+    foreground = NotificationCenter.default.addObserver(
+      forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
+    ) { [weak self] _ in self?.delivered() }
   }
 
   private func start() {
@@ -165,13 +181,55 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate, UNUserNo
       NSLog("ducktape ring: alerts \(allowed ? "allowed" : "not allowed")\(error.map { ": \($0)" } ?? "")")
     }
     if let mode = ProcessInfo.processInfo.environment["DUCKTAPE_RING_TEST"] { test(mode) }
+    delivered()
   }
 
-  /// The delivered notice's id for `tag`: pushd's `apns-collapse-id` (`collapse_id` in crates/pushd/src/push.rs),
-  /// the tag itself up to 64 bytes, else its SHA-256 in hex.
-  static func collapse(_ tag: String) -> String {
-    guard tag.utf8.count > 64 else { return tag }
-    return SHA256.hash(data: Data(tag.utf8)).map { String(format: "%02x", $0) }.joined()
+  /// The notices still in the OS's list, each to Rust as the OS showed it, oldest first.
+  private func delivered() {
+    UNUserNotificationCenter.current().getDeliveredNotifications { notices in
+      let oldest = notices.sorted { $0.date < $1.date }
+      DispatchQueue.main.async { oldest.forEach { Ring.hand($0, front: false, opened: false) } }
+    }
+  }
+
+  /// Every notice under pushd's `tag` (each its own notification, the tag in its payload) out of the OS's list,
+  /// then `done`. Any thread.
+  static func takeDown(_ tag: String, done: @escaping () -> Void = {}) {
+    let center = UNUserNotificationCenter.current()
+    center.getDeliveredNotifications { delivered in
+      center.removeDeliveredNotifications(
+        withIdentifiers: delivered.filter { $0.request.content.userInfo["tag"] as? String == tag }
+          .map { $0.request.identifier })
+      done()
+    }
+  }
+
+  /// `notice` to Rust (`ducktape_phone_notice`), its payload as JSON; one that is no program's notice (no carrier's
+  /// `kind: notice`) is let go there. Whether the OS shows one that came in front.
+  @discardableResult
+  static func hand(_ notice: UNNotification, front: Bool, opened: Bool) -> Bool {
+    let payload = notice.request.content.userInfo
+    guard JSONSerialization.isValidJSONObject(payload),
+      let data = try? JSONSerialization.data(withJSONObject: payload),
+      let json = String(data: data, encoding: .utf8)
+    else { return false }
+    return ducktape_phone_notice(json, notice.date.timeIntervalSince1970, front ? 1 : 0, opened ? 1 : 0) != 0
+  }
+
+  /// This phone's own banner of a program's notice (Rust's, the app in front): `payload` as its `userInfo`, so a tap on
+  /// it is a pushed one's (`didReceive`) and a withdraw of its tag takes it down (`takeDown`); stacked with its tag's
+  /// and under its id, the push's own for the same notice (`Notice::os_id`), which replaces it, never stands beside it.
+  static func banner(_ payload: [String: Any]) {
+    let content = UNMutableNotificationContent()
+    content.title = payload["title"] as? String ?? ""
+    content.body = payload["body"] as? String ?? ""
+    content.threadIdentifier = payload["tag"] as? String ?? ""
+    content.sound = .default
+    content.userInfo = payload
+    let id = payload["id"] as? String ?? UUID().uuidString
+    UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil)) {
+      if let error = $0 { NSLog("ducktape ring: a banner did not go up: \(error)") }
+    }
   }
 
   /// CallKit's id for the call under `tag`: the same tag, the same call, whichever push names it.
@@ -235,14 +293,20 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate, UNUserNo
     }
   }
 
-  /// A background push: a withdrawn call's ring under `tag` stops, if it still rings; a withdrawn notice under
-  /// `tag` leaves the notification list. Whether the push was taken.
+  /// A background push: a withdrawn call's ring under `tag` stops, if it still rings; else every notice under
+  /// `tag` (each its own notification, pushd's `tag` in its payload) leaves the notification list. Whether the push
+  /// was taken.
   func remote(_ payload: [String: Any]) -> Bool {
     guard payload["kind"] as? String == "withdraw", let tag = payload["tag"] as? String else { return false }
     let id = Ring.id(tag)
     guard ringing.removeValue(forKey: id) != nil else {
       NSLog("ducktape ring: withdraw of \(tag), which does not ring here")
-      UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [Ring.collapse(tag)])
+      // the push is answered as this returns and iOS may suspend the app then: held awake until the list is read
+      var awake = UIBackgroundTaskIdentifier.invalid
+      awake = UIApplication.shared.beginBackgroundTask(withName: "ducktape withdraw") {
+        UIApplication.shared.endBackgroundTask(awake)
+      }
+      Ring.takeDown(tag) { UIApplication.shared.endBackgroundTask(awake) }
       return true
     }
     NSLog("ducktape ring: \(tag) withdrawn")
@@ -250,16 +314,28 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate, UNUserNo
     return true
   }
 
-  /// A notice tapped: its link opens (a dismissal opens nothing).
+  /// A notice tapped: its row read, then its link opens (a dismissal opens nothing).
   func userNotificationCenter(
     _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
     withCompletionHandler completionHandler: @escaping () -> Void
   ) {
     let link = response.notification.request.content.userInfo["link"] as? String ?? ""
-    if response.actionIdentifier == UNNotificationDefaultActionIdentifier && !link.isEmpty {
-      ducktape_phone_link(link)
+    if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+      Ring.hand(response.notification, front: false, opened: true)
+      if !link.isEmpty { ducktape_phone_link(link) }
     }
     completionHandler()
+  }
+
+  /// A notice while the app is in front. This phone's own banner (no push's): shown. A push: to Rust, and shown unless
+  /// this phone banners it itself (the app in front by Rust's lifecycle, on the push's chain: the notifiers it runs).
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+    withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+  ) {
+    let shown: UNNotificationPresentationOptions = [.banner, .list, .sound]
+    guard notification.request.trigger is UNPushNotificationTrigger else { return completionHandler(shown) }
+    completionHandler(Ring.hand(notification, front: true, opened: false) ? shown : [])
   }
 
   /// The call under `id` stops ringing unanswered, if it still rings.
@@ -364,6 +440,26 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate, UNUserNo
 @_cdecl("ducktape_phone_call_voice")
 public func ducktapePhoneCallVoice(_ active: UInt8) {
   DispatchQueue.main.async { Ring.shared.voice(active != 0) }
+}
+
+/// The OS's notice under the push server's `tag` out of its list (Rust: its row read or cleared, or its program saw
+/// it): every notice under it (`Ring.takeDown`), this phone's own banners with them. Any thread.
+@_cdecl("ducktape_phone_withdraw_notice")
+public func ducktapePhoneWithdrawNotice(_ tag: UnsafePointer<CChar>) {
+  Ring.takeDown(String(cString: tag))
+}
+
+/// This phone's own banner from Rust (`Banners::post`), its payload as JSON; 1 when it was handed to the OS. Any
+/// thread.
+@_cdecl("ducktape_phone_banner")
+public func ducktapePhoneBanner(_ json: UnsafePointer<CChar>) -> UInt8 {
+  let data = Data(bytes: json, count: strlen(json))
+  guard let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+    NSLog("ducktape ring: a banner's payload was not a JSON object")
+    return 0
+  }
+  Ring.banner(payload)
+  return 1
 }
 
 /// A background push from Rust (gpui_ios's app delegate), its payload as JSON; 1 when the ring took it. Main thread.

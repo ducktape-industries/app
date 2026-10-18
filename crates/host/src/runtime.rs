@@ -48,7 +48,9 @@ pub use kernel::shown_title;
 // (render/av.rs)
 #[cfg(feature = "av")]
 pub use kernel::plain;
-pub use roster::{Link, RailRow, connected, deployments_checked, disconnected, props, valid_route};
+pub use roster::{
+    Link, Prep, RailRow, connected, deployments_checked, disconnected, props, valid_route,
+};
 pub use roster::{Roster, changes_channel, roster};
 pub use seat::{Back, Failure};
 #[cfg(feature = "ui")]
@@ -141,7 +143,8 @@ pub enum Intent {
     /// A notice was posted: the bell and the permission bar redraw.
     Notified,
     /// A view was seated in its tab, first or after a new deployment: its
-    /// minimum width is known, and the desk widens a window under it.
+    /// minimum width and the width it asks are known, and the desk widens
+    /// a window under them.
     Seated,
     /// `host.float`: its pane in a window of its own, at a press or key.
     Float(wire::methods::Float),
@@ -231,7 +234,8 @@ pub mod pictures;
 
 /// What a view's manifest says, read before any of its code runs: the
 /// name, icon, tint and description the rail and Home list it by, the narrowest
-/// it is laid out, the capabilities it declares, its targets, and the wire
+/// it is laid out, the width a desk window opens it at, the capabilities it
+/// declares, its targets, and the wire
 /// it was built against (another than this app's runs all the same, and
 /// whatever then fails says so: `View::failure`).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -241,6 +245,7 @@ pub struct Listing {
     pub tint: Tint,
     pub description: String,
     pub min_width: u32,
+    pub width: Option<u32>,
     pub capabilities: Vec<Capability>,
     pub targets: Vec<String>,
     pub wire: String,
@@ -256,6 +261,7 @@ fn manifest_of(bytes: &[u8]) -> Listing {
             tint: manifest.tint,
             description: manifest.description,
             min_width: manifest.min_width,
+            width: manifest.width,
             capabilities: manifest.capabilities,
             targets: manifest.targets,
             wire: manifest.wire_id,
@@ -277,6 +283,7 @@ pub fn listing(program: &str) -> Option<Listing> {
                 tint: $held.tint,
                 description: $held.description.clone(),
                 min_width: $held.min_width,
+                width: $held.width,
                 capabilities: $held.capabilities.clone(),
                 targets: $held.targets.clone(),
                 wire: $held.wire.clone(),
@@ -342,6 +349,22 @@ pub fn min_width(program: &str) -> Option<f32> {
         })
 }
 
+/// The width, in px, a desk window holding `program`'s view opens at, once
+/// one of its seats holds it drawn or compiled; `None` while it loads,
+/// failed, has none, or its manifest leaves it to the app's share.
+pub fn width(program: &str) -> Option<f32> {
+    let registry = lock(registry());
+    registry
+        .iter()
+        .filter(|((name, _), _)| *name == program)
+        .find_map(|(_, seat)| match &lock(seat).slot {
+            Slot::Ready(view) => view.width,
+            Slot::Compiled(view) => view.width,
+            _ => None,
+        })
+        .map(|width| width as f32)
+}
+
 /// Every seat of `program` holds a drawn view whose manifest says
 /// `min_width`, or, with none yet, one is preloaded for its first pane: a
 /// WAT view with the five exports whose every tick draws an empty tree.
@@ -356,6 +379,50 @@ pub fn seat_for_test(program: &'static str, min_width: u32) {
 pub fn seat_compiled_for_test(program: &'static str, name: &str, icon: &str) {
     let seat = Mounted::seat();
     lock(&seat).slot = Slot::Compiled(ViewCode::for_test(name, icon, 320));
+    lock(registry()).insert((program, 0), seat);
+}
+
+/// `program`'s seat on its way as a roster read's read ahead leaves it:
+/// its bytes coming, or all here (`read`) and not shown yet.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seat_reading_for_test(program: &'static str, read: bool) {
+    let total = read.then_some(1);
+    seat_slot_for_test(
+        program,
+        Slot::Fetching {
+            received: u64::from(read),
+            total,
+        },
+    );
+}
+
+/// `program`'s seat with its bytes here and its manifest read (`name`):
+/// waiting for a loader, or a loader compiling its code (`compiling`).
+#[cfg(any(test, feature = "test-support"))]
+pub fn seat_listed_for_test(program: &'static str, name: &str, compiling: bool) {
+    let listing = Box::new(Listing {
+        name: name.into(),
+        ..Default::default()
+    });
+    seat_slot_for_test(
+        program,
+        match compiling {
+            true => Slot::Compiling(listing),
+            false => Slot::Listed(listing),
+        },
+    );
+}
+
+/// `program`'s seat holding the network's word that it ships no view.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seat_empty_for_test(program: &'static str) {
+    seat_slot_for_test(program, Slot::Empty);
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn seat_slot_for_test(program: &'static str, slot: Slot) {
+    let seat = Mounted::seat();
+    lock(&seat).slot = slot;
     lock(registry()).insert((program, 0), seat);
 }
 
@@ -567,6 +634,19 @@ pub fn name_for_test(program: &str, name: &str) {
             && let Slot::Ready(view) = &mut lock(seat).slot
         {
             view.name = name.into();
+        }
+    }
+}
+
+/// Every drawn view of `program` asks desk windows `width` px wide, as its
+/// manifest would.
+#[cfg(any(test, feature = "test-support"))]
+pub fn width_for_test(program: &str, width: u32) {
+    for ((seated, _), seat) in lock(registry()).iter() {
+        if *seated == program
+            && let Slot::Ready(view) = &mut lock(seat).slot
+        {
+            view.width = Some(width);
         }
     }
 }

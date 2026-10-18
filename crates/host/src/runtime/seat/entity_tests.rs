@@ -1252,6 +1252,18 @@ fn a_seat_claimed_or_dropped_wakes_the_rail(cx: &mut TestAppContext) {
         woken() >= 2,
         "a retry and its load did not both tell the rail"
     );
+    // a load's stage shown tells the rail: Home's count reads it
+    {
+        let mut locked = lock(&mounted);
+        locked.slot = Slot::Loading;
+        let generation = locked.generation;
+        let fetching = Slot::Fetching {
+            received: 0,
+            total: None,
+        };
+        locked.show(generation, fetching);
+    }
+    assert!(woken() > 0, "a stage shown told the rail nothing");
     drop(seat);
     cx.update(|_| {});
     cx.run_until_parked();

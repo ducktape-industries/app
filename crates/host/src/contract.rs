@@ -235,6 +235,13 @@ pub struct OsFacts {
     /// [`motion::ANDROID`]. A pointer window never moves, so the desktop's
     /// is never read.
     pub motion: motion::Idiom,
+    /// The OS asks the person once whether the app may show notices at all
+    /// (a phone's own prompt, and its Settings switch after), and no
+    /// permission bar asks per program: a program they said nothing of
+    /// here shows its banners, as the push server shows them for the same
+    /// person while the app is closed (`notify::Settings::unasked`). The
+    /// desktop asks per program.
+    pub os_asks_notices: bool,
 }
 
 /// Values that differ by device and have a measured owner (SPEC §4.5).
@@ -320,21 +327,23 @@ pub enum Signal {
     MemoryWarning,
     /// Android BACK from the Activity's dispatcher.
     Back,
-    /// iOS's swipe back under way (from the left edge, or from anywhere
-    /// the shell lets one begin): the shell lets the screen on top follow
-    /// it.
-    BackDrag {
-        /// How far its finger is, in points, from where it started.
+    /// A sideways swipe under way: iOS's swipe back (from the left edge,
+    /// or from anywhere the shell lets one begin), the screen on top
+    /// following it; or, on either OS, the tabs' at a tab root.
+    Swipe {
+        /// How far its finger is, in points to the right (negative to the
+        /// left), from where it started.
         x: f32,
         /// How fast it moves, in points per second to the right.
         speed: f32,
     },
-    /// That swipe let go where and as fast as its last `BackDrag` says: the
-    /// shell judges whether it goes back.
-    BackLetGo,
-    /// That swipe ended without going back (UIKit cancelled it, or
-    /// something it does not reach was over the screen).
-    BackDragCancelled,
+    /// That swipe let go where and as fast as its last `Swipe` says: the
+    /// shell judges whether it goes back, or which tab it lands on.
+    SwipeLetGo,
+    /// That swipe ended without going on: the OS cancelled its touch, or
+    /// a controller the shell does not draw (iOS: a link's Safari view)
+    /// was presented over the screen.
+    SwipeCancelled,
     /// The insets changed: re-read `OsServices::insets`, re-place.
     InsetsChanged,
     /// A banner the host raised was clicked: the centre opens what it
@@ -376,6 +385,7 @@ pub fn runner() -> &'static Arc<dyn ViewRunner> {
             Arc::new(crate::runner::WasmtimeRunner::new(RunnerConfig {
                 signals_based_traps: true,
                 cache_dir: Some(os().dirs().cache.join("view-code")),
+                compile_apart: None,
             }))
         })
     }
@@ -661,6 +671,12 @@ pub struct RunnerConfig {
     pub signals_based_traps: bool,
     /// Where compiled code is kept across launches; `None` keeps none.
     pub cache_dir: Option<PathBuf>,
+    /// This binary, run as a child ([`crate::runner::COMPILE_APART`]) for
+    /// each compile, which lands in `cache_dir` for this process to read:
+    /// a compile's peak (200-315 MB) then leaves with the child, where the
+    /// allocator would keep it here on loader threads that go idle. Needs
+    /// `cache_dir`. `None` compiles in this process (the phone, pushd).
+    pub compile_apart: Option<PathBuf>,
 }
 
 /// Instruction budget for one call into a view, on every runner: a ceiling
@@ -806,6 +822,19 @@ pub mod testing {
         fn withdraw(&self, _: &str) {}
     }
 
+    static OPENED: std::sync::Mutex<Vec<(String, std::thread::ThreadId)>> =
+        std::sync::Mutex::new(Vec::new());
+
+    /// Each keyring a device key was opened for so far, by every test, and
+    /// the thread it was opened on: a test tells a key opened off the
+    /// thread that asked from one opened on it.
+    pub fn keys_opened() -> Vec<(String, std::thread::ThreadId)> {
+        OPENED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     thread_local! {
         /// This test thread's `Limits::snapshot_every`: the desktop's
         /// `None` unless a test keeps a death replay
@@ -871,6 +900,10 @@ pub mod testing {
             &self,
             keyring: &str,
         ) -> Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal> {
+            OPENED
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((keyring.to_owned(), std::thread::current().id()));
             // a key of the keyring's name: the same device key every time a
             // test meets the same network, none kept anywhere
             let mut seed = [0u8; 32];
@@ -913,6 +946,7 @@ pub mod testing {
                 one_layout: false,
                 floats: true,
                 motion: crate::motion::IOS,
+                os_asks_notices: false,
             }
         }
 

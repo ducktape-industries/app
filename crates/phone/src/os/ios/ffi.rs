@@ -6,15 +6,20 @@
 //! Foreign functions defined here, called on the main thread:
 //! - `ducktape_phone_main(documents, caches)`, once: two NUL-terminated
 //!   UTF-8 paths the caller owns, read before anything else runs.
-//! - `ducktape_phone_back_begins(x, y, vx, vy, held) -> begins`: whether
+//! - `ducktape_phone_swipe_begins(x, y, vx, vy, held) -> begins`: whether
 //!   the launcher's swipe from anywhere starts (the left edge's always
-//!   does). Called from inside UIKit's touch handling.
-//! - `ducktape_phone_back_drag(x, speed)`: a swipe back under way, `x`
-//!   points in, `speed` points per second; `ducktape_phone_back_let_go()`:
-//!   let go, the shell judges whether it goes back;
-//!   `ducktape_phone_back_cancel()`: ended without going back.
+//!   does): back, or at a tab root the tabs'. Called from inside UIKit's
+//!   touch handling.
+//! - `ducktape_phone_swipe_drag(x, speed)`: a swipe under way, `x` points
+//!   to the right (negative to the left), `speed` points per second;
+//!   `ducktape_phone_swipe_let_go()`: let go, the shell judges whether it
+//!   goes back, or which tab it lands on; `ducktape_phone_swipe_cancel()`:
+//!   ended without going on.
 //! - `ducktape_phone_link(url)`: a call's Answer (CallKit), its link.
 //! - `ducktape_phone_push_token(kind, token)`: PushKit's token, as hex.
+//! - `ducktape_phone_notice(payload, at, front, opened) -> shows`: a
+//!   program's notice the OS showed, delivered or opened; for one that
+//!   came in front, whether the OS shows it.
 //! - `ducktape_phone_call_audio(active)`: CallKit's audio session up or down.
 //!
 //! Swift's entries called from here (`App.swift`):
@@ -24,6 +29,12 @@
 //! - `ducktape_phone_remote_notification(json) -> taken`: a background push
 //!   the app delegate (gpui_ios) handed over, its payload as JSON: a
 //!   withdrawn call's ring stops. Main thread.
+//! - `ducktape_phone_withdraw_notice(tag)`: the OS's notices under the push
+//!   server's `tag` out of its list, this phone's own banners with them.
+//!   Any thread.
+//! - `ducktape_phone_banner(json) -> handed`: this phone's own banner of a
+//!   notice, its payload as JSON (`os::banner_payload`). Any thread (the
+//!   host's banner queue's).
 //!
 //! The regular remote-notification token (kind `apns`, the one a withdraw
 //! is pushed to) comes through gpui_ios's delegate hooks, set on the
@@ -43,6 +54,33 @@ unsafe extern "C" {
 
 unsafe extern "C" {
     fn ducktape_phone_remote_notification(json: *const c_char) -> u8;
+    fn ducktape_phone_withdraw_notice(tag: *const c_char);
+    fn ducktape_phone_banner(json: *const c_char) -> u8;
+}
+
+/// The OS's notices under `tag` out of its list, through the launcher
+/// (`crate::os::withdraw_notice`).
+pub(crate) fn withdraw_notice(tag: &str) {
+    match std::ffi::CString::new(tag) {
+        // SAFETY: a Swift `@_cdecl` entry taking a C string alive for the
+        // call; any thread (it hands on to the main queue).
+        Ok(tag) => unsafe { ducktape_phone_withdraw_notice(tag.as_ptr()) },
+        Err(_) => tracing::error!(target: "ducktape::phone", "a notice's tag held a NUL"),
+    }
+}
+
+/// This phone's banner, its payload as JSON, to the launcher's `Ring`:
+/// whether it was handed to the OS.
+pub(crate) fn banner(json: &str) -> bool {
+    match std::ffi::CString::new(json) {
+        // SAFETY: a Swift `@_cdecl` entry taking a C string alive for the
+        // call, any thread
+        Ok(json) => unsafe { ducktape_phone_banner(json.as_ptr()) != 0 },
+        Err(_) => {
+            tracing::error!(target: "ducktape::phone", "a banner's payload held a NUL");
+            false
+        }
+    }
 }
 
 /// A background push, as the app delegate hands it over: to the
@@ -115,13 +153,14 @@ pub unsafe extern "C" fn ducktape_phone_main(documents: *const c_char, caches: *
 }
 
 /// Whether the launcher's swipe from anywhere on the screen begins
-/// (`App.swift`, as UIKit is about to start it): its finger came down at
+/// (`App.swift`, as UIKit is about to start it), back or at a tab root the
+/// tabs' (`shell::swipe::begins`): its finger came down at
 /// (`x`, `y`) in the window's points, moves at (`vx`, `vy`) points per
 /// second, and rested `held` seconds before it moved; 1 when it begins.
 /// Read against what the last draw showed (`shell::swipe`): UIKit asks
 /// from inside its touch handling, where the app is not reached.
 #[unsafe(no_mangle)]
-pub extern "C" fn ducktape_phone_back_begins(x: f64, y: f64, vx: f64, vy: f64, held: f64) -> u8 {
+pub extern "C" fn ducktape_phone_swipe_begins(x: f64, y: f64, vx: f64, vy: f64, held: f64) -> u8 {
     use gpui_kit::{point, px};
     let held = std::time::Duration::try_from_secs_f64(held).unwrap_or(std::time::Duration::MAX);
     let start = point(px(x as f32), px(y as f32));
@@ -129,32 +168,35 @@ pub extern "C" fn ducktape_phone_back_begins(x: f64, y: f64, vx: f64, vy: f64, h
     u8::from(crate::shell::swipe::begins(start, moving, held))
 }
 
-/// A swipe back under way (`App.swift`: from the left edge, or from
-/// anywhere it began), `x` points in from where it started, moving `speed`
-/// points per second to the right: the screen on top follows the finger.
+/// A swipe under way (`App.swift`: from the left edge, or from anywhere it
+/// began), `x` points to the right of where it started (negative to the
+/// left), moving `speed` points per second to the right: the screen on
+/// top follows the finger, or at a tab root the tabs do.
 /// gpui_ios hands no gesture of the system's to the app, so Back has no
-/// other source on iOS. It ends with [`ducktape_phone_back_let_go`] or
-/// [`ducktape_phone_back_cancel`].
+/// other source on iOS. It ends with [`ducktape_phone_swipe_let_go`] or
+/// [`ducktape_phone_swipe_cancel`].
 #[unsafe(no_mangle)]
-pub extern "C" fn ducktape_phone_back_drag(x: f64, speed: f64) {
-    crate::os::send(ducktape_host::contract::Signal::BackDrag {
+pub extern "C" fn ducktape_phone_swipe_drag(x: f64, speed: f64) {
+    crate::os::send(ducktape_host::contract::Signal::Swipe {
         x: x as f32,
         speed: speed as f32,
     });
 }
 
-/// The swipe let go, where and as fast as its last drag said: Back when it
-/// went far or fast enough, else the screen on top goes back into place.
+/// The swipe let go, where and as fast as its last drag said: Back (or the
+/// tab beside) when it went far or fast enough, else the screen on top
+/// goes back into place.
 #[unsafe(no_mangle)]
-pub extern "C" fn ducktape_phone_back_let_go() {
-    crate::os::send(ducktape_host::contract::Signal::BackLetGo);
+pub extern "C" fn ducktape_phone_swipe_let_go() {
+    crate::os::send(ducktape_host::contract::Signal::SwipeLetGo);
 }
 
-/// The swipe ended without going back (UIKit cancelled it, or a presented
-/// controller took it): the screen on top goes back into place.
+/// The swipe ended without going on (UIKit cancelled its touch, or a
+/// presented controller took it): the screen on top, or the tabs, go back
+/// into place.
 #[unsafe(no_mangle)]
-pub extern "C" fn ducktape_phone_back_cancel() {
-    crate::os::send(ducktape_host::contract::Signal::BackDragCancelled);
+pub extern "C" fn ducktape_phone_swipe_cancel() {
+    crate::os::send(ducktape_host::contract::Signal::SwipeCancelled);
 }
 
 /// A call answered in CallKit (`App.swift` `Ring`): its `duck://` link,
@@ -185,6 +227,36 @@ pub unsafe extern "C" fn ducktape_phone_push_token(kind: *const c_char, token: *
     let (kind, token) = unsafe { (text(kind), text(token)) };
     if let (Some(kind), Some(token)) = (kind, token) {
         crate::os::push_token(&kind, token);
+    }
+}
+
+/// A program's notice the OS showed (`App.swift` `Ring`): its payload as
+/// JSON, the Unix seconds it was shown at; `front` when it came while the
+/// app was in front, `opened` when the person opened it. For the
+/// Notifications tab ([`crate::os::os_notice`]); 1 when the OS shows one
+/// that came in front.
+///
+/// # Safety
+/// `payload` is null or a NUL-terminated string alive for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ducktape_phone_notice(
+    payload: *const c_char,
+    at: f64,
+    front: u8,
+    opened: u8,
+) -> u8 {
+    // SAFETY: the caller's contract above.
+    match unsafe { text(payload) } {
+        Some(payload) => u8::from(crate::os::os_notice(
+            &payload,
+            at as i64,
+            front != 0,
+            opened != 0,
+        )),
+        None => {
+            tracing::error!(target: "ducktape::phone", "an OS notice's payload was not UTF-8");
+            0
+        }
     }
 }
 

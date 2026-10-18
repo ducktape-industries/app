@@ -302,6 +302,7 @@ impl View {
         fresh.capabilities = view.capabilities.clone();
         fresh.targets = view.targets.clone();
         fresh.min_width = view.min_width;
+        fresh.width = view.width;
         fresh.wire = view.wire.clone();
         fresh.code = Some(Box::new(view.clone()));
         fresh.deployed(view.hash);
@@ -651,6 +652,7 @@ impl View {
             capabilities,
             targets,
             min_width,
+            width,
             wire,
             code,
             hash,
@@ -716,6 +718,7 @@ impl View {
         sibling.capabilities = capabilities.clone();
         sibling.targets = targets.clone();
         sibling.min_width = *min_width;
+        sibling.width = *width;
         sibling.wire = wire.clone();
         sibling.code = code.clone();
         sibling.hash = *hash;
@@ -875,6 +878,7 @@ impl View {
         view.capabilities = listing.capabilities;
         view.targets = listing.targets;
         view.min_width = listing.min_width;
+        view.width = listing.width;
         view.wire = listing.wire;
         super::web::seen(program, &view.capabilities);
         view.init(shown)?;
@@ -957,6 +961,7 @@ impl View {
             capabilities: Vec::new(),
             targets: Vec::new(),
             min_width: 0,
+            width: None,
             // the manifest's, once `load` reads it
             wire: wire::WIRE_ID.into(),
             code: None,
@@ -1116,6 +1121,7 @@ fn view_code(
         tint: listing.tint,
         description: listing.description,
         min_width: listing.min_width,
+        width: listing.width,
         capabilities: listing.capabilities,
         targets: listing.targets,
         wire: listing.wire,

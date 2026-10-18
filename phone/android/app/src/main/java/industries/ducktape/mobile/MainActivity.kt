@@ -20,7 +20,9 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.VelocityTracker
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
@@ -35,6 +37,7 @@ import android.window.OnBackInvokedDispatcher
 import industries.ducktape.devicekey.DeviceKeyStore
 import java.io.File
 import java.util.concurrent.ArrayBlockingQueue
+import kotlin.math.hypot
 
 /**
  * The phone's one Activity: a `SurfaceView` gpui draws into (gm's host-driven path), and everything the OS tells
@@ -84,10 +87,21 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun handOn(intent: Intent?) {
+        // a call's ring and a notice's row are this app's own word, read only by the entry no other app can start: no
+        // other app takes a ring down or writes a row
+        val own = intent?.component?.className == Ring.OWN
+        if (!own && (intent?.hasExtra(Ring.TAG) == true || intent?.hasExtra(Ring.PAYLOAD) == true)) {
+            Log.w("ducktape", "a ring's or a notice's extra on an intent this app did not make: not read")
+        }
         // a call's Answer, or a tap on its notification: its ring goes
-        intent?.getStringExtra(Ring.TAG)?.let {
+        intent?.getStringExtra(Ring.TAG)?.takeIf { own }?.let {
             Log.i("ducktape", "a call's ring taken down: $it")
             Ring.withdraw(this, it)
+        }
+        // a program's notice opened from the shade: its row read, before its link opens
+        intent?.getStringExtra(Ring.PAYLOAD)?.takeIf { own }?.let {
+            Log.i("ducktape", "a notice opened from the shade: its row read")
+            Native.notice(it, intent.getLongExtra(Ring.AT, 0), false, true)
         }
         val url = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.dataString ?: return
         Native.link(url)
@@ -117,6 +131,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             window.attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
     }
+
+    /** This phone's own banner of a program's notice (Rust's `Banners::post`, the app in front): [Ring.banner]. */
+    fun banner(payload: String): Boolean = Ring.banner(this, payload)
 
     /**
      * The system bars' icons over the app's appearance (Rust `os::system_bars`, from App settings › Appearance or
@@ -161,10 +178,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     override fun onResume() {
         super.onResume()
+        Ring.inFront = true
         Native.resumed(host)
+        Ring.shown(this)
     }
 
     override fun onPause() {
+        Ring.inFront = false
         Native.paused(host)
         super.onPause()
     }
@@ -204,6 +224,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         }
     }
 
+    /** The shade's notices under [tag] taken down (Rust: its row read or cleared, or its program saw it). Any thread. */
+    fun withdrawNotice(tag: String) = runOnUiThread { Ring.withdraw(this, tag) }
+
     /** The app's own page in Settings, [page] its `package:` URI: where a refused camera or microphone is allowed. */
     fun openSettings(page: String) = runOnUiThread {
         try {
@@ -220,13 +243,109 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (swiped(event)) return true
+        return Native.touch(event.actionMasked, event.actionIndex, pointers(event)) || super.dispatchTouchEvent(event)
+    }
+
+    /** [event]'s pointers as [Native.touch] takes them: `[id, x, y]` each, in index order. */
+    private fun pointers(event: MotionEvent): FloatArray {
         val pointers = FloatArray(event.pointerCount * 3)
         for (i in 0 until event.pointerCount) {
             pointers[i * 3] = event.getPointerId(i).toFloat()
             pointers[i * 3 + 1] = event.getX(i)
             pointers[i * 3 + 2] = event.getY(i)
         }
-        return Native.touch(event.actionMasked, event.actionIndex, pointers) || super.dispatchTouchEvent(event)
+        return pointers
+    }
+
+    /** The finger's speed while a gesture may be the tabs' swipe; obtained at its first touch, recycled at its end. */
+    private var tracker: VelocityTracker? = null
+    private val slop by lazy { ViewConfiguration.get(this).scaledTouchSlop }
+    /** The finger the swipe follows (its pointer id), where and when it came down. */
+    private var pointer = -1
+    private var downX = 0f
+    private var downY = 0f
+    private var downAt = 0L
+    /** Where the swipe's way across counts from: where the finger stood as it began. */
+    private var originX = 0f
+    /** One finger down, not yet past the touch slop. */
+    private var deciding = false
+    /** The gesture is the swipe's: gpui hears nothing more of it. */
+    private var swiping = false
+
+    /**
+     * The tabs' swipe (`crates/phone/src/shell/swipe.rs`), as the iOS launcher's pan takes it: one finger that moves
+     * past the touch slop asks Rust whether it begins ([Native.swipeBegins]: a tab root on screen, nothing over it,
+     * the way it went to the slop clearly sideways, `ViewPager`'s rule). Then gpui's touch is cancelled and the
+     * finger's way across from there (no jump of the slop) and its speed go to Rust ([Native.swipeDrag]) until it
+     * lifts ([Native.swipeLetGo]) or is cancelled ([Native.swipeCancel]); a second finger down is not a swipe, and
+     * once one is, a lifted finger hands it to another still down, as `ViewPager` does. True while the swipe holds
+     * the gesture. Back stays the system's: no swipe back begins here.
+     */
+    private fun swiped(event: MotionEvent): Boolean {
+        val action = event.actionMasked
+        if (action == MotionEvent.ACTION_DOWN) {
+            tracker?.recycle()
+            tracker = VelocityTracker.obtain()
+            pointer = event.getPointerId(0)
+            downX = event.x
+            downY = event.y
+            downAt = event.eventTime
+            deciding = true
+            swiping = false
+        }
+        val tracker = tracker ?: return false
+        if (!deciding && !swiping) return false
+        tracker.addMovement(event)
+        val dp = resources.displayMetrics.density
+        when (action) {
+            MotionEvent.ACTION_POINTER_DOWN -> deciding = false
+            MotionEvent.ACTION_POINTER_UP -> if (event.getPointerId(event.actionIndex) == pointer) {
+                if (swiping) {
+                    val other = if (event.actionIndex == 0) 1 else 0
+                    originX += event.getX(other) - event.getX(event.actionIndex)
+                    pointer = event.getPointerId(other)
+                    tracker.clear()
+                } else {
+                    deciding = false
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val at = event.findPointerIndex(pointer)
+                val dx = event.getX(at) - downX
+                val dy = event.getY(at) - downY
+                if (deciding && hypot(dx, dy) > slop) {
+                    deciding = false
+                    val held = (event.eventTime - downAt) / 1000f
+                    swiping = Native.swipeBegins(downX / dp, downY / dp, dx / dp, dy / dp, held)
+                    if (swiping) {
+                        originX = event.getX(at)
+                        Native.touch(MotionEvent.ACTION_CANCEL, 0, pointers(event))
+                    }
+                }
+            }
+        }
+        val taken = swiping
+        if (swiping) {
+            tracker.computeCurrentVelocity(1000)
+            val x = (event.getX(event.findPointerIndex(pointer)) - originX) / dp
+            val speed = tracker.getXVelocity(pointer) / dp
+            when (action) {
+                MotionEvent.ACTION_MOVE -> Native.swipeDrag(x, speed)
+                MotionEvent.ACTION_UP -> {
+                    Native.swipeDrag(x, speed)
+                    Native.swipeLetGo()
+                }
+                MotionEvent.ACTION_CANCEL -> Native.swipeCancel()
+            }
+        }
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            deciding = false
+            swiping = false
+            tracker.recycle()
+            this.tracker = null
+        }
+        return taken
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {

@@ -49,6 +49,27 @@ object Native {
     /** A `duck://` or `ducktape://` link an intent carried. */
     @JvmStatic external fun link(url: String)
 
+    /**
+     * A program's notice shown ([Ring]): its payload as JSON, when it was shown (Unix seconds); [front] when it came
+     * while the app was in front, [opened] when the person opened it. Whether the shade shows one that came in front
+     * (unless this phone banners it itself: the app in front on the push's chain, whose notifiers it runs).
+     */
+    @JvmStatic external fun notice(payload: String, at: Long, front: Boolean, opened: Boolean): Boolean
+
     /** This device's push token of [kind] (`fcm`), for the device registry; empty when withdrawn. */
     @JvmStatic external fun pushToken(kind: String, token: String)
+
+    /**
+     * Whether the tabs' swipe begins: its finger came down at ([x], [y]) in dp, went ([dx], [dy]) dp to the touch
+     * slop, and came down [held] seconds ago; read against what the last draw showed.
+     */
+    @JvmStatic external fun swipeBegins(x: Float, y: Float, dx: Float, dy: Float, held: Float): Boolean
+
+    /** The tabs' swipe under way: [x] dp to the right of where it began (negative to the left), [speed] dp/s. */
+    @JvmStatic external fun swipeDrag(x: Float, speed: Float)
+
+    /** That swipe let go (Rust judges the tab it lands on), or ended without going on. */
+    @JvmStatic external fun swipeLetGo()
+
+    @JvmStatic external fun swipeCancel()
 }

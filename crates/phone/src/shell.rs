@@ -1,19 +1,19 @@
 //! The phone's one window: the host started once per process ([`launch`]),
 //! the window opened over it ([`open_window`]: once on iOS, once per
 //! Activity on Android), what the host hands on acted on (Back, a changed
-//! inset, memory pressure, the consent queue, a link), and in the gate
-//! build the AX door.
+//! inset, memory pressure, the consent queue, a link, a notice the OS
+//! showed), and in the gate build the AX door.
 //!
 //! The window draws the join ([`join`]) until the phone is on a network
-//! with an account, then the [`stack`]: a tab root (Home, Open) under the
-//! tab bar, or the program on top, its view seated full screen under the
-//! capsule; the shell's own pages over either (a program's page, its
-//! capabilities, from the capsule's About; App settings and Switch network
-//! from the account menu); a sheet over all (the account menu, the
-//! capsule's menu, the consent sheet). Each program opened keeps one seat,
-//! placed with the safe body and in front only while it is on top and the
-//! window is: a program left stays warm where it was (wasm-mobile SPEC
-//! §7.1).
+//! with an account, then the [`stack`]: a tab root (Home, Open,
+//! Notifications, Account) under the tab bar, or the program on top, its
+//! view seated full screen under the capsule; the shell's own pages over
+//! either (a program's page, its capabilities, from the capsule's About;
+//! App settings and Switch network from the Account tab); a sheet over all
+//! (the capsule's menu, the consent sheet). Each program opened keeps one
+//! seat, placed with the safe body and in front only while it is on top
+//! and the window is: a program left stays warm where it was (wasm-mobile
+//! SPEC §7.1).
 //!
 //! It moves as the Expo build's moves (`ducktape_host::motion`): a program
 //! (or its page) pushed slides in from the right over the screen it left,
@@ -22,9 +22,12 @@
 //! screen on top off under the finger (inside a program above its root
 //! page, that page, by the view's own tree), and its release carries the
 //! finger's speed into the rest of the move; a sheet slides up
-//! over a fading scrim and down again; the alert and the toast fade. Tab
-//! switches do not move (Expo's tabs do not). Nothing moves while nothing
-//! changes: a frame is asked for only while something is under way.
+//! over a fading scrim and down again; the alert and the toast fade. A tab
+//! picked in the bar does not move (Expo's tabs do not); a sideways swipe
+//! at a tab root pages the tabs under the finger, the tab beside sliding
+//! in with it, and its release goes on as a pop's does. Nothing moves
+//! while nothing changes: a frame is asked for only while something is
+//! under way.
 
 mod about;
 mod debug;
@@ -42,7 +45,7 @@ use ducktape_host::backend::Appearance;
 use ducktape_host::contract::{Boot, KeyStorage, OsServices, Signal, SoftKeyboard};
 use ducktape_host::motion::{self, Shown, Slide, Tween};
 use ducktape_host::render::ViewTree;
-use ducktape_host::runtime::notify::{Opened as Banner, Permission};
+use ducktape_host::runtime::notify::{Entry, Opened as Banner, Permission};
 use ducktape_host::runtime::{Back, Placed, consent};
 use ducktape_host::session::{Opening, Place, Seats, SeatsEvent, Session, SessionEvent, Shared};
 use futures::StreamExt as _;
@@ -85,9 +88,11 @@ struct Phone {
     stack: Entity<Stack>,
     window: Option<(AnyWindowHandle, WeakEntity<Root>)>,
     waiting: Vec<String>,
+    /// The OS's notices waiting for their chain's log ([`os_notice`]).
+    notices: Vec<crate::os::OsNotice>,
     /// This phone's push tokens kept registered with the push server, for
-    /// as long as the app runs.
-    _registrar: Entity<crate::push::Registrar>,
+    /// as long as the app runs; it knows which listed node serves a chain.
+    registrar: Entity<crate::push::Registrar>,
 }
 
 impl Global for Phone {}
@@ -136,12 +141,14 @@ pub fn launch(os: Arc<dyn OsServices>, cx: &mut App) {
     let (signals, mut asks) = (host.signals, host.consent);
     let stack = cx.new(|_| Stack::default());
     let registrar = crate::push::Registrar::start(host.shared.clone(), cx);
+    log_on_connect(&host.shared, cx);
     cx.set_global(Phone {
         shared: host.shared,
         stack,
         window: None,
         waiting: Vec::new(),
-        _registrar: registrar,
+        notices: Vec::new(),
+        registrar,
     });
     cx.spawn(async move |cx: &mut AsyncApp| {
         while let Ok(signal) = signals.recv().await {
@@ -166,6 +173,89 @@ pub fn launch(os: Arc<dyn OsServices>, cx: &mut App) {
         }
     })
     .detach();
+    let notices = crate::os::os_notices();
+    cx.spawn(async move |cx: &mut AsyncApp| {
+        while let Ok(notice) = notices.recv().await {
+            cx.update(|cx| os_notice(notice, cx));
+        }
+    })
+    .detach();
+}
+
+/// A program's notice the OS showed, as the push server carried it: into
+/// the Notifications tab once its chain is the one in hand (another
+/// chain's log is not open, and taking a chain up opens its log over
+/// whatever the centre held), waiting here until then. One that came while
+/// the app was in front on its chain goes: this phone runs its program's
+/// notifier then, and that run decides whether it is a notice here (it
+/// says nothing of what is on screen, which the push server cannot see).
+/// The OS's list is handed over again at every return to the front: one
+/// already waiting waits once.
+fn os_notice(notice: crate::os::OsNotice, cx: &mut App) {
+    let session = cx.global::<Phone>().shared.session.read(cx).get();
+    if notice.front && session.connected && session.chain == notice.chain {
+        return;
+    }
+    let waiting = &mut cx.global_mut::<Phone>().notices;
+    if !waiting.contains(&notice) {
+        waiting.push(notice);
+    }
+    log_os_notices(cx);
+}
+
+/// The OS's copies of each of `entries` out of its list, as its row is read
+/// or cleared here: a notice the push server carried stands there under its
+/// banner tag (`<program>/<tag>`), and the next read of the list
+/// ([`os_notice`]) would log it again. The OS's list then says what the tab
+/// says. A row with no tag has no name there to take it down by.
+fn withdraw_shown<'a>(entries: impl IntoIterator<Item = &'a Entry>) {
+    for entry in entries {
+        if !entry.tag.is_empty() && !entry.host() {
+            crate::os::withdraw_notice(&format!("{}/{}", entry.program, entry.tag));
+        }
+    }
+}
+
+/// A chain taken up opens its log: the OS's notices waiting for it go in.
+/// The chain in hand is published for the OS's own threads
+/// ([`crate::os::hold_chain`]) now and on each move of the session.
+fn log_on_connect(shared: &Shared, cx: &mut App) {
+    hold_chain(&shared.session, cx);
+    cx.observe(&shared.session, |session, cx| {
+        hold_chain(&session, cx);
+        log_os_notices(cx);
+    })
+    .detach();
+}
+
+/// The chain `session` is connected to, or none, published.
+fn hold_chain(session: &Entity<Session>, cx: &App) {
+    let session = session.read(cx).get();
+    crate::os::hold_chain(match session.connected {
+        true => &session.chain,
+        false => "",
+    });
+}
+
+/// The OS's notices waiting for the chain in hand, logged.
+fn log_os_notices(cx: &mut App) {
+    let phone = cx.global::<Phone>();
+    let session = phone.shared.session.read(cx).get();
+    if !session.connected || phone.notices.is_empty() {
+        return;
+    }
+    let chain = session.chain.clone();
+    let notifications = phone.shared.notifications.clone();
+    let waiting = std::mem::take(&mut cx.global_mut::<Phone>().notices);
+    let (here, elsewhere) = waiting
+        .into_iter()
+        .partition::<Vec<_>, _>(|notice| notice.chain == chain);
+    cx.global_mut::<Phone>().notices = elsewhere;
+    notifications.update(cx, |notifications, cx| {
+        for notice in here {
+            notifications.carried(&notice.notice, notice.at, notice.opened, cx);
+        }
+    });
 }
 
 /// What a banner's click names, from the host's notification centre: a
@@ -240,17 +330,28 @@ fn handed_on(signal: Signal, cx: &mut App) {
                 root.update(cx, |root, cx| root.back(cx));
             }
         }
-        Signal::BackDrag { x, speed } => {
+        Signal::Swipe { x, speed } => {
             if let Some(root) = root(cx) {
                 root.update(cx, |root, cx| root.drag(x, speed, cx));
             }
         }
-        Signal::BackLetGo => {
-            if let Some(root) = root(cx) {
-                root.update(cx, |root, cx| root.let_go(cx));
+        // through the window: a swipe landing off Home blurs its filter
+        Signal::SwipeLetGo => {
+            let window = cx
+                .try_global::<Phone>()
+                .and_then(|phone| phone.window.clone());
+            if let Some((handle, root)) = window
+                && let Some(root) = root.upgrade()
+            {
+                // the window is gone only as the app quits: nothing to let go
+                handle
+                    .update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| root.let_go(window, cx))
+                    })
+                    .ok();
             }
         }
-        Signal::BackDragCancelled => {
+        Signal::SwipeCancelled => {
             if let Some(root) = root(cx) {
                 root.update(cx, |root, cx| root.drag_cancelled(cx));
             }
@@ -363,6 +464,8 @@ impl Page {
         match self {
             Page::Root(Tab::Home) => "screen::home".into(),
             Page::Root(Tab::Open) => "screen::open".into(),
+            Page::Root(Tab::Notifications) => "screen::notifications".into(),
+            Page::Root(Tab::Account) => "screen::account".into(),
             Page::Program(program) => format!("screen::program/{program}").into(),
             Page::About(program) => format!("screen::about/{program}").into(),
             Page::Settings => "screen::settings".into(),
@@ -400,6 +503,25 @@ struct Move {
     tween: Tween,
 }
 
+/// How far a tab's swipe settles once let go: as UIKit's pop, so it keeps
+/// the finger's speed (`Curve::thrown`), on Android too, whose pager
+/// (`ViewPager`) carries the fling into its settle as well.
+const PAGER: motion::Motion = motion::IOS.push;
+
+/// The tab roots moving sideways at a tab root ([`Root::drag`]).
+#[derive(Clone, Copy, Debug)]
+enum Paging {
+    /// Under the finger, as [`Root::swipe`] says, counted from `from`: the
+    /// finger's travel (a share of the width, to the right) that holds the
+    /// tab on screen where the finger caught it, still settling; 0 from
+    /// rest.
+    Held { from: f32 },
+    /// Let go: the tab on screen settling into place from where the finger
+    /// left it (`tween`, its offset to the right as a share of the width,
+    /// to 0), `beside` it the tab it came from, or would have gone to.
+    Settling { beside: Option<Tab>, tween: Tween },
+}
+
 /// The window's root: the join, or the stack over the host's entities, the
 /// seats of the programs open, and the sheet over them.
 pub struct Root {
@@ -428,10 +550,15 @@ pub struct Root {
     placed: (BTreeMap<u64, Place>, Option<u64>),
     /// Links that came before the network's program list did, in order.
     waiting: Vec<String>,
+    /// A link of another listed network's, its chain and the node the
+    /// switch reaches, until that switch lands or ends another way.
+    switching: Option<(ducklink::ChainId, String, String)>,
     /// The appearance last put on the theme (`sync_appearance`).
     appearance: Appearance,
     /// Debug mode's numbers, read while the Open tab is on screen.
     readout: debug::Readout,
+    /// The programs Home's caption counts while they are being prepared.
+    run: home::Run,
     /// Home's filter, and whether it is open (its magnifier pressed).
     search: Entity<InputState>,
     filtering: bool,
@@ -443,10 +570,12 @@ pub struct Root {
     /// How far in (points) iOS's swipe back has come while it drags the
     /// screen on top off.
     dragged: Option<f32>,
-    /// The swipe back under way, whoever it drags: how far in its finger
-    /// is (points) and how fast it moves (points per second, rightward),
-    /// as last told.
+    /// The swipe under way, whoever it drags: how far in its finger is
+    /// (points, rightward) and how fast it moves (points per second,
+    /// rightward), as last told.
     swipe: Option<(f32, f32)>,
+    /// The tabs' swipe, under the finger or settling.
+    paging: Option<Paging>,
     /// The view's tree whose page the swipe drags instead, until let go.
     swiped: Option<WeakEntity<ViewTree>>,
     /// The window's width at the last draw: a drag's share of it.
@@ -459,6 +588,9 @@ pub struct Root {
     drawn_toast: Option<Shown<String>>,
     sheet_height: Rc<Cell<Option<gpui_kit::Pixels>>>,
     consent_height: Rc<Cell<Option<gpui_kit::Pixels>>>,
+    /// Draws so far: a test tells a still window from one a timer redraws.
+    #[cfg(test)]
+    renders: usize,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -543,14 +675,17 @@ impl Root {
             titles: BTreeMap::new(),
             placed: Default::default(),
             waiting: Vec::new(),
+            switching: None,
             appearance,
             readout: debug::Readout::default(),
+            run: home::Run::default(),
             search,
             filtering: false,
             watched: BTreeMap::new(),
             moving: None,
             dragged: None,
             swipe: None,
+            paging: None,
             swiped: None,
             width: 0.,
             drawn_sheet: None,
@@ -559,6 +694,8 @@ impl Root {
             drawn_toast: None,
             sheet_height: Rc::default(),
             consent_height: Rc::default(),
+            #[cfg(test)]
+            renders: 0,
             _subscriptions: subscriptions,
         }
     }
@@ -581,7 +718,9 @@ impl Root {
         cx.notify();
     }
 
+    /// `tab`'s root, still: a tabs' swipe settling is over.
     fn pick(&mut self, tab: Tab, cx: &mut Context<Self>) {
+        self.paging = None;
         let now = Self::now(cx);
         self.stack.update(cx, |stack, cx| {
             stack.pick(tab, now);
@@ -648,16 +787,33 @@ impl Root {
 
     /// The switch landed on the chain in hand (another node of it, or the
     /// node in hand itself): Switch network goes back where the reader
-    /// was. Another chain left the network first, which took the page.
+    /// was. Another chain left the network first, which took the page. A
+    /// switch a link of another network's made: the link opens here, once
+    /// the network lists its programs; a node that answered for another
+    /// chain says whose link it is, as before. Another node landed (a
+    /// switch of the reader's own took over): the link is let go, unsaid.
     fn switched(&mut self, cx: &mut Context<Self>) {
         if self.page(cx) == Page::Switch {
             self.pop_page(cx);
+        }
+        let Some((chain, link, node)) = self.switching.take() else {
+            return;
+        };
+        let session = self.shared.session.read(cx).get();
+        if session.connected_rpc != node {
+            return;
+        }
+        match session.chain == chain.to_string() {
+            true => self.take_link(link, cx),
+            false => self.said_elsewhere(&chain.label, cx),
         }
     }
 
     /// The switch did not land: on Switch network its words go under the
     /// field (Expo 75), not over the screen in the notice the host put up.
+    /// A link that waited on it is dropped; the notice says why.
     fn switch_failed(&mut self, said: String, cx: &mut Context<Self>) {
+        self.switching = None;
         if self.page(cx) != Page::Switch {
             return;
         }
@@ -738,8 +894,21 @@ impl Root {
     /// (`ViewTree::drag_page`), and that tree hears the release, whatever is
     /// on top by then. Under Reduce Motion nothing follows; the
     /// release is Back as before. A swipe begun while the stack moves does
-    /// not follow either.
+    /// not follow either. At a tab root the swipe pages the tabs instead,
+    /// either way, until let go; tabs still settling are caught where they
+    /// are, as a pager's page is.
     fn drag(&mut self, x: f32, speed: f32, cx: &mut Context<Self>) {
+        let paging = matches!(self.paging, Some(Paging::Held { .. }));
+        if paging || (self.dragged.is_none() && self.swiped.is_none() && self.can_page(cx)) {
+            if !paging {
+                let from = self.caught(cx);
+                self.paging = Some(Paging::Held { from });
+            }
+            self.swipe = Some((x, speed));
+            return cx.notify();
+        }
+        // a swipe back goes only to the right
+        let x = x.max(0.);
         self.swipe = Some((x, speed));
         let progress = x / self.width.max(1.);
         let shares = speed / self.width.max(1.);
@@ -750,8 +919,7 @@ impl Root {
             }
             self.swiped = None;
         }
-        let now = motion::now(cx);
-        let busy = self.moving.is_some_and(|moving| !moving.tween.done(now));
+        let busy = self.sliding(cx);
         if self.dragged.is_none() && (busy || !self.can_drag(cx)) {
             if !busy
                 && let Some(tree) = self.view_swiped(cx)
@@ -763,20 +931,120 @@ impl Root {
         }
         // a move that has ended may not be cleared yet: it is over
         self.moving = None;
-        self.dragged = Some(x.max(0.));
+        self.dragged = Some(x);
         cx.notify();
     }
 
-    /// The swipe let go: Back, or short of it ([`swipe::pops`]) the screen
-    /// on top springs back.
-    fn let_go(&mut self, cx: &mut Context<Self>) {
+    /// The swipe let go: Back, or short of it ([`swipe::crosses`]) the
+    /// screen on top springs back; paging the tabs, [`Root::paged_let_go`],
+    /// and landed off Home, Home's filter lets the keys go, as a tab picked
+    /// in the bar does.
+    fn let_go(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.paging, Some(Paging::Held { .. })) {
+            let was = self.stack.read(cx).tab();
+            self.paged_let_go(true, cx);
+            if was == Tab::Home && self.stack.read(cx).tab() != Tab::Home {
+                window.blur(cx);
+            }
+            return;
+        }
         let Some((x, speed)) = self.swipe else {
             return;
         };
-        match swipe::pops(x, speed, self.width) {
+        match swipe::crosses(x, speed, self.width) {
             true => self.back(cx),
             false => self.drag_cancelled(cx),
         }
+    }
+
+    /// The tabs' swipe let go (`goes`; else ended short of its release):
+    /// past the rule ([`swipe::crosses`]) toward a tab beside, that tab is
+    /// chosen and slides the rest of the way in at the finger's speed;
+    /// short of it, the tab on screen slides back into place, and at the
+    /// bar's ends, back from the rubber band. Only a tab root still on
+    /// screen goes on: a program pushed over it meanwhile stays.
+    fn paged_let_go(&mut self, goes: bool, cx: &mut Context<Self>) {
+        let along = self.along().unwrap_or_default();
+        let speed = self.swipe.take().map_or(0., |(_, speed)| speed);
+        let tab = self.stack.read(cx).tab();
+        let (at, beside) = self.held_at(along, cx);
+        let width = self.width.max(1.);
+        let goes = goes && matches!(self.page(cx), Page::Root(_));
+        // the way the screens went
+        let way = if along < 0. { -1. } else { 1. };
+        let (beside, from, velocity) = match beside {
+            Some(next) if goes && swipe::crosses(along * width * way, speed * way, width) => {
+                self.pick(next, cx);
+                (Some(tab), at - way, speed / width)
+            }
+            Some(_) => (beside, at, speed / width),
+            None => (None, at, 0.),
+        };
+        let tween = Tween::thrown(from, 0., velocity, PAGER, cx);
+        self.paging = Some(Paging::Settling { beside, tween });
+        cx.notify();
+    }
+
+    /// The finger's travel holding the tabs, a share of the width to the
+    /// right, from where it caught them.
+    fn along(&self) -> Option<f32> {
+        let Some(Paging::Held { from }) = self.paging else {
+            return None;
+        };
+        Some(from + self.swipe?.0 / self.width.max(1.))
+    }
+
+    /// Where a finger's travel `along` (a share of the width, to the right)
+    /// has the tab on screen, its share of the width to the right, and the
+    /// tab beside it that comes in from the other side: past the bar's
+    /// ends none, and the screen resists.
+    fn held_at(&self, along: f32, cx: &App) -> (f32, Option<Tab>) {
+        let width = self.width.max(1.);
+        match self.stack.read(cx).tab().beside(along < 0.) {
+            Some(beside) => (along.clamp(-1., 1.), Some(beside)),
+            None => (swipe::resisted(along * width, width) / width, None),
+        }
+    }
+
+    /// The finger's travel that holds the tabs where they are now: where
+    /// a tab settling is (out of its rubber band, past the bar's end), else
+    /// 0.
+    fn caught(&self, cx: &App) -> f32 {
+        let Some(Paging::Settling { beside, tween }) = self.paging else {
+            return 0.;
+        };
+        let at = tween.at(motion::now(cx));
+        let width = self.width.max(1.);
+        match beside {
+            Some(_) => at,
+            None => swipe::unresisted(at * width, width) / width,
+        }
+    }
+
+    /// Where the tabs' swipe has the tab on screen, and the tab beside it,
+    /// this frame ([`Root::held_at`]); the next frame asked for while they
+    /// settle.
+    fn paged(&self, window: &Window, cx: &App) -> Option<(f32, Option<Tab>)> {
+        match self.paging? {
+            Paging::Held { .. } => Some(self.held_at(self.along()?, cx)),
+            Paging::Settling { beside, tween } => Some((tween.frame(window, cx), beside)),
+        }
+    }
+
+    /// Whether the stack still slides.
+    fn sliding(&self, cx: &App) -> bool {
+        let now = motion::now(cx);
+        self.moving.is_some_and(|moving| !moving.tween.done(now))
+    }
+
+    /// Whether a swipe now pages the tabs: a tab root on screen, nothing
+    /// over it, the stack still (tabs settling are caught). Under Reduce
+    /// Motion nothing follows a finger, so none does.
+    fn can_page(&self, cx: &App) -> bool {
+        matches!(self.page(cx), Page::Root(_))
+            && !self.covered(cx)
+            && !motion::reduced(cx)
+            && !self.sliding(cx)
     }
 
     /// Whether a swipe back beginning now from anywhere on the screen
@@ -784,9 +1052,7 @@ impl Root {
     /// moves, no swipe is under way, and the screen on top follows a drag,
     /// or the view's page on top does inside it.
     fn swipe_opens(&self, cx: &App) -> bool {
-        let now = motion::now(cx);
-        let busy = self.moving.is_some_and(|moving| !moving.tween.done(now));
-        if busy || self.swipe.is_some() {
+        if self.sliding(cx) || self.swipe.is_some() {
             return false;
         }
         self.can_drag(cx)
@@ -814,6 +1080,7 @@ impl Root {
                     };
                     swipe::Shown {
                         open: root.swipe_opens(cx),
+                        tabs: root.swipe.is_none() && root.can_page(cx),
                         claimed: tree.map_or_else(Vec::new, |tree| tree.read(cx).sideways()),
                     }
                 });
@@ -857,6 +1124,9 @@ impl Root {
     /// place over the one under it, or the view's page inside it, at the
     /// finger's speed.
     fn drag_cancelled(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.paging, Some(Paging::Held { .. })) {
+            return self.paged_let_go(false, cx);
+        }
         let speed = self.swipe.take().map_or(0., |(_, speed)| speed);
         if let Some(tree) = self.swiped.take().and_then(|tree| tree.upgrade()) {
             tree.update(cx, |tree, cx| tree.drag_page_cancelled(cx));
@@ -898,12 +1168,17 @@ impl Root {
         cx.notify();
     }
 
-    /// The capsule's ×: Home, the program left where it is, popped off.
-    fn go_home(&mut self, cx: &mut Context<Self>) {
+    /// `tab`'s root, whatever is over it popped off (the program left
+    /// where it is, the shell's pages and the sheet gone): the capsule's ×
+    /// to Home, a view's avatar to Account.
+    fn go_to(&mut self, tab: Tab, cx: &mut Context<Self>) {
         let now = Self::now(cx);
         let from = self.page(cx);
+        self.paging = None;
+        self.sheet = None;
+        self.pages.clear();
         self.stack.update(cx, |stack, cx| {
-            stack.home(now);
+            stack.pick(tab, now);
             cx.notify();
         });
         self.moved(from, true, cx);
@@ -921,10 +1196,6 @@ impl Root {
     fn show(&mut self, sheet: Sheet, cx: &mut Context<Self>) {
         self.sheet = Some(sheet);
         cx.notify();
-    }
-
-    fn account_sheet(&mut self, cx: &mut Context<Self>) {
-        self.show(Sheet::Account, cx);
     }
 
     fn capsule_menu(&mut self, program: &'static str, cx: &mut Context<Self>) {
@@ -973,8 +1244,10 @@ impl Root {
     /// inside itself when its last frame's root asks to hear it; else the
     /// stack pops; at Home, the OS's own (SPEC §7.6). A drag under way
     /// that this Back does not pop springs back; a view's page under the
-    /// finger that the view does not hear it for slides back.
+    /// finger that the view does not hear it for slides back, and the
+    /// tabs' swipe, held or settling, is over.
     fn back(&mut self, cx: &mut Context<Self>) {
+        self.paging = None;
         let swiped = self.swiped.take().and_then(|tree| tree.upgrade());
         self.walk_back(cx);
         if let Some(tree) = swiped {
@@ -1043,17 +1316,24 @@ impl Root {
         let_go_closed(&self.stack, &self.shared.seats, cx);
         self.moving = None;
         self.dragged = None;
+        self.paging = None;
         self.sheet = None;
         self.alert = None;
         self.titles.clear();
         self.pages.clear();
         self.waiting.clear();
+        // left for no node the link's switch reached (a disconnect, or a
+        // switch of the reader's own): that switch is over
+        let here = &self.shared.session.read(cx).get().connected_rpc;
+        self.switching.take_if(|(_, _, node)| node != here);
         cx.notify();
     }
 
-    /// The network listed its programs: Home redraws, and the links kept
-    /// until then open now, in the order they came.
+    /// The network listed its programs, or one's code moved on: Home's
+    /// count follows and Home redraws, and the links kept until then open
+    /// now, in the order they came.
     fn rail_moved(&mut self, cx: &mut Context<Self>) {
+        self.run.follow(self.shared.rail.read(cx).rows());
         if !self.shared.rail.read(cx).rows().is_empty() {
             for link in std::mem::take(&mut self.waiting) {
                 self.open_link(&link, cx);
@@ -1077,12 +1357,60 @@ impl Root {
         }
     }
 
+    /// A row of the Notifications tab picked: read now, and what it is
+    /// about opened as a tapped system notice opens it (its link; with none,
+    /// its program, as `notify::clicked` has it), through the same routing.
+    fn open_notice(&mut self, id: u64, cx: &mut Context<Self>) {
+        let notifications = self.shared.notifications.clone();
+        let Some(entry) = notifications.update(cx, |notifications, cx| notifications.open(id, cx))
+        else {
+            return;
+        };
+        withdraw_shown([&entry]);
+        let link = match entry.link.is_empty() {
+            true => format!("duck://{}", entry.program),
+            false => entry.link,
+        };
+        self.take_link(link, cx);
+    }
+
+    /// "Mark all read" in the Notifications tab: every row read, and the
+    /// OS's copy of each unread one out of its list ([`withdraw_shown`]).
+    fn mark_all_read(&mut self, cx: &mut Context<Self>) {
+        let notifications = self.shared.notifications.clone();
+        let entries = notifications.read(cx).entries();
+        withdraw_shown(entries.iter().filter(|entry| !entry.read));
+        notifications.update(cx, |notifications, cx| notifications.mark_all_read(cx));
+    }
+
+    /// "Clear read" in the Notifications tab: the read rows gone, and the
+    /// OS's copy of each out of its list too ([`withdraw_shown`]).
+    fn clear_read(&mut self, cx: &mut Context<Self>) {
+        let notifications = self.shared.notifications.clone();
+        let entries = notifications.read(cx).entries();
+        withdraw_shown(entries.iter().filter(|entry| entry.read));
+        notifications.update(cx, |notifications, cx| notifications.clear_read(cx));
+    }
+
     /// A link, read as every shell reads it (`Rail::opening`): this chain's
-    /// program comes on top and its view is handed the route; another
-    /// chain's is said and not opened, as the Expo app says it.
+    /// program comes on top and its view is handed the route. Another
+    /// chain's switches to the listed node on that chain and opens there
+    /// once the switch lands; with none listed it is said and not opened,
+    /// as the Expo app says it.
     fn open_link(&mut self, link: &str, cx: &mut Context<Self>) {
-        let session = self.shared.session.read(cx).get();
-        let (chain, network) = (session.chain.clone(), session.network.clone());
+        let chain = self.shared.session.read(cx).get().chain.clone();
+        if let Some((other, node)) = self.elsewhere(link, &chain, cx) {
+            self.shared
+                .session
+                .update(cx, |session, cx| session.switch(node.clone(), cx));
+            // no switch under way (that node is the one in hand: what the
+            // registrar heard of it is stale): said as a link of a network
+            // not listed is
+            if self.shared.session.read(cx).get().reaching == node {
+                self.switching = Some((other, link.to_owned(), node));
+                return;
+            }
+        }
         match self.shared.rail.read(cx).opening(link, &chain) {
             Opening::Seat {
                 program,
@@ -1097,22 +1425,43 @@ impl Root {
                     self.notice(said, cx);
                 }
             }
-            // Expo's `Alert` (mobile `src/kit/navigate.ts`), its words
-            Opening::Elsewhere { chain, .. } => {
-                let here = if network.is_empty() {
-                    "another network".to_owned()
-                } else {
-                    network
-                };
-                self.alert(
-                    "Another network",
-                    format!("This link is for {chain}, you're on {here}."),
-                    cx,
-                );
-            }
+            Opening::Elsewhere { chain, .. } => self.said_elsewhere(&chain, cx),
             Opening::Browser(url) => cx.open_url(&url),
             Opening::Nothing(said) => self.notice(said, cx),
         }
+    }
+
+    /// The chain `link` names when it is a chain link of another chain
+    /// than `here`, and the listed node on that chain to switch to
+    /// (`push::Registrar::node_of`).
+    fn elsewhere(&self, link: &str, here: &str, cx: &App) -> Option<(ducklink::ChainId, String)> {
+        let ducktape_host::runtime::Link::Chain(parsed) =
+            self.shared.rail.read(cx).parse_link(link)
+        else {
+            return None;
+        };
+        if parsed.chain.to_string() == here {
+            return None;
+        }
+        let registrar = &cx.try_global::<Phone>()?.registrar;
+        let node = registrar.read(cx).node_of(&parsed.chain.to_string(), cx)?;
+        Some((parsed.chain, node))
+    }
+
+    /// Another network's link, with no listed node on its chain: Expo's
+    /// `Alert` (mobile `src/kit/navigate.ts`), its words.
+    fn said_elsewhere(&mut self, chain: &str, cx: &mut Context<Self>) {
+        let network = self.shared.session.read(cx).get().network.clone();
+        let here = if network.is_empty() {
+            "another network".to_owned()
+        } else {
+            network
+        };
+        self.alert(
+            "Another network",
+            format!("This link is for {chain}, you're on {here}."),
+            cx,
+        );
     }
 
     /// A one-line notice; the same one again while it is up says nothing
@@ -1134,8 +1483,10 @@ impl Root {
                 cx.notify();
             }
             SeatsEvent::OpenLink(_, _, link) => self.open_link(link, cx),
-            // the reader's account: the account menu, as from a header's avatar
-            SeatsEvent::Show(_, _, view_wire::methods::Place::Account) => self.account_sheet(cx),
+            // the reader's account: the Account tab, as from a header's avatar
+            SeatsEvent::Show(_, _, view_wire::methods::Place::Account) => {
+                self.go_to(Tab::Account, cx)
+            }
             // a refused camera's or microphone's system settings, where this
             // host has that page (`render/av.rs`: none without `av`); the
             // kernel shows no other
@@ -1241,7 +1592,6 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let (name, content): (&'static str, AnyElement) = match sheet {
-            Sheet::Account => ("Account", self.account_menu(palette, cx)),
             Sheet::Capsule(program) => ("More", self.capsule_sheet(program, palette, cx)?),
             Sheet::Notifications(program) => (
                 "Notifications",
@@ -1355,80 +1705,6 @@ impl Root {
             .into_any_element()
     }
 
-    /// The account menu (the shell boards' 40, Expo `you.tsx`): who is
-    /// reading, the account's own program (the `programs` view) opened by
-    /// name, App settings and Switch network.
-    fn account_menu(&mut self, palette: look::Palette, cx: &mut Context<Self>) -> AnyElement {
-        let network = self.shared.session.read(cx).get().network.clone();
-        // Expo `you.tsx`: the account's name, else "No account yet"; the
-        // avatar draws the name's initial, or none
-        let (avatar, name, caption) = match home::me(&self.shared, cx) {
-            Some((number, name)) => (name.clone(), name, format!("account {number} · {network}")),
-            None => (String::new(), "No account yet".to_owned(), network),
-        };
-        let head = sheet::head(palette).child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(look::gap::LG))
-                .child(home::avatar(&avatar, 40., palette))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            look::text(look::BODY, FontWeight::MEDIUM, palette.foreground())
-                                .truncate()
-                                .child(name),
-                        )
-                        .child(
-                            look::text(look::CAPTION, FontWeight::NORMAL, palette.muted())
-                                .font_family(ducktape_host::fonts::FAMILY_MONO)
-                                .truncate()
-                                .child(caption),
-                        ),
-                ),
-        );
-        let mut menu = div().flex().flex_col().child(head);
-        if home::row_of(&self.shared, ACCOUNT_PROGRAM, cx).is_some() {
-            menu = menu.child(
-                sheet::row(
-                    "sheet/account",
-                    Some("icons/circle-user.svg"),
-                    "Account",
-                    Some("keys · agents · invites".into()),
-                    palette,
-                )
-                .on_click(cx.listener(|root, _, _, cx| {
-                    root.open(ACCOUNT_PROGRAM, cx);
-                })),
-            );
-        }
-        menu.child(
-            sheet::row(
-                "sheet/settings",
-                Some("icons/settings.svg"),
-                "App settings",
-                Some("node · this phone · about".into()),
-                palette,
-            )
-            .on_click(cx.listener(|root, _, _, cx| root.show_settings(cx))),
-        )
-        .child(
-            sheet::row(
-                "sheet/switch",
-                Some("icons/refresh-cw.svg"),
-                "Switch network",
-                None,
-                palette,
-            )
-            .on_click(cx.listener(|root, _, window, cx| root.show_switch(window, cx))),
-        )
-        .into_any_element()
-    }
-
     /// The capsule's menu (the shell boards' 30): the program, then its
     /// notices' word and its link. `None` once the network stopped listing
     /// it.
@@ -1511,7 +1787,8 @@ impl Root {
     }
 
     /// The three words for a program's notices, the one in force checked
-    /// (the desktop's Allow, Silent, Block).
+    /// (the desktop's Allow, Silent, Block): with none said, the phone's
+    /// (`Settings::unasked`).
     fn notifications_sheet(
         &mut self,
         program: &'static str,
@@ -1520,15 +1797,8 @@ impl Root {
     ) -> AnyElement {
         let name = home::row_of(&self.shared, program, cx)
             .map_or_else(|| program.to_owned(), |row| home::name_of(&row));
-        let now = self
-            .shared
-            .prefs
-            .read(cx)
-            .get()
-            .notify
-            .views
-            .get(program)
-            .copied();
+        let notify = &self.shared.prefs.read(cx).get().notify;
+        let now = notify.views.get(program).copied().or(notify.unasked);
         let head = sheet::head(palette).child(
             look::text(look::BODY, FontWeight::MEDIUM, palette.foreground())
                 .child(format!("Notifications from {name}")),
@@ -1656,40 +1926,83 @@ impl Root {
                 (layer, edges.bottom + px(look::gap::LG))
             }
             Page::Root(tab) => {
-                let screen = match tab {
-                    Tab::Home => {
-                        let searching = self.search.read(cx).focus_handle(cx).is_focused(window);
-                        home::home(
-                            &self.shared,
-                            &self.search,
-                            self.filtering,
-                            searching,
-                            palette,
-                            cx,
-                        )
-                    }
-                    Tab::Open => {
-                        let opened = self.stack.read(cx).open().to_vec();
-                        let debug = self.shared.prefs.read(cx).get().debug;
-                        let readout = debug.then_some(&self.readout);
-                        home::open(&self.shared, &opened, &self.titles, readout, palette, cx)
-                    }
-                };
-                let body = safe().flex().flex_col().child(screen).child(home::tab_bar(
-                    tab,
-                    edges.bottom,
-                    palette,
-                    cx,
-                ));
+                let mut screen = self.tab_screen(tab, window, palette, cx);
+                // the tabs' swipe: the tab on screen `at` its share of the
+                // width to the right, the tab beside it next to it, the bar
+                // still under both
+                if let Some((at, beside)) = self.paged(window, cx) {
+                    let slot = |screen: gpui_kit::Div, at: f32| {
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(gpui_kit::relative(at))
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .child(screen)
+                    };
+                    let beside = beside.map(|beside| {
+                        let other = self.tab_screen(beside, window, palette, cx);
+                        // taking no press, as the page a stack's move left
+                        slot(other, at - at.signum()).child(div().absolute().inset_0().occlude())
+                    });
+                    screen = div()
+                        .flex_1()
+                        .min_h_0()
+                        .relative()
+                        .overflow_hidden()
+                        .child(slot(screen, at))
+                        .children(beside);
+                }
+                let unread = self.shared.notifications.read(cx).unread();
+                let bar = home::tab_bar(tab, unread, edges.bottom, palette, cx);
+                let body = safe().flex().flex_col().child(screen).child(bar);
                 let bottom = edges.bottom + px(look::TAB_BAR + look::gap::LG);
                 (layer.child(body), bottom)
             }
+        }
+    }
+
+    /// `tab`'s root screen, over the tab bar.
+    fn tab_screen(
+        &mut self,
+        tab: Tab,
+        window: &Window,
+        palette: look::Palette,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Div {
+        match tab {
+            Tab::Home => {
+                let searching = self.search.read(cx).focus_handle(cx).is_focused(window);
+                home::home(
+                    &self.shared,
+                    &self.run,
+                    &self.search,
+                    self.filtering,
+                    searching,
+                    palette,
+                    cx,
+                )
+            }
+            Tab::Open => {
+                let opened = self.stack.read(cx).open().to_vec();
+                let debug = self.shared.prefs.read(cx).get().debug;
+                let readout = debug.then_some(&self.readout);
+                home::open(&self.shared, &opened, &self.titles, readout, palette, cx)
+            }
+            Tab::Notifications => home::notifications(&self.shared, palette, cx),
+            Tab::Account => home::account(&self.shared, palette, cx),
         }
     }
 }
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        {
+            self.renders += 1;
+        }
         let edges = ducktape_host::contract::os().insets(window).effective();
         let palette = look::palette(cx);
         let viewport = window.viewport_size();
@@ -1705,6 +2018,11 @@ impl Render for Root {
         let now = motion::now(cx);
         if self.moving.is_some_and(|moving| moving.tween.done(now)) {
             self.moving = None;
+        }
+        if let Some(Paging::Settling { tween, .. }) = self.paging
+            && tween.done(now)
+        {
+            self.paging = None;
         }
         self.place(window, body, cx);
         // debug mode's numbers: read while the Open tab is on screen
@@ -1883,12 +2201,14 @@ mod tests {
         let stack = cx.new(|_| Stack::default());
         cx.update(|cx| {
             let registrar = crate::push::Registrar::start(shared.clone(), cx);
+            log_on_connect(&shared, cx);
             cx.set_global(Phone {
                 shared: shared.clone(),
                 stack: stack.clone(),
                 window: None,
                 waiting: Vec::new(),
-                _registrar: registrar,
+                notices: Vec::new(),
+                registrar,
             })
         });
         let (root, cx) =
@@ -1899,6 +2219,11 @@ mod tests {
         });
         cx.run_until_parked();
         (root, stack, cx)
+    }
+
+    /// A swipe let go, through the window as the OS's is.
+    fn let_go(root: &Entity<Root>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| root.update(cx, |root, cx| root.let_go(window, cx)));
     }
 
     /// The stack's move under way: the page it left, whether it pops.
@@ -1987,7 +2312,7 @@ mod tests {
         assert_eq!(frames(cx), 0, "a frame asked for after the pop ended");
 
         // the capsule's ×: Home, the program slid off it
-        root.update(cx, |root, cx| root.go_home(cx));
+        root.update(cx, |root, cx| root.go_to(Tab::Home, cx));
         cx.run_until_parked();
         assert_eq!(
             moving(&root, cx),
@@ -2096,28 +2421,25 @@ mod tests {
                 root.drawn_sheet.as_ref().map(|it| (it.what, it.leaving))
             })
         };
-        root.update(cx, |root, cx| root.account_sheet(cx));
+        root.update(cx, |root, cx| root.show(Sheet::Notifications(PROGRAM), cx));
         cx.run_until_parked();
-        assert_eq!(sheet(cx), Some((Sheet::Account, false)));
+        let up = Sheet::Notifications(PROGRAM);
+        assert_eq!(sheet(cx), Some((up, false)));
         assert!(frames(cx) > 0, "a sheet coming asked for no frame");
         run_out(cx);
-        assert_eq!(sheet(cx), Some((Sheet::Account, false)));
+        assert_eq!(sheet(cx), Some((up, false)));
         assert_eq!(frames(cx), 0, "a sheet up asked for a frame");
 
         root.update(cx, |root, cx| root.close_sheet(cx));
         cx.run_until_parked();
-        assert_eq!(
-            sheet(cx),
-            Some((Sheet::Account, true)),
-            "a sheet went at once"
-        );
+        assert_eq!(sheet(cx), Some((up, true)), "a sheet went at once");
         assert!(frames(cx) > 0);
         run_out(cx);
         assert_eq!(sheet(cx), None, "a sheet gone is still drawn");
         assert_eq!(frames(cx), 0, "a frame asked for after the sheet went");
 
         // Back while a sheet still comes up turns it back from where it is
-        root.update(cx, |root, cx| root.account_sheet(cx));
+        root.update(cx, |root, cx| root.show(Sheet::Notifications(PROGRAM), cx));
         cx.run_until_parked();
         cx.executor()
             .advance_clock(motion::idiom().sheet.duration / 8);
@@ -2158,27 +2480,318 @@ mod tests {
         assert_eq!(frames(cx), 0, "a toast up asked for a frame");
     }
 
-    /// The account sheet's App settings and Switch network close it and
-    /// push their pages over the screen it was on (Expo `you.tsx`'s
-    /// `leave`).
+    /// The Account tab is a tab: picked, it is the root on screen with no
+    /// sheet over it; its App settings and Switch network push their pages
+    /// over it and Back comes back to it. A view asking for the reader's
+    /// account (a header's avatar) picks it too, the program left open
+    /// where it was.
     #[gpui_kit::test]
-    fn the_account_sheets_rows_open_app_settings_and_switch_network(cx: &mut TestAppContext) {
-        let (root, _, cx) = phone(cx);
-        for (row, page) in [
-            ("sheet/settings", Page::Settings),
-            ("sheet/switch", Page::Switch),
-        ] {
-            root.update(cx, |root, cx| root.account_sheet(cx));
-            run_out(cx);
-            let at = cx.debug_bounds(row).expect("the row drawn");
+    fn the_account_tab_is_a_root_its_rows_push_over_it(cx: &mut TestAppContext) {
+        let (root, stack, cx) = phone(cx);
+        let click = |id: &'static str, cx: &mut VisualTestContext| {
+            let at = cx.debug_bounds(id).expect(id);
             cx.simulate_click(at.center(), gpui_kit::Modifiers::none());
-            cx.run_until_parked();
-            let shown = root.read_with(cx, |root, cx| (root.sheet, root.page(cx)));
-            assert_eq!(shown, (None, page), "{row}");
             run_out(cx);
+        };
+        let shown =
+            |cx: &mut VisualTestContext| root.read_with(cx, |root, cx| (root.sheet, root.page(cx)));
+        let account = (None, Page::Root(Tab::Account));
+        click("tab/account", cx);
+        assert_eq!(shown(cx), account, "the Account tab");
+        for (row, page) in [
+            ("account/settings", Page::Settings),
+            ("account/switch", Page::Switch),
+        ] {
+            click(row, cx);
+            assert_eq!(shown(cx), (None, page), "{row}");
             root.update(cx, |root, cx| root.back(cx));
             run_out(cx);
+            assert_eq!(shown(cx), account, "Back from {row}");
         }
+
+        click("tab/home", cx);
+        root.update(cx, |root, cx| _ = root.open(PROGRAM, cx));
+        run_out(cx);
+        let asked = SeatsEvent::Show(PROGRAM, 0, view_wire::methods::Place::Account);
+        root.update(cx, |root, cx| root.seats_said(&asked, cx));
+        run_out(cx);
+        assert_eq!(shown(cx), account, "a view's avatar");
+        let open = stack.read_with(cx, |stack, _| {
+            (stack.top(), stack.instance(PROGRAM).is_some())
+        });
+        assert_eq!(open, (None, true), "the program was not left open");
+    }
+
+    /// The Notifications tab lists the host's centre, newest first, a dot on
+    /// the tab while one is unread; a row pressed is read and opens its
+    /// program (no link: as a tapped system notice does); Mark all read
+    /// reads the rest and the dot goes; Clear read empties the list.
+    #[gpui_kit::test]
+    fn the_notifications_tab_lists_the_centre_and_opens_a_notice(cx: &mut TestAppContext) {
+        use ducktape_host::runtime::notify::Settings;
+        let _seat = ducktape_host::backend::seat_serial();
+        let (root, stack, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        ducktape_host::runtime::seat_for_test(PROGRAM, 320);
+        shared.rail.update(cx, |rail, cx| {
+            rail.read_off(Roster::listing(&[PROGRAM]), cx)
+        });
+        let dot = |cx: &mut VisualTestContext| cx.debug_bounds("tab/notifications/dot").is_some();
+        run_out(cx);
+        assert!(!dot(cx), "a dot with nothing logged");
+
+        let settings = Settings {
+            banners: true,
+            in_front: false,
+            burst: 3,
+            views: Default::default(),
+            unasked: None,
+        };
+        let center = shared
+            .notifications
+            .read_with(cx, |it, _| it.center().clone());
+        for (title, at) in [("Older", 100), ("Newer", 200)] {
+            let post = view_wire::methods::Notification {
+                title: title.into(),
+                body: "said".into(),
+                ..Default::default()
+            };
+            let now = std::time::Instant::now();
+            let _ = center
+                .lock()
+                .post(&settings, PROGRAM, "Test", post, now, at);
+        }
+        shared.notifications.update(cx, |it, cx| _ = it.refresh(cx));
+        run_out(cx);
+        assert!(dot(cx), "no dot with two unread");
+
+        let click = |id: &'static str, cx: &mut VisualTestContext| {
+            let at = cx.debug_bounds(id).expect(id);
+            cx.simulate_click(at.center(), gpui_kit::Modifiers::none());
+            run_out(cx);
+        };
+        click("tab/notifications", cx);
+        let ids: Vec<u64> = center.lock().entries().map(|entry| entry.id).collect();
+        let [newer, older] = ids[..] else {
+            panic!("{ids:?}");
+        };
+        let row_top = |id: u64, cx: &mut VisualTestContext| {
+            let row = format!("notifications/{id}").leak();
+            cx.debug_bounds(row).expect("the row drawn").top()
+        };
+        assert!(row_top(newer, cx) < row_top(older, cx), "not newest first");
+
+        click(format!("notifications/{older}").leak(), cx);
+        let read = |cx: &mut VisualTestContext| {
+            let entries = shared.notifications.read_with(cx, |it, _| it.entries());
+            entries.iter().map(|entry| entry.read).collect::<Vec<_>>()
+        };
+        assert_eq!(read(cx), [false, true], "the row pressed was not read");
+        assert_eq!(top(&stack, cx), Some(PROGRAM), "its program did not open");
+
+        root.update(cx, |root, cx| root.back(cx));
+        run_out(cx);
+        assert!(dot(cx), "the dot went with one still unread");
+        click("notifications/mark-all", cx);
+        assert_eq!(read(cx), [true, true]);
+        assert!(!dot(cx), "the dot stayed with nothing unread");
+        click("notifications/clear-read", cx);
+        assert_eq!(read(cx), [] as [bool; 0], "Clear read kept a read row");
+    }
+
+    /// The Notifications tab's name to a screen reader, as last drawn.
+    fn notifications_tab_name(cx: &mut VisualTestContext) -> String {
+        cx.update(|window, cx| {
+            window.activate_a11y();
+            window.render_frame(cx);
+            let tree = window.a11y_tree().expect("an accessibility tree");
+            let tab = tree.nodes.iter().find(|(_, node)| {
+                node.role() == gpui_kit::accesskit::Role::Tab
+                    && node
+                        .label()
+                        .is_some_and(|name| name.starts_with("Notifications"))
+            });
+            tab.and_then(|(_, node)| node.label())
+                .unwrap_or_default()
+                .to_owned()
+        })
+    }
+
+    /// A notice the push server carried, as the OS hands it over (the
+    /// carrier's own payload): it waits for its chain's log, then is one
+    /// row in the Notifications tab with its program's words and the OS's
+    /// time, however often the OS's list is read, and the tab says it is
+    /// unread to a screen reader in the desktop bell's words; opened from
+    /// the OS, its row is read. One that came while the app was in front on
+    /// its chain is left to this phone's own run of the notifier; another
+    /// chain's waits for that chain, once however often it is handed over.
+    #[gpui_kit::test]
+    fn a_pushed_notice_is_one_row_in_the_notifications_tab(cx: &mut TestAppContext) {
+        use ducktape_host::session::SessionState;
+        let _seat = ducktape_host::backend::seat_serial();
+        let (root, _, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        ducktape_host::runtime::seat_for_test(PROGRAM, 320);
+        shared.rail.update(cx, |rail, cx| {
+            rail.read_off(Roster::listing(&[PROGRAM]), cx)
+        });
+        let shown = |chain: &str, title: &str, at: i64, front: bool, cx: &mut VisualTestContext| {
+            // `Push::show`'s APNs body (crates/pushd)
+            let payload = serde_json::json!({
+                "aps": { "alert": { "title": title, "body": "said" }, "thread-id": PROGRAM },
+                "kind": "notice", "chain": chain, "program": PROGRAM,
+                "tag": format!("{PROGRAM}/room"), "title": title, "body": "said",
+                "link": "", "until": 0,
+            });
+            // opened from the OS: the one at 101
+            let opened = at == 101;
+            let notice = crate::os::OsNotice::of(&payload.to_string(), at, front, opened);
+            cx.update(|_, cx| os_notice(notice.expect("a notice"), cx));
+            run_out(cx);
+        };
+        let rows = |cx: &mut VisualTestContext| {
+            let entries = shared.notifications.read_with(cx, |it, _| it.entries());
+            let rows = entries
+                .iter()
+                .map(|entry| (entry.title.clone(), entry.tag.clone(), entry.at, entry.read));
+            rows.collect::<Vec<_>>()
+        };
+        shown("garage#1", "Hello", 100, false, cx);
+        assert_eq!(rows(cx), [], "logged before its chain's log was open");
+
+        shared.session.update(cx, |session, cx| {
+            let state = SessionState {
+                connected: true,
+                chain: "garage#1".into(),
+                ..Default::default()
+            };
+            session.seed(state, cx);
+        });
+        run_out(cx);
+        let hello = ("Hello".to_owned(), "room".to_owned(), 100, false);
+        assert_eq!(rows(cx), std::slice::from_ref(&hello));
+        shown("garage#1", "Hello", 100, false, cx);
+        assert_eq!(
+            rows(cx),
+            [hello],
+            "the OS's list read again logged it again"
+        );
+        assert!(cx.debug_bounds("tab/notifications/dot").is_some());
+        assert_eq!(notifications_tab_name(cx), "Notifications, 1 unread");
+
+        shown("garage#1", "Hello", 101, false, cx);
+        assert!(rows(cx)[0].3, "opened from the OS, and still unread");
+        assert_eq!(notifications_tab_name(cx), "Notifications");
+
+        shown("garage#1", "In front", 200, true, cx);
+        shown("other#2", "Elsewhere", 200, false, cx);
+        // the OS's list handed over again while it waits
+        shown("other#2", "Elsewhere", 200, false, cx);
+        let read = ("Hello".to_owned(), "room".to_owned(), 100, true);
+        assert_eq!(rows(cx), [read], "logged one this phone's run decides");
+        let waiting = cx.update(|_, cx| cx.global::<Phone>().notices.clone());
+        assert_eq!(
+            waiting.len(),
+            1,
+            "the other chain's did not wait, or waited twice"
+        );
+    }
+
+    /// A pushed notice's row read or cleared in the Notifications tab takes
+    /// the OS's copy out of its list, so the next read of the list (each
+    /// return to the front) does not log it again: "Clear read" takes the
+    /// read ones (read elsewhere: its program saw it), a row opened and
+    /// "Mark all read" take theirs as they are read.
+    #[gpui_kit::test]
+    fn a_row_read_or_cleared_here_leaves_the_os_list_too(cx: &mut TestAppContext) {
+        use ducktape_host::session::SessionState;
+        let _seat = ducktape_host::backend::seat_serial();
+        let (root, _, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        ducktape_host::runtime::seat_for_test(PROGRAM, 320);
+        shared.rail.update(cx, |rail, cx| {
+            rail.read_off(Roster::listing(&[PROGRAM]), cx)
+        });
+        shared.session.update(cx, |session, cx| {
+            let state = SessionState {
+                connected: true,
+                chain: "garage#1".into(),
+                ..Default::default()
+            };
+            session.seed(state, cx);
+        });
+        crate::os::WITHDRAWN.with(|withdrawn| withdrawn.borrow_mut().clear());
+        // the OS's list: what it shows, by the push server's tag
+        let list = [("room", 100), ("desk", 110), ("hall", 120)];
+        let withdrawn = || crate::os::WITHDRAWN.with(|withdrawn| withdrawn.borrow().clone());
+        let read_list = |cx: &mut VisualTestContext| {
+            let withdrawn = withdrawn();
+            for (tag, at) in list {
+                let tag = format!("{PROGRAM}/{tag}");
+                if withdrawn.contains(&tag) {
+                    continue;
+                }
+                let payload = serde_json::json!({
+                    "kind": "notice", "chain": "garage#1", "program": PROGRAM, "tag": tag,
+                    "title": tag, "body": "said", "link": "", "until": 0,
+                });
+                let notice = crate::os::OsNotice::of(&payload.to_string(), at, false, false);
+                cx.update(|_, cx| os_notice(notice.expect("a notice"), cx));
+            }
+            run_out(cx);
+            let entries = shared.notifications.read_with(cx, |it, _| it.entries());
+            entries
+                .iter()
+                .map(|entry| (entry.tag.clone(), entry.read))
+                .collect::<Vec<_>>()
+        };
+        let click = |id: &'static str, cx: &mut VisualTestContext| {
+            let at = cx.debug_bounds(id).expect(id);
+            cx.simulate_click(at.center(), gpui_kit::Modifiers::none());
+            run_out(cx);
+        };
+        let unread = |tag: &str| (tag.to_owned(), false);
+        assert_eq!(
+            read_list(cx),
+            [unread("hall"), unread("desk"), unread("room")]
+        );
+        // its program saw "room" (`notify.seen`) where no withdraw reached this list
+        let center = shared
+            .notifications
+            .read_with(cx, |it, _| it.center().clone());
+        center.lock().read_tag(PROGRAM, "room");
+        shared.notifications.update(cx, |it, cx| _ = it.refresh(cx));
+        click("tab/notifications", cx);
+        click("notifications/clear-read", cx);
+        assert_eq!(
+            read_list(cx),
+            [unread("hall"), unread("desk")],
+            "cleared, then back from the OS's list"
+        );
+        let entries = shared.notifications.read_with(cx, |it, _| it.entries());
+        let hall = entries
+            .iter()
+            .find(|entry| entry.tag == "hall")
+            .expect("hall")
+            .id;
+        click(format!("notifications/{hall}").leak(), cx);
+        assert!(
+            withdrawn().contains(&format!("{PROGRAM}/hall")),
+            "opened, still in the OS's list"
+        );
+        root.update(cx, |root, cx| root.back(cx));
+        run_out(cx);
+        click("notifications/mark-all", cx);
+        assert!(
+            withdrawn().contains(&format!("{PROGRAM}/desk")),
+            "read, still in the OS's list"
+        );
+        click("notifications/clear-read", cx);
+        assert_eq!(
+            read_list(cx),
+            [],
+            "read and cleared, then back from the OS's list"
+        );
     }
 
     /// A Home tile is drawn pressed (`look::PRESSED`) while a touch is
@@ -2256,6 +2869,114 @@ mod tests {
         );
     }
 
+    /// Home over a roster read: while the programs' bytes are read the
+    /// caption counts them read and no tile stands; once every one is read
+    /// (the host shows them all at once) every tile with a view comes in the
+    /// same frame, dimmed and with no word, only the one a loader compiles
+    /// ringed, the ring running as the clock does (held still under Reduce
+    /// Motion); the caption counts the views as they are prepared and is the
+    /// normal one once all are settled, and nothing redraws Home after.
+    #[gpui_kit::test]
+    fn home_shows_every_tile_at_once_once_read_and_counts_them_prepared(cx: &mut TestAppContext) {
+        use ducktape_host::runtime::{
+            seat_compiled_for_test, seat_empty_for_test, seat_listed_for_test,
+            seat_reading_for_test,
+        };
+        let (root, _, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        let (alpha, beta, none) = ("phone-prep-alpha", "phone-prep-beta", "phone-prep-none");
+        seat_reading_for_test(alpha, false);
+        seat_reading_for_test(beta, false);
+        seat_reading_for_test(none, true);
+        shared.rail.update(cx, |rail, cx| {
+            rail.read_off(Roster::listing(&[alpha, beta, none]), cx)
+        });
+        run_out(cx);
+        let refresh = |cx: &mut VisualTestContext| {
+            shared.rail.update(cx, |rail, cx| _ = rail.refresh(cx));
+            run_out(cx);
+        };
+        let caption = |cx: &mut VisualTestContext| {
+            root.read_with(cx, |root, cx| {
+                root.run.caption(root.shared.rail.read(cx).rows())
+            })
+        };
+        let shown = |what: &str, cx: &mut VisualTestContext| {
+            [alpha, beta].map(|program| {
+                let id = format!("home/{program}{what}").leak();
+                cx.debug_bounds(id).is_some()
+            })
+        };
+        assert_eq!(caption(cx).as_deref(), Some("Loading 2/3"));
+        assert_eq!(shown("", cx), [false; 2], "a tile before all are read");
+        seat_reading_for_test(alpha, true);
+        refresh(cx);
+        assert_eq!(caption(cx).as_deref(), Some("Loading 3/3"));
+        assert_eq!(shown("", cx), [false; 2], "a tile before all are read");
+
+        seat_listed_for_test(alpha, "Alpha", false);
+        seat_listed_for_test(beta, "Beta", false);
+        seat_empty_for_test(none);
+        refresh(cx);
+        assert_eq!(shown("", cx), [true; 2], "the tiles came apart");
+        assert_eq!(caption(cx).as_deref(), Some("Preparing 1/2"));
+        assert_eq!(shown("/ring", cx), [false; 2], "a waiting tile ringed");
+        assert_eq!(
+            shown("/note", cx),
+            [false; 2],
+            "a word under a tile on its way"
+        );
+
+        seat_listed_for_test(alpha, "Alpha", true);
+        refresh(cx);
+        assert_eq!(caption(cx).as_deref(), Some("Preparing 1/2 · Alpha"));
+        assert_eq!(
+            shown("/ring", cx),
+            [true, false],
+            "not the one compiling ringed"
+        );
+        const RING: &str = "home/phone-prep-alpha/ring";
+        const RUN: &str = "home/phone-prep-alpha/ring/run";
+        let tile = cx.debug_bounds("home/phone-prep-alpha").expect("the tile");
+        let ring = cx.debug_bounds(RING).expect("the ring");
+        assert_eq!(
+            ring.size.width,
+            gpui_kit::px(64.),
+            "not just outside the glyph"
+        );
+        assert!(tile.contains(&ring.center()));
+        // the clock on: the ring's part has moved round, and moves again
+        let step = |cx: &mut VisualTestContext| {
+            let before = cx.debug_bounds(RUN).expect("the ring's running part");
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(200));
+            cx.run_until_parked();
+            before != cx.debug_bounds(RUN).expect("the ring's running part")
+        };
+        assert!(step(cx) && step(cx), "the ring stood still");
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.update(|window, _| window.refresh());
+        run_out(cx);
+        assert!(cx.debug_bounds(RING).is_some(), "no still ring");
+        assert!(!step(cx), "the ring ran under Reduce Motion");
+        cx.update(|_, cx| cx.set_reduce_motion(false));
+
+        seat_compiled_for_test(alpha, "Alpha", "");
+        seat_listed_for_test(beta, "Beta", true);
+        refresh(cx);
+        assert_eq!(caption(cx).as_deref(), Some("Preparing 2/2 · Beta"));
+        assert_eq!(shown("/ring", cx), [false, true]);
+
+        seat_compiled_for_test(beta, "Beta", "");
+        refresh(cx);
+        assert_eq!(caption(cx), None, "the count stayed once all settled");
+        let renders = root.read_with(cx, |root, _| root.renders);
+        run_out(cx);
+        assert_eq!(frames(cx), 0, "a frame asked for with nothing preparing");
+        let redrawn = root.read_with(cx, |root, _| root.renders) - renders;
+        assert_eq!(redrawn, 0, "Home redrew with nothing preparing");
+    }
+
     /// App settings' Light and dark row opens Appearance; the palette (and
     /// the kit theme every view reads) follows the choice made there, not
     /// the system's, and System hands it back to the window's own.
@@ -2302,7 +3023,7 @@ mod tests {
         let (root, _, cx) = phone(cx);
         root.update(cx, |root, cx| _ = root.open(PROGRAM, cx));
         run_out(cx);
-        root.update(cx, |root, cx| root.go_home(cx));
+        root.update(cx, |root, cx| root.go_to(Tab::Home, cx));
         run_out(cx);
         root.update(cx, |root, cx| root.pick(Tab::Open, cx));
         run_out(cx);
@@ -2432,6 +3153,279 @@ mod tests {
         assert_eq!(page, Page::Root(Tab::Home), "the switch did not land here");
     }
 
+    /// A tapped notice of another network in the list switches to that
+    /// network and opens there once it lists its programs, at a cold start
+    /// too (the link held until the network first reached lists its own).
+    /// One whose network is not in the list says whose it is, as before,
+    /// and reaches nothing.
+    #[gpui_kit::test]
+    fn another_listed_networks_link_switches_to_it_and_opens_there(cx: &mut TestAppContext) {
+        use ducktape_host::backend::RecentEndpoint;
+        use ducktape_host::session::SessionState;
+        use ducktape_host::session::tests::{source, status};
+        use join::tests::until;
+        const HERE: &str = "http://127.0.0.1:1";
+        const THERE: &str = "http://127.0.0.1:2";
+        // the switch leaves the network in hand: the seat is one for the process
+        let _seat = ducktape_host::backend::seat_serial();
+        let (root, stack, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        let node = |url: &str, network: &str| RecentEndpoint {
+            url: url.into(),
+            network: network.into(),
+            ..RecentEndpoint::default()
+        };
+        let on = |url: &str, network: &str, chain: &str, recent| SessionState {
+            connected: true,
+            connected_rpc: url.into(),
+            network: network.into(),
+            chain: chain.into(),
+            recent_endpoints: recent,
+            ..SessionState::default()
+        };
+        // there is testkit as `status` answers it; the phone was on it
+        // before, and is on home now
+        let there = ducklink::ChainId::of("testkit", &[0; 32])
+            .unwrap()
+            .to_string();
+        let before = on(THERE, "testkit", &there, vec![node(THERE, "testkit")]);
+        shared
+            .session
+            .update(cx, |session, cx| session.seed(before, cx));
+        cx.run_until_parked();
+        let recent = vec![node(HERE, "home"), node(THERE, "testkit")];
+        let now = on(HERE, "home", "home#0a0a0a0a", recent);
+        shared
+            .session
+            .update(cx, |session, cx| session.seed(now, cx));
+        cx.run_until_parked();
+
+        // the tap launched the app: held until home lists its programs
+        let link = ducklink::mint(&there, PROGRAM, &["room"]).unwrap();
+        root.update(cx, |root, cx| root.take_link(link.clone(), cx));
+        cx.run_until_parked();
+        let reaching = |cx: &mut VisualTestContext| {
+            shared
+                .session
+                .read_with(cx, |session, _| session.get().reaching.clone())
+        };
+        assert_eq!(reaching(cx), "", "a switch before home listed its programs");
+        ducktape_host::runtime::seat_for_test(PROGRAM, 320);
+        shared.rail.update(cx, |rail, cx| {
+            rail.read_off(Roster::listing(&[PROGRAM]), cx)
+        });
+        assert_eq!(
+            reaching(cx),
+            THERE,
+            "the link did not switch to its network"
+        );
+        assert!(root.read_with(cx, |root, _| root.alert.is_none()));
+        assert_eq!(top(&stack, cx), None, "the link opened on home");
+
+        // testkit answers (in place of the node the switch asked)
+        let (answers, _) = source(|_| Ok(status(1)));
+        shared.session.update(cx, |session, cx| {
+            session.connect_through(THERE.into(), answers, cx)
+        });
+        until(cx, |cx| {
+            shared
+                .session
+                .read_with(cx, |session, _| session.get().chain == there)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            top(&stack, cx),
+            None,
+            "the link opened before testkit listed"
+        );
+        shared.rail.update(cx, |rail, cx| {
+            rail.read_off(Roster::listing(&[PROGRAM]), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            top(&stack, cx),
+            Some(PROGRAM),
+            "the link did not open on testkit"
+        );
+
+        // a network not in the list: said, not reached
+        let far = ducklink::mint("far#0c0c0c0c", PROGRAM, &[]).unwrap();
+        root.update(cx, |root, cx| root.take_link(far, cx));
+        cx.run_until_parked();
+        let alert = root.read_with(cx, |root, _| root.alert.clone());
+        assert_eq!(
+            alert,
+            Some((
+                "Another network",
+                "This link is for far, you're on testkit.".to_owned()
+            ))
+        );
+        assert_eq!(
+            reaching(cx),
+            "",
+            "a link of no listed network reached a node"
+        );
+    }
+
+    /// A tapped notice's switch that does not land leaves nothing behind.
+    /// One whose node is the one in hand (what the registrar heard of it
+    /// is stale) starts no switch and says whose link it is at once; one a
+    /// switch of the reader's own took over raises no "Another network"
+    /// when that one lands; one a disconnect dropped opens no old link on
+    /// the next network.
+    #[gpui_kit::test]
+    fn a_tapped_switch_that_does_not_land_leaves_nothing_behind(cx: &mut TestAppContext) {
+        use ducktape_host::backend::{NodeStatus, RecentEndpoint};
+        use ducktape_host::session::SessionState;
+        use ducktape_host::session::tests::{source, status};
+        use join::tests::until;
+        const HERE: &str = "http://127.0.0.1:1";
+        const THERE: &str = "http://127.0.0.1:2";
+        const MINE: &str = "http://127.0.0.1:3";
+        const FAR: &str = "http://127.0.0.1:4";
+        let _seat = ducktape_host::backend::seat_serial();
+        let (root, stack, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        let registrar = cx.update(|_, cx| cx.global::<Phone>().registrar.clone());
+        let node = |url: &str, network: &str| RecentEndpoint {
+            url: url.into(),
+            network: network.into(),
+            ..RecentEndpoint::default()
+        };
+        let chain_of = |network| {
+            ducklink::ChainId::of(network, &[0; 32])
+                .unwrap()
+                .to_string()
+        };
+        let (there, far) = (chain_of("testkit"), chain_of("far"));
+        let answering = |network: &'static str| {
+            source(move |_| {
+                Ok(NodeStatus {
+                    network: network.into(),
+                    ..status(1)
+                })
+            })
+            .0
+        };
+        let list = |cx: &mut VisualTestContext| {
+            shared.rail.update(cx, |rail, cx| {
+                rail.read_off(Roster::listing(&[PROGRAM]), cx)
+            });
+            cx.run_until_parked();
+        };
+        let switching =
+            |cx: &mut VisualTestContext| root.read_with(cx, |root, _| root.switching.is_some());
+        let alert = |cx: &mut VisualTestContext| root.read_with(cx, |root, _| root.alert.clone());
+        let tap = |link: &str, cx: &mut VisualTestContext| {
+            root.update(cx, |root, cx| root.take_link(link.to_owned(), cx))
+        };
+        // on home, testkit listed and heard serving `there` before
+        let before = SessionState {
+            connected: true,
+            connected_rpc: THERE.into(),
+            network: "testkit".into(),
+            chain: there.clone(),
+            recent_endpoints: vec![node(THERE, "testkit")],
+            ..SessionState::default()
+        };
+        shared
+            .session
+            .update(cx, |session, cx| session.seed(before, cx));
+        cx.run_until_parked();
+        let now = SessionState {
+            connected: true,
+            connected_rpc: HERE.into(),
+            network: "home".into(),
+            chain: "home#0a0a0a0a".into(),
+            recent_endpoints: vec![node(HERE, "home"), node(THERE, "testkit")],
+            ..SessionState::default()
+        };
+        shared
+            .session
+            .update(cx, |session, cx| session.seed(now, cx));
+        cx.run_until_parked();
+        ducktape_host::runtime::seat_for_test(PROGRAM, 320);
+        list(cx);
+        let to_there = ducklink::mint(&there, PROGRAM, &["room"]).unwrap();
+
+        // the registrar heard the node in hand serve `there`: no switch
+        registrar.update(cx, |this, _| this.heard(HERE, &there));
+        tap(&to_there, cx);
+        assert!(!switching(cx), "a switch the session never started waits");
+        assert_eq!(
+            alert(cx).map(|(title, _)| title),
+            Some("Another network"),
+            "the tap was not said"
+        );
+        root.update(cx, |root, _| root.alert = None);
+        registrar.update(cx, |this, _| this.heard(HERE, "home#0a0a0a0a"));
+
+        // a switch that lands opens the link there (the one in hand after)
+        tap(&to_there, cx);
+        assert!(switching(cx), "the tap did not switch");
+        shared.session.update(cx, |session, cx| {
+            session.connect_through(THERE.into(), answering("testkit"), cx)
+        });
+        until(cx, |cx| {
+            shared
+                .session
+                .read_with(cx, |session, _| session.get().chain == there)
+        });
+        list(cx);
+        assert_eq!(top(&stack, cx), Some(PROGRAM));
+
+        // far listed too; the tap's switch to it taken over by the
+        // reader's own, to another node of the chain in hand
+        ducktape_host::backend::note_endpoint(node(FAR, "far"));
+        let listed = SessionState {
+            recent_endpoints: ducktape_host::backend::recent_endpoints(),
+            ..shared
+                .session
+                .read_with(cx, |session, _| session.get().clone())
+        };
+        shared
+            .session
+            .update(cx, |session, cx| session.seed(listed, cx));
+        registrar.update(cx, |this, _| this.heard(FAR, &far));
+        let to_far = ducklink::mint(&far, PROGRAM, &[]).unwrap();
+        tap(&to_far, cx);
+        assert!(switching(cx), "the tap did not switch");
+        shared.session.update(cx, |session, cx| {
+            session.connect_through(MINE.into(), answering("testkit"), cx)
+        });
+        until(cx, |cx| {
+            shared
+                .session
+                .read_with(cx, |session, _| session.get().connected_rpc == MINE)
+        });
+        assert_eq!(
+            alert(cx),
+            None,
+            "the reader's own switch raised the tap's alert"
+        );
+        assert!(!switching(cx));
+
+        // the tap's switch dropped by a disconnect: the next network
+        // reached, far itself, opens no old link
+        tap(&to_far, cx);
+        assert!(switching(cx), "the tap did not switch");
+        shared
+            .session
+            .update(cx, |session, cx| session.disconnect(cx));
+        assert!(!switching(cx), "a disconnect left the tap's switch waiting");
+        shared.session.update(cx, |session, cx| {
+            session.connect_through(FAR.into(), answering("far"), cx)
+        });
+        until(cx, |cx| {
+            shared
+                .session
+                .read_with(cx, |session, _| session.get().chain == far)
+        });
+        list(cx);
+        assert_eq!(top(&stack, cx), None, "an old link opened");
+        assert_eq!(alert(cx), None);
+    }
+
     /// The window over a phone on a network with an account (the stack, not
     /// the join), its root, through the host's own entities: a link held
     /// until the program list comes, then opened; the program on top placed
@@ -2456,7 +3450,8 @@ mod tests {
                 stack: stack.clone(),
                 window: None,
                 waiting: Vec::new(),
-                _registrar: registrar,
+                notices: Vec::new(),
+                registrar,
             })
         });
         let (root, cx) =
@@ -2835,6 +3830,302 @@ mod tests {
         ducktape_host::contract::testing::touch_first_for_test(false);
     }
 
+    /// The tabs' swipe under way: the tab it settles beside, its offset at
+    /// the start and its speed there.
+    fn settling(
+        root: &Entity<Root>,
+        cx: &mut VisualTestContext,
+    ) -> Option<(Option<Tab>, f32, f32)> {
+        root.read_with(cx, |root, _| match root.paging {
+            Some(Paging::Settling { beside, tween }) => Some((beside, tween.from, tween.velocity)),
+            _ => None,
+        })
+    }
+
+    /// At Home's root a sideways swipe let go past the rule lands on Open,
+    /// which slides the rest of the way in and then asks for no frame; the
+    /// same swipe on a program pushed over Open goes back to Open, not to a
+    /// tab, and one the other way there does nothing.
+    #[gpui_kit::test]
+    fn a_sideways_swipe_at_a_tab_root_lands_beside_and_on_a_pushed_page_goes_back(
+        cx: &mut TestAppContext,
+    ) {
+        let (root, stack, cx) = phone(cx);
+        run_out(cx);
+        let shown = swipe::published();
+        assert!(shown.tabs && !shown.open, "no tabs' swipe begins at Home");
+        let width = root.read_with(cx, |root, _| root.width);
+        let tab = |cx: &mut VisualTestContext| stack.read_with(cx, |stack, _| stack.tab());
+        let swipe = |x: f32, cx: &mut VisualTestContext| {
+            root.update(cx, |root, cx| root.drag(x, 0., cx));
+            let_go(&root, cx);
+            cx.run_until_parked();
+        };
+
+        swipe(-width * 0.75, cx);
+        assert_eq!(tab(cx), Tab::Open, "the swipe did not land on Open");
+        assert_eq!(settling(&root, cx), Some((Some(Tab::Home), 0.25, 0.)));
+        assert!(frames(cx) > 0, "Open settling asked for no frame");
+        run_out(cx);
+        assert_eq!(settling(&root, cx), None, "Open settled for ever");
+        assert_eq!(frames(cx), 0, "a frame asked for once Open was still");
+
+        root.update(cx, |root, cx| _ = root.open(PROGRAM, cx));
+        run_out(cx);
+        assert!(
+            !swipe::published().tabs,
+            "the tabs' swipe began over a program"
+        );
+        root.update(cx, |root, cx| root.drag(-width * 0.75, 0., cx));
+        assert_eq!(
+            root.read_with(cx, |root, _| root.dragged),
+            Some(0.),
+            "dragged leftward"
+        );
+        let_go(&root, cx);
+        run_out(cx);
+        assert_eq!((tab(cx), top(&stack, cx)), (Tab::Open, Some(PROGRAM)));
+        swipe(width * 0.75, cx);
+        assert_eq!(
+            (tab(cx), top(&stack, cx)),
+            (Tab::Open, None),
+            "the swipe on the program did not go back to Open"
+        );
+        run_out(cx);
+
+        // a program pushed while the finger pages the tabs stays, let go
+        // past the rule, and so does the tab under it
+        root.update(cx, |root, cx| root.drag(-width * 0.75, 0., cx));
+        root.update(cx, |root, cx| _ = root.open(PROGRAM, cx));
+        let_go(&root, cx);
+        run_out(cx);
+        assert_eq!(
+            (tab(cx), top(&stack, cx)),
+            (Tab::Open, Some(PROGRAM)),
+            "the let go picked a tab over the program"
+        );
+    }
+
+    /// The tab beside slides in next to the one on screen under the finger,
+    /// the bar staying still under both; let go short (or ended by the OS),
+    /// the tab on screen slides back from the finger at its speed; a short
+    /// fast flick goes
+    /// on; past the bar's end the screen resists and settles back from
+    /// rest; a Back under the finger, a tab picked in the bar or a view's
+    /// way to a tab ends the tabs' swipe at once. Nothing pages under an
+    /// alert or Reduce Motion.
+    #[gpui_kit::test]
+    fn the_tabs_follow_the_finger_and_settle_as_a_pop_does(cx: &mut TestAppContext) {
+        let (root, stack, cx) = phone(cx);
+        let width = root.read_with(cx, |root, _| root.width);
+        let tab = |cx: &mut VisualTestContext| stack.read_with(cx, |stack, _| stack.tab());
+        let drawn = |id: &'static str, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| window.render_frame(cx));
+            cx.debug_bounds(id)
+        };
+        let pick = |tab: Tab, cx: &mut VisualTestContext| {
+            root.update(cx, |root, cx| root.pick(tab, cx));
+            run_out(cx);
+        };
+        pick(Tab::Account, cx);
+        let (row, bar) = (drawn("account/settings", cx), drawn("tab/account", cx));
+        let (row, bar) = (row.expect("Account drawn"), bar.expect("the bar drawn"));
+        pick(Tab::Notifications, cx);
+        assert_eq!(
+            drawn("account/settings", cx),
+            None,
+            "Account drawn under Notifications"
+        );
+
+        root.update(cx, |root, cx| root.drag(-width / 4., 0., cx));
+        let beside = drawn("account/settings", cx).expect("Account not drawn beside");
+        let shift = f32::from(beside.left() - row.left());
+        assert!(
+            (shift - width * 0.75).abs() < 1.,
+            "Account {shift} in, not {}",
+            width * 0.75
+        );
+        assert_eq!(
+            drawn("tab/account", cx),
+            Some(bar),
+            "the bar moved with the tabs"
+        );
+        root.update(cx, |root, cx| root.drag(-width / 4., width / 2., cx));
+        let_go(&root, cx);
+        assert_eq!(
+            tab(cx),
+            Tab::Notifications,
+            "let go short and moving back, it went on"
+        );
+        assert_eq!(settling(&root, cx), Some((Some(Tab::Account), -0.25, 0.5)));
+        run_out(cx);
+
+        // ended by UIKit past the rule: back into place all the same
+        root.update(cx, |root, cx| root.drag(-width * 0.75, 0., cx));
+        root.update(cx, |root, cx| root.drag_cancelled(cx));
+        assert_eq!(tab(cx), Tab::Notifications, "a cancelled swipe went on");
+        run_out(cx);
+
+        // a width and a half a second, let go an eighth in
+        root.update(cx, |root, cx| root.drag(-width / 8., -width * 1.5, cx));
+        let_go(&root, cx);
+        assert_eq!(tab(cx), Tab::Account, "a fast short flick did not go on");
+        assert_eq!(
+            settling(&root, cx),
+            Some((Some(Tab::Notifications), 0.875, -1.5))
+        );
+        run_out(cx);
+
+        // past Account, the bar's end: Account resists, and nothing comes in
+        root.update(cx, |root, cx| root.drag(-width / 2., -width, cx));
+        let resisted = swipe::resisted(-width / 2., width);
+        let drawn_at = drawn("account/settings", cx).expect("Account drawn").left();
+        let moved = f32::from(drawn_at - row.left());
+        assert!(
+            (moved - resisted).abs() < 1.,
+            "Account {moved} in, not {resisted}"
+        );
+        assert!(
+            resisted > -width / 2.,
+            "Account did not resist past the end"
+        );
+        let_go(&root, cx);
+        let back = Some((None, resisted / width, 0.));
+        assert_eq!((tab(cx), settling(&root, cx)), (Tab::Account, back));
+        run_out(cx);
+
+        pick(Tab::Open, cx);
+        root.update(cx, |root, cx| root.drag(width * 0.75, 0., cx));
+        root.update(cx, |root, cx| root.back(cx));
+        assert_eq!(settling(&root, cx), None, "a Back under the finger");
+        assert_eq!(tab(cx), Tab::Home);
+        run_out(cx);
+
+        root.update(cx, |root, cx| root.drag(-width * 0.75, 0., cx));
+        let_go(&root, cx);
+        assert!(settling(&root, cx).is_some(), "Open is not settling");
+        root.update(cx, |root, cx| root.pick(Tab::Account, cx));
+        assert_eq!(
+            settling(&root, cx),
+            None,
+            "a tab picked as the tabs settled"
+        );
+        root.update(cx, |root, cx| root.drag(width * 0.75, 0., cx));
+        let_go(&root, cx);
+        assert!(
+            settling(&root, cx).is_some(),
+            "Notifications is not settling"
+        );
+        root.update(cx, |root, cx| root.go_to(Tab::Home, cx));
+        assert_eq!(
+            settling(&root, cx),
+            None,
+            "a way to Home as the tabs settled"
+        );
+        run_out(cx);
+
+        root.update(cx, |root, cx| {
+            root.alert("Alert", "Over the tab".into(), cx)
+        });
+        run_out(cx);
+        assert!(!swipe::published().tabs, "a swipe began under an alert");
+        root.update(cx, |root, cx| root.drag(-width / 4., 0., cx));
+        assert!(
+            root.read_with(cx, |root, _| root.paging.is_none()),
+            "paged under an alert"
+        );
+        root.update(cx, |root, cx| root.back(cx));
+        run_out(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        run_out(cx);
+        assert!(
+            !swipe::published().tabs,
+            "a swipe began under Reduce Motion"
+        );
+        root.update(cx, |root, cx| root.drag(-width / 4., 0., cx));
+        assert!(
+            root.read_with(cx, |root, _| root.paging.is_none()),
+            "paged under Reduce Motion"
+        );
+        cx.update(|_, cx| cx.set_reduce_motion(false));
+    }
+
+    /// Flicks in a row, each let go before the last one's tab has settled,
+    /// each catch that tab where it is and go on: Home to Account. A tab
+    /// settling back from the bar's end is caught where it is drawn.
+    #[gpui_kit::test]
+    fn quick_flicks_catch_the_settling_tab_and_each_lands(cx: &mut TestAppContext) {
+        let (root, stack, cx) = phone(cx);
+        run_out(cx);
+        let width = root.read_with(cx, |root, _| root.width);
+        let tab = |cx: &mut VisualTestContext| stack.read_with(cx, |stack, _| stack.tab());
+        let settled_at = |cx: &mut VisualTestContext| {
+            root.read_with(cx, |root, cx| match root.paging {
+                Some(Paging::Settling { tween, .. }) if !tween.done(motion::now(cx)) => {
+                    tween.at(motion::now(cx))
+                }
+                _ => panic!("no tab settling"),
+            })
+        };
+        let flick = |cx: &mut VisualTestContext| {
+            root.update(cx, |root, cx| root.drag(-width / 8., -width * 1.5, cx));
+            let_go(&root, cx);
+        };
+        flick(cx);
+        assert_eq!(tab(cx), Tab::Open);
+        for next in [Tab::Notifications, Tab::Account] {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(250));
+            frames(cx);
+            let at = settled_at(cx);
+            assert!(at > 0., "the tab is not on its way in: {at}");
+            assert!(
+                swipe::published().tabs,
+                "no swipe begins as the tab settles"
+            );
+            root.update(cx, |root, cx| root.drag(0., 0., cx));
+            let caught = root.read_with(cx, |root, _| root.along());
+            assert_eq!(caught, Some(at), "not caught where the tab was");
+            flick(cx);
+            assert_eq!(tab(cx), next, "the flick did not land");
+        }
+        run_out(cx);
+
+        // past Account's end, caught on its way back
+        root.update(cx, |root, cx| root.drag(-width / 2., 0., cx));
+        let_go(&root, cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(100));
+        frames(cx);
+        let at = settled_at(cx);
+        root.update(cx, |root, cx| root.drag(0., 0., cx));
+        let held = root.read_with(cx, |root, cx| root.held_at(root.along().unwrap(), cx).0);
+        assert!((held - at).abs() < 1e-4, "caught at {held}, drawn at {at}");
+        run_out(cx);
+    }
+
+    /// A swipe from Home landing on Open lets the keys go from Home's
+    /// filter, as a tab picked in the bar does.
+    #[gpui_kit::test]
+    fn a_swipe_landing_off_home_lets_its_filter_go(cx: &mut TestAppContext) {
+        let (root, _, cx) = phone(cx);
+        run_out(cx);
+        cx.update(|window, cx| root.update(cx, |root, cx| root.filter(true, window, cx)));
+        run_out(cx);
+        let focused = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let root = root.read(cx);
+                root.search.read(cx).focus_handle(cx).is_focused(window)
+            })
+        };
+        assert!(focused(cx), "the filter did not take the keys");
+        let width = root.read_with(cx, |root, _| root.width);
+        root.update(cx, |root, cx| root.drag(-width * 0.75, 0., cx));
+        let_go(&root, cx);
+        run_out(cx);
+        assert!(!focused(cx), "Home's filter kept the keys on Open");
+    }
+
     /// No swipe from anywhere begins while a program slides in; once it is
     /// still over Home, one does. Let go, a swipe is judged where and how
     /// fast it went, and the rest of the move starts at the finger's speed:
@@ -2860,7 +4151,7 @@ mod tests {
         };
 
         root.update(cx, |root, cx| root.drag(width / 4., -width, cx));
-        root.update(cx, |root, cx| root.let_go(cx));
+        let_go(&root, cx);
         cx.run_until_parked();
         assert_eq!(moving(cx), Some((false, 0.75, 1.)));
         assert_eq!(
@@ -2872,7 +4163,7 @@ mod tests {
 
         // a width and a half a second, let go an eighth in
         root.update(cx, |root, cx| root.drag(width / 8., width * 1.5, cx));
-        root.update(cx, |root, cx| root.let_go(cx));
+        let_go(&root, cx);
         cx.run_until_parked();
         assert_eq!(top(&stack, cx), None, "a fast short flick did not pop");
         assert_eq!(moving(cx), Some((true, 0.125, 1.5)));

@@ -6,20 +6,32 @@
 //! Firebase token as a high-priority data message, both expiring at its
 //! `until` (huddle call SPEC §5); any other notice to an iPhone's
 //! remote-notification token as an alert and to an Android phone as a
-//! high-priority data message the app shows (`Ring.kt`), under the notice's
-//! tag as its collapse id. A second notice under a tag still standing goes
-//! quietly (no sound, a lower priority, `quiet` for Android): the "N more"
-//! banner past the burst is posted again on every post. Taken down (the
-//! program's `notify.seen` of its tag, or its `until`), it is withdrawn: a
-//! background push to the remote-notification token (never a second VoIP
-//! push, which iOS would ring) and `kind: withdraw` to Android. Past its
-//! `until` it is dropped. Every notice is also one `log` line.
+//! high-priority data message the app shows (`Ring.kt`). Each notice is
+//! its own notification under its id, the hash of its tag and link
+//! (`Notice::os_id`: APNs's collapse id, Android's notification tag), and
+//! a tag's notices stack together (iOS's `thread-id` and Android's group
+//! are the tag): a chat room's messages stand side by side, and the same
+//! notice posted again (a run restarted) replaces itself. The "N more"
+//! banner past the burst, posted again on every post, is one notice a
+//! program the same way: the centre posts it under `more/<program>` with
+//! no link. A second notice under a tag still standing goes quietly (no
+//! sound, a lower priority, `quiet` for Android). Taken down (the
+//! program's `notify.seen` of its tag, or its `until`), the tag is
+//! withdrawn, every notice under it at once: a background push to the
+//! remote-notification token (never a second VoIP push, which iOS would
+//! ring) and `kind: withdraw` to Android, both naming the tag. Past its
+//! `until` a notice is dropped. Every notice is also one `log` line.
+//!
+//! A notice's title and body are cut to fit: APNs takes a payload of 4 KB
+//! at most, and FCM a message's data of 4 KB ([`fitted`]). A token APNs or
+//! FCM calls gone is dropped from the registry ([`gone`]).
 //!
 //! An APNs token is sent to the server its `env` names: Apple's sandbox for
 //! a build signed for development, production for the rest. Both carry one
-//! payload, `{kind, chain, program, tag, title, body, link, until}`, and a
-//! call also `end` (the notice's `end_link`); FCM's data values are strings.
-//! pushd names no program: a call is a call whoever posts it.
+//! payload, `{kind, chain, program, tag, title, body, link, until}`, a
+//! notice also its `id` and a call its `end` (the notice's `end_link`);
+//! FCM's data values are strings. pushd names no program: a call is a
+//! call whoever posts it.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -65,6 +77,9 @@ pub struct Request {
     pub url: String,
     pub headers: Vec<(&'static str, String)>,
     pub body: String,
+    /// The device's row it goes to, by kind and token: the one dropped when
+    /// the answer says the token is gone. None for a request to no device.
+    pub device: Option<(&'static str, String)>,
 }
 
 /// What sends a [`Request`]: the status and the body that came back.
@@ -179,12 +194,11 @@ impl Apns {
         })
     }
 
-    /// One push of `body` to `token` (of `env`) with `headers` and the
-    /// provider token.
+    /// One push of `body` to `token` (a `kind` token of `env`) with
+    /// `headers` and the provider token.
     fn request(
         &self,
-        token: &str,
-        env: &str,
+        (kind, token, env): (&'static str, &str, &str),
         bearer: &str,
         mut headers: Vec<(&'static str, String)>,
         body: &serde_json::Value,
@@ -194,6 +208,7 @@ impl Apns {
             url: format!("{}/3/device/{token}", self.host(env)),
             headers,
             body: body.to_string(),
+            device: Some((kind, token.to_owned())),
         }
     }
 }
@@ -283,6 +298,7 @@ impl Fcm {
                 body: format!(
                     "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion={assertion}"
                 ),
+                device: None,
             })?;
             #[derive(serde::Deserialize)]
             struct Granted {
@@ -369,8 +385,9 @@ pub struct Push {
     pub apns: Option<Arc<Apns>>,
     pub fcm: Option<Arc<Fcm>>,
     pub http: Arc<dyn Http>,
-    /// The notices standing on the phones, by tag, each with its `until`:
-    /// what a withdraw takes back, and what a repost replaces quietly.
+    /// The tags standing on the phones, each with its last notice's
+    /// `until`: what a withdraw takes back, and what a notice goes quietly
+    /// under.
     // ponytail: in memory, so a restart alerts once more under a standing
     // tag and withdraws nothing posted before it; kept in the store if felt
     standing: Mutex<HashMap<String, u64>>,
@@ -448,8 +465,7 @@ impl Push {
         if let Some((apns, bearer, tokens)) = self.apns_for("voip", now) {
             requests.extend(tokens.iter().map(|(token, env)| {
                 apns.request(
-                    token,
-                    env,
+                    ("voip", token, env),
                     &bearer,
                     vec![
                         ("apns-push-type", "voip".into()),
@@ -467,41 +483,57 @@ impl Push {
     }
 
     /// The requests that show `notice` on every device, at `now`; `quiet`
-    /// when one under its tag already stands there.
+    /// when one under its tag already stands there. Its title and body cut
+    /// to fit each channel ([`fitted`]).
     fn show(&self, notice: &Notice, now: u64, quiet: bool) -> Vec<Request> {
-        let payload = self.payload(notice, "notice");
+        let id = notice.os_id();
+        let payload = |notice: &Notice| {
+            let mut payload = self.payload(notice, "notice");
+            payload["id"] = id.clone().into();
+            payload
+        };
         let mut requests = Vec::new();
         if let Some((apns, bearer, tokens)) = self.apns_for("apns", now) {
-            let mut aps = serde_json::json!({
-                "alert": { "title": notice.title, "body": notice.body },
-                "thread-id": notice.program,
-            });
-            if !quiet {
-                aps["sound"] = "default".into();
-            }
-            let mut body = payload.clone();
-            body["aps"] = aps;
+            // the title and body twice: the alert iOS shows, and the payload
+            // the app reads
+            let body = |notice: &Notice| {
+                let mut aps = serde_json::json!({
+                    "alert": { "title": notice.title, "body": notice.body },
+                    "thread-id": notice.tag,
+                });
+                if !quiet {
+                    aps["sound"] = "default".into();
+                }
+                let mut body = payload(notice);
+                body["aps"] = aps;
+                body
+            };
+            let body = body(&fitted(notice, |notice| body(notice).to_string().len()));
             let mut headers = vec![
                 ("apns-push-type", "alert".into()),
                 ("apns-topic", apns.topic.clone()),
                 ("apns-priority", if quiet { QUIET } else { LOUD }.into()),
-                ("apns-collapse-id", collapse_id(&notice.tag)),
+                ("apns-collapse-id", id.clone()),
             ];
             if notice.until != 0 {
                 headers.push(("apns-expiration", notice.until.to_string()));
             }
-            requests.extend(
-                tokens
-                    .iter()
-                    .map(|(token, env)| apns.request(token, env, &bearer, headers.clone(), &body)),
-            );
+            requests.extend(tokens.iter().map(|(token, env)| {
+                apns.request(("apns", token, env), &bearer, headers.clone(), &body)
+            }));
         }
-        let mut data = strings(&payload);
-        if quiet {
-            data.insert("quiet".into(), "1".into());
-        }
+        let data = |notice: &Notice| {
+            let mut data = strings(&payload(notice));
+            if quiet {
+                data.insert("quiet".into(), "1".into());
+            }
+            data
+        };
+        let data = data(&fitted(notice, |notice| {
+            serde_json::Value::Object(data(notice)).to_string().len()
+        }));
         // no collapse key: FCM keeps four per device at most, and the
-        // phone replaces the notification under its tag itself
+        // phone replaces the notification under its id itself
         requests.extend(self.fcm(data, None, notice.until, now, "high"));
         requests
     }
@@ -524,11 +556,9 @@ impl Push {
             if until != 0 {
                 headers.push(("apns-expiration", until.to_string()));
             }
-            requests.extend(
-                tokens
-                    .iter()
-                    .map(|(token, env)| apns.request(token, env, &bearer, headers.clone(), &body)),
-            );
+            requests.extend(tokens.iter().map(|(token, env)| {
+                apns.request(("apns", token, env), &bearer, headers.clone(), &body)
+            }));
         }
         let data = serde_json::json!({ "kind": "withdraw", "tag": tag });
         let data = data.as_object().cloned().unwrap_or_default();
@@ -583,23 +613,33 @@ impl Push {
                         "message": { "token": token, "data": data, "android": android },
                     })
                     .to_string(),
+                    device: Some(("fcm", token.clone())),
                 }
             })
             .collect()
     }
 
-    /// Sends each request; whether any was taken.
+    /// Sends each request; whether any was taken. A token the answer calls
+    /// gone is cleared (that kind and token, on this network); its row stays
+    /// a tombstone. The log says so in one line.
     fn send(&self, requests: Vec<Request>) -> bool {
         let mut taken = false;
         for request in requests {
             match self.http.send(&request) {
                 Ok((200, _)) => taken = true,
-                // ponytail: a token APNs or FCM says is gone stays listed
-                // until the phone registers again or its key leaves the
-                // account; dropped on `410 Unregistered` if felt
                 Ok((status, body)) => {
                     let to = shown(&request.url);
-                    tracing::warn!(target: "pushd", to, status, body, "push refused")
+                    match &request.device {
+                        Some((kind, token)) if gone(kind, status, &body) => {
+                            match self.devices.drop_token(kind, token) {
+                                Ok(_) => tracing::info!(target: "pushd", to, kind, status, body,
+                                    "a token APNs or FCM calls gone: dropped"),
+                                Err(error) => tracing::warn!(target: "pushd", to, kind, status,
+                                    body, %error, "a token APNs or FCM calls gone: not dropped"),
+                            }
+                        }
+                        _ => tracing::warn!(target: "pushd", to, status, body, "push refused"),
+                    }
                 }
                 Err(error) => {
                     let to = shown(&request.url);
@@ -615,6 +655,61 @@ impl Push {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
+
+/// Whether APNs's or FCM's answer (`status`, `body`) to a push to a `kind`
+/// token says the token is gone: APNs's 410 or its `reason` exactly
+/// `Unregistered` or `BadDeviceToken` (a token Apple's server for its env
+/// does not know), FCM's `errorCode` exactly `UNREGISTERED`. Anything else,
+/// a credential refused among it, leaves the token be.
+fn gone(kind: &str, status: u16, body: &str) -> bool {
+    let said: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    match kind {
+        "fcm" => said["error"]["details"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|detail| detail["errorCode"] == "UNREGISTERED"),
+        _ => {
+            status == 410
+                || matches!(
+                    said["reason"].as_str(),
+                    Some("Unregistered" | "BadDeviceToken")
+                )
+        }
+    }
+}
+
+/// The most an APNs payload, or the data of an FCM message, may be.
+const MOST: usize = 4096;
+
+/// `notice` cut so `size` of it is at most [`MOST`]: its body, then its
+/// title, each to its longest start that fits, cut on a char and ended with
+/// `…` (or emptied, when not even that fits). Its link, tag, `until` and
+/// the rest are never cut: a notice too big without its words goes as it
+/// is, and APNs or FCM refuses it.
+fn fitted(notice: &Notice, size: impl Fn(&Notice) -> usize) -> Notice {
+    let words: [fn(&mut Notice) -> &mut String; 2] =
+        [|notice| &mut notice.body, |notice| &mut notice.title];
+    let mut fit = notice.clone();
+    for words in words {
+        if size(&fit) <= MOST {
+            break;
+        }
+        let whole = std::mem::take(words(&mut fit));
+        let ends: Vec<usize> = whole.char_indices().map(|(at, _)| at).collect();
+        let cut = |end: usize| format!("{}…", &whole[..end]);
+        let fits = ends.partition_point(|&end| {
+            let mut tried = fit.clone();
+            *words(&mut tried) = cut(end);
+            size(&tried) <= MOST
+        });
+        *words(&mut fit) = match fits {
+            0 => String::new(),
+            fits => cut(ends[fits - 1]),
+        };
+    }
+    fit
 }
 
 /// `payload`'s fields as strings: FCM's data values.
@@ -648,12 +743,17 @@ fn shown(url: &str) -> String {
 fn collapse_id(tag: &str) -> String {
     match tag.len() <= 64 {
         true => tag.to_owned(),
-        false => ring::digest::digest(&ring::digest::SHA256, tag.as_bytes())
-            .as_ref()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect(),
+        false => sha256(tag),
     }
+}
+
+/// `text`'s SHA-256, in hex.
+fn sha256(text: &str) -> String {
+    ring::digest::digest(&ring::digest::SHA256, text.as_bytes())
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 impl Banners for Push {
@@ -747,17 +847,19 @@ mod tests {
         let http = Arc::new(Recorded::default());
         let registry = Arc::new(Devices::default());
         for (at, (kind, token)) in devices.iter().enumerate() {
-            registry.put(crate::registry::Row {
-                account: 2,
-                key: format!("key{at}"),
-                kind: (*kind).into(),
-                token: (*token).into(),
-                env: match *kind {
-                    "fcm" => String::new(),
-                    _ => "production".into(),
-                },
-                at: 1,
-            });
+            registry
+                .put(crate::registry::Row {
+                    account: 2,
+                    key: format!("key{at}"),
+                    kind: (*kind).into(),
+                    token: (*token).into(),
+                    env: match *kind {
+                        "fcm" => String::new(),
+                        _ => "production".into(),
+                    },
+                    at: 1,
+                })
+                .unwrap();
         }
         let push = Push::new(
             Log {
@@ -1000,6 +1102,7 @@ mod tests {
             url: format!("http://{at}/3/device/ab12cd34"),
             headers: Vec::new(),
             body: "{}".into(),
+            device: None,
         };
         let (done, finished) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -1029,8 +1132,8 @@ mod tests {
     }
 
     /// A notice that is not a call is an alert to the iPhone's
-    /// remote-notification token (never its VoIP one), under its tag as
-    /// the collapse id, with a sound, and a high-priority data message the
+    /// remote-notification token (never its VoIP one), in its tag's thread
+    /// under its own id, with a sound, and a high-priority data message the
     /// Android app shows; a second under the same tag goes quietly (no
     /// sound, lower priority, `quiet` for Android); taken down, both get a
     /// withdraw; a tag withdrawn alerts again when posted again.
@@ -1058,13 +1161,13 @@ mod tests {
         assert_eq!(header(apns[0], "apns-push-type"), "alert");
         assert_eq!(header(apns[0], "apns-topic"), "industries.ducktape.mobile");
         assert_eq!(header(apns[0], "apns-priority"), "10");
-        assert_eq!(header(apns[0], "apns-collapse-id"), "chat/#general");
+        assert_eq!(header(apns[0], "apns-collapse-id"), SEVEN);
         assert_eq!(header(apns[0], "apns-expiration"), "");
         let body: serde_json::Value = serde_json::from_str(&apns[0].body).unwrap();
         assert_eq!(body["aps"]["alert"]["title"], "ada mentioned you");
         assert_eq!(body["aps"]["alert"]["body"], "hey @bob");
         assert_eq!(body["aps"]["sound"], "default");
-        assert_eq!(body["aps"]["thread-id"], "chat");
+        assert_eq!(body["aps"]["thread-id"], "chat/#general");
         assert_eq!(body["kind"], "notice");
         assert_eq!(body["link"], "duck://testkit-0a1b2c3d/chat/general/7");
         // `end` is a call's alone
@@ -1122,20 +1225,224 @@ mod tests {
         assert_eq!(header(apns, "apns-priority"), "10");
     }
 
+    /// The id of the notice under `chat/#general` linking message 7, and
+    /// of the one linking message 8: SHA-256 of tag, a newline and link.
+    const SEVEN: &str = "91456d85cdd6e18a45793477650461b03e8b429f5051379cbfd1158c169df970";
+    const EIGHT: &str = "cd2c0f5bebda5c4d861fe2ed7fcce6bc611e5c293363c5bb41a4bd645473cb73";
+
+    /// Chat's notice of message `seq` in `#general`, as its notifier words
+    /// it once the centre took it.
+    fn message(seq: u32) -> Notice {
+        Notice {
+            kind: NoticeKind::Notice,
+            title: "ada mentioned you".into(),
+            body: "hey @bob".into(),
+            tag: "chat/#general".into(),
+            program: "chat".into(),
+            link: format!("duck://testkit-0a1b2c3d/chat/general/{seq}"),
+            until: 0,
+            end_link: String::new(),
+        }
+    }
+
+    /// The alert to the iPhone and the FCM message one post sent, taken
+    /// off the recorder.
+    fn sent(http: &Recorded) -> (Request, serde_json::Value) {
+        let sent = std::mem::take(&mut *http.0.lock().unwrap());
+        let mut apns = sent
+            .iter()
+            .filter(|request| request.url.contains("/3/device/"));
+        let mut fcm = sent
+            .iter()
+            .filter(|request| request.url.contains("messages:send"));
+        let (Some(alert), None, Some(message), None) =
+            (apns.next(), apns.next(), fcm.next(), fcm.next())
+        else {
+            panic!("one alert and one message: {sent:#?}");
+        };
+        let message: serde_json::Value = serde_json::from_str(&message.body).unwrap();
+        (alert.clone(), message["message"].clone())
+    }
+
+    /// A request's headers but its provider token, which changes.
+    fn headers(request: &Request) -> Vec<(&'static str, String)> {
+        request
+            .headers
+            .iter()
+            .filter(|(name, _)| *name != "authorization")
+            .cloned()
+            .collect()
+    }
+
+    /// The headers of an alert sent at `priority` as `id`.
+    fn alert(priority: &str, id: &str) -> Vec<(&'static str, String)> {
+        vec![
+            ("apns-push-type", "alert".into()),
+            ("apns-topic", "industries.ducktape.mobile".into()),
+            ("apns-priority", priority.into()),
+            ("apns-collapse-id", id.into()),
+        ]
+    }
+
+    /// The payload of `notice` as `id`, the alert's or (`strings`) FCM's.
+    fn carried(notice: &Notice, id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "notice", "chain": "testkit-0a1b2c3d", "program": notice.program,
+            "tag": notice.tag, "title": notice.title, "body": notice.body,
+            "link": notice.link, "until": notice.until, "id": id,
+        })
+    }
+
+    /// Two messages in one room are two notices: each under its own id
+    /// (APNs's collapse id, the FCM data's `id` Android posts it under),
+    /// both in the room's thread (iOS's `thread-id`, and the tag Android
+    /// groups by); the second goes quietly, its room standing.
+    #[test]
+    fn two_notices_in_a_room_stand_apart_in_its_thread() {
+        let (push, http) = push(&[("apns", "cd34"), ("fcm", "fcm-token")]);
+        for (seq, id, quiet) in [(7, SEVEN, false), (8, EIGHT, true)] {
+            let notice = message(seq);
+            assert!(push.post(&notice, None));
+            let (apns, fcm) = sent(&http);
+            assert_eq!(apns.url, "https://api.push.apple.com/3/device/cd34");
+            assert_eq!(headers(&apns), alert(if quiet { "5" } else { "10" }, id));
+            let mut body = carried(&notice, id);
+            body["aps"] = serde_json::json!({
+                "alert": { "title": "ada mentioned you", "body": "hey @bob" },
+                "thread-id": "chat/#general",
+            });
+            if !quiet {
+                body["aps"]["sound"] = "default".into();
+            }
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&apns.body).unwrap(),
+                body
+            );
+            let mut data = serde_json::Value::Object(strings(&carried(&notice, id)));
+            if quiet {
+                data["quiet"] = "1".into();
+            }
+            assert_eq!(
+                fcm,
+                serde_json::json!({
+                    "token": "fcm-token", "data": data, "android": { "priority": "high" },
+                })
+            );
+        }
+    }
+
+    /// The same notice posted again (a run that restarted re-posts what
+    /// stands) keeps its id, so it replaces itself on the phones.
+    #[test]
+    fn a_repost_keeps_its_id() {
+        let (push, http) = push(&[("apns", "cd34"), ("fcm", "fcm-token")]);
+        push.post(&message(7), None);
+        sent(&http);
+        push.post(&message(7), None);
+        let (apns, fcm) = sent(&http);
+        assert_eq!(headers(&apns), alert("5", SEVEN));
+        let body: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
+        assert_eq!(body["id"], SEVEN);
+        assert_eq!(fcm["data"]["id"], SEVEN);
+        assert_eq!(fcm["data"]["quiet"], "1");
+    }
+
+    /// The burst's "N more", posted again on every notice past the burst,
+    /// is one notice a program: under `more/<program>` with no link, it
+    /// keeps one id whatever its count, alone in its thread.
+    #[test]
+    fn the_burst_summary_is_one_notice_a_program() {
+        const MORE: &str = "ef7dad463059cafba2349784b2e003dd96d0edf8052009d9dfdfc17ded4b8d1c";
+        let (push, http) = push(&[("apns", "cd34"), ("fcm", "fcm-token")]);
+        let center = ducktape_host::runtime::notify::CenterHandle::default();
+        let (at, wall) = (Instant::now(), i64::try_from(now()).unwrap());
+        let summaries: Vec<Notice> = (0..crate::BURST + 2)
+            .filter_map(|seq| {
+                let post = view_wire::methods::Notification {
+                    title: "ada mentioned you".into(),
+                    body: "hey @bob".into(),
+                    tag: "#general".into(),
+                    link: format!("duck://testkit-0a1b2c3d/chat/general/{seq}"),
+                    kind: NoticeKind::Notice,
+                    until: 0,
+                    end_link: String::new(),
+                };
+                let (_, banner) =
+                    center
+                        .lock()
+                        .post(&crate::settings(), "chat", "Chat", post, at, wall);
+                banner.filter(|banner| banner.tag == "more/chat")
+            })
+            .collect();
+        let titles: Vec<_> = summaries.iter().map(|more| more.title.as_str()).collect();
+        assert_eq!(titles, ["1 more from Chat", "2 more from Chat"]);
+        for (more, priority) in summaries.iter().zip(["10", "5"]) {
+            assert!(push.post(more, None));
+            let (apns, fcm) = sent(&http);
+            assert_eq!(headers(&apns), alert(priority, MORE));
+            let body: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
+            assert_eq!(body["aps"]["thread-id"], "more/chat");
+            assert_eq!((&body["id"], &body["link"]), (&MORE.into(), &"".into()));
+            assert_eq!(fcm["data"]["id"], MORE);
+        }
+    }
+
+    /// A withdraw names the tag alone: one background push to each iPhone
+    /// and one `withdraw` to each Android phone take down every notice in
+    /// the room, however many stand there.
+    #[test]
+    fn a_withdraw_takes_down_the_whole_room() {
+        let (push, http) = push(&[("apns", "cd34"), ("fcm", "fcm-token")]);
+        push.post(&message(7), None);
+        push.post(&message(8), None);
+        http.0.lock().unwrap().clear();
+        push.withdraw("chat/#general");
+        let sent = std::mem::take(&mut *http.0.lock().unwrap());
+        let [apns, fcm] = &sent[..] else {
+            panic!("one push and one message: {sent:#?}");
+        };
+        assert_eq!(apns.url, "https://api.push.apple.com/3/device/cd34");
+        assert_eq!(
+            headers(apns),
+            vec![
+                ("apns-push-type", "background".to_owned()),
+                ("apns-topic", "industries.ducktape.mobile".to_owned()),
+                ("apns-priority", "5".to_owned()),
+            ]
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&apns.body).unwrap(),
+            serde_json::json!({
+                "aps": { "content-available": 1 }, "kind": "withdraw", "tag": "chat/#general",
+            })
+        );
+        let fcm: serde_json::Value = serde_json::from_str(&fcm.body).unwrap();
+        assert_eq!(
+            fcm["message"],
+            serde_json::json!({
+                "token": "fcm-token",
+                "data": { "kind": "withdraw", "tag": "chat/#general" },
+                "android": { "priority": "normal" },
+            })
+        );
+    }
+
     /// A token registered under `sandbox` goes to Apple's sandbox server,
     /// one under `production` to the production one; an endpoint set in
     /// the config takes every push whatever the env.
     #[test]
     fn an_apns_token_goes_to_the_server_its_env_names() {
         let (push, http) = push(&[("apns", "cd34")]);
-        push.devices.put(crate::registry::Row {
-            account: 2,
-            key: "dev-key".into(),
-            kind: "apns".into(),
-            token: "ef56".into(),
-            env: "sandbox".into(),
-            at: 1,
-        });
+        push.devices
+            .put(crate::registry::Row {
+                account: 2,
+                key: "dev-key".into(),
+                kind: "apns".into(),
+                token: "ef56".into(),
+                env: "sandbox".into(),
+                at: 1,
+            })
+            .unwrap();
         push.post(
             &Notice {
                 kind: NoticeKind::Notice,
@@ -1176,14 +1483,16 @@ mod tests {
         };
         assert!(!push.post(&notice, None));
         assert!(http.0.lock().unwrap().is_empty());
-        push.devices.put(crate::registry::Row {
-            account: 2,
-            key: "key9".into(),
-            kind: "apns".into(),
-            token: "cd34".into(),
-            env: "production".into(),
-            at: 1,
-        });
+        push.devices
+            .put(crate::registry::Row {
+                account: 2,
+                key: "key9".into(),
+                kind: "apns".into(),
+                token: "cd34".into(),
+                env: "production".into(),
+                at: 1,
+            })
+            .unwrap();
         assert!(push.post(&notice, None));
         let sent = http.0.lock().unwrap().clone();
         let [apns] = &sent[..] else {
@@ -1192,6 +1501,169 @@ mod tests {
         assert_eq!(header(apns, "apns-priority"), "10");
         let body: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
         assert_eq!(body["aps"]["sound"], "default");
+    }
+
+    /// A notice too long for APNs's 4 KB payload or FCM's 4 KB of data has
+    /// its body cut to fit each, on a char and ended with `…`; its title
+    /// too when the body alone is not enough. The link, tag, id and `until`
+    /// stand whole, and a call is not cut.
+    #[test]
+    fn a_long_notice_is_cut_to_fit_four_kilobytes() {
+        let (push, http) = push(&[("apns", "cd34"), ("fcm", "fcm-token")]);
+        // three bytes a char: a cut anywhere but on a char would not parse
+        let long = Notice {
+            body: "가".repeat(3000),
+            ..message(1)
+        };
+        assert!(push.post(&long, None));
+        let (apns, fcm) = sent(&http);
+        let id = long.os_id();
+        // the body twice in an alert: a char less is six bytes less
+        assert_eq!(apns.body.len(), 4091);
+        let alert: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
+        let body = alert["body"].as_str().unwrap();
+        assert!(body.ends_with('…'), "{body}");
+        assert!(long.body.starts_with(body.trim_end_matches('…')));
+        assert_eq!(alert["aps"]["alert"]["body"], body);
+        assert_eq!(alert["title"], long.title);
+        for (field, whole) in [("link", &long.link), ("tag", &long.tag), ("id", &id)] {
+            assert_eq!(alert[field], **whole, "{field} was cut");
+            assert_eq!(fcm["data"][field], **whole, "{field} was cut");
+        }
+        assert_eq!(alert["until"], 0);
+        let data = serde_json::to_string(&fcm["data"]).unwrap();
+        assert_eq!(data.len(), 4096);
+        assert!(fcm["data"]["body"].as_str().unwrap().ends_with('…'));
+
+        // a title too long to fit beside an empty body: cut as well
+        let longer = Notice {
+            title: "t".repeat(5000),
+            body: "b".repeat(5000),
+            ..message(2)
+        };
+        assert!(push.post(&longer, None));
+        let (apns, fcm) = sent(&http);
+        // the title twice: a char less is two bytes less
+        assert_eq!(apns.body.len(), 4095);
+        let alert: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
+        assert_eq!(alert["body"], "");
+        assert!(alert["title"].as_str().unwrap().ends_with("t…"));
+        assert_eq!(serde_json::to_string(&fcm["data"]).unwrap().len(), 4096);
+
+        // a notice that fits goes whole
+        assert!(push.post(&message(3), None));
+        let (apns, _) = sent(&http);
+        let alert: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
+        assert_eq!(alert["body"], "hey @bob");
+
+        // a call is never cut
+        let ring = Notice {
+            body: "c".repeat(5000),
+            ..call(now() + 45)
+        };
+        assert!(push.post(&ring, None));
+        let sent = std::mem::take(&mut *http.0.lock().unwrap());
+        let message: serde_json::Value = serde_json::from_str(&sent[0].body).unwrap();
+        assert_eq!(message["message"]["data"]["body"], ring.body);
+    }
+
+    /// A token APNs calls gone (410 `Unregistered`, or `BadDeviceToken`)
+    /// or FCM calls gone (`UNREGISTERED`) is cleared, in the registry's
+    /// file too; its row stays a tombstone. That token only: another
+    /// token, and one whose push failed for another reason, stay.
+    #[test]
+    fn a_token_called_gone_is_dropped() {
+        struct Answers;
+        impl Http for Answers {
+            fn send(&self, request: &Request) -> Result<(u16, String), String> {
+                if request.url.contains("oauth2") {
+                    let token = r#"{"access_token":"ya29.test","expires_in":3600}"#;
+                    return Ok((200, token.into()));
+                }
+                let to = request.device.as_ref().map_or("", |(_, token)| token);
+                Ok(match to {
+                    "dead" => (410, r#"{"reason":"Unregistered","timestamp":1700000000000}"#),
+                    "bad0" => (400, r#"{"reason":"BadDeviceToken"}"#),
+                    "fcm-dead" => (
+                        404,
+                        r#"{"error":{"code":404,"status":"NOT_FOUND","details":[{"@type":"type.googleapis.com/google.firebase.fcm.v1.FcmError","errorCode":"UNREGISTERED"}]}}"#,
+                    ),
+                    "fcm-busy" => (503, r#"{"error":{"code":503,"status":"UNAVAILABLE"}}"#),
+                    _ => (200, "{}"),
+                })
+                .map(|(status, body)| (status, body.to_owned()))
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("testkit").join("devices.json");
+        let (mut push, _) = push(&[]);
+        push.devices = Devices::load(&file).unwrap();
+        push.http = Arc::new(Answers);
+        let rows = [
+            ("k1", "apns", "dead"),
+            ("k2", "apns", "bad0"),
+            ("k3", "apns", "cd34"),
+            ("k4", "fcm", "fcm-dead"),
+            ("k5", "fcm", "fcm-busy"),
+        ];
+        for (key, kind, token) in rows {
+            let env = if kind == "fcm" { "" } else { "production" };
+            push.devices
+                .put(crate::registry::Row {
+                    account: 2,
+                    key: key.into(),
+                    kind: kind.into(),
+                    token: token.into(),
+                    env: env.into(),
+                    at: 1,
+                })
+                .unwrap();
+        }
+        assert!(push.post(&message(1), None));
+        let left = |devices: &Devices, kind: &str| -> Vec<String> {
+            let tokens = devices.tokens(2, kind).into_iter();
+            tokens.map(|(token, _)| token).collect()
+        };
+        assert_eq!(left(&push.devices, "apns"), ["cd34"]);
+        assert_eq!(left(&push.devices, "fcm"), ["fcm-busy"]);
+        let kept = Devices::load(&file).unwrap();
+        assert_eq!(left(&kept, "apns"), ["cd34"]);
+        assert_eq!(left(&kept, "fcm"), ["fcm-busy"]);
+    }
+
+    /// Gone is read off the answer's own field, never a word anywhere in
+    /// it: a credential refused, or a message that names the word, keeps
+    /// the token.
+    #[test]
+    fn gone_is_the_answers_reason_exactly() {
+        assert!(gone("apns", 410, r#"{"reason":"Unregistered"}"#));
+        assert!(gone("voip", 400, r#"{"reason":"BadDeviceToken"}"#));
+        let fcm_gone = r#"{"error":{"code":404,"details":[{"errorCode":"UNREGISTERED"}]}}"#;
+        assert!(gone("fcm", 404, fcm_gone));
+        for (kind, status, body) in [
+            ("apns", 403, r#"{"reason":"InvalidProviderToken"}"#),
+            (
+                "apns",
+                400,
+                r#"{"reason":"BadTopic","note":"BadDeviceToken"}"#,
+            ),
+            ("apns", 400, "Unregistered"),
+            (
+                "fcm",
+                403,
+                r#"{"error":{"code":403,"message":"not UNREGISTERED","details":[{"errorCode":"SENDER_ID_MISMATCH"}]}}"#,
+            ),
+            (
+                "fcm",
+                401,
+                r#"{"error":{"code":401,"status":"UNAUTHENTICATED"}}"#,
+            ),
+        ] {
+            assert!(
+                !gone(kind, status, body),
+                "{kind} {status} {body} called gone"
+            );
+        }
     }
 
     /// A tag past APNs's 64 bytes collapses by its hash.

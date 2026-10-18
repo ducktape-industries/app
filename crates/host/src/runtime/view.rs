@@ -118,6 +118,9 @@ pub(super) struct View {
     /// The manifest's `MIN_WINDOW_WIDTH`: the narrowest the view is laid
     /// out, and so the narrowest a window holding it is sized.
     pub min_width: u32,
+    /// The manifest's `WINDOW_WIDTH`: the width a desk window holding the
+    /// view opens at; none for the desk's own share.
+    pub width: Option<u32>,
     /// The manifest's `wire_id`: the wire the view was built against. A
     /// view built against another than this app's runs all the same, and
     /// whatever then fails says so ([`View::failure`]).
