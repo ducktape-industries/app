@@ -236,11 +236,17 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate, UNUserNo
     let id = Ring.id(tag)
     guard ringing.removeValue(forKey: id) != nil else {
       NSLog("ducktape ring: withdraw of \(tag), which does not ring here")
+      // the push is answered as this returns and iOS may suspend the app then: held awake until the list is read
+      var awake = UIBackgroundTaskIdentifier.invalid
+      awake = UIApplication.shared.beginBackgroundTask(withName: "ducktape withdraw") {
+        UIApplication.shared.endBackgroundTask(awake)
+      }
       let center = UNUserNotificationCenter.current()
       center.getDeliveredNotifications { delivered in
         center.removeDeliveredNotifications(
           withIdentifiers: delivered.filter { $0.request.content.userInfo["tag"] as? String == tag }
             .map { $0.request.identifier })
+        UIApplication.shared.endBackgroundTask(awake)
       }
       return true
     }
