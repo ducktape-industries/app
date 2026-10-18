@@ -1,6 +1,7 @@
 // The Activity, the Kotlin key store, and the Rust library: `phone/Makefile`
 // builds `libducktape_phone.so` per ABI into `build/rust/jniLibs` and the
-// emoji face gm reads into `build/rust/assets` before Gradle runs.
+// emoji face gm reads into `build/rust/assets`, and the quack every notice
+// plays into `build/rust/res`, before Gradle runs.
 plugins {
     id("com.android.application")
 }
@@ -22,6 +23,7 @@ android {
         getByName("main") {
             jniLibs.srcDir("build/rust/jniLibs")
             assets.srcDir("build/rust/assets")
+            res.srcDir("build/rust/res")
         }
     }
 

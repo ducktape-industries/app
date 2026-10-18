@@ -3,7 +3,7 @@
 //! caller can catch, the process dies. `cargo test`, `cargo run` and any
 //! bare binary are exactly that process, so the identifier is read first.
 
-use ducktape_host::runtime::notify::{Click, Notice, NoticeKind};
+use ducktape_host::runtime::notify::{Click, Notice, NoticeKind, SOUND};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{ClassType, DeclaredClass, declare_class, msg_send_id, mutability};
@@ -179,7 +179,14 @@ pub(super) fn post(notice: &Notice, click: Option<Click>) -> bool {
             // a dictionary of strings is a property list, as userInfo holds
             content.setUserInfo(&Retained::cast::<NSDictionary>(row));
         }
-        content.setSound(Some(&UNNotificationSound::defaultSound()));
+        // a notice quacks (the bundle's Resources, `bundle-app-macos.sh`;
+        // a name macOS does not find plays its default), a call keeps the
+        // default
+        let sound = match notice.kind {
+            NoticeKind::Call => UNNotificationSound::defaultSound(),
+            NoticeKind::Notice => UNNotificationSound::soundNamed(&NSString::from_str(SOUND)),
+        };
+        content.setSound(Some(&sound));
         if notice.kind == NoticeKind::Call {
             content.setCategoryIdentifier(&NSString::from_str(CALL));
         }

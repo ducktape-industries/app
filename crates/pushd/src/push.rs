@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use ducktape_host::contract::Banners;
-use ducktape_host::runtime::notify::{Click, Notice, NoticeKind};
+use ducktape_host::runtime::notify::{Click, Notice, NoticeKind, SOUND};
 use ring::signature::{self, EcdsaKeyPair, RsaKeyPair};
 
 use crate::Log;
@@ -501,8 +501,10 @@ impl Push {
                     "alert": { "title": notice.title, "body": notice.body },
                     "thread-id": notice.tag,
                 });
+                // the app's quack (an iPhone app that does not carry it
+                // plays the default)
                 if !quiet {
-                    aps["sound"] = "default".into();
+                    aps["sound"] = SOUND.into();
                 }
                 let mut body = payload(notice);
                 body["aps"] = aps;
@@ -1166,7 +1168,7 @@ mod tests {
         let body: serde_json::Value = serde_json::from_str(&apns[0].body).unwrap();
         assert_eq!(body["aps"]["alert"]["title"], "ada mentioned you");
         assert_eq!(body["aps"]["alert"]["body"], "hey @bob");
-        assert_eq!(body["aps"]["sound"], "default");
+        assert_eq!(body["aps"]["sound"], SOUND);
         assert_eq!(body["aps"]["thread-id"], "chat/#general");
         assert_eq!(body["kind"], "notice");
         assert_eq!(body["link"], "duck://testkit-0a1b2c3d/chat/general/7");
@@ -1312,7 +1314,7 @@ mod tests {
                 "thread-id": "chat/#general",
             });
             if !quiet {
-                body["aps"]["sound"] = "default".into();
+                body["aps"]["sound"] = SOUND.into();
             }
             assert_eq!(
                 serde_json::from_str::<serde_json::Value>(&apns.body).unwrap(),
@@ -1500,7 +1502,7 @@ mod tests {
         };
         assert_eq!(header(apns, "apns-priority"), "10");
         let body: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
-        assert_eq!(body["aps"]["sound"], "default");
+        assert_eq!(body["aps"]["sound"], SOUND);
     }
 
     /// A notice too long for APNs's 4 KB payload or FCM's 4 KB of data has
@@ -1519,7 +1521,7 @@ mod tests {
         let (apns, fcm) = sent(&http);
         let id = long.os_id();
         // the body twice in an alert: a char less is six bytes less
-        assert_eq!(apns.body.len(), 4091);
+        assert_eq!(apns.body.len(), 4093);
         let alert: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
         let body = alert["body"].as_str().unwrap();
         assert!(body.ends_with('…'), "{body}");

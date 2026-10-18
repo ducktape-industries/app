@@ -62,7 +62,13 @@ object Ring {
     @Volatile
     var inFront = false
     private const val CHANNEL = "calls"
-    private const val NOTICES = "notices"
+    /**
+     * Notices' channel, which plays the quack (`res/raw/quack`, which `phone/Makefile` copies from `assets/sounds`).
+     * A channel's sound is fixed once it is made, so the quack came with a channel of its own.
+     */
+    private const val NOTICES = "quacks"
+    /** Notices' channel before they quacked: deleted, and the person's settings for it with it. */
+    private const val UNQUACKED = "notices"
     /** Every call's and notice's notification is this id under its own tag (a notice's: its `id`). */
     private const val ID = 1
     /** A tag's group summary is this id under the tag. */
@@ -140,7 +146,16 @@ object Ring {
         val payload = JSONObject(notice).toString()
         if (inFront && !own && !Native.notice(payload, now / 1000, true, false)) return false
         val manager = context.getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel(NOTICES, "Notices", NotificationManager.IMPORTANCE_DEFAULT))
+        manager.deleteNotificationChannel(UNQUACKED)
+        manager.createNotificationChannel(
+            NotificationChannel(NOTICES, "Notices", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                setSound(
+                    Uri.parse("android.resource://${context.packageName}/raw/quack"),
+                    AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build(),
+                )
+            },
+        )
         val link = notice["link"].orEmpty()
         // its own request code: each notice in a group opens with its own payload
         val opened = PendingIntent.getActivity(

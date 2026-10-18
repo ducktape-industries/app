@@ -225,6 +225,14 @@ fn withdraw_at(
     })
 }
 
+/// The sound an ordinary notice plays, by its file's name (a call keeps
+/// the ring its OS gives it): `assets/sounds/quack.wav`, which `quack.py`
+/// beside it makes. Each app carries it where its OS finds a notice's
+/// sound (the Mac and iPhone apps' resources, Android's `res/raw`, a file
+/// the Linux app keeps for its notification daemon), and pushd's alerts to
+/// an iPhone name it.
+pub const SOUND: &str = "quack.wav";
+
 /// What a click on a banner opens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Click {

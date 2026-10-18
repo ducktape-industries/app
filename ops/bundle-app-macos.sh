@@ -57,6 +57,8 @@ contents="$app/Contents"
 mkdir -p "$contents/MacOS" "$contents/Resources" "$stage/Ducktape.iconset"
 install -m 0755 "$release_bin/ducktape-app" "$contents/MacOS/ducktape-app"
 install -m 0644 "$repo/packaging/Info.plist" "$contents/Info.plist"
+# a notice's sound: the notification centre finds it by name in Resources
+install -m 0644 "$repo/assets/sounds/quack.wav" "$contents/Resources/quack.wav"
 /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $version" "$contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $version" "$contents/Info.plist"
 swift "$repo/ops/macos-icon.swift" "$repo/assets/icon.svg" "$stage/Ducktape.iconset"

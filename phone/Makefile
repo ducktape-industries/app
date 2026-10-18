@@ -42,6 +42,9 @@ android:
 	cp $(CARGO_TARGET_DIR)/$(ANDROID_TRIPLE_$(ANDROID_ABI))/phone/libducktape_phone.so $(ANDROID_OUT)/jniLibs/$(ANDROID_ABI)/
 	# gm reads the colour emoji face from the APK's assets
 	cp $(ROOT)/assets/fonts/NotoColorEmoji.ttf $(ANDROID_OUT)/assets/fonts/
+	# the quack every notice plays (Ring.kt)
+	mkdir -p $(ANDROID_OUT)/res/raw
+	cp $(ROOT)/assets/sounds/quack.wav $(ANDROID_OUT)/res/raw/
 	cd $(ROOT)/phone/android && ./gradlew --quiet assembleDebug
 
 android-run: android
