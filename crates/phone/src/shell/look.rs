@@ -182,7 +182,7 @@ pub fn header(
         .child(back)
 }
 
-/// The palette of the kit theme's mode: the appearance App settings chose,
+/// The palette of the kit theme's mode: the appearance the Account tab chose,
 /// or under System the system's (`shell::sync_appearance` sets the theme,
 /// which the views and the host's own chrome read too).
 pub fn palette(cx: &App) -> Palette {

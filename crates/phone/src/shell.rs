@@ -384,7 +384,7 @@ fn let_go_closed(stack: &Entity<Stack>, seats: &Entity<Seats>, cx: &mut App) {
     seats.update(cx, |seats, cx| seats.place(kept, cx));
 }
 
-/// `appearance` (App settings › Appearance) onto the app's iOS windows,
+/// `appearance` (the Account tab's Appearance) onto the app's iOS windows,
 /// which UIKit's keyboard and alerts follow (`os::interface_style`), and
 /// onto the kit theme, which the phone's palette (`look::palette`), every
 /// view's theme and the host's own chrome read; under System, the window's
