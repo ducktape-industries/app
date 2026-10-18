@@ -29,6 +29,9 @@
 //!   thread for one that came in front (it only hands on, through a
 //!   channel, and answers from what the shell published whether the shade
 //!   shows it).
+//! - `swipeBegins(x, y, dx, dy, held) -> begins`: whether the Activity's
+//!   tabs' swipe starts, read against the last draw; `swipeDrag(x, speed)`,
+//!   `swipeLetGo()`, `swipeCancel()`: that swipe under way, let go, ended.
 //!
 //! - `android_main(app)`: the entry gm's NativeActivity glue (android-activity,
 //!   which gm links whatever path a host takes) names; never called, since
@@ -48,6 +51,7 @@ use jni::objects::{JClass, JFloatArray, JObject, JString, JValue};
 use jni::sys::{jboolean, jfloat, jint, jlong};
 use jni::{Env, EnvUnowned};
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// What an entry's failure becomes for Java: a `RuntimeException` (there is
 /// none of ours; a JNI call that failed is the only way in).
@@ -234,6 +238,59 @@ pub extern "system" fn Java_industries_ducktape_mobile_Native_back(
     _: JClass<'_>,
 ) {
     crate::os::send(ducktape_host::contract::Signal::Back);
+}
+
+/// `Native.swipeBegins`: whether the tabs' swipe begins (`MainActivity`, at
+/// the touch slop): its finger came down at (`x`, `y`) in the window's
+/// points, went (`dx`, `dy`) points to the slop, and came down `held`
+/// seconds ago. Android's Back is the system's: no swipe back begins here
+/// (`shell::swipe::pages`).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_swipeBegins(
+    _: EnvUnowned<'_>,
+    _: JClass<'_>,
+    x: jfloat,
+    y: jfloat,
+    dx: jfloat,
+    dy: jfloat,
+    held: jfloat,
+) -> jboolean {
+    use gpui_kit::{point, px};
+    let held = Duration::try_from_secs_f32(held).unwrap_or(Duration::MAX);
+    crate::shell::swipe::pages(point(px(x), px(y)), point(px(dx), px(dy)), held)
+}
+
+/// `Native.swipeDrag`: the tabs' swipe under way, `x` points to the right
+/// of where it began (negative to the left), moving `speed` points per
+/// second to the right.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_swipeDrag(
+    _: EnvUnowned<'_>,
+    _: JClass<'_>,
+    x: jfloat,
+    speed: jfloat,
+) {
+    crate::os::send(ducktape_host::contract::Signal::Swipe { x, speed });
+}
+
+/// `Native.swipeLetGo`: that swipe let go, where and as fast as its last
+/// drag said: the shell judges which tab it lands on.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_swipeLetGo(
+    _: EnvUnowned<'_>,
+    _: JClass<'_>,
+) {
+    crate::os::send(ducktape_host::contract::Signal::SwipeLetGo);
+}
+
+/// `Native.swipeCancel`: that swipe ended without going on (the OS
+/// cancelled the touch).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_industries_ducktape_mobile_Native_swipeCancel(
+    _: EnvUnowned<'_>,
+    _: JClass<'_>,
+) {
+    crate::os::send(ducktape_host::contract::Signal::SwipeCancelled);
 }
 
 /// `Native.ime`: one update from the Activity's `InputConnection`, for gm's
