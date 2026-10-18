@@ -194,9 +194,11 @@ impl Join {
     }
 
     /// Switch network opened (Expo mounts it afresh): the last node reached
-    /// in the field, the keys in it, nothing refused.
+    /// in the field, the keys in it, nothing refused, scrolled to its top
+    /// (the handle outlives the sheet, and the join's own screen shares it).
     pub fn open_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.refused = None;
+        self.scroll.set_offset(Default::default());
         let last = self
             .shared
             .session

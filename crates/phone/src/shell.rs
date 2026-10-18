@@ -3516,9 +3516,9 @@ mod tests {
     }
 
     /// On a network, Continue on the node in hand (the field holds it, the
-    /// keys in it) closes Switch network at once; a switch whose node does
-    /// not answer says why under the field, not in a notice over it, and
-    /// the sheet stays; one that lands closes it.
+    /// keys in it, the sheet at its top) closes Switch network at once; a
+    /// switch whose node does not answer says why under the field, not in a
+    /// notice over it, and the sheet stays; one that lands closes it.
     #[gpui_kit::test]
     fn a_switch_that_stays_or_lands_closes_the_sheet_and_a_failed_one_says_why_under_the_field(
         cx: &mut TestAppContext,
@@ -3549,8 +3549,17 @@ mod tests {
             .session
             .update(cx, |session, cx| session.seed(connected, cx));
         let sheet = |cx: &mut VisualTestContext| root.read_with(cx, |root, _| root.sheet);
-        show_switch(&root, cx);
         let join = root.read_with(cx, |root, _| root.join.clone());
+        // left scrolled down (the last time, or the join's own screen)
+        let scrolled = point(px(0.), px(-50.));
+        join.read_with(cx, |join, _| join.scroll.set_offset(scrolled));
+        // read before a draw, which would clamp it to this short list
+        let top = cx.update(|window, cx| {
+            root.update(cx, |root, cx| root.show_switch(window, cx));
+            join.read(cx).scroll.offset().y
+        });
+        assert_eq!(top, px(0.), "Switch network opened scrolled down");
+        run_out(cx);
         let focused = cx.update(|window, cx| {
             join.read(cx)
                 .node
