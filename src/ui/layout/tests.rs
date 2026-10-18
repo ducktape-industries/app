@@ -188,6 +188,81 @@ fn a_window_is_never_narrower_than_its_view() {
     assert_eq!(Pane::new("layout-narrow-view").min_width(), MIN_WIDTH);
 }
 
+/// A view that asks a width opens its window at it, centred, where the
+/// desk's share is narrower; at the desk's width on a desk narrower than
+/// that; never under the view's own minimum. A view that asks none opens
+/// at the share.
+#[test]
+fn a_window_opens_at_the_width_its_view_asks() {
+    let opened = |program: &'static str, desk: (f32, f32)| {
+        let mut layout = Layout::default();
+        layout.split(program);
+        layout.place(desk);
+        layout
+    };
+    crate::runtime::seat_for_test("layout-asks-wide", 560);
+    crate::runtime::width_for_test("layout-asks-wide", 1200);
+    let mut layout = opened("layout-asks-wide", DESK);
+    let first = layout.panes[0].frame.unwrap();
+    assert_eq!(first.w, 1200., "past the share, 840");
+    assert_eq!(first.x * 2. + first.w, DESK.0, "centred");
+    layout.split("layout-asks-wide");
+    layout.place(DESK);
+    let second = layout.panes[1].frame.unwrap();
+    assert_eq!(
+        (second.x, second.y, second.w),
+        (first.x + CASCADE, first.y + CASCADE, 1200.),
+        "cascaded"
+    );
+    let narrow = (1000., 700.);
+    let frame = opened("layout-asks-wide", narrow).panes[0].frame.unwrap();
+    assert_eq!((frame.x, frame.w), (0., narrow.0), "the desk");
+    crate::runtime::seat_for_test("layout-asks-under-its-min", 900);
+    crate::runtime::width_for_test("layout-asks-under-its-min", 600);
+    let frame = opened("layout-asks-under-its-min", DESK).panes[0]
+        .frame
+        .unwrap();
+    assert_eq!(frame.w, 902., "the view's minimum and its border");
+    crate::runtime::seat_for_test("layout-asks-nothing", 560);
+    let frame = opened("layout-asks-nothing", DESK).panes[0].frame.unwrap();
+    assert_eq!(frame.w, (DESK.0 * NEW_SHARE.0).round(), "the share");
+}
+
+/// A window placed before its view came grows to the width the view asks
+/// once it is seated (`Seated` settles the desk), on the desk; one the
+/// person moved or sized stays as they left it.
+#[test]
+fn a_late_width_widens_only_a_window_the_person_left_alone() {
+    let (alone, sized) = ("layout-late-alone", "layout-late-sized");
+    let mut layout = Layout::default();
+    layout.split(alone);
+    layout.split(sized);
+    layout.measure(DESK);
+    layout.settle();
+    let share = (DESK.0 * NEW_SHARE.0).round();
+    assert_eq!(layout.panes[0].frame.unwrap().w, share, "no view yet");
+    let left = layout.panes[0].frame.unwrap();
+    assert!(layout.set_frame(0, left, DESK));
+    assert!(!layout.panes[0].by_hand, "a press that moves nothing");
+    let by_hand = Frame {
+        w: 700.,
+        ..layout.panes[1].frame.unwrap()
+    };
+    assert!(layout.set_frame(1, by_hand, DESK));
+    for program in [alone, sized] {
+        crate::runtime::seat_for_test(program, 560);
+        crate::runtime::width_for_test(program, 1200);
+    }
+    layout.settle();
+    let widened = layout.panes[0].frame.unwrap();
+    assert_eq!(widened.w, 1200.);
+    assert!(
+        widened.x >= 0. && widened.x + widened.w <= DESK.0,
+        "on the desk"
+    );
+    assert_eq!(layout.panes[1].frame, Some(by_hand), "the person's");
+}
+
 /// Fill is the desk's: on and off again, every frame is where it was.
 #[test]
 fn filling_the_desk_and_filling_it_again_leaves_every_frame_as_it_was() {

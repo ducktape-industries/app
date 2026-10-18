@@ -15,7 +15,8 @@ pub(crate) const MIN_HEIGHT: f32 = 220.;
 pub(crate) const KEEP: f32 = 96.;
 /// A new window opens this far down and right of the one before it.
 const CASCADE: f32 = 28.;
-/// A new window's share of the desk, wide and high.
+/// A new window's share of the desk, wide and high; wider where its view
+/// asks ([`Pane::width`]).
 const NEW_SHARE: (f32, f32) = (0.6, 0.7);
 /// The desk's margin: a resized desk scales frames between it, and a
 /// cascade past the desk's far corner starts again inside it.
@@ -32,8 +33,9 @@ pub(crate) struct Frame {
 }
 
 impl Frame {
-    /// At least `min_w` wide (its pane's [`Pane::min_width`]) and the
-    /// smallest window high, no larger than the desk, never past its left
+    /// At least `min_w` wide (its pane's [`Pane::min_width`], or its view's
+    /// [`Pane::width`] while the frame is the app's: [`Layout::place`]) and
+    /// the smallest window high, no larger than the desk, never past its left
     /// or top edge (the chrome is there: the sidebar, the bar), and never
     /// so far off its right or bottom that its title bar can't be grabbed
     /// back. On a desk narrower than
@@ -75,6 +77,9 @@ pub(crate) struct Pane {
     /// What its view named it (`host.title`), shown beside the program's
     /// name; never `Some("")`. It travels with the pane between windows.
     pub(crate) title: Option<String>,
+    /// The person moved or sized its frame (a drag, the keyboard's hold):
+    /// a view's width that comes after no longer widens it.
+    pub(crate) by_hand: bool,
 }
 
 impl Pane {
@@ -86,6 +91,7 @@ impl Pane {
             frame: None,
             z: 0,
             title: None,
+            by_hand: false,
         }
     }
 
@@ -107,6 +113,13 @@ impl Pane {
             .then(|| crate::runtime::min_width(self.program));
         view.flatten()
             .map_or(MIN_WIDTH, |min_width| MIN_WIDTH.max(min_width + 2.))
+    }
+
+    /// The width its view asks a desk window to open at, once the view is
+    /// drawn or compiled; none for the desk's own share.
+    pub(crate) fn width(&self) -> Option<f32> {
+        let view = self.is_view().then(|| crate::runtime::width(self.program));
+        view.flatten()
     }
 }
 
@@ -291,6 +304,7 @@ impl Layout {
         let mut pane = Pane::new(program);
         if let Some(current) = self.panes.get_mut(self.focused) {
             pane.frame = current.frame;
+            pane.by_hand = current.by_hand;
             pane.z = current.z;
             *current = pane;
         } else {
@@ -364,6 +378,7 @@ impl Layout {
     /// move; placed when it lands.
     pub(crate) fn popin(&mut self, mut pane: Pane) {
         pane.frame = None;
+        pane.by_hand = false;
         self.panes.push(pane);
         self.focused = self.panes.len() - 1;
         self.raise(self.focused);
@@ -371,7 +386,11 @@ impl Layout {
 
     /// Gives every window a frame on a desk of `desk` size: the first one
     /// opens centred, a later one cascades from the topmost window that has
-    /// a frame; every frame is kept where it can be grabbed.
+    /// a frame. A new window is the desk's share wide, or its view's width
+    /// where that is wider, never past the desk nor under its view's
+    /// minimum; a window the person has not moved or sized grows to its
+    /// view's width when that comes after it. Every frame is kept where it
+    /// can be grabbed.
     pub(crate) fn place(&mut self, desk: (f32, f32)) {
         for index in 0..self.panes.len() {
             if self.panes[index].frame.is_some() {
@@ -383,8 +402,13 @@ impl Layout {
                 .filter(|pane| pane.frame.is_some())
                 .max_by_key(|pane| pane.z)
                 .and_then(|pane| pane.frame);
+            let pane = &self.panes[index];
             // whole pixels: frames laid edge to edge add back up
-            let w = (desk.0 * NEW_SHARE.0).round().max(MIN_WIDTH);
+            let w = (desk.0 * NEW_SHARE.0)
+                .round()
+                .max(pane.width().unwrap_or(0.))
+                .max(pane.min_width())
+                .min(desk.0.max(MIN_WIDTH));
             let h = (desk.1 * NEW_SHARE.1).round().max(MIN_HEIGHT);
             let frame = match beneath {
                 None => Frame {
@@ -407,8 +431,11 @@ impl Layout {
             self.panes[index].frame = Some(frame);
         }
         for pane in &mut self.panes {
-            let min_w = pane.min_width();
-            pane.frame = pane.frame.map(|frame| frame.clamped(desk, min_w));
+            let floor = match pane.by_hand {
+                true => pane.min_width(),
+                false => pane.min_width().max(pane.width().unwrap_or(0.)),
+            };
+            pane.frame = pane.frame.map(|frame| frame.clamped(desk, floor));
         }
     }
 
@@ -418,7 +445,9 @@ impl Layout {
             .all(|v| v.is_finite());
         match self.panes.get_mut(index) {
             Some(pane) if valid => {
-                pane.frame = Some(frame.clamped(desk, pane.min_width()));
+                let frame = Some(frame.clamped(desk, pane.min_width()));
+                pane.by_hand |= pane.frame != frame;
+                pane.frame = frame;
                 true
             }
             _ => false,

@@ -443,7 +443,8 @@ fn module(sections: &[(&str, &[u8])]) -> Vec<u8> {
 async fn blob_manifest_answers_what_the_view_in_a_blob_declares() {
     use sha2::Digest as _;
     use view_wire::manifest::{Manifest, Tint};
-    let text = "ducktape.view.manifest\nChat\nRooms.\nchain,clipboard,\n480\n0123abcd\n\n\nblue";
+    let text =
+        "ducktape.view.manifest\nChat\nRooms.\nchain,clipboard,\n480\n0123abcd\n\n\nblue\n1200";
     let view = module(&[("ducktape.view.manifest", text.as_bytes())]);
     let program = module(&[("ducktape.view", &view)]);
     let manifest = Manifest {
@@ -455,6 +456,7 @@ async fn blob_manifest_answers_what_the_view_in_a_blob_declares() {
         targets: Vec::new(),
         icon: String::new(),
         tint: Tint::Blue,
+        width: Some(1200),
     };
     let ask = |body: &[u8]| {
         let mut framed = format!("program {}\0", body.len()).into_bytes();

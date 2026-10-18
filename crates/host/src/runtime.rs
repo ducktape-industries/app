@@ -233,7 +233,8 @@ pub mod pictures;
 
 /// What a view's manifest says, read before any of its code runs: the
 /// name, icon, tint and description the rail and Home list it by, the narrowest
-/// it is laid out, the capabilities it declares, its targets, and the wire
+/// it is laid out, the width a desk window opens it at, the capabilities it
+/// declares, its targets, and the wire
 /// it was built against (another than this app's runs all the same, and
 /// whatever then fails says so: `View::failure`).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -243,6 +244,7 @@ pub struct Listing {
     pub tint: Tint,
     pub description: String,
     pub min_width: u32,
+    pub width: Option<u32>,
     pub capabilities: Vec<Capability>,
     pub targets: Vec<String>,
     pub wire: String,
@@ -258,6 +260,7 @@ fn manifest_of(bytes: &[u8]) -> Listing {
             tint: manifest.tint,
             description: manifest.description,
             min_width: manifest.min_width,
+            width: manifest.width,
             capabilities: manifest.capabilities,
             targets: manifest.targets,
             wire: manifest.wire_id,
@@ -279,6 +282,7 @@ pub fn listing(program: &str) -> Option<Listing> {
                 tint: $held.tint,
                 description: $held.description.clone(),
                 min_width: $held.min_width,
+                width: $held.width,
                 capabilities: $held.capabilities.clone(),
                 targets: $held.targets.clone(),
                 wire: $held.wire.clone(),
@@ -342,6 +346,22 @@ pub fn min_width(program: &str) -> Option<f32> {
             Slot::Compiled(view) => Some(view.min_width as f32),
             _ => None,
         })
+}
+
+/// The width, in px, a desk window holding `program`'s view opens at, once
+/// one of its seats holds it drawn or compiled; `None` while it loads,
+/// failed, has none, or its manifest leaves it to the app's share.
+pub fn width(program: &str) -> Option<f32> {
+    let registry = lock(registry());
+    registry
+        .iter()
+        .filter(|((name, _), _)| *name == program)
+        .find_map(|(_, seat)| match &lock(seat).slot {
+            Slot::Ready(view) => view.width,
+            Slot::Compiled(view) => view.width,
+            _ => None,
+        })
+        .map(|width| width as f32)
 }
 
 /// Every seat of `program` holds a drawn view whose manifest says
@@ -613,6 +633,19 @@ pub fn name_for_test(program: &str, name: &str) {
             && let Slot::Ready(view) = &mut lock(seat).slot
         {
             view.name = name.into();
+        }
+    }
+}
+
+/// Every drawn view of `program` asks desk windows `width` px wide, as its
+/// manifest would.
+#[cfg(any(test, feature = "test-support"))]
+pub fn width_for_test(program: &str, width: u32) {
+    for ((seated, _), seat) in lock(registry()).iter() {
+        if *seated == program
+            && let Slot::Ready(view) = &mut lock(seat).slot
+        {
+            view.width = Some(width);
         }
     }
 }
