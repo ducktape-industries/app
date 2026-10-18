@@ -550,9 +550,9 @@ pub struct Root {
     placed: (BTreeMap<u64, Place>, Option<u64>),
     /// Links that came before the network's program list did, in order.
     waiting: Vec<String>,
-    /// A link of another listed network's, and its chain, until the switch
-    /// to that network lands.
-    switching: Option<(ducklink::ChainId, String)>,
+    /// A link of another listed network's, its chain and the node the
+    /// switch reaches, until that switch lands or ends another way.
+    switching: Option<(ducklink::ChainId, String, String)>,
     /// The appearance last put on the theme (`sync_appearance`).
     appearance: Appearance,
     /// Debug mode's numbers, read while the Open tab is on screen.
@@ -790,16 +790,22 @@ impl Root {
     /// was. Another chain left the network first, which took the page. A
     /// switch a link of another network's made: the link opens here, once
     /// the network lists its programs; a node that answered for another
-    /// chain says whose link it is, as before.
+    /// chain says whose link it is, as before. Another node landed (a
+    /// switch of the reader's own took over): the link is let go, unsaid.
     fn switched(&mut self, cx: &mut Context<Self>) {
         if self.page(cx) == Page::Switch {
             self.pop_page(cx);
         }
-        if let Some((chain, link)) = self.switching.take() {
-            match self.shared.session.read(cx).get().chain == chain.to_string() {
-                true => self.take_link(link, cx),
-                false => self.said_elsewhere(&chain.label, cx),
-            }
+        let Some((chain, link, node)) = self.switching.take() else {
+            return;
+        };
+        let session = self.shared.session.read(cx).get();
+        if session.connected_rpc != node {
+            return;
+        }
+        match session.chain == chain.to_string() {
+            true => self.take_link(link, cx),
+            false => self.said_elsewhere(&chain.label, cx),
         }
     }
 
@@ -1316,6 +1322,10 @@ impl Root {
         self.titles.clear();
         self.pages.clear();
         self.waiting.clear();
+        // left for no node the link's switch reached (a disconnect, or a
+        // switch of the reader's own): that switch is over
+        let here = &self.shared.session.read(cx).get().connected_rpc;
+        self.switching.take_if(|(_, _, node)| node != here);
         cx.notify();
     }
 
@@ -1390,11 +1400,16 @@ impl Root {
     fn open_link(&mut self, link: &str, cx: &mut Context<Self>) {
         let chain = self.shared.session.read(cx).get().chain.clone();
         if let Some((other, node)) = self.elsewhere(link, &chain, cx) {
-            self.switching = Some((other, link.to_owned()));
             self.shared
                 .session
-                .update(cx, |session, cx| session.switch(node, cx));
-            return;
+                .update(cx, |session, cx| session.switch(node.clone(), cx));
+            // no switch under way (that node is the one in hand: what the
+            // registrar heard of it is stale): said as a link of a network
+            // not listed is
+            if self.shared.session.read(cx).get().reaching == node {
+                self.switching = Some((other, link.to_owned(), node));
+                return;
+            }
         }
         match self.shared.rail.read(cx).opening(link, &chain) {
             Opening::Seat {
@@ -1417,8 +1432,8 @@ impl Root {
     }
 
     /// The chain `link` names when it is a chain link of another chain
-    /// than `here`, and the listed node on that chain, the most recent
-    /// first (`push::Registrar::node_of`).
+    /// than `here`, and the listed node on that chain to switch to
+    /// (`push::Registrar::node_of`).
     fn elsewhere(&self, link: &str, here: &str, cx: &App) -> Option<(ducklink::ChainId, String)> {
         let ducktape_host::runtime::Link::Chain(parsed) =
             self.shared.rail.read(cx).parse_link(link)
@@ -3250,6 +3265,165 @@ mod tests {
             "",
             "a link of no listed network reached a node"
         );
+    }
+
+    /// A tapped notice's switch that does not land leaves nothing behind.
+    /// One whose node is the one in hand (what the registrar heard of it
+    /// is stale) starts no switch and says whose link it is at once; one a
+    /// switch of the reader's own took over raises no "Another network"
+    /// when that one lands; one a disconnect dropped opens no old link on
+    /// the next network.
+    #[gpui_kit::test]
+    fn a_tapped_switch_that_does_not_land_leaves_nothing_behind(cx: &mut TestAppContext) {
+        use ducktape_host::backend::{NodeStatus, RecentEndpoint};
+        use ducktape_host::session::SessionState;
+        use ducktape_host::session::tests::{source, status};
+        use join::tests::until;
+        const HERE: &str = "http://127.0.0.1:1";
+        const THERE: &str = "http://127.0.0.1:2";
+        const MINE: &str = "http://127.0.0.1:3";
+        const FAR: &str = "http://127.0.0.1:4";
+        let _seat = ducktape_host::backend::seat_serial();
+        let (root, stack, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        let registrar = cx.update(|_, cx| cx.global::<Phone>().registrar.clone());
+        let node = |url: &str, network: &str| RecentEndpoint {
+            url: url.into(),
+            network: network.into(),
+            ..RecentEndpoint::default()
+        };
+        let chain_of = |network| {
+            ducklink::ChainId::of(network, &[0; 32])
+                .unwrap()
+                .to_string()
+        };
+        let (there, far) = (chain_of("testkit"), chain_of("far"));
+        let answering = |network: &'static str| {
+            source(move |_| {
+                Ok(NodeStatus {
+                    network: network.into(),
+                    ..status(1)
+                })
+            })
+            .0
+        };
+        let list = |cx: &mut VisualTestContext| {
+            shared.rail.update(cx, |rail, cx| {
+                rail.read_off(Roster::listing(&[PROGRAM]), cx)
+            });
+            cx.run_until_parked();
+        };
+        let switching =
+            |cx: &mut VisualTestContext| root.read_with(cx, |root, _| root.switching.is_some());
+        let alert = |cx: &mut VisualTestContext| root.read_with(cx, |root, _| root.alert.clone());
+        let tap = |link: &str, cx: &mut VisualTestContext| {
+            root.update(cx, |root, cx| root.take_link(link.to_owned(), cx))
+        };
+        // on home, testkit listed and heard serving `there` before
+        let before = SessionState {
+            connected: true,
+            connected_rpc: THERE.into(),
+            network: "testkit".into(),
+            chain: there.clone(),
+            recent_endpoints: vec![node(THERE, "testkit")],
+            ..SessionState::default()
+        };
+        shared
+            .session
+            .update(cx, |session, cx| session.seed(before, cx));
+        cx.run_until_parked();
+        let now = SessionState {
+            connected: true,
+            connected_rpc: HERE.into(),
+            network: "home".into(),
+            chain: "home#0a0a0a0a".into(),
+            recent_endpoints: vec![node(HERE, "home"), node(THERE, "testkit")],
+            ..SessionState::default()
+        };
+        shared
+            .session
+            .update(cx, |session, cx| session.seed(now, cx));
+        cx.run_until_parked();
+        ducktape_host::runtime::seat_for_test(PROGRAM, 320);
+        list(cx);
+        let to_there = ducklink::mint(&there, PROGRAM, &["room"]).unwrap();
+
+        // the registrar heard the node in hand serve `there`: no switch
+        registrar.update(cx, |this, _| this.heard(HERE, &there));
+        tap(&to_there, cx);
+        assert!(!switching(cx), "a switch the session never started waits");
+        assert_eq!(
+            alert(cx).map(|(title, _)| title),
+            Some("Another network"),
+            "the tap was not said"
+        );
+        root.update(cx, |root, _| root.alert = None);
+        registrar.update(cx, |this, _| this.heard(HERE, "home#0a0a0a0a"));
+
+        // a switch that lands opens the link there (the one in hand after)
+        tap(&to_there, cx);
+        assert!(switching(cx), "the tap did not switch");
+        shared.session.update(cx, |session, cx| {
+            session.connect_through(THERE.into(), answering("testkit"), cx)
+        });
+        until(cx, |cx| {
+            shared
+                .session
+                .read_with(cx, |session, _| session.get().chain == there)
+        });
+        list(cx);
+        assert_eq!(top(&stack, cx), Some(PROGRAM));
+
+        // far listed too; the tap's switch to it taken over by the
+        // reader's own, to another node of the chain in hand
+        ducktape_host::backend::note_endpoint(node(FAR, "far"));
+        let listed = SessionState {
+            recent_endpoints: ducktape_host::backend::recent_endpoints(),
+            ..shared
+                .session
+                .read_with(cx, |session, _| session.get().clone())
+        };
+        shared
+            .session
+            .update(cx, |session, cx| session.seed(listed, cx));
+        registrar.update(cx, |this, _| this.heard(FAR, &far));
+        let to_far = ducklink::mint(&far, PROGRAM, &[]).unwrap();
+        tap(&to_far, cx);
+        assert!(switching(cx), "the tap did not switch");
+        shared.session.update(cx, |session, cx| {
+            session.connect_through(MINE.into(), answering("testkit"), cx)
+        });
+        until(cx, |cx| {
+            shared
+                .session
+                .read_with(cx, |session, _| session.get().connected_rpc == MINE)
+        });
+        assert_eq!(
+            alert(cx),
+            None,
+            "the reader's own switch raised the tap's alert"
+        );
+        assert!(!switching(cx));
+
+        // the tap's switch dropped by a disconnect: the next network
+        // reached, far itself, opens no old link
+        tap(&to_far, cx);
+        assert!(switching(cx), "the tap did not switch");
+        shared
+            .session
+            .update(cx, |session, cx| session.disconnect(cx));
+        assert!(!switching(cx), "a disconnect left the tap's switch waiting");
+        shared.session.update(cx, |session, cx| {
+            session.connect_through(FAR.into(), answering("far"), cx)
+        });
+        until(cx, |cx| {
+            shared
+                .session
+                .read_with(cx, |session, _| session.get().chain == far)
+        });
+        list(cx);
+        assert_eq!(top(&stack, cx), None, "an old link opened");
+        assert_eq!(alert(cx), None);
     }
 
     /// The window over a phone on a network with an account (the stack, not

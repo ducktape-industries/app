@@ -822,6 +822,19 @@ pub mod testing {
         fn withdraw(&self, _: &str) {}
     }
 
+    static OPENED: std::sync::Mutex<Vec<(String, std::thread::ThreadId)>> =
+        std::sync::Mutex::new(Vec::new());
+
+    /// Each keyring a device key was opened for so far, by every test, and
+    /// the thread it was opened on: a test tells a key opened off the
+    /// thread that asked from one opened on it.
+    pub fn keys_opened() -> Vec<(String, std::thread::ThreadId)> {
+        OPENED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     thread_local! {
         /// This test thread's `Limits::snapshot_every`: the desktop's
         /// `None` unless a test keeps a death replay
@@ -887,6 +900,10 @@ pub mod testing {
             &self,
             keyring: &str,
         ) -> Result<Option<Arc<dyn noded_client::Signer>>, KeyRefusal> {
+            OPENED
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((keyring.to_owned(), std::thread::current().id()));
             // a key of the keyring's name: the same device key every time a
             // test meets the same network, none kept anywhere
             let mut seed = [0u8; 32];
