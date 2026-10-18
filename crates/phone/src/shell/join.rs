@@ -870,7 +870,7 @@ fn header(session: &SessionState, palette: Palette, cx: &Context<Join>) -> Div {
 /// A field (Expo `Field`): its label over the box (the edge 2 in the
 /// foreground focused, in danger with a problem), the text in the data
 /// face when `mono`; what goes under it is the caller's.
-fn field(
+pub(super) fn field(
     input: &Entity<InputState>,
     id: &'static str,
     label: &'static str,
@@ -936,7 +936,7 @@ fn under(problem: Option<String>, palette: Palette) -> Div {
 }
 
 /// A refusal (Expo `Notice`, danger): 13 in danger on `danger_soft`.
-fn notice(id: &'static str, said: String, palette: Palette) -> Stateful<Div> {
+pub(super) fn notice(id: &'static str, said: String, palette: Palette) -> Stateful<Div> {
     div()
         .id(id)
         .control(Role::Alert, said.clone())
@@ -947,7 +947,7 @@ fn notice(id: &'static str, said: String, palette: Palette) -> Stateful<Div> {
 }
 
 /// A button's kind (Expo `Button`).
-enum Kind {
+pub(super) enum Kind {
     /// 48, the primary's ground, body medium, the row's width.
     Primary,
     /// 36, a hairline, secondary medium.
@@ -959,7 +959,7 @@ enum Kind {
 /// An Expo `Button` named `label`, with `icon` before it (16 small, 18
 /// else), or a spinner while `busy` (a press box of at least 44: the small
 /// one's 36 reaches it unseen).
-fn button(
+pub(super) fn button(
     id: &'static str,
     label: String,
     kind: Kind,
@@ -1055,7 +1055,7 @@ fn name_keyboard() -> TextInputConfiguration {
 /// A field's keyboard up as `want` says, or down: gm is told (Android);
 /// gpui_ios raises its own with the focused field, from the field's
 /// `text_input`.
-fn keyboard(window: &mut Window, want: Option<TextInputConfiguration>) {
+pub(super) fn keyboard(window: &mut Window, want: Option<TextInputConfiguration>) {
     let want = match want {
         Some(config) => SoftKeyboard::Show(config),
         None => SoftKeyboard::Hide,

@@ -9,11 +9,11 @@
 //! Notifications, Account) under the tab bar, or the program on top, its
 //! view seated full screen under the capsule; the shell's own pages over
 //! either (a program's page, its capabilities, from the capsule's About;
-//! App settings and Switch network from the Account tab); a sheet over all
-//! (the capsule's menu, the consent sheet). Each program opened keeps one
-//! seat, placed with the safe body and in front only while it is on top
-//! and the window is: a program left stays warm where it was (wasm-mobile
-//! SPEC §7.1).
+//! App settings, Switch network and Add a device from the Account tab); a
+//! sheet over all (the capsule's menu, the consent sheet). Each program
+//! opened keeps one seat, placed with the safe body and in front only
+//! while it is on top and the window is: a program left stays warm where
+//! it was (wasm-mobile SPEC §7.1).
 //!
 //! It moves as the Expo build's moves (`ducktape_host::motion`): a program
 //! (or its page) pushed slides in from the right over the screen it left,
@@ -30,6 +30,7 @@
 //! under way.
 
 mod about;
+mod approve;
 mod debug;
 mod home;
 mod join;
@@ -47,7 +48,9 @@ use ducktape_host::motion::{self, Shown, Slide, Tween};
 use ducktape_host::render::ViewTree;
 use ducktape_host::runtime::notify::{Entry, Opened as Banner, Permission};
 use ducktape_host::runtime::{Back, Placed, consent};
-use ducktape_host::session::{Opening, Place, Seats, SeatsEvent, Session, SessionEvent, Shared};
+use ducktape_host::session::{
+    AccountEvent, AccountState, Opening, Place, Seats, SeatsEvent, Session, SessionEvent, Shared,
+};
 use futures::StreamExt as _;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{
@@ -446,7 +449,7 @@ fn open_door(cx: &mut App) {
 
 /// What the stack shows full screen: a tab root, the program on top, or
 /// one of the shell's own pages pushed over them (a program's page, App
-/// settings, its Appearance, Switch network).
+/// settings, its Appearance, Switch network, Add a device).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Page {
     Root(Tab),
@@ -455,6 +458,7 @@ enum Page {
     Settings,
     Appearance,
     Switch,
+    Approve,
 }
 
 impl Page {
@@ -471,6 +475,7 @@ impl Page {
             Page::Settings => "screen::settings".into(),
             Page::Appearance => "screen::appearance".into(),
             Page::Switch => "screen::switch".into(),
+            Page::Approve => "screen::approve".into(),
         }
     }
 
@@ -478,9 +483,12 @@ impl Page {
     fn program(self) -> Option<&'static str> {
         match self {
             Page::Program(program) => Some(program),
-            Page::Root(_) | Page::About(_) | Page::Settings | Page::Appearance | Page::Switch => {
-                None
-            }
+            Page::Root(_)
+            | Page::About(_)
+            | Page::Settings
+            | Page::Appearance
+            | Page::Switch
+            | Page::Approve => None,
         }
     }
 
@@ -488,7 +496,7 @@ impl Page {
     fn pushed(self) -> bool {
         matches!(
             self,
-            Page::About(_) | Page::Settings | Page::Appearance | Page::Switch
+            Page::About(_) | Page::Settings | Page::Appearance | Page::Switch | Page::Approve
         )
     }
 }
@@ -537,7 +545,8 @@ pub struct Root {
     /// title and its sentence, dismissed by OK or Back.
     alert: Option<(&'static str, String)>,
     /// The shell's own pages over the stack, the top last: a program's
-    /// page, App settings, Switch network (over App settings, or alone).
+    /// page, App settings, Switch network (over App settings, or alone),
+    /// Add a device.
     pages: Vec<Page>,
     /// Where this phone's key is kept, as the store said when App settings
     /// opened (Expo reads it once per keyring): its words, or why the store
@@ -562,6 +571,11 @@ pub struct Root {
     /// Home's filter, and whether it is open (its magnifier pressed).
     search: Entity<InputState>,
     filtering: bool,
+    /// Add a device's code, as typed (`approve::field`), and what the page
+    /// showed as it was left: drawn so while it slides off, as a screen
+    /// leaving keeps its look (what it found is forgotten at once).
+    code: Entity<InputState>,
+    approve_left: AccountState,
     /// Each placed seat, observed: a tree, a standin or a fault that moved
     /// draws the window again.
     watched: BTreeMap<u64, Subscription>,
@@ -622,6 +636,15 @@ impl Root {
             cx.subscribe(&shared.seats, |root, _, event: &SeatsEvent, cx| {
                 root.seats_said(event, cx)
             }),
+            // an approval landed: Add a device goes, as the desktop's dialog
+            // closes; the host's notice says so (the `Toast` entity's)
+            cx.subscribe(
+                &shared.account,
+                |root, _, event: &AccountEvent, cx| match event {
+                    AccountEvent::Approved if root.page(cx) == Page::Approve => root.pop_page(cx),
+                    AccountEvent::Approved | AccountEvent::Toast(_) | AccountEvent::Welcome => {}
+                },
+            ),
             cx.subscribe(
                 &shared.session,
                 |root, _, event: &SessionEvent, cx| match event {
@@ -659,6 +682,8 @@ impl Root {
             }),
         ];
         subscriptions.extend(crate::os::follow(window, cx));
+        let (code, typed) = approve::field(window, cx);
+        subscriptions.push(typed);
         let appearance = shared.prefs.read(cx).get().appearance;
         sync_appearance(appearance, window, cx);
         let join = cx.new(|cx| join::Join::new(shared.clone(), window, cx));
@@ -681,6 +706,8 @@ impl Root {
             run: home::Run::default(),
             search,
             filtering: false,
+            code,
+            approve_left: AccountState::default(),
             watched: BTreeMap::new(),
             moving: None,
             dragged: None,
@@ -785,6 +812,20 @@ impl Root {
         self.push_page(Page::Switch, cx);
     }
 
+    /// Add a device pushed (the desktop's "Add a device…" opening): what
+    /// the last one found and typed gone, the keys in its field (Expo
+    /// `autoFocus`).
+    fn show_approve(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.shared
+            .account
+            .update(cx, |account, cx| account.approve_open(cx));
+        self.code.update(cx, |code, cx| {
+            code.set_value("", window, cx);
+            code.focus(window, cx);
+        });
+        self.push_page(Page::Approve, cx);
+    }
+
     /// The switch landed on the chain in hand (another node of it, or the
     /// node in hand itself): Switch network goes back where the reader
     /// was. Another chain left the network first, which took the page. A
@@ -859,7 +900,19 @@ impl Root {
     /// this one undoes it (Back during a push): that turns back from where
     /// it is. A pop the finger let go of goes on from where it let go, at
     /// the finger's speed. Tab switches do not move.
+    ///
+    /// Add a device left, by any way that moves the stack (Back, Cancel,
+    /// a swipe, a program or a tab's root opened over it, its approval),
+    /// forgets what it found and drops its call, as the desktop's dialog
+    /// closing does; a network left forgets it in the host already
+    /// (`Account::leave_network`).
     fn moved(&mut self, from: Page, pop: bool, cx: &mut Context<Self>) {
+        if from == Page::Approve && !self.pages.contains(&Page::Approve) {
+            self.approve_left = self.shared.account.read(cx).get().clone();
+            self.shared
+                .account
+                .update(cx, |account, cx| account.approve_closed(cx));
+        }
         let dragged = self.dragged.take();
         let to = self.page(cx);
         if from == to || matches!((from, to), (Page::Root(_), Page::Root(_))) {
@@ -1903,6 +1956,16 @@ impl Root {
                 let body = safe().flex().flex_col().pb(edges.bottom).child(page);
                 (layer.child(body), edges.bottom + px(look::gap::LG))
             }
+            Page::Approve => {
+                let shown = match self.pages.contains(&Page::Approve) {
+                    true => self.shared.account.read(cx).get().clone(),
+                    false => self.approve_left.clone(),
+                };
+                let focused = self.code.read(cx).focus_handle(cx).is_focused(window);
+                let page = approve::page(&self.shared, &shown, &self.code, focused, palette, cx);
+                let body = safe().flex().flex_col().pb(edges.bottom).child(page);
+                (layer.child(body), edges.bottom + px(look::gap::LG))
+            }
             Page::Switch => {
                 let back = cx.listener(|root, _, _, cx| root.pop_page(cx));
                 let header = look::header("switch/back", back, palette);
@@ -2480,14 +2543,51 @@ mod tests {
         assert_eq!(frames(cx), 0, "a toast up asked for a frame");
     }
 
+    /// The account this phone holds, seeded, with what Add a device found:
+    /// the joining key's fingerprint (`approve`), and the request itself
+    /// when `found`.
+    fn seed_found(shared: &Shared, approve: Option<&str>, found: bool, cx: &mut VisualTestContext) {
+        let key = vec![7; 32];
+        let state = ducktape_host::session::AccountState {
+            account: Some(Some((9, "ada".into()))),
+            approve: approve.map(str::to_owned),
+            error: "no".into(),
+            ..Default::default()
+        };
+        let request = found.then(|| noded_client::join::Request {
+            network: "testkit".into(),
+            key,
+        });
+        shared
+            .account
+            .update(cx, |account, cx| account.seed(state, None, request, cx));
+    }
+
+    fn approve_state(
+        shared: &Shared,
+        cx: &mut VisualTestContext,
+    ) -> ducktape_host::session::AccountState {
+        shared
+            .account
+            .read_with(cx, |account, _| account.get().clone())
+    }
+
+    /// Add a device pushed, as its row pushes it.
+    fn show_approve(root: &Entity<Root>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| root.update(cx, |root, cx| root.show_approve(window, cx)));
+        run_out(cx);
+    }
+
     /// The Account tab is a tab: picked, it is the root on screen with no
-    /// sheet over it; its App settings and Switch network push their pages
-    /// over it and Back comes back to it. A view asking for the reader's
-    /// account (a header's avatar) picks it too, the program left open
-    /// where it was.
+    /// sheet over it; its Add a device (only while this phone holds an
+    /// account), App settings and Switch network push their pages over it
+    /// and Back comes back to it; Add a device opens with nothing the last
+    /// one found. A view asking for the reader's account (a header's
+    /// avatar) picks it too, the program left open where it was.
     #[gpui_kit::test]
     fn the_account_tab_is_a_root_its_rows_push_over_it(cx: &mut TestAppContext) {
         let (root, stack, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
         let click = |id: &'static str, cx: &mut VisualTestContext| {
             let at = cx.debug_bounds(id).expect(id);
             cx.simulate_click(at.center(), gpui_kit::Modifiers::none());
@@ -2498,12 +2598,27 @@ mod tests {
         let account = (None, Page::Root(Tab::Account));
         click("tab/account", cx);
         assert_eq!(shown(cx), account, "the Account tab");
+        assert!(
+            cx.debug_bounds("account/add-device").is_none(),
+            "Add a device with no account to approve for"
+        );
+        seed_found(&shared, Some("A1F3 09C2"), false, cx);
+        run_out(cx);
         for (row, page) in [
+            ("account/add-device", Page::Approve),
             ("account/settings", Page::Settings),
             ("account/switch", Page::Switch),
         ] {
             click(row, cx);
             assert_eq!(shown(cx), (None, page), "{row}");
+            if page == Page::Approve {
+                let state = approve_state(&shared, cx);
+                assert_eq!(
+                    (state.approve, state.error.as_str()),
+                    (None, ""),
+                    "Add a device opened on the last one's find"
+                );
+            }
             root.update(cx, |root, cx| root.back(cx));
             run_out(cx);
             assert_eq!(shown(cx), account, "Back from {row}");
@@ -2520,6 +2635,144 @@ mod tests {
             (stack.top(), stack.instance(PROGRAM).is_some())
         });
         assert_eq!(open, (None, true), "the program was not left open");
+    }
+
+    /// Add a device asks for the code, Next and Cancel under it, until the
+    /// host found the joining key; then it shows that key's fingerprint
+    /// and Approve.
+    #[gpui_kit::test]
+    fn add_a_device_shows_the_fingerprint_once_the_host_found_the_key(cx: &mut TestAppContext) {
+        let (root, _, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        let drawn = |id: &'static str, cx: &mut VisualTestContext| cx.debug_bounds(id).is_some();
+        show_approve(&root, cx);
+        assert!(drawn("approve/next", cx) && drawn("approve/cancel", cx));
+        assert!(
+            !drawn("approve/fingerprint", cx),
+            "a fingerprint before a find"
+        );
+        seed_found(&shared, Some("A1F3 09C2"), true, cx);
+        run_out(cx);
+        assert!(drawn("approve/fingerprint", cx) && drawn("approve/confirm", cx));
+        assert!(
+            !drawn("approve/next", cx),
+            "the code step under the fingerprint"
+        );
+    }
+
+    /// Add a device left by Back, iOS's swipe or Cancel forgets what it
+    /// found: Approve after it asks nothing of the host.
+    #[gpui_kit::test]
+    fn leaving_add_a_device_any_way_forgets_what_it_found(cx: &mut TestAppContext) {
+        let (root, _, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        type Leave = fn(&Entity<Root>, f32, &mut VisualTestContext);
+        let ways: [(&str, Leave); 3] = [
+            ("Back", |root, _, cx| {
+                root.update(cx, |root, cx| root.back(cx))
+            }),
+            ("the swipe", |root, width, cx| {
+                root.update(cx, |root, cx| root.drag(width * 0.75, 0., cx));
+                let_go(root, cx);
+            }),
+            ("Cancel", |_, _, cx| {
+                let at = cx.debug_bounds("approve/cancel").expect("Cancel drawn");
+                cx.simulate_click(at.center(), gpui_kit::Modifiers::none());
+            }),
+        ];
+        for (way, leave) in ways {
+            show_approve(&root, cx);
+            seed_found(&shared, Some("A1F3 09C2"), true, cx);
+            run_out(cx);
+            let width = root.read_with(cx, |root, _| root.width);
+            leave(&root, width, cx);
+            run_out(cx);
+            let page = root.read_with(cx, |root, cx| root.page(cx));
+            assert_eq!(page, Page::Root(Tab::Home), "{way} stayed on the page");
+            shared
+                .account
+                .update(cx, |account, cx| account.approve_confirm(cx));
+            let state = approve_state(&shared, cx);
+            assert_eq!(state.approve, None, "{way} kept the fingerprint");
+            assert!(!state.busy, "{way} kept the request: Approve signed it");
+        }
+    }
+
+    /// An approval landing pops Add a device, and the host's notice says
+    /// so; one landing while another page is on top leaves that page.
+    #[gpui_kit::test]
+    fn an_approval_pops_add_a_device_and_says_so(cx: &mut TestAppContext) {
+        let (root, _, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        let approved = |cx: &mut VisualTestContext| {
+            shared
+                .account
+                .update(cx, |account, cx| account.approve_done(Ok(()), cx));
+            run_out(cx);
+        };
+        let pages = |cx: &mut VisualTestContext| root.read_with(cx, |root, _| root.pages.clone());
+        show_approve(&root, cx);
+        seed_found(&shared, Some("A1F3 09C2"), true, cx);
+        run_out(cx);
+        shared
+            .account
+            .update(cx, |account, cx| account.approve_done(Ok(()), cx));
+        frames(cx);
+        assert!(
+            cx.debug_bounds("approve/fingerprint").is_some(),
+            "the page slid off without what it showed"
+        );
+        run_out(cx);
+        assert_eq!(pages(cx), [], "the approval left the page up");
+        let notice = shared.toast.read_with(cx, |toast, _| toast.get().clone());
+        assert_eq!(notice, "Approved. The new device finishes on its own.");
+        root.update(cx, |root, cx| root.show_settings(cx));
+        run_out(cx);
+        approved(cx);
+        assert_eq!(
+            pages(cx),
+            [Page::Settings],
+            "an approval popped App settings"
+        );
+    }
+
+    /// What the person does: Add a device from the Account tab, a code
+    /// typed into its field (the keys in it as it opens) and Next; the
+    /// host is asked, and its refusal shows under the field until the next
+    /// keystroke; return asks again.
+    #[gpui_kit::test]
+    fn a_code_typed_and_next_asks_the_host_and_its_refusal_shows_under_the_field(
+        cx: &mut TestAppContext,
+    ) {
+        use join::tests::until;
+        const REFUSED: &str = "A code is 8 letters and digits, like KQ4M-9XPT.";
+        let (root, _, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        let click = |id: &'static str, cx: &mut VisualTestContext| {
+            let at = cx.debug_bounds(id).expect(id);
+            cx.simulate_click(at.center(), gpui_kit::Modifiers::none());
+            run_out(cx);
+        };
+        let error = |cx: &mut VisualTestContext| approve_state(&shared, cx).error;
+        seed_found(&shared, None, false, cx);
+        click("tab/account", cx);
+        click("account/add-device", cx);
+        cx.simulate_input("KQ4M");
+        let typed = root.read_with(cx, |root, cx| root.code.read(cx).value().to_string());
+        assert_eq!(typed, "KQ4M", "the keys were not in the field");
+        click("approve/next", cx);
+        until(cx, |cx| !error(cx).is_empty());
+        assert_eq!(error(cx), REFUSED);
+        run_out(cx);
+        assert!(
+            cx.debug_bounds("approve/problem").is_some(),
+            "the refusal was not under the field"
+        );
+        cx.simulate_input("9");
+        assert_eq!(error(cx), "", "a keystroke left the refusal up");
+        cx.simulate_keystrokes("enter");
+        until(cx, |cx| !error(cx).is_empty());
+        assert_eq!(error(cx), REFUSED, "return asked nothing");
     }
 
     /// The Notifications tab lists the host's centre, newest first, a dot on
