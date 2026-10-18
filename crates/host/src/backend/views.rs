@@ -304,6 +304,8 @@ fn cached_section(path: &Path, code: &BlobId, name: &str) -> Option<Option<Vec<u
     while read.byte()? != 0 {}
     let mut preamble = [0; 8];
     read.read_exact(&mut preamble).ok()?;
+    // ponytail: a component's notifier is still read whole; walk its
+    // nested modules here if a program ships one as a component
     if preamble != *b"\0asm\x01\0\0\0" {
         return None;
     }
