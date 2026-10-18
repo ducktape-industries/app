@@ -48,7 +48,9 @@ pub use kernel::shown_title;
 // (render/av.rs)
 #[cfg(feature = "av")]
 pub use kernel::plain;
-pub use roster::{Link, RailRow, connected, deployments_checked, disconnected, props, valid_route};
+pub use roster::{
+    Link, Prep, RailRow, connected, deployments_checked, disconnected, props, valid_route,
+};
 pub use roster::{Roster, changes_channel, roster};
 pub use seat::{Back, Failure};
 #[cfg(feature = "ui")]
@@ -356,6 +358,50 @@ pub fn seat_for_test(program: &'static str, min_width: u32) {
 pub fn seat_compiled_for_test(program: &'static str, name: &str, icon: &str) {
     let seat = Mounted::seat();
     lock(&seat).slot = Slot::Compiled(ViewCode::for_test(name, icon, 320));
+    lock(registry()).insert((program, 0), seat);
+}
+
+/// `program`'s seat on its way as a roster read's read ahead leaves it:
+/// its bytes coming, or all here (`read`) and not shown yet.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seat_reading_for_test(program: &'static str, read: bool) {
+    let total = read.then_some(1);
+    seat_slot_for_test(
+        program,
+        Slot::Fetching {
+            received: u64::from(read),
+            total,
+        },
+    );
+}
+
+/// `program`'s seat with its bytes here and its manifest read (`name`):
+/// waiting for a loader, or a loader compiling its code (`compiling`).
+#[cfg(any(test, feature = "test-support"))]
+pub fn seat_listed_for_test(program: &'static str, name: &str, compiling: bool) {
+    let listing = Box::new(Listing {
+        name: name.into(),
+        ..Default::default()
+    });
+    seat_slot_for_test(
+        program,
+        match compiling {
+            true => Slot::Compiling(listing),
+            false => Slot::Listed(listing),
+        },
+    );
+}
+
+/// `program`'s seat holding the network's word that it ships no view.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seat_empty_for_test(program: &'static str) {
+    seat_slot_for_test(program, Slot::Empty);
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn seat_slot_for_test(program: &'static str, slot: Slot) {
+    let seat = Mounted::seat();
+    lock(&seat).slot = slot;
     lock(registry()).insert((program, 0), seat);
 }
 

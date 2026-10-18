@@ -113,6 +113,9 @@ pub const SHEET_INSET: f32 = 20.;
 /// A pressable while it is held (Expo `platform.pressed`, the boards'
 /// `.press`): dimmed to this opacity.
 pub const PRESSED: f32 = 0.6;
+/// A tile's glyph while its program is on its way: dimmed to this opacity
+/// (inside its ring while a loader prepares it).
+pub const PREPARING: f32 = 0.4;
 
 /// The design crate's spacing ladder (`spacing`).
 pub mod gap {

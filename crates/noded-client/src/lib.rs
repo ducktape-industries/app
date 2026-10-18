@@ -26,6 +26,7 @@ use abi::{BlobId, Refusal};
 use borsh::{BorshDeserialize, BorshSerialize};
 use futures::{Stream, StreamExt as _};
 use reqwest::StatusCode;
+use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
@@ -91,6 +92,30 @@ fn http() -> reqwest::Client {
         .expect("the HTTP client")
 }
 
+/// A blob read's client ([`Client::blob`]): [`http`]'s, with deadlines a
+/// read gives up on, which only a read has. An upload (`put_blobs`) streams
+/// for as long as its blobs take, and a query is answered when the node has
+/// it. A deadline passed is the read's failure, said as any transport
+/// failure is; nothing here asks again.
+fn reads(connect: Duration, idle: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(connect)
+        .read_timeout(idle)
+        .build()
+        .expect("the HTTP client")
+}
+
+/// A blob read's connect deadline: a node that has not taken the
+/// connection (TCP and TLS) in 10 s is not reached; the handshake takes
+/// well under a second even on a weak phone link.
+const READ_CONNECT: Duration = Duration::from_secs(10);
+
+/// A blob read's idle deadline: 30 s with no byte at all ends it, as the
+/// live link's own idle does (`backend::live`); it starts again on every
+/// byte, so a slow blob that keeps coming never trips it.
+const READ_IDLE: Duration = Duration::from_secs(30);
+
 /// [`Error::Failed`]'s sentence when what answered is not a node: its body is someone else's page.
 pub const NOT_A_NODE: &str = "this address does not answer as a ducktape node";
 
@@ -135,13 +160,19 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
+    /// The blob reads' own, with their deadlines ([`reads`]).
+    reads: reqwest::Client,
     base: String,
 }
 
 impl Client {
     pub fn new(base: impl Into<String>) -> Client {
         let base = base.into().trim_end_matches('/').to_owned();
-        Client { http: http(), base }
+        Client {
+            http: http(),
+            reads: reads(READ_CONNECT, READ_IDLE),
+            base,
+        }
     }
 
     pub fn endpoint(&self) -> &str {
@@ -192,10 +223,11 @@ impl Client {
         self.post(route::QUERY, &Query { layer, frame }).await
     }
 
-    /// The framed bytes (`kind len\0body`) of a blob the node holds.
+    /// The framed bytes (`kind len\0body`) of a blob the node holds, read
+    /// under the reads' deadlines ([`READ_CONNECT`], [`READ_IDLE`]).
     pub async fn blob(&self, id: BlobId) -> Result<Option<Vec<u8>>> {
         answered(
-            self.http
+            self.reads
                 .post(self.url(route::BLOB_GET))
                 .body(abi::encode(&id)),
         )
@@ -389,6 +421,59 @@ mod tests {
         sent.extend([7; 300]);
         sent.extend(blobs.concat());
         assert_eq!(body, sent);
+    }
+
+    /// A client whose blob reads give up after `idle` with no byte, and
+    /// the node it asks: a socket whose one connection `answer` serves.
+    async fn reading<F: Future<Output = ()> + Send + 'static>(
+        idle: Duration,
+        answer: impl FnOnce(tokio::net::TcpStream) -> F + Send + 'static,
+    ) -> Client {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = Client {
+            reads: reads(Duration::from_secs(5), idle),
+            ..Client::new(format!("http://{}", listener.local_addr().unwrap()))
+        };
+        tokio::spawn(async move { answer(listener.accept().await.unwrap().0).await });
+        client
+    }
+
+    /// A blob read the node takes and never answers gives up once nothing
+    /// has come for the idle deadline: a transport failure, not a wait for
+    /// good.
+    #[tokio::test]
+    async fn a_blob_read_gives_up_on_a_node_that_says_nothing() {
+        let client = reading(Duration::from_millis(200), |stream| async move {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            drop(stream);
+        })
+        .await;
+        let read =
+            tokio::time::timeout(Duration::from_secs(5), client.blob(BlobId::Sha256([0; 32])))
+                .await
+                .expect("the read never gave up");
+        assert!(matches!(read, Err(Error::Transport(_))), "{read:?}");
+    }
+
+    /// A blob that keeps coming, a byte at a time, for longer than the idle
+    /// deadline is read whole: the deadline is on silence, not on the read.
+    #[tokio::test]
+    async fn a_slow_blob_that_keeps_coming_is_read_whole() {
+        use tokio::io::AsyncWriteExt as _;
+        let blob = abi::encode(&Some(vec![7u8; 6]));
+        let sent = blob.clone();
+        let client = reading(Duration::from_millis(200), |mut stream| async move {
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", sent.len());
+            stream.write_all(head.as_bytes()).await.unwrap();
+            for byte in sent {
+                tokio::time::sleep(Duration::from_millis(80)).await;
+                stream.write_all(&[byte]).await.unwrap();
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        })
+        .await;
+        let read = client.blob(BlobId::Sha256([0; 32])).await;
+        assert_eq!(read.ok(), Some(Some(vec![7u8; 6])));
     }
 
     #[tokio::test]

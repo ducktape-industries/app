@@ -11,14 +11,14 @@ use super::look::{self, Palette};
 use super::stack::{Opened, Tab};
 use super::{ACCOUNT_PROGRAM, Root, settings};
 use ducktape_host::a11y::Control as _;
-use ducktape_host::runtime::RailRow;
 use ducktape_host::runtime::notify::{Entry, wall};
+use ducktape_host::runtime::{Prep, RailRow};
 use ducktape_host::session::Shared;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::{
-    App, Context, Div, Entity, FontWeight, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, Role, SharedString, Stateful, StatefulInteractiveElement as _,
-    Styled as _, div, px, relative, svg,
+    AnimationExt as _, AnyElement, App, Context, Div, Entity, FontWeight, InteractiveElement as _,
+    IntoElement, ParentElement as _, Pixels, Role, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled as _, div, px, relative, svg,
 };
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -231,6 +231,144 @@ fn search(field: &Entity<InputState>, focused: bool, palette: Palette) -> Div {
     )
 }
 
+/// The programs Home's caption counts while they are on their way: the
+/// ones not settled when the run begins, until every one of them is. The
+/// host reads every one's bytes before it prepares any: while some are still
+/// being read the caption counts those read (`Loading 7/18`: on a first join
+/// every program the roster lists, those that ship no view too, since
+/// whether one does is known only once its bytes are here), then the ones
+/// with a view as they are prepared (`Preparing 3/11 · Forge`). Later, the
+/// ones the network moved to new code. The count never grows: a program
+/// that starts while a run is on waits for the next run.
+#[derive(Default)]
+pub struct Run(Vec<&'static str>);
+
+impl Run {
+    /// The run once the rail reads `rows`: over when none it counts is
+    /// being prepared, and then the next one begins with those that are.
+    pub fn follow(&mut self, rows: &[RailRow]) {
+        if !self.0.iter().any(|program| preparing(rows, program)) {
+            self.0 = rows
+                .iter()
+                .filter(|row| row.prep != Prep::Settled)
+                .map(|row| row.program)
+                .collect();
+        }
+    }
+
+    /// The caption while a run is on: `Loading 7/18` while some of its
+    /// programs' bytes are being read (the place of the next one to come
+    /// among them), then `Preparing 3/11 · Forge` (the place of the one in
+    /// hand among those with a view, the settled ones before it, and that
+    /// one's name while a loader is at it).
+    pub fn caption(&self, rows: &[RailRow]) -> Option<String> {
+        let run: Vec<&RailRow> = (rows.iter())
+            .filter(|row| self.0.contains(&row.program))
+            .collect();
+        if run
+            .iter()
+            .any(|row| row.pending || row.prep == Prep::Reading)
+        {
+            let read = run.iter().filter(|row| row.prep != Prep::Reading).count();
+            let total = run.len();
+            return Some(format!("Loading {}/{total}", (read + 1).min(total)));
+        }
+        let views: Vec<&RailRow> = run.into_iter().filter(|row| !row.empty).collect();
+        let left = views.iter().filter(|row| row.prep != Prep::Settled).count();
+        if left == 0 {
+            return None;
+        }
+        let (total, place) = (views.len(), views.len() - left + 1);
+        Some(match views.iter().find(|row| row.prep == Prep::Working) {
+            Some(row) => format!("Preparing {place}/{total} · {}", name_of(row)),
+            None => format!("Preparing {place}/{total}"),
+        })
+    }
+}
+
+/// Whether `program`'s row in `rows` is being prepared.
+fn preparing(rows: &[RailRow], program: &str) -> bool {
+    rows.iter()
+        .any(|row| row.program == program && row.prep != Prep::Settled)
+}
+
+/// The ring around a tile's glyph while a loader prepares its program (the
+/// shell boards' opening spinner, `.opening .gl .spin`): a 2 line in
+/// `border` just outside the 60 square, sharp, with one side's length of it
+/// in the foreground running round once in [`RING_LAP`]; held still on the
+/// top side when the system asks for less motion. It paces itself at 30 fps
+/// (the desktop's status dot does too) and is drawn only on the tile being
+/// prepared, so nothing redraws for it while none is. `id` is its selector,
+/// `{id}/run` its running part's.
+fn ring(id: String, moving: bool, palette: Palette) -> AnyElement {
+    let side = 60. + 2. * RING;
+    let run = format!("{id}/run");
+    let piece = move |[left, top, width, height]: [f32; 4]| {
+        let run = run.clone();
+        div()
+            .debug_selector(move || run)
+            .absolute()
+            .left(px(left))
+            .top(px(top))
+            .w(px(width))
+            .h(px(height))
+            .bg(palette.foreground())
+    };
+    let frame = div()
+        .debug_selector(move || id)
+        .absolute()
+        .top(px(-RING))
+        .left(px(-RING))
+        .size(px(side))
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .border(px(RING))
+                .border_color(palette.border()),
+        );
+    match moving {
+        false => frame
+            .children(segment(0., side).map(piece))
+            .into_any_element(),
+        true => frame
+            .with_animation(
+                "ring",
+                gpui_kit::Animation::new(RING_LAP)
+                    .repeat()
+                    .with_max_fps(30.),
+                move |frame, at| frame.children(segment(at, side).map(&piece)),
+            )
+            .into_any_element(),
+    }
+}
+
+/// The ring's line.
+const RING: f32 = 2.;
+/// Once round the ring.
+const RING_LAP: Duration = Duration::from_millis(1500);
+
+/// The ring's running part, `at` (0..1) of the way round its `side` square
+/// clockwise from the top left corner: one side's length, [`RING`] thick,
+/// in a piece for each side it lies on (left, top, width, height).
+fn segment(at: f32, side: f32) -> impl Iterator<Item = [f32; 4]> {
+    let round = 4. * side;
+    let head = at.rem_euclid(1.) * round;
+    (0..4u8).flat_map(move |edge| {
+        let start = f32::from(edge) * side;
+        // the part before the top left corner, and the part past it
+        [head, head - round].into_iter().filter_map(move |from| {
+            let (a, b) = ((from - start).max(0.), (from + side - start).min(side));
+            (b > a).then_some(match edge {
+                0 => [a, 0., b - a, RING],
+                1 => [side - RING, a, RING, b - a],
+                2 => [side - b, side - RING, b - a, RING],
+                _ => [0., side - b, RING, b - a],
+            })
+        })
+    })
+}
+
 /// Home's two sections of `rows`: New, the programs with news (a view
 /// asked about it: a dot) in `rows`' order, empty while none has news; and
 /// the grid, every program of `rows` in its order, those with news too:
@@ -248,8 +386,10 @@ fn sections<'a>(
 
 /// One program's tile in Home's grid, four across: its glyph on its tint's
 /// ground, a dot when it has news (never a count, Expo `Dot`), the name
-/// under it and the stage it is at while on its way. `section` keeps the
-/// New section's copy apart from the grid's (`new/chat`, `home/chat`).
+/// under it; while it is on its way, the glyph dimmed and no word, in a
+/// running [`ring`] while a loader prepares it; a failure says so under the
+/// name. `section` keeps
+/// the New section's copy apart from the grid's (`new/chat`, `home/chat`).
 fn tile(
     row: &RailRow,
     section: &'static str,
@@ -259,7 +399,16 @@ fn tile(
 ) -> Stateful<Div> {
     let program = row.program;
     let name = name_of(row);
-    let mut face = glyph(row, 60., 30., palette).relative();
+    let prepared = row.prep == Prep::Settled;
+    let mut face = glyph(row, 60., 30., palette);
+    if !prepared {
+        face = div().child(face.opacity(look::PREPARING));
+    }
+    if row.prep == Prep::Working {
+        let id = format!("{section}/{program}/ring");
+        face = face.child(ring(id, !cx.reduce_motion(), palette));
+    }
+    let mut face = face.relative();
     if news {
         // the board's dot: 10 in a 2 ring of the ground, at -5 / -5
         face = face.child(
@@ -296,9 +445,10 @@ fn tile(
             window.blur(cx);
             root.open(program, cx);
         }));
-    if let Some(stage) = row.note {
+    if let Some(stage) = row.note.filter(|_| prepared) {
         tile = tile.child(
             look::text(look::TINY, FontWeight::NORMAL, palette.muted())
+                .debug_selector(move || format!("{section}/{program}/note"))
                 .mt(px(-look::gap::XS))
                 .child(stage),
         );
@@ -311,11 +461,13 @@ fn tile(
 /// news, those programs' tiles under "New"; then every program the filter
 /// answers in the roster's order, four across, under "Programs on this
 /// network". New repeats a tile, it never moves one, so the grid's places
-/// stay put. Each tile comes as its program's code is read; while none is
-/// there and programs are still on their way, a `Loading` line stands where
-/// the tiles go.
+/// stay put. A tile comes once its program's code is read, and the host
+/// shows every program a roster read read at once, so they come together;
+/// while none is there and programs are still on their way, a `Loading` line
+/// stands where the tiles go. While a `run` is on, the caption counts it.
 pub fn home(
     shared: &Shared,
+    run: &Run,
     field: &Entity<InputState>,
     filtering: bool,
     searching: bool,
@@ -323,6 +475,7 @@ pub fn home(
     cx: &mut Context<Root>,
 ) -> Div {
     let query = field.read(cx).value().trim().to_lowercase();
+    let counting = run.caption(shared.rail.read(cx).rows());
     let all = listed(shared, cx);
     let loading = all.is_empty() || all.iter().any(|row| row.pending);
     // a program still on its way may ship no view: not a tile until its
@@ -380,7 +533,7 @@ pub fn home(
             Some((_, name)) if !name.is_empty() => format!("{name} · {programs}"),
             _ => programs,
         };
-        (network, on)
+        (network, counting.unwrap_or(on))
     };
     let (icon, label) = match filtering {
         true => ("icons/x.svg", "Close the filter"),
@@ -1049,6 +1202,7 @@ mod tests {
             note,
             empty: false,
             pending: false,
+            prep: Prep::Settled,
         }
     }
 
@@ -1079,6 +1233,110 @@ mod tests {
         let (new, grid) = sections(&rows, &badges);
         assert_eq!(programs(new), ["chat", "forge"]);
         assert_eq!(programs(grid), ["arcade", "chat", "files", "forge"]);
+    }
+
+    /// A run counts the programs on its way when it begins: those read while
+    /// some are still being read or not shown yet, then the ones with a view
+    /// as they are prepared, the one a loader is at by name; it never grows
+    /// (one that starts meanwhile waits for the next run, which begins as
+    /// this one ends); new code over a view held is read, then prepared; none
+    /// is on once every one is settled.
+    #[test]
+    fn a_run_counts_them_read_then_prepared_and_ends_when_all_are_settled() {
+        // R its bytes coming, r read and not shown yet, W waiting for a
+        // loader, K a loader at it, S settled, N settled with no view, H a
+        // view held with new code coming
+        let rows = |states: &[(&'static str, char)]| -> Vec<RailRow> {
+            (states.iter())
+                .map(|&(program, state)| {
+                    let (prep, pending) = match state {
+                        'R' => (Prep::Reading, true),
+                        'r' => (Prep::Waiting, true),
+                        'W' => (Prep::Waiting, false),
+                        'K' => (Prep::Working, false),
+                        'H' => (Prep::Reading, false),
+                        _ => (Prep::Settled, false),
+                    };
+                    RailRow {
+                        program,
+                        prep,
+                        pending,
+                        empty: state == 'N',
+                        ..row(program, (prep != Prep::Settled).then_some("Loading"))
+                    }
+                })
+                .collect()
+        };
+        let mut run = Run::default();
+        let mut step = |states: &[(&'static str, char)]| {
+            let rows = rows(states);
+            run.follow(&rows);
+            run.caption(&rows)
+        };
+        let at = |caption: &str| Some(caption.to_owned());
+        assert_eq!(step(&[("chat", 'S'), ("forge", 'S')]), None, "all settled");
+        assert_eq!(
+            step(&[("chat", 'R'), ("forge", 'R'), ("none", 'R')]),
+            at("Loading 1/3")
+        );
+        assert_eq!(
+            step(&[("chat", 'r'), ("forge", 'R'), ("none", 'r')]),
+            at("Loading 3/3")
+        );
+        assert_eq!(
+            step(&[("chat", 'r'), ("forge", 'r'), ("none", 'r')]),
+            at("Loading 3/3"),
+            "prepared before the tiles came"
+        );
+        assert_eq!(
+            step(&[("chat", 'W'), ("forge", 'W'), ("none", 'N')]),
+            at("Preparing 1/2")
+        );
+        assert_eq!(
+            step(&[("chat", 'K'), ("forge", 'W'), ("none", 'N'), ("trade", 'R')]),
+            at("Preparing 1/2 · Chat"),
+            "grew with a program that started meanwhile"
+        );
+        assert_eq!(
+            step(&[("chat", 'S'), ("forge", 'K'), ("none", 'N'), ("trade", 'R')]),
+            at("Preparing 2/2 · Forge")
+        );
+        assert_eq!(
+            step(&[("chat", 'S'), ("forge", 'S'), ("none", 'N'), ("trade", 'R')]),
+            at("Loading 1/1"),
+            "the next run did not begin as this one ended"
+        );
+        assert_eq!(step(&[("trade", 'S'), ("chat", 'H')]), at("Loading 1/1"));
+        assert_eq!(
+            step(&[("trade", 'S'), ("chat", 'K')]),
+            at("Preparing 1/1 · Chat")
+        );
+        assert_eq!(step(&[("trade", 'S'), ("chat", 'S')]), None);
+    }
+
+    /// The ring's running part is one side long wherever it is, on the top
+    /// side at the start, cut in two at a corner.
+    #[test]
+    fn the_rings_part_is_one_side_long_and_cut_at_a_corner() {
+        let side = 64.;
+        let length = |at| -> f32 { segment(at, side).map(|[_, _, w, h]| w.max(h)).sum() };
+        for at in [0., 0.1, 0.25, 0.4, 0.8, 0.95] {
+            assert!((length(at) - side).abs() < 1e-3, "{at}: {}", length(at));
+        }
+        assert_eq!(
+            segment(0., side).collect::<Vec<_>>(),
+            [[0., 0., side, RING]]
+        );
+        // half way along the top: the top's second half, the right's first
+        assert_eq!(
+            segment(0.125, side).collect::<Vec<_>>(),
+            [[32., 0., 32., RING], [side - RING, 0., RING, 32.]]
+        );
+        // past the end: the left side's top half and the top's first half
+        assert_eq!(
+            segment(0.875, side).collect::<Vec<_>>(),
+            [[0., 0., 32., RING], [0., 0., RING, 32.]]
+        );
     }
 
     /// The filter reads a name or an id, in any case.

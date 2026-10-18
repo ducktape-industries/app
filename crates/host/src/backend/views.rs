@@ -220,11 +220,20 @@ pub async fn program_bytes(
     if !hashes_to(&framed, code)? {
         return Err(Fetch::Corrupt);
     }
+    // written whole or not at all (a sibling of its own, renamed into
+    // place): a reader never meets half a blob
     if let Some(path) = cached {
+        static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let kept = path.with_extension(format!("{n}.partial"));
         if let Some(parent) = path.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
-        let _ = tokio::fs::write(path, &framed).await;
+        if tokio::fs::write(&kept, &framed).await.is_err()
+            || tokio::fs::rename(&kept, &path).await.is_err()
+        {
+            let _ = tokio::fs::remove_file(&kept).await;
+        }
     }
     Ok((body, "node"))
 }

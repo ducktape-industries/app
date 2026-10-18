@@ -557,6 +557,8 @@ pub struct Root {
     appearance: Appearance,
     /// Debug mode's numbers, read while the Open tab is on screen.
     readout: debug::Readout,
+    /// The programs Home's caption counts while they are being prepared.
+    run: home::Run,
     /// Home's filter, and whether it is open (its magnifier pressed).
     search: Entity<InputState>,
     filtering: bool,
@@ -586,6 +588,9 @@ pub struct Root {
     drawn_toast: Option<Shown<String>>,
     sheet_height: Rc<Cell<Option<gpui_kit::Pixels>>>,
     consent_height: Rc<Cell<Option<gpui_kit::Pixels>>>,
+    /// Draws so far: a test tells a still window from one a timer redraws.
+    #[cfg(test)]
+    renders: usize,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -673,6 +678,7 @@ impl Root {
             switching: None,
             appearance,
             readout: debug::Readout::default(),
+            run: home::Run::default(),
             search,
             filtering: false,
             watched: BTreeMap::new(),
@@ -688,6 +694,8 @@ impl Root {
             drawn_toast: None,
             sheet_height: Rc::default(),
             consent_height: Rc::default(),
+            #[cfg(test)]
+            renders: 0,
             _subscriptions: subscriptions,
         }
     }
@@ -1311,9 +1319,11 @@ impl Root {
         cx.notify();
     }
 
-    /// The network listed its programs: Home redraws, and the links kept
-    /// until then open now, in the order they came.
+    /// The network listed its programs, or one's code moved on: Home's
+    /// count follows and Home redraws, and the links kept until then open
+    /// now, in the order they came.
     fn rail_moved(&mut self, cx: &mut Context<Self>) {
+        self.run.follow(self.shared.rail.read(cx).rows());
         if !self.shared.rail.read(cx).rows().is_empty() {
             for link in std::mem::take(&mut self.waiting) {
                 self.open_link(&link, cx);
@@ -1952,6 +1962,7 @@ impl Root {
                 let searching = self.search.read(cx).focus_handle(cx).is_focused(window);
                 home::home(
                     &self.shared,
+                    &self.run,
                     &self.search,
                     self.filtering,
                     searching,
@@ -1973,6 +1984,10 @@ impl Root {
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        {
+            self.renders += 1;
+        }
         let edges = ducktape_host::contract::os().insets(window).effective();
         let palette = look::palette(cx);
         let viewport = window.viewport_size();
@@ -2837,6 +2852,114 @@ mod tests {
             Some(PROGRAM),
             "the tap did not open the program at lift"
         );
+    }
+
+    /// Home over a roster read: while the programs' bytes are read the
+    /// caption counts them read and no tile stands; once every one is read
+    /// (the host shows them all at once) every tile with a view comes in the
+    /// same frame, dimmed and with no word, only the one a loader compiles
+    /// ringed, the ring running as the clock does (held still under Reduce
+    /// Motion); the caption counts the views as they are prepared and is the
+    /// normal one once all are settled, and nothing redraws Home after.
+    #[gpui_kit::test]
+    fn home_shows_every_tile_at_once_once_read_and_counts_them_prepared(cx: &mut TestAppContext) {
+        use ducktape_host::runtime::{
+            seat_compiled_for_test, seat_empty_for_test, seat_listed_for_test,
+            seat_reading_for_test,
+        };
+        let (root, _, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        let (alpha, beta, none) = ("phone-prep-alpha", "phone-prep-beta", "phone-prep-none");
+        seat_reading_for_test(alpha, false);
+        seat_reading_for_test(beta, false);
+        seat_reading_for_test(none, true);
+        shared.rail.update(cx, |rail, cx| {
+            rail.read_off(Roster::listing(&[alpha, beta, none]), cx)
+        });
+        run_out(cx);
+        let refresh = |cx: &mut VisualTestContext| {
+            shared.rail.update(cx, |rail, cx| _ = rail.refresh(cx));
+            run_out(cx);
+        };
+        let caption = |cx: &mut VisualTestContext| {
+            root.read_with(cx, |root, cx| {
+                root.run.caption(root.shared.rail.read(cx).rows())
+            })
+        };
+        let shown = |what: &str, cx: &mut VisualTestContext| {
+            [alpha, beta].map(|program| {
+                let id = format!("home/{program}{what}").leak();
+                cx.debug_bounds(id).is_some()
+            })
+        };
+        assert_eq!(caption(cx).as_deref(), Some("Loading 2/3"));
+        assert_eq!(shown("", cx), [false; 2], "a tile before all are read");
+        seat_reading_for_test(alpha, true);
+        refresh(cx);
+        assert_eq!(caption(cx).as_deref(), Some("Loading 3/3"));
+        assert_eq!(shown("", cx), [false; 2], "a tile before all are read");
+
+        seat_listed_for_test(alpha, "Alpha", false);
+        seat_listed_for_test(beta, "Beta", false);
+        seat_empty_for_test(none);
+        refresh(cx);
+        assert_eq!(shown("", cx), [true; 2], "the tiles came apart");
+        assert_eq!(caption(cx).as_deref(), Some("Preparing 1/2"));
+        assert_eq!(shown("/ring", cx), [false; 2], "a waiting tile ringed");
+        assert_eq!(
+            shown("/note", cx),
+            [false; 2],
+            "a word under a tile on its way"
+        );
+
+        seat_listed_for_test(alpha, "Alpha", true);
+        refresh(cx);
+        assert_eq!(caption(cx).as_deref(), Some("Preparing 1/2 · Alpha"));
+        assert_eq!(
+            shown("/ring", cx),
+            [true, false],
+            "not the one compiling ringed"
+        );
+        const RING: &str = "home/phone-prep-alpha/ring";
+        const RUN: &str = "home/phone-prep-alpha/ring/run";
+        let tile = cx.debug_bounds("home/phone-prep-alpha").expect("the tile");
+        let ring = cx.debug_bounds(RING).expect("the ring");
+        assert_eq!(
+            ring.size.width,
+            gpui_kit::px(64.),
+            "not just outside the glyph"
+        );
+        assert!(tile.contains(&ring.center()));
+        // the clock on: the ring's part has moved round, and moves again
+        let step = |cx: &mut VisualTestContext| {
+            let before = cx.debug_bounds(RUN).expect("the ring's running part");
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(200));
+            cx.run_until_parked();
+            before != cx.debug_bounds(RUN).expect("the ring's running part")
+        };
+        assert!(step(cx) && step(cx), "the ring stood still");
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.update(|window, _| window.refresh());
+        run_out(cx);
+        assert!(cx.debug_bounds(RING).is_some(), "no still ring");
+        assert!(!step(cx), "the ring ran under Reduce Motion");
+        cx.update(|_, cx| cx.set_reduce_motion(false));
+
+        seat_compiled_for_test(alpha, "Alpha", "");
+        seat_listed_for_test(beta, "Beta", true);
+        refresh(cx);
+        assert_eq!(caption(cx).as_deref(), Some("Preparing 2/2 · Beta"));
+        assert_eq!(shown("/ring", cx), [false, true]);
+
+        seat_compiled_for_test(beta, "Beta", "");
+        refresh(cx);
+        assert_eq!(caption(cx), None, "the count stayed once all settled");
+        let renders = root.read_with(cx, |root, _| root.renders);
+        run_out(cx);
+        assert_eq!(frames(cx), 0, "a frame asked for with nothing preparing");
+        let redrawn = root.read_with(cx, |root, _| root.renders) - renders;
+        assert_eq!(redrawn, 0, "Home redrew with nothing preparing");
     }
 
     /// App settings' Light and dark row opens Appearance; the palette (and
