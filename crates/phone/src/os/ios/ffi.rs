@@ -6,14 +6,14 @@
 //! Foreign functions defined here, called on the main thread:
 //! - `ducktape_phone_main(documents, caches)`, once: two NUL-terminated
 //!   UTF-8 paths the caller owns, read before anything else runs.
-//! - `ducktape_phone_back_begins(x, y, vx, vy, held) -> begins`: whether
+//! - `ducktape_phone_swipe_begins(x, y, vx, vy, held) -> begins`: whether
 //!   the launcher's swipe from anywhere starts (the left edge's always
 //!   does): back, or at a tab root the tabs'. Called from inside UIKit's
 //!   touch handling.
-//! - `ducktape_phone_back_drag(x, speed)`: a swipe under way, `x` points
+//! - `ducktape_phone_swipe_drag(x, speed)`: a swipe under way, `x` points
 //!   to the right (negative to the left), `speed` points per second;
-//!   `ducktape_phone_back_let_go()`: let go, the shell judges whether it
-//!   goes back, or which tab it lands on; `ducktape_phone_back_cancel()`:
+//!   `ducktape_phone_swipe_let_go()`: let go, the shell judges whether it
+//!   goes back, or which tab it lands on; `ducktape_phone_swipe_cancel()`:
 //!   ended without going on.
 //! - `ducktape_phone_link(url)`: a call's Answer (CallKit), its link.
 //! - `ducktape_phone_push_token(kind, token)`: PushKit's token, as hex.
@@ -160,7 +160,7 @@ pub unsafe extern "C" fn ducktape_phone_main(documents: *const c_char, caches: *
 /// Read against what the last draw showed (`shell::swipe`): UIKit asks
 /// from inside its touch handling, where the app is not reached.
 #[unsafe(no_mangle)]
-pub extern "C" fn ducktape_phone_back_begins(x: f64, y: f64, vx: f64, vy: f64, held: f64) -> u8 {
+pub extern "C" fn ducktape_phone_swipe_begins(x: f64, y: f64, vx: f64, vy: f64, held: f64) -> u8 {
     use gpui_kit::{point, px};
     let held = std::time::Duration::try_from_secs_f64(held).unwrap_or(std::time::Duration::MAX);
     let start = point(px(x as f32), px(y as f32));
@@ -173,11 +173,11 @@ pub extern "C" fn ducktape_phone_back_begins(x: f64, y: f64, vx: f64, vy: f64, h
 /// left), moving `speed` points per second to the right: the screen on
 /// top follows the finger, or at a tab root the tabs do.
 /// gpui_ios hands no gesture of the system's to the app, so Back has no
-/// other source on iOS. It ends with [`ducktape_phone_back_let_go`] or
-/// [`ducktape_phone_back_cancel`].
+/// other source on iOS. It ends with [`ducktape_phone_swipe_let_go`] or
+/// [`ducktape_phone_swipe_cancel`].
 #[unsafe(no_mangle)]
-pub extern "C" fn ducktape_phone_back_drag(x: f64, speed: f64) {
-    crate::os::send(ducktape_host::contract::Signal::BackDrag {
+pub extern "C" fn ducktape_phone_swipe_drag(x: f64, speed: f64) {
+    crate::os::send(ducktape_host::contract::Signal::Swipe {
         x: x as f32,
         speed: speed as f32,
     });
@@ -187,15 +187,16 @@ pub extern "C" fn ducktape_phone_back_drag(x: f64, speed: f64) {
 /// tab beside) when it went far or fast enough, else the screen on top
 /// goes back into place.
 #[unsafe(no_mangle)]
-pub extern "C" fn ducktape_phone_back_let_go() {
-    crate::os::send(ducktape_host::contract::Signal::BackLetGo);
+pub extern "C" fn ducktape_phone_swipe_let_go() {
+    crate::os::send(ducktape_host::contract::Signal::SwipeLetGo);
 }
 
-/// The swipe ended without going back (UIKit cancelled it, or a presented
-/// controller took it): the screen on top goes back into place.
+/// The swipe ended without going on (UIKit cancelled its touch, or a
+/// presented controller took it): the screen on top, or the tabs, go back
+/// into place.
 #[unsafe(no_mangle)]
-pub extern "C" fn ducktape_phone_back_cancel() {
-    crate::os::send(ducktape_host::contract::Signal::BackDragCancelled);
+pub extern "C" fn ducktape_phone_swipe_cancel() {
+    crate::os::send(ducktape_host::contract::Signal::SwipeCancelled);
 }
 
 /// A call answered in CallKit (`App.swift` `Ring`): its `duck://` link,

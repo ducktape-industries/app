@@ -60,12 +60,12 @@ object Native {
     @JvmStatic external fun pushToken(kind: String, token: String)
 
     /**
-     * Whether the tabs' swipe begins: its finger came down at ([x], [y]) in dp, moves at ([vx], [vy]) dp per second,
-     * and came down [held] seconds ago; read against what the last draw showed.
+     * Whether the tabs' swipe begins: its finger came down at ([x], [y]) in dp, went ([dx], [dy]) dp to the touch
+     * slop, and came down [held] seconds ago; read against what the last draw showed.
      */
-    @JvmStatic external fun swipeBegins(x: Float, y: Float, vx: Float, vy: Float, held: Float): Boolean
+    @JvmStatic external fun swipeBegins(x: Float, y: Float, dx: Float, dy: Float, held: Float): Boolean
 
-    /** The tabs' swipe under way: [x] dp to the right of where it came down (negative to the left), [speed] dp/s. */
+    /** The tabs' swipe under way: [x] dp to the right of where it began (negative to the left), [speed] dp/s. */
     @JvmStatic external fun swipeDrag(x: Float, speed: Float)
 
     /** That swipe let go (Rust judges the tab it lands on), or ended without going on. */

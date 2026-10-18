@@ -330,19 +330,20 @@ pub enum Signal {
     /// A sideways swipe under way: iOS's swipe back (from the left edge,
     /// or from anywhere the shell lets one begin), the screen on top
     /// following it; or, on either OS, the tabs' at a tab root.
-    BackDrag {
+    Swipe {
         /// How far its finger is, in points to the right (negative to the
         /// left), from where it started.
         x: f32,
         /// How fast it moves, in points per second to the right.
         speed: f32,
     },
-    /// That swipe let go where and as fast as its last `BackDrag` says: the
+    /// That swipe let go where and as fast as its last `Swipe` says: the
     /// shell judges whether it goes back, or which tab it lands on.
-    BackLetGo,
-    /// That swipe ended without going back (UIKit cancelled it, or
-    /// something it does not reach was over the screen).
-    BackDragCancelled,
+    SwipeLetGo,
+    /// That swipe ended without going on: the OS cancelled its touch, or
+    /// a controller the shell does not draw (iOS: a link's Safari view)
+    /// was presented over the screen.
+    SwipeCancelled,
     /// The insets changed: re-read `OsServices::insets`, re-place.
     InsetsChanged,
     /// A banner the host raised was clicked: the centre opens what it

@@ -258,51 +258,78 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         return pointers
     }
 
-    /** The finger the tabs' swipe follows: its speed, where and when it came down, and where it stands. */
-    private val tracker: VelocityTracker = VelocityTracker.obtain()
+    /** The finger's speed while a gesture may be the tabs' swipe; obtained at its first touch, recycled at its end. */
+    private var tracker: VelocityTracker? = null
     private val slop by lazy { ViewConfiguration.get(this).scaledTouchSlop }
+    /** The finger the swipe follows (its pointer id), where and when it came down. */
+    private var pointer = -1
     private var downX = 0f
     private var downY = 0f
     private var downAt = 0L
+    /** Where the swipe's way across counts from: where the finger stood as it began. */
+    private var originX = 0f
     /** One finger down, not yet past the touch slop. */
     private var deciding = false
-    /** The finger is the swipe's: gpui hears nothing more of it. */
+    /** The gesture is the swipe's: gpui hears nothing more of it. */
     private var swiping = false
 
     /**
      * The tabs' swipe (`crates/phone/src/shell/swipe.rs`), as the iOS launcher's pan takes it: one finger that moves
      * past the touch slop asks Rust whether it begins ([Native.swipeBegins]: a tab root on screen, nothing over it,
-     * the move clearly sideways). Then gpui's touch is cancelled and the finger's way across and speed go to Rust
-     * ([Native.swipeDrag]) until it lifts ([Native.swipeLetGo]) or is cancelled ([Native.swipeCancel]). True while
-     * the swipe holds the finger. Back stays the system's: no swipe back begins here.
+     * the way it went to the slop clearly sideways, `ViewPager`'s rule). Then gpui's touch is cancelled and the
+     * finger's way across from there (no jump of the slop) and its speed go to Rust ([Native.swipeDrag]) until it
+     * lifts ([Native.swipeLetGo]) or is cancelled ([Native.swipeCancel]); a second finger down is not a swipe, and
+     * once one is, a lifted finger hands it to another still down, as `ViewPager` does. True while the swipe holds
+     * the gesture. Back stays the system's: no swipe back begins here.
      */
     private fun swiped(event: MotionEvent): Boolean {
         val action = event.actionMasked
         if (action == MotionEvent.ACTION_DOWN) {
-            tracker.clear()
+            tracker?.recycle()
+            tracker = VelocityTracker.obtain()
+            pointer = event.getPointerId(0)
             downX = event.x
             downY = event.y
             downAt = event.eventTime
             deciding = true
             swiping = false
         }
+        val tracker = tracker ?: return false
         if (!deciding && !swiping) return false
         tracker.addMovement(event)
-        tracker.computeCurrentVelocity(1000)
         val dp = resources.displayMetrics.density
-        val x = (event.x - downX) / dp
-        val speed = tracker.xVelocity / dp
         when (action) {
             MotionEvent.ACTION_POINTER_DOWN -> deciding = false
-            MotionEvent.ACTION_MOVE -> if (deciding && hypot(event.x - downX, event.y - downY) > slop) {
-                deciding = false
-                val held = (event.eventTime - downAt) / 1000f
-                swiping = Native.swipeBegins(downX / dp, downY / dp, speed, tracker.yVelocity / dp, held)
-                if (swiping) Native.touch(MotionEvent.ACTION_CANCEL, 0, pointers(event))
+            MotionEvent.ACTION_POINTER_UP -> if (event.getPointerId(event.actionIndex) == pointer) {
+                if (swiping) {
+                    val other = if (event.actionIndex == 0) 1 else 0
+                    originX += event.getX(other) - event.getX(event.actionIndex)
+                    pointer = event.getPointerId(other)
+                    tracker.clear()
+                } else {
+                    deciding = false
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val at = event.findPointerIndex(pointer)
+                val dx = event.getX(at) - downX
+                val dy = event.getY(at) - downY
+                if (deciding && hypot(dx, dy) > slop) {
+                    deciding = false
+                    val held = (event.eventTime - downAt) / 1000f
+                    swiping = Native.swipeBegins(downX / dp, downY / dp, dx / dp, dy / dp, held)
+                    if (swiping) {
+                        originX = event.getX(at)
+                        Native.touch(MotionEvent.ACTION_CANCEL, 0, pointers(event))
+                    }
+                }
             }
         }
         val taken = swiping
         if (swiping) {
+            tracker.computeCurrentVelocity(1000)
+            val x = (event.getX(event.findPointerIndex(pointer)) - originX) / dp
+            val speed = tracker.getXVelocity(pointer) / dp
             when (action) {
                 MotionEvent.ACTION_MOVE -> Native.swipeDrag(x, speed)
                 MotionEvent.ACTION_UP -> {
@@ -315,6 +342,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
             deciding = false
             swiping = false
+            tracker.recycle()
+            this.tracker = null
         }
         return taken
     }

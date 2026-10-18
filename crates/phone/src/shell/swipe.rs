@@ -76,9 +76,11 @@ pub fn begins(start: Point<Pixels>, moving: Point<Pixels>, held: Duration) -> bo
 }
 
 /// [`begins`] on a phone whose Back is the system's own (Android): only
-/// the tabs' swipe begins.
-pub fn pages(start: Point<Pixels>, moving: Point<Pixels>, held: Duration) -> bool {
-    begins_on(&shown(), start, moving, held, false)
+/// the tabs' swipe begins. Its finger's way is read from how far it went
+/// to the touch slop (`moved`, each way), as `ViewPager` reads it: only
+/// its direction counts.
+pub fn pages(start: Point<Pixels>, moved: Point<Pixels>, held: Duration) -> bool {
+    begins_on(&shown(), start, moved, held, false)
 }
 
 fn shown() -> std::sync::MutexGuard<'static, Shown> {
@@ -119,6 +121,13 @@ pub(super) fn crosses(x: f32, speed: f32, width: f32) -> bool {
 pub(super) fn resisted(x: f32, width: f32) -> f32 {
     let width = width.max(1.);
     (1. - 1. / (x.abs() * 0.55 / width + 1.)) * width * x.signum()
+}
+
+/// The finger's travel [`resisted`] draws `at`: its inverse.
+pub(super) fn unresisted(at: f32, width: f32) -> f32 {
+    let width = width.max(1.);
+    let share = (at.abs() / width).min(0.99);
+    width / 0.55 * (1. / (1. - share) - 1.) * at.signum()
 }
 
 #[cfg(test)]
@@ -225,7 +234,8 @@ mod tests {
     }
 
     /// The rubber band follows the finger's way, less than the finger
-    /// moves, and less the further it goes.
+    /// moves, and less the further it goes; undone, it gives the finger's
+    /// travel back.
     #[test]
     fn the_rubber_band_resists_more_the_further_it_goes() {
         let width = 400.;
@@ -234,5 +244,9 @@ mod tests {
         assert!(0. < step(0.) && step(0.) < 40., "{}", step(0.));
         assert!(step(360.) < step(0.), "it resists no more further out");
         assert_eq!(resisted(-40., width), -resisted(40., width));
+        for x in [40., 400., -150.] {
+            let back = unresisted(resisted(x, width), width);
+            assert!((back - x).abs() < 0.01, "{x} drawn, {back} undone");
+        }
     }
 }

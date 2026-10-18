@@ -15,23 +15,23 @@ enum App {
     let files = FileManager.default
     let documents = files.urls(for: .documentDirectory, in: .userDomainMask)[0].path
     let caches = files.urls(for: .cachesDirectory, in: .userDomainMask)[0].path
-    SwipeBack.shared.follow()
+    Swipe.shared.follow()
     Ring.shared.follow()
     ducktape_phone_main(documents, caches)
   }
 }
 
 /// Back on iOS (SPEC §7.6): a swipe to the right, as iOS 26's own stacks take it: in from the left edge, over anything,
-/// and from anywhere else on the screen when Rust says it begins there (`ducktape_phone_back_begins`: something to go
+/// and from anywhere else on the screen when Rust says it begins there (`ducktape_phone_swipe_begins`: something to go
 /// back to, nothing over the screen, nothing under the finger that takes a sideways drag itself, the move clearly
 /// rightward). At a tab root the same swipe, either way, pages the tabs (Rust says so too). gpui_ios hands the app raw
 /// touches and no gesture of the system's, so the launcher puts both pans on gpui's window when it becomes key, the
 /// edge's first: the other waits for it to fail, so the edge always wins. Either tells Rust where the finger is (its
-/// way across, negative to the left) and how fast it moves while it moves (`ducktape_phone_back_drag`, the screen on
-/// top follows it), then that it let go (`ducktape_phone_back_let_go`: Rust judges Back, or the tab it lands on) or
-/// ended (`ducktape_phone_back_cancel`). The touches a swipe takes are cancelled for the view under it.
-final class SwipeBack: NSObject, UIGestureRecognizerDelegate {
-  static let shared = SwipeBack()
+/// way across, negative to the left) and how fast it moves while it moves (`ducktape_phone_swipe_drag`, the screen on
+/// top follows it), then that it let go (`ducktape_phone_swipe_let_go`: Rust judges Back, or the tab it lands on) or
+/// ended (`ducktape_phone_swipe_cancel`). The touches a swipe takes are cancelled for the view under it.
+final class Swipe: NSObject, UIGestureRecognizerDelegate {
+  static let shared = Swipe()
   private var observer: NSObjectProtocol?
   /// When the finger the swipe from anywhere would follow came down, on the touches' clock.
   private var down: TimeInterval = 0
@@ -62,14 +62,14 @@ final class SwipeBack: NSObject, UIGestureRecognizerDelegate {
   /// The swipe from anywhere, as UIKit is about to start it (at the finger's first move of a point or two): where its
   /// finger came down, how fast it moves, how long it rested first, for Rust to judge.
   func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
-    guard let pan = recognizer as? UIPanGestureRecognizer, let view = pan.view, !SwipeBack.presented(view) else {
+    guard let pan = recognizer as? UIPanGestureRecognizer, let view = pan.view, !Swipe.presented(view) else {
       return false
     }
     let at = pan.location(in: view)
     let moved = pan.translation(in: view)
     let moving = pan.velocity(in: view)
     let held = ProcessInfo.processInfo.systemUptime - down
-    return ducktape_phone_back_begins(
+    return ducktape_phone_swipe_begins(
       Double(at.x - moved.x), Double(at.y - moved.y), Double(moving.x), Double(moving.y), held) != 0
   }
 
@@ -80,17 +80,17 @@ final class SwipeBack: NSObject, UIGestureRecognizerDelegate {
 
   @objc private func swiped(_ pan: UIPanGestureRecognizer) {
     guard let view = pan.view else { return }
-    let presented = SwipeBack.presented(view)
+    let presented = Swipe.presented(view)
     let x = Double(pan.translation(in: view).x)
     let speed = Double(pan.velocity(in: view).x)
     switch pan.state {
     case .began, .changed:
-      if !presented { ducktape_phone_back_drag(x, speed) }
+      if !presented { ducktape_phone_swipe_drag(x, speed) }
     case .ended where !presented:
-      ducktape_phone_back_drag(x, speed)
-      ducktape_phone_back_let_go()
+      ducktape_phone_swipe_drag(x, speed)
+      ducktape_phone_swipe_let_go()
     case .ended, .cancelled, .failed:
-      ducktape_phone_back_cancel()
+      ducktape_phone_swipe_cancel()
     default:
       break
     }
