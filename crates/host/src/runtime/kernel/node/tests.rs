@@ -948,7 +948,12 @@ async fn a_put_answers_each_framed_blobs_sha256_once_the_bundle_is_held() {
     ];
     let blobs = put_of(&view, blobs);
     let fake = put_node(bundle_five());
-    let mut answer = std::pin::pin!(put(fake.node.clone(), blobs));
+    let told = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sent = {
+        let told = told.clone();
+        move |bytes| told.lock().unwrap().push(bytes)
+    };
+    let mut answer = std::pin::pin!(put(fake.node.clone(), blobs, sent));
     let waited = tokio::time::timeout(std::time::Duration::from_millis(500), &mut answer).await;
     assert!(waited.is_err(), "answered before the bundle was held");
     assert!(fake.upload.lock().unwrap().is_some(), "the upload went in");
@@ -973,8 +978,13 @@ async fn a_put_answers_each_framed_blobs_sha256_once_the_bundle_is_held() {
         })
         .collect();
     assert_eq!(
-        methods::decode::<Vec<[u8; 32]>>(&answer.unwrap()).unwrap(),
-        ids
+        methods::decode::<methods::Putting>(&answer.unwrap()).unwrap(),
+        methods::Putting::Held(ids)
+    );
+    assert_eq!(
+        *told.lock().unwrap(),
+        [MOST, MOST + 5, MOST + 7],
+        "the bodies' bytes the upload took, as it took each"
     );
     let upload = fake.upload.lock().unwrap().take().unwrap();
     let len = u32::from_le_bytes(upload[..4].try_into().unwrap()) as usize;
@@ -1004,7 +1014,7 @@ async fn put_meeting(carried: Option<abi::Outcome>, seed: u64) -> Answer {
     .await;
     let blobs = put_of(&view(), vec![bytes("chunk", b"tape")]);
     let fake = put_node(carried);
-    let answer = put(fake.node.clone(), blobs);
+    let answer = put(fake.node.clone(), blobs, |_| {});
     tokio::time::timeout(std::time::Duration::from_secs(5), answer)
         .await
         .expect("answered")
@@ -1052,7 +1062,7 @@ fn a_put_of_no_blob_one_too_big_or_a_slice_of_no_pick_is_malformed() {
         (vec![picked(1, 0, MOST + 1)], "past"),
         (vec![picked(1, 2, 2)], "past"),
         (vec![picked(1, u64::MAX, 2)], "past"),
-        (vec![picked(2, 0, 1)], "not of the latest pick"),
+        (vec![picked(2, 0, 1)], "not one the view holds"),
         (vec![bytes("two words", b"x")], "one word"),
         (vec![bytes("", b"x")], "one word"),
     ];
@@ -1085,7 +1095,7 @@ async fn a_put_of_a_file_whose_size_changed_since_the_pick_is_a_host_fault() {
         client: RpcClient::new("http://127.0.0.1:1"),
         network: "test-network".into(),
     };
-    let refusal = put(nowhere, blobs).await.unwrap_err();
+    let refusal = put(nowhere, blobs, |_| {}).await.unwrap_err();
     assert_eq!(refusal.code, refusal::HOST_FAULT);
     assert_eq!(refusal.message, "log.txt changed since it was picked");
 }
@@ -1107,7 +1117,7 @@ fn a_put_waiting_for_its_bundle_goes_with_the_view() {
     let mut changed = view.replies.changes();
     let node = fake.node.clone();
     start(&mut view, 1, None, Claim::default(), async move {
-        let answer = put(node, blobs).await;
+        let answer = put(node, blobs, |_| {}).await;
         replies.item(1, answer, true);
     });
     for _ in 0..200 {
@@ -1168,7 +1178,10 @@ async fn the_try_network_holds_a_put() {
         network: status.network.clone(),
     };
     let asked = std::time::Instant::now();
-    let ids: Vec<[u8; 32]> = methods::decode(&put(node, blobs).await.unwrap()).unwrap();
+    let held = methods::decode(&put(node, blobs, |_| {}).await.unwrap()).unwrap();
+    let methods::Putting::Held(ids) = held else {
+        panic!("{held:?}");
+    };
     eprintln!("held after {:?}", asked.elapsed());
     let target = status.roles.bound(abi::role::BLOBS).unwrap();
     for id in ids {

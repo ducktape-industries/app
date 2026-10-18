@@ -132,6 +132,15 @@ impl Replies {
         self.changed.send_replace(());
     }
 
+    /// An event the host makes for the view itself, not an answer to a
+    /// request (a file drop's files, once opened).
+    #[cfg(feature = "ui")]
+    pub(super) fn event(&self, event: wire::Event) {
+        let mut events = self.events.lock().expect("kernel replies");
+        events.push(event);
+        self.changed.send_replace(());
+    }
+
     /// One request off the in-flight count, under the lock a waiter holds.
     fn settled(&self) {
         let _events = self.events.lock().expect("kernel replies");

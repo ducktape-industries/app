@@ -781,7 +781,7 @@ pub(super) struct Blob {
 
 enum Body {
     Bytes(Vec<u8>),
-    /// a slice of a file of the latest pick, within its size as picked
+    /// a slice of a file the view holds, within its size as held
     Picked {
         file: std::sync::Arc<picker::Picked>,
         offset: u64,
@@ -790,6 +790,14 @@ enum Body {
 }
 
 impl Blob {
+    /// The bytes of its body, as `op.put`'s `Sent` counts them.
+    fn len(&self) -> u64 {
+        match &self.body {
+            Body::Bytes(bytes) => bytes.len() as u64,
+            Body::Picked { len, .. } => *len,
+        }
+    }
+
     /// The blob framed (`kind len\0body`), a picked slice read on a
     /// blocking thread: a file whose size changed since the pick is
     /// refused `host_fault` (`picker::slice`).
@@ -811,7 +819,7 @@ impl Blob {
 
 /// `op.put`'s blobs, checked at the ask: no blob, one over
 /// [`methods::BLOB_MOST`], a kind the node does not take, or a slice of no
-/// file of the latest pick (or past its end) is `malformed_request`.
+/// file the view holds (or past its end) is `malformed_request`.
 fn blobs_of(view: &View, payload: &[u8]) -> Result<Vec<Blob>, wire::Error> {
     let put: methods::PutBlobs = methods::decode(payload).map_err(malformed)?;
     if put.blobs.is_empty() {
@@ -832,7 +840,7 @@ fn blobs_of(view: &View, payload: &[u8]) -> Result<Vec<Blob>, wire::Error> {
                 let picked = view
                     .picker
                     .picked(file)
-                    .ok_or_else(|| malformed(format!("file {file} is not of the latest pick")))?;
+                    .ok_or_else(|| malformed(format!("file {file} is not one the view holds")))?;
                 if offset.checked_add(len).is_none_or(|end| end > picked.size) {
                     return Err(malformed(format!(
                         "{len} bytes from {offset} run past file {file}'s {} bytes",
@@ -861,15 +869,127 @@ fn blobs_of(view: &View, payload: &[u8]) -> Result<Vec<Blob>, wire::Error> {
 }
 
 /// `op.put`: its blobs checked here ([`blobs_of`]), then put by its task
-/// ([`put`]), which goes with the view as every node task does.
+/// ([`put`]), which goes with the view as every node task does. A
+/// subscription: each `Sent` is an item as the upload takes the bytes (not
+/// parked for the redraw, which would hold the upload up while no window
+/// draws the view), then `Held` ends it. A reconnect refuses it
+/// `stale_connection`, as any request on the old node.
 pub(super) fn spawn_put(view: &mut View, id: u64, payload: &[u8]) {
     let blobs = match blobs_of(view, payload) {
         Ok(blobs) => blobs,
         Err(refusal) => return view.reply(id, Err(refusal)),
     };
-    // the blobs are taken: the payload is not carried again
-    let put = move |node, _, _| -> Answered { Box::pin(put(node, blobs)) };
-    spawn_method(view, id, &[], put, "host_call.op.put", None);
+    let Some(node) = connected(view, id) else {
+        return;
+    };
+    let replies = view.replies.clone();
+    let claim = Claim::default();
+    let held = claim.clone();
+    let key = view.perf_key();
+    let asked = crate::perf::on().then(std::time::Instant::now);
+    start(view, id, None, claim, async move {
+        let sent = {
+            let (replies, held) = (replies.clone(), held.clone());
+            move |bytes| {
+                let item = methods::encode(&methods::Putting::Sent(bytes));
+                replies.answer(&held, id, Ok(item), false);
+            }
+        };
+        let answer = put(node, blobs, sent).await;
+        if let Some(asked) = asked {
+            let micros = asked.elapsed().as_micros() as u64;
+            crate::perf::record(key, "host_call.op.put", micros);
+        }
+        replies.answer(&held, id, answer, true);
+    });
+}
+
+/// Whether the view's request `id` can reach the node now, refusing it
+/// when not ([`connected`]): asked before a dialog opens for it.
+#[cfg(feature = "ui")]
+pub(in crate::runtime) fn reaches_node(view: &mut View, id: u64) -> bool {
+    connected(view, id).is_some()
+}
+
+/// `file.save`: once `chosen` answers the file the person chose, its task
+/// ([`saved`]) writes the blobs into it, as a node task that goes with the
+/// view.
+#[cfg(feature = "ui")]
+pub(in crate::runtime) fn spawn_save(
+    view: &mut View,
+    id: u64,
+    save: methods::SaveFile,
+    chosen: impl std::future::Future<Output = Result<Option<std::path::PathBuf>, wire::Error>>
+    + Send
+    + 'static,
+) {
+    let save = move |node, _, _| -> Answered { Box::pin(saved(node, save, chosen)) };
+    spawn_method(view, id, &[], save, "host_call.file.save", None);
+}
+
+/// `file.save`'s task: the file the person chose (none: cancelled, `false`),
+/// and each blob of `save` read from the node in order and written to it on
+/// a blocking thread; `true` once every one is written. A blob the node
+/// does not hold is refused `node_failed`, a file that cannot be written
+/// `host_fault`, naming it by its name alone.
+#[cfg(feature = "ui")]
+async fn saved(
+    node: Node,
+    save: methods::SaveFile,
+    chosen: impl std::future::Future<Output = Result<Option<std::path::PathBuf>, wire::Error>>,
+) -> Answer {
+    let Some(path) = chosen.await? else {
+        return Ok(methods::encode(&false));
+    };
+    let methods::SaveFile { name, blobs } = save;
+    let named = move |error: std::io::Error| host_fault(format!("{name}: {error}"));
+    let file = tokio::task::spawn_blocking(move || std::fs::File::create(path))
+        .await
+        .map_err(host_fault)?
+        .map_err(named.clone())?;
+    let file = std::sync::Arc::new(Mutex::new(file));
+    for digest in blobs {
+        let Some(framed) = node
+            .client
+            .blob(abi::BlobId::Sha256(digest))
+            .await
+            .map_err(refused)?
+        else {
+            let hex = noded_client::hex::hex_encode(&digest);
+            let missing = format!("the node holds no blob sha256:{hex}");
+            return Err(wire::Error::new(refusal::NODE_FAILED, missing));
+        };
+        let body = noded_client::wire::unframe(&framed)
+            .ok_or_else(|| host_fault("blob has no header"))?
+            .to_vec();
+        let file = file.clone();
+        tokio::task::spawn_blocking(move || {
+            use std::io::Write as _;
+            file.lock().expect("a saved file").write_all(&body)
+        })
+        .await
+        .map_err(host_fault)?
+        .map_err(named.clone())?;
+    }
+    Ok(methods::encode(&true))
+}
+
+/// An event the host makes for the view on [`handle`], counted in flight
+/// until `event` answers: delivered at the view's next redraw, or nothing
+/// when it answers none.
+#[cfg(feature = "ui")]
+pub(in crate::runtime) fn spawn_event(
+    view: &View,
+    event: impl std::future::Future<Output = Option<wire::Event>> + Send + 'static,
+) {
+    let slot = view.replies.admit();
+    let replies = view.replies.clone();
+    handle().spawn(async move {
+        let _slot = slot;
+        if let Some(event) = event.await {
+            replies.event(event);
+        }
+    });
 }
 
 /// `op.put`'s task. A hash pass (each blob read, framed, hashed, dropped)
@@ -877,9 +997,16 @@ pub(super) fn spawn_put(view: &mut View, id: u64, payload: &[u8]) {
 /// the node binds to the blobs role; a stream pass reads each blob again
 /// into the node's blob upload after it, so no pass holds the bundle
 /// whole. A file that changed between the passes no longer hashes to its
-/// id, and the node's refusal of it is the answer. The answer, each blob's
-/// sha256 digest in order, waits for the network to hold the bundle.
-pub(super) async fn put(node: Node, blobs: Vec<Blob>) -> Answer {
+/// id, and the node's refusal of it is the answer. `sent` hears the bytes
+/// of the blobs' bodies the upload has taken so far, each time it takes
+/// one, the last once the upload is done. The answer, `Held` with each
+/// blob's sha256 digest in order, waits for the network to hold the
+/// bundle.
+pub(super) async fn put(
+    node: Node,
+    blobs: Vec<Blob>,
+    sent: impl Fn(u64) + Send + Sync + 'static,
+) -> Answer {
     use futures::StreamExt as _;
     use sha2::Digest as _;
     let (mut ids, mut entries) = (Vec::with_capacity(blobs.len()), Vec::new());
@@ -905,24 +1032,35 @@ pub(super) async fn put(node: Node, blobs: Vec<Blob>) -> Answer {
     let mut blocks = node.client.changes(noded::RECENT).await.map_err(refused)?;
     let mut bundles = node.client.changes(&target).await.map_err(refused)?;
     let unread = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let sent = futures::stream::iter(blobs).then({
-        let unread = unread.clone();
+    let total: u64 = blobs.iter().map(Blob::len).sum();
+    let sent = std::sync::Arc::new(sent);
+    let taken = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let stream = futures::stream::iter(blobs).then({
+        let (unread, sent, taken) = (unread.clone(), sent.clone(), taken.clone());
         move |blob| {
-            let unread = unread.clone();
+            let (unread, sent, taken) = (unread.clone(), sent.clone(), taken.clone());
             async move {
-                blob.framed().await.map_err(|refusal| {
+                // asked for the next blob: the upload took the ones before
+                let before = taken.load(Ordering::SeqCst);
+                if before > 0 {
+                    sent(before);
+                }
+                let framed = blob.framed().await.map_err(|refusal| {
                     let error = std::io::Error::other(refusal.message.clone());
                     *unread.lock().expect("an unread blob") = Some(refusal);
                     error
-                })
+                })?;
+                taken.fetch_add(blob.len(), Ordering::SeqCst);
+                Ok(framed)
             }
         }
     });
-    if let Err(error) = node.client.put_blobs(frame.encode(), sent).await {
+    if let Err(error) = node.client.put_blobs(frame.encode(), stream).await {
         // a blob that could not be read again ended the upload: its refusal
         let unread = unread.lock().expect("an unread blob").take();
         return Err(unread.unwrap_or_else(|| refused(error)));
     }
+    sent(total);
     let bundle = landed(&node, &mut blocks, frame.body.id(), frame.body.until()).await?;
     drop(blocks);
     let key = blob::contract::bundle_key(bundle);
@@ -935,7 +1073,7 @@ pub(super) async fn put(node: Node, blobs: Vec<Blob>) -> Answer {
                 written == key && blob::contract::held_since(value.as_deref()).is_some()
             });
         if held {
-            return Ok(methods::encode(&ids));
+            return Ok(methods::encode(&methods::Putting::Held(ids)));
         }
     }
     Err(wire::Error::new(

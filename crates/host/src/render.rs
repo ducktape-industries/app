@@ -318,6 +318,16 @@ pub struct ViewTree {
 
 impl EventEmitter<wire::Event> for ViewTree {}
 
+/// Files dropped on a node that listens for them (`on_file_drop`): its
+/// route, and the paths, which the seat opens and holds for the view
+/// before it tells it (`Event::FileDrop`).
+pub struct Dropped {
+    pub handler: u32,
+    pub paths: Vec<std::path::PathBuf>,
+}
+
+impl EventEmitter<Dropped> for ViewTree {}
+
 /// The content a tooltip route's response brought with the table it came
 /// with, and for a rich text's tooltip the character it was built for.
 struct TooltipContent {

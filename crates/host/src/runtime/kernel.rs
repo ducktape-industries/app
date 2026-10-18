@@ -62,8 +62,9 @@
 //!   person's name, through the node's blob upload: the host frames and
 //!   hashes each (a picked file's slice read where it is), signs the
 //!   blobs-role `Put` naming only ids, lengths and kinds, streams the bytes
-//!   after it, and answers the ids once the network holds the bundle
-//!   (`Held`). No card asks: the host builds the op itself.
+//!   after it. A subscription: `Sent` as the upload takes the bytes, then
+//!   the ids once the network holds the bundle (`Held`). No card asks: the
+//!   host builds the op itself.
 //! - `chain.status` — node status as `NodeStatus`.
 //! - `chain.blocks` `BlockPage` — finalized blocks, newest first, as the
 //!   node lists them (`/v1/blocks`): each transaction's size, its payload
@@ -95,11 +96,13 @@
 //! opens them again too.
 //!
 //! In a sibling module [`answer`] asks first:
-//! - `clipboard.read`, `clipboard.write` — `clipboard`, run on the window
-//!   thread after the tick.
-//! - `file.pick` — `picker`: the system's picker opened on the window
-//!   thread after the tick, the files picked held open for `op.put`, which
-//!   reads them a slice at a time on a blocking thread.
+//! - `clipboard.read`, `clipboard.write`, `clipboard.files` — `clipboard`,
+//!   run on the window thread after the tick.
+//! - `file.pick`, `file.release`, `file.save` — `picker`: the system's
+//!   picker opened on the window thread after the tick, the files picked
+//!   held open for `op.put` until the view lets go of them, which reads
+//!   them a slice at a time on a blocking thread; the save dialog, the
+//!   blobs written from the node to the file chosen.
 //! - `notify.post`, `notify.seen` — `notify`, the notification centre.
 //! - `store.get`, `store.set` — `store`, the view's file on this device;
 //!   `store.changes` — a subscription to the keys another instance of the
@@ -146,6 +149,8 @@ use node::{
     blob_get, blob_manifest, block, blocks, changes, heads, invite, network, query, spawn_asked,
     spawn_put, spawn_submit, status, tx,
 };
+#[cfg(feature = "ui")]
+pub(super) use node::{reaches_node, spawn_event, spawn_save};
 pub(super) use replies::Replies;
 use replies::{Claim, InFlight};
 
