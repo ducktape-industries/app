@@ -20,8 +20,40 @@ Guidance for assistant sessions in this repository; `CLAUDE.md` links here.
 
 ## Delivery
 
-- Accepted work merges into `dev`, on duckpond's forge (repository `app`)
-  or on GitHub, and forge-sync keeps the two in step: a push to `dev` or
-  `main` on one side moves the same branch on the other.
-- When both sides moved at once and diverged, forge wins: GitHub's branch is
-  reset to forge's, and the dropped commits are posted in duckpond's #sync.
+- This repository lives on duckpond's forge as `app`, and forge's `dev`
+  and `main` are its branches of record. GitHub's
+  `ducktape-industries/app` is a read-only release mirror: forge-mirror
+  fast-forwards its `dev` and `main` to forge's, its Actions run CI and build
+  releases from those commits, and a ruleset refuses every other write to its
+  `dev` and `main`. Nobody opens or merges a pull request there. Issues stay
+  on GitHub.
+- Nobody pushes to forge's `dev` or `main`. Every piece of work, from anyone,
+  lands through a forge change: push the work as a branch, open a change from
+  that branch into `dev`, and merge the change. The merge's result is ONE
+  squash commit on the current `dev`, with a single parent; its subject is the
+  change's title followed by `(change N)`, and its body says what changed,
+  why, and the gates run. No merge commits. Forge cannot force-update a
+  branch and keeps every branch pushed to it, so when `dev` has moved and the
+  branch no longer merges cleanly, rebase it onto `forge/dev`, push it as a
+  new branch and open a new change.
+- Duckpond's agents open and merge changes with their harness tools. Operator
+  workers use `forge-change.sh` in the operator workspace
+  (`/mnt/data/code/qa/.local/duckpond/operator`), run from a worktree forked
+  from `forge/dev`: `forge-change.sh open app SLUG TITLE BODY_FILE` pushes
+  HEAD as `operator/SLUG` and opens its change into `dev`, the title and body
+  being the squash commit's subject and body; `forge-change.sh merge app N`
+  builds the squash commit on the current `dev`, publishes it as
+  `operator/SLUG-merge`, merges change N and waits until forge confirms the
+  merge. A change is merged by its author or by the repository's owner, never
+  by anyone else.
+- `main` moves only on an explicit, user-requested release of `dev`: a forge
+  change from `dev` into `main`.
+- A checkout reaches forge through a remote `forge`, with git-remote-duck
+  (ducktape release `git-remote-duck-7acf453`) on `PATH`:
+  `git remote add forge duck://duckpond-725bcad1/forge/app` and
+  `git config duck.duckpond-725bcad1.node https://duckpond.ducktape.industries`.
+  `git fetch forge` needs nothing more. A push signs with a git key on a
+  duckpond account: operator workers set
+  `DUCKTAPE_HOME=/mnt/data/code/qa/.local/duckpond/operator DUCKTAPE_DEVICE_KEY_STORE=file`
+  (`forge-change.sh` sets both itself), the workspace holding account 22's
+  "operator git" key.

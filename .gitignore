@@ -3,7 +3,7 @@
 .DS_Store
 .claude/
 .codex/
-# Brainstorm specs and implementation plans are per-PR working files.
+# Brainstorm specs and implementation plans are per-change working files.
 docs/superpowers/
 .superpowers/
 HANDOFF.md
