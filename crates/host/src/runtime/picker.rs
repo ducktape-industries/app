@@ -207,9 +207,8 @@ fn save(view: &mut View, id: u64, payload: &[u8]) {
 /// Opens the system's picker for each pick asked since the last turn, and
 /// its save dialog for each save; each is answered once the person picks,
 /// chooses or cancels. A host with no window (pushd) opens none: its
-/// notifiers have no press to pick with. A phone's shell has no save
-/// dialog yet (gpui-pre's iOS and Android platforms answer none), so a
-/// save there is refused saying so.
+/// notifiers have no press to pick with. gpui-pre's iOS platform has no
+/// save dialog and answers so, and the save is refused with its words.
 #[cfg(feature = "ui")]
 pub(super) fn mount(view: &mut View, cx: &mut Context<Seat>) {
     for (id, pick) in std::mem::take(&mut view.picker.pending) {
@@ -234,10 +233,6 @@ pub(super) fn mount(view: &mut View, cx: &mut Context<Seat>) {
         });
     }
     for (id, save) in std::mem::take(&mut view.picker.saves) {
-        if cfg!(any(target_os = "ios", target_os = "android")) {
-            view.refuse(id, refusal::HOST_FAULT, "this device has no save dialog");
-            continue;
-        }
         if !kernel::reaches_node(view, id) {
             continue;
         }
