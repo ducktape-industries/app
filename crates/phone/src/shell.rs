@@ -2923,9 +2923,9 @@ mod tests {
         assert_eq!(sheet_up(&root, cx), (None, true), "a flick kept it");
         run_out(cx);
 
-        // a pan begun upward is not a drag
+        // a pan begun upward is not a drag, even come back down past half
         show(cx);
-        pan(&[-40., -200.], slow, cx);
+        pan(&[-40., height * 0.9], slow, cx);
         assert_eq!(
             sheet_up(&root, cx),
             (Some(up), false),
