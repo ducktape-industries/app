@@ -938,8 +938,9 @@ fn notice(
 
 /// Account (the shell boards' 40, Expo `you.tsx`; the Account tab's root):
 /// who is reading on which network, then the account's own program (the
-/// `programs` view, opened by name, while the network lists it), App
-/// settings and Switch network, each pushed over the tab.
+/// `programs` view, opened by name, while the network lists it), Add a
+/// device (while this phone holds an account: the one it approves for),
+/// App settings and Switch network, each pushed over the tab.
 pub fn account(shared: &Shared, palette: Palette, cx: &mut Context<Root>) -> Div {
     let network = shared.session.read(cx).get().network.clone();
     // Expo `you.tsx`: the account's name, else "No account yet"; the
@@ -999,6 +1000,17 @@ pub fn account(shared: &Shared, palette: Palette, cx: &mut Context<Root>) -> Div
             root.open(ACCOUNT_PROGRAM, cx);
         }))
     });
+    // Expo's row under the Keys list, in the `programs` view here, which
+    // the shell does not draw into: the desktop's account menu holds it too
+    let add = me(shared, cx).map(|_| {
+        push(
+            "account/add-device",
+            "icons/smartphone.svg",
+            "Add a device",
+            None,
+        )
+        .on_click(cx.listener(|root, _, window, cx| root.show_approve(window, cx)))
+    });
     let settings = push(
         "account/settings",
         "icons/settings.svg",
@@ -1031,6 +1043,7 @@ pub fn account(shared: &Shared, palette: Palette, cx: &mut Context<Root>) -> Div
                 .overflow_y_scroll()
                 .child(card)
                 .children(program)
+                .children(add)
                 .child(settings)
                 .child(switch),
         )
