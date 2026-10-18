@@ -15,7 +15,7 @@
 //! name, then view-only entries by name, as the programs role answers them) is the
 //! rail's order, the manifest inside the view names the tab.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use abi::BlobId;
 
@@ -203,20 +203,20 @@ pub async fn program_bytes(
 ) -> Result<(Vec<u8>, &'static str), Fetch> {
     let cached = cache_path(code);
     if let Some(path) = &cached
-        && let Ok(framed) = tokio::fs::read(path).await
+        && let Ok(mut framed) = tokio::fs::read(path).await
         && hashes_to(&framed, code)?
-        && let Some(body) = unframe(&framed)
+        && let Some(body) = body_at(&framed)
     {
-        return Ok((body.to_vec(), "disk"));
+        framed.drain(..body);
+        return Ok((framed, "disk"));
     }
-    let framed = client
+    let mut framed = client
         .blob(*code)
         .await
         .map_err(fetch_error)?
         .ok_or(Fetch::NotHeld)?;
-    let body = unframe(&framed)
-        .ok_or_else(|| Fetch::Unreadable("the blob carries no git header".into()))?
-        .to_vec();
+    let body = body_at(&framed)
+        .ok_or_else(|| Fetch::Unreadable("the blob carries no git header".into()))?;
     if !hashes_to(&framed, code)? {
         return Err(Fetch::Corrupt);
     }
@@ -235,7 +235,15 @@ pub async fn program_bytes(
             let _ = tokio::fs::remove_file(&kept).await;
         }
     }
-    Ok((body, "node"))
+    framed.drain(..body);
+    Ok((framed, "node"))
+}
+
+/// Where `framed`'s body starts, past its `kind len\0` header: the header
+/// is cut off in place, as a copy of the body would hold a blob (megabytes)
+/// twice at once.
+fn body_at(framed: &[u8]) -> Option<usize> {
+    unframe(framed).map(|body| framed.len() - body.len())
 }
 
 /// Where the cache keeps `code`'s framed bytes.
@@ -262,10 +270,101 @@ pub fn view_section(bytes: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// The notifier inside `code`'s blob, or `None` when the program ships
-/// none (a view-only entry never does).
+/// none (a view-only entry never does). Every listed program's blob is
+/// asked, to find the few that carry one, and a blob is megabytes, most of
+/// it the view: the cache's copy is read through in pieces, the notifier
+/// alone kept ([`cached_section`]).
 pub async fn notifier_of(client: &RpcClient, code: &BlobId) -> Result<Option<Vec<u8>>, Fetch> {
+    if let Some(path) = cache_path(code) {
+        let id = *code;
+        let cached =
+            tokio::task::spawn_blocking(move || cached_section(&path, &id, NOTIFY_SECTION));
+        if let Ok(Some(notifier)) = cached.await {
+            return Ok(notifier);
+        }
+    }
     let (bytes, _) = program_bytes(client, code).await?;
     Ok(section(&bytes, NOTIFY_SECTION).map(<[u8]>::to_vec))
+}
+
+/// The custom section `name` of the cache's copy of `code` (`Some(None)`:
+/// the blob carries none), its bytes hashed as they pass and the section
+/// alone kept. `None` when the cache holds no copy that hashes to `code`,
+/// or the blob is not one core module (a component's sections sit on its
+/// nested modules: [`section`] reads those).
+fn cached_section(path: &Path, code: &BlobId, name: &str) -> Option<Option<Vec<u8>>> {
+    use std::io::Read as _;
+    let file = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+    let mut read = Hashed {
+        read: file,
+        hasher: blob::Hasher::new(code.kind()),
+        at: 0,
+    };
+    // the `kind len\0` header, then a core module's preamble
+    while read.byte()? != 0 {}
+    let mut preamble = [0; 8];
+    read.read_exact(&mut preamble).ok()?;
+    // ponytail: a component's notifier is still read whole; walk its
+    // nested modules here if a program ships one as a component
+    if preamble != *b"\0asm\x01\0\0\0" {
+        return None;
+    }
+    let mut found = None;
+    while let Some(id) = read.byte() {
+        let size = read.leb()?;
+        let end = read.at + size;
+        if id == 0 && found.is_none() && read.leb()? == name.len() as u64 {
+            let mut named = vec![0; name.len()];
+            read.read_exact(&mut named).ok()?;
+            if named == name.as_bytes() {
+                let mut section = Vec::new();
+                let left = end.checked_sub(read.at)?;
+                (&mut read).take(left).read_to_end(&mut section).ok()?;
+                found = Some(section);
+            }
+        }
+        let left = end.checked_sub(read.at)?;
+        std::io::copy(&mut (&mut read).take(left), &mut std::io::sink()).ok()?;
+    }
+    (read.hasher.finish().ok()? == *code).then_some(found)
+}
+
+/// A read that hashes what passes through it, and counts it.
+struct Hashed<R> {
+    read: R,
+    hasher: blob::Hasher,
+    at: u64,
+}
+
+impl<R: std::io::Read> std::io::Read for Hashed<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.read.read(buf)?;
+        self.hasher.update(&buf[..read]);
+        self.at += read as u64;
+        Ok(read)
+    }
+}
+
+impl<R: std::io::Read> Hashed<R> {
+    /// The next byte; none at the end.
+    fn byte(&mut self) -> Option<u8> {
+        let mut byte = [0];
+        std::io::Read::read_exact(self, &mut byte).ok()?;
+        Some(byte[0])
+    }
+
+    /// A wasm LEB128 `u32`.
+    fn leb(&mut self) -> Option<u64> {
+        let mut value = 0;
+        for shift in (0..35).step_by(7) {
+            let byte = self.byte()?;
+            value |= u64::from(byte & 0x7f) << shift;
+            if byte < 0x80 {
+                return Some(value);
+            }
+        }
+        None
+    }
 }
 
 /// The bytes of the custom section `name`, out of a core module or a
@@ -292,6 +391,60 @@ fn fetch_error(error: noded_client::Error) -> Fetch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The notifier is read out of the cache's copy of its program in one
+    /// pass, the view before it never held whole; a copy that does not hash
+    /// to its id, or a component, is left to the whole read.
+    #[test]
+    fn the_notifier_alone_is_read_out_of_the_cached_blob() {
+        fn leb(mut n: usize) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            loop {
+                let byte = (n & 0x7f) as u8;
+                n >>= 7;
+                if n == 0 {
+                    bytes.push(byte);
+                    return bytes;
+                }
+                bytes.push(byte | 0x80);
+            }
+        }
+        let custom = |name: &str, data: &[u8]| {
+            let mut content = leb(name.len());
+            content.extend_from_slice(name.as_bytes());
+            content.extend_from_slice(data);
+            [vec![0], leb(content.len()), content].concat()
+        };
+        // a type section, a view past one LEB byte, then the notifier
+        let body = [
+            b"\0asm\x01\0\0\0".to_vec(),
+            vec![1, 4, 1, 0x60, 0, 0],
+            custom(VIEW_SECTION, &[7; 300]),
+            custom(NOTIFY_SECTION, b"the notifier"),
+        ]
+        .concat();
+        let framed = |body: &[u8]| [format!("program {}\0", body.len()).as_bytes(), body].concat();
+        let id = |framed: &[u8]| {
+            use sha2::Digest as _;
+            BlobId::Sha256(sha2::Sha256::digest(framed).into())
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blob");
+        let kept = framed(&body);
+        std::fs::write(&path, &kept).unwrap();
+        let code = id(&kept);
+        let read = cached_section(&path, &code, NOTIFY_SECTION);
+        assert_eq!(read, Some(Some(b"the notifier".to_vec())));
+        assert_eq!(section(&body, NOTIFY_SECTION), Some(&b"the notifier"[..]));
+        assert_eq!(cached_section(&path, &code, "ducktape.none"), Some(None));
+        let mut corrupt = kept.clone();
+        *corrupt.last_mut().unwrap() ^= 1;
+        std::fs::write(&path, &corrupt).unwrap();
+        assert_eq!(cached_section(&path, &code, NOTIFY_SECTION), None);
+        let component = framed(b"\0asm\x0d\0\x01\0");
+        std::fs::write(&path, &component).unwrap();
+        assert_eq!(cached_section(&path, &id(&component), NOTIFY_SECTION), None);
+    }
 
     #[test]
     fn the_view_section_is_read_out_of_a_core_module() {
