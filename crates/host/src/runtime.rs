@@ -361,6 +361,18 @@ pub fn seat_compiled_for_test(program: &'static str, name: &str, icon: &str) {
     lock(registry()).insert((program, 0), seat);
 }
 
+/// `program`'s seat with its bytes here and its manifest read (`name`), its
+/// code not compiled yet: a row being prepared.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seat_listed_for_test(program: &'static str, name: &str) {
+    let seat = Mounted::seat();
+    lock(&seat).slot = Slot::Listed(Box::new(Listing {
+        name: name.into(),
+        ..Default::default()
+    }));
+    lock(registry()).insert((program, 0), seat);
+}
+
 /// `frame` encoded as the string of a WAT `data` segment, and its length.
 #[cfg(any(test, feature = "test-support"))]
 pub fn wat_frame(frame: &wire::Frame) -> (String, u32) {

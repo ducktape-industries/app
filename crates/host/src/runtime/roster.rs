@@ -813,6 +813,7 @@ mod rail_tests {
         assert_eq!(row.note, Some("Loading"));
         assert!(!row.empty);
         assert!(row.pending, "whether it ships a view is not known yet");
+        assert_eq!(row.prep, Prep::Waiting, "no seat yet: waiting for one");
     }
 
     /// A seat preloaded only as far as compiled is a row ready to open,
@@ -845,14 +846,14 @@ mod rail_tests {
             lock(registry()).insert((program, 0), seat.clone());
             let row = Roster::listing(&[program]).rail().remove(0);
             lock(registry()).remove(&(program, 0));
-            (row.empty, row.pending)
+            (row.empty, row.pending, row.prep)
         };
         let fetching = Slot::Fetching {
             received: 1,
             total: Some(2),
         };
-        assert_eq!(row(&seat, fetching), (false, true));
-        assert_eq!(row(&seat, Slot::Empty), (true, false));
+        assert_eq!(row(&seat, fetching), (false, true, Prep::Working));
+        assert_eq!(row(&seat, Slot::Empty), (true, false, Prep::Settled));
     }
 
     /// A seat whose bytes are here and whose manifest is read, its code not

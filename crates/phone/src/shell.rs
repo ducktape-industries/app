@@ -588,6 +588,9 @@ pub struct Root {
     drawn_toast: Option<Shown<String>>,
     sheet_height: Rc<Cell<Option<gpui_kit::Pixels>>>,
     consent_height: Rc<Cell<Option<gpui_kit::Pixels>>>,
+    /// Draws so far: a test tells a still window from one a timer redraws.
+    #[cfg(test)]
+    renders: usize,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -691,6 +694,8 @@ impl Root {
             drawn_toast: None,
             sheet_height: Rc::default(),
             consent_height: Rc::default(),
+            #[cfg(test)]
+            renders: 0,
             _subscriptions: subscriptions,
         }
     }
@@ -1979,6 +1984,10 @@ impl Root {
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        {
+            self.renders += 1;
+        }
         let edges = ducktape_host::contract::os().insets(window).effective();
         let palette = look::palette(cx);
         let viewport = window.viewport_size();
@@ -2843,6 +2852,82 @@ mod tests {
             Some(PROGRAM),
             "the tap did not open the program at lift"
         );
+    }
+
+    /// While programs are being prepared Home's caption counts them, the
+    /// one a loader is at by name, and a tile being prepared is ringed with
+    /// no word under it, the ring running as the clock does (held still
+    /// under Reduce Motion); the caption comes back once all are settled,
+    /// and nothing redraws Home after.
+    #[gpui_kit::test]
+    fn home_counts_the_programs_being_prepared_and_rings_their_tiles(cx: &mut TestAppContext) {
+        use ducktape_host::runtime::{seat_compiled_for_test, seat_listed_for_test};
+        let (root, _, cx) = phone(cx);
+        let shared = root.read_with(cx, |root, _| root.shared.clone());
+        // one with its manifest read and its code not compiled, one with no
+        // seat yet: neither is settled
+        let (listed, coming) = ("phone-prep-listed", "phone-prep-coming");
+        seat_listed_for_test(listed, "Listed");
+        shared.rail.update(cx, |rail, cx| {
+            rail.read_off(Roster::listing(&[listed, coming]), cx)
+        });
+        run_out(cx);
+        let caption = |cx: &mut VisualTestContext| {
+            root.read_with(cx, |root, cx| {
+                root.run.caption(root.shared.rail.read(cx).rows())
+            })
+        };
+        const RING: &str = "home/phone-prep-listed/ring";
+        const RUN: &str = "home/phone-prep-listed/ring/run";
+        const NOTE: &str = "home/phone-prep-listed/note";
+        assert_eq!(caption(cx).as_deref(), Some("Preparing 1/2 · Listed"));
+        assert!(
+            cx.debug_bounds(NOTE).is_none(),
+            "a word under a ringed tile"
+        );
+        let tile = cx.debug_bounds("home/phone-prep-listed").expect("the tile");
+        let ring = cx.debug_bounds(RING).expect("no ring on the tile");
+        assert_eq!(
+            ring.size.width,
+            gpui_kit::px(64.),
+            "not just outside the glyph"
+        );
+        assert!(tile.contains(&ring.center()));
+        // the clock on: the ring's part has moved round, and moves again
+        let step = |cx: &mut VisualTestContext| {
+            let before = cx.debug_bounds(RUN).expect("the ring's running part");
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(200));
+            cx.run_until_parked();
+            before != cx.debug_bounds(RUN).expect("the ring's running part")
+        };
+        assert!(step(cx) && step(cx), "the ring stood still");
+
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.update(|window, _| window.refresh());
+        run_out(cx);
+        assert!(cx.debug_bounds(RING).is_some(), "no still ring");
+        assert!(!step(cx), "the ring ran under Reduce Motion");
+        cx.update(|_, cx| cx.set_reduce_motion(false));
+
+        seat_compiled_for_test(listed, "Listed", "");
+        shared.rail.update(cx, |rail, cx| _ = rail.refresh(cx));
+        run_out(cx);
+        assert_eq!(caption(cx).as_deref(), Some("Preparing 2/2"));
+        assert!(
+            cx.debug_bounds(RING).is_none(),
+            "a settled tile still ringed"
+        );
+
+        seat_compiled_for_test(coming, "Coming", "");
+        shared.rail.update(cx, |rail, cx| _ = rail.refresh(cx));
+        run_out(cx);
+        assert_eq!(caption(cx), None, "the count stayed once all settled");
+        let renders = root.read_with(cx, |root, _| root.renders);
+        run_out(cx);
+        assert_eq!(frames(cx), 0, "a frame asked for with nothing preparing");
+        let redrawn = root.read_with(cx, |root, _| root.renders) - renders;
+        assert_eq!(redrawn, 0, "Home redrew with nothing preparing");
     }
 
     /// App settings' Light and dark row opens Appearance; the palette (and

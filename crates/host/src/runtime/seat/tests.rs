@@ -32,6 +32,132 @@ fn a_roster_read_reloads_by_code_node_and_hold_off() {
     }
 }
 
+/// Claim: a seat is being prepared while it waits for a loader or a loader
+/// is at it, and settled once drawn, compiled, none or failed; new code the
+/// network named over a settled seat counts as being prepared, waiting and
+/// then a loader at it, until its load lands, the view held staying up
+/// meanwhile; a load that moved on since leaves it settled.
+#[test]
+fn a_seat_is_prepared_by_its_stage_and_by_new_code_on_its_way() {
+    let seat = Mounted::seat();
+    let mut locked = seat.lock().unwrap();
+    let mut prep = |slot| {
+        locked.slot = slot;
+        locked.prep()
+    };
+    assert_eq!(prep(Slot::Loading), Prep::Waiting);
+    let fetching = Slot::Fetching {
+        received: 0,
+        total: None,
+    };
+    for slot in [
+        fetching,
+        Slot::Listed(Box::default()),
+        Slot::Compiling(Box::default()),
+    ] {
+        assert_eq!(prep(slot), Prep::Working);
+    }
+    let compiled = || Slot::Compiled(ViewCode::for_test("Held", "", 320));
+    for slot in [
+        compiled(),
+        Slot::Empty,
+        Slot::Failed(Failure::Refused("x".into())),
+    ] {
+        assert_eq!(prep(slot), Prep::Settled);
+    }
+    locked.slot = compiled();
+    let generation = locked.start();
+    locked.replacing = Some((generation, Prep::Waiting));
+    assert_eq!(
+        locked.prep(),
+        Prep::Waiting,
+        "new code coming, no loader yet"
+    );
+    let fetching = Slot::Fetching {
+        received: 0,
+        total: None,
+    };
+    locked.show(generation, fetching);
+    assert_eq!(locked.prep(), Prep::Working, "a loader at the new code");
+    assert!(
+        matches!(locked.slot, Slot::Compiled(_)),
+        "the view held went"
+    );
+    let asked_of = connection().lock().unwrap().clone();
+    let mut timing = LoadTiming::default();
+    let loaded = Ok(Loaded::Empty);
+    install(
+        "seat-tests-prep",
+        &mut locked,
+        generation,
+        &asked_of,
+        None,
+        loaded,
+        &mut timing,
+    );
+    assert_eq!(locked.prep(), Prep::Settled, "landed and still preparing");
+    locked.slot = compiled();
+    let generation = locked.start();
+    locked.replacing = Some((generation, Prep::Working));
+    locked.start();
+    assert_eq!(locked.prep(), Prep::Settled, "a load that moved on");
+}
+
+/// Claim: a roster read that finds a program moved to new code over a view
+/// the seat holds counts it as being prepared while the new code comes, the
+/// view held staying up; one that asks the same code again of a new node
+/// does not: nothing new is coming.
+#[test]
+fn new_code_over_a_held_view_counts_as_being_prepared() {
+    let (moved, same) = ("seat-tests-moved", "seat-tests-same");
+    let node = FakeNode::new(
+        vec![listed(moved, "moved-new"), listed(same, "same")],
+        Vec::new(),
+        Vec::new(),
+    );
+    let (roster, registry) = (Roster::default(), Registry::default());
+    let held = |name: &str, seed: &str| crate::backend::views::Program {
+        name: name.into(),
+        code: blob_id(seed.as_bytes()),
+        bare: false,
+    };
+    roster
+        .lock()
+        .extend([held(moved, "moved-old"), held(same, "same")]);
+    let seat = |program| {
+        let seat = Mounted::seat();
+        {
+            let mut locked = seat.lock().unwrap();
+            locked.slot = Slot::Compiled(ViewCode::for_test("Held", "", 320));
+            locked.generation = 1;
+            // compiled off another node: both are asked again
+            locked.rev = node.asked_of.rev.wrapping_add(1);
+        }
+        lock(&registry).insert((intern(program), 0), seat.clone());
+        seat
+    };
+    let (moved_seat, same_seat) = (seat(moved), seat(same));
+    read_roster(node.asked_of.clone(), &roster, &registry);
+    assert_ne!(
+        lock(&moved_seat).prep(),
+        Prep::Settled,
+        "new code not counted"
+    );
+    assert_eq!(
+        lock(&same_seat).prep(),
+        Prep::Settled,
+        "the same code counted"
+    );
+    eventually("a loader at the new code", || {
+        lock(&moved_seat).prep() == Prep::Working
+    });
+    assert!(
+        matches!(lock(&moved_seat).slot, Slot::Compiled(_)),
+        "the view held went"
+    );
+    assert_eq!(lock(&same_seat).prep(), Prep::Settled);
+}
+
 /// A view that fails to load is held off under the blob the roster names,
 /// not under its own section's hash: the two never match, and keying on
 /// the section had every block reload the failed view.

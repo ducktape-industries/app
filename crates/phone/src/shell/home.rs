@@ -1226,6 +1226,80 @@ mod tests {
         assert_eq!(programs(grid), ["arcade", "chat", "files", "forge"]);
     }
 
+    /// A run counts the programs being prepared when it begins, the place
+    /// of the one in hand and its name while a loader is at it; it never
+    /// grows: one that starts meanwhile waits for the next run, which
+    /// begins as this one ends; none is on once every one is settled.
+    #[test]
+    fn a_run_counts_what_it_began_with_and_ends_when_all_are_settled() {
+        let rows = |preps: &[(&'static str, Prep)]| -> Vec<RailRow> {
+            preps
+                .iter()
+                .map(|&(program, prep)| RailRow {
+                    program,
+                    prep,
+                    ..row(program, (prep != Prep::Settled).then_some("Loading"))
+                })
+                .collect()
+        };
+        let (s, w, k) = (Prep::Settled, Prep::Waiting, Prep::Working);
+        let mut run = Run::default();
+        let mut step = |preps: &[(&'static str, Prep)]| {
+            let rows = rows(preps);
+            run.follow(&rows);
+            run.caption(&rows)
+        };
+        let at = |caption: &str| Some(caption.to_owned());
+        assert_eq!(step(&[("chat", s), ("forge", s)]), None, "all settled");
+        assert_eq!(
+            step(&[("chat", w), ("forge", w), ("files", w)]),
+            at("Preparing 1/3")
+        );
+        assert_eq!(
+            step(&[("chat", k), ("forge", w), ("files", w)]),
+            at("Preparing 1/3 · Chat")
+        );
+        assert_eq!(
+            step(&[("chat", s), ("forge", k), ("files", w), ("trade", w)]),
+            at("Preparing 2/3 · Forge"),
+            "grew with a program that started meanwhile"
+        );
+        assert_eq!(
+            step(&[("chat", s), ("forge", s), ("files", s), ("trade", k)]),
+            at("Preparing 1/1 · Trade"),
+            "the next run did not begin as this one ended"
+        );
+        assert_eq!(
+            step(&[("chat", s), ("forge", s), ("files", s), ("trade", s)]),
+            None
+        );
+    }
+
+    /// The ring's running part is one side long wherever it is, on the top
+    /// side at the start, cut in two at a corner.
+    #[test]
+    fn the_rings_part_is_one_side_long_and_cut_at_a_corner() {
+        let side = 64.;
+        let length = |at| -> f32 { segment(at, side).map(|[_, _, w, h]| w.max(h)).sum() };
+        for at in [0., 0.1, 0.25, 0.4, 0.8, 0.95] {
+            assert!((length(at) - side).abs() < 1e-3, "{at}: {}", length(at));
+        }
+        assert_eq!(
+            segment(0., side).collect::<Vec<_>>(),
+            [[0., 0., side, RING]]
+        );
+        // half way along the top: the top's second half, the right's first
+        assert_eq!(
+            segment(0.125, side).collect::<Vec<_>>(),
+            [[32., 0., 32., RING], [side - RING, 0., RING, 32.]]
+        );
+        // past the end: the left side's top half and the top's first half
+        assert_eq!(
+            segment(0.875, side).collect::<Vec<_>>(),
+            [[0., 0., 32., RING], [0., 0., RING, 32.]]
+        );
+    }
+
     /// The filter reads a name or an id, in any case.
     #[test]
     fn the_filter_reads_names_and_ids() {
