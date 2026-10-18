@@ -106,12 +106,14 @@ pub fn networks(
     networks
 }
 
-/// The registrations due now. On each of `networks` with an account and a
-/// key: each token not registered as it stands, and a leave for each kind
-/// sent on its chain and key that the OS withdrew since. Then a leave for
-/// each kind sent on a chain none of `networks` is on, signed by the key it
-/// was sent with. Nothing on a network whose account is not known: no key
-/// acts there yet, or the node has not said.
+/// The registrations due now. `tokens` holds each kind the OS handed a
+/// token for this run, empty for one it took back since; a kind not handed
+/// yet says nothing (a launch's tokens come after it). On each of
+/// `networks` with an account and a key: each token not registered as it
+/// stands, and a leave for each kind taken back that was sent on its chain
+/// and key. Then a leave for each kind sent on a chain none of `networks`
+/// is on, signed by the key it was sent with. Nothing on a network whose
+/// account is not known: no key acts there yet, or the node has not said.
 pub fn plan(
     networks: &[Network],
     tokens: &BTreeMap<String, String>,
@@ -142,13 +144,13 @@ pub fn plan(
             tokens
                 .iter()
                 .map(|(kind, token)| wanted(kind, token))
-                .filter(|want| sent.get(&(want.chain.clone(), want.kind.clone())) != Some(want)),
-        );
-        due.extend(
-            sent.values()
-                .filter(|was| was.chain == network.chain && was.key == network.key)
-                .filter(|was| !was.token.is_empty() && !tokens.contains_key(&was.kind))
-                .map(|was| wanted(&was.kind, "")),
+                .filter(|want| {
+                    let was = sent.get(&(want.chain.clone(), want.kind.clone()));
+                    match want.token.is_empty() {
+                        true => was.is_some_and(|was| was.key == want.key && !was.token.is_empty()),
+                        false => was != Some(want),
+                    }
+                }),
         );
     }
     due.extend(
@@ -204,6 +206,9 @@ pub struct Registrar {
     reached: BTreeMap<String, Network>,
     /// The nodes not reached since the inputs last moved.
     missed: BTreeSet<String>,
+    /// The kinds the OS handed a token for this run: one taken back since
+    /// is a leave, one not handed yet is no word at all.
+    heard: BTreeSet<String>,
     /// Sends refused for good since the inputs last moved: not sent again
     /// as they stand.
     stopped: Sent,
@@ -234,6 +239,7 @@ impl Registrar {
                 nodes,
                 reached: BTreeMap::new(),
                 missed: BTreeSet::new(),
+                heard: BTreeSet::new(),
                 stopped: Sent::new(),
                 inputs: None,
                 busy: None,
@@ -274,7 +280,13 @@ impl Registrar {
         if self.busy.is_some() {
             return;
         }
-        let tokens = crate::os::push_tokens();
+        let handed = crate::os::push_tokens();
+        self.heard.extend(handed.keys().cloned());
+        let tokens: BTreeMap<String, String> = self
+            .heard
+            .iter()
+            .map(|kind| (kind.clone(), handed.get(kind).cloned().unwrap_or_default()))
+            .collect();
         let session = self.shared.session.read(cx).get().clone();
         let account = self.shared.account.read(cx);
         let here = account
@@ -617,7 +629,7 @@ mod tests {
 
     /// What the server holds as sent is not sent again; a token that moved
     /// is, and a kind the OS withdrew goes as a leave once, on the chain
-    /// and key it was sent for.
+    /// and key it was sent for; a kind not handed yet is not a withdrawal.
     #[test]
     fn only_what_moved_is_sent_again_and_a_withdrawn_token_leaves() {
         let here = [on("testkit#0a1b2c3d", Some(15), "ab")];
@@ -631,10 +643,13 @@ mod tests {
             (due[0].kind.as_str(), due[0].token.as_str()),
             ("voip", "v2")
         );
-        let withdrawn = tokens(&[("fcm", "f1")]);
+        let withdrawn = tokens(&[("voip", ""), ("fcm", "f1")]);
         let due = plan(&here, &withdrawn, "production", &sent);
         assert_eq!(due.len(), 1);
         assert_eq!((due[0].kind.as_str(), due[0].token.as_str()), ("voip", ""));
+        // a relaunch before the OS handed a kind's token: no word, no leave
+        let unhanded = tokens(&[("fcm", "f1")]);
+        assert!(plan(&here, &unhanded, "production", &sent).is_empty());
         // the account moved under the same key: sent again
         let moved = on("testkit#0a1b2c3d", Some(16), "ab");
         assert_eq!(plan(&[moved], &have, "production", &sent).len(), 2);
