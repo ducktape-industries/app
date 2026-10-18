@@ -39,9 +39,11 @@ import org.json.JSONObject
  * asks it for anything.
  * Every notice shown goes to Rust for the Notifications tab ([Native.notice], its payload as JSON and when it was
  * shown): those still in the shade each time the app comes to the front ([shown]), one opened from the shade (before
- * its link), and one that comes while the app is in front, which is not shown (this phone's own notifiers run then,
- * and post what is a notice here themselves). One the person swiped away first is not in the shade: what the
- * program's notifier here posts when it runs again is what the tab gets of it.
+ * its link), and one that comes while the app is in front. One the person swiped away first is not in the shade: what
+ * the program's notifier here posts when it runs again is what the tab gets of it.
+ * While the app is in front a notice is still a notification in the shade, once: this phone runs the notifiers of the
+ * chain in hand, and what they post Rust shows through [banner] (the push's payload, under its tag); a push for that
+ * chain then shows nothing, and one for another chain shows (Rust answers which).
  */
 object Ring {
     /** The intent extra naming the call an Answer came from, so the app takes its ring down. */
@@ -56,7 +58,7 @@ object Ring {
      */
     const val OWN = "industries.ducktape.mobile.Own"
 
-    /** [MainActivity] is in front (resumed): a notice is the app's own notifiers' to post then, not the shade's. */
+    /** [MainActivity] is in front (resumed): a push is shown only when Rust says ([notice]). */
     @Volatile
     var inFront = false
     private const val CHANNEL = "calls"
@@ -124,18 +126,19 @@ object Ring {
     }
 
     /**
-     * `notice` shown under its id in its tag's group; the same one already there is replaced; `quiet`: no sound. With
-     * the app in front it is handed to Rust instead, and nothing is shown.
+     * `notice` shown under its id in its tag's group; the same one already there is replaced; `quiet`: no sound. A push
+     * that comes with the app in front is handed to Rust first and shown only when Rust says; this phone's own ([own],
+     * [banner]) is shown as it is. Whether it was shown.
      */
-    fun notice(context: Context, notice: Map<String, String>) {
-        val tag = notice["tag"] ?: return
-        val id = notice["id"] ?: return
+    fun notice(context: Context, notice: Map<String, String>, own: Boolean = false): Boolean {
+        val tag = notice["tag"] ?: return false
+        val id = notice["id"] ?: return false
         val until = notice["until"]?.toLongOrNull() ?: 0
         val now = System.currentTimeMillis()
         val left = until * 1000 - now
-        if (until != 0L && left <= 0) return
+        if (until != 0L && left <= 0) return false
         val payload = JSONObject(notice).toString()
-        if (inFront) return Native.notice(payload, now / 1000, true, false)
+        if (inFront && !own && !Native.notice(payload, now / 1000, true, false)) return false
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(NOTICES, "Notices", NotificationManager.IMPORTANCE_DEFAULT))
         val link = notice["link"].orEmpty()
@@ -174,6 +177,16 @@ object Ring {
             .setAutoCancel(true)
             .build()
         manager.notify(tag, SUMMARY, summary)
+        return true
+    }
+
+    /**
+     * This phone's own banner ([MainActivity.banner]): [payload] (JSON, the push's shape, its id with it) shown as a
+     * pushed notice is, so opening it, and taking it down ([withdraw]), is a pushed one's. Whether it was shown.
+     */
+    fun banner(context: Context, payload: String): Boolean {
+        val json = JSONObject(payload)
+        return notice(context, json.keys().asSequence().associateWith { json.getString(it) }, own = true)
     }
 
     /** The notices still in the shade, each to Rust as it was shown ([Native.notice]), oldest first. */

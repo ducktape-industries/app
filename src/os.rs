@@ -188,6 +188,7 @@ impl OsServices for DesktopOs {
             one_layout: false,
             floats: true,
             motion: ducktape_host::motion::IOS,
+            os_asks_notices: false,
         }
     }
 

@@ -24,9 +24,11 @@
 //! - `link(url)`: a `duck://` or `ducktape://` intent's data.
 //! - `pushToken(kind, token)`: this device's push token (`fcm`), for the
 //!   device registry; empty when withdrawn.
-//! - `notice(payload, at, front, opened)`: a program's notice `Ring.kt`
-//!   showed, opened or handed over in front; from Firebase's own thread
-//!   for one that came in front (it only hands on, through a channel).
+//! - `notice(payload, at, front, opened) -> shows`: a program's notice
+//!   `Ring.kt` showed, opened or handed over in front; from Firebase's own
+//!   thread for one that came in front (it only hands on, through a
+//!   channel, and answers from what the shell published whether the shade
+//!   shows it).
 //!
 //! - `android_main(app)`: the entry gm's NativeActivity glue (android-activity,
 //!   which gm links whatever path a host takes) names; never called, since
@@ -37,7 +39,8 @@
 //! `MainActivity.systemBars(dark)` on gm's render thread, and
 //! `MainActivity.ask(permission)` (blocking until the person answers) and
 //! `MainActivity.openSettings(page)` on a camera's or a microphone's thread,
-//! and `MainActivity.withdrawNotice(tag)` on any.
+//! `MainActivity.banner(payload)` on the host's banner queue's, and
+//! `MainActivity.withdrawNotice(tag)` on any.
 #![allow(unsafe_code, reason = "the JNI entries the Android Activity calls")]
 
 use gpui_mobile::android::host::{self, Pointer};
@@ -300,8 +303,9 @@ pub extern "system" fn Java_industries_ducktape_mobile_Native_pushToken<'caller>
 
 /// `Native.notice`: a program's notice the OS showed (`Ring.kt`), its
 /// payload as JSON, the Unix seconds it was shown at; `front` when it came
-/// while the app was in front (nothing was shown), `opened` when the
-/// person opened it ([`crate::os::os_notice`]).
+/// while the app was in front, `opened` when the person opened it
+/// ([`crate::os::os_notice`]). Whether the shade shows one that came in
+/// front.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_industries_ducktape_mobile_Native_notice<'caller>(
     mut env: EnvUnowned<'caller>,
@@ -310,12 +314,38 @@ pub extern "system" fn Java_industries_ducktape_mobile_Native_notice<'caller>(
     at: jlong,
     front: jboolean,
     opened: jboolean,
-) {
-    env.with_env(|_: &mut Env| -> jni::errors::Result<()> {
-        crate::os::os_notice(&payload.to_string(), at, front, opened);
-        Ok(())
+) -> jboolean {
+    env.with_env(|_: &mut Env| -> jni::errors::Result<jboolean> {
+        Ok(crate::os::os_notice(
+            &payload.to_string(),
+            at,
+            front,
+            opened,
+        ))
     })
-    .resolve::<Policy>();
+    .resolve::<Policy>()
+}
+
+/// This phone's own banner, its payload as JSON (`os::banner_payload`),
+/// up through the Activity (`MainActivity.banner`, `Ring.kt`'s notice):
+/// whether it was handed to the shade.
+pub fn banner(payload: &str) -> bool {
+    let shown = gpui_mobile::android::jni::with_env(|env| {
+        let activity = gpui_mobile::android::jni::activity(env)?;
+        let payload = env.new_string(payload).map_err(|error| error.to_string())?;
+        env.call_method(
+            &activity,
+            jni::jni_str!("banner"),
+            jni::jni_sig!("(Ljava/lang/String;)Z"),
+            &[JValue::Object(&payload)],
+        )
+        .and_then(|shown| shown.z())
+        .map_err(|error| error.to_string())
+    });
+    shown.unwrap_or_else(|error| {
+        tracing::error!(target: "ducktape::phone", %error, "a banner did not go up");
+        false
+    })
 }
 
 /// The entry android-activity's NativeActivity glue calls. gm links that

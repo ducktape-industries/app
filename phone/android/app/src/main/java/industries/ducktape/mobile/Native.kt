@@ -51,9 +51,10 @@ object Native {
 
     /**
      * A program's notice shown ([Ring]): its payload as JSON, when it was shown (Unix seconds); [front] when it came
-     * while the app was in front (nothing shown), [opened] when the person opened it.
+     * while the app was in front, [opened] when the person opened it. Whether the shade shows one that came in front
+     * (unless this phone banners it itself: the app in front on the push's chain, whose notifiers it runs).
      */
-    @JvmStatic external fun notice(payload: String, at: Long, front: Boolean, opened: Boolean)
+    @JvmStatic external fun notice(payload: String, at: Long, front: Boolean, opened: Boolean): Boolean
 
     /** This device's push token of [kind] (`fcm`), for the device registry; empty when withdrawn. */
     @JvmStatic external fun pushToken(kind: String, token: String)

@@ -19,8 +19,9 @@ void ducktape_phone_back_cancel(void);
 void ducktape_phone_link(const char *url);
 
 // A program's notice the OS showed (`App.swift` `Ring`): its payload as JSON, the Unix seconds it was shown at; `front`
-// 1 when it came while the app was in front (nothing shown), `opened` 1 when the person opened it. Main thread.
-void ducktape_phone_notice(const char *payload, double at, uint8_t front, uint8_t opened);
+// 1 when it came while the app was in front, `opened` 1 when the person opened it. 1 when the OS shows one that came in
+// front (unless this phone banners it itself: the app in front on the push's chain). Main thread.
+uint8_t ducktape_phone_notice(const char *payload, double at, uint8_t front, uint8_t opened);
 
 // This device's push token of `kind` ("voip": PushKit's, as hex), for the device registry; "" when withdrawn.
 void ducktape_phone_push_token(const char *kind, const char *token);
