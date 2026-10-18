@@ -50,7 +50,7 @@ pub fn insets(window: &Window) -> WindowInsets {
     }
 }
 
-/// This phone as App settings names it (Expo `platform.phone`, React
+/// This phone as the Account tab names it (Expo `platform.phone`, React
 /// Native's `Build.MODEL` and `Build.VERSION.RELEASE`): the model and the
 /// system's version, from the properties those two read.
 pub fn phone() -> String {

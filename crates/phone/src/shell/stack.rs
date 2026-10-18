@@ -21,8 +21,8 @@ pub enum Tab {
     Open,
     /// The notices the programs posted, newest first.
     Notifications,
-    /// Who is reading, and the way to the account, App settings and
-    /// Switch network.
+    /// Who is reading, the way to the account, this phone, the network
+    /// and the appearance.
     Account,
 }
 

@@ -1,4 +1,4 @@
-//! Debug mode (App settings): what each open program costs, under its name
+//! Debug mode (the Account tab): what each open program costs, under its name
 //! on the Open tab, and the whole app's memory over the list. Read once a
 //! second while the tab is shown in front, never else; the numbers are the
 //! host's own (`ducktape_host::perf`, the registry `GET /perf` reads, which
