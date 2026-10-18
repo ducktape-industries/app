@@ -6,20 +6,28 @@
 //! Firebase token as a high-priority data message, both expiring at its
 //! `until` (huddle call SPEC §5); any other notice to an iPhone's
 //! remote-notification token as an alert and to an Android phone as a
-//! high-priority data message the app shows (`Ring.kt`), under the notice's
-//! tag as its collapse id. A second notice under a tag still standing goes
-//! quietly (no sound, a lower priority, `quiet` for Android): the "N more"
-//! banner past the burst is posted again on every post. Taken down (the
-//! program's `notify.seen` of its tag, or its `until`), it is withdrawn: a
-//! background push to the remote-notification token (never a second VoIP
-//! push, which iOS would ring) and `kind: withdraw` to Android. Past its
-//! `until` it is dropped. Every notice is also one `log` line.
+//! high-priority data message the app shows (`Ring.kt`). Each notice is
+//! its own notification under its id, the hash of its tag and link
+//! (`notice_id`: APNs's collapse id, Android's notification tag), and
+//! a tag's notices stack together (iOS's `thread-id` and Android's group
+//! are the tag): a chat room's messages stand side by side, and the same
+//! notice posted again (a run restarted) replaces itself. The "N more"
+//! banner past the burst, posted again on every post, is one notice a
+//! program the same way: the centre posts it under `more/<program>` with
+//! no link. A second notice under a tag still standing goes quietly (no
+//! sound, a lower priority, `quiet` for Android). Taken down (the
+//! program's `notify.seen` of its tag, or its `until`), the tag is
+//! withdrawn, every notice under it at once: a background push to the
+//! remote-notification token (never a second VoIP push, which iOS would
+//! ring) and `kind: withdraw` to Android, both naming the tag. Past its
+//! `until` a notice is dropped. Every notice is also one `log` line.
 //!
 //! An APNs token is sent to the server its `env` names: Apple's sandbox for
 //! a build signed for development, production for the rest. Both carry one
-//! payload, `{kind, chain, program, tag, title, body, link, until}`, and a
-//! call also `end` (the notice's `end_link`); FCM's data values are strings.
-//! pushd names no program: a call is a call whoever posts it.
+//! payload, `{kind, chain, program, tag, title, body, link, until}`, a
+//! notice also its `id` and a call its `end` (the notice's `end_link`);
+//! FCM's data values are strings. pushd names no program: a call is a
+//! call whoever posts it.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -369,8 +377,9 @@ pub struct Push {
     pub apns: Option<Arc<Apns>>,
     pub fcm: Option<Arc<Fcm>>,
     pub http: Arc<dyn Http>,
-    /// The notices standing on the phones, by tag, each with its `until`:
-    /// what a withdraw takes back, and what a repost replaces quietly.
+    /// The tags standing on the phones, each with its last notice's
+    /// `until`: what a withdraw takes back, and what a notice goes quietly
+    /// under.
     // ponytail: in memory, so a restart alerts once more under a standing
     // tag and withdraws nothing posted before it; kept in the store if felt
     standing: Mutex<HashMap<String, u64>>,
@@ -469,12 +478,14 @@ impl Push {
     /// The requests that show `notice` on every device, at `now`; `quiet`
     /// when one under its tag already stands there.
     fn show(&self, notice: &Notice, now: u64, quiet: bool) -> Vec<Request> {
-        let payload = self.payload(notice, "notice");
+        let id = notice_id(&notice.tag, &notice.link);
+        let mut payload = self.payload(notice, "notice");
+        payload["id"] = id.clone().into();
         let mut requests = Vec::new();
         if let Some((apns, bearer, tokens)) = self.apns_for("apns", now) {
             let mut aps = serde_json::json!({
                 "alert": { "title": notice.title, "body": notice.body },
-                "thread-id": notice.program,
+                "thread-id": notice.tag,
             });
             if !quiet {
                 aps["sound"] = "default".into();
@@ -485,7 +496,7 @@ impl Push {
                 ("apns-push-type", "alert".into()),
                 ("apns-topic", apns.topic.clone()),
                 ("apns-priority", if quiet { QUIET } else { LOUD }.into()),
-                ("apns-collapse-id", collapse_id(&notice.tag)),
+                ("apns-collapse-id", id),
             ];
             if notice.until != 0 {
                 headers.push(("apns-expiration", notice.until.to_string()));
@@ -501,7 +512,7 @@ impl Push {
             data.insert("quiet".into(), "1".into());
         }
         // no collapse key: FCM keeps four per device at most, and the
-        // phone replaces the notification under its tag itself
+        // phone replaces the notification under its id itself
         requests.extend(self.fcm(data, None, notice.until, now, "high"));
         requests
     }
@@ -648,12 +659,25 @@ fn shown(url: &str) -> String {
 fn collapse_id(tag: &str) -> String {
     match tag.len() <= 64 {
         true => tag.to_owned(),
-        false => ring::digest::digest(&ring::digest::SHA256, tag.as_bytes())
-            .as_ref()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect(),
+        false => sha256(tag),
     }
+}
+
+/// A notice's id on the phones (its APNs collapse id, Android's
+/// notification tag): the same tag and link, the same notice, which replaces
+/// itself; any other stands beside it. Always hashed: 64 bytes, APNs's
+/// limit, and a header value whatever the program's tag holds.
+fn notice_id(tag: &str, link: &str) -> String {
+    sha256(&format!("{tag}\n{link}"))
+}
+
+/// `text`'s SHA-256, in hex.
+fn sha256(text: &str) -> String {
+    ring::digest::digest(&ring::digest::SHA256, text.as_bytes())
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 impl Banners for Push {
@@ -1029,8 +1053,8 @@ mod tests {
     }
 
     /// A notice that is not a call is an alert to the iPhone's
-    /// remote-notification token (never its VoIP one), under its tag as
-    /// the collapse id, with a sound, and a high-priority data message the
+    /// remote-notification token (never its VoIP one), in its tag's thread
+    /// under its own id, with a sound, and a high-priority data message the
     /// Android app shows; a second under the same tag goes quietly (no
     /// sound, lower priority, `quiet` for Android); taken down, both get a
     /// withdraw; a tag withdrawn alerts again when posted again.
@@ -1058,13 +1082,13 @@ mod tests {
         assert_eq!(header(apns[0], "apns-push-type"), "alert");
         assert_eq!(header(apns[0], "apns-topic"), "industries.ducktape.mobile");
         assert_eq!(header(apns[0], "apns-priority"), "10");
-        assert_eq!(header(apns[0], "apns-collapse-id"), "chat/#general");
+        assert_eq!(header(apns[0], "apns-collapse-id"), SEVEN);
         assert_eq!(header(apns[0], "apns-expiration"), "");
         let body: serde_json::Value = serde_json::from_str(&apns[0].body).unwrap();
         assert_eq!(body["aps"]["alert"]["title"], "ada mentioned you");
         assert_eq!(body["aps"]["alert"]["body"], "hey @bob");
         assert_eq!(body["aps"]["sound"], "default");
-        assert_eq!(body["aps"]["thread-id"], "chat");
+        assert_eq!(body["aps"]["thread-id"], "chat/#general");
         assert_eq!(body["kind"], "notice");
         assert_eq!(body["link"], "duck://testkit-0a1b2c3d/chat/general/7");
         // `end` is a call's alone
@@ -1120,6 +1144,208 @@ mod tests {
             .find(|request| request.url.contains("/3/device/"))
             .unwrap();
         assert_eq!(header(apns, "apns-priority"), "10");
+    }
+
+    /// The id of the notice under `chat/#general` linking message 7, and
+    /// of the one linking message 8: SHA-256 of tag, a newline and link.
+    const SEVEN: &str = "91456d85cdd6e18a45793477650461b03e8b429f5051379cbfd1158c169df970";
+    const EIGHT: &str = "cd2c0f5bebda5c4d861fe2ed7fcce6bc611e5c293363c5bb41a4bd645473cb73";
+
+    /// Chat's notice of message `seq` in `#general`, as its notifier words
+    /// it once the centre took it.
+    fn message(seq: u32) -> Notice {
+        Notice {
+            kind: NoticeKind::Notice,
+            title: "ada mentioned you".into(),
+            body: "hey @bob".into(),
+            tag: "chat/#general".into(),
+            program: "chat".into(),
+            link: format!("duck://testkit-0a1b2c3d/chat/general/{seq}"),
+            until: 0,
+            end_link: String::new(),
+        }
+    }
+
+    /// The alert to the iPhone and the FCM message one post sent, taken
+    /// off the recorder.
+    fn sent(http: &Recorded) -> (Request, serde_json::Value) {
+        let sent = std::mem::take(&mut *http.0.lock().unwrap());
+        let mut apns = sent
+            .iter()
+            .filter(|request| request.url.contains("/3/device/"));
+        let mut fcm = sent
+            .iter()
+            .filter(|request| request.url.contains("messages:send"));
+        let (Some(alert), None, Some(message), None) =
+            (apns.next(), apns.next(), fcm.next(), fcm.next())
+        else {
+            panic!("one alert and one message: {sent:#?}");
+        };
+        let message: serde_json::Value = serde_json::from_str(&message.body).unwrap();
+        (alert.clone(), message["message"].clone())
+    }
+
+    /// A request's headers but its provider token, which changes.
+    fn headers(request: &Request) -> Vec<(&'static str, String)> {
+        request
+            .headers
+            .iter()
+            .filter(|(name, _)| *name != "authorization")
+            .cloned()
+            .collect()
+    }
+
+    /// The headers of an alert sent at `priority` as `id`.
+    fn alert(priority: &str, id: &str) -> Vec<(&'static str, String)> {
+        vec![
+            ("apns-push-type", "alert".into()),
+            ("apns-topic", "industries.ducktape.mobile".into()),
+            ("apns-priority", priority.into()),
+            ("apns-collapse-id", id.into()),
+        ]
+    }
+
+    /// The payload of `notice` as `id`, the alert's or (`strings`) FCM's.
+    fn carried(notice: &Notice, id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "notice", "chain": "testkit-0a1b2c3d", "program": notice.program,
+            "tag": notice.tag, "title": notice.title, "body": notice.body,
+            "link": notice.link, "until": notice.until, "id": id,
+        })
+    }
+
+    /// Two messages in one room are two notices: each under its own id
+    /// (APNs's collapse id, the FCM data's `id` Android posts it under),
+    /// both in the room's thread (iOS's `thread-id`, and the tag Android
+    /// groups by); the second goes quietly, its room standing.
+    #[test]
+    fn two_notices_in_a_room_stand_apart_in_its_thread() {
+        let (push, http) = push(&[("apns", "cd34"), ("fcm", "fcm-token")]);
+        for (seq, id, quiet) in [(7, SEVEN, false), (8, EIGHT, true)] {
+            let notice = message(seq);
+            assert!(push.post(&notice, None));
+            let (apns, fcm) = sent(&http);
+            assert_eq!(apns.url, "https://api.push.apple.com/3/device/cd34");
+            assert_eq!(headers(&apns), alert(if quiet { "5" } else { "10" }, id));
+            let mut body = carried(&notice, id);
+            body["aps"] = serde_json::json!({
+                "alert": { "title": "ada mentioned you", "body": "hey @bob" },
+                "thread-id": "chat/#general",
+            });
+            if !quiet {
+                body["aps"]["sound"] = "default".into();
+            }
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&apns.body).unwrap(),
+                body
+            );
+            let mut data = serde_json::Value::Object(strings(&carried(&notice, id)));
+            if quiet {
+                data["quiet"] = "1".into();
+            }
+            assert_eq!(
+                fcm,
+                serde_json::json!({
+                    "token": "fcm-token", "data": data, "android": { "priority": "high" },
+                })
+            );
+        }
+    }
+
+    /// The same notice posted again (a run that restarted re-posts what
+    /// stands) keeps its id, so it replaces itself on the phones.
+    #[test]
+    fn a_repost_keeps_its_id() {
+        let (push, http) = push(&[("apns", "cd34"), ("fcm", "fcm-token")]);
+        push.post(&message(7), None);
+        sent(&http);
+        push.post(&message(7), None);
+        let (apns, fcm) = sent(&http);
+        assert_eq!(headers(&apns), alert("5", SEVEN));
+        let body: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
+        assert_eq!(body["id"], SEVEN);
+        assert_eq!(fcm["data"]["id"], SEVEN);
+        assert_eq!(fcm["data"]["quiet"], "1");
+    }
+
+    /// The burst's "N more", posted again on every notice past the burst,
+    /// is one notice a program: under `more/<program>` with no link, it
+    /// keeps one id whatever its count, alone in its thread.
+    #[test]
+    fn the_burst_summary_is_one_notice_a_program() {
+        const MORE: &str = "ef7dad463059cafba2349784b2e003dd96d0edf8052009d9dfdfc17ded4b8d1c";
+        let (push, http) = push(&[("apns", "cd34"), ("fcm", "fcm-token")]);
+        let center = ducktape_host::runtime::notify::CenterHandle::default();
+        let (at, wall) = (Instant::now(), i64::try_from(now()).unwrap());
+        let summaries: Vec<Notice> = (0..crate::BURST + 2)
+            .filter_map(|seq| {
+                let post = view_wire::methods::Notification {
+                    title: "ada mentioned you".into(),
+                    body: "hey @bob".into(),
+                    tag: "#general".into(),
+                    link: format!("duck://testkit-0a1b2c3d/chat/general/{seq}"),
+                    kind: NoticeKind::Notice,
+                    until: 0,
+                    end_link: String::new(),
+                };
+                let (_, banner) =
+                    center
+                        .lock()
+                        .post(&crate::settings(), "chat", "Chat", post, at, wall);
+                banner.filter(|banner| banner.tag == "more/chat")
+            })
+            .collect();
+        let titles: Vec<_> = summaries.iter().map(|more| more.title.as_str()).collect();
+        assert_eq!(titles, ["1 more from Chat", "2 more from Chat"]);
+        for (more, priority) in summaries.iter().zip(["10", "5"]) {
+            assert!(push.post(more, None));
+            let (apns, fcm) = sent(&http);
+            assert_eq!(headers(&apns), alert(priority, MORE));
+            let body: serde_json::Value = serde_json::from_str(&apns.body).unwrap();
+            assert_eq!(body["aps"]["thread-id"], "more/chat");
+            assert_eq!((&body["id"], &body["link"]), (&MORE.into(), &"".into()));
+            assert_eq!(fcm["data"]["id"], MORE);
+        }
+    }
+
+    /// A withdraw names the tag alone: one background push to each iPhone
+    /// and one `withdraw` to each Android phone take down every notice in
+    /// the room, however many stand there.
+    #[test]
+    fn a_withdraw_takes_down_the_whole_room() {
+        let (push, http) = push(&[("apns", "cd34"), ("fcm", "fcm-token")]);
+        push.post(&message(7), None);
+        push.post(&message(8), None);
+        http.0.lock().unwrap().clear();
+        push.withdraw("chat/#general");
+        let sent = std::mem::take(&mut *http.0.lock().unwrap());
+        let [apns, fcm] = &sent[..] else {
+            panic!("one push and one message: {sent:#?}");
+        };
+        assert_eq!(apns.url, "https://api.push.apple.com/3/device/cd34");
+        assert_eq!(
+            headers(apns),
+            vec![
+                ("apns-push-type", "background".to_owned()),
+                ("apns-topic", "industries.ducktape.mobile".to_owned()),
+                ("apns-priority", "5".to_owned()),
+            ]
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&apns.body).unwrap(),
+            serde_json::json!({
+                "aps": { "content-available": 1 }, "kind": "withdraw", "tag": "chat/#general",
+            })
+        );
+        let fcm: serde_json::Value = serde_json::from_str(&fcm.body).unwrap();
+        assert_eq!(
+            fcm["message"],
+            serde_json::json!({
+                "token": "fcm-token",
+                "data": { "kind": "withdraw", "tag": "chat/#general" },
+                "android": { "priority": "normal" },
+            })
+        );
     }
 
     /// A token registered under `sandbox` goes to Apple's sandbox server,
