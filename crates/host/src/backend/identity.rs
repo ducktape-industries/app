@@ -1,10 +1,10 @@
 //! The identity program as this app's own flows onto an account use it, on
-//! top of `noded_client::identity`: mint a plain account, tell a user's
-//! account from an agent's, submit an op signed by the seated key.
+//! top of `noded_client::identity`: mint a plain account, submit an op
+//! signed by the seated key.
 //! `passkey` and `join` build on it; the rail's foot and the sign-in screen
 //! call it directly.
 
-use identity::{Control, Op};
+use identity::Op;
 use noded_client::identity::submit;
 
 use super::{RpcClient, query_signer, seated_frame, seated_key};
@@ -33,27 +33,6 @@ pub async fn create_seated(client: &RpcClient, network: &str, name: &str) -> Res
     };
     let output = submit_seated(client, network, &create).await?;
     abi::decode::<u64>(&output).map_err(|refusal| refusal.sentence)
-}
-
-/// A passkey or recovery-key flow is a user's: their own keys join their
-/// own account. A program account's keys are its manager's to add, and a
-/// system account holds none, so a key that holds either is told so
-/// instead of sending an `AddKey` identity would refuse.
-pub fn user(account: &identity::Account) -> Result<(), String> {
-    let name = &account.card.name;
-    match &account.control {
-        Control::User { .. } => Ok(()),
-        Control::Program { manager, .. } => Err(format!(
-            "This key belongs to {name} (account {}), a program account managed by account \
-             {manager}. Passkeys and recovery keys are for a user's own account: sign in \
-             with a user's key.",
-            account.number
-        )),
-        Control::System { program } => Err(format!(
-            "This key belongs to the account of the program {program}, which takes no passkey or \
-             recovery key."
-        )),
-    }
 }
 
 /// `noded_client::identity::account_of_key`, asked in a frame the seated
