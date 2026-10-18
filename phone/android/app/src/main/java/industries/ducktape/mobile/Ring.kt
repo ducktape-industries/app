@@ -139,8 +139,9 @@ object Ring {
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(NOTICES, "Notices", NotificationManager.IMPORTANCE_DEFAULT))
         val link = notice["link"].orEmpty()
+        // its own request code: each notice in a group opens with its own payload
         val opened = PendingIntent.getActivity(
-            context, tag.hashCode(),
+            context, id.hashCode(),
             (if (link.isEmpty()) Intent() else Intent(Intent.ACTION_VIEW, Uri.parse(link)))
                 .setClassName(context, OWN).putExtra(PAYLOAD, payload).putExtra(AT, now / 1000),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
@@ -175,9 +176,10 @@ object Ring {
         manager.notify(tag, SUMMARY, summary)
     }
 
-    /** The notices still in the shade, each to Rust as it was shown ([Native.notice]). */
+    /** The notices still in the shade, each to Rust as it was shown ([Native.notice]), oldest first. */
     fun shown(context: Context) {
-        for (posted in context.getSystemService(NotificationManager::class.java).activeNotifications) {
+        val active = context.getSystemService(NotificationManager::class.java).activeNotifications
+        for (posted in active.sortedBy { it.notification.`when` }) {
             val notification = posted.notification
             val payload = notification.extras.getString(PAYLOAD) ?: continue
             Native.notice(payload, notification.`when` / 1000, false, false)

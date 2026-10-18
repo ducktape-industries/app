@@ -179,10 +179,11 @@ final class Ring: NSObject, PKPushRegistryDelegate, CXProviderDelegate, UNUserNo
     delivered()
   }
 
-  /// The notices still in the OS's list, each to Rust as the OS showed it.
+  /// The notices still in the OS's list, each to Rust as the OS showed it, oldest first.
   private func delivered() {
     UNUserNotificationCenter.current().getDeliveredNotifications { notices in
-      DispatchQueue.main.async { notices.forEach { Ring.hand($0, front: false, opened: false) } }
+      let oldest = notices.sorted { $0.date < $1.date }
+      DispatchQueue.main.async { oldest.forEach { Ring.hand($0, front: false, opened: false) } }
     }
   }
 

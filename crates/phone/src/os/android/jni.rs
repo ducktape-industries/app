@@ -424,7 +424,7 @@ pub fn system_bars(dark: bool) {
     }
 }
 
-/// The shade's notice under `tag` (the push server's) taken down, through
+/// The shade's notices under `tag` (the push server's) taken down, through
 /// the Activity (`MainActivity.withdrawNotice`, `Ring.withdraw`).
 pub fn withdraw_notice(tag: &str) {
     let withdrawn = gpui_mobile::android::jni::with_env(|env| {

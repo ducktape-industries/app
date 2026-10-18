@@ -174,10 +174,10 @@ pub fn os_notice(payload: &str, at: i64, front: bool, opened: bool) {
     }
 }
 
-/// Takes the OS's notice under `tag` (the push server's banner tag,
-/// `<program>/<tag>`) out of its list: its row was read or cleared here, or
-/// its program said it was seen. Nothing when none stands there. Any
-/// thread.
+/// Takes the OS's notices under `tag` (the push server's banner tag,
+/// `<program>/<tag>`; each notice is its own notification there) out of its
+/// list: their row was read or cleared here, or its program said it was
+/// seen. Nothing when none stands there. Any thread.
 pub fn withdraw_notice(tag: &str) {
     #[cfg(target_os = "ios")]
     ios::ffi::withdraw_notice(tag);

@@ -200,7 +200,7 @@ fn os_notice(notice: crate::os::OsNotice, cx: &mut App) {
     log_os_notices(cx);
 }
 
-/// The OS's copy of each of `entries` out of its list, as its row is read
+/// The OS's copies of each of `entries` out of its list, as its row is read
 /// or cleared here: a notice the push server carried stands there under its
 /// banner tag (`<program>/<tag>`), and the next read of the list
 /// ([`os_notice`]) would log it again. The OS's list then says what the tab
