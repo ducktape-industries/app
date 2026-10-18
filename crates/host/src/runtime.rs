@@ -143,7 +143,8 @@ pub enum Intent {
     /// A notice was posted: the bell and the permission bar redraw.
     Notified,
     /// A view was seated in its tab, first or after a new deployment: its
-    /// minimum width is known, and the desk widens a window under it.
+    /// minimum width and the width it asks are known, and the desk widens
+    /// a window under them.
     Seated,
     /// `host.float`: its pane in a window of its own, at a press or key.
     Float(wire::methods::Float),

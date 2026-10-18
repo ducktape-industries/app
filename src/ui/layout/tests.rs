@@ -188,10 +188,10 @@ fn a_window_is_never_narrower_than_its_view() {
     assert_eq!(Pane::new("layout-narrow-view").min_width(), MIN_WIDTH);
 }
 
-/// A view that asks a width opens its window at it, centred, where the
-/// desk's share is narrower; at the desk's width on a desk narrower than
-/// that; never under the view's own minimum. A view that asks none opens
-/// at the share.
+/// A view that asks a width opens its window at it and the frame's
+/// border, centred, where the desk's share is narrower; at the desk's
+/// width on a desk narrower than that; never under the view's own
+/// minimum. A view that asks none opens at the share.
 #[test]
 fn a_window_opens_at_the_width_its_view_asks() {
     let opened = |program: &'static str, desk: (f32, f32)| {
@@ -204,14 +204,14 @@ fn a_window_opens_at_the_width_its_view_asks() {
     crate::runtime::width_for_test("layout-asks-wide", 1200);
     let mut layout = opened("layout-asks-wide", DESK);
     let first = layout.panes[0].frame.unwrap();
-    assert_eq!(first.w, 1200., "past the share, 840");
+    assert_eq!(first.w, 1202., "the width and its border, past the share");
     assert_eq!(first.x * 2. + first.w, DESK.0, "centred");
     layout.split("layout-asks-wide");
     layout.place(DESK);
     let second = layout.panes[1].frame.unwrap();
     assert_eq!(
         (second.x, second.y, second.w),
-        (first.x + CASCADE, first.y + CASCADE, 1200.),
+        (first.x + CASCADE, first.y + CASCADE, 1202.),
         "cascaded"
     );
     let narrow = (1000., 700.);
@@ -229,19 +229,27 @@ fn a_window_opens_at_the_width_its_view_asks() {
 }
 
 /// A window placed before its view came grows to the width the view asks
-/// once it is seated (`Seated` settles the desk), on the desk; one the
-/// person moved or sized stays as they left it.
+/// once it is seated (`Seated` settles the desk), about its own centre and
+/// on the desk; one the person moved or sized stays as they left it.
 #[test]
 fn a_late_width_widens_only_a_window_the_person_left_alone() {
-    let (alone, sized) = ("layout-late-alone", "layout-late-sized");
+    let programs = [
+        "layout-late-alone",
+        "layout-late-sized",
+        "layout-late-right",
+    ];
     let mut layout = Layout::default();
-    layout.split(alone);
-    layout.split(sized);
+    for program in programs {
+        layout.split(program);
+    }
     layout.measure(DESK);
     layout.settle();
-    let share = (DESK.0 * NEW_SHARE.0).round();
-    assert_eq!(layout.panes[0].frame.unwrap().w, share, "no view yet");
     let left = layout.panes[0].frame.unwrap();
+    assert_eq!(
+        (left.w, left.x * 2. + left.w),
+        ((DESK.0 * NEW_SHARE.0).round(), DESK.0),
+        "no view yet: the share, centred"
+    );
     assert!(layout.set_frame(0, left, DESK));
     assert!(!layout.panes[0].by_hand, "a press that moves nothing");
     let by_hand = Frame {
@@ -249,17 +257,23 @@ fn a_late_width_widens_only_a_window_the_person_left_alone() {
         ..layout.panes[1].frame.unwrap()
     };
     assert!(layout.set_frame(1, by_hand, DESK));
-    for program in [alone, sized] {
+    // the app's frame off the desk's centre, as a cascade or a resized
+    // desk leaves one: grown about its centre it would pass the right edge
+    layout.panes[2].frame.as_mut().unwrap().x = 500.;
+    for program in programs {
         crate::runtime::seat_for_test(program, 560);
         crate::runtime::width_for_test(program, 1200);
     }
     layout.settle();
     let widened = layout.panes[0].frame.unwrap();
-    assert_eq!(widened.w, 1200.);
-    assert!(
-        widened.x >= 0. && widened.x + widened.w <= DESK.0,
-        "on the desk"
+    assert_eq!(
+        (widened.w, widened.y),
+        (1202., left.y),
+        "the width and its border"
     );
+    assert_eq!(widened.x * 2. + widened.w, DESK.0, "about its own centre");
+    let right = layout.panes[2].frame.unwrap();
+    assert_eq!((right.x, right.w), (DESK.0 - 1202., 1202.), "on the desk");
     assert_eq!(layout.panes[1].frame, Some(by_hand), "the person's");
 }
 

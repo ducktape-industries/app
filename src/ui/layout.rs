@@ -33,9 +33,8 @@ pub(crate) struct Frame {
 }
 
 impl Frame {
-    /// At least `min_w` wide (its pane's [`Pane::min_width`], or its view's
-    /// [`Pane::width`] while the frame is the app's: [`Layout::place`]) and
-    /// the smallest window high, no larger than the desk, never past its left
+    /// At least `min_w` wide (its pane's [`Pane::min_width`]) and the
+    /// smallest window high, no larger than the desk, never past its left
     /// or top edge (the chrome is there: the sidebar, the bar), and never
     /// so far off its right or bottom that its title bar can't be grabbed
     /// back. On a desk narrower than
@@ -115,11 +114,12 @@ impl Pane {
             .map_or(MIN_WIDTH, |min_width| MIN_WIDTH.max(min_width + 2.))
     }
 
-    /// The width its view asks a desk window to open at, once the view is
-    /// drawn or compiled; none for the desk's own share.
+    /// The width its frame opens at, once its view is drawn or compiled and
+    /// asks one: the view's width and the frame's 1px border on each side.
+    /// None for the desk's own share.
     pub(crate) fn width(&self) -> Option<f32> {
         let view = self.is_view().then(|| crate::runtime::width(self.program));
-        view.flatten()
+        view.flatten().map(|width| width + 2.)
     }
 }
 
@@ -389,8 +389,8 @@ impl Layout {
     /// a frame. A new window is the desk's share wide, or its view's width
     /// where that is wider, never past the desk nor under its view's
     /// minimum; a window the person has not moved or sized grows to its
-    /// view's width when that comes after it. Every frame is kept where it
-    /// can be grabbed.
+    /// view's width when that comes after it, about its own centre. Every
+    /// frame is kept where it can be grabbed.
     pub(crate) fn place(&mut self, desk: (f32, f32)) {
         for index in 0..self.panes.len() {
             if self.panes[index].frame.is_some() {
@@ -431,11 +431,22 @@ impl Layout {
             self.panes[index].frame = Some(frame);
         }
         for pane in &mut self.panes {
-            let floor = match pane.by_hand {
-                true => pane.min_width(),
-                false => pane.min_width().max(pane.width().unwrap_or(0.)),
+            let Some(mut frame) = pane.frame else {
+                continue;
             };
-            pane.frame = pane.frame.map(|frame| frame.clamped(desk, floor));
+            // the app's frame grows to its view's width about its own
+            // centre, so a window centred before its view came stays so
+            if !pane.by_hand
+                && let Some(width) = pane.width()
+            {
+                let w = width.min(desk.0.max(MIN_WIDTH));
+                if w > frame.w {
+                    let x = frame.x - ((w - frame.w) / 2.).round();
+                    frame.x = x.min(desk.0 - w).max(0.);
+                    frame.w = w;
+                }
+            }
+            pane.frame = Some(frame.clamped(desk, pane.min_width()));
         }
     }
 
