@@ -423,9 +423,8 @@ pub trait ViewRunner: Send + Sync + 'static {
     /// dead-page rules).
     fn instantiate(&self, hash: [u8; 32], seat: SeatId, land: Landing);
     /// `program.describe`: run the import-free describe module `module`
-    /// (sha256 `hash`) on `op`, bounded by the same fuel, once
-    /// `view_meter::accepts` takes it as it would a view; `None` on any
-    /// failure.
+    /// (sha256 `hash`) on `op`, once `view_meter::accepts` takes it as it
+    /// would a view; `None` on any failure.
     fn describe(
         &self,
         hash: [u8; 32],
@@ -474,7 +473,7 @@ pub struct Prepared {
 /// the answer lands on the seat's [`Landing`].
 ///
 /// A program's NOTIFIER (`runtime::notifier`) is seated the same way, on
-/// the same code path, budget and fuel: a module that exports `alloc`,
+/// the same code path and budget: a module that exports `alloc`,
 /// `init` and `tick` only (no state to hand over). Every runner seats a
 /// module without `snapshot` and `restore`, and a `begin_snapshot` or
 /// `begin_restore` on it lands `Fault::Trap("the view exports no …")`. Its
@@ -531,7 +530,7 @@ pub trait ViewInstance: Send {
     /// The `restore` export: lands `Restored`, `RestoreRefused` or a
     /// `Fault`.
     fn begin_restore(&mut self, snapshot: Vec<u8>);
-    /// The fuel the last landed call used, of [`FUEL_PER_TICK`].
+    /// The fuel the last landed call used.
     fn fuel_used(&self) -> u64;
     /// The view's linear memory, in bytes.
     fn memory_bytes(&self) -> usize;
@@ -624,8 +623,6 @@ pub enum Fault {
     /// The view panicked: the words its panic hook
     /// (`ducktape_view.panicked`) handed over before the trap.
     Panicked(String),
-    /// The call used all of [`FUEL_PER_TICK`].
-    OutOfFuel,
     /// A `memory.grow` or `table.grow` past the `memory.view_bytes`
     /// setting.
     Memory,
@@ -637,7 +634,6 @@ impl std::fmt::Display for Fault {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Trap(words) | Self::Panicked(words) | Self::Runner(words) => f.write_str(words),
-            Self::OutOfFuel => f.write_str("all fuel consumed by WebAssembly"),
             Self::Memory => f.write_str("the view is past the device's view memory setting"),
         }
     }
@@ -678,12 +674,6 @@ pub struct RunnerConfig {
     /// `cache_dir`. `None` compiles in this process (the phone).
     pub compile_apart: Option<PathBuf>,
 }
-
-/// Instruction budget for one call into a view, on every runner: a ceiling
-/// that ends a runaway, not a cost. `RUST_LOG=ducktape::perf=debug` logs
-/// each tick's fuel; docs/perf.md §4.2 has the heaviest ticks measured and
-/// each view's budget, at most half of this ceiling.
-pub const FUEL_PER_TICK: u64 = 250_000_000;
 
 /// The shell's services, installed before the host reads anything
 /// (`start` installs its `Boot`'s; a shell that needs them earlier, or

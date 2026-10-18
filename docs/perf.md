@@ -93,14 +93,14 @@ loop runs on the window thread inside `Seat::turn`
 | Roster read (per block) | nothing | `roster::spawn_roster_read` around `backend::views::programs` | H `roster` (W) | free |
 | Fetch the blob | `LoadTiming.fetch` (`seat.rs`), logged by `LoadTiming::log` as `fetch_ms`; disk-cache hit and node read are not told apart | `View::load` (`view/lifecycle.rs`) around `backend::views::view_of`; source from `backend::views::program_bytes` (cache path vs `client.blob`) | H `fetch` (W), C `fetch.source{disk,node}` (D), G `view_bytes` (D) | a3 for the wall time in `View::load`; free for source and bytes in `program_bytes` (`backend/views.rs`) |
 | Compile: memory hit / disk-cache hit / cold | `LoadTiming.compile` as `compile_ms`, one number for all three | `View::compile` → `view::compiled_view` (owns the static `ViewCodeCache`) → `view::compile_view`: in-process cache hit before `Module::new`; disk vs cold from a `wasmtime::Cache::cache_hits`/`cache_misses` delta around `Module::new`. `view::engine` moves its `Cache` into `config.cache(..)`; `Cache` is `Clone`, so keep a clone beside the `Engine` to read the counters. They are process-global and loaders compile concurrently on purpose, so the delta is approximate — `ponytail:` note | H `compile` (W), C `compile.source{memory,disk,cold}` (D) | a3 (`view.rs`) |
-| Instantiate | lumped into `init_ms` | `View::instantiate` (`view/lifecycle.rs`): `Linker::instantiate` plus `Exports::bind`; fuel is armed there too, so `FUEL_PER_TICK - get_fuel()` after it is the start function's fuel | H `instantiate` (W), H `fuel.instantiate` (D) | a3 |
+| Instantiate | lumped into `init_ms` | `View::instantiate` (`view/lifecycle.rs`): `Linker::instantiate` plus `Exports::bind`; fuel is armed there too, so the count after it is the start function's fuel | H `instantiate` (W), H `fuel.instantiate` (D) | a3 |
 | Snapshot of the old view (swap only) | lumped into `init_ms`, and runs under the seat mutex the window thread needs | `View::load` where it calls `old.snapshot()` (`View::snapshot` → `Exports::snapshot`) | H `snapshot` (W), G `snapshot_bytes` (D), H `fuel.snapshot` (D) | a3 |
 | Restore | lumped into `init_ms` | `View::restore` → `Exports::restore` | H `restore` (W), H `fuel.restore` (D) | a3 |
 | Init | `init_ms` = instantiate + snapshot + restore + init together | `View::init` → `Exports::init` | H `init` (W), H `fuel.init` (D) | a3 |
 | First frame of a swap | `first_frame_ms` | `View::first_frame` | H `first_frame` (W) | a3 |
 | Install | nothing: `LoadTiming::log` runs before the loader takes the seat lock in `Load::land` | `seat::Load::land`, after `View::load` returns: lock wait, then the match on `Loaded` through `locked.wake.send_replace(())`; a swap also drops the old `View` (its `Store`, up to the device's `memory.view_bytes` of memory) under the lock | H `install.lock_wait`, H `install` (W) | free |
 | First tree of a fresh view | nothing. A fresh load only calls `init`; the first `tick` runs on the window thread at the first redraw, after `view_load` was logged. A preloaded seat (`roster::read_roster`) is only compiled: the pane that claims it starts its code (`View::start`, `view_load` with `blob=seat code=seat`), so a first open pays only instantiate and `init`; "from load start" is still not what a user feels | end of the first `View::tick` (`View.ticks == 0` in `View::redraw`), measured from the start of the `Seat::turn` that ticks it | H `first_tree` (W, ms) | a3 / 70 |
-| Tick: fuel | `tracing::debug!(target: "ducktape::perf", used, limit)` in `View::tick` (`view/requests.rs`) | same site | H `fuel.tick` (D) | a3 |
+| Tick: fuel | `tracing::debug!(target: "ducktape::perf", used)` in `View::tick` (`view/requests.rs`) | same site | H `fuel.tick` (D) | a3 |
 | Tick: wall | nothing | `View::tick`: the `arm` → `Exports::tick` → `shape` chain is one expression today and has to be split to time the call and the decode apart | H `tick.call`, H `tick.decode` (W) | a3 |
 | Requests per tick | nothing | `View::redraw`, the loop over `frame.requests` and `frame.cancels` | H `requests`, H `cancels` (D) | a3 |
 | Host-call latency | nothing | `kernel::node::spawn_method`: `Instant` before the spawned future, record when `replies.item` is called; the kind is the `(Capability, operation)` pair `kernel::answer` matched on | H `host_call.<kind>` (W) | free |
@@ -121,12 +121,13 @@ loop runs on the window thread inside `Seat::turn`
 
 Two findings the table depends on:
 
-- **There is no time budget.** `view::engine` sets only
+- **There is no time or fuel budget.** `view::engine` sets only
   `cranelift_opt_level`, `consume_fuel(true)` and the disk cache; no
   `epoch_interruption`, `set_epoch_deadline` or `increment_epoch` appears in
-  `src`. The only bound is `FUEL_PER_TICK`, re-armed by `view::arm` before
-  every call. The owner kept it that way (§7), and the `crates/host/src/runtime.rs`
-  module doc now says so.
+  `src`. `view::arm` starts the fuel count full before every call, so the
+  count measures a call and stops none: a view's call runs until it
+  returns. The owner kept it that way (§7), and the
+  `crates/host/src/runtime.rs` module doc says so.
 - **`LoadTiming` had already lost `status` and `check`** by the time phase
   0 landed; the split above is what it holds now (`seat.rs`).
 
@@ -242,8 +243,7 @@ only when on and only when the tree changed.
   event in `View::tick`, plus one debug event per registry sample.
   Callsite-filtered, so it costs nothing unless
   `RUST_LOG=ducktape::perf=debug` (the filter is `info` plus `RUST_LOG`,
-  `install_log`). There is no `ducktape::fuel` target and no alias; the
-  `FUEL_PER_TICK` doc in `crates/host/src/runtime.rs` names the new one.
+  `install_log`). There is no `ducktape::fuel` target and no alias.
 - `view_load` (`LoadTiming::log`) is on this target as well, with `blob`,
   `code`, `instantiate_ms`, `restore_ms`, `snapshot_ms`, `snapshot_bytes`,
   `lock_wait_ms` and `install_ms`, and is logged after install rather than
@@ -372,7 +372,6 @@ only when on and only when the tree changed.
 
 | Ceiling | Value | Effect |
 |---|---|---|
-| `FUEL_PER_TICK` | 250M | trap → fault, "This view stopped" |
 | `memory.view_bytes` (`prefs.json`, `ViewLimits`) | 64 MiB unless set | trap on grow |
 | `MAX_DEPTH` (view-wire) | 64 | a deeper frame does not decode → fault |
 
@@ -380,8 +379,8 @@ only when on and only when the tree changed.
 
 Measured so far (fold in, attribute, do not over-trust):
 
-- Fuel, heaviest ticks, #291 (`3a2d63c3`, 2026-09-24, the commit that set
-  `FUEL_PER_TICK` to 250M): chat ~72M, forge ~45M, explorer ~26M. A manual
+- Fuel, heaviest ticks, #291 (`3a2d63c3`, 2026-09-24): chat ~72M, forge
+  ~45M, explorer ~26M. A manual
   per-tick fuel trace, screen and stage not recorded, before the qa gate
   existed.
 - Explorer, qa's `a11y-census` on a freshly seeded stage (`kit up`,
@@ -437,8 +436,8 @@ Measured so far (fold in, attribute, do not over-trust):
 
 Rules, in `qa`'s `perf-budgets.json`, keyed by program and by window:
 
-1. **Hard ceiling**: 50% of each kill ceiling, every view. Fuel max ≤ 125M,
-   memory max ≤ 32 MiB (half the default `memory.view_bytes`).
+1. **Hard ceiling**: 50% of each kill ceiling, every view: memory max
+   ≤ 32 MiB (half the default `memory.view_bytes`).
 2. **Regression budget**: baseline × 1.25 on the D metrics — fuel max and
    p95, frame bytes max, nodes max, requests max, truncations, snapshot
    bytes, memory max, picture bytes, view bytes — refreshed from a green
@@ -462,9 +461,7 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by program and by window:
    when replies and blocks land: the explorer's follows the largest event
    payload one tick takes (`events_bytes.max`: 48.8 kB read 31.4M and 54.1
    kB read 33.7M below), so the baseline is the largest of at least three
-   runs. The budget is that reading × 1.25, rounded to the million. At or
-   over rule 1's ceiling it would be no regression budget: the ceiling
-   reports the same tick without it.
+   runs. The budget is that reading × 1.25, rounded to the million.
 
    Refreshed 2026-10-05, after the campaign's second part (bytes cross
    the wire as a bin, programs#269; a lowered node costs what it sets,
@@ -490,11 +487,11 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by program and by window:
    746 nodes) while the explorer's Transactions page became a window of
    the rows shown (1,074 → 696 nodes).
 
-   What holds a view's fuel, in order: its budget (a tick 25% over the
-   baseline is reported), rule 1 at 125M, and the 250M kill (§4.1).
-   Nothing in `perf-budgets.json` reports a regression under 25%, and of
-   this rule's D metrics the file holds only the fuel max, for chat, forge
-   and the explorer: every other view is held by rule 1 alone.
+   What holds a view's fuel: its budget alone (a tick 25% over the
+   baseline is reported). Nothing in `perf-budgets.json` reports a
+   regression under 25%, and of this rule's D metrics the file holds only
+   the fuel max, for chat, forge and the explorer: no other view's fuel is
+   judged.
    `--perf-baseline <run-dir>` (§4.4) is the
    check that compares every D metric with a recorded run (fuel p95 and
    nodes max among them), and no census run passes it today. Every line
@@ -799,8 +796,8 @@ Phase 0, as listed:
   `install.lock_wait`, the `view_perf` retire line (`impl Drop for View`)
   and `view_load` after install (`seat.rs`), `roster`, `picture_bytes`
   (`Pictures::bytes`).
-- Same PR: the `FUEL_PER_TICK` doc names `ducktape::perf`; the runtime
-  module doc no longer claims a time budget; ARCHITECTURE.md follows.
+- Same PR: the runtime module doc no longer claims a time budget;
+  ARCHITECTURE.md follows.
 
 Phase 1, as listed:
 - `View::tick` split (`tick.call`, `tick.decode`, `merge`), the fuel
@@ -880,9 +877,9 @@ design, not merged. What still informs:
    Either add epoch interruption (always on; then the view profiler no
    longer splits the compile cache) or delete the claim.
 
-   **Answered (owner, 2026-09-28): delete the claim.** Fuel
-   (`FUEL_PER_TICK`) is the only ceiling; no epoch interruption. The
-   module doc says so.
+   **Answered (owner): no time budget and no fuel limit.** No epoch
+   interruption, and a view's call runs until it returns. The module doc
+   says so.
 3. **Do budgets block merges?** Fuel, bytes, nodes and idle counts are
    deterministic enough to gate.
 

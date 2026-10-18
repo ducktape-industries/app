@@ -1,7 +1,7 @@
 //! The meter pass: a view's wasm rewritten so it carries its own bounds.
 //!
-//! On the desktop and Android, wasmtime bounds a view at run time: fuel
-//! (`FUEL_PER_TICK` per call) and the `memory.view_bytes` budget
+//! On the desktop and Android, wasmtime counts a view's fuel and bounds its
+//! memory at run time: the `memory.view_bytes` budget
 //! (`ViewLimits`: linear memory plus 8 bytes per table element). On iOS the
 //! views run in JavaScriptCore, which has neither, and a page stuck in a wasm
 //! loop cannot be stopped from outside (wasm-mobile S0-webkit §7). So
@@ -66,8 +66,7 @@
 //!   budget, or the view's own trap. The module gives no use for a trapped
 //!   call: the view's own trap leaves [`GAS`] at what the host armed (the
 //!   count is in a register, never written back there), and wasmtime's own
-//!   count after a trap is the last one it stored. The iOS host's glue
-//!   (lane J part 2) caps the use it reports at the budget.
+//!   count after a trap is the last one it stored.
 //! - **Imports must not call back into the module.** An import call passes
 //!   no count and stores none in [`GAS`] first: an import that called an
 //!   export would start it from a stale [`GAS`], and the outer wrapper's

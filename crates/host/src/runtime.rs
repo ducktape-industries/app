@@ -5,8 +5,8 @@
 //! developer's override directory (`Dirs::views_override`, the desktop's
 //! `DUCKTAPE_VIEWS_DIR`) is the one exception, and says so in app.log for
 //! every view it supplies. A view is
-//! ticked inside a fuel budget (`FUEL_PER_TICK`, the one ceiling on a
-//! call), and presented through native gpui-kit controls in its seat.
+//! ticked until its call returns, and presented through native gpui-kit
+//! controls in its seat.
 //!
 //! The app knows no program by name. The roster's order is the rail's, a
 //! view's manifest names its tab, and what a view asks of the app is the
@@ -101,7 +101,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::contract::{
-    CodeSource, FUEL_PER_TICK, Fault, Landed, Landing, Prepared, SeatId, ViewInstance, ViewRunner,
+    CodeSource, Fault, Landed, Landing, Prepared, SeatId, ViewInstance, ViewRunner,
 };
 #[cfg(feature = "ui")]
 use gpui_kit::AppContext as _;

@@ -445,9 +445,8 @@ impl View {
         if perf::on() {
             perf::record(key, "fuel.tick", self.fuel_used());
         }
-        // `RUST_LOG=ducktape::perf=debug`: how much of the budget a tick took
         tracing::debug!(target: "ducktape::perf", program = self.program,
-            used = self.fuel_used(), limit = FUEL_PER_TICK);
+            used = self.fuel_used());
         let headless = self.notifier;
         let outcome = answer.and_then(|frame| {
             perf::record(key, "frame_bytes", frame.len() as u64);

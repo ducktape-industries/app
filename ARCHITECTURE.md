@@ -131,7 +131,7 @@ quit) are `Windows`' methods.
 | **freedesktop listener** (non-macOS) | banner clicks off the session bus | `runtime/notify/freedesktop.rs` |
 | GPUI background executor | timers only (clock wake-ups, sensor delays, spin, the door's settle polls) | — |
 
-There is no wall-clock budget on a tick. Fuel is the one bound (see §8).
+There is no wall-clock or fuel budget on a tick: it runs until the view's call returns (see §8).
 
 ## 3. Life of a view
 
@@ -192,11 +192,10 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    read), and no instance exists and no `init` runs for a program nobody
    opened. The pane that claims it starts that code (`View::start`:
    instantiate and `init`, nothing fetched or compiled again) right in
-   `seat::mounted` on the window thread, where every tick runs on the same
-   fuel, when the blob is still the one the roster lists; any other claim
-   is queued as a load. A seat claimed while its preload is on the way gets
-   its load once the preload lands, and that load starts the code the same
-   way.
+   `seat::mounted` on the window thread, when the blob is still the one
+   the roster lists; any other claim is queued as a load. A seat claimed
+   while its preload is on the way gets its load once the preload lands,
+   and that load starts the code the same way.
    `View::instantiate` builds a store whose `ViewLimits`
    (`view/abi.rs`, a wasmtime `ResourceLimiter`) charges linear memory and
    table elements against the device's `memory.view_bytes` setting
@@ -230,7 +229,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    kernel `Replies`, fires due `clock.ticks`, syncs visibility, offset and
    route subscriptions, and — only if something is pending, the frame said
    `busy`, or there was never a first tree — calls `View::tick`: `arm`
-   refills `FUEL_PER_TICK`, `Exports::tick` runs the wasm with the encoded
+   starts the fuel count full, `Exports::tick` runs the wasm with the encoded
    events, `shape` decodes the returned `Frame` (`view_wire::decode`
    refuses one nested deeper than `view_wire::MAX_DEPTH`) and sanitizes it,
    taking the frame's style entries into the held table; a frame `shape`
@@ -324,7 +323,7 @@ the pane draws: the load's stage words while loading; the network's word
 for `Slot::Empty` ("This network has no `<program>` view. An admin can
 activate a deployment that ships one."); or a `Failure` with a
 title and Retry — `Unreachable` (node or blob), `HashMismatch`,
-`NotListed`, `Trapped` (fuel exhausted or a wasm trap, the panic message
+`NotListed`, `Trapped` (a wasm trap, the panic message
 from `HostState::panic` when there is one), `Refused` (bytes this build does
 not run, or a load overtaken), `Wire` (built against another wire than
 this app's). A failed candidate's code is held off (`seat::Retry`) until
@@ -740,9 +739,13 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
 
 ## 8. Performance facts
 
-- **Fuel.** `FUEL_PER_TICK` (`runtime.rs`, 250M instructions) is armed by
-  `view::arm` before every entry into a view: `init`, `tick`, `snapshot`,
-  `restore`, and instantiate. There is no wall-clock or epoch budget.
+- **Fuel.** `arm` (`runner/wasmtime.rs`) starts the fuel count full
+  before every entry into a view: `init`, `tick`, `snapshot`, `restore`,
+  and instantiate. The count measures a call and stops none: a view's call
+  runs until it returns. There is no wall-clock or epoch budget either. A
+  view that never returns holds the window thread, so the app draws and
+  answers nothing until it is killed.
+  `program.describe` keeps its own fuel budget (`describe::host::FUEL`).
   `RUST_LOG=ducktape::perf=debug` logs fuel used per tick, and
   `DUCKTAPE_PERF=1` keeps the counters `GET /perf` reads (docs/perf.md).
 - **Memory settings** (`backend::memory_bounds`, `backend/prefs.rs`): three
