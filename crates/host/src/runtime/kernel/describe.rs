@@ -19,10 +19,12 @@ use crate::backend::views::{self, Fetch};
 
 type Description = Option<methods::Description>;
 
-/// One code id's describe module, its sha256 and its bytes; `None` where
-/// the code carries none: set once, by the first ask that fetched it,
-/// while every ask that came meanwhile waits for it.
-type Module = Option<([u8; 32], Arc<[u8]>)>;
+/// One code id's describe module: its sha256, its bytes (small: kept, the
+/// blob's map is not) and where they lie in the cache's file, for a
+/// compile apart to read there; `None` where the code carries none. Set
+/// once, by the first ask that fetched it, while every ask that came
+/// meanwhile waits for it.
+type Module = Option<([u8; 32], Arc<[u8]>, Option<(std::path::PathBuf, u64)>)>;
 type Compiled = Arc<OnceCell<Module>>;
 
 /// Describe modules by code id.
@@ -59,14 +61,19 @@ pub(super) async fn described(
     if let Some(kept) = answers().lock().expect("describe answers").get(&key) {
         return Ok(kept.clone());
     }
-    let Some((hash, module)) = module(node, code).await? else {
+    let Some((hash, module, file)) = module(node, code).await? else {
         return Ok(None);
     };
-    let described =
-        tokio::task::spawn_blocking(move || crate::contract::runner().describe(hash, &module, &op))
-            .await
-            .ok()
-            .flatten();
+    let described = tokio::task::spawn_blocking(move || {
+        let module = crate::contract::Code {
+            bytes: &module,
+            file: file.as_ref().map(|(path, at)| (path.as_path(), *at)),
+        };
+        crate::contract::runner().describe(hash, module, &op)
+    })
+    .await
+    .ok()
+    .flatten();
     answers()
         .lock()
         .expect("describe answers")
@@ -87,8 +94,8 @@ async fn module(node: &Node, code: abi::BlobId) -> Result<Module, wire::Error> {
         .clone();
     let kept = compiled
         .get_or_try_init(|| async {
-            let bytes = match views::program_bytes(&node.client, &code).await {
-                Ok((bytes, _)) => bytes,
+            let blob = match views::program_bytes(&node.client, &code).await {
+                Ok((blob, _)) => blob,
                 // the transport: the ask's answer, and the next ask tries again
                 Err(Fetch::Unreachable(reason)) => {
                     return Err(Some(wire::Error::new(refusal::RPC_CLIENT, reason)));
@@ -97,10 +104,11 @@ async fn module(node: &Node, code: abi::BlobId) -> Result<Module, wire::Error> {
                 Err(_) => return Err(None),
             };
             Ok(tokio::task::spawn_blocking(move || {
-                ::describe::section(&bytes).map(|section| {
-                    let hash: [u8; 32] = sha2::Sha256::digest(section).into();
-                    (hash, Arc::from(section))
-                })
+                let section = blob.part(::describe::section)?;
+                let code = section.code();
+                let hash: [u8; 32] = sha2::Sha256::digest(code.bytes).into();
+                let file = code.file.map(|(path, at)| (path.to_owned(), at));
+                Some((hash, Arc::from(code.bytes), file))
             })
             .await
             .ok()
@@ -140,7 +148,7 @@ pub(super) mod tests {
         let module = wat.map(|wat| {
             let bytes = wat::parse_str(wat).unwrap();
             let hash: [u8; 32] = sha2::Sha256::digest(&bytes).into();
-            (hash, Arc::from(bytes))
+            (hash, Arc::from(bytes), None)
         });
         modules().lock().unwrap().insert(code, kept(module));
     }
@@ -226,10 +234,10 @@ pub(super) mod tests {
         )]);
         let asks = futures::future::join_all((0..8).map(|_| module(&node.node, code))).await;
         let _ = std::fs::remove_file(&cached);
-        let (_, first) = asks[0].clone().unwrap().expect("the section is read");
+        let (_, first, _) = asks[0].clone().unwrap().expect("the section is read");
         assert!(
             asks.iter()
-                .all(|ask| matches!(ask, Ok(Some((_, module))) if Arc::ptr_eq(module, &first))),
+                .all(|ask| matches!(ask, Ok(Some((_, module, _))) if Arc::ptr_eq(module, &first))),
             "each ask read a section of its own"
         );
         assert_eq!(
@@ -251,7 +259,7 @@ pub(super) mod tests {
         modules()
             .lock()
             .unwrap()
-            .insert(code, kept(Some((hash, Arc::from(module)))));
+            .insert(code, kept(Some((hash, Arc::from(module), None))));
         let apart = super::super::super::roster::Apart::default();
         apart.roster.lock().push(crate::backend::views::Program {
             name: program.into(),

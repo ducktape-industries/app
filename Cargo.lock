@@ -2798,6 +2798,7 @@ dependencies = [
  "keyscheme",
  "libc",
  "live-wire",
+ "memmap2",
  "noded-client",
  "program",
  "programs",

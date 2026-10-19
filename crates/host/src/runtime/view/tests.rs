@@ -412,7 +412,7 @@ fn a_ticked_view_survives_a_swap_with_its_state() {
     let alive = old.alive.clone();
     let mounted = Mounted::seat();
     mounted.lock().unwrap().slot = Slot::Ready(Box::new(old));
-    let (code, prepared) = View::prepare(&**crate::contract::runner(), &bytes, "probe")
+    let (code, prepared) = View::prepare(&**crate::contract::runner(), Code::of(&bytes), "probe")
         .map_err(|f| f.to_string())
         .expect("compiles");
     let mut deployment = ViewCode::for_test("", "", 0);

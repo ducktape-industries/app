@@ -109,7 +109,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::contract::{
-    CodeSource, Fault, Landed, Landing, Prepared, SeatId, ViewInstance, ViewRunner,
+    Code, CodeSource, Fault, Landed, Landing, Prepared, SeatId, ViewInstance, ViewRunner,
 };
 #[cfg(feature = "ui")]
 use gpui_kit::AppContext as _;

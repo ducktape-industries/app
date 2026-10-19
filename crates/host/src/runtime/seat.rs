@@ -699,7 +699,7 @@ async fn read_bytes(load: &Load, timing: &mut LoadTiming) -> Read {
     timing.started = Some(Instant::now());
     timing.path = "read";
     let bytes = match crate::contract::os().bundled_view(&blob) {
-        Some(view) => Ok(Some((view, "bundle"))),
+        Some(view) => Ok(Some((view.into(), "bundle"))),
         None => {
             show(Slot::Fetching {
                 received: 0,

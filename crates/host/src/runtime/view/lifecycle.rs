@@ -71,8 +71,13 @@ impl View {
                 before_any_candidate(Failure::Refused(format!("{shown}: {error}")))
             })?;
             let runner = crate::contract::runner();
+            // a compile apart reads the developer's file itself
+            let code = Code {
+                bytes: &bytes,
+                file: Some((&path, 0)),
+            };
             let (hash, prepared) =
-                Self::prepare(&**runner, &bytes, &shown).map_err(before_any_candidate)?;
+                Self::prepare(&**runner, code, &shown).map_err(before_any_candidate)?;
             let view = Box::new(view_code(
                 program,
                 runner,
@@ -111,7 +116,7 @@ impl View {
         let fetched = Instant::now();
         let bytes = match crate::contract::os().bundled_view(&blob) {
             // the app ships the view section this blob holds: no fetch
-            Some(view_bytes) => Ok(Some((view_bytes, "bundle"))),
+            Some(view_bytes) => Ok(Some((view_bytes.into(), "bundle"))),
             None => {
                 show(Slot::Fetching {
                     received: 0,
@@ -151,7 +156,7 @@ impl View {
         crate::perf::gauge(key, "view_bytes", view_bytes.len() as u64);
         let hash: [u8; 32] = {
             use sha2::Digest as _;
-            sha2::Sha256::digest(&view_bytes).into()
+            sha2::Sha256::digest(&*view_bytes).into()
         };
         let shown = shown_as(program, &hash);
         // the bytes are here: the rail and Home list the program by its
@@ -175,7 +180,7 @@ impl View {
             show(Slot::Compiling(Box::new(listing)));
             let compiled = Instant::now();
             let runner = crate::contract::runner();
-            let code = Self::prepare(&**runner, &view_bytes, &shown);
+            let code = Self::prepare(&**runner, view_bytes.code(), &shown);
             timing.compile = compiled.elapsed();
             crate::perf::record(key, "compile", timing.compile.as_micros() as u64);
             let (_, prepared) = code?;
@@ -866,8 +871,8 @@ impl View {
     pub fn from_bytes(program: &'static str, bytes: &[u8], shown: &str) -> Result<Self, String> {
         let runner = crate::contract::runner();
         // held until the instance holds the code itself
-        let (code, _held) =
-            Self::prepare(&**runner, bytes, shown).map_err(|failure| failure.to_string())?;
+        let (code, _held) = Self::prepare(&**runner, Code::of(bytes), shown)
+            .map_err(|failure| failure.to_string())?;
         let mut view = Self::instantiate(program, runner, code, shown)?;
         let listing = manifest_of(bytes);
         view.name = listing.name;
@@ -883,16 +888,17 @@ impl View {
         Ok(view)
     }
 
-    /// The view's bytes checked (its manifest read; a wire other than this
+    /// The view's code checked (its manifest read; a wire other than this
     /// app's only warned of) and prepared on `runner` — the compile stage
-    /// of a load, measured on its own: their sha256, which instances are
+    /// of a load, measured on its own: its sha256, which instances are
     /// seated by, and the runner's answer (`ViewRunner::prepare`), whose
     /// hold keeps the code prepared.
     pub fn prepare(
         runner: &dyn ViewRunner,
-        bytes: &[u8],
+        code: Code<'_>,
         shown: &str,
     ) -> Result<([u8; 32], Prepared), Failure> {
+        let bytes = code.bytes;
         // refused here, a manifest `manifest_of` would read as empty never
         // reaches a seat
         let manifest = view_wire::manifest::read_manifest(bytes).ok_or_else(|| {
@@ -909,7 +915,7 @@ impl View {
         let view_bytes =
             usize::try_from(crate::backend::memory_bounds().view_bytes).unwrap_or(usize::MAX);
         let prepared = runner
-            .prepare(hash, bytes, view_bytes)
+            .prepare(hash, code, view_bytes)
             .map_err(|failure| Failure::Refused(format!("{shown}: {failure}")))?;
         Ok((hash, prepared))
     }

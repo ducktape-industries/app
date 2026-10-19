@@ -19,12 +19,12 @@
 //! exports the bytes cross through (`wire::abi`).
 
 use crate::contract::{
-    CodeSource, Failure, Fault, Landed, Landing, Prepared, RunnerConfig, SeatId, ViewInstance,
-    ViewRunner,
+    Code, CodeSource, Failure, Fault, Landed, Landing, Prepared, RunnerConfig, SeatId,
+    ViewInstance, ViewRunner,
 };
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, Weak};
@@ -55,8 +55,9 @@ pub struct WasmtimeRunner {
 }
 
 /// The argument that runs this binary as a compile child
-/// ([`compile_child`]), followed by `<signal traps 0|1> <cache dir>`, the
-/// code on its stdin.
+/// ([`compile_child`]), followed by `<signal traps 0|1> <cache dir> <file>
+/// <offset> <len> <sha256>`: the code is the file's `len` bytes from
+/// `offset` on, as the parent checked them (their hex sha256).
 pub const COMPILE_APART: &str = "--compile-view";
 
 /// What the cache dir keeps ([`prune`]).
@@ -198,26 +199,24 @@ impl WasmtimeRunner {
     }
 
     /// Compiles `code` (`hash`) into its file in a child of this binary,
-    /// which says whether it found it there (`Disk`) or compiled it
-    /// (`Cold`). A child that fails is logged, and the compile happens here
-    /// as it did before there was a child; code that does not compile is
-    /// not logged, the compile here fails with the reason.
-    fn compile_apart(&self, hash: [u8; 32], code: &[u8]) -> Option<CodeSource> {
+    /// which reads the code out of the file it lies in, and says whether it
+    /// found the compile there (`Disk`) or compiled it (`Cold`). Code held
+    /// in memory only has no file for a child to read: it is compiled here.
+    /// The child is handed `hash` and compiles only bytes that match it, so
+    /// its exit 1 is this code not compiling: not logged, the compile here
+    /// fails with the reason. A child that fails otherwise (the file changed
+    /// since it was read here, or is gone) is logged, and the compile
+    /// happens here as it did before there was a child.
+    fn compile_apart(&self, hash: [u8; 32], code: Code<'_>) -> Option<CodeSource> {
         let (exe, args) = self.apart.as_ref()?;
+        let (file, offset) = code.file?;
+        let hash = noded_client::hex::hex_encode(&hash);
         let ran = Command::new(exe)
             .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .and_then(|mut child| {
-                // a child gone early fails the write; its exit says why
-                if let Some(mut stdin) = child.stdin.take() {
-                    let _ = stdin.write_all(code);
-                }
-                child.wait_with_output()
-            });
-        let hash = noded_client::hex::hex_encode(&hash);
+            .arg(file)
+            .args([&offset.to_string(), &code.bytes.len().to_string(), &hash])
+            .stdin(Stdio::null())
+            .output();
         match ran {
             Ok(output) if output.status.success() => match &output.stdout[..] {
                 b"disk" => Some(CodeSource::Disk),
@@ -244,11 +243,11 @@ impl WasmtimeRunner {
     /// mapped (`Disk`), else compiled into its file, by a child where there
     /// is one, and mapped (`Cold`). With no cache dir, or no file written
     /// (no room), it is compiled here and held in memory.
-    fn compiled(&self, hash: [u8; 32], code: &[u8]) -> Result<(Module, CodeSource), Failure> {
+    fn compiled(&self, hash: [u8; 32], code: Code<'_>) -> Result<(Module, CodeSource), Failure> {
         let failed = |error: wasmtime::Error| Failure::Runner(error.to_string());
         let Some(dir) = &self.dir else {
             return Ok((
-                Module::new(&self.engine, code).map_err(failed)?,
+                Module::new(&self.engine, code.bytes).map_err(failed)?,
                 CodeSource::Cold,
             ));
         };
@@ -267,7 +266,7 @@ impl WasmtimeRunner {
                 hash = %noded_client::hex::hex_encode(&hash),
             );
         }
-        let compiled = compile_to(&self.engine, code, &file).map_err(failed)?;
+        let compiled = compile_to(&self.engine, code.bytes, &file).map_err(failed)?;
         let module = match mapped(&self.engine, &file) {
             Some(module) => module,
             // SAFETY: what this engine compiled just now
@@ -343,7 +342,12 @@ impl WasmtimeRunner {
 }
 
 impl ViewRunner for WasmtimeRunner {
-    fn prepare(&self, hash: [u8; 32], code: &[u8], view_bytes: usize) -> Result<Prepared, Failure> {
+    fn prepare(
+        &self,
+        hash: [u8; 32],
+        code: Code<'_>,
+        view_bytes: usize,
+    ) -> Result<Prepared, Failure> {
         if let Some((module, bytes)) = lock(&self.code).get_mut(&hash)
             && let Some(module) = module.upgrade()
         {
@@ -355,7 +359,8 @@ impl ViewRunner for WasmtimeRunner {
         }
         // compiled outside the lock, so unrelated views prepare at once; a
         // competing compile of the same code adopts the one kept first
-        view_meter::accepts(code).map_err(|refusal| Failure::Unsupported(refusal.to_string()))?;
+        view_meter::accepts(code.bytes)
+            .map_err(|refusal| Failure::Unsupported(refusal.to_string()))?;
         let (module, source) = self.compiled(hash, code)?;
         let mut kept = lock(&self.code);
         kept.retain(|_, (module, _)| module.strong_count() > 0);
@@ -381,7 +386,7 @@ impl ViewRunner for WasmtimeRunner {
     fn describe(
         &self,
         hash: [u8; 32],
-        module: &[u8],
+        module: Code<'_>,
         op: &[u8],
     ) -> Option<view_wire::methods::Description> {
         let compiled = lock(&self.described).get(&hash).cloned();
@@ -391,7 +396,7 @@ impl ViewRunner for WasmtimeRunner {
                 // the rule a view is taken by, as on iOS (`accepts`), kept
                 // as a view's code is; and the rule `describe::host::compile`
                 // takes a module by, that it imports nothing
-                let compiled = view_meter::accepts(module)
+                let compiled = view_meter::accepts(module.bytes)
                     .ok()
                     .and_then(|()| self.compiled(hash, module).ok())
                     .map(|(compiled, _)| compiled)
@@ -701,24 +706,58 @@ fn panic_message(store: &mut Store<HostState>) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// The compile child's body ([`COMPILE_APART`]): the code on stdin into
-/// the cache dir, and `disk` or `cold` on stdout as [`compile_into`] found
-/// it. Exit 1 with wasmtime's error when the code does not compile, 2 on a
-/// bad call.
+/// The compile child's body ([`COMPILE_APART`]): the code, read out of
+/// its file ([`read_at`]) and checked against the hash its parent checked
+/// it by, into the cache dir, and `disk` or `cold` on stdout as
+/// [`compile_into`] found it. Exit 1 with wasmtime's error when the code
+/// does not compile; 2 on a bad call, a file it cannot read, or bytes that
+/// are not the ones the parent checked (the file changed since): those are
+/// never compiled.
 pub fn compile_child(args: &[OsString]) -> i32 {
-    let (traps, dir) = match args {
-        [traps, dir] if traps == "0" || traps == "1" => (traps == "1", dir),
-        _ => {
-            eprintln!("usage: {COMPILE_APART} <signal traps 0|1> <cache dir>, the code on stdin");
+    use sha2::Digest as _;
+    let number = |arg: &OsString| -> Option<u64> { arg.to_str()?.parse().ok() };
+    let sha256 = |arg: &OsString| -> Option<[u8; 32]> {
+        noded_client::hex::hex_decode(arg.to_str()?)
+            .ok()?
+            .try_into()
+            .ok()
+    };
+    let called = || match args {
+        [traps, dir, file, offset, len, hash] if traps == "0" || traps == "1" => Some((
+            traps == "1",
+            dir,
+            Path::new(file),
+            number(offset)?,
+            number(len)?,
+            sha256(hash)?,
+        )),
+        _ => None,
+    };
+    let Some((traps, dir, file, offset, len, checked)) = called() else {
+        eprintln!(
+            "usage: {COMPILE_APART} <signal traps 0|1> <cache dir> <file> <offset> <len> <sha256>, the code the file's len bytes from offset on, as the parent checked them"
+        );
+        return 2;
+    };
+    let code = match read_at(file, offset, len) {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("{}: {error}", file.display());
             return 2;
         }
     };
-    let mut code = Vec::new();
-    if let Err(error) = std::io::stdin().read_to_end(&mut code) {
-        eprintln!("{error}");
+    let hash: [u8; 32] = sha2::Sha256::digest(&code).into();
+    if hash != checked {
+        let hex = noded_client::hex::hex_encode;
+        eprintln!(
+            "{}: the {len} bytes from {offset} on have sha256 {}, not the {} the parent checked: the file changed after the parent read it",
+            file.display(),
+            hex(&hash),
+            hex(&checked),
+        );
         return 2;
     }
-    match compile_into(traps, dir.into(), &code) {
+    match compile_into(traps, dir.into(), &hash, &code) {
         Ok(CodeSource::Disk) => print!("disk"),
         Ok(_) => print!("cold"),
         Err((exit, error)) => {
@@ -729,16 +768,34 @@ pub fn compile_child(args: &[OsString]) -> i32 {
     0
 }
 
-/// Compiles `code` into the file in `dir` a parent with these
-/// `signals_based_traps` maps ([`code_file`]); whether it was there already.
+/// The `len` bytes of `file` from `offset` on: the code a compile child
+/// compiles, read where its parent found it (a section of a program's blob
+/// in the cache), so the parent never copies it to the child.
+fn read_at(file: &Path, offset: u64, len: u64) -> std::io::Result<Vec<u8>> {
+    let mut file = std::fs::File::open(file)?;
+    file.seek(std::io::SeekFrom::Start(offset))?;
+    let mut code = Vec::new();
+    file.take(len).read_to_end(&mut code)?;
+    match code.len() as u64 == len {
+        true => Ok(code),
+        false => Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            format!("{len} bytes from {offset} on wanted, {} there", code.len()),
+        )),
+    }
+}
+
+/// Compiles `code` (sha256 `hash`) into the file in `dir` a parent with
+/// these `signals_based_traps` maps ([`code_file`]); whether it was there
+/// already.
 fn compile_into(
     signals_based_traps: bool,
     dir: PathBuf,
+    hash: &[u8; 32],
     code: &[u8],
 ) -> Result<CodeSource, (i32, String)> {
-    use sha2::Digest as _;
     let engine = engine(signals_based_traps);
-    let file = code_file(&dir, &sha2::Sha256::digest(code).into(), settings(&engine));
+    let file = code_file(&dir, hash, settings(&engine));
     if mapped(&engine, &file).is_some() {
         return Ok(CodeSource::Disk);
     }
@@ -805,6 +862,8 @@ mod tests {
     /// engine from the same settings, so the file it writes is the one
     /// looked for here. Settings drifting apart would compile every view
     /// twice, the second time here, and keep that compile's memory here.
+    /// The child reads its code where it lies in a file, those bytes and
+    /// none around them, as a view lies inside its program's blob.
     #[test]
     fn the_childs_compile_is_a_disk_hit_here() {
         use sha2::Digest as _;
@@ -815,17 +874,35 @@ mod tests {
             (func (export "alloc") (param i32) (result i32) i32.const 64))"#,
         )
         .expect("parses");
-        let child = |code: &[u8]| compile_into(true, dir.path().into(), code);
+        let blob = dir.path().join("blob");
+        let child = |code: &[u8]| {
+            std::fs::write(&blob, [&b"before"[..], code, b"after"].concat()).unwrap();
+            let code =
+                read_at(&blob, 6, code.len() as u64).map_err(|error| (2, error.to_string()))?;
+            compile_into(
+                true,
+                dir.path().into(),
+                &sha2::Sha256::digest(&code).into(),
+                &code,
+            )
+        };
         assert!(matches!(child(&code), Ok(CodeSource::Cold)));
         assert!(matches!(child(&code), Ok(CodeSource::Disk)));
         assert!(matches!(child(b"not wasm"), Err((1, _))));
+        let short = read_at(&blob, 6, 1 << 20).expect_err("past the file's end");
+        assert!(
+            short.to_string().contains("1048576 bytes from 6 on"),
+            "{short}"
+        );
         let runner = WasmtimeRunner::new(RunnerConfig {
             signals_based_traps: true,
             cache_dir: Some(dir.path().into()),
             compile_apart: None,
         });
         let hash = sha2::Sha256::digest(&code).into();
-        let prepared = runner.prepare(hash, &code, PAGE).expect("prepares");
+        let prepared = runner
+            .prepare(hash, Code::of(&code), PAGE)
+            .expect("prepares");
         assert!(matches!(prepared.source, CodeSource::Disk));
     }
 
@@ -856,24 +933,30 @@ mod tests {
         let (here, other) = (runner(true), runner(false));
         let file = code_file(dir.path(), &hash, here.settings);
         assert_eq!(
-            here.prepare(hash, &code, PAGE).expect("compiles").source,
+            here.prepare(hash, Code::of(&code), PAGE)
+                .expect("compiles")
+                .source,
             CodeSource::Cold
         );
         assert!(file.exists(), "kept as its own file");
         // a later launch: nothing in memory, the file mapped
         assert_eq!(
             runner(true)
-                .prepare(hash, &code, PAGE)
+                .prepare(hash, Code::of(&code), PAGE)
                 .expect("maps")
                 .source,
             CodeSource::Disk
         );
         // another engine's code under this engine's name
         assert_ne!(here.settings, other.settings);
-        let _ = other.prepare(hash, &code, PAGE).expect("compiles");
+        let _ = other
+            .prepare(hash, Code::of(&code), PAGE)
+            .expect("compiles");
         std::fs::copy(code_file(dir.path(), &hash, other.settings), &file).expect("copies");
         assert!(mapped(&here.engine, &file).is_none(), "refused, not run");
-        let again = runner(true).prepare(hash, &code, PAGE).expect("compiles");
+        let again = runner(true)
+            .prepare(hash, Code::of(&code), PAGE)
+            .expect("compiles");
         assert_eq!(again.source, CodeSource::Cold);
         assert!(
             mapped(&here.engine, &file).is_some(),
@@ -1001,7 +1084,11 @@ mod tests {
         );
         let hash = [7; 32];
         let _held = runner
-            .prepare(hash, &wat::parse_str(&code).expect("parses"), 4 * PAGE)
+            .prepare(
+                hash,
+                Code::of(&wat::parse_str(&code).expect("parses")),
+                4 * PAGE,
+            )
             .expect("compiles");
         let (land, landing) = Landing::channel();
         runner.instantiate(hash, SeatId("grow-past-maximum", 0), land);
@@ -1067,7 +1154,9 @@ mod tests {
             let meter = view_meter::accepts(&code);
             assert_eq!(meter.is_ok(), takes, "the meter on {what}: {meter:?}");
             assert_eq!(
-                runner.prepare([nth as u8; 32], &code, 4 * PAGE).err(),
+                runner
+                    .prepare([nth as u8; 32], Code::of(&code), 4 * PAGE)
+                    .err(),
                 meter
                     .err()
                     .map(|refusal| Failure::Unsupported(refusal.to_string())),
@@ -1101,7 +1190,11 @@ mod tests {
             ([2; 32], "(func $again return_call $again)", false),
         ] {
             // an empty answer decodes to no description either way
-            assert!(runner.describe(hash, &module(more), b"op").is_none());
+            assert!(
+                runner
+                    .describe(hash, Code::of(&module(more)), b"op")
+                    .is_none()
+            );
             assert_eq!(lock(&runner.described)[&hash].is_some(), compiled, "{more}");
         }
     }
@@ -1122,7 +1215,11 @@ mod tests {
             (func (export "restore") (param i32 i32) (result i64) i64.const 0))"#;
         let hash = [8; 32];
         let code = wat::parse_str(code).expect("parses");
-        let prepare = || runner.prepare(hash, &code, 4 * PAGE).expect("compiles");
+        let prepare = || {
+            runner
+                .prepare(hash, Code::of(&code), 4 * PAGE)
+                .expect("compiles")
+        };
         let seat = || {
             let (land, landing) = Landing::channel();
             runner.instantiate(hash, SeatId("code-freed", 0), land);
@@ -1167,7 +1264,9 @@ mod tests {
             (func (export "tick") (param i32 i32) (result i64) i64.const 0))"#;
         let hash = [9; 32];
         let code = wat::parse_str(code).expect("parses");
-        let _held = runner.prepare(hash, &code, 4 * PAGE).expect("compiles");
+        let _held = runner
+            .prepare(hash, Code::of(&code), 4 * PAGE)
+            .expect("compiles");
         let (land, landing) = Landing::channel();
         runner.instantiate(hash, SeatId("headless", 0), land);
         let Ok(Landed::Seated(mut instance)) = landing.try_recv() else {

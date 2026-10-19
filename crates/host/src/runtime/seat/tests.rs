@@ -1100,7 +1100,11 @@ fn a_program_read_once_is_read_off_the_disk() {
     let _ = std::fs::remove_file(&kept);
     let node = FakeNode::new(Vec::new(), Vec::new(), vec![body.clone()]);
     let client = node.asked_of.client.clone().unwrap();
-    let read = || handle().block_on(crate::backend::views::program_bytes(&client, &code));
+    let read = || {
+        handle()
+            .block_on(crate::backend::views::program_bytes(&client, &code))
+            .map(|(blob, from)| (blob.to_vec(), from))
+    };
     let first = read();
     let again = read();
     let _ = std::fs::remove_file(&kept);
@@ -1123,7 +1127,8 @@ fn a_program_the_cache_cannot_keep_is_read_all_the_same() {
     let client = node.asked_of.client.clone().unwrap();
     let read = handle().block_on(crate::backend::views::program_bytes(&client, &code));
     let _ = std::fs::remove_file(&programs);
-    assert_eq!(read.unwrap(), (body, "node"));
+    let (read, from) = read.unwrap();
+    assert_eq!((&*read, from), (&body[..], "node"));
 }
 
 /// A program's code is streamed off the node into the cache as it lands,
@@ -1185,7 +1190,9 @@ fn a_program_is_streamed_into_the_cache_and_kept_only_whole() {
         let client = client.clone();
         std::thread::spawn(move || {
             path.send(crate::backend::views::cache_path(&code)).unwrap();
-            handle().block_on(crate::backend::views::program_bytes(&client, &code))
+            handle()
+                .block_on(crate::backend::views::program_bytes(&client, &code))
+                .map(|(blob, from)| (blob.to_vec(), from))
         })
     };
     let there = kept.recv().unwrap();
@@ -1203,7 +1210,9 @@ fn a_program_is_streamed_into_the_cache_and_kept_only_whole() {
     let kept = crate::backend::views::cache_path(&code);
     for bad in ["other bytes", "fewer bytes"] {
         use crate::backend::views::Fetch;
-        let read = handle().block_on(crate::backend::views::program_bytes(&client, &code));
+        let read = handle()
+            .block_on(crate::backend::views::program_bytes(&client, &code))
+            .map(|(blob, from)| (blob.len(), from));
         let refused = match bad {
             "other bytes" => matches!(read, Err(Fetch::Corrupt)),
             _ => matches!(read, Err(Fetch::Unreadable(_))),

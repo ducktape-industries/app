@@ -63,6 +63,11 @@ fn notifier_asking(name: &str, capabilities: &str, requests: Vec<wire::Request>)
 /// A program's code blob carrying `notifier` as its notify section, as a
 /// founding packs it: a core module of custom sections.
 pub(super) fn blob_carrying(notifier: &[u8]) -> Vec<u8> {
+    blob_with(crate::backend::views::NOTIFY_SECTION, notifier)
+}
+
+/// A program's code blob carrying `data` as its custom section `name`.
+fn blob_with(name: &str, data: &[u8]) -> Vec<u8> {
     fn leb(out: &mut Vec<u8>, mut value: usize) {
         loop {
             let byte = (value & 0x7f) as u8;
@@ -73,11 +78,11 @@ pub(super) fn blob_carrying(notifier: &[u8]) -> Vec<u8> {
             }
         }
     }
-    let name = crate::backend::views::NOTIFY_SECTION.as_bytes();
+    let name = name.as_bytes();
     let mut body = Vec::new();
     leb(&mut body, name.len());
     body.extend_from_slice(name);
-    body.extend_from_slice(notifier);
+    body.extend_from_slice(data);
     let mut blob = b"\0asm\x01\0\0\0".to_vec();
     blob.push(0);
     leb(&mut blob, body.len());
@@ -264,13 +269,21 @@ fn a_notifier_declaring_what_needs_a_person_is_refused() {
     for capability in ["link,", "op,", "clipboard,", "invite,"] {
         let bytes = notifier_posting("Pushy", &format!("notify,{capability}"), &mention());
         let refused = handle()
-            .block_on(View::notifier("notifier-tests-pushy", &bytes, &connection))
+            .block_on(View::notifier(
+                "notifier-tests-pushy",
+                Code::of(&bytes),
+                &connection,
+            ))
             .err()
             .unwrap_or_else(|| panic!("{capability} started"));
         assert!(refused.contains("no one in front of it"), "{refused}");
     }
     let bytes = notifier_posting("Quiet", "notify,store,", &mention());
-    let quiet = handle().block_on(View::notifier("notifier-tests-quiet", &bytes, &connection));
+    let quiet = handle().block_on(View::notifier(
+        "notifier-tests-quiet",
+        Code::of(&bytes),
+        &connection,
+    ));
     assert!(quiet.is_ok(), "{:?}", quiet.err());
 }
 
@@ -399,10 +412,43 @@ fn a_cold_notifier_read_holds_no_piece_on_its_thread() {
     let client = node.asked_of.client.clone().unwrap();
     let (read, largest) = largest::watching(|| handle().block_on(notifier_of(&client, &code)));
     let _ = std::fs::remove_file(cache_path(&code));
-    assert_eq!(read.unwrap(), Some(notifier));
+    assert_eq!(read.unwrap().as_deref(), Some(&notifier[..]));
     assert!(
         largest < 64 << 10,
         "the reading thread asked for {largest} bytes at once"
+    );
+}
+
+/// A view read cold, off the node, holds no blob in this process's heap:
+/// the blob is streamed into the cache and mapped there, and the view is
+/// handed on as a part of that map, with where it lies in the file for the
+/// compile apart to read there. Before, the blob was read back whole and
+/// the view copied out of it (here a 2 MiB block on the reading thread):
+/// a megabytes-sized block freed raises glibc's thresholds for giving
+/// memory back, for the whole process and for good.
+#[test]
+fn a_cold_view_read_holds_no_blob_in_the_heap() {
+    use crate::backend::views::{VIEW_SECTION, cache_path, view_of};
+    let view = vec![7; 2 << 20];
+    let blob = blob_with(VIEW_SECTION, &view);
+    let id = blob_id(&blob);
+    let kept = cache_path(&id);
+    let _ = std::fs::remove_file(&kept);
+    let node = FakeNode::new(Vec::new(), Vec::new(), vec![blob]);
+    let client = node.asked_of.client.clone().unwrap();
+    let (read, largest) = largest::watching(|| handle().block_on(view_of(&client, &id, false)));
+    let _ = std::fs::remove_file(&kept);
+    assert!(
+        largest < 64 << 10,
+        "the reading thread asked for {largest} bytes at once"
+    );
+    let (read, from) = read.unwrap().expect("the blob carries a view");
+    assert_eq!((&*read, from), (&view[..], "node"));
+    let (file, at) = read.code().file.expect("no file for a compile apart");
+    assert_eq!(
+        (file, at > 0),
+        (kept.as_path(), true),
+        "the view's own place"
     );
 }
 

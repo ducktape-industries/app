@@ -368,7 +368,7 @@ pub fn prepared_on_for_test(
     let view_bytes =
         usize::try_from(crate::backend::memory_bounds().view_bytes).unwrap_or(usize::MAX);
     let prepared = runner
-        .prepare(hash, &code, view_bytes)
+        .prepare(hash, Code::of(&code), view_bytes)
         .expect("the test's code compiles");
     HELD.lock().unwrap().push(prepared.hold);
     hash

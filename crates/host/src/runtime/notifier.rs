@@ -354,19 +354,19 @@ fn load(program: &'static str, code: &abi::BlobId, asked_of: &Connection) -> Opt
     let client = asked_of.client.as_ref()?;
     let gate = loading(code);
     let _loading = lock(&gate);
-    let bytes = handle().block_on(crate::backend::views::notifier_of(client, code));
+    let blob = handle().block_on(crate::backend::views::notifier_of(client, code));
     let refused = |reason: String| {
         tracing::warn!(target: "ducktape::app", program, reason = %reason, "notifier not started");
     };
-    let bytes = match bytes {
-        Ok(Some(bytes)) => bytes,
+    let blob = match blob {
+        Ok(Some(blob)) => blob,
         Ok(None) => return None,
         Err(error) => {
             refused(error.to_string());
             return None;
         }
     };
-    let notifier = handle().block_on(View::notifier(program, &bytes, asked_of));
+    let notifier = handle().block_on(View::notifier(program, blob.code(), asked_of));
     if let Err(reason) = &notifier {
         refused(reason.clone());
     }
@@ -394,11 +394,11 @@ impl View {
     /// `connection` and `init`ed.
     pub(super) async fn notifier(
         program: &'static str,
-        bytes: &[u8],
+        code: Code<'_>,
         connection: &Connection,
     ) -> Result<Self, String> {
         let shown = format!("{program} notifier");
-        let listing = manifest_of(bytes);
+        let listing = manifest_of(code.bytes);
         if let Some(capability) = listing
             .capabilities
             .iter()
@@ -412,7 +412,7 @@ impl View {
         let runner = crate::contract::runner();
         // held until the instance holds the code itself
         let (code, _held) =
-            Self::prepare(&**runner, bytes, &shown).map_err(|failure| failure.to_string())?;
+            Self::prepare(&**runner, code, &shown).map_err(|failure| failure.to_string())?;
         let mut notifier = Self::seated(program, INSTANCE, runner, code, &shown).await?;
         notifier.notifier = true;
         // nothing snapshots a notifier: no replay is kept for it

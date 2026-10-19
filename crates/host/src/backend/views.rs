@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use abi::BlobId;
 
 use super::RpcClient;
+use crate::contract::Code;
 use noded_client::wire::{Layer, unframe};
 
 pub const VIEW_SECTION: &str = "ducktape.view";
@@ -166,40 +167,115 @@ pub async fn view_of(
     client: &RpcClient,
     code: &BlobId,
     bare: bool,
-) -> Result<Option<(Vec<u8>, &'static str)>, Fetch> {
-    let (bytes, source) = program_bytes(client, code).await?;
-    Ok(if bare {
-        Some((bytes, source))
-    } else {
-        view_section(&bytes).map(|view| (view, source))
+) -> Result<Option<(Blob, &'static str)>, Fetch> {
+    let (blob, source) = program_bytes(client, code).await?;
+    Ok(match bare {
+        true => Some((blob, source)),
+        false => blob
+            .part(|body| section(body, VIEW_SECTION))
+            .map(|view| (view, source)),
     })
 }
 
-/// A program's blob: the cache's copy, else the node's, streamed into the
-/// cache ([`fetched`]) and read from there, or read whole off the node
-/// when the cache cannot keep it (a full disk). Only code the roster names
-/// is read here (a seat's, `program.describe`'s, `blob.manifest`'s), so
-/// the cache holds at most what the network runs or has scheduled.
+/// A program's blob, or a section of it, as this process holds it: the
+/// cache's file mapped, or bytes in memory (the node's, when the cache
+/// cannot keep them; a bundle's). A blob is megabytes. Read into the heap
+/// it is a block glibc keeps in a thread's arena once freed, and the free
+/// of a block that size raises glibc's thresholds for giving memory back
+/// (mmap's to the block's size, trim's to twice that) for the whole
+/// process, for good. A map is the file's own pages, given back whole when
+/// it goes.
+pub struct Blob {
+    held: Held,
+    /// Where in `held` this blob, or this part of one, lies.
+    range: std::ops::Range<usize>,
+}
+
+enum Held {
+    /// The cache's file at the path, mapped whole.
+    Mapped(memmap2::Mmap, PathBuf),
+    /// Bytes in memory.
+    Read(Vec<u8>),
+}
+
+impl Blob {
+    /// The file at `path`, mapped whole.
+    fn mapped(path: &Path) -> std::io::Result<Self> {
+        let file = std::fs::File::open(path)?;
+        // SAFETY: a map's bytes change under it only when its file is
+        // written in place, and the cache's files never are: `fetched`
+        // writes each one whole under a name of its own and renames it
+        // into place, and nothing writes it after. A rename over it or a
+        // removal leaves the map whole.
+        let map = unsafe { memmap2::Mmap::map(&file) }?;
+        Ok(Self {
+            range: 0..map.len(),
+            held: Held::Mapped(map, path.to_owned()),
+        })
+    }
+
+    /// The part of these bytes `part` reads out of them, as a blob of its
+    /// own: nothing is copied. `None` when it reads none, or answers bytes
+    /// that are not these.
+    pub fn part(self, part: impl FnOnce(&[u8]) -> Option<&[u8]>) -> Option<Self> {
+        let within = {
+            let bytes: &[u8] = &self;
+            let part = part(bytes)?;
+            let start = (part.as_ptr() as usize).wrapping_sub(bytes.as_ptr() as usize);
+            let end = start.checked_add(part.len())?;
+            (end <= bytes.len()).then_some(start..end)?
+        };
+        Some(Self {
+            range: self.range.start + within.start..self.range.start + within.end,
+            held: self.held,
+        })
+    }
+
+    /// The bytes as a runner takes them: with where they lie in the
+    /// cache's file when they are its, for a compile apart to read there.
+    pub fn code(&self) -> Code<'_> {
+        Code {
+            bytes: self,
+            file: match &self.held {
+                Held::Mapped(_, path) => Some((path, self.range.start as u64)),
+                Held::Read(_) => None,
+            },
+        }
+    }
+}
+
+impl From<Vec<u8>> for Blob {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self {
+            range: 0..bytes.len(),
+            held: Held::Read(bytes),
+        }
+    }
+}
+
+impl std::ops::Deref for Blob {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match &self.held {
+            Held::Mapped(map, _) => &map[self.range.clone()],
+            Held::Read(bytes) => &bytes[self.range.clone()],
+        }
+    }
+}
+
+/// A program's blob, its body what derefs: the cache's copy, else the
+/// node's, streamed into the cache ([`fetched`]) and mapped there, or read
+/// whole off the node when the cache cannot keep it (a full disk). Only
+/// code the roster names is read here (a seat's, `program.describe`'s,
+/// `blob.manifest`'s), so the cache holds at most what the network runs or
+/// has scheduled.
 pub async fn program_bytes(
     client: &RpcClient,
     code: &BlobId,
-) -> Result<(Vec<u8>, &'static str), Fetch> {
-    let path = cache_path(code);
-    if let Ok(mut framed) = tokio::fs::read(&path).await
-        && hashes_to(&framed, code)?
-        && let Some(body) = body_at(&framed)
-    {
-        framed.drain(..body);
-        return Ok((framed, "disk"));
-    }
-    let mut framed = match fetched(client, code, &path).await {
-        // hashed as it landed: read back as it is
-        Ok(landed) => {
-            landed?;
-            tokio::fs::read(&path).await.map_err(|error| {
-                Fetch::Unreadable(format!("the program's code was not kept: {error}"))
-            })?
-        }
+) -> Result<(Blob, &'static str), Fetch> {
+    match cached(client, code).await {
+        Ok(cached) => cached,
         Err(error) => {
             tracing::warn!(
                 target: "ducktape::app",
@@ -215,13 +291,66 @@ pub async fn program_bytes(
             if !hashes_to(&framed, code)? {
                 return Err(Fetch::Corrupt);
             }
-            framed
+            let body = Blob::from(framed).part(unframe).ok_or_else(headless)?;
+            Ok((body, "node"))
         }
+    }
+}
+
+/// `code`'s blob in the cache, mapped, its body what derefs, and where it
+/// came from: the cache's copy when it hashes to `code` (`disk`), else the
+/// node's, streamed into the cache first ([`fetched`]; `node`). The outer
+/// error is the cache's (it could not keep the blob: a full disk), the
+/// inner one the node's or the blob's.
+async fn cached(
+    client: &RpcClient,
+    code: &BlobId,
+) -> std::io::Result<Result<(Blob, &'static str), Fetch>> {
+    let path = cache_path(code);
+    let kept = {
+        let (path, code) = (path.clone(), *code);
+        blocking(move || match Blob::mapped(&path) {
+            Ok(blob) => Ok(hashes_to(&blob, &code)?.then_some(blob)),
+            Err(_) => Ok(None),
+        })
+        .await
     };
-    let body = body_at(&framed)
-        .ok_or_else(|| Fetch::Unreadable("the blob carries no git header".into()))?;
-    framed.drain(..body);
-    Ok((framed, "node"))
+    match kept {
+        Ok(Some(blob)) => {
+            return Ok(blob
+                .part(unframe)
+                .map(|body| (body, "disk"))
+                .ok_or_else(headless));
+        }
+        Ok(None) => {}
+        Err(error) => return Ok(Err(error)),
+    }
+    if let Err(error) = fetched(client, code, &path).await? {
+        return Ok(Err(error));
+    }
+    // hashed as it landed: mapped as it is
+    let landed = blocking(move || {
+        Blob::mapped(&path)
+            .map_err(|error| Fetch::Unreadable(format!("the program's code was not kept: {error}")))
+    })
+    .await;
+    Ok(landed
+        .and_then(|blob| blob.part(unframe).ok_or_else(headless))
+        .map(|body| (body, "node")))
+}
+
+/// `work` on tokio's blocking pool: a map's pages are read from the disk
+/// as they are first touched.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, Fetch> + Send + 'static,
+) -> Result<T, Fetch> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| Fetch::Unreadable(error.to_string()))?
+}
+
+fn headless() -> Fetch {
+    Fetch::Unreadable("the blob carries no git header".into())
 }
 
 /// `code`'s blob streamed off the node into the cache at `path`, hashed as
@@ -280,13 +409,6 @@ async fn fetched(
     landed
 }
 
-/// Where `framed`'s body starts, past its `kind len\0` header: the header
-/// is cut off in place, as a copy of the body would hold a blob (megabytes)
-/// twice at once.
-fn body_at(framed: &[u8]) -> Option<usize> {
-    unframe(framed).map(|body| framed.len() - body.len())
-}
-
 /// Where the cache keeps `code`'s framed bytes.
 pub(crate) fn cache_path(code: &BlobId) -> PathBuf {
     super::dirs()
@@ -303,116 +425,17 @@ fn hashes_to(framed: &[u8], code: &BlobId) -> Result<bool, Fetch> {
     Ok(hashed == *code)
 }
 
-/// The bytes of the [`VIEW_SECTION`] custom section ([`section`]).
-pub fn view_section(bytes: &[u8]) -> Option<Vec<u8>> {
-    section(bytes, VIEW_SECTION).map(<[u8]>::to_vec)
-}
-
 /// The notifier inside `code`'s blob, or `None` when the program ships
 /// none (a view-only entry never does). Every listed program's blob is
 /// asked, to find the few that carry one, and a blob is megabytes, most of
-/// it the view: it is streamed into the cache ([`fetched`]) and read
-/// through in pieces there, the notifier alone kept ([`cached_section`]).
-/// A cache that cannot keep it (a full disk) fails the read: a notifier is
-/// not worth a whole blob held.
-pub async fn notifier_of(client: &RpcClient, code: &BlobId) -> Result<Option<Vec<u8>>, Fetch> {
-    let path = cache_path(code);
-    let cached = || {
-        let (path, id) = (path.clone(), *code);
-        tokio::task::spawn_blocking(move || cached_section(&path, &id, NOTIFY_SECTION))
-    };
-    if let Ok(Some(notifier)) = cached().await {
-        return Ok(notifier);
-    }
-    fetched(client, code, &path).await.map_err(|error| {
+/// it the view: it is mapped from the cache ([`cached`]) and the notifier
+/// alone handed on, as a part of the map. A cache that cannot keep it (a
+/// full disk) fails the read: a notifier is not worth a whole blob held.
+pub async fn notifier_of(client: &RpcClient, code: &BlobId) -> Result<Option<Blob>, Fetch> {
+    let (blob, _) = cached(client, code).await.map_err(|error| {
         Fetch::Unreadable(format!("the program's code could not be kept: {error}"))
     })??;
-    if let Ok(Some(notifier)) = cached().await {
-        return Ok(notifier);
-    }
-    // a component ([`cached_section`]'s `ponytail:`), read whole
-    let (bytes, _) = program_bytes(client, code).await?;
-    Ok(section(&bytes, NOTIFY_SECTION).map(<[u8]>::to_vec))
-}
-
-/// The custom section `name` of the cache's copy of `code` (`Some(None)`:
-/// the blob carries none), its bytes hashed as they pass and the section
-/// alone kept. `None` when the cache holds no copy that hashes to `code`,
-/// or the blob is not one core module (a component's sections sit on its
-/// nested modules: [`section`] reads those).
-fn cached_section(path: &Path, code: &BlobId, name: &str) -> Option<Option<Vec<u8>>> {
-    use std::io::Read as _;
-    let file = std::io::BufReader::new(std::fs::File::open(path).ok()?);
-    let mut read = Hashed {
-        read: file,
-        hasher: blob::Hasher::new(code.kind()),
-        at: 0,
-    };
-    // the `kind len\0` header, then a core module's preamble
-    while read.byte()? != 0 {}
-    let mut preamble = [0; 8];
-    read.read_exact(&mut preamble).ok()?;
-    // ponytail: a component's notifier is still read whole; walk its
-    // nested modules here if a program ships one as a component
-    if preamble != *b"\0asm\x01\0\0\0" {
-        return None;
-    }
-    let mut found = None;
-    while let Some(id) = read.byte() {
-        let size = read.leb()?;
-        let end = read.at + size;
-        if id == 0 && found.is_none() && read.leb()? == name.len() as u64 {
-            let mut named = vec![0; name.len()];
-            read.read_exact(&mut named).ok()?;
-            if named == name.as_bytes() {
-                let mut section = Vec::new();
-                let left = end.checked_sub(read.at)?;
-                (&mut read).take(left).read_to_end(&mut section).ok()?;
-                found = Some(section);
-            }
-        }
-        let left = end.checked_sub(read.at)?;
-        std::io::copy(&mut (&mut read).take(left), &mut std::io::sink()).ok()?;
-    }
-    (read.hasher.finish().ok()? == *code).then_some(found)
-}
-
-/// A read that hashes what passes through it, and counts it.
-struct Hashed<R> {
-    read: R,
-    hasher: blob::Hasher,
-    at: u64,
-}
-
-impl<R: std::io::Read> std::io::Read for Hashed<R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let read = self.read.read(buf)?;
-        self.hasher.update(&buf[..read]);
-        self.at += read as u64;
-        Ok(read)
-    }
-}
-
-impl<R: std::io::Read> Hashed<R> {
-    /// The next byte; none at the end.
-    fn byte(&mut self) -> Option<u8> {
-        let mut byte = [0];
-        std::io::Read::read_exact(self, &mut byte).ok()?;
-        Some(byte[0])
-    }
-
-    /// A wasm LEB128 `u32`.
-    fn leb(&mut self) -> Option<u64> {
-        let mut value = 0;
-        for shift in (0..35).step_by(7) {
-            let byte = self.byte()?;
-            value |= u64::from(byte & 0x7f) << shift;
-            if byte < 0x80 {
-                return Some(value);
-            }
-        }
-        None
-    }
+    Ok(blob.part(|body| section(body, NOTIFY_SECTION)))
 }
 
 /// The bytes of the custom section `name`, out of a core module or a
@@ -440,11 +463,13 @@ fn fetch_error(error: noded_client::Error) -> Fetch {
 mod tests {
     use super::*;
 
-    /// The notifier is read out of the cache's copy of its program in one
-    /// pass, the view before it never held whole; a copy that does not hash
-    /// to its id, or a component, is left to the whole read.
+    /// A section of a blob mapped from the cache is a part of the map,
+    /// nothing copied: it reads as the section's bytes, and the code it
+    /// hands a runner names the file and where in it the section starts,
+    /// for a compile apart to read there. Bytes in memory name no file;
+    /// a part read out of other bytes is none.
     #[test]
-    fn the_notifier_alone_is_read_out_of_the_cached_blob() {
+    fn a_section_of_a_mapped_blob_names_where_it_lies_in_the_file() {
         fn leb(mut n: usize) -> Vec<u8> {
             let mut bytes = Vec::new();
             loop {
@@ -471,27 +496,25 @@ mod tests {
             custom(NOTIFY_SECTION, b"the notifier"),
         ]
         .concat();
-        let framed = |body: &[u8]| [format!("program {}\0", body.len()).as_bytes(), body].concat();
-        let id = |framed: &[u8]| {
-            use sha2::Digest as _;
-            BlobId::Sha256(sha2::Sha256::digest(framed).into())
-        };
+        let framed = [format!("program {}\0", body.len()).as_bytes(), &body].concat();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("blob");
-        let kept = framed(&body);
-        std::fs::write(&path, &kept).unwrap();
-        let code = id(&kept);
-        let read = cached_section(&path, &code, NOTIFY_SECTION);
-        assert_eq!(read, Some(Some(b"the notifier".to_vec())));
-        assert_eq!(section(&body, NOTIFY_SECTION), Some(&b"the notifier"[..]));
-        assert_eq!(cached_section(&path, &code, "ducktape.none"), Some(None));
-        let mut corrupt = kept.clone();
-        *corrupt.last_mut().unwrap() ^= 1;
-        std::fs::write(&path, &corrupt).unwrap();
-        assert_eq!(cached_section(&path, &code, NOTIFY_SECTION), None);
-        let component = framed(b"\0asm\x0d\0\x01\0");
-        std::fs::write(&path, &component).unwrap();
-        assert_eq!(cached_section(&path, &id(&component), NOTIFY_SECTION), None);
+        std::fs::write(&path, &framed).unwrap();
+        let notifier = Blob::mapped(&path)
+            .unwrap()
+            .part(unframe)
+            .unwrap()
+            .part(|body| section(body, NOTIFY_SECTION))
+            .unwrap();
+        assert_eq!(&*notifier, b"the notifier");
+        let at = (framed.len() - b"the notifier".len()) as u64;
+        let code = notifier.code();
+        assert_eq!(code.bytes, b"the notifier");
+        assert_eq!(code.file, Some((path.as_path(), at)));
+        let read = Blob::from(framed.clone()).part(unframe).unwrap();
+        assert_eq!(&*read, &body[..]);
+        assert_eq!(read.code().file, None);
+        assert!(read.part(|_| Some(&b"elsewhere"[..])).is_none());
     }
 
     #[test]
@@ -506,8 +529,8 @@ mod tests {
         module.push(0);
         module.push(section.len() as u8);
         module.extend_from_slice(&section);
-        assert_eq!(view_section(&module).as_deref(), Some(&body[..]));
-        assert_eq!(view_section(b"\0asm\x01\0\0\0"), None);
+        assert_eq!(super::section(&module, VIEW_SECTION), Some(&body[..]));
+        assert_eq!(super::section(b"\0asm\x01\0\0\0", VIEW_SECTION), None);
     }
 
     #[test]

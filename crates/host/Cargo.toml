@@ -88,6 +88,9 @@ abi.workspace = true
 ducklink.workspace = true
 wasmtime = { workspace = true, optional = true }
 wasmparser = "0.251"
+# a program's blob mapped from the cache's file (`backend::views::Blob`),
+# never read into the heap: fontdb's and xkbcommon's own, already in the graph
+memmap2 = "0.9"
 # `accepts`: the one rule every view runner applies before it compiles a
 # view (wasm-mobile SPEC §6.2), so wasmtime and JavaScriptCore take and
 # refuse the same views

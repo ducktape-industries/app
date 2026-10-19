@@ -406,13 +406,20 @@ impl JscRunner {
 }
 
 impl ViewRunner for JscRunner {
-    fn prepare(&self, hash: [u8; 32], code: &[u8], view_bytes: usize) -> Result<Prepared, Failure> {
+    fn prepare(
+        &self,
+        hash: [u8; 32],
+        code: ducktape_host::contract::Code<'_>,
+        view_bytes: usize,
+    ) -> Result<Prepared, Failure> {
         self.wasm()?;
         let view_bytes = u64::try_from(view_bytes).unwrap_or(u64::MAX);
-        let (hold, source) =
-            self.shared
-                .code
-                .prepare(self.shared.cache.as_deref(), &hash, code, view_bytes)?;
+        let (hold, source) = self.shared.code.prepare(
+            self.shared.cache.as_deref(),
+            &hash,
+            code.bytes,
+            view_bytes,
+        )?;
         Ok(Prepared { source, hold })
     }
 
@@ -476,9 +483,10 @@ impl ViewRunner for JscRunner {
     fn describe(
         &self,
         hash: [u8; 32],
-        module: &[u8],
+        module: ducktape_host::contract::Code<'_>,
         op: &[u8],
     ) -> Option<view_wire::methods::Description> {
+        let module = module.bytes;
         // its answer comes on the main thread: waiting there never ends
         if MainThreadMarker::new().is_some() || self.wasm().is_err() {
             return None;

@@ -37,7 +37,7 @@ use crate::runtime::notify::Opened;
 use crate::runtime::notify::{Click, Notice};
 #[cfg(feature = "ui")]
 use gpui_kit::{AppLifecyclePhase, TextInputConfiguration, Window, WindowInsets};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 /// What a shell gives the host. One impl per shell.
@@ -417,7 +417,12 @@ pub trait ViewRunner: Send + Sync + 'static {
     /// sha256 is `hash`, for a view whose linear memory may reach
     /// `view_bytes` (the `memory.view_bytes` setting). Nothing runs. The
     /// code stays prepared while the answer's hold is held.
-    fn prepare(&self, hash: [u8; 32], code: &[u8], view_bytes: usize) -> Result<Prepared, Failure>;
+    fn prepare(
+        &self,
+        hash: [u8; 32],
+        code: Code<'_>,
+        view_bytes: usize,
+    ) -> Result<Prepared, Failure>;
     /// Seat the prepared code `hash` names: lands [`Landed::Seated`] (or a
     /// `Fault`) on `land`, which the instance keeps for every later answer.
     /// Code nothing holds any more lands a `Fault::Runner`. Right after a
@@ -430,9 +435,30 @@ pub trait ViewRunner: Send + Sync + 'static {
     fn describe(
         &self,
         hash: [u8; 32],
-        module: &[u8],
+        module: Code<'_>,
         op: &[u8],
     ) -> Option<view_wire::methods::Description>;
+}
+
+/// Code a runner prepares (a view's, a notifier's, a describe module's):
+/// its bytes, and where they lie in a file when they are a file's, as a
+/// section of a program's blob the cache keeps is. A compile apart
+/// ([`RunnerConfig::compile_apart`]) reads them there itself, so they are
+/// never copied through this process's heap on their way to it.
+#[derive(Clone, Copy, Debug)]
+pub struct Code<'a> {
+    /// The code.
+    pub bytes: &'a [u8],
+    /// The file `bytes` are, from this offset on; `None` for code held in
+    /// memory only.
+    pub file: Option<(&'a Path, u64)>,
+}
+
+impl<'a> Code<'a> {
+    /// Code held in memory only.
+    pub fn of(bytes: &'a [u8]) -> Self {
+        Self { bytes, file: None }
+    }
 }
 
 /// Where prepared code came from, for the load's log and counters.
@@ -670,10 +696,12 @@ pub struct RunnerConfig {
     /// Where compiled code is kept across launches; `None` keeps none.
     pub cache_dir: Option<PathBuf>,
     /// This binary, run as a child ([`crate::runner::COMPILE_APART`]) for
-    /// each compile, which lands in `cache_dir` for this process to read:
-    /// a compile's peak (200-315 MB) then leaves with the child, where the
-    /// allocator would keep it here on loader threads that go idle. Needs
-    /// `cache_dir`. `None` compiles in this process (the phone).
+    /// each compile of code that lies in a file ([`Code::file`]): it reads
+    /// the code there and lands the compile in `cache_dir` for this process
+    /// to read. A compile's peak (200-315 MB) then leaves with the child,
+    /// where the allocator would keep it here on loader threads that go
+    /// idle. Needs `cache_dir`. `None` compiles in this process (the
+    /// phone), as does code held in memory only.
     pub compile_apart: Option<PathBuf>,
 }
 
