@@ -539,11 +539,15 @@ fn the_sidebars_menus_hang_beside_it(cx: &mut TestAppContext) {
         );
         assert_eq!((x0, y1), (left, 800. - 40. - 4.), "{card} over {button}");
     }
-    // a window too short for the account's menu: it scrolls in what is
-    // left over the footer, 4px inside the window's top
-    let (_view, mut native) = open((sidebar(&[], &[]), Overlay::Menu(Popover::Account)), cx);
-    native.simulate_resize(size(px(1280.), px(280.)));
-    let nodes = native.update(drawn);
-    let [_, y0, _, y1] = bounds(&nodes, "shell:account-menu");
-    assert_eq!((y0, y1), (4., 280. - 40. - 4.), "the account's menu, short");
+    for (menu, card) in [
+        (Popover::Notifications, "notifications"),
+        (Popover::Node, "node-status"),
+        (Popover::Account, "account-menu"),
+    ] {
+        let (_view, mut native) = open((sidebar(&[], &[]), Overlay::Menu(menu)), cx);
+        native.simulate_resize(size(px(1280.), px(160.)));
+        let nodes = native.update(drawn);
+        let [_, y0, _, y1] = bounds(&nodes, &format!("shell:{card}"));
+        assert_eq!((y0, y1), (36. + 4., 160. - 40. - 4.), "{card}, short");
+    }
 }

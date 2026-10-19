@@ -21,7 +21,7 @@ impl Chrome {
     ) -> AnyElement {
         const WIDTH: f32 = 400.;
         let viewport = window.viewport_size();
-        let (wide, high) = (f32::from(viewport.width), f32::from(viewport.height));
+        let wide = f32::from(viewport.width);
         let width = WIDTH.min(wide - 16.).max(0.);
         let now = crate::runtime::notify::wall();
         let midnight = local_midnight(now);
@@ -79,7 +79,7 @@ impl Chrome {
             .flex()
             .flex_col()
             .max_h(px(
-                (high - self.inset(cx).menus - 4. - 46. - 38. - 8.).max(80.)
+                (self.menu_room(window, cx) - tall(46.) - tall(38.)).max(80.)
             ))
             .overflow_y_scroll();
         let mut section = None;

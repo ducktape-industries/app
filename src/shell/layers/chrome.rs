@@ -325,6 +325,14 @@ impl Chrome {
         chrome_inset(self.prefs.read(cx).get().layout_or_default())
     }
 
+    fn menu_room(&self, window: &Window, cx: &App) -> f32 {
+        let clear = match self.prefs.read(cx).get().layout_or_default() {
+            crate::backend::Layout::MenuBar => 8.,
+            crate::backend::Layout::Sidebar => 4. + BAR + 4.,
+        };
+        f32::from(window.viewport_size().height) - self.inset(cx).menus - clear - 3.
+    }
+
     /// What is under an open menu: it keeps presses off the desk, and a
     /// click on it closes the menu (as a click on the chrome itself does
     /// not: the backdrop starts past it). Drawn first among the deferred
@@ -494,8 +502,7 @@ impl Chrome {
             Popover::Account => ("account-menu", "Account"),
             Popover::Notifications => ("notifications", "Notifications"),
         };
-        // (the card's 1.5px border above and below it)
-        let room = f32::from(window.viewport_size().height) - self.inset(cx).menus - 8. - 3.;
+        let room = self.menu_room(window, cx);
         let body = div()
             .id(SharedString::from(format!("{id}-body")))
             .max_h(px(room.max(0.)))
