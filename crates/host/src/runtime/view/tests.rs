@@ -499,6 +499,13 @@ fn a_view_on_another_wire_runs_and_its_failure_names_the_node_and_both_wires() {
         + 2;
     frame[second] = 0x7f;
     answer_bytes(&mut view, &frame);
+    assert_eq!(
+        view.fault, None,
+        "a node kind a later wire added draws nothing"
+    );
+    assert_eq!(view.unknown_logged.len(), 1, "{:?}", view.unknown_logged);
+    frame[second] = 0xc1;
+    answer_bytes(&mut view, &frame);
     let fault = view.fault.clone().expect("the view stopped");
     assert!(fault.starts_with("node at [1]: "), "{fault}");
 
