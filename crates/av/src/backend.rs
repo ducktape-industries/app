@@ -832,6 +832,17 @@ fn capture(
 /// out. Bounded: a speaker that takes no samples for 2 s past the chime's
 /// length is an error, not a wait forever.
 pub fn play_chime(output: Option<&str>) -> Result<(), String> {
+    play_made(output, |rate| (chime(rate), rate))
+}
+
+pub fn play_sound(output: Option<&str>, samples: Vec<f32>, rate: u32) -> Result<(), String> {
+    play_made(output, move |_| (samples, rate))
+}
+
+fn play_made(
+    output: Option<&str>,
+    made: impl FnOnce(u32) -> (Vec<f32>, u32),
+) -> Result<(), String> {
     let said = |status| match status {
         Status::Failed(why) => why,
         Status::Denied => "the system refused the speaker".into(),
@@ -843,11 +854,12 @@ pub fn play_chime(output: Option<&str>) -> Result<(), String> {
     // the system's audio session (a phone's) held while the chime plays,
     // once the speaker is known: an id that names none activates nothing
     let _session = platform::activate(None).map_err(said)?;
-    let rate = found
-        .default_output_config()
-        .map_err(|error| error.to_string())?
-        .sample_rate();
-    let samples = chime(rate);
+    let (samples, rate) = made(
+        found
+            .default_output_config()
+            .map_err(|error| error.to_string())?
+            .sample_rate(),
+    );
     let length = Duration::from_secs_f32(samples.len() as f32 / rate.max(1) as f32);
     let queue = Queue::new(Mutex::new(VecDeque::from(samples)));
     // on the speaker found above: found again, the id could name none

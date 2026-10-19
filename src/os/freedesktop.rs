@@ -16,6 +16,165 @@ const DESKTOP_ENTRY: &str = "dev.ducktape.app";
 /// the Linux app is one file, with nothing installed beside it.
 const QUACK: &[u8] = include_bytes!("../../assets/sounds/quack.wav");
 
+const NOTIFICATIONS: Address = Address {
+    destination: "org.freedesktop.Notifications",
+    path: "/org/freedesktop/Notifications",
+    interface: "org.freedesktop.Notifications",
+};
+
+struct Address {
+    destination: &'static str,
+    path: &'static str,
+    interface: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sounding {
+    Ring,
+    Hint,
+    Itself,
+}
+
+fn sounding(kind: NoticeKind, daemon_sounds: bool) -> Sounding {
+    match (kind, daemon_sounds) {
+        (NoticeKind::Call, _) => Sounding::Ring,
+        (NoticeKind::Notice, true) => Sounding::Hint,
+        (NoticeKind::Notice, false) => Sounding::Itself,
+    }
+}
+
+trait Bus {
+    fn flag(&self, at: &Address, method: &str) -> Option<bool>;
+    fn property(&self, at: &Address, name: &str) -> Option<zbus::zvariant::OwnedValue>;
+}
+
+impl Bus for zbus::blocking::Connection {
+    fn flag(&self, at: &Address, method: &str) -> Option<bool> {
+        let reply = self
+            .call_method(
+                Some(at.destination),
+                at.path,
+                Some(at.interface),
+                method,
+                &(),
+            )
+            .ok()?;
+        reply.body().deserialize::<bool>().ok()
+    }
+
+    fn property(&self, at: &Address, name: &str) -> Option<zbus::zvariant::OwnedValue> {
+        let reply = self
+            .call_method(
+                Some(at.destination),
+                at.path,
+                Some("org.freedesktop.DBus.Properties"),
+                "Get",
+                &(at.interface, name),
+            )
+            .ok()?;
+        reply
+            .body()
+            .deserialize::<zbus::zvariant::OwnedValue>()
+            .ok()
+    }
+}
+
+fn capabilities(bus: &zbus::blocking::Connection) -> Vec<String> {
+    let at = &NOTIFICATIONS;
+    bus.call_method(
+        Some(at.destination),
+        at.path,
+        Some(at.interface),
+        "GetCapabilities",
+        &(),
+    )
+    .and_then(|reply| reply.body().deserialize::<Vec<String>>())
+    .unwrap_or_default()
+}
+
+fn server(bus: &zbus::blocking::Connection) -> String {
+    let at = &NOTIFICATIONS;
+    bus.call_method(
+        Some(at.destination),
+        at.path,
+        Some(at.interface),
+        "GetServerInformation",
+        &(),
+    )
+    .and_then(|reply| {
+        reply
+            .body()
+            .deserialize::<(String, String, String, String)>()
+    })
+    .map(|(name, ..)| name)
+    .unwrap_or_default()
+}
+
+fn quiet(bus: &impl Bus, server: &str, capabilities: &[String]) -> bool {
+    let flagged = |value: Option<zbus::zvariant::OwnedValue>| {
+        value.and_then(|value| bool::try_from(value).ok()) == Some(true)
+    };
+    let inhibited = capabilities
+        .iter()
+        .any(|capability| capability == "inhibitions")
+        && flagged(bus.property(&NOTIFICATIONS, "Inhibited"));
+    inhibited
+        || match server {
+            "dunst" => flagged(bus.property(
+                &Address {
+                    interface: "org.dunstproject.cmd0",
+                    ..NOTIFICATIONS
+                },
+                "paused",
+            )),
+            "mako" => bus
+                .property(
+                    &Address {
+                        destination: "org.freedesktop.Notifications",
+                        path: "/fr/emersion/Mako",
+                        interface: "fr.emersion.Mako",
+                    },
+                    "Modes",
+                )
+                .and_then(|modes| Vec::<String>::try_from(modes).ok())
+                .is_some_and(|modes| modes.iter().any(|mode| mode == "do-not-disturb")),
+            "SwayNotificationCenter" => {
+                let control = Address {
+                    destination: "org.erikreider.swaync.cc",
+                    path: "/org/erikreider/swaync/cc",
+                    interface: "org.erikreider.swaync.cc",
+                };
+                bus.flag(&control, "GetDnd") == Some(true)
+            }
+            _ => false,
+        }
+}
+
+#[cfg(any(test, feature = "av"))]
+fn quack_samples(wave: &[u8]) -> (Vec<f32>, u32) {
+    let rate = u32::from_le_bytes([wave[24], wave[25], wave[26], wave[27]]);
+    let samples = wave[44..]
+        .chunks_exact(2)
+        .map(|pair| f32::from(i16::from_le_bytes([pair[0], pair[1]])) / 32768.)
+        .collect();
+    (samples, rate)
+}
+
+#[cfg(feature = "av")]
+fn quack() {
+    let spawned = std::thread::Builder::new()
+        .name("quack".into())
+        .spawn(|| {
+            let (samples, rate) = quack_samples(QUACK);
+            if let Err(error) = ducktape_av::play_sound(None, samples, rate) {
+                tracing::info!(target: "ducktape::app", reason = "no_quack", %error, "a desktop notice went without its quack");
+            }
+        });
+    if let Err(error) = spawned {
+        tracing::info!(target: "ducktape::app", reason = "no_quack", %error, "a desktop notice went without its quack");
+    }
+}
+
 /// The quack where the daemon can play it (the `sound-file` hint), kept
 /// in this user's cache; `None` when it cannot be kept there, and the
 /// notice goes up all the same with the daemon's own sound.
@@ -342,9 +501,10 @@ fn notify(
     replaces: u32,
     clickable: bool,
 ) -> zbus::Result<u32> {
-    let sound = (notice.kind == NoticeKind::Notice)
-        .then(sound_file)
-        .flatten();
+    let capabilities = capabilities(bus);
+    let daemon_sounds = capabilities.iter().any(|capability| capability == "sound");
+    let sounding = sounding(notice.kind, daemon_sounds || !cfg!(feature = "av"));
+    let sound = (sounding == Sounding::Hint).then(sound_file).flatten();
     let (actions, hints, timeout) = request(notice, clickable, sound);
     let body = markup_escaped(&notice.body);
     let reply = bus.call_method(
@@ -363,7 +523,12 @@ fn notify(
             timeout,
         ),
     )?;
-    reply.body().deserialize::<u32>()
+    let raised = reply.body().deserialize::<u32>()?;
+    if sounding == Sounding::Itself && !quiet(bus, &server(bus), &capabilities) {
+        #[cfg(feature = "av")]
+        quack();
+    }
+    Ok(raised)
 }
 
 #[cfg(test)]
@@ -429,6 +594,134 @@ fn a_notice_quacks_and_a_call_keeps_its_ring() {
     let ring = zbus::zvariant::Value::from("phone-incoming-call");
     assert_eq!(hints["sound-name"], ring);
     assert!(!hints.contains_key("sound-file"));
+}
+
+#[cfg(test)]
+#[test]
+fn a_daemon_that_plays_no_sound_leaves_the_quack_to_the_app() {
+    assert_eq!(sounding(NoticeKind::Notice, true), Sounding::Hint);
+    assert_eq!(sounding(NoticeKind::Notice, false), Sounding::Itself);
+    assert_eq!(sounding(NoticeKind::Call, false), Sounding::Ring);
+    assert_eq!(sounding(NoticeKind::Call, true), Sounding::Ring);
+    let (samples, rate) = quack_samples(QUACK);
+    assert_eq!(
+        rate,
+        u32::from_le_bytes([QUACK[24], QUACK[25], QUACK[26], QUACK[27]])
+    );
+    assert_eq!(samples.len(), (QUACK.len() - 44) / 2);
+    assert!(samples.iter().all(|sample| (-1.0..1.0).contains(sample)));
+    assert!(
+        samples.iter().any(|sample| sample.abs() > 0.1),
+        "a quack, not silence"
+    );
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct FakeBus {
+    flags: HashMap<(String, String), bool>,
+    properties: HashMap<(String, String), zbus::zvariant::Value<'static>>,
+}
+
+#[cfg(test)]
+impl FakeBus {
+    fn with_flag(mut self, at: &Address, method: &str, on: bool) -> Self {
+        self.flags.insert(
+            (
+                at.destination.to_owned(),
+                format!("{}.{method}", at.interface),
+            ),
+            on,
+        );
+        self
+    }
+
+    fn with_property(
+        mut self,
+        at: &Address,
+        name: &str,
+        value: zbus::zvariant::Value<'static>,
+    ) -> Self {
+        let key = (
+            at.destination.to_owned(),
+            format!("{}{}.{name}", at.path, at.interface),
+        );
+        self.properties.insert(key, value);
+        self
+    }
+}
+
+#[cfg(test)]
+impl Bus for FakeBus {
+    fn flag(&self, at: &Address, method: &str) -> Option<bool> {
+        let key = (
+            at.destination.to_owned(),
+            format!("{}.{method}", at.interface),
+        );
+        self.flags.get(&key).copied()
+    }
+
+    fn property(&self, at: &Address, name: &str) -> Option<zbus::zvariant::OwnedValue> {
+        let key = (
+            at.destination.to_owned(),
+            format!("{}{}.{name}", at.path, at.interface),
+        );
+        self.properties
+            .get(&key)
+            .and_then(|value| value.try_to_owned().ok())
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn each_known_daemon_says_when_it_is_quiet() {
+    use zbus::zvariant::Value;
+    let dunst = Address {
+        interface: "org.dunstproject.cmd0",
+        ..NOTIFICATIONS
+    };
+    let mako = Address {
+        destination: "org.freedesktop.Notifications",
+        path: "/fr/emersion/Mako",
+        interface: "fr.emersion.Mako",
+    };
+    let swaync = Address {
+        destination: "org.erikreider.swaync.cc",
+        path: "/org/erikreider/swaync/cc",
+        interface: "org.erikreider.swaync.cc",
+    };
+    let none: &[String] = &[];
+    let paused = FakeBus::default().with_property(&dunst, "paused", Value::from(true));
+    assert!(quiet(&paused, "dunst", none));
+    let running = FakeBus::default().with_property(&dunst, "paused", Value::from(false));
+    assert!(!quiet(&running, "dunst", none));
+    let modes = |modes: &[&str]| {
+        let modes: Vec<String> = modes.iter().map(|mode| (*mode).to_owned()).collect();
+        FakeBus::default().with_property(&mako, "Modes", Value::from(modes))
+    };
+    assert!(quiet(&modes(&["default", "do-not-disturb"]), "mako", none));
+    assert!(!quiet(&modes(&["default"]), "mako", none));
+    let dnd = FakeBus::default().with_flag(&swaync, "GetDnd", true);
+    assert!(quiet(&dnd, "SwayNotificationCenter", none));
+    let open = FakeBus::default().with_flag(&swaync, "GetDnd", false);
+    assert!(!quiet(&open, "SwayNotificationCenter", none));
+    let inhibitions = ["inhibitions".to_owned()];
+    let inhibited =
+        FakeBus::default().with_property(&NOTIFICATIONS, "Inhibited", Value::from(true));
+    assert!(quiet(&inhibited, "Plasma", &inhibitions));
+    assert!(
+        !quiet(&inhibited, "Plasma", none),
+        "Inhibited read only where it is offered"
+    );
+    assert!(
+        !quiet(&paused, "mako", none),
+        "another daemon's word is not this one's"
+    );
+    assert!(
+        !quiet(&FakeBus::default(), "dunst", none),
+        "no answer is not quiet"
+    );
+    assert!(!quiet(&FakeBus::default(), "some-daemon", none));
 }
 
 #[cfg(test)]

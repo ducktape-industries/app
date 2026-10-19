@@ -151,6 +151,10 @@ pub fn play_chime(output: Option<&str>) -> Result<(), String> {
     backend::play_chime(output)
 }
 
+pub fn play_sound(output: Option<&str>, samples: Vec<f32>, rate: u32) -> Result<(), String> {
+    backend::play_sound(output, samples, rate)
+}
+
 /// A camera or a microphone, as a person is told how to allow it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {

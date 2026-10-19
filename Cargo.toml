@@ -100,7 +100,7 @@ web = ["ducktape-host/web"]
 # (`--no-default-features`, a system `crates/av` does not capture on)
 # compiles none of it: the pieces say the build has no camera or
 # microphone and their methods are refused `unknown_request`.
-av = ["ducktape-host/av"]
+av = ["ducktape-host/av", "dep:ducktape-av", "ducktape-av/capture"]
 # Calls: the pieces above publish into and play from live tracks
 # (`crates/host/src/render/call.rs`, `crates/av` with `call`). On by
 # default: the app's own build makes and takes calls. The picture codec
