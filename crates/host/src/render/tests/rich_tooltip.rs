@@ -51,7 +51,7 @@ fn rich_text_tooltip_dispatches_character_index_and_stays_in_slot(
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, subscription) = emitted(&tree, &mut native);
     subscription.detach();
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.simulate_mouse_move(point(px(2.), px(8.)), None, Default::default());
     let character_index = events.borrow().iter().find_map(|event| match event {
         wire::Event::TooltipRequest {
@@ -73,10 +73,10 @@ fn rich_text_tooltip_dispatches_character_index_and_stays_in_slot(
             );
         });
     });
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.executor().advance_clock(Duration::from_millis(501));
     native.run_until_parked();
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
 
     native.update(|window, _| {
         let quads: Vec<_> = window

@@ -66,20 +66,20 @@ fn open(
     let window = cx.open_window(size(px(WIDTH), px(844.)), |_, _| ViewTree::new(first));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     (tree, native)
 }
 
 fn show(tree: &Entity<ViewTree>, native: &mut gpui_kit::VisualTestContext, root: wire::Node) {
     tree.update(native, |tree, cx| tree.replace(root, &[], cx));
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
 }
 
 /// `by` later, drawn.
 fn later(tree: &Entity<ViewTree>, native: &mut gpui_kit::VisualTestContext, by: Duration) {
     native.executor().advance_clock(by);
     tree.update(native, |_, cx| cx.notify());
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
 }
 
 fn left(native: &mut gpui_kit::VisualTestContext, key: &str) -> f32 {
@@ -242,7 +242,7 @@ fn a_press_on_the_page_going_reaches_nothing(cx: &mut gpui_kit::TestAppContext) 
         native.simulate_mouse_move(at, None, Default::default());
         native.simulate_mouse_down(at, MouseButton::Left, Default::default());
         native.simulate_mouse_up(at, MouseButton::Left, Default::default());
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
     };
     let clicks = |events: &RefCell<Vec<wire::Event>>| {
         events
@@ -289,14 +289,14 @@ fn drag_at(
     speed: f32,
 ) -> bool {
     let followed = tree.update(native, |tree, cx| tree.drag_page(progress, speed, cx));
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     followed
 }
 
 /// The swipe let go short, drawn.
 fn let_go_short(tree: &Entity<ViewTree>, native: &mut gpui_kit::VisualTestContext) {
     tree.update(native, |tree, cx| tree.drag_page_cancelled(cx));
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
 }
 
 fn finger(tree: &Entity<ViewTree>, native: &gpui_kit::VisualTestContext) -> Option<(f32, bool)> {
@@ -308,7 +308,7 @@ fn finger(tree: &Entity<ViewTree>, native: &gpui_kit::VisualTestContext) -> Opti
 fn frames(native: &mut gpui_kit::VisualTestContext) -> usize {
     native.update(|window, cx| {
         window.simulate_next_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         window.simulate_next_frame(cx)
     })
 }
@@ -446,7 +446,7 @@ fn a_back_answered_without_a_pop_slides_the_page_back(cx: &mut gpui_kit::TestApp
     );
     assert!(!moving(&tree, &native));
     tree.update(&mut native, |tree, cx| tree.back_answered(cx));
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     assert_eq!(finger(&tree, &native), None);
     assert!(moving(&tree, &native), "the page held did not slide back");
     later(&tree, &mut native, crate::motion::idiom().push.duration);

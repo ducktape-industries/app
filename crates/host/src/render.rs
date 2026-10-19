@@ -39,6 +39,7 @@ mod layout;
 mod page_motion;
 mod picture_resources;
 mod pictures;
+pub mod pointer;
 mod sensors;
 mod sheet;
 mod sideways;
@@ -56,7 +57,10 @@ mod test_support;
 #[cfg(test)]
 mod tests;
 #[cfg(any(test, feature = "test-support"))]
-pub use test_support::{answered, plain_style, sanitize_whole, sent, test_style, test_styles};
+pub use test_support::{
+    answered, draw_frame, plain_style, refresh_and_draw, sanitize_whole, sent, test_style,
+    test_styles,
+};
 
 use accessibility::accessible;
 pub use accessibility::{Accessible, announce};
@@ -464,6 +468,7 @@ impl ViewTree {
         // of fourteen.
         self.row = self.next_row.take();
         let index = self.row.map(|(position, _)| position - 1);
+        let place = self.render_index;
         let entered_scope = enter_scope(node, index, &mut self.authored_path);
         // The host numbers id-less nodes within the nearest id'd node, from
         // zero: gpui files them under that node's id, so a number only has
@@ -509,6 +514,7 @@ impl ViewTree {
             Some(at) => accessibility::Measured { element, at }.into_any_element(),
             None => element,
         };
+        let element = self.marked(node, entered_scope, place, element, cx);
         #[cfg(feature = "ax-door")]
         let element = match entered_scope && cx.has_global::<crate::ax::shown::Views>() {
             true => crate::ax::shown::recorded(element, cx.entity_id(), &self.authored_path),
@@ -656,7 +662,10 @@ impl Render for ViewTree {
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
-            .child(deferred::Layer(node, self.perf_key))
+            .child(pointer::pane(
+                cx.entity_id(),
+                deferred::Layer(node, self.perf_key).into_any_element(),
+            ))
             // over the whole body, in the view's layer like the rest
             .children(sheet.map(|sheet| deferred::Layer(sheet, None)))
     }

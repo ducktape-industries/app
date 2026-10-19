@@ -49,7 +49,7 @@ fn a_container_that_sets_nothing_has_no_id(cx: &mut gpui_kit::TestAppContext) {
     let root = container("card", [plain, clipped, nested]);
     let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(root));
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     for leaf in ["plain", "clipped", "nested"] {
         let path = filed(&mut native, leaf);
         assert!(
@@ -195,7 +195,7 @@ fn a_container_something_reads_keeps_its_id(cx: &mut gpui_kit::TestAppContext) {
     let root = container("card", kept.into_iter().chain([authored]));
     let window = cx.open_window(size(px(400.), px(600.)), |_, _| ViewTree::new(root));
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let mut ids = std::collections::HashSet::new();
     for leaf in leaves {
         let path = filed(&mut native, leaf);
@@ -252,13 +252,13 @@ fn a_scroller_the_view_gave_no_id_keeps_its_offset(cx: &mut gpui_kit::TestAppCon
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let top = |native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, cx| {
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             f32::from(window.find("row-0").bounds().top())
         })
     };
     assert_eq!(top(&mut native), 0.);
     native.update(|window, cx| {
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         let wheel = gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-120.)));
         window.scroll("row-1", wheel, cx);
     });
@@ -333,7 +333,7 @@ fn a_scroller_keeps_its_offset_when_a_box_before_it_takes_an_id(cx: &mut gpui_ki
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let top = |native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, cx| {
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             f32::from(window.find("row-0").bounds().top())
         })
     };
@@ -367,7 +367,7 @@ fn a_text_keeps_its_number_when_a_box_before_it_takes_an_id(cx: &mut gpui_kit::T
     // the number of the one text the host numbered
     let number = |native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, cx| {
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             (0..8).find(|n| {
                 let id = crate::render::host_id(format!("text-{n}"));
                 window.try_find(id).is_some()
@@ -415,7 +415,7 @@ fn a_text_keeps_its_number_when_a_box_before_it_grows(cx: &mut gpui_kit::TestApp
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let number = |native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, cx| {
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             (0..8).find(|n| {
                 let id = crate::render::host_id(format!("text-{n}"));
                 window.within("second").try_find(id).is_some()

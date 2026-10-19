@@ -625,7 +625,6 @@ mod key_tests {
     //! The keys a node carries beyond role, name, value, states and actions.
     use super::*;
     use crate::a11y::Patch;
-    use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{
         Context, InteractiveElement as _, IntoElement, ParentElement as _, Render,
         StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
@@ -684,10 +683,10 @@ mod key_tests {
         let mut native = VisualTestContext::from_window(window.into(), cx);
         let nodes = native.update(|window, cx| {
             window.activate_a11y();
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             window.focus_next(cx);
-            window.render_frame(cx);
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
+            crate::render::draw_frame(window, cx);
             snapshot("t", window, false)
         });
         let json = |id: &str| {
@@ -726,7 +725,6 @@ mod key_tests {
 mod mark_tests {
     //! The program a node is in comes off the host's mark, never a view's id.
     use super::*;
-    use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{
         Context, InteractiveElement as _, IntoElement, ParentElement as _, Render,
         StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
@@ -760,7 +758,7 @@ mod mark_tests {
         let mut native = VisualTestContext::from_window(window.into(), cx);
         let nodes = native.update(|window, cx| {
             window.activate_a11y();
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             snapshot("t", window, false)
         });
         let approve = nodes
@@ -805,7 +803,6 @@ mod modal_tests {
 mod offer_tests {
     //! What the door offers a node, and that `/act` performs each offer.
     use super::*;
-    use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{
         AccessibleAction, Context, InteractiveElement as _, IntoElement, Render,
         StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
@@ -857,8 +854,8 @@ mod offer_tests {
         let mut native = VisualTestContext::from_window(window.into(), cx);
         native.update(|window, cx| {
             window.activate_a11y();
-            window.render_frame(cx);
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
+            crate::render::draw_frame(window, cx);
             let node = snapshot("t", window, false)
                 .into_iter()
                 .find(|node| node.role == "SpinButton")
@@ -869,7 +866,7 @@ mod offer_tests {
                 assert!(super::super::actions::perform_by_id(
                     "t", window, cx, &node.id, word, ""
                 ));
-                window.render_frame(cx);
+                crate::render::draw_frame(window, cx);
             }
         });
         let performed: Vec<_> = MORE.iter().map(|(action, _)| *action).collect();
@@ -882,7 +879,6 @@ mod active_descendant_tests {
     //! A node can name its focused descendant, as a web page's node names
     //! the page's own focus.
     use super::*;
-    use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{
         Context, FocusHandle, InteractiveElement as _, IntoElement, Render,
         StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
@@ -922,8 +918,8 @@ mod active_descendant_tests {
         let nodes = native.update(|window, cx| {
             window.activate_a11y();
             window.focus(&handle, cx);
-            window.render_frame(cx);
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
+            crate::render::draw_frame(window, cx);
             snapshot("t", window, false)
         });
         let state = |name: &str| {

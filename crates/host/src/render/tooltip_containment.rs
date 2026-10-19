@@ -60,7 +60,6 @@ impl Render for TooltipHost {
 mod tests {
     use super::*;
     use crate::render::tests::emitted;
-    use gpui_kit::test::TestWindowExt as _;
     use std::{
         cell::{Cell, RefCell},
         rc::Rc,
@@ -193,11 +192,11 @@ mod tests {
         let mut native = gpui_kit::VisualTestContext::from_window(any_window, cx);
         let (events, subscription) = emitted(&parent, &mut native);
         subscription.detach();
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
         native.simulate_mouse_move(point(px(10.), px(10.)), None, Default::default());
         native.executor().advance_clock(Duration::from_millis(11));
         native.run_until_parked();
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
         (native, parent, events)
     }
 
@@ -294,14 +293,14 @@ mod tests {
         });
         let host = window.root(cx).unwrap();
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
 
         native.simulate_mouse_move(point(px(10.), px(10.)), None, Default::default());
         native.run_until_parked();
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
         native.executor().advance_clock(Duration::from_millis(11));
         native.run_until_parked();
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
 
         assert_eq!(host.read_with(&native, |host, _| host.requests.get()), 1);
         native.update(|window, _| {
@@ -345,12 +344,12 @@ mod tests {
             Slot(tree)
         });
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
         native.simulate_mouse_move(point(px(10.), px(10.)), None, Default::default());
         native.executor().advance_clock(Duration::from_millis(11));
         native.run_until_parked();
         native.update(|window, cx| {
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             assert!(
                 window
                     .painted_quads()
@@ -385,19 +384,19 @@ mod tests {
             .unwrap()
             .read_with(cx, |host, _| host.0.clone());
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
         native.simulate_mouse_move(point(px(10.), px(10.)), None, Default::default());
         native.executor().advance_clock(Duration::from_millis(11));
         native.run_until_parked();
         native.update(|window, cx| {
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             assert!(tooltip_painted(window), "the tooltip opened");
         });
         native.update(|_, cx| {
             tree.update(cx, |tree, cx| tree.replace(sized_source(71, 44.), &[], cx));
         });
         native.update(|window, cx| {
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             assert!(
                 tooltip_painted(window),
                 "the props change closed the tooltip"
@@ -432,19 +431,19 @@ mod tests {
             .unwrap()
             .read_with(cx, |host, _| host.0.clone());
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
         // the hover begins with OLD held, then the answer lands
         native.simulate_mouse_move(point(px(10.), px(10.)), None, Default::default());
         native.update(|window, cx| {
             tree.update(cx, |tree, cx| {
                 tree.tooltip_responses(answered([answer(71, colored(20., NEW, None))]), cx)
             });
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
         });
         native.executor().advance_clock(Duration::from_millis(11));
         native.run_until_parked();
         native.update(|window, cx| {
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             assert!(painted(window, NEW), "the tooltip shows the answer");
             assert!(!painted(window, OLD), "the tooltip shows what it held");
         });
@@ -498,13 +497,13 @@ mod tests {
         });
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
         let hover = |native: &mut gpui_kit::VisualTestContext, at: f32| {
-            native.update(|window, cx| window.render_frame(cx));
+            native.update(crate::render::draw_frame);
             native.simulate_mouse_move(point(px(at), px(at)), None, Default::default());
             native.run_until_parked();
-            native.update(|window, cx| window.render_frame(cx));
+            native.update(crate::render::draw_frame);
             native.executor().advance_clock(Duration::from_millis(11));
             native.run_until_parked();
-            native.update(|window, cx| window.render_frame(cx));
+            native.update(crate::render::draw_frame);
         };
         hover(&mut native, 10.);
         native.update(|window, _| assert!(painted(window, FIRST), "the first tooltip shows"));
@@ -568,12 +567,12 @@ mod tests {
             Host(view)
         });
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
         native.simulate_mouse_move(point(px(10.), px(10.)), None, Default::default());
         native.executor().advance_clock(Duration::from_millis(11));
         native.run_until_parked();
         native.update(|window, cx| {
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             assert!(
                 tooltip_painted(window),
                 "the tooltip wears the style its id names in a later table"

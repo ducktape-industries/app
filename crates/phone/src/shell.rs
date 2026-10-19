@@ -2324,7 +2324,7 @@ mod tests {
         let search = root.read_with(cx, |root, _| root.search.entity_id().as_u64());
         let home = |cx: &mut VisualTestContext| {
             cx.update(|window, cx| {
-                window.render_frame(cx);
+                ducktape_host::render::draw_frame(window, cx);
                 let field = gpui_kit::ElementId::NamedInteger("input".into(), search);
                 window.try_find(field).map(|it| it.bounds())
             })
@@ -3064,7 +3064,7 @@ mod tests {
     fn notifications_tab_name(cx: &mut VisualTestContext) -> String {
         cx.update(|window, cx| {
             window.activate_a11y();
-            window.render_frame(cx);
+            ducktape_host::render::draw_frame(window, cx);
             let tree = window.a11y_tree().expect("an accessibility tree");
             let tab = tree.nodes.iter().find(|(_, node)| {
                 node.role() == gpui_kit::accesskit::Role::Tab
@@ -4376,7 +4376,7 @@ mod tests {
         let width = root.read_with(cx, |root, _| root.width);
         let tab = |cx: &mut VisualTestContext| stack.read_with(cx, |stack, _| stack.tab());
         let drawn = |id: &'static str, cx: &mut VisualTestContext| {
-            cx.update(|window, cx| window.render_frame(cx));
+            cx.update(ducktape_host::render::draw_frame);
             cx.debug_bounds(id)
         };
         let pick = |tab: Tab, cx: &mut VisualTestContext| {
@@ -4662,7 +4662,7 @@ mod tests {
         let tree = view_tree(&root, cx);
         let left = |cx: &mut VisualTestContext| {
             cx.update(|window, cx| {
-                window.render_frame(cx);
+                ducktape_host::render::draw_frame(window, cx);
                 let page = ducktape_host::render::native_id(&view_wire::ElementIdWire::Name(
                     "room".into(),
                 ));

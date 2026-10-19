@@ -26,7 +26,7 @@ fn mounted(
     let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     (tree, native)
 }
 
@@ -106,7 +106,7 @@ fn typing_reaches_the_view_as_its_text(cx: &mut gpui_kit::TestAppContext) {
             let refused = tree.inspect_type("form/send", "x", window, cx).unwrap_err();
             assert!(refused.contains("not a field"), "{refused}");
         });
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
     });
     native.run_until_parked();
     assert!(

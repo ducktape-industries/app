@@ -7,7 +7,6 @@ use crate::shell::PaneMessage;
 use crate::shell::entities::tests::status;
 use crate::shell::layers::tests::{frame, line, pane, polled, set_motion, tree_renders};
 use crate::shell::panes_tests::{console, window_count};
-use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{TestAppContext, VisualTestContext, px, size};
 
 /// A block landing moves the bar's height: the chrome draws once, and no
@@ -151,7 +150,7 @@ fn the_dot_slot_is_committed_after_the_frame(cx: &mut TestAppContext) {
     );
     // the same bar again: nothing to commit, no callback asked for
     native.update(|window, cx| {
-        window.render_frame(cx);
+        ducktape_host::render::draw_frame(window, cx);
     });
     assert_eq!(
         native.update(|window, cx| window.simulate_next_frame(cx)),
@@ -163,7 +162,7 @@ fn the_dot_slot_is_committed_after_the_frame(cx: &mut TestAppContext) {
     native.simulate_resize(size(px(1000.), px(800.)));
     native.run_until_parked();
     native.update(|window, cx| {
-        window.render_frame(cx);
+        ducktape_host::render::draw_frame(window, cx);
     });
     assert_eq!(
         slot(&mut native),
@@ -287,7 +286,7 @@ fn a_folded_tab_with_no_icon_to_draw_is_its_initial(cx: &mut TestAppContext) {
         }
         let nodes = native.update(|window, cx| {
             window.activate_a11y();
-            window.render_frame(cx);
+            ducktape_host::render::draw_frame(window, cx);
             serde_json::to_value(crate::ax::snapshot("console", window, true)).unwrap()
         });
         let nodes = nodes.as_array().unwrap();

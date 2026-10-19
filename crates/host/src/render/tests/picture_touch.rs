@@ -46,7 +46,7 @@ fn touch(native: &mut gpui_kit::VisualTestContext, phase: gpui_kit::TouchPhase) 
     };
     native.update(|window, cx| {
         let _ = window.dispatch_event(event.to_platform_input(), cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
     });
     native.run_until_parked();
 }
@@ -61,7 +61,7 @@ fn a_tap_and_a_hold_on_a_picture_in_a_row_go_to_the_row(cx: &mut gpui_kit::TestA
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     touch(&mut native, gpui_kit::TouchPhase::Started);
     touch(&mut native, gpui_kit::TouchPhase::Ended);
     native

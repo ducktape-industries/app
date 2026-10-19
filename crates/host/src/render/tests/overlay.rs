@@ -80,7 +80,7 @@ fn a_press_outside_a_menu_dismisses_it_and_reaches_nothing_under_it(
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     press(&mut native, 20., 12.);
     assert_eq!(
         heard(&events),
@@ -89,7 +89,7 @@ fn a_press_outside_a_menu_dismisses_it_and_reaches_nothing_under_it(
     );
 
     tree.update(&mut native, |tree, cx| tree.replace(page(true), &[], cx));
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     press(&mut native, 20., 12.);
     assert_eq!(heard(&events), ["dismiss"], "open, it only closes the menu");
     press(&mut native, 210., 160.);

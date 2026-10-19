@@ -58,7 +58,7 @@ fn native_variable_list_measures_different_heights_and_keeps_slot_clip(
     let window = cx.open_window(size(px(200.), px(120.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     tree.read_with(&native, |tree, _| {
         let list = tree
             .variable_lists
@@ -122,8 +122,8 @@ fn missing_far_rows_emit_one_bounded_request_and_bottom_anchor_uses_tail_rows(
         .read_with(cx, |host, _| host.tree.clone());
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| {
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
     });
     native.run_until_parked();
     let requests = events
@@ -176,7 +176,7 @@ fn accepted_frames_retain_anonymous_list_scroll(cx: &mut gpui_kit::TestAppContex
     let window = cx.open_window(size(px(200.), px(120.)), |_, _| ViewTree::new(root.clone()));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.update(|_, cx| {
         tree.update(cx, |tree, cx| {
             let state = tree.variable_lists.values().next().unwrap().state.clone();
@@ -225,7 +225,7 @@ fn a_programmatic_scroll_reports_where_the_list_settled(cx: &mut gpui_kit::TestA
     let (events, _subscription) = emitted(&tree, &mut native);
     let frame = |native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, cx| {
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             window.simulate_next_frame(cx);
         });
     };
@@ -307,7 +307,7 @@ fn a_row_equal_by_its_ids_is_measured_again_under_another_table(cx: &mut gpui_ki
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let drawn = |native: &mut gpui_kit::VisualTestContext| {
         let heights: Vec<f32> = native.update(|window, cx| {
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             let scale = window.scale_factor();
             let quads = window.painted_quads();
             let rows = quads
@@ -359,7 +359,7 @@ fn a_changed_frame_remeasures_no_row_it_kept(cx: &mut gpui_kit::TestAppContext) 
     });
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let remeasured = |native: &mut gpui_kit::VisualTestContext| {
         tree.read_with(native, |tree, _| {
             tree.variable_lists.values().next().unwrap().remeasured
@@ -372,7 +372,7 @@ fn a_changed_frame_remeasures_no_row_it_kept(cx: &mut gpui_kit::TestAppContext) 
     );
     for title in ["Room ·", "Room"] {
         tree.update(&mut native, |tree, cx| tree.replace(screen(title), &[], cx));
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
     }
     assert_eq!(
         remeasured(&mut native),
@@ -423,8 +423,8 @@ fn rows_holding_one_id_are_each_their_own_field(cx: &mut gpui_kit::TestAppContex
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let nodes = native.update(|window, cx| {
         window.activate_a11y();
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
         crate::ax::snapshot("t", window, false)
     });
     let fields: Vec<(&str, Option<&str>)> = nodes
@@ -539,7 +539,7 @@ fn a_field_in_a_list_row_crosses_a_new_generation(cx: &mut gpui_kit::TestAppCont
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let saved = native.update(|window, cx| {
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         let (target, start, end) = (field("thread"), 2, 5);
         let select = wire::WidgetCommand::Select { target, start, end };
         tree.update(cx, |tree, cx| {
@@ -553,7 +553,7 @@ fn a_field_in_a_list_row_crosses_a_new_generation(cx: &mut gpui_kit::TestAppCont
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let selected = native.update(|window, cx| {
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         let tree = tree.read(cx);
         ["timeline", "thread"]
             .map(|pane| tree.fields[field(pane).as_slice()].presentation(window, cx))
@@ -604,8 +604,8 @@ fn seated(
         .read_with(cx, |seat, _| seat.0.clone());
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| {
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
     });
     native.run_until_parked();
     (tree, native)
@@ -639,7 +639,7 @@ fn wheel_frame(native: &mut gpui_kit::VisualTestContext, up: &[f32]) {
             );
         }
     });
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.run_until_parked();
 }
 
@@ -690,7 +690,7 @@ fn a_window_slid_by_two_splices_keeps_a_scrolled_reader_on_their_row(
         ],
     );
     tree.update(&mut native, |tree, cx| tree.replace(slid, &[], cx));
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.run_until_parked();
     let after = scroll_top(&tree, &mut native);
     assert_eq!(
@@ -725,9 +725,9 @@ fn following_list(count: usize, revision: u64, commands: Vec<wire::ListCommand>)
 
 fn laid_out(native: &mut gpui_kit::VisualTestContext) {
     native.update(|window, cx| {
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         window.simulate_next_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
     });
 }
 

@@ -307,13 +307,13 @@ fn a_rich_texts_links_are_clean_on_the_door(cx: &mut gpui_kit::TestAppContext) {
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let away = native.update(|window, cx| {
         window.activate_a11y();
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
         crate::ax::snapshot("t", window, false)
     });
     let held = native.update(|window, cx| {
         window.focus_next(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         crate::ax::snapshot("t", window, false)
     });
     let seen: Vec<serde_json::Value> = held
@@ -392,8 +392,8 @@ fn a_rich_texts_ranges_are_links_a_press_reaches(cx: &mut gpui_kit::TestAppConte
     let (events, _subscription) = emitted(&tree, &mut native);
     let links: Vec<serde_json::Value> = native.update(|window, cx| {
         window.activate_a11y();
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
         crate::ax::snapshot("t", window, false)
             .iter()
             .map(|node| serde_json::to_value(node).unwrap())
@@ -500,8 +500,8 @@ fn a_readers_click_on_a_covered_button_is_its_click_on_its_bounds(
     let (events, _subscription) = emitted(&tree, &mut native);
     let drawn = native.update(|window, cx| {
         window.activate_a11y();
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
         let target = window
             .a11y_tree()
             .unwrap()

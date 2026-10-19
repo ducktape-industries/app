@@ -67,7 +67,7 @@ fn a_long_press_is_the_nodes_aux_click_and_no_click(cx: &mut gpui_kit::TestAppCo
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     hold(&mut native, point(px(60.), px(40.)));
     assert_eq!(
         heard(&events),
@@ -90,7 +90,7 @@ fn a_long_press_on_a_node_inside_is_that_nodes_alone(cx: &mut gpui_kit::TestAppC
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     hold(&mut native, point(px(10.), px(10.)));
     assert_eq!(heard(&events), ["aux 73"], "the chip takes it, not its row");
     events.borrow_mut().clear();
@@ -107,7 +107,7 @@ fn a_long_press_on_a_node_that_hears_only_clicks_is_its_click(cx: &mut gpui_kit:
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     hold(&mut native, point(px(60.), px(40.)));
     assert_eq!(
         heard(&events),

@@ -72,7 +72,7 @@ fn a_view_naming_the_design_crates_mono_is_drawn_in_the_apps() {
         .unwrap();
     cx.run_until_parked();
     cx.update_window(window.into(), |_, window, cx| {
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         let width = |key: &'static str| window.find(key).bounds().size.width;
         assert_ne!(
             width("app-mono"),
@@ -134,7 +134,7 @@ fn a_views_letter_spacing_is_drawn_as_none() {
         .unwrap();
     cx.run_until_parked();
     cx.update_window(window.into(), |_, window, cx| {
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         let width = |key: &'static str| window.find(key).bounds().size.width;
         for key in ["wide", "tight", "max", "min"] {
             assert_eq!(width(key), width("plain"), "{key}");

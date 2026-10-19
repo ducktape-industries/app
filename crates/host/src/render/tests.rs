@@ -256,8 +256,8 @@ fn draw(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> Vec<crate::ax::A
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| {
         window.activate_a11y();
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
         crate::ax::snapshot("t", window, false)
     })
 }
@@ -313,6 +313,7 @@ mod page_motion;
 pub(super) mod picture_pixels;
 mod picture_presentation;
 mod picture_touch;
+mod pointer;
 mod press_release;
 mod primitives;
 mod rich_tooltip;

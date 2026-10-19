@@ -277,13 +277,18 @@ impl Render for WindowRoot {
                         true => style.w(px(SIDEBAR)).h_full(),
                     })
                 });
-                let console = div().id("console").size_full().flex();
+                let console = div().id("console").size_full().flex().on_action(
+                    |_: &gpui_kit::base::input::Copy, window, cx| {
+                        crate::render::pointer::copy(window, cx)
+                    },
+                );
                 let seat = div().id("seat").flex_1();
                 let (console, seat) = match side {
                     false => (console.flex_col(), seat.min_h_0().w_full()),
                     true => (console.flex_row(), seat.min_w_0().h_full()),
                 };
                 console
+                    .child(crate::render::pointer::Layer)
                     .children(chrome)
                     // the panes: a layer of their own, measuring the desk they sit on
                     .child(seat.child(self.panes.clone()))

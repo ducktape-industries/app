@@ -459,7 +459,6 @@ impl HeldKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{Context, Render, TestAppContext, VisualTestContext, px, size};
 
     struct Patched(FocusHandle);
@@ -488,8 +487,8 @@ mod tests {
         let mut native = VisualTestContext::from_window(window.into(), cx);
         native.update(|window, cx| {
             window.activate_a11y();
-            window.render_frame(cx);
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
+            crate::render::draw_frame(window, cx);
             let update = window.a11y_tree().unwrap();
             let (_, node) = update
                 .nodes
@@ -547,7 +546,7 @@ mod tests {
                 false => two.b.clone(),
             });
             handle.focus(window, cx);
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
         });
     }
 

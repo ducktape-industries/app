@@ -111,8 +111,8 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
     });
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| {
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
     });
     let mut bounds = |key: &'static str| native.update(|window, _| window.find(key).bounds());
     let (sidebar, error, composer) = (bounds("sidebar"), bounds("error"), bounds("composer"));
@@ -127,7 +127,7 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         "the Fill space pushes the composer to the bottom: {composer:?}"
     );
     native.update(|window, cx| {
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         let quads = window.painted_quads();
         let scale = window.scale_factor();
         let surface = |w: f32, h: f32| {
@@ -185,8 +185,8 @@ fn styled_container_uses_native_interactivity_and_typed_identity(
     let handle = window.into();
     let mut native = gpui_kit::VisualTestContext::from_window(handle, cx);
     let (events, _subscription) = emitted(&tree, &mut native);
-    native.update(|window, cx| window.render_frame(cx));
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
+    native.update(crate::render::draw_frame);
     native.update(|window, cx| window.click("interactive", cx));
     assert!(events.borrow().iter().any(|event| matches!(
         event,
@@ -224,7 +224,7 @@ fn container_interactivity_emits_native_pointer_and_key_payloads(
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.update(|window, cx| window.click("events", cx));
     native.update(|window, cx| {
         let modifiers = gpui_kit::Modifiers {
@@ -251,7 +251,7 @@ fn container_interactivity_emits_native_pointer_and_key_payloads(
             .to_platform_input(),
             cx,
         );
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
     });
     let events = events.borrow();
     assert!(events.iter().any(|event| matches!(
@@ -415,7 +415,7 @@ fn a_claimed_row_below_the_fold_is_scrolled_into_view(cx: &mut gpui_kit::TestApp
     let shown = |native: &mut gpui_kit::VisualTestContext, claim: usize| {
         native.update(|window, cx| {
             for _ in 0..3 {
-                window.render_frame(cx);
+                crate::render::draw_frame(window, cx);
             }
             let row = window.find(format!("row-{claim}")).bounds();
             tree.read_with(cx, |tree, _| {

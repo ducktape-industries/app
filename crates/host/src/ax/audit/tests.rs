@@ -710,7 +710,6 @@ fn stops_window(
     tabs: usize,
 ) -> gpui_kit::VisualTestContext {
     use gpui_kit::AppContext as _;
-    use gpui_kit::test::TestWindowExt as _;
     cx.update(gpui_kit::init);
     let window = cx.open_window(
         gpui_kit::size(gpui_kit::px(200.), gpui_kit::px(200.)),
@@ -728,7 +727,7 @@ fn stops_window(
         let held = root.read(cx).view().clone().downcast::<Stops>().unwrap();
         held.read(cx).0.clone().focus(window, cx);
         window.activate_a11y();
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         for _ in 0..tabs {
             window.focus_next(cx);
         }
@@ -766,12 +765,11 @@ fn six() -> Vec<gpui_kit::AnyElement> {
 fn the_walk_goes_round_a_cycle_longer_than_the_first_snapshot_shows(
     cx: &mut gpui_kit::TestAppContext,
 ) {
-    use gpui_kit::test::TestWindowExt as _;
     let mut native = stops_window(cx, six, 0);
     let snap = |window: &mut Window, cx: &mut App| {
         window.activate_a11y();
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
         crate::ax::snapshot("w", window, true)
     };
     let report = native.update(|window, cx| {
@@ -784,11 +782,10 @@ fn the_walk_goes_round_a_cycle_longer_than_the_first_snapshot_shows(
 
 /// The presses a walk of `native` takes.
 fn presses(native: &mut gpui_kit::VisualTestContext) -> usize {
-    use gpui_kit::test::TestWindowExt as _;
     let snap = |window: &mut Window, cx: &mut App| {
         window.activate_a11y();
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
         crate::ax::snapshot("w", window, true)
     };
     native
@@ -971,7 +968,6 @@ async fn arrow_probe(
     cx: &mut gpui_kit::TestAppContext,
     after: Option<std::time::Duration>,
 ) -> (serde_json::Value, Vec<String>) {
-    use gpui_kit::test::TestWindowExt as _;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     let window = cx.open_window(
@@ -1015,7 +1011,7 @@ async fn arrow_probe(
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| {
         window.activate_a11y();
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         window.focus_next(cx);
     });
     let report = door_audit(window.into(), None, &|_, _| None, cx).await;
@@ -1200,7 +1196,6 @@ async fn composites_audit(
     tabs: usize,
 ) -> (serde_json::Value, Vec<Vec<String>>) {
     use gpui_kit::AppContext as _;
-    use gpui_kit::test::TestWindowExt as _;
     use std::cell::RefCell;
     use std::rc::Rc;
     cx.update(gpui_kit::init);
@@ -1245,10 +1240,10 @@ async fn composites_audit(
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| {
         window.activate_a11y();
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         for _ in 0..tabs {
             window.focus_next(cx);
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
         }
     });
     let report = door_audit(window.into(), None, &|_, _| None, cx).await;

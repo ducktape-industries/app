@@ -17,15 +17,14 @@ mod text;
 use super::entities::{Account, AccountStep, Overlay, Popover, Screen, SettingsPage};
 use super::layers::tests::{Seed, entities, set_screen};
 use gpui_kit::accesskit::{Action, ActionData, ActionRequest, TreeId};
-use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{ElementId, Entity, TestAppContext, VisualTestContext, Window, px, size};
 
 fn draw(window: &mut Window, cx: &mut gpui_kit::App) -> serde_json::Value {
     window.activate_a11y();
-    window.render_frame(cx);
+    ducktape_host::render::draw_frame(window, cx);
     // the frame's callbacks (the desk's size) run before the next frame
     window.simulate_next_frame(cx);
-    window.render_frame(cx);
+    ducktape_host::render::draw_frame(window, cx);
     serde_json::to_value(crate::ax::snapshot("shell", window, false)).unwrap()
 }
 

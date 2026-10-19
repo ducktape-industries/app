@@ -42,7 +42,7 @@ fn close_gives_focus_back_to_the_opener(cx: &mut gpui_kit::TestAppContext, fallb
     });
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let root = native.update(|_, cx| cx.focus_handle());
     let _fallback = fallback.then(|| {
         native.update(|window, cx| {
@@ -57,7 +57,7 @@ fn close_gives_focus_back_to_the_opener(cx: &mut gpui_kit::TestAppContext, fallb
         .expect("the opener is drawn");
     let show = |native: &mut gpui_kit::VisualTestContext, open: bool| {
         tree.update(native, |tree, cx| tree.replace(screen(open), &[], cx));
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
         native.run_until_parked();
         native.update(|window, cx| window.focused(cx))
     };
@@ -106,13 +106,13 @@ fn a_dialog_takes_no_keys_without_the_grant(cx: &mut gpui_kit::TestAppContext) {
     });
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let opener = tree
         .read_with(&native, |tree, _| tree.view_focus_targets.get(&1).cloned())
         .expect("the opener is drawn");
     native.update(|window, cx| opener.focus(window, cx));
     tree.update(&mut native, |tree, cx| tree.replace(screen(true), &[], cx));
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.run_until_parked();
     assert_eq!(
         native.update(|window, cx| window.focused(cx)).as_ref(),
@@ -151,13 +151,13 @@ fn tab_goes_round_a_view_dialog_and_never_out(cx: &mut gpui_kit::TestAppContext)
         .downcast::<ViewTree>()
         .unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let opener = tree
         .read_with(&native, |tree, _| tree.view_focus_targets.get(&1).cloned())
         .expect("the opener is drawn");
     native.update(|window, cx| opener.focus(window, cx));
     tree.update(&mut native, |tree, cx| tree.replace(screen(true), &[], cx));
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.run_until_parked();
     assert_eq!(
         holder(&tree, &mut native),
@@ -197,9 +197,9 @@ fn under_touch_a_view_dialog_opens_on_no_control(cx: &mut gpui_kit::TestAppConte
         .downcast::<ViewTree>()
         .unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     tree.update(&mut native, |tree, cx| tree.replace(screen(true), &[], cx));
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.run_until_parked();
     assert!(inside(&tree, &mut native), "the dialog has the keys");
     assert_eq!(holder(&tree, &mut native), None, "no control has them");
@@ -264,7 +264,7 @@ fn a_dialog_wrapped_around_its_opener_takes_the_keys(cx: &mut gpui_kit::TestAppC
         .downcast::<ViewTree>()
         .unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let root = native.update(|_, cx| cx.focus_handle());
     let fallback = native.update(|window, cx| {
         let root = root.clone();
@@ -279,7 +279,7 @@ fn a_dialog_wrapped_around_its_opener_takes_the_keys(cx: &mut gpui_kit::TestAppC
     let opener = native.update(|window, cx| window.focused(cx));
     assert!(opener.is_some(), "a press gave the opener the keys");
     tree.update(&mut native, |tree, cx| tree.replace(wrapped(true), &[], cx));
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.run_until_parked();
     let now = native.update(|window, cx| window.focused(cx));
     assert!(
@@ -353,13 +353,13 @@ fn a_popover_dialog_takes_the_keys_and_keeps_them(cx: &mut gpui_kit::TestAppCont
     });
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let opener = tree
         .read_with(&native, |tree, _| tree.view_focus_targets.get(&1).cloned())
         .expect("the opener is drawn");
     native.update(|window, cx| opener.focus(window, cx));
     tree.update(&mut native, |tree, cx| tree.replace(popover(true), &[], cx));
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.run_until_parked();
     assert_eq!(
         holder(&tree, &mut native),
@@ -400,8 +400,8 @@ fn a_popover_dialog_holds_its_controls_for_assistive_technology(cx: &mut gpui_ki
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let held = native.update(|window, cx| {
         window.activate_a11y();
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
         let update = window.a11y_tree().expect("an a11y tree once activated");
         let nodes: std::collections::HashMap<_, _> =
             update.nodes.iter().map(|(id, node)| (*id, node)).collect();
@@ -444,10 +444,10 @@ fn tab_and_escape_hold_in_a_popover_dialog(cx: &mut gpui_kit::TestAppContext) {
         .downcast::<ViewTree>()
         .unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let (events, _subscription) = super::emitted(&tree, &mut native);
     tree.update(&mut native, |tree, cx| tree.replace(popover(true), &[], cx));
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.run_until_parked();
     assert_eq!(
         holder(&tree, &mut native),

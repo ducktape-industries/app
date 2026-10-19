@@ -34,7 +34,7 @@ fn a_click_leaves_no_press_for_the_pointer_to_drag(cx: &mut gpui_kit::TestAppCon
             .read_with(cx, |w, _| w.tree.clone());
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
         let (events, _subscription) = emitted(&tree, &mut native);
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
         let button = point(px(20.), px(30.));
         native.simulate_mouse_move(button, None, Default::default());
         native.simulate_mouse_down(button, MouseButton::Left, Default::default());
@@ -47,9 +47,9 @@ fn a_click_leaves_no_press_for_the_pointer_to_drag(cx: &mut gpui_kit::TestAppCon
         assert_eq!(clicks, 1, "the button heard its click");
         for at in [point(px(100.), px(10.)), point(px(2.), px(10.))] {
             native.simulate_mouse_move(at, None, Default::default());
-            native.update(|window, cx| window.render_frame(cx));
+            native.update(crate::render::draw_frame);
         }
-        let selected = native.update(gpui_kit::base::TextSelection::selected_text);
+        let selected = native.update(crate::render::pointer::selected_text);
         assert_eq!(selected, "", "consumed: {consumes}");
     }
 }

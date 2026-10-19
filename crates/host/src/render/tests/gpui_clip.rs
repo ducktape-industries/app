@@ -231,18 +231,18 @@ fn a_tooltip_and_a_popup_on_a_scrolled_lists_last_row_draw_whole(
             Pane { tree }
         });
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
         native.simulate_event(ScrollWheelEvent {
             position: point(px(20.), px(50.)),
             delta: ScrollDelta::Pixels(point(px(0.), px(-40.))),
             ..Default::default()
         });
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
         native.simulate_mouse_move(point(px(20.), px(90.)), None, Default::default());
         native.executor().advance_clock(Duration::from_millis(11));
         native.run_until_parked();
         native.update(|window, cx| {
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             let scale = window.scale_factor();
             let quads: Vec<_> = window
                 .painted_quads()

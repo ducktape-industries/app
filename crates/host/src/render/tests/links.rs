@@ -12,7 +12,7 @@ fn press(native: &mut gpui_kit::VisualTestContext, stroke: &str) -> Option<Strin
                 window.dispatch_keystroke(Keystroke::parse(stroke).unwrap(), cx);
             }
         }
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         let tree = window.a11y_tree().unwrap();
         tree.nodes
             .iter()
@@ -37,8 +37,8 @@ fn tab_reaches_the_links_the_arrows_pick_one_and_enter_presses_it(
     let (events, _subscription) = emitted(&tree, &mut native);
     native.update(|window, cx| {
         window.activate_a11y();
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
     });
     assert_eq!(press(&mut native, "tab").as_deref(), Some("the docs"));
     assert_eq!(press(&mut native, "right").as_deref(), Some("the code"));
@@ -168,8 +168,8 @@ fn a_rich_text_without_links_is_no_tab_stop(cx: &mut gpui_kit::TestAppContext) {
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| {
         window.activate_a11y();
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
     });
     assert_eq!(press(&mut native, "tab"), None);
     assert!(native.update(|window, cx| window.focused(cx)).is_none());
@@ -200,8 +200,8 @@ fn space_on_a_link_box_presses_its_link_and_does_not_reach_the_composite_around_
     let (events, _subscription) = emitted(&tree, &mut native);
     native.update(|window, cx| {
         window.activate_a11y();
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
     });
     assert_eq!(press(&mut native, "tab").as_deref(), Some("Messages"));
     assert_eq!(press(&mut native, "tab").as_deref(), Some("the docs"));

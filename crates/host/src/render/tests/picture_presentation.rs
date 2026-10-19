@@ -130,9 +130,9 @@ fn drawn(
     });
     let host = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.run_until_parked();
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     (host, native)
 }
 
@@ -196,9 +196,9 @@ fn picture_caches_survive_view_tree_recreation_without_resetting_limits(
             cx.notify();
         });
     });
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.run_until_parked();
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let admitted_after = svg_admitted(&mut native);
     assert_eq!(
         admitted_after, admitted_before,
@@ -276,7 +276,7 @@ fn a_full_raster_cache_draws_the_fallback_then_evicts(cx: &mut gpui_kit::TestApp
             last
         })
     });
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     tree.read_with(&native, |tree, _| {
         assert!(tree.image_for_test(7).is_none(), "the cache had no room");
     });
@@ -289,7 +289,7 @@ fn a_full_raster_cache_draws_the_fallback_then_evicts(cx: &mut gpui_kit::TestApp
     native
         .cx
         .update(|cx| tree.update(cx, |tree, cx| tree.replace(image_with_states(7), &[], cx)));
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     tree.read_with(&native, |tree, _| {
         assert!(tree.image_for_test(7).is_some(), "the picture drew");
         let evicted = (100..=last)
@@ -322,7 +322,7 @@ fn a_released_tree_drops_its_atlas_tiles_and_a_hot_swap_keeps_them(
         });
     });
     drop(original);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.run_until_parked();
     assert!(
         native.update(|window, _| window.has_image_atlas_entry(&image)),
@@ -409,7 +409,7 @@ fn a_seat_at_its_raster_cap(cx: &mut gpui_kit::TestAppContext) {
             tree.replace(row(64), &[], cx);
         })
     });
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.run_until_parked();
     let churned = resident_mib();
     println!(

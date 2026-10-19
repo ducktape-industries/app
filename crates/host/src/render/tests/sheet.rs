@@ -44,7 +44,7 @@ fn open(
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, subscription) = emitted(&tree, &mut native);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     (tree, native, events, subscription)
 }
 
@@ -64,7 +64,7 @@ fn rest(tree: &Entity<ViewTree>, native: &gpui_kit::VisualTestContext) -> Option
 
 fn show(tree: &Entity<ViewTree>, native: &mut gpui_kit::VisualTestContext, open: bool) {
     tree.update(native, |tree, cx| tree.replace(page(open), &[], cx));
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
 }
 
 fn press(native: &mut gpui_kit::VisualTestContext, x: f32, y: f32) {
@@ -80,7 +80,7 @@ fn drag(native: &mut gpui_kit::VisualTestContext, x: f32, from: f32, to: f32) {
     native.simulate_mouse_down(from, MouseButton::Left, Default::default());
     native.simulate_mouse_move(to, Some(MouseButton::Left), Default::default());
     native.simulate_mouse_up(to, MouseButton::Left, Default::default());
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
 }
 
 /// The UX QA's first finding on both phones: a sheet closed by its scrim
@@ -245,7 +245,7 @@ fn a_tap_on_a_fitted_handle_never_dismisses(cx: &mut gpui_kit::TestAppContext) {
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let band = crate::render::sheet::HANDLE_BAND;
     press(&mut native, 195., 844. - 300. - band / 2.);
     assert_eq!(dismissals(&events), 0);
@@ -264,8 +264,8 @@ fn a_sheet_with_no_detents_is_as_tall_as_its_child(cx: &mut gpui_kit::TestAppCon
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
-    native.update(|window, cx| window.render_frame(cx));
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
+    native.update(crate::render::draw_frame);
     let top = |native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, _| f32::from(window.find("rows").bounds().top()))
     };
@@ -274,7 +274,7 @@ fn a_sheet_with_no_detents_is_as_tall_as_its_child(cx: &mut gpui_kit::TestAppCon
     assert!((top(&mut native) - (844. - 300.)).abs() < 1., "fitted");
     let handle = 844. - 300. - band / 2.;
     drag(&mut native, 195., handle, handle + 60.);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     assert!(
         (top(&mut native) - (844. - 300.)).abs() < 1.,
         "a short drag snaps back to the fitted height"
@@ -285,7 +285,7 @@ fn a_sheet_with_no_detents_is_as_tall_as_its_child(cx: &mut gpui_kit::TestAppCon
     // what outgrows the body is held to it: the panel's top at the body's,
     // the rows under its hairline and the handle's band
     tree.update(&mut native, |tree, cx| tree.replace(fitted(2000.), &[], cx));
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let capped = top(&mut native);
     assert!(
         (capped - (1. + band)).abs() < 1.,
@@ -318,7 +318,7 @@ fn under_touch_a_sheet_slides_up_and_down_and_then_stays_still(cx: &mut gpui_kit
     native
         .executor()
         .advance_clock(crate::motion::idiom().sheet.duration);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let up = rows(&mut native).expect("drawn");
     assert!(coming > up + 100., "it did not come up: {coming} -> {up}");
     // the frame asked for before the end, drawn after it, asks for none
@@ -334,7 +334,7 @@ fn under_touch_a_sheet_slides_up_and_down_and_then_stays_still(cx: &mut gpui_kit
     native
         .executor()
         .advance_clock(crate::motion::idiom().sheet.duration);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     assert_eq!(rows(&mut native), None, "a sheet gone is still drawn");
     assert!(going >= up, "it went up as it went");
     frames(&mut native);
@@ -360,7 +360,7 @@ fn under_touch_a_release_settles_at_its_detent(cx: &mut gpui_kit::TestAppContext
     native
         .executor()
         .advance_clock(crate::motion::idiom().sheet.duration);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let top = |native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, _| f32::from(window.find("rows").bounds().top()))
     };
@@ -372,7 +372,7 @@ fn under_touch_a_release_settles_at_its_detent(cx: &mut gpui_kit::TestAppContext
     native
         .executor()
         .advance_clock(crate::motion::idiom().sheet.duration);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let settled = top(&mut native);
     crate::contract::testing::touch_first_for_test(false);
     assert!(
@@ -392,7 +392,7 @@ fn under_touch_a_sheet_turns_back_from_where_it_is(cx: &mut gpui_kit::TestAppCon
     let (tree, mut native, _events, _subscription) = open(cx, 390., 844.);
     let rows = |native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, cx| {
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             f32::from(window.find("rows").bounds().top())
         })
     };

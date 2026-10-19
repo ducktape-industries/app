@@ -84,8 +84,8 @@ fn uniform_list_measures_row_zero_and_emits_bounded_viewport_ranges(
         .unwrap()
         .read_with(cx, |host, _| host.tree.clone());
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
+    native.update(crate::render::draw_frame);
     native.run_until_parked();
 
     let events = events.borrow();
@@ -109,7 +109,7 @@ fn uniform_list_measures_row_zero_and_emits_bounded_viewport_ranges(
     });
     // the same rows drawn again are the ones held, not taken again
     native.update(|_, cx| tree.update(cx, |_, cx| cx.notify()));
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     tree.read_with(&native, |tree, _| {
         let state = tree.uniform_lists.get(&vec![named_id("uniform")]).unwrap();
         assert_eq!(state.replaced, 1, "row zero was taken once");
@@ -134,7 +134,7 @@ fn uniform_list_scroll_requests_far_rows_without_view_layout_or_unbounded_state(
             }
         })
     });
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.run_until_parked();
     events.borrow_mut().clear();
 
@@ -145,7 +145,7 @@ fn uniform_list_scroll_requests_far_rows_without_view_layout_or_unbounded_state(
             .scroll
             .scroll_to_item(1_500, gpui_kit::ScrollStrategy::Top);
     });
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.run_until_parked();
 
     let events = events.borrow();
@@ -173,13 +173,13 @@ fn uniform_list_row_cache_contains_only_the_current_frame(cx: &mut gpui_kit::Tes
     let window = cx.open_window(size(px(240.), px(96.)), |_, _| ViewTree::new(first));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.run_until_parked();
 
     tree.update(&mut native, |tree, cx| {
         tree.replace(uniform_node("uniform", 2_000, 1_000..1_020), &[], cx);
     });
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.run_until_parked();
     tree.read_with(&native, |tree, _| {
         let state = tree.uniform_lists.get(&vec![named_id("uniform")]).unwrap();
@@ -219,7 +219,7 @@ fn uniform_list_click_uses_native_identity_and_records_user_activation(
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.update(|window, cx| {
         window
             .within("uniform-click")
@@ -246,7 +246,7 @@ fn a_focus_on_a_uniform_list_is_refused(cx: &mut gpui_kit::TestAppContext) {
     let window = cx.open_window(size(px(240.), px(96.)), |_, _| ViewTree::new(node));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let answer = native.update(|window, cx| {
         tree.update(cx, |tree, cx| {
             tree.execute_widget_command(
@@ -316,8 +316,8 @@ fn a_scroll_request_is_applied_once_per_revision(cx: &mut gpui_kit::TestAppConte
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let drawn = |native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, cx| {
-            window.render_frame(cx);
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
+            crate::render::draw_frame(window, cx);
         });
         native.run_until_parked();
     };
@@ -368,8 +368,8 @@ fn a_uniform_list_ends_where_the_bars_gutter_begins(cx: &mut gpui_kit::TestAppCo
         let window = cx.open_window(size(px(width), px(96.)), |_, _| ViewTree::new(node));
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
         native.update(|window, cx| {
-            window.render_frame(cx);
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
+            crate::render::draw_frame(window, cx);
         });
         native.run_until_parked();
         // the rows draw no quad: the list's fill starts at the window's left
@@ -418,13 +418,13 @@ fn the_wheel_over_the_bars_gutter_scrolls_the_list(cx: &mut gpui_kit::TestAppCon
     let window = cx.open_window(size(px(240.), px(96.)), |_, _| ViewTree::new(node));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.simulate_event(gpui_kit::ScrollWheelEvent {
         position: point(px(232.), px(48.)),
         delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-240.))),
         ..Default::default()
     });
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.run_until_parked();
     let top = tree.read_with(&native, |tree, _| {
         let state = tree.uniform_lists.get(&vec![named_id("uniform")]).unwrap();
@@ -468,15 +468,15 @@ fn the_wheel_over_the_bars_gutter_reaches_the_page_as_over_the_rows(
         let tree = window.root(cx).unwrap();
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
         native.update(|window, cx| {
-            window.render_frame(cx);
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
+            crate::render::draw_frame(window, cx);
         });
         native.simulate_event(gpui_kit::ScrollWheelEvent {
             position: point(px(x), px(48.)),
             delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-50.))),
             ..Default::default()
         });
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
         native.run_until_parked();
         tree.read_with(&native, |tree, _| {
             let list = tree.uniform_lists.get(&vec![named_id("uniform")]).unwrap();
@@ -515,8 +515,8 @@ fn each_of_two_lists_side_by_side_drags_its_own_bar(cx: &mut gpui_kit::TestAppCo
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| {
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
     });
     native.run_until_parked();
     // b's thumb is at the top of b's gutter, past b's rows
@@ -528,13 +528,13 @@ fn each_of_two_lists_side_by_side_drags_its_own_bar(cx: &mut gpui_kit::TestAppCo
         gpui_kit::MouseButton::Left,
         Default::default(),
     );
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.simulate_mouse_move(
         point(x, px(60.)),
         gpui_kit::MouseButton::Left,
         Default::default(),
     );
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.run_until_parked();
     let [a, b] = tree.read_with(&native, |tree, _| {
         ["a", "b"].map(|id| {
@@ -565,8 +565,8 @@ fn a_wheel_at_a_list_asks_the_view_for_the_rows_it_brings(cx: &mut gpui_kit::Tes
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| {
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
     });
     native.run_until_parked();
     let list = native
@@ -584,7 +584,7 @@ fn a_wheel_at_a_list_asks_the_view_for_the_rows_it_brings(cx: &mut gpui_kit::Tes
     tree.update(&mut native, |tree, cx| {
         tree.replace(sent(rows.clone()), &[], cx);
     });
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let texts: Vec<String> = native
         .update(|window, cx| tree.read(cx).inspect(window, cx))
         .into_iter()

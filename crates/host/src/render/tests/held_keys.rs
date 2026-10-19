@@ -52,7 +52,7 @@ fn focus(tree: &Entity<ViewTree>, target: &[&str], native: &mut VisualTestContex
             tree.execute_widget_command(wire::WidgetCommand::Focus { target }, window, cx)
         })
         .unwrap();
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
     });
 }
 
@@ -61,7 +61,7 @@ fn activate(native: &mut VisualTestContext) {
     native.run_until_parked();
     native.update(|window, cx| {
         assert!(window.is_window_active());
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
     });
 }
 
@@ -94,7 +94,7 @@ fn a_held_key_comes_up_when_the_window_goes_to_the_back(cx: &mut gpui_kit::TestA
     press(&mut native, "left");
     assert_eq!(came_up(&events, UP), ["a"], "a key let go comes up once");
     native.deactivate_window();
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     assert_eq!(
         came_up(&events, UP),
         ["a", "left"],
@@ -102,7 +102,7 @@ fn a_held_key_comes_up_when_the_window_goes_to_the_back(cx: &mut gpui_kit::TestA
     );
     activate(&mut native);
     native.deactivate_window();
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     assert_eq!(came_up(&events, UP), ["a", "left"], "and only once");
 }
 
@@ -187,7 +187,7 @@ fn a_held_key_comes_up_on_the_handler_the_node_has_now(cx: &mut gpui_kit::TestAp
     press(&mut native, "left");
     native.update(|window, cx| {
         tree.update(cx, |tree, cx| tree.replace(screen(RENUMBERED), &[], cx));
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
     });
     focus(&tree, &["screen", "other"], &mut native);
     assert_eq!(came_up(&events, UP), Vec::<String>::new());

@@ -931,7 +931,6 @@ fn the_placement_is_told_at_subscribe_and_on_each_change() {
 fn a_readers_press_on_a_link_opens_it_once(cx: &mut gpui_kit::TestAppContext) {
     use gpui_kit::Styled as _;
     use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
-    use gpui_kit::test::TestWindowExt as _;
     cx.update(gpui_kit::init);
     let link = wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("docs".into())),
@@ -962,8 +961,8 @@ fn a_readers_press_on_a_link_opens_it_once(cx: &mut gpui_kit::TestAppContext) {
     });
     native.update(|window, cx| {
         window.activate_a11y();
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
         let target = window
             .a11y_tree()
             .unwrap()

@@ -5,7 +5,6 @@ use super::*;
 use crate::ax::audit::{self, Violation};
 use crate::shell::entities::{AccountStep, Overlay, Popover, Screen, Secret, SettingsPage};
 use crate::shell::layers::tests::Seed;
-use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{TestAppContext, VisualTestContext};
 
 pub(super) type Build = Box<dyn Fn() -> Scene>;
@@ -392,10 +391,10 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
 
 fn snap(window: &mut Window, cx: &mut gpui_kit::App) -> Vec<crate::ax::AxNode> {
     window.activate_a11y();
-    window.render_frame(cx);
+    ducktape_host::render::draw_frame(window, cx);
     // the frame's callbacks (the desk's size, its seed) run before the next
     window.simulate_next_frame(cx);
-    window.render_frame(cx);
+    ducktape_host::render::draw_frame(window, cx);
     crate::ax::snapshot("shell", window, true)
 }
 

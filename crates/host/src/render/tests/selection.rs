@@ -33,18 +33,9 @@ fn linked(key: &str, text: &str) -> wire::Node {
 /// lines at y 0 and 60, the thread's between them at y 30.
 fn panes() -> wire::Node {
     let pane = |key: &str, children: Vec<wire::Node>| {
-        container_with_style(
-            key,
-            div()
-                .w(px(150.))
-                .h_full()
-                .flex()
-                .flex_col()
-                .overflow_hidden()
-                .style()
-                .clone(),
-            children,
-        )
+        let mut style = div().w(px(150.)).h_full().flex().flex_col().style().clone();
+        style.overflow.y = Some(gpui_kit::Overflow::Scroll);
+        container_with_style(key, style, children)
     };
     let gap = |key: &str| container_with_style(key, div().h(px(10.)).style().clone(), []);
     container_with_style(
@@ -83,6 +74,7 @@ impl Render for Window2 {
         div()
             .size_full()
             .child(gpui_kit::base::TextSelectionLayer)
+            .child(crate::render::pointer::Layer)
             .child(self.tree.clone())
     }
 }
@@ -106,19 +98,19 @@ fn drag_over(
         tree: cx.new(|_| ViewTree::new(root)),
     });
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.simulate_mouse_move(from, None, Default::default());
     native.simulate_mouse_down(from, MouseButton::Left, Default::default());
     let mut last = from;
     for &at in through {
         native.simulate_mouse_move(at, Some(MouseButton::Left), Default::default());
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
         last = at;
     }
     native.simulate_mouse_up(last, MouseButton::Left, Default::default());
     native.update(|window, cx| {
-        window.render_frame(cx);
-        gpui_kit::base::TextSelection::selected_text(window, cx)
+        crate::render::draw_frame(window, cx);
+        crate::render::pointer::selected_text(window, cx)
     })
 }
 
@@ -164,18 +156,18 @@ fn enter_presses_the_picked_link_while_words_are_selected(cx: &mut gpui_kit::Tes
         .read_with(cx, |window, _| window.tree.clone());
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let (from, to) = (point(px(1.), px(10.)), point(px(40.), px(10.)));
     native.simulate_mouse_move(from, None, Default::default());
     native.simulate_mouse_down(from, MouseButton::Left, Default::default());
     native.simulate_mouse_move(to, Some(MouseButton::Left), Default::default());
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.simulate_mouse_up(to, MouseButton::Left, Default::default());
     native.update(|window, cx| {
-        window.render_frame(cx);
-        assert!(gpui_kit::base::TextSelection::has_selection(window, cx));
+        crate::render::draw_frame(window, cx);
+        assert!(crate::render::pointer::has_selection(window, cx));
         window.focus_next(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
     });
     assert_eq!(
@@ -307,7 +299,7 @@ fn a_controls_label_is_no_text_to_select(cx: &mut gpui_kit::TestAppContext) {
         tree: cx.new(|_| ViewTree::new(root)),
     });
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let word = point(px(5.), px(30.));
     for click_count in [1, 2] {
         native.simulate_event(MouseDownEvent {
@@ -325,19 +317,19 @@ fn a_controls_label_is_no_text_to_select(cx: &mut gpui_kit::TestAppContext) {
         });
     }
     let doubled = native.update(|window, cx| {
-        window.render_frame(cx);
-        gpui_kit::base::TextSelection::selected_text(window, cx)
+        crate::render::draw_frame(window, cx);
+        crate::render::pointer::selected_text(window, cx)
     });
     assert_eq!(doubled, "", "a double-click on the button's word");
     let (from, to) = (point(px(1.), px(10.)), point(px(140.), px(50.)));
     native.simulate_mouse_move(from, None, Default::default());
     native.simulate_mouse_down(from, MouseButton::Left, Default::default());
     native.simulate_mouse_move(to, Some(MouseButton::Left), Default::default());
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.simulate_mouse_up(to, MouseButton::Left, Default::default());
     let copied = native.update(|window, cx| {
-        window.render_frame(cx);
-        gpui_kit::base::TextSelection::selected_text(window, cx)
+        crate::render::draw_frame(window, cx);
+        crate::render::pointer::selected_text(window, cx)
     });
     assert!(
         copied.contains("ada") && copied.contains("gamma"),
@@ -411,7 +403,7 @@ fn a_click_on_words_leaves_no_anchor_behind(cx: &mut gpui_kit::TestAppContext) {
         tree: cx.new(|_| ViewTree::new(root)),
     });
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let (word, below) = (point(px(5.), px(10.)), point(px(140.), px(30.)));
     let press = |native: &mut gpui_kit::VisualTestContext,
                  at: Point<Pixels>,
@@ -431,8 +423,8 @@ fn a_click_on_words_leaves_no_anchor_behind(cx: &mut gpui_kit::TestAppContext) {
             click_count,
         });
         native.update(|window, cx| {
-            window.render_frame(cx);
-            gpui_kit::base::TextSelection::selected_text(window, cx)
+            crate::render::draw_frame(window, cx);
+            crate::render::pointer::selected_text(window, cx)
         })
     };
     press(&mut native, word, 1, gpui_kit::Modifiers::default());
@@ -470,7 +462,7 @@ fn a_click_that_drifts_leaves_no_anchor_behind(cx: &mut gpui_kit::TestAppContext
         tree: cx.new(|_| ViewTree::new(root)),
     });
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let (word, below) = (point(px(5.), px(10.)), point(px(140.), px(30.)));
     let shift_click = |native: &mut gpui_kit::VisualTestContext| {
         native.simulate_mouse_move(below, None, Default::default());
@@ -488,8 +480,8 @@ fn a_click_that_drifts_leaves_no_anchor_behind(cx: &mut gpui_kit::TestAppContext
             click_count: 1,
         });
         native.update(|window, cx| {
-            window.render_frame(cx);
-            gpui_kit::base::TextSelection::selected_text(window, cx)
+            crate::render::draw_frame(window, cx);
+            crate::render::pointer::selected_text(window, cx)
         })
     };
     for drift in [1., 2., 3.] {
@@ -497,9 +489,9 @@ fn a_click_that_drifts_leaves_no_anchor_behind(cx: &mut gpui_kit::TestAppContext
         native.simulate_mouse_move(word, None, Default::default());
         native.simulate_mouse_down(word, MouseButton::Left, Default::default());
         native.simulate_mouse_move(drifted, Some(MouseButton::Left), Default::default());
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
         native.simulate_mouse_up(drifted, MouseButton::Left, Default::default());
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
         assert_eq!(
             shift_click(&mut native),
             "",
@@ -516,11 +508,11 @@ fn a_click_that_drifts_leaves_no_anchor_behind(cx: &mut gpui_kit::TestAppContext
     native.simulate_mouse_move(from, None, Default::default());
     native.simulate_mouse_down(from, MouseButton::Left, Default::default());
     native.simulate_mouse_move(to, Some(MouseButton::Left), Default::default());
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.simulate_mouse_up(to, MouseButton::Left, Default::default());
     let dragged = native.update(|window, cx| {
-        window.render_frame(cx);
-        gpui_kit::base::TextSelection::selected_text(window, cx)
+        crate::render::draw_frame(window, cx);
+        crate::render::pointer::selected_text(window, cx)
     });
     assert!(dragged.starts_with("alph"), "the drag: {dragged:?}");
     let extended = shift_click(&mut native);
@@ -550,7 +542,7 @@ fn a_drift_across_a_glyphs_middle_selects_that_glyph(cx: &mut gpui_kit::TestAppC
         tree: cx.new(|_| ViewTree::new(root)),
     });
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let drift = |native: &mut gpui_kit::VisualTestContext, x: f32| {
         let (down, up) = (point(px(x), px(10.)), point(px(x + 2.), px(11.)));
         native.simulate_mouse_move(down, None, Default::default());
@@ -558,8 +550,8 @@ fn a_drift_across_a_glyphs_middle_selects_that_glyph(cx: &mut gpui_kit::TestAppC
         native.simulate_mouse_move(up, Some(MouseButton::Left), Default::default());
         native.simulate_mouse_up(up, MouseButton::Left, Default::default());
         native.update(|window, cx| {
-            window.render_frame(cx);
-            gpui_kit::base::TextSelection::selected_text(window, cx)
+            crate::render::draw_frame(window, cx);
+            crate::render::pointer::selected_text(window, cx)
         })
     };
     let kept: Vec<(f32, String)> = (0..30)
@@ -596,8 +588,8 @@ fn a_drift_across_a_glyphs_middle_selects_that_glyph(cx: &mut gpui_kit::TestAppC
         click_count: 1,
     });
     let extended = native.update(|window, cx| {
-        window.render_frame(cx);
-        gpui_kit::base::TextSelection::selected_text(window, cx)
+        crate::render::draw_frame(window, cx);
+        crate::render::pointer::selected_text(window, cx)
     });
     assert!(
         extended.starts_with(&glyph) && extended.ends_with("gamma"),
@@ -624,7 +616,7 @@ fn a_press_before_the_frame_after_a_click_still_drags(cx: &mut gpui_kit::TestApp
         tree: cx.new(|_| ViewTree::new(root)),
     });
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let (word, from, to) = (
         point(px(5.), px(10.)),
         point(px(1.), px(30.)),
@@ -659,8 +651,8 @@ fn a_press_before_the_frame_after_a_click_still_drags(cx: &mut gpui_kit::TestApp
     native.simulate_mouse_move(to, Some(MouseButton::Left), Default::default());
     native.simulate_mouse_up(to, MouseButton::Left, Default::default());
     let copied = native.update(|window, cx| {
-        window.render_frame(cx);
-        gpui_kit::base::TextSelection::selected_text(window, cx)
+        crate::render::draw_frame(window, cx);
+        crate::render::pointer::selected_text(window, cx)
     });
     assert!(copied.starts_with("gamm"), "the drag: {copied:?}");
 }
@@ -691,7 +683,7 @@ fn a_drag_selecting_words_in_a_clickable_box_is_not_its_click(cx: &mut gpui_kit:
         .read_with(cx, |window, _| window.tree.clone());
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let clicks = |events: &Rc<RefCell<Vec<wire::Event>>>| {
         events
             .borrow()
@@ -703,11 +695,11 @@ fn a_drag_selecting_words_in_a_clickable_box_is_not_its_click(cx: &mut gpui_kit:
     native.simulate_mouse_move(from, None, Default::default());
     native.simulate_mouse_down(from, MouseButton::Left, Default::default());
     native.simulate_mouse_move(to, Some(MouseButton::Left), Default::default());
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.simulate_mouse_up(to, MouseButton::Left, Default::default());
     let copied = native.update(|window, cx| {
-        window.render_frame(cx);
-        gpui_kit::base::TextSelection::selected_text(window, cx)
+        crate::render::draw_frame(window, cx);
+        crate::render::pointer::selected_text(window, cx)
     });
     assert!(
         copied.contains("alpha") && copied.contains("gamma"),
@@ -717,7 +709,7 @@ fn a_drag_selecting_words_in_a_clickable_box_is_not_its_click(cx: &mut gpui_kit:
     native.simulate_mouse_move(from, None, Default::default());
     native.simulate_mouse_down(from, MouseButton::Left, Default::default());
     native.simulate_mouse_up(from, MouseButton::Left, Default::default());
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     assert_eq!(clicks(&events), 1, "a plain click is still a click");
     // a trackpad press drifts a little between down and up, on the words
     // themselves: no word selected, so still a click
@@ -725,9 +717,9 @@ fn a_drag_selecting_words_in_a_clickable_box_is_not_its_click(cx: &mut gpui_kit:
     native.simulate_mouse_move(from, None, Default::default());
     native.simulate_mouse_down(from, MouseButton::Left, Default::default());
     native.simulate_mouse_move(drifted, Some(MouseButton::Left), Default::default());
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.simulate_mouse_up(drifted, MouseButton::Left, Default::default());
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     assert_eq!(
         clicks(&events),
         2,
@@ -771,7 +763,7 @@ fn press_drift_and_lift(
         window.dispatch_event(moved.to_platform_input(), cx);
         window.dispatch_event(lifted.to_platform_input(), cx);
     });
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
 }
 
 /// A press on a link that drifts half a pixel and lifts before the next
@@ -793,7 +785,7 @@ fn a_press_on_a_link_that_drifts_is_its_press(cx: &mut gpui_kit::TestAppContext)
         .read_with(cx, |window, _| window.tree.clone());
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let (from, drifted) = (point(px(5.), px(10.)), point(px(5.5), px(10.)));
     press_drift_and_lift(&mut native, from, drifted);
     assert_eq!(

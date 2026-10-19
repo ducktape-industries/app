@@ -5,7 +5,6 @@
 use super::*;
 use crate::render::tests::emitted;
 use gpui_kit::accesskit::{self, Action, NodeId, Toggled, TreeUpdate};
-use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{Role, size};
 
 const PARENT_FOCUS: u64 = 7;
@@ -317,8 +316,8 @@ fn announce(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> (Option<Hear
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| {
         window.activate_a11y();
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
         let parent = tree
             .read(cx)
             .view_focus_targets
@@ -326,8 +325,8 @@ fn announce(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> (Option<Hear
             .cloned()
             .expect("the parent's view focus handle is made on first render");
         parent.focus(window, cx);
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
         let update = window.a11y_tree().expect("an a11y tree once activated");
         let (parent_id, _) = heard(update, "parent").expect("the parent has a node");
         let Some((child_id, child)) = heard(update, "child") else {
@@ -436,8 +435,8 @@ fn a_labelled_picture_without_a_role_is_an_image_in_the_tree(cx: &mut gpui_kit::
             let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
             let heard = native.update(|window, cx| {
                 window.activate_a11y();
-                window.render_frame(cx);
-                window.render_frame(cx);
+                crate::render::draw_frame(window, cx);
+                crate::render::draw_frame(window, cx);
                 let update = window.a11y_tree().expect("an a11y tree once activated");
                 heard(update, "picture").map(|(_, heard)| (heard.role, heard.name))
             });
@@ -484,11 +483,11 @@ fn a_tracked_handle_the_view_makes_a_tab_stop_takes_tab(cx: &mut gpui_kit::TestA
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| {
         window.activate_a11y();
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         // Tab is the app's binding to `focus_next`; a bare window has none
         window.focus_next(cx);
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
         let update = window.a11y_tree().expect("an a11y tree once activated");
         let (stop, _) = heard(update, "stop").expect("the stop has a node");
         assert_eq!(update.focus, stop, "Tab reaches the view's tab stop");
@@ -529,11 +528,11 @@ fn pressable_after_tab(cx: &mut gpui_kit::TestAppContext, tab_stop: Option<bool>
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| {
         window.activate_a11y();
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         // Tab is the app's binding to `focus_next`; a bare window has none
         window.focus_next(cx);
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
         let update = window.a11y_tree().expect("an a11y tree once activated");
         let (press, heard) = heard(update, "press").expect("the button has a node");
         (heard.focus_action, update.focus == press)
@@ -598,7 +597,7 @@ fn a_container_the_view_focuses_by_id_stays_a_tab_stop(cx: &mut gpui_kit::TestAp
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let focused = |native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, cx| {
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             let update = window.a11y_tree().expect("an a11y tree once activated");
             ["menu", "next"]
                 .into_iter()
@@ -607,7 +606,7 @@ fn a_container_the_view_focuses_by_id_stays_a_tab_stop(cx: &mut gpui_kit::TestAp
     };
     native.update(|window, cx| {
         window.activate_a11y();
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         tree.update(cx, |tree, cx| {
             let target = vec![key("row"), key("menu")];
             tree.execute_widget_command(wire::WidgetCommand::Focus { target }, window, cx)
@@ -738,8 +737,8 @@ fn a_held_pane_over_two_claiming_composites_reports_the_pane_box(
         window.activate_a11y();
         let own = pane.read(cx).own.clone();
         own.focus(window, cx);
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
         let update = window.a11y_tree().expect("an a11y tree once activated");
         let focused = update
             .nodes
@@ -786,8 +785,8 @@ mod phase_two {
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
         native.update(|window, cx| {
             window.activate_a11y();
-            window.render_frame(cx);
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
+            crate::render::draw_frame(window, cx);
             let update = window.a11y_tree().expect("an a11y tree once activated");
             update
                 .nodes
@@ -893,12 +892,12 @@ mod phase_two {
         // Tab is the app's binding to `focus_next`; a bare window has none
         native.update(|window, cx| {
             window.activate_a11y();
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             window.focus_next(cx);
         });
         native.simulate_keystrokes("left");
         native.update(|window, cx| {
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             let update = window.a11y_tree().expect("an a11y tree once activated");
             let (id, node) = update
                 .nodes
@@ -985,7 +984,7 @@ mod phase_two {
         let (events, _subscription) = emitted(&tree, &mut native);
         let wide = |native: &mut gpui_kit::VisualTestContext| {
             native.update(|window, cx| {
-                window.render_frame(cx);
+                crate::render::draw_frame(window, cx);
                 let nodes = serde_json::to_value(crate::ax::snapshot("t", window, true)).unwrap();
                 let nodes = nodes.as_array().unwrap();
                 let pane = nodes
@@ -1008,7 +1007,7 @@ mod phase_two {
         // Tab is the app's binding to `focus_next`; a bare window has none
         native.update(|window, cx| {
             window.activate_a11y();
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             window.focus_next(cx);
         });
         let mut width = 200.;
@@ -1065,10 +1064,10 @@ mod phase_two {
             let tree = window.root(cx).unwrap();
             let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
             native.update(|window, cx| {
-                window.render_frame(cx);
+                crate::render::draw_frame(window, cx);
                 let handle = tree.read(cx).view_focus_targets[&PARENT_FOCUS].clone();
                 tree.update(cx, |tree, cx| tree.replace(again, &[], cx));
-                window.render_frame(cx);
+                crate::render::draw_frame(window, cx);
                 assert!(
                     tree.read(cx).view_focus_targets[&PARENT_FOCUS] == handle,
                     "{site:?} made its handle anew"
@@ -1115,8 +1114,8 @@ mod phase_two {
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
         native.update(|window, cx| {
             window.activate_a11y();
-            window.render_frame(cx);
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
+            crate::render::draw_frame(window, cx);
             let update = window.a11y_tree().expect("an a11y tree once activated");
             let mut places: Vec<_> = update
                 .nodes

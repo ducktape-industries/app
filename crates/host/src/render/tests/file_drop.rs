@@ -34,8 +34,8 @@ fn files_dropped_on_a_listening_node_reach_the_seat_with_its_route(
         })
     });
     native.update(|window, cx| {
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
     });
     let at = gpui_kit::point(px(200.), px(150.));
     let file = std::path::PathBuf::from("/tmp/a.txt");

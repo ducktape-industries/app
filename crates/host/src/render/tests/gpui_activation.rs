@@ -13,7 +13,7 @@ fn native_gpui_click_grants_one_user_activation(cx: &mut gpui_kit::TestAppContex
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     tree.read_with(&native, |tree, _| {
         assert!(tree.take_activation().is_none());
     });
@@ -67,7 +67,7 @@ fn native_rich_text_click_grants_one_user_activation(cx: &mut gpui_kit::TestAppC
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     tree.read_with(&native, |tree, _| assert!(tree.take_activation().is_none()));
     native.simulate_mouse_move(point(px(5.), px(5.)), None, Default::default());
     native.simulate_mouse_down(point(px(5.), px(5.)), MouseButton::Left, Default::default());
@@ -108,7 +108,7 @@ fn a_key_activates_the_view_and_escape_does_not(cx: &mut gpui_kit::TestAppContex
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
     native.update(|window, cx| {
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         window.focus_next(cx);
     });
     let press = |native: &mut gpui_kit::VisualTestContext, key: &str| {
@@ -166,11 +166,11 @@ fn a_consumed_press_stops_at_the_node_that_consumes_it(cx: &mut gpui_kit::TestAp
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.update(|window, cx| window.click("link", cx));
     native.update(|window, cx| {
         window.focus_next(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
     });
     for key in ["space", "enter", "x"] {
         native.update(|window, cx| {

@@ -7,16 +7,15 @@ use super::layers::tests::{
 };
 use super::*;
 use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
-use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{ElementId, Entity, TestAppContext, VisualTestContext, Window, px, size};
 
 pub(super) fn draw(window: &mut Window, cx: &mut gpui_kit::App) -> serde_json::Value {
     window.activate_a11y();
-    window.render_frame(cx);
+    ducktape_host::render::draw_frame(window, cx);
     // the frame's callbacks (the desk's size, a switch's end) run before
     // the next frame, as the platform delivers them
     window.simulate_next_frame(cx);
-    window.render_frame(cx);
+    ducktape_host::render::draw_frame(window, cx);
     serde_json::to_value(crate::ax::snapshot("console", window, false)).unwrap()
 }
 
@@ -2130,7 +2129,7 @@ fn the_desk_size_is_committed_after_the_frame_not_during_it(cx: &mut TestAppCont
     native.run_until_parked();
     // the window drew at its new size; the model still has the old one
     native.update(|window, cx| {
-        window.render_frame(cx);
+        ducktape_host::render::draw_frame(window, cx);
     });
     assert_eq!(
         desk(&mut native),
@@ -2142,7 +2141,7 @@ fn the_desk_size_is_committed_after_the_frame_not_during_it(cx: &mut TestAppCont
     assert_eq!(desk(&mut native), Some((1000., 700. - layers::BAR)));
     // the same size again: nothing to commit, no callback asked for
     native.update(|window, cx| {
-        window.render_frame(cx);
+        ducktape_host::render::draw_frame(window, cx);
     });
     assert_eq!(
         native.update(|window, cx| window.simulate_next_frame(cx)),

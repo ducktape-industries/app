@@ -40,7 +40,7 @@ fn drag_from(x: f32, cx: &mut gpui_kit::TestAppContext) -> (f64, bool) {
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     // the list's first settled report is the mount's, not the wheel's
     native.update(|window, cx| _ = window.simulate_next_frame(cx));
     events.borrow_mut().clear();
@@ -99,7 +99,7 @@ fn a_divider_wears_its_group_hover(cx: &mut gpui_kit::TestAppContext) {
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let lit_quads = |native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, cx| {
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             window
                 .painted_quads()
                 .iter()
@@ -133,7 +133,7 @@ fn a_focus_on_a_divider_is_refused(cx: &mut gpui_kit::TestAppContext) {
     let window = cx.open_window(size(px(300.), px(80.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let answer = native.update(|window, cx| {
         tree.update(cx, |tree, cx| {
             tree.execute_widget_command(
@@ -212,7 +212,7 @@ fn scrolled_beside_the_divider(x: f32, cx: &mut gpui_kit::TestAppContext) -> usi
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     // the list's first settled report is the mount's, not the wheel's
     native.update(|window, cx| _ = window.simulate_next_frame(cx));
     events.borrow_mut().clear();
@@ -223,7 +223,7 @@ fn scrolled_beside_the_divider(x: f32, cx: &mut gpui_kit::TestAppContext) -> usi
         delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(60.))),
         ..Default::default()
     });
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.update(|window, cx| _ = window.simulate_next_frame(cx));
     native.run_until_parked();
     events

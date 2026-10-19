@@ -459,7 +459,6 @@ mod tests {
         cx: &mut gpui_kit::TestAppContext,
     ) {
         use super::{Kind, Press, button};
-        use gpui_kit::test::TestWindowExt as _;
         use gpui_kit::{
             BoxShadow, Context, Div, FocusHandle, InteractiveElement as _, IntoElement, Modifiers,
             Render, Stateful, Styled as _, VisualTestContext, Window, div, point, px, size,
@@ -505,7 +504,7 @@ mod tests {
             });
             let mut native = VisualTestContext::from_window(window.into(), cx);
             let shown = |native: &mut VisualTestContext| {
-                native.update(|window, cx| window.render_frame(cx));
+                native.update(ducktape_host::render::draw_frame);
                 seen.borrow().clone()
             };
             // both are drawn with an ink border

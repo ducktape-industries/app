@@ -204,8 +204,8 @@ fn a_view_text_spelled_layer_keeps_a_nested_dialog_its_node(cx: &mut gpui_kit::T
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let labels = native.update(|window, cx| {
         window.activate_a11y();
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
         let tree = window.a11y_tree().unwrap();
         let mut labels: Vec<(gpui_kit::Role, String)> = tree
             .nodes
@@ -250,7 +250,7 @@ fn a_click_on_a_container_spelled_like_a_host_id_fires_its_own_handler(
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let (events, _subscription) = emitted(&tree, &mut native);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     // the second button: 24px of the first, an 8px gap, then its own 24px
     let centre = point(px(40.), px(24. + 8. + 12.));
     native.simulate_mouse_move(centre, None, Default::default());

@@ -54,6 +54,9 @@ pub(super) fn dragged_over_words(
     window: &mut Window,
     cx: &mut App,
 ) -> bool {
+    if let Some(took) = super::pointer::took(window, cx) {
+        return took;
+    }
     (up - down).magnitude() > DRAG_THRESHOLD
         && !gpui_kit::base::TextSelection::selected_text(window, cx).is_empty()
 }
@@ -108,6 +111,7 @@ pub(super) struct RichParagraph {
     /// drag selects what lies between its ends in reading order, not every
     /// line in the window between their heights.
     pub(super) order: std::rc::Rc<std::cell::Cell<u64>>,
+    pub(super) participant: Option<u64>,
 }
 
 impl IntoElement for RichParagraph {
@@ -154,6 +158,18 @@ impl Element for RichParagraph {
         let clip = window.content_mask().bounds;
         let order = self.order.get();
         self.order.set(order + 1);
+        self.participant = super::pointer::register(
+            &self.id,
+            order,
+            &hitbox,
+            &self.text,
+            &self.layout,
+            window,
+            cx,
+        );
+        if self.participant.is_some() {
+            return (hitbox, clip);
+        }
         let joins = joins_drag(DRAG_CLIP.get(), clip);
         let text = self.text.clone();
         let layout_bounds = self.layout.bounds();
@@ -193,6 +209,11 @@ impl Element for RichParagraph {
         window: &mut Window,
         cx: &mut App,
     ) {
+        if let Some(participant) = self.participant {
+            *self.selection.borrow_mut() = super::pointer::range_of(participant, window, cx);
+            self.content.paint(window, cx);
+            return;
+        }
         let (hitbox, clip) = (hitbox.clone(), *clip);
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, _| {
             if phase != gpui_kit::DispatchPhase::Capture || event.button != MouseButton::Left {
@@ -430,6 +451,7 @@ impl ViewTree {
             active_handle: Default::default(),
             selection: selection_range,
             order: self.selection_order.clone(),
+            participant: None,
         }
         .into_any_element()
     }
@@ -594,6 +616,7 @@ impl ViewTree {
             active_handle: Default::default(),
             selection: selection_range,
             order: self.selection_order.clone(),
+            participant: None,
         }
         .into_any_element()
     }

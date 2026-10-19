@@ -5,7 +5,6 @@
 
 use super::*;
 use crate::render::ViewTree;
-use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{px, size};
 use view_wire as wire;
 
@@ -90,16 +89,16 @@ fn ax_action_reaches_the_views_field(cx: &mut gpui_kit::TestAppContext, action: 
     });
     native.update(|window, cx| {
         window.activate_a11y();
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
     });
     let performed = native.update(|window, cx| {
         perform_by_id("t", window, cx, "t:draft-general/editor", action, "hello")
     });
     assert!(performed, "the composer's AX field must be in the tree");
     native.update(|window, cx| {
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
     });
     native.run_until_parked();
     assert_eq!(
@@ -158,8 +157,8 @@ fn an_action_a_view_advertises_reaches_the_view(cx: &mut gpui_kit::TestAppContex
     });
     native.update(|window, cx| {
         window.activate_a11y();
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
         let node = snapshot("t", window, false)
             .into_iter()
             .find(|node| node.role == "SpinButton")
@@ -167,7 +166,7 @@ fn an_action_a_view_advertises_reaches_the_view(cx: &mut gpui_kit::TestAppContex
         assert_eq!(node.actions, ["increment", "decrement"]);
         for word in ["increment", "decrement"] {
             assert!(perform_by_id("t", window, cx, &node.id, word, ""));
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
         }
         window.dispatch_a11y_action(
             ActionRequest {
@@ -278,8 +277,8 @@ fn a_press_on_a_view_row_scrolled_out_of_its_list_is_that_rows_click(
     });
     native.update(|window, cx| {
         window.activate_a11y();
-        window.render_frame(cx);
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
+        crate::render::draw_frame(window, cx);
         let nodes = snapshot("t", window, true);
         let row = nodes
             .iter()

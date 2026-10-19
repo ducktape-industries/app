@@ -179,7 +179,6 @@ mod tests {
     use super::*;
     use crate::a11y::Control as _;
     use crate::ax::shown::wheel;
-    use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{
         Context, InteractiveElement as _, ParentElement as _, Render, Role,
         StatefulInteractiveElement as _, TestAppContext, VisualTestContext, div, px, size,
@@ -237,7 +236,7 @@ mod tests {
             gone: screen.2.clone(),
         });
         let mut native = VisualTestContext::from_window(window.into(), cx);
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
         Mounted {
             native,
             pressed,
@@ -249,7 +248,7 @@ mod tests {
     fn redrawn(native: &mut VisualTestContext) {
         native.update(|window, cx| {
             window.refresh();
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
         });
     }
 
@@ -363,7 +362,7 @@ mod tests {
             covered,
         });
         let mut native = VisualTestContext::from_window(window.into(), cx);
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
         (native, pressed)
     }
 

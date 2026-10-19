@@ -17,7 +17,7 @@ fn mounted(
     let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     (tree, native)
 }
 
@@ -38,14 +38,14 @@ fn focus(
             )
             .unwrap();
         });
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
     });
 }
 
 /// The text the first field holds, as the engine has it.
 fn text(tree: &Entity<ViewTree>, native: &mut gpui_kit::VisualTestContext) -> String {
     native.update(|window, cx| {
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         let tree = tree.read(cx);
         tree.fields
             .values()
@@ -63,7 +63,7 @@ fn text_at(
     path: &[wire::ElementIdWire],
 ) -> String {
     native.update(|window, cx| {
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         tree.read(cx).fields[path].presentation(window, cx).value
     })
 }
@@ -80,7 +80,7 @@ fn pressed(native: &mut gpui_kit::VisualTestContext, keys: &[&str]) {
     native.update(|window, cx| {
         for key in keys {
             window.dispatch_keystroke(Keystroke::parse(key).unwrap(), cx);
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
         }
     });
     native.run_until_parked();
@@ -182,7 +182,7 @@ fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestApp
     let window = cx.open_window(size(px(500.), px(200.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
 
     let left_path = vec![
         named_id("form"),
@@ -252,15 +252,15 @@ fn a_read_only_field_takes_no_typing_and_no_set_value(cx: &mut gpui_kit::TestApp
         let (events, _subscription) = emitted(&tree, &mut native);
         let state = native.update(|window, cx| {
             window.activate_a11y();
-            window.render_frame(cx);
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
+            crate::render::draw_frame(window, cx);
             let state = tree.read(cx).first_input_for_test().unwrap();
             state.update(cx, |state, cx| state.focus(window, cx));
             state
         });
         native.simulate_input(" typed");
         native.update(|window, cx| {
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             let update = window.a11y_tree().expect("an a11y tree once activated");
             let (node, _) = update
                 .nodes
@@ -341,7 +341,7 @@ fn a_focused_field_wears_one_ring_on_its_own_box(cx: &mut gpui_kit::TestAppConte
     // it, and its node's box
     let drawn = |native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, cx| {
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             let scale = window.scale_factor();
             let quads = window.painted_quads();
             let bordered = || {
@@ -404,7 +404,7 @@ fn a_fraction_wide_field_takes_its_fraction_once(cx: &mut gpui_kit::TestAppConte
     let window = cx.open_window(size(px(600.), px(200.)), |_, _| ViewTree::new(root));
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let width = native.update(|window, cx| {
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         let scale = window.scale_factor();
         window
             .painted_quads()
@@ -447,7 +447,7 @@ fn a_disabled_field_wears_no_ring(cx: &mut gpui_kit::TestAppContext) {
     let border = native.update(|window, cx| {
         let state = tree.read(cx).first_input_for_test().unwrap();
         state.update(cx, |state, cx| state.focus(window, cx));
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         let scale = window.scale_factor();
         window
             .painted_quads()
@@ -479,7 +479,7 @@ fn a_focused_editor_wears_the_ring_on_the_views_box(cx: &mut gpui_kit::TestAppCo
     let (tree, mut native) = mounted(area("document", None, "", style), cx);
     let border = |native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, cx| {
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
             let scale = window.scale_factor();
             window
                 .painted_quads()
@@ -579,7 +579,7 @@ fn a_key_in_a_native_editor_activates_the_view_and_escape_does_not(
     let press = |native: &mut gpui_kit::VisualTestContext, key: &str| {
         native.update(|window, cx| {
             window.dispatch_keystroke(gpui_kit::Keystroke::parse(key).unwrap(), cx);
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
         });
         native.run_until_parked();
     };
@@ -634,7 +634,7 @@ fn a_key_in_a_native_editor_activates_the_view_and_escape_does_not(
         gpui_kit::MouseButton::Left,
         Default::default(),
     );
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     tree.read_with(&native, |tree, _| {
         assert!(
             tree.take_activation().is_some(),
@@ -654,7 +654,7 @@ fn a_key_in_a_native_editor_activates_the_view_and_escape_does_not(
             tree.update(cx, |tree, cx| {
                 tree.execute_widget_command(command, window, cx).unwrap();
             });
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
         });
         native.run_until_parked();
         tree.read_with(&native, |tree, _| {
@@ -692,7 +692,7 @@ fn editor_obeys_authored_size_and_height_limits(cx: &mut gpui_kit::TestAppContex
         };
         options.read_only = true;
         let (_, mut native) = mounted(root, cx);
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(crate::render::draw_frame);
         // the authored box, under a host name: the view's id is its field
         let bounds = native.update(|window, _| window.find(host_id("field")).bounds());
         assert_eq!(bounds.size, size(px(240.), px(expected)));
@@ -719,7 +719,7 @@ fn a_shrunk_editor_is_as_tall_as_all_of_its_lines(cx: &mut gpui_kit::TestAppCont
     // inside the card's own layout.
     let root = sized("card", root, Some(fill()), Some(fill()));
     let (_, mut native) = mounted(root, cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     // the authored box, under a host name: the view's id is its field
     let bounds = native.update(|window, _| window.find(host_id("field")).bounds());
     let lines = f32::from(bounds.size.height) / leading;
@@ -789,13 +789,13 @@ fn a_backward_selection_crosses_a_new_generation(cx: &mut gpui_kit::TestAppConte
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     // "hunter2", the caret at 5, then Shift+Left three times: 2..5, caret at 2
     let saved = native.update(|window, cx| {
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         let state = tree.read(cx).first_input_for_test().unwrap();
         state.update(cx, |state, cx| {
             state.focus(window, cx);
             state.set_selected_range(5..5, cx);
         });
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         for _ in 0..3 {
             window.dispatch_keystroke(Keystroke::parse("shift-left").unwrap(), cx);
         }
@@ -809,7 +809,7 @@ fn a_backward_selection_crosses_a_new_generation(cx: &mut gpui_kit::TestAppConte
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let restored = native.update(|window, cx| {
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         let state = tree.read(cx).first_input_for_test().unwrap();
         state.read_with(cx, |state, _| (state.selected_range(), state.cursor()))
     });
@@ -844,7 +844,7 @@ fn a_focus_takes_the_field_at_its_whole_path(cx: &mut gpui_kit::TestAppContext) 
     let window = cx.open_window(size(px(500.), px(200.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let nested = vec![named_id("a"), named_id("b"), named_id("input")];
     let alone = vec![named_id("b"), named_id("input")];
     native.update(|window, cx| {
@@ -890,7 +890,7 @@ fn an_ime_commit_inside_the_echo_window_is_kept(cx: &mut gpui_kit::TestAppContex
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let state = native.update(|window, cx| {
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
         let state = tree.read(cx).first_input_for_test().unwrap();
         state.update(cx, |state, cx| state.focus(window, cx));
         state
@@ -908,7 +908,7 @@ fn an_ime_commit_inside_the_echo_window_is_kept(cx: &mut gpui_kit::TestAppContex
         tree.update(cx, |tree, cx| {
             tree.replace(container("form", [field("abc")]), &[], cx)
         });
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
     });
     assert_eq!(
         state.read_with(&native, |state, _| state.value().to_string()),
@@ -941,7 +941,7 @@ fn typed_over_a_selection(
             unreachable!()
         };
         state.update(cx, |state, cx| state.set_selected_range(lo..hi, cx));
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
     });
     pressed(&mut native, &["backspace"]);
     native.simulate_input(typed);
@@ -951,7 +951,7 @@ fn typed_over_a_selection(
         tree.update(cx, |tree, cx| {
             tree.replace(area("doc", None, text_before, style), &[], cx)
         });
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
     });
     text(&tree, &mut native)
 }
@@ -1096,7 +1096,7 @@ fn a_letter_typed_inside_the_words_a_send_clears_is_kept(cx: &mut gpui_kit::Test
             unreachable!()
         };
         state.update(cx, |state, cx| state.set_selected_range(3..3, cx));
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
     });
     native.simulate_input("x");
     native.run_until_parked();
@@ -1136,7 +1136,7 @@ fn frames_arriving_before_an_ask_runs_keep_the_edits_it_read_against(
             unreachable!()
         };
         state.update(cx, |state, cx| state.set_selected_range(2..2, cx));
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
     });
     native.simulate_input("b");
     native.run_until_parked();
@@ -1151,7 +1151,7 @@ fn frames_arriving_before_an_ask_runs_keep_the_edits_it_read_against(
             };
             *revision = 2;
             tree.update(cx, |tree, cx| tree.replace(root, &[(path.to_vec(), 1)], cx));
-            window.render_frame(cx);
+            crate::render::draw_frame(window, cx);
         }
     });
     // the ask, against "helloa": clear "hello". The "b" typed into it since
@@ -1309,7 +1309,7 @@ fn esc_then_tab_leaves_the_field_and_any_other_key_takes_tab_back(
     });
     let tree = mounted.expect("the tree is mounted");
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let path = [named_id("form"), named_id("doc")];
     let focused = |tree: &Entity<ViewTree>, native: &mut gpui_kit::VisualTestContext| {
         native.update(|window, cx| tree.read(cx).fields[path.as_slice()].is_focused(window, cx))
@@ -1411,7 +1411,7 @@ fn a_clear_asked_against_a_seed_lands_after_the_adopt(cx: &mut gpui_kit::TestApp
         tree.update(cx, |tree, cx| {
             tree.replace(seed(2, "hello"), &[(path.to_vec(), 0)], cx)
         });
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
     });
     native.run_until_parked();
     let adopt = last_change(&events);
@@ -1464,7 +1464,7 @@ fn a_clear_asked_against_a_seed_lands_after_the_adopt(cx: &mut gpui_kit::TestApp
     assert_eq!(text(&tree, &mut native), "");
     native.update(|window, cx| {
         tree.update(cx, |tree, cx| tree.replace(seed(3, "abcde"), &[], cx));
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
     });
     native.run_until_parked();
     assert_eq!(text(&tree, &mut native), "yode");
@@ -1509,7 +1509,7 @@ fn an_adopt_held_by_an_ime_keeps_the_old_generation_until_it_lands(
         };
         *generation = 2;
         tree.update(cx, |tree, cx| tree.replace(root, &[], cx));
-        window.render_frame(cx);
+        crate::render::draw_frame(window, cx);
     });
     native.run_until_parked();
     // the IME goes on composing: the old document, told as the old generation

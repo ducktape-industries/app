@@ -419,7 +419,6 @@ pub(super) fn drawing(spin: &Entity<Spin>) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::{FRAME, Figure, LONGEST_TICK, Spin, figure, stamps};
-    use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{Hsla, point, px, size};
     use std::time::Duration;
 
@@ -434,7 +433,7 @@ mod tests {
         });
         let spin = window.root(cx).unwrap();
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(ducktape_host::render::draw_frame);
         frame(&mut native, frames);
         native.update(|_, cx| spin.read(cx).ticks)
     }
@@ -444,7 +443,7 @@ mod tests {
         for _ in 0..frames {
             native.executor().advance_clock(FRAME);
             native.run_until_parked();
-            native.update(|window, cx| window.render_frame(cx));
+            native.update(ducktape_host::render::draw_frame);
         }
     }
 
@@ -459,14 +458,14 @@ mod tests {
         });
         let spin = window.root(cx).unwrap();
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(ducktape_host::render::draw_frame);
         let per_second = (Duration::from_secs(1).as_nanos() / step.as_nanos()) as u32;
         (0..seconds)
             .map(|_| {
                 for _ in 0..per_second {
                     native.executor().advance_clock(step);
                     native.run_until_parked();
-                    native.update(|window, cx| window.render_frame(cx));
+                    native.update(ducktape_host::render::draw_frame);
                 }
                 native.update(|_, cx| spin.read(cx).t())
             })
@@ -546,7 +545,7 @@ mod tests {
         });
         let spin = window.root(cx).unwrap();
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        native.update(|window, cx| window.render_frame(cx));
+        native.update(ducktape_host::render::draw_frame);
         frame(&mut native, 10);
         native.update(|_, cx| cx.set_reduce_motion(true));
         let asked = native.update(|_, cx| spin.read(cx).ticks);

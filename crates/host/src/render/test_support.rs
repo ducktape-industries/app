@@ -71,3 +71,12 @@ impl From<wire::Node> for Tree {
         }
     }
 }
+
+pub fn draw_frame(window: &mut gpui_kit::Window, cx: &mut gpui_kit::App) {
+    window.draw(cx).clear(cx);
+}
+
+pub fn refresh_and_draw(window: &mut gpui_kit::Window, cx: &mut gpui_kit::App) {
+    window.refresh();
+    window.draw(cx).clear(cx);
+}

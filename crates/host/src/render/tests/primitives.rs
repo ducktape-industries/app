@@ -80,7 +80,7 @@ fn container_focus_is_native_and_handoff_never_reuses_retired_handles(
     });
     let host = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let tree = host.read_with(&native, |host, _| host.tree.clone());
     native.update(|window, cx| {
         tree.update(cx, |tree, cx| {
@@ -90,7 +90,7 @@ fn container_focus_is_native_and_handoff_never_reuses_retired_handles(
                 .unwrap();
         })
     });
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let retired = native.update(|window, cx| {
         tree.read_with(cx, |tree, cx| {
             let target = vec![named_id("menu")];
@@ -113,7 +113,7 @@ fn container_focus_is_native_and_handoff_never_reuses_retired_handles(
             cx.notify();
         });
     });
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let replacement = host.read_with(&native, |host, _| host.tree.clone());
     native.update(|window, cx| {
         replacement.read_with(cx, |tree, cx| {
@@ -135,7 +135,7 @@ fn container_focus_is_native_and_handoff_never_reuses_retired_handles(
             assert!(!tree.target_focused(&[named_id("menu")], window, cx));
         })
     });
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.update(|window, cx| {
         retired.focus(window, cx);
         window.dispatch_keystroke(gpui_kit::Keystroke::parse("escape").unwrap(), cx);
@@ -221,7 +221,7 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
     });
     let window = cx.open_window(size(px(800.), px(500.)), |_, _| ViewTree::new(root));
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     native.update(|window, _| {
         let bounds = |key: &'static str| window.find(key).bounds();
         let button_bounds = bounds("wrapping-parent");
@@ -288,7 +288,7 @@ fn sensor_preserves_linear_fill_bounds(cx: &mut gpui_kit::TestAppContext) {
     let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     tree.read_with(&native, |tree, _| {
         assert_eq!(
             tree.sensors[&vec![named_id("viewport")]].told,
@@ -314,7 +314,7 @@ fn told(
     events: &RefCell<Vec<wire::Event>>,
     native: &mut gpui_kit::VisualTestContext,
 ) -> Vec<[f32; 4]> {
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let bounds = |event| match event {
         wire::Event::Bounds {
             handler: 7,
@@ -557,7 +557,7 @@ fn a_scrolling_container_keeps_its_handle_at_its_own_id(cx: &mut gpui_kit::TestA
     });
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     let path = vec![named_id("main"), named_id("list")];
     assert_eq!(
         native.update(|window, _| window.find("list").bounds().size),
@@ -568,11 +568,11 @@ fn a_scrolling_container_keeps_its_handle_at_its_own_id(cx: &mut gpui_kit::TestA
         assert_eq!(tree.scrolls[&path].max_offset().y, px(800.));
         tree.scrolls[&path].set_offset(point(px(0.), px(-300.)));
     });
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     tree.update(&mut native, |tree, cx| {
         tree.replace(root(true, 12), &[], cx)
     });
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     tree.read_with(&native, |tree, _| {
         assert_eq!(tree.scrolls[&path].offset().y, px(-300.));
         assert_eq!(tree.scrolls[&path].max_offset().y, px(1000.));
@@ -580,7 +580,7 @@ fn a_scrolling_container_keeps_its_handle_at_its_own_id(cx: &mut gpui_kit::TestA
     tree.update(&mut native, |tree, cx| {
         tree.replace(container("main", [banner()]), &[], cx)
     });
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     tree.read_with(&native, |tree, _| {
         assert!(
             tree.scrolls.is_empty(),
@@ -602,7 +602,7 @@ fn a_scrolling_container_keeps_its_handle_at_its_own_id(cx: &mut gpui_kit::TestA
             cx,
         )
     });
-    native.update(|window, cx| window.render_frame(cx));
+    native.update(crate::render::draw_frame);
     tree.read_with(&native, |tree, _| {
         assert!(tree.scrolls.is_empty(), "id-less scrollers share no handle");
     });

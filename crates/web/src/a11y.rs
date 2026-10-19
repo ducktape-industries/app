@@ -656,7 +656,7 @@ mod tests {
         let mut native = VisualTestContext::from_window(window.into(), cx);
         native.update(|window, cx| {
             window.activate_a11y();
-            window.render_frame(cx);
+            ducktape_host::render::draw_frame(window, cx);
             (
                 window.a11y_tree().unwrap().clone(),
                 f64::from(window.scale_factor()),

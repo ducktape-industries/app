@@ -13,7 +13,10 @@
 //! stays one whatever the view nests (gpui asserts it under ten).
 use super::*;
 use gpui_kit::TooltipLayer;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+type Scopes = Rc<RefCell<Option<Vec<super::pointer::ScopeKey>>>>;
 
 /// The host's band, over every window's rank and every priority a view
 /// asks for: each window draws at its rank (`PaneLayer`), and a view's
@@ -50,9 +53,11 @@ impl ViewTree {
 }
 
 pub(super) fn deferred(child: AnyElement, priority: usize) -> SlotDeferred {
+    let scopes = Scopes::default();
     SlotDeferred {
-        child: Some(Inside(child).into_any_element()),
+        child: Some(Inside(child, scopes.clone()).into_any_element()),
         priority: priority.min(VIEW_CEILING),
+        scopes,
     }
 }
 
@@ -63,6 +68,7 @@ pub(super) struct SlotDeferred {
     /// Held until prepaint, and on through paint when drawn in place.
     child: Option<AnyElement>,
     priority: usize,
+    scopes: Scopes,
 }
 
 impl IntoElement for SlotDeferred {
@@ -116,6 +122,7 @@ impl Element for SlotDeferred {
             return;
         }
         let child = self.child.take().expect("deferred child is drawn once");
+        *self.scopes.borrow_mut() = super::pointer::stack(window, cx);
         let pane = window
             .tooltip_layer()
             .expect("a view deferral draws inside its view's layer")
@@ -315,7 +322,7 @@ pub(super) fn inside<R>(f: impl FnOnce() -> R) -> R {
 }
 
 /// A deferred view child: prepaints as inside a deferral (`INSIDE`).
-struct Inside(AnyElement);
+struct Inside(AnyElement, Scopes);
 
 impl IntoElement for Inside {
     type Element = Self;
@@ -354,7 +361,10 @@ impl Element for Inside {
         window: &mut Window,
         cx: &mut App,
     ) {
-        inside(|| self.0.prepaint(window, cx));
+        let scopes = self.1.borrow_mut().take();
+        super::pointer::within(scopes, window, cx, |window, cx| {
+            inside(|| self.0.prepaint(window, cx))
+        });
     }
 
     fn paint(
