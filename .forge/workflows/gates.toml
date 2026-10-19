@@ -18,10 +18,10 @@ id = "gates"
 runs-on = ["pods"]
 # What the pod asks: the quota queues a check that does not fit, and cargo runs as many jobs as
 # CPUs. The target dir is memory-backed scratch (gates.sh puts it at /var/tmp/target), so the
-# build never writes the node's disk; memory covers that target and the compile (a clippy-only
-# target, smaller than a test build's; trimmed once a check run is measured).
+# build never writes the node's disk; memory covers that target and the compile: a check run's
+# pod peaked at 7.9 GiB (its target 2.4 GiB) in CI.
 cpu = "16"
-memory = "24Gi"
+memory = "8Gi"
 scratch = ["/var/tmp/target"]
 image = "localhost:5000/toolchain:f8ff9f00de3f@sha256:bbdcb20bbddd8035fd9a9fc0acf03330e0b4f5d00b05292bed7fd8279306b25c"
 steps = [
