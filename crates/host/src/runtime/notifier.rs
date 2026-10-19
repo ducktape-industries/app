@@ -436,6 +436,11 @@ fn drive(
     mut session: tokio::sync::watch::Receiver<Option<Vec<u8>>>,
 ) {
     let mut answered = notifier.replies.changes();
+    let name = match &notifier.recipient {
+        Some(_) => format!("{} on {}", notifier.program, notifier.connection.network),
+        None => notifier.program.to_owned(),
+    };
+    let gauge = crate::memory::track(crate::memory::Group::Notifier, name, notifier.hash);
     loop {
         if *stopped.borrow_and_update() {
             return;
@@ -443,6 +448,7 @@ fn drive(
         answered.borrow_and_update();
         let current = session.borrow_and_update().clone();
         let again = redrawn(&mut notifier, &current);
+        gauge.set(notifier.memory_bytes() as u64, notifier.memory_resident());
         for intent in std::mem::take(&mut notifier.intents) {
             match &notifier.recipient {
                 Some(recipient) => {

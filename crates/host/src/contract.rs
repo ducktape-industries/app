@@ -105,6 +105,11 @@ pub trait OsServices: Send + Sync + 'static {
     fn files(&self) -> Option<&dyn Files> {
         None
     }
+    /// The process's memory as the OS counts it, and with `regions` its
+    /// breakdown by region; `None` where the shell reads none.
+    fn memory(&self, _regions: bool) -> Option<crate::memory::OsMemory> {
+        None
+    }
 }
 
 /// What a pick answers ([`Files::pick`]): the paths of the shell's copies
@@ -478,6 +483,11 @@ pub trait ViewRunner: Send + Sync + 'static {
         module: Code<'_>,
         op: &[u8],
     ) -> Option<view_wire::methods::Description>;
+    /// The compiled code this runner holds: by hash, the bytes mapped and
+    /// how many of them are resident.
+    fn code_memory(&self) -> Vec<crate::memory::HeldCode> {
+        Vec::new()
+    }
 }
 
 /// Code a runner prepares (a view's, a notifier's, a describe module's):
@@ -602,6 +612,11 @@ pub trait ViewInstance: Send {
     fn fuel_used(&self) -> u64;
     /// The view's linear memory, in bytes.
     fn memory_bytes(&self) -> usize;
+    /// How much of the view's linear memory is resident; `None` where the
+    /// runner cannot say.
+    fn memory_resident(&self) -> Option<u64> {
+        None
+    }
     /// Ends the instance. Dropping it ends it too.
     fn stop(self: Box<Self>);
     /// The instance's linear memory, for the host's own tests that read

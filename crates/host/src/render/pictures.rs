@@ -37,6 +37,10 @@ fn raster_len(image: &RenderImage) -> usize {
 }
 
 impl Rasters {
+    pub(super) fn bytes(&self) -> usize {
+        self.bytes
+    }
+
     /// A new frame was adopted: what the last one drew may now be evicted.
     pub(super) fn next_frame(&mut self) {
         self.frame += 1;

@@ -286,6 +286,10 @@ impl View {
         self.running.memory_bytes()
     }
 
+    pub fn memory_resident(&self) -> Option<u64> {
+        self.running.memory_resident()
+    }
+
     /// The answer to the call just begun, when it lands: before the call
     /// returned on the wasmtime runner, later on one that answers across a
     /// process boundary.

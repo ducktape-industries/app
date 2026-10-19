@@ -410,6 +410,30 @@ impl ViewRunner for WasmtimeRunner {
         };
         ::describe::host::run(&self.engine, &*compiled?, op)
     }
+
+    fn code_memory(&self) -> Vec<crate::memory::HeldCode> {
+        let held: Vec<([u8; 32], Arc<Module>, bool)> = lock(&self.code)
+            .iter()
+            .filter_map(|(hash, (module, _))| Some((*hash, module.upgrade()?, false)))
+            .chain(
+                lock(&self.described)
+                    .iter()
+                    .filter_map(|(hash, module)| Some((*hash, module.clone()?, true))),
+            )
+            .collect();
+        held.into_iter()
+            .map(|(hash, module, describe)| {
+                let image = module.image_range();
+                let mapped = (image.end as usize).saturating_sub(image.start as usize);
+                crate::memory::HeldCode {
+                    hash,
+                    mapped: mapped as u64,
+                    resident: crate::memory::resident(image.start, mapped),
+                    describe,
+                }
+            })
+            .collect()
+    }
 }
 
 /// One view's store and exports, and the landing its answers go to.
@@ -488,6 +512,13 @@ impl ViewInstance for WasmtimeInstance {
 
     fn memory_bytes(&self) -> usize {
         self.exports.memory.data_size(&self.store)
+    }
+
+    fn memory_resident(&self) -> Option<u64> {
+        crate::memory::resident(
+            self.exports.memory.data_ptr(&self.store),
+            self.exports.memory.data_size(&self.store),
+        )
     }
 
     fn stop(self: Box<Self>) {}

@@ -670,3 +670,13 @@ impl Render for ViewTree {
             .children(sheet.map(|sheet| deferred::Layer(sheet, None)))
     }
 }
+
+impl ViewTree {
+    pub fn raster_bytes(&self) -> u64 {
+        self.images.borrow().bytes() as u64
+    }
+}
+
+pub fn svg_raster_bytes(window: gpui_kit::WindowId, cx: &App) -> u64 {
+    svg_limits::svg_admitted_bytes(window, cx)
+}

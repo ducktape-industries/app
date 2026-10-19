@@ -27,6 +27,7 @@ pub mod consent;
 mod kernel;
 pub(crate) mod notifier;
 pub mod notify;
+mod owners;
 mod picker;
 mod roster;
 mod seat;
@@ -62,6 +63,7 @@ pub use seat::{Back, Failure};
 #[cfg(feature = "ui")]
 pub use seat::{Backgrounded, Placed, Seat, serve_starts};
 
+pub(crate) use owners::owners as memory_owners;
 use roster::{Connection, code_digest, connection, rail_moved};
 use seat::{
     Load, LoadTiming, Loaded, Mounted, Registry, Slot, Unloaded, ViewCode, log_source, queue,

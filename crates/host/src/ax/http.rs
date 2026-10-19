@@ -339,6 +339,9 @@ fn route(method: &str, target: &str, body: &[u8], private: bool) -> Result<Reque
         ("GET", "inspect/screenshot") => Ok(Request::Inspect(inspect::Ask::Screenshot(
             params.get("window").map(|window| window.to_string()),
         ))),
+        ("GET", "inspect/memory") => Ok(Request::Inspect(inspect::Ask::Memory {
+            regions: flag("regions"),
+        })),
         _ => {
             let mut endpoints = vec![
                 "GET /tree",
@@ -359,6 +362,7 @@ fn route(method: &str, target: &str, body: &[u8], private: bool) -> Result<Reque
                 "POST /inspect/wait",
                 "POST /inspect/scroll",
                 "GET /inspect/screenshot",
+                "GET /inspect/memory",
             ];
             if private {
                 endpoints.push("POST /reveal");
@@ -414,7 +418,8 @@ const USAGE: &str = "usage: ducktape-app ax tree [--window W] [--view V] [--comp
        ducktape-app ax inspect type <id> <text>   (scrolled into view first)
        ducktape-app ax inspect scroll <id> (--by X,Y | --to start|end --deadline-ms MS)   (a wheel at the node's middle: by px once, or to an end until a wheel moves nothing on screen; refused when covered)
        ducktape-app ax inspect wait [--id ID] [--role R] [--label L] [--text T] [--in W[:V]] [--gone] --deadline-ms MS   (408 carries the tree it last read)
-       ducktape-app ax inspect screenshot [--window W]   (a PNG in base64, in a build with test-support; else 501 in its own words)";
+       ducktape-app ax inspect screenshot [--window W]   (a PNG in base64, in a build with test-support; else 501 in its own words)
+       ducktape-app ax inspect memory [--regions]   (the app's memory by owner beside the OS's own figures; --regions adds the OS's breakdown by region)";
 
 /// `x,y` as the CLI takes a position.
 fn point(word: &str) -> Option<[f32; 2]> {
@@ -467,7 +472,8 @@ fn request(args: &[String]) -> Option<(&'static str, String, String)> {
     while let Some(arg) = rest.next() {
         match arg.strip_prefix("--") {
             Some(
-                name @ ("compact" | "bounds" | "gone" | "walk" | "launcher" | "reset" | "no-read"),
+                name @ ("compact" | "bounds" | "gone" | "walk" | "launcher" | "reset" | "no-read"
+                | "regions"),
             ) => {
                 flags.insert(name, "1");
             }
@@ -574,6 +580,7 @@ fn request(args: &[String]) -> Option<(&'static str, String, String)> {
             json!({ "id": id, "to": flags.get("to"), "deadline_ms": flags.get("deadline-ms").and_then(|ms| ms.parse::<u64>().ok()) }).to_string(),
         ),
         (Some("inspect"), ["screenshot"]) => ("GET", format!("/inspect/screenshot?{}", query(&["window"])), String::new()),
+        (Some("inspect"), ["memory"]) => ("GET", format!("/inspect/memory?{}", query(&["regions"])), String::new()),
         _ => return None,
     };
     Some((method, target, body))
@@ -646,6 +653,26 @@ mod tests {
             Some(("POST", "/perf/reset".to_owned(), String::new()))
         );
         assert_eq!(request(&words("perf --reset --by instance")), None);
+    }
+
+    #[test]
+    fn memory_route_and_cli_words() {
+        assert_eq!(
+            route("GET", "/inspect/memory?regions=1", b"", false),
+            Ok(Request::Inspect(inspect::Ask::Memory { regions: true }))
+        );
+        assert_eq!(
+            route("GET", "/inspect/memory", b"", false),
+            Ok(Request::Inspect(inspect::Ask::Memory { regions: false }))
+        );
+        assert_eq!(
+            request(&words("inspect memory --regions")),
+            Some(("GET", "/inspect/memory?regions=1".to_owned(), String::new()))
+        );
+        assert_eq!(
+            request(&words("inspect memory")),
+            Some(("GET", "/inspect/memory?".to_owned(), String::new()))
+        );
     }
 
     /// `POST /key` carries `"delta": false` when asked, and only then; a body

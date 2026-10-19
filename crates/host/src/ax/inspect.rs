@@ -30,6 +30,9 @@ pub enum Ask {
     Scroll(Scroll),
     /// `GET /inspect/screenshot?window=W`: the named window, else the first.
     Screenshot(Option<String>),
+    Memory {
+        regions: bool,
+    },
 }
 
 pub(super) async fn answer(ask: Ask, door: &Door<'_>, cx: &mut AsyncApp) -> Reply {
@@ -47,7 +50,21 @@ pub(super) async fn answer(ask: Ask, door: &Door<'_>, cx: &mut AsyncApp) -> Repl
         Ask::Wait(asked) => wait(door, asked, cx).await,
         Ask::Scroll(asked) => scroll(door, asked, cx).await,
         Ask::Screenshot(window) => screenshot(door, window, cx).await,
+        Ask::Memory { regions } => memory(door, regions, cx),
     }
+}
+
+fn memory(door: &Door<'_>, regions: bool, cx: &mut AsyncApp) -> Reply {
+    cx.update(|cx| {
+        let windows: Vec<_> = (door.windows)(cx)
+            .into_iter()
+            .map(|(name, _, handle)| (name, handle))
+            .collect();
+        let seated = views(door, cx);
+        let mut reading = crate::memory::read(regions);
+        crate::memory::drawn(&mut reading, &seated, &windows, cx);
+        Reply::ok(json!(reading))
+    })
 }
 
 /// What a node is found by: each one given must hold. `id` is the whole

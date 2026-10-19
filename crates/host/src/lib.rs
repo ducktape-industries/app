@@ -14,6 +14,8 @@
 //! - [`fonts`], [`theme`], [`a11y`]: faces and fallbacks, the product theme,
 //!   role/name/keyboard helpers for native controls.
 //! - [`perf`]: the performance journal.
+//! - [`memory`]: the app's memory by owner, beside the OS's own figures
+//!   (`GET /inspect/memory`).
 //! - [`motion`]: how a phone moves: each transition's duration and curve,
 //!   Reduce Motion's cross-fade, a motion under way.
 //! - [`ax`] (feature `ax-door`, and every test): the AX test door.
@@ -50,6 +52,7 @@ pub mod contract;
 pub mod fonts;
 #[cfg(feature = "ui")]
 pub mod frames;
+pub mod memory;
 pub mod motion;
 pub mod perf;
 pub mod push;

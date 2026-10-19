@@ -258,7 +258,6 @@ fn drop_raster(raster: SvgRaster, window: &mut Window, cx: &mut App) {
     }
 }
 
-#[cfg(test)]
 pub(super) fn svg_admitted_bytes(window_id: WindowId, cx: &App) -> u64 {
     cx.try_global::<SvgAdmissionLedgers>()
         .and_then(|ledgers| ledgers.windows.get(&window_id))

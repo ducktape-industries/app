@@ -30,6 +30,7 @@ use macos as platform;
 mod freedesktop;
 #[cfg(not(target_os = "macos"))]
 use freedesktop as platform;
+mod memory;
 
 /// What this device's key is labelled on the account it joins.
 pub(crate) const DEVICE_LABEL: &str = "Desktop";
@@ -227,6 +228,10 @@ impl OsServices for DesktopOs {
                 notes: Vec::new(),
             }))
         }))
+    }
+
+    fn memory(&self, regions: bool) -> Option<ducktape_host::memory::OsMemory> {
+        memory::read(regions)
     }
 }
 

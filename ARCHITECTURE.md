@@ -765,6 +765,21 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   run on at most `loaders()` threads, the parallelism the OS reports. The wire bounds a
   frame's nesting (`view_wire::MAX_DEPTH`, 64) and an element id's
   (`view_wire::MAX_ELEMENT_ID_DEPTH`, 64).
+- **Memory by owner** (`crates/host/src/memory.rs`). `memory::read` lists
+  what each owner holds: each seat's linear memory (grown, and resident
+  by `mincore`) and picture bytes, each notifier's linear memory (the
+  network in hand's and every followed network's), the compiled code the
+  runner maps, each seat's decoded rasters, each window's SVG rasters and
+  the bundled faces, beside the OS's own figures, which the shell reads
+  (`OsServices::memory`; the desktop's `src/os/memory.rs`: macOS's
+  `phys_footprint`, its graphics ledger and its VM regions by tag,
+  Linux's resident pages and `/proc/self/smaps` by mapping). gpui counts
+  no atlas bytes, so GPU memory shows as the OS's regions. Compiled
+  code and the bundled faces are file-backed clean pages (`clean`):
+  their resident figure counts the page cache and is not part of macOS's
+  footprint, so a reader never sums them with the rest. The door
+  serves it at `GET /inspect/memory[?regions=1]`; the region walk runs
+  only when asked.
 - **Window-thread work.** Every wasm tick, frame decode (`shape`), `merge`
   and `ViewTree::replace` run on the window thread inside `Seat::turn`,
   while holding the seat mutex, between draws and never inside one; GPUI
@@ -1061,6 +1076,8 @@ House words, and where one word means several things.
   `screenshot` is gpui's `Window::render_to_image`, which gpui builds only
   with `test-support`; any other build answers 501 and the OS's own
   screenshot stands in.
+  `memory [--regions]` (`GET /inspect/memory[?regions=1]`) answers the
+  app's memory by owner beside the OS's own figures (§8).
 - **Node-less screenshots.** `dev/screens/chat-screens.sh FIXTURES OUT`
   builds the debug binary and, per fixture in `manifest.json`, runs
   `ducktape-app --render-tree` (`shell/fixtures.rs`: a `ViewTree` in a
