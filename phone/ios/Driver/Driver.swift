@@ -46,12 +46,24 @@ final class Driver: XCTestCase {
         }
         let milliseconds = (command["deadline_ms"] as? NSNumber)?.doubleValue ?? 0
         let app = XCUIApplication(bundleIdentifier: bundle)
-        let element = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", label)).firstMatch
-        guard element.waitForExistence(timeout: milliseconds / 1000) else {
-            return ["seq": seq, "ok": false, "error": "no element of \(bundle) labelled \(label) appeared within \(Int(milliseconds)) ms"]
+        let named = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", label))
+        let control = named.matching(NSPredicate(format: "elementType != %d", XCUIElement.ElementType.other.rawValue)).firstMatch
+        guard named.firstMatch.waitForExistence(timeout: milliseconds / 1000) else {
+            let seen = labels(app)
+            print("driver: no \(label) in \(bundle); its labels: \(seen)")
+            return ["seq": seq, "ok": false, "error": "no element of \(bundle) labelled \(label) appeared within \(Int(milliseconds)) ms; its labels: \(seen)"]
         }
-        element.tap()
+        let element = control.exists ? control : named.firstMatch
+        print("driver: tapping \(element.elementType.rawValue) \"\(element.label)\" in \(bundle)")
+        guard element.isHittable || !element.frame.isEmpty else {
+            return ["seq": seq, "ok": false, "error": "the element of \(bundle) labelled \(label) can't be tapped; the app: \(labels(app))"]
+        }
+        element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         return ["seq": seq, "ok": true]
+    }
+
+    private func labels(_ app: XCUIApplication) -> String {
+        app.debugDescription
     }
 
     private func done(_ base: URL, _ result: [String: Any]) throws {
