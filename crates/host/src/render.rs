@@ -177,15 +177,20 @@ pub struct Tree {
 /// ([`crate::fonts::app_family`]). Every node's style is read through here.
 fn drawn_style(styles: &wire::Styles, id: wire::StyleId) -> Arc<gpui_kit::StyleRefinement> {
     let style = styles.share(id);
-    let Some(family) = &style.text.font_family else {
-        return style;
-    };
-    let face = crate::fonts::app_family(family);
-    if face == *family {
+    let face = style
+        .text
+        .font_family
+        .as_ref()
+        .map(crate::fonts::app_family)
+        .filter(|face| style.text.font_family.as_ref() != Some(face));
+    if face.is_none() && style.text.letter_spacing.is_none() {
         return style;
     }
     let mut style = Arc::unwrap_or_clone(style);
-    style.text.font_family = Some(face);
+    if face.is_some() {
+        style.text.font_family = face;
+    }
+    style.text.letter_spacing = None;
     Arc::new(style)
 }
 

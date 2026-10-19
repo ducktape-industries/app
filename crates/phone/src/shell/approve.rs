@@ -152,7 +152,6 @@ pub fn content(
                 .child(
                     look::text(look::EYEBROW, FontWeight::MEDIUM, palette.muted())
                         .font_family(ducktape_host::fonts::FAMILY_MONO)
-                        .letter_spacing(px(0.66))
                         .child("KEY FINGERPRINT"),
                 )
                 .child(
