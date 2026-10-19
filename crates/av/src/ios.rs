@@ -676,6 +676,18 @@ pub(crate) struct Active {
 /// microphone's feed, which hears how it ends and where its route moves,
 /// and the microphone its piece named (`None`: the default). A call that
 /// has the audio refuses it (Busy).
+pub(crate) struct Prepared;
+
+impl Prepared {
+    pub(crate) fn device(&self) -> Option<&str> {
+        None
+    }
+}
+
+pub(crate) fn prepare(_device: Option<&str>) -> Result<Prepared, Status> {
+    Ok(Prepared)
+}
+
 pub(crate) fn activate(
     microphone: Option<(&Arc<MicFeed>, Option<&str>)>,
 ) -> Result<Active, Status> {

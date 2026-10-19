@@ -312,7 +312,7 @@ impl Voice {
 /// call mode (`platform::call`) is on for the thread's life.
 fn run(io: Weak<Io>) {
     let host = cpal::default_host();
-    let mut input: Option<(cpal::Stream, backend::Holding, platform::Active)> = None;
+    let mut input: Option<Opened> = None;
     let mut output: Option<(cpal::Stream, platform::Active)> = None;
     let (mut retry_in, mut retry_out) = (Retry::default(), Retry::default());
     platform::call(true);
@@ -373,13 +373,12 @@ fn run(io: Weak<Io>) {
 
 /// The microphone opened: Live, its frames processed and handed to the
 /// captures.
-fn open_input(
-    host: &cpal::Host,
-    io: &Arc<Io>,
-) -> Result<(cpal::Stream, backend::Holding, platform::Active), Status> {
+fn open_input(host: &cpal::Host, io: &Arc<Io>) -> Result<Opened, Status> {
     // after any microphone piece that let its device go has closed it
     let holding = backend::hold_microphone(io.clone());
-    let device = platform::find(host, io.device.as_deref(), true).ok_or(Status::NoDevice)?;
+    let prepared = platform::prepare(io.device.as_deref())?;
+    let named = prepared.device().or(io.device.as_deref());
+    let device = platform::find(host, named, true).ok_or(Status::NoDevice)?;
     if !platform::microphone_allowed() {
         return Err(Status::Denied);
     }
@@ -470,8 +469,15 @@ fn open_input(
         .play()
         .map_err(|error| backend::audio_fault(&error, false))?;
     io.set_status(Status::Live, name);
-    Ok((stream, holding, session))
+    Ok((stream, holding, session, prepared))
 }
+
+type Opened = (
+    cpal::Stream,
+    backend::Holding,
+    platform::Active,
+    platform::Prepared,
+);
 
 /// The speaker opened: the mixer's frames played, each told to the echo
 /// canceller as what the microphone will hear; the system's audio session

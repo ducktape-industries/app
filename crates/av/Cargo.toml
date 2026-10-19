@@ -45,7 +45,7 @@ capture = [
     "dep:objc2", "dep:block2", "dep:objc2-foundation", "dep:objc2-av-foundation",
     "dep:objc2-core-media", "dep:objc2-core-video", "dep:dispatch2", "dep:objc2-core-audio",
     "dep:objc2-avf-audio",
-    "dep:jni", "dep:ndk", "dep:ndk-context", "dep:ndk-sys",
+    "dep:jni", "dep:ndk", "dep:ndk-context", "dep:ndk-sys", "dep:pulseaudio",
 ]
 
 # a call: the codecs over the pictures and samples the capture side gives
@@ -83,6 +83,7 @@ sonora = { version = "=0.2.0", optional = true }
 # Linux: the V4L2 calls (open, ioctl, mmap, poll), with our own few structs
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = { workspace = true, optional = true }
+pulseaudio = { version = "0.3", optional = true }
 # a call's picture: Cisco's prebuilt OpenH264 (the one build Cisco's
 # AVC/H.264 patent licence covers), fetched by the app onto this device
 # and loaded here (`libloading`; the crate checks its sha256 against the

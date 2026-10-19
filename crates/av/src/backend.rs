@@ -577,7 +577,12 @@ fn run_microphone(device: Option<String>, feed: &Arc<MicFeed>) {
         return crate::fake::run_microphone(feed);
     }
     let host = cpal::default_host();
-    let Some(input) = platform::find(&host, device.as_deref(), true) else {
+    let prepared = match platform::prepare(device.as_deref()) {
+        Ok(prepared) => prepared,
+        Err(status) => return set(&feed.status, status),
+    };
+    let named = prepared.device().or(device.as_deref());
+    let Some(input) = platform::find(&host, named, true) else {
         return set(&feed.status, Status::NoDevice);
     };
     if !platform::microphone_allowed() {

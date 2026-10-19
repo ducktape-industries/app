@@ -25,7 +25,82 @@ pub(crate) fn audio_devices() -> Result<(Vec<AudioDevice>, Vec<AudioDevice>), St
                 .collect()
         })
     };
-    Ok((kinds(true)?, kinds(false)?))
+    let inputs = kinds(true)?;
+    #[cfg(target_os = "linux")]
+    let inputs = with_headsets(&host, inputs);
+    Ok((inputs, kinds(false)?))
+}
+
+#[cfg(target_os = "linux")]
+fn with_headsets(host: &cpal::Host, mut inputs: Vec<AudioDevice>) -> Vec<AudioDevice> {
+    use crate::pulse::Server as _;
+    if host.id() != cpal::HostId::PulseAudio {
+        return inputs;
+    }
+    let graph =
+        crate::pulse::Pulse::connect().and_then(|mut pulse| Ok((pulse.cards()?, pulse.sources()?)));
+    let Ok((cards, sources)) = graph else {
+        return inputs;
+    };
+    let headsets = crate::pulse::silent_headsets(&cards, &sources)
+        .into_iter()
+        .map(|(id, name)| AudioDevice {
+            device: Device {
+                id,
+                name,
+                default: false,
+            },
+            kind: crate::backend::AudioKind::Headphones,
+        })
+        .filter(|headset| nameable(&headset.device));
+    inputs.extend(headsets);
+    inputs
+}
+
+pub(crate) struct Prepared {
+    device: Option<String>,
+    #[cfg(target_os = "linux")]
+    back: Option<(String, String)>,
+}
+
+impl Prepared {
+    pub(crate) fn device(&self) -> Option<&str> {
+        self.device.as_deref()
+    }
+}
+
+pub(crate) fn prepare(device: Option<&str>) -> Result<Prepared, Status> {
+    #[cfg(target_os = "linux")]
+    if let Some(id) = device.filter(|id| id.starts_with(crate::pulse::CARD)) {
+        let switched = crate::pulse::Pulse::connect()
+            .and_then(|mut pulse| crate::pulse::switch(&mut pulse, id))
+            .map_err(Status::Failed)?;
+        return Ok(Prepared {
+            device: Some(format!("pulseaudio:{}", switched.source)),
+            back: switched.back,
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = device;
+    Ok(Prepared {
+        device: None,
+        #[cfg(target_os = "linux")]
+        back: None,
+    })
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for Prepared {
+    fn drop(&mut self) {
+        use crate::pulse::Server as _;
+        if let Some((card, profile)) = self.back.take() {
+            let put_back = crate::pulse::Pulse::connect()
+                .and_then(|mut pulse| pulse.set_profile(&card, &profile));
+            if let Err(error) = put_back {
+                tracing::warn!(target: "ducktape::av", %error, %card, %profile, "the headset's profile was not put back");
+            }
+        }
+    }
 }
 
 /// The microphones (`input`) or the speakers the system lists now, as this

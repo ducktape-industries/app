@@ -17,9 +17,9 @@ use std::time::Duration;
 
 use crate::backend::{AudioKind, CameraDevice, Device, Facing, Got, Picture, Source, Status};
 #[cfg(feature = "call")]
-pub(crate) use crate::devices::{Active, call};
+pub(crate) use crate::devices::{Active, Prepared, call};
 pub(crate) use crate::devices::{
-    ROUTED_IN_PLACE, activate, audio_devices, find, heard, input_name,
+    ROUTED_IN_PLACE, activate, audio_devices, find, heard, input_name, prepare,
 };
 
 const YUYV: u32 = u32::from_le_bytes(*b"YUYV");

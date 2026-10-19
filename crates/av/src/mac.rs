@@ -26,9 +26,9 @@ use crate::backend::{AudioKind, CameraDevice, Device, Facing};
 
 pub(crate) use crate::apple::{camera_allowed, microphone_allowed, open};
 #[cfg(feature = "call")]
-pub(crate) use crate::devices::{Active, call};
+pub(crate) use crate::devices::{Active, Prepared, call};
 pub(crate) use crate::devices::{
-    ROUTED_IN_PLACE, activate, audio_devices, find, heard, input_name,
+    ROUTED_IN_PLACE, activate, audio_devices, find, heard, input_name, prepare,
 };
 
 // ---------- what a microphone or speaker is ----------

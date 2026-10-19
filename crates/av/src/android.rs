@@ -253,6 +253,18 @@ pub(crate) struct Active(Option<(mpsc::Sender<()>, std::thread::JoinHandle<()>)>
 
 /// With a microphone's feed, its watcher until the returned hold drops:
 /// Android holds no session to activate.
+pub(crate) struct Prepared;
+
+impl Prepared {
+    pub(crate) fn device(&self) -> Option<&str> {
+        None
+    }
+}
+
+pub(crate) fn prepare(_device: Option<&str>) -> Result<Prepared, Status> {
+    Ok(Prepared)
+}
+
 pub(crate) fn activate(
     microphone: Option<(&Arc<MicFeed>, Option<&str>)>,
 ) -> Result<Active, Status> {

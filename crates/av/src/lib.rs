@@ -88,6 +88,8 @@ mod meter;
 #[cfg(feature = "call")]
 pub mod mixer;
 #[cfg(target_os = "linux")]
+mod pulse;
+#[cfg(target_os = "linux")]
 mod v4l2;
 #[cfg(feature = "call")]
 pub mod voice;
