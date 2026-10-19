@@ -35,7 +35,7 @@ impl StatusDot {
 }
 
 impl Render for StatusDot {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf::count(crate::perf::Key::Window(self.key), "renders.dot", 1);
         // nothing until the bar has laid its well out (the first frame)
         let Some(slot) = *self.slot.read(cx).get() else {
@@ -51,6 +51,6 @@ impl Render for StatusDot {
             .left(slot.origin.x)
             .top(slot.origin.y)
             .size(slot.size.width)
-            .child(pulse(ok, prefs.motion, &Ink::of(prefs.dark())))
+            .child(pulse(ok, prefs.motion, &Ink::of(prefs.dark()), window, cx))
     }
 }

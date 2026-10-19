@@ -1593,11 +1593,10 @@ fn a_popped_out_window_names_its_os_window(cx: &mut TestAppContext) {
 /// the timers that came due run, whatever they dirtied draws, then the
 /// next-frame callbacks.
 fn tick_frame(native: &mut VisualTestContext) {
-    native
-        .executor()
-        .advance_clock(std::time::Duration::from_secs(1) / super::figure::FPS as u32);
-    native.run_until_parked();
-    frame(native);
+    ducktape_host::frames::deliver(
+        native,
+        std::time::Duration::from_secs(1) / super::figure::FPS as u32,
+    );
 }
 
 /// Motion switched off with the desk otherwise idle: the empty desk's
@@ -1672,13 +1671,12 @@ fn the_breath_and_the_figure_share_frames(cx: &mut TestAppContext) {
         window_count(key, "renders.dot"),
         window_count(key, "renders.empty"),
     );
-    // a millisecond a step: two wakes in one step drew at one instant
+    let interval = native
+        .update(|window, cx| window.refresh_interval(cx))
+        .unwrap();
     let (mut drawn, mut instants) = (window_count(key, "renders"), 0);
-    for _ in 0..1000 {
-        native
-            .executor()
-            .advance_clock(std::time::Duration::from_millis(1));
-        native.run_until_parked();
+    for _ in 0..std::time::Duration::from_secs(1).as_nanos() / interval.as_nanos() {
+        ducktape_host::frames::deliver(&mut native, interval);
         let now = window_count(key, "renders");
         instants += u64::from(now > drawn);
         drawn = now;
@@ -1708,12 +1706,7 @@ fn a_still_desk_draws_no_frame(cx: &mut TestAppContext) {
     pane(&view, PaneMessage::Close(0), &mut native);
     assert_eq!(panes(&mut native, &view).0, 0, "the desk is bare");
     let run = |native: &mut VisualTestContext, ms: u64| {
-        for _ in 0..ms / 40 {
-            native
-                .executor()
-                .advance_clock(std::time::Duration::from_millis(40));
-            native.run_until_parked();
-        }
+        ducktape_host::frames::deliver(native, std::time::Duration::from_millis(ms));
     };
     run(&mut native, 400);
     assert!(window_count(key, "renders.empty") > 1, "the figure moved");
@@ -1743,12 +1736,7 @@ fn the_figure_moves_again_when_less_motion_is_no_longer_asked(cx: &mut TestAppCo
     pane(&view, PaneMessage::Close(0), &mut native);
     let second = |native: &mut VisualTestContext| {
         let drawn = window_count(key, "renders.empty");
-        for _ in 0..25 {
-            native
-                .executor()
-                .advance_clock(std::time::Duration::from_millis(40));
-            native.run_until_parked();
-        }
+        ducktape_host::frames::deliver(native, std::time::Duration::from_secs(1));
         window_count(key, "renders.empty") - drawn
     };
     native.update(|_, cx| cx.set_reduce_motion(true));
@@ -2120,7 +2108,9 @@ fn a_pane_wake_re_renders_its_tree_and_not_the_siblings(cx: &mut TestAppContext)
 /// size the model already has commits nothing.
 #[gpui_kit::test]
 fn the_desk_size_is_committed_after_the_frame_not_during_it(cx: &mut TestAppContext) {
-    let (_, _, view, mut native) = console(cx);
+    let (app, _, view, mut native) = console(cx);
+    set_motion(&app, false, &mut native);
+    ducktape_host::frames::deliver(&mut native, std::time::Duration::from_secs(1) / 30);
     let desk =
         |native: &mut VisualTestContext| native.update(|_, cx| view.read(cx).layout(cx).desk);
     // the fixture delivered the first frame's callback

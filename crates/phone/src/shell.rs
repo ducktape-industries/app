@@ -2037,18 +2037,15 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> gpui_kit::Div {
         match tab {
-            Tab::Home => {
-                let searching = self.search.read(cx).focus_handle(cx).is_focused(window);
-                home::home(
-                    &self.shared,
-                    &self.run,
-                    &self.search,
-                    self.filtering,
-                    searching,
-                    palette,
-                    cx,
-                )
-            }
+            Tab::Home => home::home(
+                &self.shared,
+                &self.run,
+                &self.search,
+                self.filtering,
+                palette,
+                window,
+                cx,
+            ),
             Tab::Open => {
                 let opened = self.stack.read(cx).open().to_vec();
                 let debug = self.shared.prefs.read(cx).get().debug;
@@ -3376,9 +3373,7 @@ mod tests {
         // the clock on: the ring's part has moved round, and moves again
         let step = |cx: &mut VisualTestContext| {
             let before = cx.debug_bounds(RUN).expect("the ring's running part");
-            cx.executor()
-                .advance_clock(std::time::Duration::from_millis(200));
-            cx.run_until_parked();
+            ducktape_host::frames::deliver(cx, std::time::Duration::from_millis(200));
             before != cx.debug_bounds(RUN).expect("the ring's running part")
         };
         assert!(step(cx) && step(cx), "the ring stood still");

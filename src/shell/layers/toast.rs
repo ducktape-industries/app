@@ -36,11 +36,17 @@ impl Render for ToastView {
     /// answering, which stays until it does, and a passing note (a toast:
     /// it fades, or is dismissed). `width: 560px; height: 56px; gap: 14px;
     /// border: 1.5px solid ink`, a soft shadow; a long note wraps.
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf::count(crate::perf::Key::Window(self.key), "renders.toast", 1);
-        let session = self.session.read(cx).get();
-        let prefs = self.prefs.read(cx).get();
-        let lost = session.reconnecting && *self.screen.read(cx).get() != Screen::Connect;
+        let (reconnecting, network) = {
+            let session = self.session.read(cx).get();
+            (session.reconnecting, session.network.clone())
+        };
+        let (dark, motion) = {
+            let prefs = self.prefs.read(cx).get();
+            (prefs.dark(), prefs.motion)
+        };
+        let lost = reconnecting && *self.screen.read(cx).get() != Screen::Connect;
         let toast = self.toast.read(cx).get().clone();
         // `size_full` too: cached, this view is a layout root of its own
         // (`OverlayLayer::render`)
@@ -48,7 +54,7 @@ impl Render for ToastView {
         if !lost && toast.is_empty() {
             return layer;
         }
-        let ink = Ink::of(prefs.dark());
+        let ink = Ink::of(dark);
         let bar = |id: &'static str| {
             div()
                 .id(id)
@@ -68,16 +74,13 @@ impl Render for ToastView {
         };
         let text = |said: String| sans(400, 14.).flex_1().min_w_0().child(said);
         let lost = lost.then(|| {
-            let said = format!(
-                "{} isn't answering. What you write stays here.",
-                session.network
-            );
+            let said = format!("{} isn't answering. What you write stays here.", network);
             crate::a11y::live(
                 bar("reconnecting").role(Role::Status),
                 gpui_kit::accesskit::Live::Polite,
                 said.clone(),
             )
-            .child(pulse(false, prefs.motion, &ink))
+            .child(pulse(false, motion, &ink, window, cx))
             .child(text(said))
             .child(button(
                 "reconnect",

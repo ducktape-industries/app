@@ -25,11 +25,14 @@ impl Chrome {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (session, chain, motion) = (
-            self.session.read(cx).get(),
-            self.chain.read(cx),
+        let breath = pulse(
+            !self.session.read(cx).get().reconnecting,
             self.prefs.read(cx).get().motion,
+            ink,
+            window,
+            cx,
         );
+        let (session, chain) = (self.session.read(cx).get(), self.chain.read(cx));
         let ok = !session.reconnecting;
         let host = noded_client::endpoint::host_of(&session.connected_rpc).to_owned();
         let now = crate::runtime::notify::wall();
@@ -101,7 +104,7 @@ impl Chrome {
                     .pt(px(14.))
                     .px(px(16.))
                     .pb(px(12.))
-                    .child(pulse(ok, motion, ink))
+                    .child(breath)
                     .child(
                         div()
                             .flex_1()

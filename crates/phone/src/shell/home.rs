@@ -16,9 +16,9 @@ use ducktape_host::runtime::{Prep, RailRow};
 use ducktape_host::session::Shared;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::{
-    AnimationExt as _, AnyElement, App, Context, Div, Entity, FontWeight, InteractiveElement as _,
-    IntoElement, ParentElement as _, Pixels, Role, SharedString, Stateful,
-    StatefulInteractiveElement as _, Styled as _, div, px, relative, svg,
+    AnyElement, App, Context, Div, Entity, FontWeight, InteractiveElement as _, IntoElement,
+    ParentElement as _, Pixels, Role, SharedString, Stateful, StatefulInteractiveElement as _,
+    Styled as _, div, px, relative, svg,
 };
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -300,7 +300,13 @@ fn preparing(rows: &[RailRow], program: &str) -> bool {
 /// (the desktop's status dot does too) and is drawn only on the tile being
 /// prepared, so nothing redraws for it while none is. `id` is its selector,
 /// `{id}/run` its running part's.
-fn ring(id: String, moving: bool, palette: Palette) -> AnyElement {
+fn ring(
+    id: String,
+    moving: bool,
+    palette: Palette,
+    window: &gpui_kit::Window,
+    cx: &mut App,
+) -> AnyElement {
     let side = 60. + 2. * RING;
     let run = format!("{id}/run");
     let piece = move |[left, top, width, height]: [f32; 4]| {
@@ -327,20 +333,16 @@ fn ring(id: String, moving: bool, palette: Palette) -> AnyElement {
                 .border(px(RING))
                 .border_color(palette.border()),
         );
-    match moving {
-        false => frame
-            .children(segment(0., side).map(piece))
-            .into_any_element(),
-        true => frame
-            .with_animation(
-                "ring",
-                gpui_kit::Animation::new(RING_LAP)
-                    .repeat()
-                    .with_max_fps(30.),
-                move |frame, at| frame.children(segment(at, side).map(&piece)),
-            )
-            .into_any_element(),
-    }
+    let at = match moving {
+        false => 0.,
+        true => {
+            ducktape_host::frames::notify(30, window, cx);
+            ducktape_host::frames::phase(RING_LAP, cx)
+        }
+    };
+    frame
+        .children(segment(at, side).map(piece))
+        .into_any_element()
 }
 
 /// The ring's line.
@@ -395,6 +397,7 @@ fn tile(
     section: &'static str,
     news: bool,
     palette: Palette,
+    window: &gpui_kit::Window,
     cx: &mut Context<Root>,
 ) -> Stateful<Div> {
     let program = row.program;
@@ -406,7 +409,7 @@ fn tile(
     }
     if row.prep == Prep::Working {
         let id = format!("{section}/{program}/ring");
-        face = face.child(ring(id, !cx.reduce_motion(), palette));
+        face = face.child(ring(id, !cx.reduce_motion(), palette, window, cx));
     }
     let mut face = face.relative();
     if news {
@@ -470,10 +473,11 @@ pub fn home(
     run: &Run,
     field: &Entity<InputState>,
     filtering: bool,
-    searching: bool,
     palette: Palette,
+    window: &gpui_kit::Window,
     cx: &mut Context<Root>,
 ) -> Div {
+    let searching = gpui_kit::Focusable::focus_handle(field.read(cx), cx).is_focused(window);
     let query = field.read(cx).value().trim().to_lowercase();
     let counting = run.caption(shared.rail.read(cx).rows());
     let all = listed(shared, cx);
@@ -492,7 +496,7 @@ pub fn home(
             .iter()
             .map(|row| {
                 let news = badges.get(row.program).is_some_and(|count| *count > 0);
-                tile(row, section, news, palette, cx)
+                tile(row, section, news, palette, window, cx)
             })
             .collect();
         div()

@@ -137,6 +137,8 @@ fn a_drag_frame_moves_the_desk_once_and_leaves_the_chrome_cached(cx: &mut TestAp
 #[gpui_kit::test]
 fn the_dot_slot_is_committed_after_the_frame(cx: &mut TestAppContext) {
     let (app, key, _, mut native) = console(cx);
+    set_motion(&app, false, &mut native);
+    ducktape_host::frames::deliver(&mut native, std::time::Duration::from_secs(1) / 30);
     let dot = app
         .windows
         .read_with(&native, |windows, _| windows.own(key).unwrap().dot.clone());

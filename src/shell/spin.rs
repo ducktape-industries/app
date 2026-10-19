@@ -198,14 +198,7 @@ impl Spin {
         }
     }
 
-    /// Waits for the next frame of the shared grid (every animation at
-    /// `figure::FPS` wakes on it, so they share frames) and asks for it to
-    /// be drawn, moved on by the time since its last tick. Its render waits
-    /// for the one after, so a hidden window, never drawn, stops; shown
-    /// again, it picks up where it was (`LONGEST_TICK`). Stilled while it
-    /// waited (motion switched off, a hand took hold of it), it asks for
-    /// none, and its next tick moves one frame.
-    fn run(&mut self, cx: &mut Context<Self>) {
+    fn run(&mut self, window: &Window, cx: &mut Context<Self>) {
         // the system's ask may have moved since the last tick: a window
         // drawn again after it stops asking moves again
         self.moving = moving(self.switch, cx);
@@ -217,9 +210,8 @@ impl Spin {
             return;
         }
         self.ticking = true;
-        let wait = cx.until_next_animation_frame(figure::FPS as f32);
-        cx.spawn(async move |spin, cx| {
-            cx.background_executor().timer(wait).await;
+        let spin = cx.entity().downgrade();
+        ducktape_host::frames::then(figure::FPS as u32, window, cx, move |_, cx| {
             let _ = spin.update(cx, |spin, cx| {
                 spin.ticking = false;
                 if !spin.alive() {
@@ -229,8 +221,7 @@ impl Spin {
                 spin.wake(cx.background_executor().now(), cx);
                 cx.notify();
             });
-        })
-        .detach();
+        });
     }
 }
 
@@ -300,7 +291,7 @@ fn stamps(cells: &[u8]) -> Vec<(Point<Pixels>, usize)> {
 
 impl Render for Spin {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.run(cx);
+        self.run(window, cx);
         let glyphs = *self.glyphs.get_or_insert_with(|| Glyphs::shape(window));
         let timed = crate::perf::time(crate::perf::Key::Shell, "figure.frame");
         if let Some(timed) = &timed {
@@ -389,12 +380,12 @@ fn listen(spin: Entity<Spin>, bounds: Bounds<Pixels>, window: &mut Window) {
             });
         }
     });
-    window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+    window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
         if phase == DispatchPhase::Bubble && event.button == MouseButton::Left {
             spin.update(cx, |spin, cx| {
                 if spin.drag.is_some() {
                     spin.release(Instant::now());
-                    spin.run(cx);
+                    spin.run(window, cx);
                     cx.notify();
                 }
             });
@@ -438,13 +429,23 @@ mod tests {
         native.update(|_, cx| spin.read(cx).ticks)
     }
 
-    /// `frames` frames, a tick apart.
     fn frame(native: &mut gpui_kit::VisualTestContext, frames: u64) {
         for _ in 0..frames {
-            native.executor().advance_clock(FRAME);
-            native.run_until_parked();
-            native.update(ducktape_host::render::draw_frame);
+            after(native, FRAME);
         }
+    }
+
+    fn after(native: &mut gpui_kit::VisualTestContext, step: Duration) {
+        native.executor().advance_clock(step);
+        native.run_until_parked();
+        native.update(|window, cx| {
+            let stride =
+                ducktape_host::frames::stride(window.refresh_interval(cx), figure::FPS as u32);
+            for _ in 0..stride {
+                window.simulate_next_frame(cx);
+            }
+            ducktape_host::render::draw_frame(window, cx)
+        });
     }
 
     /// A moving figure in a window, woken `step` apart (a box that wakes
@@ -463,9 +464,7 @@ mod tests {
         (0..seconds)
             .map(|_| {
                 for _ in 0..per_second {
-                    native.executor().advance_clock(step);
-                    native.run_until_parked();
-                    native.update(ducktape_host::render::draw_frame);
+                    after(&mut native, step);
                 }
                 native.update(|_, cx| spin.read(cx).t())
             })

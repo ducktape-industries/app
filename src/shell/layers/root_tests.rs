@@ -38,17 +38,14 @@ fn a_pulse_re_renders_the_dot_and_not_the_chrome(cx: &mut TestAppContext) {
         count(&mut native, "renders"),
     );
     assert!(chrome > 0 && dot > 0, "the bar and the dot drew");
-    // the pulse paces itself at 30 fps on a timer: each step lands one
     for _ in 0..10 {
-        native
-            .executor()
-            .advance_clock(std::time::Duration::from_millis(40));
-        native.run_until_parked();
+        ducktape_host::frames::deliver(&mut native, std::time::Duration::from_secs(1) / 30);
     }
-    // the test clock jitters forward a little on each poll, so a step can
-    // land two pulses: at least ten, and the root drew once per pulse
     let pulsed = count(&mut native, "renders.dot") - dot;
-    assert!(pulsed >= 10, "the dot pulsed {pulsed} times in ten steps");
+    assert_eq!(
+        pulsed, 10,
+        "the dot pulsed {pulsed} times in ten pulses' frames"
+    );
     assert_eq!(
         count(&mut native, "renders") - root,
         pulsed,
@@ -314,10 +311,7 @@ fn a_cached_layer_keeps_its_nodes_under_a11y(cx: &mut TestAppContext) {
     );
     assert!(chrome > 0 && strip > 0 && tree > 0, "every layer drew");
     let pulse_and_read = |native: &mut VisualTestContext| {
-        native
-            .executor()
-            .advance_clock(std::time::Duration::from_millis(40));
-        native.run_until_parked();
+        ducktape_host::frames::deliver(native, std::time::Duration::from_secs(1) / 30);
         native.update(|window, cx| window.draw(cx).clear(cx));
     };
     for pulse in 0..10 {
@@ -1756,4 +1750,22 @@ fn settings_opens_over_the_launcher(cx: &mut TestAppContext) {
     );
     native.simulate_keystrokes("escape");
     assert_eq!(open_now(&view, &mut native), None);
+}
+
+#[gpui_kit::test]
+fn an_idle_window_takes_no_frames(cx: &mut TestAppContext) {
+    let _on = crate::perf::on_for_test();
+    let (app, key, _, mut native) = console(cx);
+    native.update(|_, cx| cx.set_reduce_motion(false));
+    set_motion(&app, false, &mut native);
+    for _ in 0..4 {
+        frame(&mut native);
+    }
+    let drawn = window_count(key, "renders");
+    assert_eq!(
+        ducktape_host::frames::deliver(&mut native, std::time::Duration::from_secs(1)),
+        0,
+        "an idle window took frames"
+    );
+    assert_eq!(window_count(key, "renders"), drawn, "an idle window drew");
 }

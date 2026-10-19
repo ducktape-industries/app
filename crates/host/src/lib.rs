@@ -48,6 +48,8 @@ pub mod backend;
 pub mod contract;
 #[cfg(feature = "ui")]
 pub mod fonts;
+#[cfg(feature = "ui")]
+pub mod frames;
 pub mod motion;
 pub mod perf;
 pub mod push;
