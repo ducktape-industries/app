@@ -566,6 +566,203 @@ fn followers_of_one_programs_changes_share_one_socket() {
     assert_eq!(sockets.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
+/// A changes node the test takes away and brings back, as a node restart
+/// behind Cloudflare looks from outside: while up it answers its status
+/// (a 20 ms block time, so a feed reads it again every 10 ms) and takes
+/// the socket, which sends each height the test gives it until the test
+/// cuts it; while down, both get a proxy's 502. One that `refuses`
+/// answers the socket 404, as a node does a route it has not.
+struct Flaky {
+    node: Node,
+    up: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    refuses: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    blocks: tokio::sync::mpsc::UnboundedSender<u64>,
+    cut: std::sync::Arc<tokio::sync::Notify>,
+    /// One item per status read it answered 502.
+    away_reads: std::sync::mpsc::Receiver<()>,
+    opened: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+fn flaky_changes_node() -> Flaky {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let node = Node {
+        client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
+        network: "test-network".into(),
+        apart: None,
+    };
+    let (up, refuses) = (
+        Arc::new(AtomicBool::new(true)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let (blocks, heights) = tokio::sync::mpsc::unbounded_channel::<u64>();
+    let heights = Arc::new(tokio::sync::Mutex::new(heights));
+    let cut = Arc::new(tokio::sync::Notify::new());
+    let (read_away, away_reads) = std::sync::mpsc::channel();
+    let opened = Arc::new(AtomicUsize::new(0));
+    let (is_up, refusing, cutting, taken) =
+        (up.clone(), refuses.clone(), cut.clone(), opened.clone());
+    handle().spawn(async move {
+        use futures::SinkExt as _;
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let (is_up, refusing, cutting, taken, heights, read_away) = (
+                is_up.clone(),
+                refusing.clone(),
+                cutting.clone(),
+                taken.clone(),
+                heights.clone(),
+                read_away.clone(),
+            );
+            tokio::spawn(async move {
+                let status = request_line(&stream).await.contains(noded::route::STATUS);
+                if !is_up.load(SeqCst) {
+                    if status {
+                        let _ = read_away.send(());
+                    }
+                    return answer(&mut stream, "502 Bad Gateway", b"").await;
+                }
+                if status {
+                    let status = noded::Status {
+                        block_time_ms: 20,
+                        ..status_at(TIP)
+                    };
+                    return answer(&mut stream, "200 OK", &abi::encode(&status)).await;
+                }
+                if refusing.load(SeqCst) {
+                    return answer(&mut stream, "404 Not Found", b"").await;
+                }
+                let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
+                    return;
+                };
+                taken.fetch_add(1, SeqCst);
+                let mut heights = heights.lock().await;
+                loop {
+                    tokio::select! {
+                        Some(height) = heights.recv() => {
+                            let change = noded::Change {
+                                height,
+                                root: abi::Root([0; 32]),
+                                writes: vec![(format!("row/{height}").into_bytes(), None)],
+                            };
+                            let sent = tokio_tungstenite::tungstenite::Message::Binary(abi::encode(&change));
+                            socket.send(sent).await.unwrap();
+                        }
+                        // the node goes away: its socket drops, unclosed
+                        () = cutting.notified() => return,
+                    }
+                }
+            });
+        }
+    });
+    Flaky {
+        node,
+        up,
+        refuses,
+        blocks,
+        cut,
+        away_reads,
+        opened,
+    }
+}
+
+/// The request line `stream` starts with, peeked: a socket's handshake
+/// still reads it whole.
+async fn request_line(stream: &tokio::net::TcpStream) -> String {
+    let mut head = [0; 256];
+    loop {
+        let read = stream.peek(&mut head).await.unwrap_or(0);
+        if let Some(end) = head[..read].windows(2).position(|pair| pair == b"\r\n") {
+            return String::from_utf8_lossy(&head[..end]).into_owned();
+        }
+        if read == 0 {
+            return String::new();
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
+/// `status` and `body` for the request `stream` holds, read first so that
+/// the close does not reset it.
+async fn answer(stream: &mut tokio::net::TcpStream, status: &str, body: &[u8]) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let mut head = Vec::new();
+    let mut byte = [0; 1];
+    while !head.ends_with(b"\r\n\r\n") && matches!(stream.read(&mut byte).await, Ok(1)) {
+        head.push(byte[0]);
+    }
+    let answer = format!(
+        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(answer.as_bytes()).await;
+    let _ = stream.write_all(body).await;
+}
+
+/// The node goes away mid-feed, as duckpond's did for a few seconds at a
+/// restart behind Cloudflare: its socket drops, and while it is away the
+/// socket and the status both answer 502. The feed reads the status
+/// again at half the block time rather than ending, its follower hears
+/// nothing meanwhile (no refusal, no re-read), and once the node is back
+/// the socket opens again: the follower re-reads once, then hears its
+/// blocks. Before, the one reopen at the drop met the 502 and ended the
+/// feed for good: pushd, which reconnects nothing, went deaf.
+#[test]
+fn a_feed_whose_node_goes_away_opens_again_once_it_answers() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let flaky = flaky_changes_node();
+    let mut view = view();
+    follow_changes(&mut view, 1, flaky.node.clone(), "chat".into());
+    flaky.blocks.send(5).unwrap();
+    assert_eq!(drained(&view, 1), [change_item(Some(5))]);
+    flaky.up.store(false, SeqCst);
+    flaky.cut.notify_one();
+    for _ in 0..2 {
+        flaky
+            .away_reads
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the feed reads the node's status again while it is away");
+    }
+    let mut meanwhile = Vec::new();
+    view.replies.drain_into(&mut meanwhile);
+    assert_eq!(meanwhile, [], "nothing while the node is away");
+    flaky.up.store(true, SeqCst);
+    assert_eq!(
+        drained(&view, 1),
+        [change_item(None)],
+        "re-read once it is back"
+    );
+    flaky.blocks.send(7).unwrap();
+    assert_eq!(drained(&view, 1), [change_item(Some(7))]);
+    assert_eq!(flaky.opened.load(SeqCst), 2);
+}
+
+/// A node that refuses the socket (a 4xx, not a proxy's 5xx) ends the
+/// feed with why, as it always did: there is nothing to wait for.
+#[test]
+fn a_node_that_refuses_the_socket_ends_the_feed_with_why() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let flaky = flaky_changes_node();
+    flaky.refuses.store(true, SeqCst);
+    let mut view = view();
+    follow_changes(&mut view, 1, flaky.node.clone(), "chat".into());
+    let ended = drained(&view, 1);
+    assert!(
+        matches!(
+            &ended[..],
+            [wire::Event::Response {
+                id: 1,
+                result: Err(_),
+                done: true
+            }]
+        ),
+        "{ended:?}"
+    );
+    assert_eq!(flaky.opened.load(SeqCst), 0);
+}
+
 /// A connect inside the network, under a view that kept its code: its
 /// `program.changes` subscription goes on, on the new node, so its follower
 /// hears `None` (re-read what moved meanwhile) and then the new node's

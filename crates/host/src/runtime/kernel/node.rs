@@ -662,6 +662,12 @@ fn feed(node: &Node, program: &str) -> (std::sync::Arc<Feed>, std::sync::Arc<Slo
 }
 
 /// A feed's socket: each change the node publishes, to every follower.
+/// A socket that closes or does not open (the node restarting, a proxy's
+/// 502 while it is away) opens again once the node answers its status,
+/// read at half its block time as `chain.heads` reads it; each follower
+/// then re-reads what moved meanwhile. It keeps at it for as long as one
+/// follows ([`Feed`]'s drop ends it): only a node that refuses the socket,
+/// or that never gave its block time, ends the feed, with why.
 async fn socket(client: RpcClient, program: String, followers: Followers) {
     use futures::StreamExt as _;
     // to every follower still there; one that let go is dropped
@@ -677,31 +683,86 @@ async fn socket(client: RpcClient, program: String, followers: Followers) {
                 None => false,
             });
     };
+    // the pace the node is read again at while it is away, once it said it
+    let mut block_time_ms = None;
+    // the socket is closed, and its followers have not re-read since
+    let mut away = false;
     loop {
-        let mut changes = match client.changed_keys(&program).await {
-            Ok(changes) => changes,
-            Err(error) => {
+        let lost = match client.changed_keys(&program).await {
+            Ok(mut changes) => {
+                if std::mem::take(&mut away) {
+                    tracing::info!(target: "ducktape::app", program, "changes stream open again");
+                    send(Ok(reread()));
+                }
+                if block_time_ms.is_none() {
+                    block_time_ms = client
+                        .status()
+                        .await
+                        .ok()
+                        .map(|status| status.block_time_ms);
+                }
+                while let Some(change) = changes.next().await {
+                    // what the node publishes, as it publishes it: the height and
+                    // the keys the block wrote (the values stay on the node)
+                    let item = match change {
+                        Ok(change) => methods::encode(&Some(methods::Change {
+                            height: change.height,
+                            keys: change.writes.into_iter().map(|(key, _)| key).collect(),
+                        })),
+                        Err(_) => break,
+                    };
+                    send(Ok(item));
+                }
+                "the socket closed".to_owned()
+            }
+            Err(error) if node_refuses(&error) => {
                 tracing::debug!(target: "ducktape::app", %error, program, "changes stream not opened");
                 send(Err(refused(error)));
                 return;
             }
+            Err(error) => error.to_string(),
         };
-        while let Some(change) = changes.next().await {
-            // what the node publishes, as it publishes it: the height and
-            // the keys the block wrote (the values stay on the node)
-            let item = match change {
-                Ok(change) => methods::encode(&Some(methods::Change {
-                    height: change.height,
-                    keys: change.writes.into_iter().map(|(key, _)| key).collect(),
-                })),
-                Err(_) => break,
-            };
-            send(Ok(item));
+        // once an outage, however many reads it takes
+        if !std::mem::replace(&mut away, true) {
+            tracing::warn!(target: "ducktape::app", program, reason = lost,
+                "changes stream lost: it opens again once the node answers");
         }
-        // the socket closed: the node restarted or the link dropped. Say so
-        // once (each follower re-reads) and open it again; a node that does
-        // not take it again ends every follower's subscription with why.
-        send(Ok(reread()));
+        match answering(&client, block_time_ms).await {
+            Ok(answered) => block_time_ms = Some(answered),
+            Err(error) => {
+                send(Err(refused(error)));
+                return;
+            }
+        }
+    }
+}
+
+/// Whether the node itself turned the changes socket down (its refusal, or
+/// a 4xx), rather than not being reached: a 5xx is a proxy or a node that
+/// is away, and the socket is opened again.
+fn node_refuses(error: &noded_client::Error) -> bool {
+    use noded_client::Error;
+    match error {
+        Error::Refused(_) | Error::Decode(_) => true,
+        Error::Failed { status, .. } => (400..500).contains(status),
+        Error::Unreachable(_) | Error::Transport(_) => false,
+    }
+}
+
+/// The node's block time once its status answers: read at once, then at
+/// half `block_time_ms` (the one it last gave) until it does. A node that
+/// never gave one has no pace to wait at: its first unanswered read is why.
+async fn answering(client: &RpcClient, block_time_ms: Option<u64>) -> noded_client::Result<u64> {
+    loop {
+        let error = match client.status().await {
+            Ok(status) => return Ok(status.block_time_ms),
+            Err(error) => error,
+        };
+        let Some(block_time_ms) = block_time_ms else {
+            return Err(error);
+        };
+        tracing::debug!(target: "ducktape::app", %error, "status not answered");
+        tokio::time::sleep(std::time::Duration::from_millis(block_time_ms / 2)).await;
     }
 }
 

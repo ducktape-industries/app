@@ -351,7 +351,7 @@ impl Client {
         };
         let (socket, _) = tokio_tungstenite::connect_async_with_config(url, Some(unbounded), false)
             .await
-            .map_err(|error| Error::Transport(error.to_string()))?;
+            .map_err(not_opened)?;
         Ok(socket.filter_map(|message| {
             let change = match message {
                 Ok(Message::Binary(bytes)) => Some(abi::decode(&bytes).map_err(Error::Decode)),
@@ -450,6 +450,35 @@ async fn sent(request: reqwest::RequestBuilder) -> Result<reqwest::Response> {
                 false => NOT_A_NODE.into(),
             },
         }),
+    }
+}
+
+/// Why a changes socket did not open, read as [`sent`] reads an answer: an
+/// upgrade the node answered with a status is its refusal or failure.
+fn not_opened(error: tokio_tungstenite::tungstenite::Error) -> Error {
+    match error {
+        tokio_tungstenite::tungstenite::Error::Http(answer) => {
+            let body = answer.body().as_deref().unwrap_or_default();
+            let plain = answer
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.starts_with("text/plain"));
+            match answer.status() {
+                StatusCode::BAD_REQUEST => match abi::decode(body) {
+                    Ok(refusal) => Error::Refused(refusal),
+                    Err(refusal) => Error::Decode(refusal),
+                },
+                status => Error::Failed {
+                    status: status.as_u16(),
+                    sentence: match plain || body.is_empty() {
+                        true => String::from_utf8_lossy(body).into_owned(),
+                        false => NOT_A_NODE.into(),
+                    },
+                },
+            }
+        }
+        error => Error::Transport(error.to_string()),
     }
 }
 
