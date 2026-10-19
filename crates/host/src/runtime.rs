@@ -371,6 +371,74 @@ pub fn width(program: &str) -> Option<f32> {
         .map(|width| width as f32)
 }
 
+/// The process's runtime (the node in hand, the app's roster, every seat)
+/// is one for the whole test binary: a test whose connect lands hands it a
+/// node, and that node's roster read loads every seat any test holds. Such
+/// a test holds the runtime alone ([`alone_for_test`]) and every test that
+/// builds the shell's entities shares it ([`shared_for_test`]), so no test
+/// seats a view beside a connect.
+#[cfg(any(test, feature = "test-support"))]
+static RUNTIME_HOLD: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    /// This test thread's share of the runtime, held until the thread ends
+    /// (libtest runs each test on a thread of its own).
+    static SHARED: std::cell::RefCell<Option<std::sync::RwLockReadGuard<'static, ()>>> =
+        const { std::cell::RefCell::new(None) };
+    /// This test thread holds the runtime alone.
+    static ALONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// This test shares the process's runtime until its thread ends, waiting
+/// while another test holds it alone; nothing more when it holds it
+/// already.
+#[cfg(any(test, feature = "test-support"))]
+pub fn shared_for_test() {
+    if ALONE.with(std::cell::Cell::get) {
+        return;
+    }
+    SHARED.with(|shared| {
+        let mut shared = shared.borrow_mut();
+        if shared.is_none() {
+            let held = RUNTIME_HOLD
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *shared = Some(held);
+        }
+    });
+}
+
+/// The process's runtime held by this test alone until the guard drops,
+/// which leaves the node the test handed it, as leaving a network does:
+/// the next test starts with no node and an empty roster. Taken before the
+/// test builds any entities.
+#[cfg(any(test, feature = "test-support"))]
+pub fn alone_for_test() -> Alone {
+    // a share this thread took for an earlier test (a run on one thread)
+    SHARED.with(|shared| shared.borrow_mut().take());
+    let held = RUNTIME_HOLD
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ALONE.with(|alone| alone.set(true));
+    Alone { _held: held }
+}
+
+/// One test's hold of the process's runtime alone ([`alone_for_test`]).
+#[cfg(any(test, feature = "test-support"))]
+pub struct Alone {
+    _held: std::sync::RwLockWriteGuard<'static, ()>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for Alone {
+    fn drop(&mut self) {
+        roster::disconnected();
+        roster().clear();
+        ALONE.with(|alone| alone.set(false));
+    }
+}
+
 /// Every seat of `program` holds a drawn view whose manifest says
 /// `min_width`, or, with none yet, one is preloaded for its first pane: a
 /// WAT view with the five exports whose every tick draws an empty tree.

@@ -101,7 +101,11 @@ impl Standin {
         let reason = div().id(id).max_w_full().flex().flex_col().gap_2();
         let reason = match loading {
             true => reason,
-            false => reason.role(Role::Alert).aria_label(alert_label),
+            false => crate::a11y::live(
+                reason.role(Role::Alert),
+                gpui_kit::accesskit::Live::Assertive,
+                alert_label,
+            ),
         };
         let reason = reason
             .children(title.map(|title| {

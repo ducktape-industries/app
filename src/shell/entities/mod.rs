@@ -72,6 +72,9 @@ impl Entities {
         center: crate::runtime::notify::CenterHandle,
         cx: &mut App,
     ) -> Self {
+        // the process's runtime is shared with every test but one that
+        // hands it a node (`runtime::alone_for_test`)
+        crate::runtime::shared_for_test();
         Self::new(Shared::for_test(roster, center, cx), cx)
     }
 }

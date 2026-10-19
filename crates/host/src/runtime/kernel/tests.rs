@@ -345,7 +345,9 @@ fn unknown_kinds_finish_with_a_typed_refusal() {
 
 /// The roster's role bindings are the process's: a test that binds them
 /// (`acl_roles`), or whose requests read them (`invite.create`,
-/// `op.submit`), holds this for its whole run.
+/// `op.submit`), holds this for its whole run. A test that holds the seat
+/// too (`backend::seat_serial`) takes the seat first: the other order
+/// deadlocks against one that does.
 pub(in crate::runtime) fn roles_serial() -> std::sync::MutexGuard<'static, ()> {
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
     SERIAL

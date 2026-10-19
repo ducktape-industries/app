@@ -1435,6 +1435,8 @@ fn switched_then_opened(
 fn another_networks_notice_switches_then_opens(cx: &mut TestAppContext) {
     const PROGRAM: &str = "switch-test-there";
     let _seat = crate::backend::seat_serial();
+    // its connect lands: no other test seats a view meanwhile
+    let _alone = crate::runtime::alone_for_test();
     cx.executor().allow_parking();
     let (app, _) = console(cx);
     let (status, chain) = there("switch-there");
@@ -1475,6 +1477,8 @@ fn another_networks_notice_switches_then_opens(cx: &mut TestAppContext) {
 fn another_networks_notice_switches_then_opens_cold(cx: &mut TestAppContext) {
     const PROGRAM: &str = "switch-test-cold";
     let _seat = crate::backend::seat_serial();
+    // its connect lands: no other test seats a view meanwhile
+    let _alone = crate::runtime::alone_for_test();
     cx.executor().allow_parking();
     let (app, _) = console(cx);
     let follower = cx.new(|cx| crate::shell::follow::Follower::new(&app.session, &app.account, cx));
@@ -1532,6 +1536,8 @@ fn another_networks_notice_switches_then_opens_cold(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_switch_takes_the_followed_chains_log_in_memory(cx: &mut TestAppContext) {
     let _seat = crate::backend::seat_serial();
+    // its connect lands: no other test seats a view meanwhile
+    let _alone = crate::runtime::alone_for_test();
     cx.executor().allow_parking();
     let app = cx.update(entities);
     let center = app
