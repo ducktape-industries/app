@@ -464,7 +464,7 @@ impl Updater {
 
     /// Its notices' rows into `center`, as the app's next start's updater
     /// puts them into the one centre the last start's did.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(super) fn with_center(mut self, center: CenterHandle) -> Self {
         self.center = center;
         self
