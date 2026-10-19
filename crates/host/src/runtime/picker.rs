@@ -360,7 +360,7 @@ fn shell_pick(
 /// then removed with their folders: the host holds each one open, and a
 /// copy outlives no pick.
 #[cfg(any(feature = "ui", test))]
-fn open_copies(paths: Vec<PathBuf>) -> Result<Vec<Opened>, wire::Error> {
+fn open_copies(paths: Vec<PathBuf>) -> Result<Vec<Picked>, wire::Error> {
     let opened = open_paths(paths.clone());
     for path in &paths {
         let _ = std::fs::remove_file(path);
