@@ -189,6 +189,25 @@ fn a_restart_opens_the_windows_it_quit_with(cx_a: &mut TestAppContext, cx_b: &mu
 }
 
 #[gpui_kit::test]
+fn a_window_kept_under_its_minimum_reopens_at_it(
+    cx_a: &mut TestAppContext,
+    cx_b: &mut TestAppContext,
+) {
+    const SHORT: &str = "short#0c0c0c0c";
+    let (before, console) = launched(SHORT, cx_a);
+    desk_of(&before, console, cx_a).update(cx_a, |desk, cx| {
+        desk.resize(DESK, cx);
+        desk.seed("chat", cx);
+    });
+    place(&before, console, at(60., 40., 1280., 230.), cx_a);
+    before.windows.update(cx_a, |windows, cx| windows.quit(cx));
+    close(&before, console, cx_a);
+
+    let (after, console) = launched(SHORT, cx_b);
+    assert_eq!(bounds_of(&after, console, cx_b), at(60., 40., 1280., 480.));
+}
+
+#[gpui_kit::test]
 fn each_network_keeps_its_own_windows(cx_a: &mut TestAppContext, cx_b: &mut TestAppContext) {
     let (before, console) = launched(HOME, cx_a);
     let desk = desk_of(&before, console, cx_a);

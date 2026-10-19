@@ -117,6 +117,19 @@ fn kept_bounds(bounds: WindowBounds) -> (State, Frame) {
     (state, frame)
 }
 
+pub(crate) fn at_least(bounds: WindowBounds, min: gpui_kit::Size<Pixels>) -> WindowBounds {
+    let grown = |at: Bounds<Pixels>| {
+        let width = f32::from(at.size.width).max(f32::from(min.width));
+        let height = f32::from(at.size.height).max(f32::from(min.height));
+        Bounds::new(at.origin, size(px(width), px(height)))
+    };
+    match bounds {
+        WindowBounds::Windowed(at) => WindowBounds::Windowed(grown(at)),
+        WindowBounds::Maximized(at) => WindowBounds::Maximized(grown(at)),
+        WindowBounds::Fullscreen(at) => WindowBounds::Fullscreen(grown(at)),
+    }
+}
+
 pub(crate) fn on_a_display(at: Bounds<Pixels>, displays: &[Bounds<Pixels>]) -> bool {
     displays.is_empty() || displays.iter().any(|display| display.intersects(&at))
 }

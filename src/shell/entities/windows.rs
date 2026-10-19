@@ -465,12 +465,7 @@ impl Windows {
             // a pop-out goes down to its view's minimum, as it stands when
             // the window opens (there is no setting it later), a float to
             // its own
-            window_min_size: Some(min.unwrap_or_else(|| match kind {
-                WindowKind::Console => size(px(720.), px(480.)),
-                WindowKind::View { program } => {
-                    size(px(windows::popout_min(program)), px(windows::POPOUT_MIN))
-                }
-            })),
+            window_min_size: Some(min.unwrap_or_else(|| windows::min_size(kind))),
             app_id: Some("dev.ducktape.app".into()),
             kind: gpui_kit::WindowKind::Normal,
             icon: image::RgbaImage::from_raw(
@@ -1558,6 +1553,9 @@ impl Windows {
                 .collect();
             let desk = match window.console {
                 true => {
+                    let bounds = bounds.map(|at| {
+                        arrangement::at_least(at, windows::min_size(WindowKind::Console))
+                    });
                     if self.desk_bounds.is_none() {
                         self.desk_bounds = bounds;
                         if let (Some(console), Some(bounds)) = (self.console, bounds) {
@@ -1573,7 +1571,10 @@ impl Windows {
                     let Some(program) = layout.shown().filter(|_| layout.panes.len() == 1) else {
                         continue;
                     };
-                    let key = self.open_at(WindowKind::View { program }, bounds, None, cx);
+                    let kind = WindowKind::View { program };
+                    let bounds =
+                        bounds.map(|at| arrangement::at_least(at, windows::min_size(kind)));
+                    let key = self.open_at(kind, bounds, None, cx);
                     if on_top {
                         self.set_on_top(key, true, cx);
                     }

@@ -24,6 +24,13 @@ pub(in crate::shell) fn popout_min(program: &str) -> f32 {
     crate::runtime::min_width(program).map_or(POPOUT_MIN, |min_width| min_width.max(POPOUT_MIN))
 }
 
+pub(in crate::shell) fn min_size(kind: super::WindowKind) -> Size<Pixels> {
+    match kind {
+        super::WindowKind::Console => size(px(720.), px(480.)),
+        super::WindowKind::View { program } => size(px(popout_min(program)), px(POPOUT_MIN)),
+    }
+}
+
 /// Where a pop-out opens: stepped off its source window so it does not
 /// land exactly on top of it, and pulled back inside `display` when the
 /// step would push it off an edge.
