@@ -1185,7 +1185,7 @@ fn put_of(view: &View, blobs: Vec<methods::NewBlob>) -> Vec<Blob> {
 #[tokio::test]
 async fn a_put_answers_each_framed_blobs_sha256_once_the_bundle_is_held() {
     use commonware_cryptography::Signer as _;
-    const MOST: u64 = methods::BLOB_MOST;
+    const MOST: u64 = 3 << 20;
     let _seat = backend::seat_serial();
     backend::seat_key(std::sync::Arc::new(
         commonware_cryptography::ed25519::PrivateKey::from_seed(43),
@@ -1303,10 +1303,10 @@ async fn a_put_no_block_carries_by_its_until_is_refused_anchor() {
     );
 }
 
-/// What `op.put` refuses at the ask, before anything is read or signed.
+/// What `op.put` refuses at the ask, before anything is read or signed;
+/// a blob of any size is taken.
 #[test]
-fn a_put_of_no_blob_one_too_big_or_a_slice_of_no_pick_is_malformed() {
-    const MOST: u64 = methods::BLOB_MOST;
+fn a_put_of_no_blob_or_a_slice_of_no_pick_is_malformed() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("a.txt");
     std::fs::write(&path, b"abc").unwrap();
@@ -1314,8 +1314,7 @@ fn a_put_of_no_blob_one_too_big_or_a_slice_of_no_pick_is_malformed() {
     assert_eq!(view.picker.pick(vec![path])[0].file, 1);
     let cases = [
         (Vec::new(), "names no blob"),
-        (vec![bytes("chunk", &vec![0; MOST as usize + 1])], "over"),
-        (vec![picked(1, 0, MOST + 1)], "past"),
+        (vec![picked(1, 0, 4)], "past"),
         (vec![picked(1, 2, 2)], "past"),
         (vec![picked(1, u64::MAX, 2)], "past"),
         (vec![picked(2, 0, 1)], "not one the view holds"),
@@ -1329,10 +1328,9 @@ fn a_put_of_no_blob_one_too_big_or_a_slice_of_no_pick_is_malformed() {
         assert_eq!(refusal.code, refusal::MALFORMED_REQUEST);
         assert!(refusal.message.contains(why), "{}", refusal.message);
     }
-    // the most a blob holds, and a whole file
     put_of(
         &view,
-        vec![bytes("chunk", &vec![0; MOST as usize]), picked(1, 0, 3)],
+        vec![bytes("chunk", &vec![0; 3 << 20]), picked(1, 0, 3)],
     );
 }
 
@@ -1405,7 +1403,7 @@ fn a_put_waiting_for_its_bundle_goes_with_the_view() {
 #[ignore = "needs the try network's node"]
 async fn the_try_network_holds_a_put() {
     use commonware_cryptography::Signer as _;
-    const MOST: u64 = methods::BLOB_MOST;
+    const MOST: u64 = 1 << 20;
     let _seat = backend::seat_serial();
     let key = commonware_cryptography::ed25519::PrivateKey::from_seed(noded::salt());
     backend::seat_key(std::sync::Arc::new(key)).await;

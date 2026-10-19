@@ -1022,28 +1022,42 @@ impl Blob {
         }
     }
 
-    /// The blob framed (`kind len\0body`), a picked slice read on a
-    /// blocking thread: a file whose size changed since the pick is
-    /// refused `host_fault` (`picker::slice`).
-    async fn framed(&self) -> Result<Vec<u8>, wire::Error> {
-        let read;
-        let body = match &self.body {
-            Body::Bytes(bytes) => bytes,
+    /// The blob framed (`kind len\0body`), in parts: its header, then its
+    /// body, a picked slice read on a blocking thread one part ahead of
+    /// the parts taken (`picker::read`), so no blob is held whole. A file
+    /// whose size changed since the pick is refused `host_fault`.
+    fn framed(&self) -> futures::stream::BoxStream<'static, Result<Vec<u8>, wire::Error>> {
+        use futures::StreamExt as _;
+        let header =
+            futures::stream::once(std::future::ready(Ok(blob::header(&self.kind, self.len()))));
+        match &self.body {
+            Body::Bytes(bytes) => {
+                let body = futures::stream::once(std::future::ready(Ok(bytes.clone())));
+                header.chain(body).boxed()
+            }
             Body::Picked { file, offset, len } => {
                 let (file, offset, len) = (file.clone(), *offset, *len);
-                read = tokio::task::spawn_blocking(move || picker::slice(&file, offset, len))
-                    .await
-                    .map_err(host_fault)??;
-                &read
+                let (parts, taken) = tokio::sync::mpsc::channel(1);
+                tokio::task::spawn_blocking(move || {
+                    let read = picker::read(&file, offset, len, |part| {
+                        parts.blocking_send(Ok(part.to_vec())).is_ok()
+                    });
+                    if let Err(refusal) = read {
+                        let _ = parts.blocking_send(Err(refusal));
+                    }
+                });
+                let body = futures::stream::unfold(taken, |mut taken| async move {
+                    taken.recv().await.map(|part| (part, taken))
+                });
+                header.chain(body).boxed()
             }
-        };
-        blob::frame(&self.kind, body).map_err(|refusal| malformed(refusal.sentence))
+        }
     }
 }
 
-/// `op.put`'s blobs, checked at the ask: no blob, one over
-/// [`methods::BLOB_MOST`], a kind the node does not take, or a slice of no
-/// file the view holds (or past its end) is `malformed_request`.
+/// `op.put`'s blobs, checked at the ask: no blob, a kind the node does
+/// not take, or a slice of no file the view holds (or past its end) is
+/// `malformed_request`.
 fn blobs_of(view: &View, payload: &[u8]) -> Result<Vec<Blob>, wire::Error> {
     let put: methods::PutBlobs = methods::decode(payload).map_err(malformed)?;
     if put.blobs.is_empty() {
@@ -1055,11 +1069,8 @@ fn blobs_of(view: &View, payload: &[u8]) -> Result<Vec<Blob>, wire::Error> {
                 "a blob's kind is one word, without spaces or NUL",
             ));
         }
-        let (body, len) = match body {
-            methods::BlobBody::Bytes(bytes) => {
-                let len = bytes.len() as u64;
-                (Body::Bytes(bytes), len)
-            }
+        let body = match body {
+            methods::BlobBody::Bytes(bytes) => Body::Bytes(bytes),
             methods::BlobBody::Picked { file, offset, len } => {
                 let picked = view
                     .picker
@@ -1071,22 +1082,13 @@ fn blobs_of(view: &View, payload: &[u8]) -> Result<Vec<Blob>, wire::Error> {
                         picked.size
                     )));
                 }
-                (
-                    Body::Picked {
-                        file: picked,
-                        offset,
-                        len,
-                    },
+                Body::Picked {
+                    file: picked,
+                    offset,
                     len,
-                )
+                }
             }
         };
-        if len > methods::BLOB_MOST {
-            return Err(malformed(format!(
-                "a blob of {len} bytes is over the {} one holds",
-                methods::BLOB_MOST
-            )));
-        }
         Ok(Blob { kind, body })
     };
     put.blobs.into_iter().map(blob).collect()
@@ -1269,8 +1271,8 @@ pub(in crate::runtime) fn spawn_event(
     });
 }
 
-/// `op.put`'s task. A hash pass (each blob read, framed, hashed, dropped)
-/// makes the bundle's `Put`, which the seated key signs to the program
+/// `op.put`'s task. A hash pass (each blob framed and hashed a part at a
+/// time) makes the bundle's `Put`, which the seated key signs to the program
 /// the node binds to the blobs role; a stream pass reads each blob again
 /// into the node's blob upload after it, so no pass holds the bundle
 /// whole. A file that changed between the passes no longer hashes to its
@@ -1288,12 +1290,18 @@ pub(super) async fn put(
     use sha2::Digest as _;
     let (mut ids, mut entries) = (Vec::with_capacity(blobs.len()), Vec::new());
     for blob in &blobs {
-        let framed = blob.framed().await?;
-        let digest: [u8; 32] = sha2::Sha256::digest(&framed).into();
+        let (mut hasher, mut framed) = (sha2::Sha256::new(), 0);
+        let mut parts = blob.framed();
+        while let Some(part) = parts.next().await {
+            let part = part?;
+            framed += part.len() as u64;
+            hasher.update(&part);
+        }
+        let digest: [u8; 32] = hasher.finalize().into();
         ids.push(digest);
         entries.push(blob::contract::Entry {
             id: abi::BlobId::Sha256(digest),
-            len: framed.len() as u64,
+            len: framed,
             kind: blob.kind.clone(),
         });
     }
@@ -1311,25 +1319,23 @@ pub(super) async fn put(
     let unread = std::sync::Arc::new(std::sync::Mutex::new(None));
     let total: u64 = blobs.iter().map(Blob::len).sum();
     let sent = std::sync::Arc::new(sent);
-    let taken = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let stream = futures::stream::iter(blobs).then({
-        let (unread, sent, taken) = (unread.clone(), sent.clone(), taken.clone());
+    let stream = futures::stream::iter(blobs).flat_map({
+        let (unread, sent) = (unread.clone(), sent.clone());
+        let mut before = 0;
         move |blob| {
-            let (unread, sent, taken) = (unread.clone(), sent.clone(), taken.clone());
-            async move {
-                // asked for the next blob: the upload took the ones before
-                let before = taken.load(Ordering::SeqCst);
-                if before > 0 {
-                    sent(before);
-                }
-                let framed = blob.framed().await.map_err(|refusal| {
+            // asked for the next blob: the upload took the ones before
+            if before > 0 {
+                sent(before);
+            }
+            before += blob.len();
+            let unread = unread.clone();
+            blob.framed().map(move |part| {
+                part.map_err(|refusal| {
                     let error = std::io::Error::other(refusal.message.clone());
                     *unread.lock().expect("an unread blob") = Some(refusal);
                     error
-                })?;
-                taken.fetch_add(blob.len(), Ordering::SeqCst);
-                Ok(framed)
-            }
+                })
+            })
         }
     });
     if let Err(error) = node.client.put_blobs(frame.encode(), stream).await {

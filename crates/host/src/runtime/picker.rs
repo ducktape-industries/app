@@ -7,9 +7,9 @@
 //! them (`file.release`) or goes away. Files pasted (`clipboard.files`)
 //! or dropped on the view (`Event::FileDrop`) are held the same way, a
 //! pasted picture in an unnamed file of its own, so the host's memory
-//! never holds what a view keeps. `op.put` reads them a slice at a time
-//! ([`slice`]), at most `BLOB_MOST` each, and the bytes go to the node,
-//! never through the view. A view gets each file's own name, never its
+//! never holds what a view keeps. `op.put` reads each slice it names a
+//! part at a time ([`read`]), and the bytes go to the node, never through
+//! the view. A view gets each file's own name, never its
 //! path.
 //!
 //! `file.save`: blobs kept on this device as one file. Only the person's
@@ -35,7 +35,7 @@ use std::collections::HashMap;
 use std::fs::File;
 #[cfg(any(feature = "ui", test))]
 use std::io::Write;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 #[cfg(any(feature = "ui", test))]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -410,9 +410,16 @@ pub(in crate::runtime) async fn keep(
 }
 
 /// The `len` bytes of a held file from `offset` (the caller keeps them
-/// within its size as held). A file whose size changed since it was
-/// picked is refused: its slices would mix two files.
-pub(super) fn slice(picked: &Picked, offset: u64, len: u64) -> Result<Vec<u8>, wire::Error> {
+/// within its size as held), handed to `part` as
+/// std's buffered reader fills, until they end or `part` takes no more. A
+/// file whose size changed since it was picked is refused: its slices
+/// would mix two files.
+pub(super) fn read(
+    picked: &Picked,
+    offset: u64,
+    len: u64,
+    mut part: impl FnMut(&[u8]) -> bool,
+) -> Result<(), wire::Error> {
     let named = |error: std::io::Error| fault(format!("{}: {error}", picked.name));
     let file = &mut *picked.file.lock().expect("a picked file");
     if file.metadata().map_err(named)?.len() != picked.size {
@@ -422,9 +429,21 @@ pub(super) fn slice(picked: &Picked, offset: u64, len: u64) -> Result<Vec<u8>, w
         )));
     }
     file.seek(SeekFrom::Start(offset)).map_err(named)?;
-    let mut bytes = vec![0; len as usize];
-    file.read_exact(&mut bytes).map_err(named)?;
-    Ok(bytes)
+    let mut reader = BufReader::new(file.take(len));
+    let mut left = len;
+    while left > 0 {
+        let bytes = reader.fill_buf().map_err(named)?;
+        if bytes.is_empty() {
+            return Err(named(std::io::ErrorKind::UnexpectedEof.into()));
+        }
+        let taken = bytes.len();
+        if !part(bytes) {
+            return Ok(());
+        }
+        reader.consume(taken);
+        left -= taken as u64;
+    }
+    Ok(())
 }
 
 pub(super) fn fault(message: String) -> wire::Error {
@@ -436,12 +455,18 @@ mod tests {
     use super::*;
 
     fn read(held: &Held, file: u64, offset: u64, len: u64) -> Vec<u8> {
-        slice(&held.get(file).expect("held"), offset, len).expect("read")
+        let mut bytes = Vec::new();
+        super::read(&held.get(file).expect("held"), offset, len, |part| {
+            bytes.extend_from_slice(part);
+            true
+        })
+        .expect("read");
+        bytes
     }
 
     #[test]
     fn a_file_is_named_without_its_folder_and_read_a_slice_at_a_time() {
-        const MOST: u64 = methods::BLOB_MOST;
+        const MOST: u64 = 1 << 20;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tape.png");
         let bytes: Vec<u8> = (0..MOST + 5).map(|at| at as u8).collect();
@@ -568,6 +593,32 @@ mod tests {
     }
 
     #[test]
+    fn a_slice_is_read_in_parts_and_stops_when_no_more_is_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("film.mov");
+        let bytes: Vec<u8> = (0..3 << 20).map(|at: u32| (at * 7) as u8).collect();
+        std::fs::write(&path, &bytes).unwrap();
+        let held = Held::default();
+        held.hold(open_paths(vec![path]).unwrap());
+        let picked = held.get(1).unwrap();
+        let mut parts = Vec::new();
+        super::read(&picked, 5, bytes.len() as u64 - 9, |part| {
+            parts.push(part.to_vec());
+            true
+        })
+        .unwrap();
+        assert!(parts.len() > 1, "no part holds the whole slice");
+        assert_eq!(parts.concat(), bytes[5..bytes.len() - 4]);
+        let mut first = 0;
+        super::read(&picked, 0, bytes.len() as u64, |_| {
+            first += 1;
+            false
+        })
+        .unwrap();
+        assert_eq!(first, 1, "a part not taken ends the read");
+    }
+
+    #[test]
     fn a_file_that_changed_size_since_it_was_picked_is_not_read() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("log.txt");
@@ -575,7 +626,7 @@ mod tests {
         let held = Held::default();
         held.hold(open_paths(vec![path.clone()]).unwrap());
         std::fs::write(&path, b"one two").unwrap();
-        let changed = slice(&held.get(1).unwrap(), 0, 3).unwrap_err();
+        let changed = super::read(&held.get(1).unwrap(), 0, 3, |_| true).unwrap_err();
         assert_eq!(changed.message, "log.txt changed since it was picked");
     }
 
