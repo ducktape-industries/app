@@ -121,7 +121,7 @@ impl UniformListDecoration for RangeObserver {
 /// in its parent (shown or not, its place, its size, its margin, its share
 /// of a flex or grid parent). The row that holds the list and the bar's
 /// gutter takes it; `list` keeps its own box (padding, border, fill, text).
-fn room(list: &mut gpui_kit::StyleRefinement) -> gpui_kit::StyleRefinement {
+pub(super) fn room(list: &mut gpui_kit::StyleRefinement) -> gpui_kit::StyleRefinement {
     use std::mem::take;
     gpui_kit::StyleRefinement {
         display: list
@@ -155,14 +155,13 @@ fn room(list: &mut gpui_kit::StyleRefinement) -> gpui_kit::StyleRefinement {
 /// the kit keeps a bar's hover and drag by the ids around the bar, and
 /// the gutter is outside the list's, so it takes one of its own, apart
 /// from a sibling list's and from an enclosing scroller's.
-fn beside_its_bar(
+pub(super) fn beside_its_bar(
     room: gpui_kit::StyleRefinement,
     list: impl IntoElement,
     list_id: &ElementId,
-    scroll: &gpui_kit::UniformListScrollHandle,
+    scroll: &(impl gpui_base::ScrollbarHandle + Clone),
     tree: gpui_kit::EntityId,
 ) -> impl IntoElement {
-    use gpui_base::ScrollbarHandle as _;
     let wheel = scroll.clone();
     let gutter = div()
         // `Debug` tells any two ids apart; `Display` prints every focus

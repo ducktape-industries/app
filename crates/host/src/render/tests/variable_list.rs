@@ -793,3 +793,77 @@ fn a_following_list_follows_arrivals_only_while_it_stands_at_its_end(
         "the row that arrived is on screen"
     );
 }
+
+fn bar_quads(native: &mut gpui_kit::VisualTestContext, gutter: f32) -> Vec<gpui_kit::Bounds<f32>> {
+    native.update(|window, _| {
+        let scale = window.scale_factor();
+        window
+            .painted_quads()
+            .into_iter()
+            .filter(|quad| quad.background.as_solid().is_some_and(|color| color.a > 0.))
+            .map(|quad| {
+                let at = |pixels: gpui_kit::ScaledPixels| pixels.0 / scale;
+                gpui_kit::Bounds {
+                    origin: gpui_kit::point(at(quad.bounds.origin.x), at(quad.bounds.origin.y)),
+                    size: gpui_kit::size(at(quad.bounds.size.width), at(quad.bounds.size.height)),
+                }
+            })
+            .filter(|quad| quad.origin.x >= gutter)
+            .collect()
+    })
+}
+
+#[gpui_kit::test]
+fn a_list_that_scrolls_draws_its_bar_in_a_gutter_beside_its_rows(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    let (width, height) = (200., 120.);
+    let gutter = width - 16.;
+    for (rows, scrolls) in [(vec![20., 60., 100.], true), (vec![20.], false)] {
+        let count = rows.len();
+        let children = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| fixed_row(10 + index as u64, *row, 0xff0000))
+            .collect();
+        let root = variable_list_node(count, wire::ListAlignment::Top, 0, children);
+        let window = cx.open_window(size(px(width), px(height)), |_, _| ViewTree::new(root));
+        let tree = window.root(cx).unwrap();
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(crate::render::draw_frame);
+        native.update(crate::render::draw_frame);
+        let row = tree.read_with(&native, |tree, _| {
+            let list = tree.variable_lists.values().next().expect("the list");
+            list.state.bounds_for_item(0).unwrap()
+        });
+        assert_eq!(
+            row.right(),
+            px(gutter),
+            "{count} rows end where the gutter begins"
+        );
+        let bar = bar_quads(&mut native, gutter);
+        assert!(
+            bar.iter()
+                .all(|quad| quad.origin.x + quad.size.width <= width + 0.5),
+            "{count} rows: the bar is in the gutter: {bar:?}"
+        );
+        assert_eq!(!bar.is_empty(), scrolls, "{count} rows: {bar:?}");
+        if !scrolls {
+            continue;
+        }
+        tree.read_with(&native, |tree, _| {
+            tree.variable_lists
+                .values()
+                .next()
+                .unwrap()
+                .state
+                .scroll_by(px(40.))
+        });
+        native.update(|_, cx| tree.update(cx, |_, cx| cx.notify()));
+        native.update(crate::render::draw_frame);
+        let scrolled = bar_quads(&mut native, gutter);
+        assert!(!scrolled.is_empty(), "the bar is drawn after a scroll");
+        assert_ne!(scrolled, bar, "the thumb moved with the list");
+    }
+}

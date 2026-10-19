@@ -147,8 +147,11 @@ impl ViewTree {
             wire::ListSizingBehavior::Infer => ListSizingBehavior::Infer,
             wire::ListSizingBehavior::Auto => ListSizingBehavior::Auto,
         });
+        let mut own = Arc::unwrap_or_clone(self.style(*style));
+        let room = super::uniform::room(&mut own);
         let mut native = native;
-        *native.style() = Arc::unwrap_or_clone(self.style(*style));
+        *native.style() = own;
+        let mut native = native.flex_grow(1.).flex_shrink(1.).min_w_0();
 
         let list = self
             .variable_lists
@@ -169,19 +172,22 @@ impl ViewTree {
         let interactivity = interactivity
             .as_deref()
             .unwrap_or(wire::Interactivity::none());
-        if *interactivity == wire::Interactivity::default() {
-            return Scope {
-                id: scope,
+        let drawn = if *interactivity == wire::Interactivity::default() {
+            Scope {
+                id: scope.clone(),
                 element: native.into_any_element(),
             }
-            .into_any_element();
-        }
-        // gpui's list is no interactive element: a list the view roled,
-        // named or wired is a box in the list's place, holding it whole
-        let mut host = div();
-        *host.style() = std::mem::take(native.style());
-        let host = host.id(scope).child(native.size_full());
-        self.view_aria(host, node, interactivity, cx)
+            .into_any_element()
+        } else {
+            // gpui's list is no interactive element: a list the view roled,
+            // named or wired is a box in the list's place, holding it whole
+            let mut host = div();
+            *host.style() = std::mem::take(native.style());
+            let host = host.id(scope.clone()).child(native.size_full());
+            self.view_aria(host, node, interactivity, cx)
+                .into_any_element()
+        };
+        super::uniform::beside_its_bar(room, drawn, &scope, &state, cx.entity_id())
             .into_any_element()
     }
 }
