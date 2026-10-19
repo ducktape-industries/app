@@ -38,7 +38,7 @@ pub(crate) trait Server {
     fn cards(&mut self) -> Result<Vec<Card>, String>;
     fn sources(&mut self) -> Result<Vec<Source>, String>;
     fn set_profile(&mut self, card: &str, profile: &str) -> Result<(), String>;
-    fn source_added(&mut self) -> Result<(), String>;
+    fn moved(&mut self) -> Result<(), String>;
 }
 
 pub(crate) fn headset(card: &Card) -> Option<&str> {
@@ -89,12 +89,19 @@ pub(crate) fn switch(server: &mut impl Server, id: &str) -> Result<Switched, Str
         .clone()
         .map(|active| (card.name.clone(), active));
     let found = loop {
+        match server.cards() {
+            Ok(cards) if !cards.iter().any(|listed| listed.index == card.index) => {
+                break Err("the headset went away".to_owned());
+            }
+            Ok(_) => {}
+            Err(error) => break Err(error),
+        }
         match server.sources().map(|sources| source_of(&card, &sources)) {
             Ok(Some(source)) => break Ok(source),
             Ok(None) => {}
             Err(error) => break Err(error),
         }
-        if let Err(error) = server.source_added() {
+        if let Err(error) = server.moved() {
             break Err(error);
         }
     };
@@ -222,7 +229,9 @@ impl Server for Pulse {
     fn set_profile(&mut self, card: &str, profile: &str) -> Result<(), String> {
         if self.events.is_none() {
             let (mut events, version) = connected()?;
-            let subscribe = protocol::Command::Subscribe(protocol::SubscriptionMask::SOURCE);
+            let subscribe = protocol::Command::Subscribe(
+                protocol::SubscriptionMask::SOURCE | protocol::SubscriptionMask::CARD,
+            );
             protocol::write_command_message(events.get_mut(), 2, &subscribe, version)
                 .map_err(|error| error.to_string())?;
             protocol::read_ack_message(&mut events).map_err(|error| error.to_string())?;
@@ -242,14 +251,18 @@ impl Server for Pulse {
             .map_err(|error| error.to_string())
     }
 
-    fn source_added(&mut self) -> Result<(), String> {
+    fn moved(&mut self) -> Result<(), String> {
+        use protocol::SubscriptionEventFacility as Facility;
+        use protocol::SubscriptionEventType as Type;
         let events = self.events.as_mut().ok_or("not listening")?;
         loop {
             let (_, event) = protocol::read_command_message(events, self.version)
                 .map_err(|error| error.to_string())?;
             if let protocol::Command::SubscribeEvent(event) = event
-                && event.event_facility == protocol::SubscriptionEventFacility::Source
-                && event.event_type == protocol::SubscriptionEventType::New
+                && matches!(
+                    (event.event_facility, event.event_type),
+                    (Facility::Source, Type::New | Type::Removed) | (Facility::Card, Type::Removed)
+                )
             {
                 return Ok(());
             }
@@ -266,6 +279,7 @@ mod tests {
         sources: Vec<Source>,
         asked: Vec<(String, String)>,
         refuse: bool,
+        leaves: bool,
     }
 
     impl Server for Graph {
@@ -290,7 +304,12 @@ mod tests {
             Ok(())
         }
 
-        fn source_added(&mut self) -> Result<(), String> {
+        fn moved(&mut self) -> Result<(), String> {
+            if self.leaves {
+                self.cards.retain(|card| !card.bluetooth);
+                self.sources.retain(|source| source.card != Some(7));
+                return Ok(());
+            }
             let headset = self.cards.iter().find(|card| card.bluetooth).unwrap();
             assert_eq!(headset.active.as_deref(), Some("headset-head-unit"));
             self.sources.push(Source {
@@ -350,6 +369,7 @@ mod tests {
             sources,
             asked: Vec::new(),
             refuse,
+            leaves: false,
         }
     }
 
@@ -383,6 +403,23 @@ mod tests {
         let again = switch(&mut graph, "pulseaudio-card:bluez_card.AA_BB_CC_DD_EE_FF").unwrap();
         assert_eq!(again.back, None, "already a headset: nothing to put back");
         assert_eq!(graph.asked.len(), 1);
+    }
+
+    #[test]
+    fn a_headset_that_goes_away_while_it_switches_ends_the_wait_and_says_so() {
+        let mut graph = music_headset(false);
+        graph.leaves = true;
+        let gone = switch(&mut graph, "pulseaudio-card:bluez_card.AA_BB_CC_DD_EE_FF");
+        assert_eq!(gone.err().as_deref(), Some("the headset went away"));
+        let card = || "bluez_card.AA_BB_CC_DD_EE_FF".to_owned();
+        assert_eq!(
+            graph.asked,
+            [
+                (card(), "headset-head-unit".to_owned()),
+                (card(), "a2dp-sink".to_owned())
+            ],
+            "the profile it had is asked back"
+        );
     }
 
     #[test]
