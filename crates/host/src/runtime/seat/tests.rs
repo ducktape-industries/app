@@ -404,6 +404,8 @@ struct Held {
 
 /// What a fake node answers.
 struct Answers {
+    /// The network its status names.
+    network: String,
     programs: Vec<::programs::Entry>,
     views: Vec<::programs::View>,
     roles: RolesAnswer,
@@ -425,7 +427,33 @@ impl FakeNode {
         Self::with_roles(programs, views, RolesAnswer::Bound(roles()), blobs)
     }
 
+    /// [`FakeNode::new`] on `network` (a followed set's own, apart from
+    /// every other test's), its status naming it.
+    pub(in crate::runtime) fn on(
+        network: &str,
+        programs: Vec<::programs::Entry>,
+        blobs: Vec<Vec<u8>>,
+    ) -> Self {
+        Self::serving(
+            network,
+            programs,
+            Vec::new(),
+            RolesAnswer::Bound(roles()),
+            blobs,
+        )
+    }
+
     fn with_roles(
+        programs: Vec<::programs::Entry>,
+        views: Vec<::programs::View>,
+        roles: RolesAnswer,
+        blobs: Vec<Vec<u8>>,
+    ) -> Self {
+        Self::serving("fake-network", programs, views, roles, blobs)
+    }
+
+    fn serving(
+        network: &str,
         programs: Vec<::programs::Entry>,
         views: Vec<::programs::View>,
         roles: RolesAnswer,
@@ -434,6 +462,7 @@ impl FakeNode {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let answers = Arc::new(Answers {
+            network: network.into(),
             programs,
             views,
             roles,
@@ -453,10 +482,11 @@ impl FakeNode {
         FakeNode {
             asked_of: Connection {
                 client: Some(crate::backend::RpcClient::new(format!("http://{address}"))),
-                network: "fake-network".into(),
-                chain: "fake-network#0".into(),
+                network: network.into(),
+                chain: format!("{network}#0"),
                 rev: connection().lock().unwrap().rev,
                 live: None,
+                apart: None,
             },
             held,
         }
@@ -479,7 +509,11 @@ fn answer(mut stream: std::net::TcpStream, answers: &Answers, held: &Mutex<Held>
     use super::super::kernel::tests::{read_request, respond};
     let (line, body) = read_request(&mut stream);
     if line.starts_with("GET /v1/status ") {
-        return respond(&mut stream, "200 OK", &abi::encode(&status(0)));
+        let status = noded_client::wire::Status {
+            network: answers.network.clone(),
+            ..status(0)
+        };
+        return respond(&mut stream, "200 OK", &abi::encode(&status));
     }
     if line.starts_with("POST /v1/query ") {
         let query: noded_client::wire::Query = abi::decode(&body).unwrap();
@@ -581,6 +615,7 @@ impl ProgramsNode {
                 chain: "fake-network#0".into(),
                 rev: connection().lock().unwrap().rev,
                 live: None,
+                apart: None,
             },
             tip,
             running,

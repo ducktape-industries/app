@@ -188,10 +188,12 @@ impl KeyRefusal {
 /// their own.
 pub trait Banners: Send + Sync {
     /// Raises `notice`; a click on it comes back as `click` through
-    /// [`Signal::BannerClick`]. Whether it went up.
+    /// [`Signal::BannerClick`]. Whether it went up. A banner stands under
+    /// its chain and tag ([`Notice::chain`]): two listed networks'
+    /// programs may raise one tag.
     fn post(&self, notice: &Notice, click: Option<Click>) -> bool;
-    /// Takes down the banner standing under `tag`.
-    fn withdraw(&self, tag: &str);
+    /// Takes down the banner standing under `tag` on `chain`.
+    fn withdraw(&self, chain: &str, tag: &str);
 }
 
 /// The software keyboard a focused field wants. (The fork's
@@ -800,6 +802,17 @@ pub mod testing {
             .clone()
     }
 
+    static WITHDRAWN: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+    /// Every banner the host took down so far, by every test: its chain
+    /// and tag.
+    pub fn banners_withdrawn() -> Vec<(String, String)> {
+        WITHDRAWN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     impl Banners for NoBanners {
         fn post(&self, notice: &Notice, _: Option<Click>) -> bool {
             ASKED
@@ -809,7 +822,12 @@ pub mod testing {
             false
         }
 
-        fn withdraw(&self, _: &str) {}
+        fn withdraw(&self, chain: &str, tag: &str) {
+            WITHDRAWN
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((chain.to_owned(), tag.to_owned()));
+        }
     }
 
     static OPENED: std::sync::Mutex<Vec<(String, std::thread::ThreadId)>> =

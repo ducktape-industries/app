@@ -153,10 +153,15 @@ pub async fn seated_sign(namespace: &[u8], message: &[u8]) -> Result<(Vec<u8>, V
     Ok((signer.key.public_key().to_vec(), proof.to_vec()))
 }
 
-/// A query signed by the seated key, or by the shell's reader while none
-/// is seated.
-pub async fn query_frame(network: &str, target: &str, payload: Vec<u8>) -> Result<Vec<u8>, Error> {
-    let frame = Frame::query(&*query_signer(), network.as_bytes(), target, payload);
+/// A query `signer` signs: [`query_signer`] for the network in hand, the
+/// reader for another (a followed set's, `runtime::notifier::follow`).
+pub async fn query_frame(
+    signer: &dyn noded_client::Signer,
+    network: &str,
+    target: &str,
+    payload: Vec<u8>,
+) -> Result<Vec<u8>, Error> {
+    let frame = Frame::query(signer, network.as_bytes(), target, payload);
     Ok(frame
         .map_err(|refusal| Error::new(refusal::SESSION_LOCKED, refusal.0))?
         .encode())

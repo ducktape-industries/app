@@ -859,3 +859,22 @@ fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
         "a known account is not greeted"
     );
 }
+
+/// A key seated on a network: its public half is kept under the network's
+/// keyring, whose set runs its notifiers for this person while another
+/// network is in hand (`runtime::follow`), no key store asked. Seated on
+/// no network, nothing is kept.
+#[gpui_kit::test]
+fn unlocked_notes_the_public_half(cx: &mut TestAppContext) {
+    let (account, _) = fresh(cx);
+    account.update(cx, |account, cx| account.unlocked("cd".into(), cx));
+    assert_eq!(backend::device_key_of(""), None);
+    account.update(cx, |account, _| {
+        account.seed_network(NODE, "testkit", "notes-testkit")
+    });
+    account.update(cx, |account, cx| account.unlocked("ab".into(), cx));
+    assert_eq!(
+        backend::device_key_of("notes-testkit").as_deref(),
+        Some("ab")
+    );
+}

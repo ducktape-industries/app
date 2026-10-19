@@ -52,7 +52,7 @@ pub(super) async fn described(
     op: Vec<u8>,
 ) -> Result<Description, wire::Error> {
     // a view-only entry is no program: it runs no ops
-    let Some((code, false)) = super::super::roster::roster().code(program) else {
+    let Some((code, false)) = node.roster().code(program) else {
         return Ok(None);
     };
     let key = (code, sha2::Sha256::digest(&op).into());
@@ -122,6 +122,7 @@ pub(super) mod tests {
         Node {
             client: RpcClient::new("http://127.0.0.1:9"),
             network: "test#1".into(),
+            apart: None,
         }
     }
 
@@ -238,6 +239,38 @@ pub(super) mod tests {
         );
     }
 
+    /// An op is described by the code the asking request's roster lists: a
+    /// followed set's own (another network's), never the app's, and the
+    /// app's for a view.
+    #[tokio::test]
+    async fn describe_reads_the_requests_own_roster() {
+        let program = "describe-apart";
+        let code = abi::BlobId::Sha256([0xd5; 32]);
+        let module = wat::parse_str(HI).unwrap();
+        let hash: [u8; 32] = sha2::Sha256::digest(&module).into();
+        modules()
+            .lock()
+            .unwrap()
+            .insert(code, kept(Some((hash, Arc::from(module)))));
+        let apart = super::super::super::roster::Apart::default();
+        apart.roster.lock().push(crate::backend::views::Program {
+            name: program.into(),
+            code,
+            bare: false,
+        });
+        let followed = Node {
+            apart: Some(Arc::new(apart)),
+            ..node()
+        };
+        let read = described(&followed, program, vec![5]).await.unwrap();
+        assert_eq!(read.map(|read| read.title).as_deref(), Some("hi"));
+        assert_eq!(
+            described(&node(), program, vec![5]).await,
+            Ok(None),
+            "the app's roster lists no such program"
+        );
+    }
+
     #[test]
     fn the_method_decodes_its_request_or_refuses_it() {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -266,11 +299,15 @@ mod stage {
         let endpoint = std::env::var("DESCRIBE_STAGE").expect("DESCRIBE_STAGE names the node");
         let client = RpcClient::new(endpoint);
         let network = client.status().await.expect("the stage answers").network;
-        let programs = views::programs(&client, &network)
+        let programs = views::programs(&client, &network, &*crate::backend::query_signer())
             .await
             .expect("its roster");
         *super::super::super::roster::roster().lock() = programs;
-        let node = Node { client, network };
+        let node = Node {
+            client,
+            network,
+            apart: None,
+        };
         let mut counts: std::collections::BTreeMap<String, (u64, u64)> = Default::default();
         let every = Blocks {
             before: None,

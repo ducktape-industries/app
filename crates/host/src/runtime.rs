@@ -38,8 +38,14 @@ pub mod web;
 pub(crate) use kernel::live::Subscribed;
 pub use kernel::live::{HostLive, HostPublication, HostSubscription, TrackHeard};
 pub use kernel::{Answered, day, local_offset, set_in_front};
-// a host with no screen runs each program's notifier per account (`crates/pushd`)
-pub use notifier::{Carried, Recipient, Said, notify_for};
+// a host with no screen runs each program's notifier per account (`crates/pushd`),
+// and the desktop every other listed network's (`follow`)
+#[cfg(any(test, feature = "test-support"))]
+pub use notifier::follow_for_test;
+pub use notifier::{
+    Carried, Followed, Recipient, STATUS_EVERY, Said, chain_of, follow, followed_url,
+    lock_followed, notify_for, take_up,
+};
 // the web view cleans a page's title as a window's (render/web.rs), the
 // av pieces a device's name (render/av.rs)
 #[cfg(any(feature = "web", feature = "av"))]
@@ -71,12 +77,14 @@ pub fn handle() -> tokio::runtime::Handle {
 }
 
 /// The app's quit hook (`shell::launch`, the one every quit path reaches):
-/// the notification log handed over, then a wait on every in-order queue
-/// (store files, the log, banners) and on the live session's close
-/// (`kernel::live::quit`), then `kept` dropped. The returned future is the
-/// wait; gpui gives it `SHUTDOWN_TIMEOUT` (200 ms).
+/// the notification logs handed over (the one in hand, each followed
+/// network's), then a wait on every in-order queue (store files, the logs,
+/// banners) and on the live session's close (`kernel::live::quit`), then
+/// `kept` dropped. The returned future is the wait; gpui gives it
+/// `SHUTDOWN_TIMEOUT` (200 ms).
 pub fn quitting(center: &notify::CenterHandle, kept: impl Sized) -> impl Future<Output = ()> {
     center.lock().flush();
+    notifier::flush_sets();
     let drained = kernel::drain();
     let live = kernel::live::quit();
     drop(kept);

@@ -62,12 +62,12 @@ impl Notifications {
         )
     }
 
-    /// Read again each time the session connects: the centre has just
-    /// taken up that chain's log off disk (`Session`, `set_network`), and
-    /// no view has posted to say so.
+    /// Read again each time the session connects or leaves its network:
+    /// the centre has just taken up that chain's log, or let the one left
+    /// go (`runtime::take_up`), and no view has posted to say so.
     pub fn follow(&self, session: &Entity<Session>, cx: &mut Context<Self>) {
         cx.subscribe(session, |this, _, event: &SessionEvent, cx| {
-            if let SessionEvent::Connected = event {
+            if let SessionEvent::Connected | SessionEvent::LeftNetwork = event {
                 this.refresh(cx);
             }
         })
@@ -229,7 +229,7 @@ mod tests {
         assert_eq!(slice.read_with(cx, |slice, _| slice.unread), 0);
     }
 
-    /// A connect takes up the chain's log off disk (`set_network`) and no
+    /// A connect takes up the chain's log (`runtime::take_up`) and no
     /// view posts to say so: the bell reads its count again as the session
     /// says it connected, not at the next notice.
     #[gpui_kit::test]
@@ -239,7 +239,7 @@ mod tests {
             gpui_kit::init(cx);
             crate::session::Shared::for_test(Default::default(), center.clone(), cx)
         });
-        // as `set_network` leaves the centre: a row off disk, unread
+        // as `take_up` leaves the centre: a row of the log, unread
         post(&center);
         let unread = |cx: &mut TestAppContext| {
             app.notifications

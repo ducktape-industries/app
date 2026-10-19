@@ -322,7 +322,7 @@ fn run(network: &Network, config: &Config, data: &Path) -> Result<(), String> {
                     .join(account.to_string())
                     .join("store"),
                 center: CenterHandle::default(),
-                settings: settings(),
+                settings: Some(settings()),
                 banners: Arc::new(Push::new(
                     Log {
                         network: network.name.clone(),
@@ -433,7 +433,7 @@ impl Banners for Log {
         true
     }
 
-    fn withdraw(&self, tag: &str) {
+    fn withdraw(&self, _: &str, tag: &str) {
         let withdrawn = serde_json::json!({
             "channel": "log",
             "network": self.network,
@@ -554,7 +554,7 @@ impl Banners for Nowhere {
         false
     }
 
-    fn withdraw(&self, _: &str) {}
+    fn withdraw(&self, _: &str, _: &str) {}
 }
 
 impl OsServices for Headless {

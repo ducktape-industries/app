@@ -24,6 +24,7 @@ pub mod words;
 
 use abi::{BlobId, Refusal};
 use borsh::{BorshDeserialize, BorshSerialize};
+use bytes::Bytes;
 use futures::{Stream, StreamExt as _};
 use reqwest::StatusCode;
 use std::time::Duration;
@@ -244,13 +245,17 @@ impl Client {
                 .body(abi::encode(&id)),
         )
         .await?;
-        // borsh's `Option<Vec<u8>>`: a tag, the length (u32 LE), the bytes
+        // borsh's `Option<Vec<u8>>`: a tag, the length (u32 LE), the bytes;
+        // the head is cut off the first pieces, what follows it kept as it came
         let mut head = Vec::new();
+        let mut first = Bytes::new();
         while head.len() < 5 && head.first() != Some(&0) {
-            let Some(chunk) = response.chunk().await? else {
+            let Some(mut chunk) = response.chunk().await? else {
                 break;
             };
-            head.extend_from_slice(&chunk);
+            let took = chunk.len().min(5 - head.len());
+            head.extend_from_slice(&chunk.split_to(took));
+            first = chunk;
         }
         match head[..] {
             [0] => match response.chunk().await? {
@@ -259,7 +264,7 @@ impl Client {
             },
             [1, a, b, c, d, ..] => Ok(Some(BlobStream {
                 left: u32::from_le_bytes([a, b, c, d]) as usize,
-                first: head.split_off(5),
+                first,
                 response,
             })),
             _ => Err(undecoded("the blob answer did not decode")),
@@ -367,18 +372,20 @@ pub struct BlobStream {
     /// The bytes still to come, as the answer said.
     left: usize,
     /// What came with the answer's head.
-    first: Vec<u8>,
+    first: Bytes,
 }
 
 impl BlobStream {
-    /// The next piece of the framed bytes; `None` once all of them came.
-    /// Fewer than the answer said, or more, fail as an answer that does
-    /// not decode.
-    pub async fn next(&mut self) -> Result<Option<Vec<u8>>> {
+    /// The next piece of the framed bytes, as the connection read it (a
+    /// piece is up to the connection's read buffer, ~400 KB, and a copy
+    /// would be a second one on the reader's thread); `None` once all of
+    /// them came. Fewer than the answer said, or more, fail as an answer
+    /// that does not decode.
+    pub async fn next(&mut self) -> Result<Option<Bytes>> {
         let piece = match std::mem::take(&mut self.first) {
             first if !first.is_empty() => first,
             _ => match self.response.chunk().await? {
-                Some(chunk) => chunk.to_vec(),
+                Some(chunk) => chunk,
                 None if self.left == 0 => return Ok(None),
                 None => return Err(undecoded("the blob ended before its length")),
             },

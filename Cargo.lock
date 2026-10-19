@@ -6420,6 +6420,7 @@ dependencies = [
  "abi",
  "base64 0.22.1",
  "borsh",
+ "bytes",
  "commonware-cryptography",
  "futures",
  "identity",

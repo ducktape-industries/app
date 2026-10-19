@@ -9,7 +9,7 @@
 use super::*;
 use ducktape_host::contract::OsServices;
 use futures::StreamExt as _;
-use gpui_kit::AsyncApp;
+use gpui_kit::{AppContext as _, AsyncApp};
 use std::sync::Arc;
 
 /// What the first window is: the console (the launcher, then the desk),
@@ -156,6 +156,12 @@ fn start(boot: Boot, os: Arc<dyn OsServices>) {
                         .session
                         .update(cx, |session, cx| session.connect(target, cx));
                 }
+                // the other listed networks' notices, from the start: after
+                // the boot connect is out, so its node is not followed
+                let follower = cx.new(|cx| {
+                    super::follow::Follower::new(&entities.session, &entities.account, cx)
+                });
+                windows.update(cx, |windows, cx| windows.notified_by(follower, cx));
             }
             #[cfg(debug_assertions)]
             Boot::Live(live) => super::live::boot(live, &entities, cx),

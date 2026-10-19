@@ -268,7 +268,8 @@ fn log_os_notices(cx: &mut App) {
 fn banner_opened(opened: Banner) {
     match opened {
         Banner::Link(link) => crate::os::link(link),
-        Banner::Updates => {}
+        // a phone's banners are all the chain in hand's (`os::PhoneBanners`)
+        Banner::Row { .. } | Banner::Updates => {}
     }
 }
 

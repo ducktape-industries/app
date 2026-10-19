@@ -71,11 +71,15 @@ impl std::fmt::Display for Fetch {
 /// wherever the app names it (the rail, a pane, the consent card's
 /// "Program <id>", which a newline would end before a "System asks" of its
 /// own). One left off is said in app.log, once while the same ids are.
-pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>, Fetch> {
+pub async fn programs(
+    client: &RpcClient,
+    network: &str,
+    signer: &dyn noded_client::Signer,
+) -> Result<Vec<Program>, Fetch> {
     use ::programs::{Query, Reply};
     let Reply::Roster {
         programs, views, ..
-    } = ask(client, network, Query::Roster).await?
+    } = ask(client, network, signer, Query::Roster).await?
     else {
         return Err(Fetch::Unreadable(
             "the programs role answered no roster".into(),
@@ -94,15 +98,21 @@ pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>,
     let (roster, misspelled): (Vec<Program>, Vec<Program>) = programs
         .chain(views)
         .partition(|program| program::is_name(&program.name));
-    misspelled_said(misspelled.into_iter().map(|program| program.name).collect());
+    misspelled_said(
+        network,
+        misspelled.into_iter().map(|program| program.name).collect(),
+    );
     Ok(roster)
 }
 
-/// Warns of the ids left off the roster, escaped (`{:?}`), when they are
-/// not the ones the last read left off: once, not every block.
-fn misspelled_said(ids: Vec<String>) {
-    static LAST: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+/// Warns of the ids left off `network`'s roster, escaped (`{:?}`), when
+/// they are not the ones its last read left off: once, not every block,
+/// with another listed network's roster read in turn.
+fn misspelled_said(network: &str, ids: Vec<String>) {
+    static LAST: std::sync::Mutex<std::collections::BTreeMap<String, Vec<String>>> =
+        std::sync::Mutex::new(std::collections::BTreeMap::new());
     let mut last = LAST.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let last = last.entry(network.to_owned()).or_default();
     if *last != ids {
         if !ids.is_empty() {
             tracing::warn!(
@@ -118,9 +128,13 @@ fn misspelled_said(ids: Vec<String>) {
 
 /// Which programs fill the roles the kernel calls, as genesis bound them
 /// and the programs role answers them.
-pub async fn roles(client: &RpcClient, network: &str) -> Result<abi::Roles, Fetch> {
+pub async fn roles(
+    client: &RpcClient,
+    network: &str,
+    signer: &dyn noded_client::Signer,
+) -> Result<abi::Roles, Fetch> {
     use ::programs::{Query, Reply};
-    match ask(client, network, Query::Roles).await? {
+    match ask(client, network, signer, Query::Roles).await? {
         Reply::Roles(roles) => Ok(roles),
         _ => Err(Fetch::Unreadable(
             "the programs role answered the roles question with another reply".into(),
@@ -131,9 +145,10 @@ pub async fn roles(client: &RpcClient, network: &str) -> Result<abi::Roles, Fetc
 async fn ask(
     client: &RpcClient,
     network: &str,
+    signer: &dyn noded_client::Signer,
     query: ::programs::Query,
 ) -> Result<::programs::Reply, Fetch> {
-    let frame = super::query_frame(network, ::programs::PROGRAM, abi::encode(&query))
+    let frame = super::query_frame(signer, network, ::programs::PROGRAM, abi::encode(&query))
         .await
         .map_err(|refusal| Fetch::Refused(refusal.message))?;
     let answer = client
@@ -215,13 +230,16 @@ pub async fn program_bytes(
 /// error is the cache's (it could not keep the blob: a full disk), the
 /// inner one the node's. The landing file is named by this process too,
 /// so another instance of the app landing the same code never truncates
-/// it.
+/// it. Each piece goes to the disk as the connection read it, never
+/// copied: a copy (tokio's file takes one of each write, up to 2 MB) is a
+/// second piece-sized block on the reading thread, which glibc keeps in
+/// that thread's arena once freed.
 async fn fetched(
     client: &RpcClient,
     code: &BlobId,
     path: &Path,
 ) -> std::io::Result<Result<(), Fetch>> {
-    use tokio::io::AsyncWriteExt as _;
+    use std::io::Write as _;
     let mut blob = match client.blob_stream(*code).await {
         Ok(Some(blob)) => blob,
         Ok(None) => return Ok(Err(Fetch::NotHeld)),
@@ -234,7 +252,8 @@ async fn fetched(
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        let mut file = tokio::fs::File::create(&landing).await?;
+        let file = tokio::fs::File::create(&landing).await?.into_std().await;
+        let file = std::sync::Arc::new(file);
         let mut hasher = blob::Hasher::new(code.kind());
         loop {
             let piece = match blob.next().await {
@@ -243,9 +262,11 @@ async fn fetched(
                 Err(error) => return Ok(Err(fetch_error(error))),
             };
             hasher.update(&piece);
-            file.write_all(&piece).await?;
+            let file = file.clone();
+            tokio::task::spawn_blocking(move || (&*file).write_all(&piece))
+                .await
+                .map_err(std::io::Error::other)??;
         }
-        file.flush().await?;
         Ok(match hasher.finish() {
             Ok(landed) if landed == *code => Ok(tokio::fs::rename(&landing, path).await?),
             Ok(_) => Err(Fetch::Corrupt),

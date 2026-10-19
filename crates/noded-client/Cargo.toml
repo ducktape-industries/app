@@ -27,6 +27,8 @@ commonware = ["dep:commonware-cryptography"]
 abi.workspace = true
 identity.workspace = true
 borsh.workspace = true
+# a blob's pieces handed on as the connection read them (`BlobStream`)
+bytes = "1"
 # `stream`: a blob upload streams its bytes, never held whole
 reqwest = { workspace = true, features = ["stream"] }
 tokio = { version = "1", features = ["time"] }

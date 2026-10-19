@@ -1049,7 +1049,7 @@ impl View {
             .showing
             .clone()
             .filter(|route| self.visible && !route.is_empty());
-        kernel::screen::shown(self.program, self.instance, route);
+        kernel::screen::shown(&self.connection.chain, self.program, self.instance, route);
     }
 
     /// Where the seat placed the pane: told to the `host.placement`

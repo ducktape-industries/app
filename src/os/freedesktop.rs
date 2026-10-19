@@ -74,10 +74,11 @@ fn session_bus() -> Option<&'static zbus::blocking::Connection> {
     .as_ref()
 }
 
-/// The banner a tag is standing under, so the next notice under that tag
-/// replaces it instead of stacking a second one.
-fn standing() -> &'static Mutex<HashMap<String, u32>> {
-    static STANDING: OnceLock<Mutex<HashMap<String, u32>>> = OnceLock::new();
+/// The banner a chain's tag is standing under, so the next notice under
+/// that tag replaces it instead of stacking a second one: two networks'
+/// programs may share a tag, and each stands.
+fn standing() -> &'static Mutex<HashMap<(String, String), u32>> {
+    static STANDING: OnceLock<Mutex<HashMap<(String, String), u32>>> = OnceLock::new();
     STANDING.get_or_init(Mutex::default)
 }
 
@@ -126,7 +127,7 @@ fn listen(bus: &'static zbus::blocking::Connection) {
                         .lock()
                         .expect("banner clicks")
                         .get(&banner)
-                        .copied();
+                        .cloned();
                     match (click, action.as_str()) {
                         // a call's Answer opens it as a click does
                         (Some(click), "default" | "answer") => super::clicked(click),
@@ -155,17 +156,16 @@ pub(super) fn post(notice: &Notice, click: Option<Click>) -> bool {
     // the host's notice (a click opens Updates) replaces the one any of
     // this session's processes left standing
     let host = click == Some(Click::Updates);
-    let replaces = match (host, notice.tag.is_empty()) {
-        (true, _) => host_banner().unwrap_or(0),
-        (false, true) => 0,
-        (false, false) => standing.get(&notice.tag).copied().unwrap_or(0),
+    let replaces = match host {
+        true => host_banner().unwrap_or(0),
+        false => replaced(&standing, notice),
     };
     match notify(bus, notice, replaces, click.is_some()) {
         Ok(raised) => {
             if host {
                 keep_host_banner(Some(raised));
             } else if !notice.tag.is_empty() {
-                standing.insert(notice.tag.clone(), raised);
+                standing.insert((notice.chain.clone(), notice.tag.clone()), raised);
             }
             let mut clicks = clicks().lock().expect("banner clicks");
             match click {
@@ -186,24 +186,40 @@ pub(super) fn post(notice: &Notice, click: Option<Click>) -> bool {
     }
 }
 
+/// The banner `notice` replaces: the one standing under its chain's tag;
+/// none (0) with no tag.
+fn replaced(standing: &HashMap<(String, String), u32>, notice: &Notice) -> u32 {
+    let under = (notice.chain.clone(), notice.tag.clone());
+    match notice.tag.is_empty() {
+        true => 0,
+        false => standing.get(&under).copied().unwrap_or(0),
+    }
+}
+
 /// A call's banner declined: no longer standing, and closed (a daemon
-/// that keeps a banner after its action would leave it up).
+/// that keeps a banner after its action would leave it up); the centre
+/// holding its chain's log hears it (the one in hand, or that network's
+/// followed set).
 fn declined(banner: u32) {
-    let tag = standing()
+    let under = standing()
         .lock()
         .expect("standing notices")
         .iter()
         .find(|(_, raised)| **raised == banner)
-        .map(|(tag, _)| tag.clone());
-    if let Some(tag) = tag {
-        withdraw(&tag);
-        ducktape_host::runtime::notify::declined(&tag);
+        .map(|(under, _)| under.clone());
+    if let Some((chain, tag)) = under {
+        withdraw(&chain, &tag);
+        ducktape_host::runtime::notify::declined(&chain, &tag);
     }
 }
 
-/// The banner standing under `tag`, closed (`CloseNotification`).
-pub(super) fn withdraw(tag: &str) {
-    let Some(banner) = standing().lock().expect("standing notices").remove(tag) else {
+/// The banner standing under `tag` on `chain`, closed (`CloseNotification`).
+pub(super) fn withdraw(chain: &str, tag: &str) {
+    let standing = standing()
+        .lock()
+        .expect("standing notices")
+        .remove(&(chain.to_owned(), tag.to_owned()));
+    let Some(banner) = standing else {
         return;
     };
     clicks().lock().expect("banner clicks").remove(&banner);
@@ -454,4 +470,30 @@ fn the_quack_is_a_short_pcm_wave() {
         bytes <= rate * 2,
         "{bytes} bytes at {rate} Hz: over a second"
     );
+}
+
+#[cfg(test)]
+/// Two networks' programs raise one tag (garage's and duckpond's
+/// `chat/#general`): each banner stands, and a later one replaces only its
+/// own chain's.
+#[test]
+fn one_tag_on_two_chains_stands_twice() {
+    let on = |chain: &str| Notice {
+        title: "ada mentioned you".into(),
+        tag: "chat/#general".into(),
+        chain: chain.into(),
+        ..Notice::default()
+    };
+    let standing = HashMap::from([(("garage#01".into(), "chat/#general".into()), 5)]);
+    assert_eq!(
+        replaced(&standing, &on("duckpond#02")),
+        0,
+        "garage's was replaced"
+    );
+    assert_eq!(replaced(&standing, &on("garage#01")), 5);
+    let untagged = Notice {
+        tag: String::new(),
+        ..on("garage#01")
+    };
+    assert_eq!(replaced(&standing, &untagged), 0);
 }

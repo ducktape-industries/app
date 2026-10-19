@@ -1327,3 +1327,241 @@ fn a_float_from_a_popout_leaves_no_empty_window(cx: &mut TestAppContext) {
     });
     assert_eq!(keys, [console, floated], "the emptied pop-out went");
 }
+
+/// The node a banner's switch reaches, and the one in hand before it.
+const HERE: &str = "http://127.0.0.1:1";
+const THERE: &str = "http://127.0.0.1:2";
+
+/// `THERE` as a test node of `network`'s: its status, and its chain.
+fn there(network: &str) -> (crate::backend::NodeStatus, String) {
+    let status = crate::backend::NodeStatus {
+        network: network.into(),
+        ..super::tests::status(1)
+    };
+    let chain = crate::runtime::chain_of(&status);
+    (status, chain)
+}
+
+fn listed_node(url: &str, network: &str) -> crate::backend::RecentEndpoint {
+    crate::backend::RecentEndpoint {
+        url: url.into(),
+        network: network.into(),
+        ..Default::default()
+    }
+}
+
+/// A row of `program`'s logged in the followed set's log, in memory: its
+/// id.
+fn logged_there(followed: &crate::runtime::Followed, program: &str) -> u64 {
+    use crate::runtime::notify::{Permission, Settings, wall};
+    let allowed = Settings {
+        banners: true,
+        in_front: false,
+        burst: 6,
+        views: Default::default(),
+        unasked: Some(Permission::Allow),
+    };
+    let notice = view_wire::methods::Notification {
+        title: "ada mentioned you".into(),
+        body: "look".into(),
+        ..Default::default()
+    };
+    let center = followed.center();
+    let mut center = center.lock();
+    center.post(
+        &allowed,
+        program,
+        "There",
+        notice,
+        std::time::Instant::now(),
+        wall(),
+    );
+    center.logged().expect("a row logged")
+}
+
+/// The switch a click started lands on `status` (a node of the test's own
+/// in place of the real one): the centre takes the followed set's log up
+/// in memory, and `program`'s row `row` opens once the rail lists it and
+/// the desk shows, not before, read there.
+fn switched_then_opened(
+    app: &Entities,
+    status: crate::backend::NodeStatus,
+    program: &'static str,
+    row: u64,
+    cx: &mut TestAppContext,
+) {
+    let chain = crate::runtime::chain_of(&status);
+    let answering = super::tests::source(move |_| Ok(status.clone())).0;
+    app.session.update(cx, |session, cx| {
+        session.connect_through(THERE.into(), answering, cx)
+    });
+    for _ in 0..500 {
+        cx.run_until_parked();
+        if app
+            .session
+            .read_with(cx, |session, _| session.get().chain == chain)
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let read = |cx: &mut TestAppContext| {
+        app.notifications.read_with(cx, |notifications, _| {
+            notifications
+                .entries()
+                .iter()
+                .find(|entry| entry.id == row)
+                .map(|entry| entry.read)
+        })
+    };
+    assert_eq!(read(cx), Some(false), "the set's log was not taken up");
+    assert_ne!(
+        active(app, cx),
+        Some(program),
+        "opened before the rail listed it"
+    );
+    listed(app, &[program], cx);
+    app.screen
+        .update(cx, |screen, cx| screen.set(super::Screen::Desk, cx));
+    cx.run_until_parked();
+    assert_eq!(active(app, cx), Some(program), "the row did not open");
+    assert_eq!(read(cx), Some(true));
+}
+
+/// A banner of another listed network's: a click switches to the node its
+/// set follows, and its row opens there once the network lists its
+/// programs and shows its desk.
+#[gpui_kit::test]
+fn another_networks_notice_switches_then_opens(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "switch-test-there";
+    let _seat = crate::backend::seat_serial();
+    cx.executor().allow_parking();
+    let (app, _) = console(cx);
+    let (status, chain) = there("switch-there");
+    let here = "home#0a0a0a0a";
+    app.notifications.read_with(cx, |notifications, _| {
+        crate::runtime::take_up(notifications.center(), here)
+    });
+    app.session.update(cx, |session, cx| {
+        let state = SessionState {
+            connected: true,
+            connected_rpc: HERE.into(),
+            network: "home".into(),
+            chain: here.into(),
+            recent_endpoints: vec![
+                listed_node(HERE, "home"),
+                listed_node(THERE, "switch-there"),
+            ],
+            ..SessionState::default()
+        };
+        session.seed(state, cx)
+    });
+    let followed = crate::runtime::follow_for_test(THERE, &chain, "", None).expect("its set");
+    let row = logged_there(&followed, PROGRAM);
+    app.windows.update(cx, |windows, cx| {
+        windows.posted(super::windows::Posted::Row { chain, row }, cx)
+    });
+    let reaching = app
+        .session
+        .read_with(cx, |session, _| session.get().reaching.clone());
+    assert_eq!(reaching, THERE, "the click did not switch");
+    switched_then_opened(&app, status, PROGRAM, row, cx);
+}
+
+/// As [`another_networks_notice_switches_then_opens`], from the Connect
+/// screen with no network in hand and no set running yet (a click that
+/// started the app): the switch waits until the listed nodes are asked.
+#[gpui_kit::test]
+fn another_networks_notice_switches_then_opens_cold(cx: &mut TestAppContext) {
+    const PROGRAM: &str = "switch-test-cold";
+    let _seat = crate::backend::seat_serial();
+    cx.executor().allow_parking();
+    let (app, _) = console(cx);
+    let follower = cx.new(|cx| crate::shell::follow::Follower::new(&app.session, &app.account, cx));
+    app.windows
+        .update(cx, |windows, cx| windows.notified_by(follower, cx));
+    let (status, chain) = there("switch-cold");
+    app.screen
+        .update(cx, |screen, cx| screen.set(super::Screen::Connect, cx));
+    app.session.update(cx, |session, cx| {
+        let state = SessionState {
+            recent_endpoints: vec![listed_node(THERE, "switch-cold")],
+            ..SessionState::default()
+        };
+        session.seed(state, cx)
+    });
+    let posted = super::windows::Posted::Row {
+        chain: chain.clone(),
+        row: 1,
+    };
+    app.windows
+        .update(cx, |windows, cx| windows.posted(posted, cx));
+    let state = app
+        .session
+        .read_with(cx, |session, _| session.get().clone());
+    assert!(
+        state.reaching.is_empty(),
+        "switched before its set was found"
+    );
+    assert!(state.error.is_empty() && !state.connecting);
+    // its set starts as the follower asks the listed node (here, the test's
+    // own: the real node refuses)
+    let followed = crate::runtime::follow_for_test(THERE, &chain, "", None).expect("its set");
+    let row = logged_there(&followed, PROGRAM);
+    assert_eq!(row, 1);
+    for _ in 0..500 {
+        cx.run_until_parked();
+        let reaching = app
+            .session
+            .read_with(cx, |session, _| session.get().reaching.clone());
+        if !reaching.is_empty() {
+            assert_eq!(reaching, THERE);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    switched_then_opened(&app, status, PROGRAM, row, cx);
+}
+
+/// A switch to a chain another listed network's set follows: the centre
+/// takes that set's log up in memory, a row it logged there and all, and
+/// the set holds none from then on (its run left: a late write of it is
+/// refused, `take_up_trades_logs_and_refuses_the_left_sets_post`). Here,
+/// not beside the session's own tests: a connect that lands hands the
+/// process's runtime its node.
+#[gpui_kit::test]
+fn a_switch_takes_the_followed_chains_log_in_memory(cx: &mut TestAppContext) {
+    let _seat = crate::backend::seat_serial();
+    cx.executor().allow_parking();
+    let app = cx.update(entities);
+    let center = app
+        .notifications
+        .read_with(cx, |notifications, _| notifications.center().clone());
+    let (status, chain) = there("switch-takes");
+    let followed = crate::runtime::follow_for_test(THERE, &chain, "", None).expect("its set");
+    let row = logged_there(&followed, "chat");
+    let answering = super::tests::source(move |_| Ok(status.clone())).0;
+    app.session.update(cx, |session, cx| {
+        session.connect_through(THERE.into(), answering, cx)
+    });
+    for _ in 0..500 {
+        cx.run_until_parked();
+        if app
+            .session
+            .read_with(cx, |session, _| session.get().chain == chain)
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(center.lock().network(), chain);
+    assert!(
+        center.lock().entries().any(|entry| entry.id == row),
+        "the set's row did not come with its log"
+    );
+    assert_eq!(
+        followed.center().lock().network(),
+        "",
+        "the set kept its log"
+    );
+}

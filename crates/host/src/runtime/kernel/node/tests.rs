@@ -35,6 +35,7 @@ async fn a_host_that_runs_no_node_mints_no_invite() {
     let node = Node {
         client: RpcClient::new("http://127.0.0.1:1"),
         network: "test-network".into(),
+        apart: None,
     };
     let ask = methods::encode(&methods::CreateInvite { ttl_days: 7 });
     let refusal = invite(node, ask).await.unwrap_err();
@@ -89,6 +90,7 @@ fn applying_node_with_a_lost_answer(lost: &'static str) -> (Node, Sent) {
     let node = Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
+        apart: None,
     };
     let submits = Sent::default();
     let counted = submits.clone();
@@ -360,6 +362,7 @@ fn node_refusing_duplicates() -> (Node, std::sync::Arc<std::sync::atomic::Atomic
     let node = Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
+        apart: None,
     };
     let applied_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = applied_count.clone();
@@ -445,6 +448,7 @@ fn counted_changes_node(
     let node = Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
+        apart: None,
     };
     handle().spawn(async move {
         use futures::{SinkExt as _, StreamExt as _};
@@ -536,6 +540,7 @@ fn a_reconnect_opens_a_views_subscriptions_again_on_the_new_node() {
         chain: String::new(),
         rev,
         live: None,
+        apart: None,
     });
     assert_eq!(refused(&mut view, 2).0, refusal::STALE_CONNECTION);
     assert_eq!(view.pending, [], "a subscription was refused");
@@ -599,6 +604,7 @@ fn connection_to(view: &View, node: Node) -> crate::runtime::Connection {
         chain: String::new(),
         rev: view.connection.rev + 1,
         live: None,
+        apart: None,
     }
 }
 
@@ -760,6 +766,7 @@ fn put_node(carried: Option<abi::Outcome>) -> PutNode {
     let node = Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
+        apart: None,
     };
     let fake = PutNode {
         node,
@@ -1093,6 +1100,7 @@ async fn a_put_of_a_file_whose_size_changed_since_the_pick_is_a_host_fault() {
     let nowhere = Node {
         client: RpcClient::new("http://127.0.0.1:1"),
         network: "test-network".into(),
+        apart: None,
     };
     let refusal = put(nowhere, blobs, |_| {}).await.unwrap_err();
     assert_eq!(refusal.code, refusal::HOST_FAULT);
@@ -1175,6 +1183,7 @@ async fn the_try_network_holds_a_put() {
     let node = Node {
         client: client.clone(),
         network: status.network.clone(),
+        apart: None,
     };
     let asked = std::time::Instant::now();
     let held = methods::decode(&put(node, blobs, |_| {}).await.unwrap()).unwrap();
@@ -1186,7 +1195,7 @@ async fn the_try_network_holds_a_put() {
     for id in ids {
         let blob = abi::BlobId::Sha256(id);
         let ask = abi::encode(&blob::contract::Query::Held { blob });
-        let frame = backend::query_frame(&status.network, target, ask)
+        let frame = backend::query_frame(&*backend::query_signer(), &status.network, target, ask)
             .await
             .unwrap();
         let reply = client
@@ -1220,6 +1229,7 @@ fn a_view_reaches_a_program_its_manifest_never_names() {
         chain: "test-network#1".into(),
         rev: view.connection.rev,
         live: None,
+        apart: None,
     };
     let answered = |view: &mut View, id: u64| {
         for _ in 0..500 {
@@ -1315,6 +1325,7 @@ fn watched_changes_node(heights: &'static [u64]) -> Watched {
     let node = Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
+        apart: None,
     };
     handle().spawn(async move {
         use futures::{SinkExt as _, StreamExt as _};
@@ -1450,4 +1461,76 @@ fn heads_off_screen_ask_nothing() {
     assert_eq!(counted(&stalled.accepted, 0), 0, "a status read for no one");
     view.set_visible(true);
     assert_eq!(counted(&stalled.accepted, 1), 1);
+}
+
+/// A followed set's request (`Connection::apart`) is asked of its own node,
+/// whatever the views' connection did since (a reconnect moves `rev`), and
+/// refused `stale_connection` only once its set left. A view's own is as
+/// before: refused once the app reconnected, asked otherwise.
+#[test]
+fn a_followed_request_is_stale_only_once_its_set_left() {
+    let mut view = view();
+    let rev = view.connection.rev;
+    let apart = std::sync::Arc::new(super::super::super::roster::Apart::default());
+    view.connection = crate::runtime::Connection {
+        client: Some(RpcClient::new("http://127.0.0.1:1")),
+        network: "other-network".into(),
+        chain: "other-network#1".into(),
+        // from before the views' last connect
+        rev: rev.wrapping_sub(1),
+        live: None,
+        apart: Some(apart.clone()),
+    };
+    let node = connected(&mut view, 1).expect("asked of its own node");
+    assert!(node.apart.is_some(), "its node reads its set's roster");
+    apart.left.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(connected(&mut view, 2).is_none());
+    assert_eq!(refused(&mut view, 2).0, refusal::STALE_CONNECTION);
+
+    view.connection.apart = None;
+    assert!(connected(&mut view, 3).is_none());
+    assert_eq!(refused(&mut view, 3).0, refusal::STALE_CONNECTION);
+    view.connection.rev = rev;
+    assert!(connected(&mut view, 4).is_some_and(|node| node.apart.is_none()));
+}
+
+/// A followed set's `program.query` goes out signed by the reader, never by
+/// the key seated for the network in hand (another network's); a view's
+/// own by the seated key.
+#[test]
+fn a_followed_query_is_signed_by_the_reader() {
+    use commonware_cryptography::Signer as _;
+    let _seat = backend::seat_serial();
+    let seated = commonware_cryptography::ed25519::PrivateKey::from_seed(61);
+    let seated_key = noded_client::Signer::public_key(&seated).to_vec();
+    handle().block_on(backend::seat_key(std::sync::Arc::new(seated)));
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (heard, signed) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let (_, body) = read_request(&mut stream);
+            let query: noded::Query = abi::decode(&body).unwrap();
+            let frame: noded::Frame = abi::decode(&query.frame).unwrap();
+            let _ = heard.send(frame.body.signer);
+            respond(&mut stream, "200 OK", &abi::encode(&Vec::<u8>::new()));
+        }
+    });
+    let ask = methods::encode(&methods::Call {
+        target: "chat".into(),
+        body: Vec::new(),
+    });
+    let mut node = Node {
+        client: RpcClient::new(format!("http://{address}")),
+        network: "other-network".into(),
+        apart: None,
+    };
+    handle().block_on(query(node.clone(), ask.clone())).unwrap();
+    assert_eq!(signed.recv().unwrap(), seated_key, "the views' own");
+    node.apart = Some(Default::default());
+    handle().block_on(query(node, ask)).unwrap();
+    let reader = noded_client::Signer::public_key(&*crate::contract::os().reader()).to_vec();
+    assert_eq!(signed.recv().unwrap(), reader);
+    assert_ne!(reader, seated_key);
+    handle().block_on(backend::lock_signer());
 }

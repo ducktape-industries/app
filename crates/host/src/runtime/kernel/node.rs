@@ -22,6 +22,27 @@ type NodeMethod = fn(Node, Vec<u8>) -> Answered;
 pub(super) struct Node {
     pub(super) client: RpcClient,
     pub(super) network: String,
+    /// A followed set's own (`Connection::apart`); `None` for the views'.
+    pub(super) apart: Option<std::sync::Arc<super::super::roster::Apart>>,
+}
+
+impl Node {
+    /// The roster the request reads: its set's, or the app's.
+    pub(super) fn roster(&self) -> &super::super::Roster {
+        match &self.apart {
+            Some(apart) => &apart.roster,
+            None => super::super::roster::roster(),
+        }
+    }
+
+    /// What signs its queries: a set's, the reader (the seated key is the
+    /// network in hand's); the views', the seated key or the reader.
+    pub(super) fn signer(&self) -> std::sync::Arc<dyn noded_client::Signer> {
+        match &self.apart {
+            Some(_) => crate::contract::os().reader(),
+            None => backend::query_signer(),
+        }
+    }
 }
 
 /// A refusal the transport produced, not the node's own word.
@@ -314,8 +335,7 @@ pub(in crate::runtime) fn spawn_reply(
 /// with the request REFUSED: `stale_connection` for a view from before the
 /// app's last (re)connect, `not_connected` without a node.
 pub(super) fn connected(view: &mut View, id: u64) -> Option<Node> {
-    let rev = super::super::connection().lock().expect("views rpc").rev;
-    if rev != view.connection.rev {
+    if view.connection.stale() {
         view.refuse(
             id,
             refusal::STALE_CONNECTION,
@@ -336,6 +356,7 @@ fn node_on(connection: &super::super::Connection) -> Option<Node> {
         (Some(client), network) if !network.is_empty() => Some(Node {
             client: client.clone(),
             network: network.clone(),
+            apart: connection.apart.clone(),
         }),
         _ => None,
     }
@@ -778,7 +799,8 @@ pub(super) fn enveloped(view: &mut View, id: u64, payload: &[u8]) -> Option<meth
 pub(super) fn query(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
         let call = call_of(&ask)?;
-        let frame = backend::query_frame(&node.network, &call.target, call.body).await?;
+        let frame =
+            backend::query_frame(&*node.signer(), &node.network, &call.target, call.body).await?;
         node.client
             .query(backend::Layer::Preconfirmed, frame)
             .await

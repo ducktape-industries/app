@@ -1,26 +1,28 @@
 //! `host.showing` and `host.screen`: the route each view names as the one
-//! it shows, and, for each program, the routes its views show on screen
-//! (`host.visible`), which its notifier reads to leave alone what the
-//! person is looking at. The app knows nothing of any route: it keeps
-//! what each view names, while that view is on screen.
+//! it shows, and, for each program on each chain, the routes its views show
+//! on screen (`host.visible`), which its notifier reads to leave alone what
+//! the person is looking at. The app knows nothing of any route: it keeps
+//! what each view names, while that view is on screen. Two networks run
+//! one program apart (another listed network's notifier, `notifier::follow`):
+//! a route on screen is its own chain's alone.
 use super::*;
 use std::collections::BTreeMap;
 
 type Routes = tokio::sync::watch::Sender<Vec<String>>;
 
-/// What each view on screen shows, by its program and pane, and each
-/// program's routes as `host.screen` hands them out. A leaf lock: nothing
-/// else is taken while it is held.
+/// What each view on screen shows, by its program and pane, with the chain
+/// it shows it on, and each program's routes on each chain as `host.screen`
+/// hands them out. A leaf lock: nothing else is taken while it is held.
 #[derive(Default)]
 struct Screen {
-    shown: BTreeMap<(&'static str, u64), String>,
-    programs: HashMap<&'static str, Routes>,
+    shown: BTreeMap<(&'static str, u64), (String, String)>,
+    programs: HashMap<(String, &'static str), Routes>,
 }
 
 impl Screen {
-    fn routes(&mut self, program: &'static str) -> &Routes {
+    fn routes(&mut self, chain: &str, program: &'static str) -> &Routes {
         self.programs
-            .entry(program)
+            .entry((chain.to_owned(), program))
             .or_insert_with(|| tokio::sync::watch::channel(Vec::new()).0)
     }
 }
@@ -33,33 +35,52 @@ fn screen() -> std::sync::MutexGuard<'static, Screen> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// The view of `program` in pane `instance` shows `route` on screen now, or
-/// nothing (off screen, gone, or naming none): its program's routes move.
-pub(in crate::runtime) fn shown(program: &'static str, instance: u64, route: Option<String>) {
+/// The view of `program` in pane `instance` shows `route` on `chain` on
+/// screen now, or nothing (off screen, gone, or naming none): its program's
+/// routes on that chain move, and on the chain it showed one on before.
+pub(in crate::runtime) fn shown(
+    chain: &str,
+    program: &'static str,
+    instance: u64,
+    route: Option<String>,
+) {
     let mut screen = screen();
-    let moved = match route {
-        Some(route) => screen.shown.insert((program, instance), route.clone()) != Some(route),
-        None => screen.shown.remove(&(program, instance)).is_some(),
+    let before = match route {
+        Some(route) => screen
+            .shown
+            .insert((program, instance), (chain.to_owned(), route)),
+        None => screen.shown.remove(&(program, instance)),
     };
-    if !moved {
+    let now = screen.shown.get(&(program, instance)).cloned();
+    if before == now {
         return;
     }
-    let mut routes: Vec<String> = screen
-        .shown
-        .iter()
-        .filter(|((shown, _), _)| *shown == program)
-        .map(|(_, route)| route.clone())
+    let mut chains: Vec<String> = [before, now]
+        .into_iter()
+        .flatten()
+        .map(|(on, _)| on)
         .collect();
-    routes.sort();
-    routes.dedup();
-    // sent under the lock: two moves never land out of order
-    screen.routes(program).send_replace(routes);
+    chains.dedup();
+    for chain in chains {
+        let mut routes: Vec<String> = screen
+            .shown
+            .iter()
+            .filter(|((shown, _), (on, _))| *shown == program && *on == chain)
+            .map(|(_, (_, route))| route.clone())
+            .collect();
+        routes.sort();
+        routes.dedup();
+        // sent under the lock: two moves never land out of order
+        screen.routes(&chain, program).send_replace(routes);
+    }
 }
 
-/// `host.screen`: the program's routes on screen now, then each time they
-/// move.
+/// `host.screen`: the program's routes on screen on the view's chain now,
+/// then each time they move.
 pub(super) fn follow(view: &mut View, id: u64) {
-    let mut routes = screen().routes(view.program).subscribe();
+    let mut routes = screen()
+        .routes(&view.connection.chain, view.program)
+        .subscribe();
     spawn_host_subscription(view, id, move |mut items| async move {
         loop {
             let now = routes.borrow_and_update().clone();
@@ -134,5 +155,50 @@ mod tests {
         assert_eq!(heard(&notifier, 1), [vec!["general".to_owned()]]);
         drop(pane);
         assert_eq!(heard(&notifier, 1), [Vec::<String>::new()]);
+    }
+
+    /// One program on two networks (garage's and duckpond's `#general`): a
+    /// pane showing a route on one chain is on screen for that chain's
+    /// notifier alone, so the other network's notifier still says what came.
+    #[test]
+    fn one_route_on_two_chains_stands_apart() {
+        let program = "screen-tests-chains";
+        let on = |chain: &str, instance| {
+            let mut view = crate::runtime::kernel::tests::view();
+            view.program = program;
+            view.instance = instance;
+            view.connection.chain = chain.into();
+            view
+        };
+        let mut elsewhere = on("duckpond#02", crate::runtime::notifier::INSTANCE);
+        assert!(answer(
+            &mut elsewhere,
+            Capability::Host,
+            "screen",
+            1,
+            &[],
+            &None
+        ));
+        assert_eq!(heard(&elsewhere, 1), [Vec::<String>::new()]);
+        let mut here = on("garage#01", crate::runtime::notifier::INSTANCE);
+        assert!(answer(&mut here, Capability::Host, "screen", 1, &[], &None));
+        assert_eq!(heard(&here, 1), [Vec::<String>::new()]);
+
+        let mut pane = on("garage#01", 7);
+        let route = methods::encode(&"general".to_owned());
+        assert!(answer(
+            &mut pane,
+            Capability::Host,
+            "showing",
+            2,
+            &route,
+            &None
+        ));
+        pane.set_visible(true);
+        assert_eq!(heard(&here, 1), [vec!["general".to_owned()]]);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let mut events = Vec::new();
+        elsewhere.replies.drain_into(&mut events);
+        assert!(events.is_empty(), "another chain's pane: {events:?}");
     }
 }

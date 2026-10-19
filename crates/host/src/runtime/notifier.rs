@@ -32,10 +32,19 @@
 //! where the app's have the person's at this device. The program still
 //! decides every notice; the recipient only says whose they are and where
 //! they go.
+//!
+//! The desktop runs every other listed network's notifiers too, beside the
+//! network in hand's: a followed set per chain ([`follow`]).
 use super::*;
 use crate::backend::views::Program;
 use crate::contract::Banners;
 use notify::{CenterHandle, Permission, Settings};
+
+mod follow;
+#[cfg(any(test, feature = "test-support"))]
+pub use follow::follow_for_test;
+pub use follow::{Followed, STATUS_EVERY, chain_of, follow, followed_url, lock_followed, take_up};
+pub(super) use follow::{flush_sets, holding};
 
 /// The instance a notifier's requests and perf samples go under: no pane's.
 pub(crate) const INSTANCE: u64 = u64::MAX;
@@ -83,8 +92,9 @@ pub struct Recipient {
     pub store: PathBuf,
     /// Its notification centre: the fold by tag, the burst limit.
     pub center: CenterHandle,
-    /// Its word on notices, as the prefs hold the person's.
-    pub settings: Settings,
+    /// Its word on notices, as the prefs hold the person's; `None`: the
+    /// person's own, read as each notice is (a followed set's).
+    pub settings: Option<Settings>,
     /// Where a notice its centre lets through goes; the app's go to the OS.
     pub banners: Arc<dyn Banners>,
     /// What its notifiers ask the host to move (a badge), each with its
@@ -171,8 +181,9 @@ impl Notifiers {
     /// another on one thread ([`start`]): a program that ships none costs a
     /// read of its blob and no thread.
     pub(super) fn reconcile(&self, asked_of: &Connection, programs: &[Program]) {
-        let blocked = match &self.recipient {
-            Some(recipient) => blocked_in(&recipient.settings),
+        let settings = self.recipient.as_ref().and_then(|r| r.settings.as_ref());
+        let blocked = match settings {
+            Some(settings) => blocked_in(settings),
             None => blocked(),
         };
         let wanted: HashMap<&'static str, abi::BlobId> = programs
@@ -237,16 +248,20 @@ pub(crate) fn disconnected() {
 }
 
 /// The person's word on `program`'s notices: blocked stops its notifier,
-/// anything else starts it if the network in hand lists the program.
+/// on every network, anything else starts it where a network lists the
+/// program (in hand, on the views' connection and roster; followed, on the
+/// set's own).
 pub(crate) fn permission_moved(program: &str, permission: Permission) {
     if permission == Permission::Block {
-        return notifiers().stop(program);
+        notifiers().stop(program);
+    } else {
+        let asked_of = connection().lock().expect("views rpc").clone();
+        if asked_of.client.is_some() {
+            let programs = roster().lock().clone();
+            notifiers().reconcile(&asked_of, &programs);
+        }
     }
-    let asked_of = connection().lock().expect("views rpc").clone();
-    if asked_of.client.is_some() {
-        let programs = roster().lock().clone();
-        notifiers().reconcile(&asked_of, &programs);
-    }
+    follow::permission_moved(program, permission);
 }
 
 /// Each of `programs`' notifiers out of its code, for `recipient` (none:
@@ -263,6 +278,7 @@ fn start(
     asked_of: Connection,
     recipient: Option<Arc<Recipient>>,
 ) {
+    let loading = Loading::new();
     // a test's prefs are its own thread's (`backend::prefs`): the notifier
     // it starts reads the same
     #[cfg(any(test, feature = "test-support"))]
@@ -295,12 +311,37 @@ fn start(
                 tracing::warn!(target: "ducktape::app", program, %error, "no thread to run the notifier on");
             }
         }
+        drop(loading);
     };
     if let Err(error) = std::thread::Builder::new()
         .name("notifiers".into())
         .spawn(found)
     {
         tracing::warn!(target: "ducktape::app", %error, "no thread to find the notifiers on");
+    }
+}
+
+/// Notifier loads under way in the process, each a fetch and a compile:
+/// a followed set's first read waits for none to be left ([`follow`]), so
+/// sets started one after another never load at once.
+fn loads() -> &'static tokio::sync::watch::Sender<usize> {
+    static LOADS: OnceLock<tokio::sync::watch::Sender<usize>> = OnceLock::new();
+    LOADS.get_or_init(|| tokio::sync::watch::channel(0).0)
+}
+
+/// One load counted while it lives.
+struct Loading;
+
+impl Loading {
+    fn new() -> Self {
+        loads().send_modify(|loads| *loads += 1);
+        Loading
+    }
+}
+
+impl Drop for Loading {
+    fn drop(&mut self) {
+        loads().send_modify(|loads| *loads -= 1);
     }
 }
 

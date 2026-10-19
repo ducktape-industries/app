@@ -137,12 +137,11 @@ fn ask(view: &mut View, id: u64, path: PathBuf, (stage, run): Method, payload: V
 }
 
 /// This view's file on its own connection's network; a view from before
-/// the app's last (re)connect is refused, so it never writes into the next
-/// network's.
+/// the app's last (re)connect, or of a followed set that left, is refused,
+/// so it never writes into the next network's or after the run in hand.
 fn file(view: &View) -> Result<PathBuf, wire::Error> {
-    let rev = super::connection().lock().expect("views rpc").rev;
     let connection = &view.connection;
-    if connection.rev != rev {
+    if connection.stale() {
         return Err(wire::Error::new(
             methods::refusal::STALE_CONNECTION,
             "view belongs to a previous network connection",
@@ -154,11 +153,18 @@ fn file(view: &View) -> Result<PathBuf, wire::Error> {
             "not connected to a network",
         ));
     }
-    let store = match &view.recipient {
+    let store = store_of(view.recipient.as_deref());
+    Ok(path(&store, &connection.chain, view.program))
+}
+
+/// Where `recipient`'s notifiers keep their files: its store, or the app's
+/// `<config>/store` for the person at this device, every network's run of
+/// a program alike (in hand or followed), so a switch finds its cursor.
+pub(super) fn store_of(recipient: Option<&super::notifier::Recipient>) -> PathBuf {
+    match recipient {
         Some(recipient) => recipient.store.clone(),
         None => crate::backend::dirs().config.join("store"),
-    };
-    Ok(path(&store, &connection.chain, view.program))
+    }
 }
 
 fn path(store: &Path, chain: &str, program: &str) -> PathBuf {
@@ -407,6 +413,28 @@ mod tests {
             Kept::from([("last".to_owned(), b"word".to_vec())])
         );
         let _ = std::fs::remove_dir_all(config);
+    }
+
+    /// A followed set's notifier keeps its file on its own chain while the
+    /// set runs, whatever the views' connection did since; once the set left
+    /// (its chain taken up in hand) it is refused, so the run in hand is the
+    /// file's one writer.
+    #[test]
+    fn a_left_set_writes_no_store() {
+        let mut view = crate::runtime::kernel::tests::view();
+        let apart = std::sync::Arc::new(super::super::roster::Apart::default());
+        view.connection = super::super::Connection {
+            chain: "other-network#1".into(),
+            rev: view.connection.rev.wrapping_sub(1),
+            apart: Some(apart.clone()),
+            ..Default::default()
+        };
+        assert!(file(&view).is_ok(), "{:?}", file(&view));
+        apart.left.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            file(&view).unwrap_err().code,
+            methods::refusal::STALE_CONNECTION
+        );
     }
 
     /// A store file cut to nothing answers `None` to a view, not a host

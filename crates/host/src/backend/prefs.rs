@@ -143,6 +143,21 @@ pub fn save_debug(on: bool) -> bool {
     edit_prefs(|prefs| prefs["debug"] = serde_json::json!(on))
 }
 
+/// This device's public key on the network `keyring` names, hex, as last
+/// seated there (`Account::unlocked`): whose notices that network's
+/// notifiers run for while another is in hand (`runtime::follow`), no key
+/// store asked. None before its first seat with this build.
+pub fn device_key_of(keyring: &str) -> Option<String> {
+    let prefs = read_prefs().ok()?;
+    prefs["device_keys"][keyring].as_str().map(str::to_owned)
+}
+
+/// `key` (hex) kept as this device's public key on `keyring`'s network:
+/// [`device_key_of`] from then on.
+pub fn note_device_key(keyring: &str, key: &str) -> bool {
+    edit_prefs(|prefs| prefs["device_keys"][keyring] = serde_json::json!(key))
+}
+
 const DEFAULT_VIEW_BYTES: u64 = 64 << 20;
 const DEFAULT_PICTURE_BYTES: u64 = 64 << 20;
 const DEFAULT_SVG_RASTER_BYTES: u64 = 256 << 20;

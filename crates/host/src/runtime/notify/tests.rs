@@ -548,6 +548,8 @@ fn a_redraws_posts_read_the_prefs_once_and_write_the_log_once() {
         prefs[VIEWS_PREF] = serde_json::json!({ "request-test": "Silent" });
     });
     let mut view = crate::runtime::kernel::tests::view();
+    // the person's view of the chain in hand
+    view.connection.chain = "dev".into();
     let _on = crate::perf::on_for_test();
     let reads = crate::backend::prefs_reads();
     for id in 0..256 {
@@ -854,7 +856,7 @@ fn an_until_past_the_clock_sets_no_timer() {
         CenterHandle::default(),
         None,
         "chat",
-        "chat/call/1".into(),
+        (String::new(), "chat/call/1".into()),
         u64::MAX,
     );
     crate::runtime::kernel::handle()
@@ -879,7 +881,13 @@ fn a_calls_banner_is_withdrawn_at_its_until() {
         0,
     );
     let banner = banner.unwrap();
-    let timer = super::withdraw_at(center.clone(), None, "chat", banner.tag.clone(), until);
+    let timer = super::withdraw_at(
+        center.clone(),
+        None,
+        "chat",
+        (banner.chain.clone(), banner.tag.clone()),
+        until,
+    );
     let started = Instant::now();
     crate::runtime::kernel::handle().block_on(timer).unwrap();
     assert!(
@@ -1187,4 +1195,51 @@ fn the_hosts_rows_stand_beside_every_chains_in_a_file_of_their_own() {
     assert_eq!(center.entries().count(), 0);
     flushed(&mut center, &device);
     assert_eq!(kept(&device), Vec::<String>::new());
+}
+
+/// A notice of the person's notifier on one chain, posted into a centre
+/// holding another's log (the chain just left, before the connect that
+/// stops its notifiers): refused `stale_connection`, nothing logged. On
+/// the centre's own chain it is logged.
+#[test]
+fn a_post_into_another_chains_centre_is_refused() {
+    let center = CenterHandle::default();
+    center.lock().open_log("held-net#1", None);
+    let mut view = crate::runtime::kernel::tests::view();
+    view.program = "chat";
+    view.connection.chain = "left-net#2".into();
+    let payload = methods::encode(&post("ada", "#general"));
+    super::post(&mut view, &center, 1, &payload);
+    match view.pending.pop() {
+        Some(view_wire::Event::Response {
+            id: 1,
+            result: Err(refusal),
+            ..
+        }) => assert_eq!(refusal.code, methods::refusal::STALE_CONNECTION),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(center.lock().entries().count(), 0, "logged anyway");
+    view.connection.chain = "held-net#1".into();
+    super::post(&mut view, &center, 2, &payload);
+    assert_eq!(center.lock().entries().count(), 1);
+}
+
+/// A banner's row of a chain not in hand goes to the shell as that chain's
+/// (it switches there first); a row of none (an older banner, the host's
+/// own) opens on the centre in hand.
+#[test]
+fn another_chains_row_click_asks_the_shell() {
+    let opened = super::opened(super::Click::Row {
+        chain: "never-in-hand#7".into(),
+        row: 4,
+    });
+    assert!(
+        matches!(&opened, Some(super::Opened::Row { chain, row: 4 }) if chain == "never-in-hand#7"),
+        "opened here"
+    );
+    let gone = super::opened(super::Click::Row {
+        chain: String::new(),
+        row: u64::MAX,
+    });
+    assert!(gone.is_none(), "a row the centre in hand does not hold");
 }

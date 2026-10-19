@@ -20,6 +20,7 @@ pub(super) fn node_server(
     let node = node::Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
+        apart: None,
     };
     let responses: Vec<(String, Vec<u8>)> = responses
         .into_iter()

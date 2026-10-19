@@ -434,7 +434,8 @@ struct PhoneBanners;
 impl Banners for PhoneBanners {
     fn post(&self, notice: &Notice, click: Option<Click>) -> bool {
         let row = match click {
-            Some(Click::Row(id)) => Some(row_at(id)),
+            // the phone runs the notifiers of the chain in hand alone
+            Some(Click::Row { row, .. }) => Some(row_at(row)),
             _ => None,
         };
         let front = IN_FRONT.load(Ordering::Relaxed);
@@ -444,7 +445,7 @@ impl Banners for PhoneBanners {
         }
     }
 
-    fn withdraw(&self, tag: &str) {
+    fn withdraw(&self, _: &str, tag: &str) {
         withdraw_notice(tag);
     }
 }

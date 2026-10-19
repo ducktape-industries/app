@@ -340,7 +340,7 @@ impl Drop for View {
             crate::perf::retire(self.program, self.instance);
         }
         if self.showing.is_some() {
-            kernel::screen::shown(self.program, self.instance, None);
+            kernel::screen::shown(&self.connection.chain, self.program, self.instance, None);
         }
     }
 }
