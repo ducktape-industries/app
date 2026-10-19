@@ -318,6 +318,8 @@ mod primitives;
 mod rich_tooltip;
 mod selection;
 mod sheet;
+#[cfg(target_os = "linux")]
+mod snap;
 mod svg_real;
 mod uniform_list;
 mod variable_list;
