@@ -590,6 +590,8 @@ impl OsServices for Headless {
             motion: ducktape_host::motion::IOS,
             // its recipients' settings answer for them (`unasked`)
             os_asks_notices: false,
+            // notifiers alone, on no screen
+            feeds_follow_screen: false,
         }
     }
 

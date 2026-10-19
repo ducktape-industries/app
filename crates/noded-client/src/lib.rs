@@ -329,8 +329,7 @@ impl Client {
     }
 
     /// Each block's writes to `program`, the keys alone (`?keys`): every
-    /// value `None`. A node that does not know `?keys` sends the values
-    /// too, which a caller of this never reads.
+    /// value `None`.
     pub async fn changed_keys(
         &self,
         program: &str,

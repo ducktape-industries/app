@@ -81,14 +81,16 @@
 //!   block that wrote to `program` (`/v1/changes/<program>?keys`): the block's
 //!   height and the keys it wrote, as the node publishes them, so the view
 //!   re-reads what moved; `None` when the link was reopened, or the view
-//!   came back on screen or the app in front, and the view should re-read
-//!   everything. Only a view on screen (a notifier: always) of an app in
-//!   front holds the socket: off screen or behind another app it lets go,
-//!   and a socket no view holds closes.
+//!   came back on screen or the app in front, or fell a block behind (it
+//!   holds one item untaken), and the view should re-read everything. Only
+//!   a view of an app in front holds the socket, and on a phone only one on
+//!   screen (a notifier: always); a desktop window keeps it while it is
+//!   open. Off screen on a phone or behind another app it lets go, and a
+//!   socket no view holds closes.
 //! - `chain.heads` — a subscription that gets one `Head` per finalized block,
 //!   oldest first: the host reads the node's status at half its block
-//!   time and fills each advance from the block archive, while the view
-//!   is on screen and the app in front; back, it goes on from the tip.
+//!   time and fills each advance from the block archive, while the
+//!   socket above would be held; back, it goes on after the last head.
 //!
 //! A connect inside the network opens both again on the new node
 //! (`reconnected`): neither ends on it.

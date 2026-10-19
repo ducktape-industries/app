@@ -199,8 +199,9 @@ pub(super) struct View {
     pub visible: bool,
     pub visibility_change: Option<bool>,
     pub visibility_subscriptions: Vec<u64>,
-    /// `visible`, for the kernel's tasks: a node subscription follows the
-    /// node only while its view is on screen (`kernel::node::Wanted`).
+    /// `visible`, for the kernel's tasks: on a phone a node subscription
+    /// follows the node only while its view is on screen
+    /// (`kernel::node::Wanted`).
     pub(crate) on_screen: tokio::sync::watch::Sender<bool>,
     /// Whether the app is in front (`kernel::set_in_front`), as this
     /// view's tasks read it.

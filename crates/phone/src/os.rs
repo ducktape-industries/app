@@ -401,6 +401,7 @@ impl PhoneOs {
             },
             // iOS's alert prompt, Android 13's POST_NOTIFICATIONS
             os_asks_notices: true,
+            feeds_follow_screen: true,
         }
     }
 

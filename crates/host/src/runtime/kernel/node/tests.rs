@@ -466,17 +466,26 @@ async fn two_identical_submits_in_flight_are_two_frames() {
 /// A node whose `/v1/changes/<program>` socket sends one change at each of
 /// `heights`, then stays open for as long as the client holds it.
 fn changes_node(heights: &'static [u64]) -> Node {
-    counted_changes_node(heights, std::time::Duration::ZERO).0
+    counted_changes_node(heights, None).node
 }
 
-/// [`changes_node`], each socket waiting `after` before its first change,
-/// and the count of sockets it took.
+/// A changes node that also counts its sockets: those it took, and those
+/// the client closed since.
+struct Watched {
+    node: Node,
+    opened: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    closed: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// [`changes_node`], each change sent once `paced` (if any) gives a permit,
+/// counted when it opens and when the client closes it.
 fn counted_changes_node(
     heights: &'static [u64],
-    after: std::time::Duration,
-) -> (Node, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
-    let sockets = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let taken = sockets.clone();
+    paced: Option<std::sync::Arc<tokio::sync::Semaphore>>,
+) -> Watched {
+    let opened = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let closed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (taken, gone) = (opened.clone(), closed.clone());
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let node = Node {
@@ -488,15 +497,18 @@ fn counted_changes_node(
         use futures::{SinkExt as _, StreamExt as _};
         let listener = tokio::net::TcpListener::from_std(listener).unwrap();
         while let Ok((stream, _)) = listener.accept().await {
-            let taken = taken.clone();
+            let (taken, gone, paced) = (taken.clone(), gone.clone(), paced.clone());
             tokio::spawn(async move {
                 // anything but the socket (a `chain.heads` status read) is dropped
                 let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
                     return;
                 };
                 taken.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                tokio::time::sleep(after).await;
                 for &height in heights {
+                    // each block once the test lets it go
+                    if let Some(paced) = &paced {
+                        paced.acquire().await.unwrap().forget();
+                    }
                     // each block wrote one row, as a program's block does
                     let change = noded::Change {
                         height,
@@ -507,20 +519,31 @@ fn counted_changes_node(
                         tokio_tungstenite::tungstenite::Message::Binary(abi::encode(&change));
                     socket.send(sent).await.unwrap();
                 }
-                while socket.next().await.is_some() {}
+                while let Some(Ok(_)) = socket.next().await {}
+                gone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             });
         }
     });
-    (node, sockets)
+    Watched {
+        node,
+        opened,
+        closed,
+    }
 }
 
 /// Two subscriptions to one program's changes on one node, as two
 /// accounts' notifiers of it on a host with no screen (or a program's pane
 /// and its notifier in the app): ONE socket to the node, and each hears
-/// every block it publishes.
+/// every block it publishes. The node sends each block once both took the
+/// one before, as a block's time apart lets a view that keeps up.
 #[test]
 fn followers_of_one_programs_changes_share_one_socket() {
-    let (node, sockets) = counted_changes_node(&[5, 6], std::time::Duration::from_millis(200));
+    let paced = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+    let Watched {
+        node,
+        opened: sockets,
+        ..
+    } = counted_changes_node(&[5, 6], Some(paced.clone()));
     let mut first = view();
     let mut second = view();
     follow_changes(&mut first, 1, node.clone(), "chat".into());
@@ -533,16 +556,12 @@ fn followers_of_one_programs_changes_share_one_socket() {
         }))),
         done: false,
     };
-    for follower in [&mut first, &mut second] {
-        let mut items = Vec::new();
-        for _ in 0..500 {
-            follower.replies.drain_into(&mut items);
-            if items.len() >= 2 {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+    for height in [5, 6] {
+        // both joined, or both took the block before: the next one goes
+        paced.add_permits(1);
+        for follower in [&first, &second] {
+            assert_eq!(drained(follower, 1), [block(height)]);
         }
-        assert_eq!(items, [block(5), block(6)]);
     }
     assert_eq!(sockets.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
@@ -1340,59 +1359,6 @@ fn a_view_reaches_a_program_its_manifest_never_names() {
     handle().block_on(backend::lock_signer());
 }
 
-/// A changes node that also counts its sockets: those it took, and those
-/// the client closed since.
-struct Watched {
-    node: Node,
-    opened: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    closed: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-}
-
-/// [`changes_node`], each socket counted when it opens and when the client
-/// closes it.
-fn watched_changes_node(heights: &'static [u64]) -> Watched {
-    let opened = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let closed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let (taken, gone) = (opened.clone(), closed.clone());
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let node = Node {
-        client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
-        network: "test-network".into(),
-        apart: None,
-    };
-    handle().spawn(async move {
-        use futures::{SinkExt as _, StreamExt as _};
-        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-        while let Ok((stream, _)) = listener.accept().await {
-            let (taken, gone) = (taken.clone(), gone.clone());
-            tokio::spawn(async move {
-                let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
-                    return;
-                };
-                taken.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                for &height in heights {
-                    let change = noded::Change {
-                        height,
-                        root: abi::Root([0; 32]),
-                        writes: vec![(format!("row/{height}").into_bytes(), None)],
-                    };
-                    let sent =
-                        tokio_tungstenite::tungstenite::Message::Binary(abi::encode(&change));
-                    socket.send(sent).await.unwrap();
-                }
-                while let Some(Ok(_)) = socket.next().await {}
-                gone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            });
-        }
-    });
-    Watched {
-        node,
-        opened,
-        closed,
-    }
-}
-
 /// `count`'s value once it is `want`, waiting up to two seconds for it.
 fn counted(count: &std::sync::atomic::AtomicUsize, want: usize) -> usize {
     for _ in 0..200 {
@@ -1427,7 +1393,7 @@ fn change_item(height: Option<u64>) -> wire::Event {
 /// the network, about a megabyte a minute on duckpond.
 #[test]
 fn a_view_off_screen_holds_no_socket() {
-    let watched = watched_changes_node(&[5]);
+    let watched = counted_changes_node(&[5], None);
     let mut view = view();
     view.set_visible(false);
     follow_changes(&mut view, 1, watched.node.clone(), "chat".into());
@@ -1460,7 +1426,7 @@ fn a_view_off_screen_holds_no_socket() {
 /// and the node queued each block's writes for it until it woke.
 #[test]
 fn an_app_behind_another_holds_no_socket() {
-    let watched = watched_changes_node(&[5]);
+    let watched = counted_changes_node(&[5], None);
     let (front, in_front) = tokio::sync::watch::channel(true);
     let mut notifier = view();
     notifier.notifier = true;
@@ -1495,6 +1461,57 @@ fn heads_off_screen_ask_nothing() {
     assert_eq!(counted(&stalled.accepted, 0), 0, "a status read for no one");
     view.set_visible(true);
     assert_eq!(counted(&stalled.accepted, 1), 1);
+}
+
+/// A follower's slot holds one item: two blocks that come before its view
+/// takes either leave exactly one re-read (`None`) and nothing else; a view
+/// that keeps up takes each block; a refusal stands whatever else came.
+#[test]
+fn two_blocks_before_a_take_are_one_reread() {
+    let block = |height| -> Answer {
+        let change = methods::Change {
+            height,
+            keys: Vec::new(),
+        };
+        Ok(methods::encode(&Some(change)))
+    };
+    let slot = Slot::default();
+    slot.offer(block(5));
+    slot.offer(block(6));
+    assert_eq!(handle().block_on(slot.take()), Ok(reread()));
+    let left = slot.pending.lock().unwrap().take();
+    assert_eq!(left, None, "nothing else queued");
+    slot.offer(block(7));
+    assert_eq!(
+        handle().block_on(slot.take()),
+        block(7),
+        "a view that keeps up"
+    );
+    let refused = || Err(wire::Error::new(refusal::NODE_FAILED, "refused"));
+    assert_eq!(coalesced(Some(block(8)), refused()), refused());
+    assert_eq!(coalesced(Some(refused()), block(9)), refused());
+}
+
+/// A view's feed is wanted while the app is in front and, where its screen
+/// gates it (a phone's view), while it is on screen: a desktop window open
+/// behind another keeps its feed; nothing behind another app does.
+#[test]
+fn a_feed_is_wanted_in_front_and_on_a_phone_on_screen() {
+    assert!(wanted(true, None), "a desktop window, focused or not");
+    assert!(wanted(true, Some(true)));
+    assert!(!wanted(true, Some(false)), "a phone's view off screen");
+    assert!(!wanted(false, None), "behind another app");
+}
+
+/// `chain.heads` back on screen goes on after the last head it handed,
+/// the blocks in between asked of the archive; the first read asks for the
+/// tip alone, and a caught-up read for nothing.
+#[test]
+fn heads_go_on_after_the_last_one_handed() {
+    let page = |last, tip| advance(last, tip).map(|page| (page.before, page.limit));
+    assert_eq!(page(None, 10), Some((Some(11), 1)), "the tip alone");
+    assert_eq!(page(Some(7), 10), Some((Some(11), 3)), "8, 9 and 10");
+    assert_eq!(page(Some(10), 10), None);
 }
 
 /// A followed set's request (`Connection::apart`) is asked of its own node,

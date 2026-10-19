@@ -426,11 +426,20 @@ pub(super) fn changes(view: &mut View, id: u64, payload: &[u8]) {
     follow_changes(view, id, node, program);
 }
 
+/// What a `program.changes` follower heard last: what its loop turns on.
+enum Heard {
+    /// It is [`Wanted`] again: it joins the feed, and the view is told
+    /// first to re-read (`None`), as after a reopened socket.
+    Back,
+    /// It is no longer wanted: it lets go of the feed, and the last
+    /// follower gone, the socket closes.
+    Away,
+    /// The feed's next item for the view.
+    Item(Answer),
+}
+
 /// Subscription `id`: `program.changes` of `program` on `node`, one
-/// follower of its [`Feed`] while it is [`Wanted`]: off screen or behind
-/// another app it lets go of the feed (the last follower gone, the socket
-/// closes), and back it joins again and is told first to re-read
-/// (`None`), as after a reopened socket.
+/// follower of its [`Feed`] while it is [`Wanted`].
 fn follow_changes(view: &mut View, id: u64, node: Node, program: String) {
     let replies = view.replies.clone();
     let subscribed = (id, program.clone());
@@ -443,76 +452,78 @@ fn follow_changes(view: &mut View, id: u64, node: Node, program: String) {
     start(view, id, Some(follows), claim, async move {
         let mut drained = replies.drains();
         loop {
-            let (feed, mut items) = match joined.take() {
-                Some(joined) => joined,
+            let heard = match &joined {
                 None => {
                     wanted.until(true).await;
-                    let joined = feed(&node, &program);
-                    // what was written while it was away is not known
-                    let reread = Ok(methods::encode(&None::<methods::Change>));
-                    let told = tokio::select! {
-                        told = replies.subscription_item(&mut drained, &held, id, reread) => told,
-                        () = wanted.until(false) => continue,
-                    };
-                    if !told {
-                        return;
-                    }
-                    joined
+                    Heard::Back
+                }
+                Some((_, slot)) => tokio::select! {
+                    item = slot.take() => Heard::Item(item),
+                    () = wanted.until(false) => Heard::Away,
+                },
+            };
+            let item = match heard {
+                Heard::Away => {
+                    joined = None;
+                    continue;
+                }
+                Heard::Back => {
+                    joined = Some(feed(&node, &program));
+                    Ok(reread())
+                }
+                // a node that did not take the socket ends the subscription with why
+                Heard::Item(Err(refused)) => {
+                    replies.answer(&held, id, Err(refused), true);
+                    return;
+                }
+                Heard::Item(item) => item,
+            };
+            // a view that stops taking items (its app behind another)
+            // holds no socket while it does not
+            let told = tokio::select! {
+                told = replies.subscription_item(&mut drained, &held, id, item) => told,
+                () = wanted.until(false) => {
+                    joined = None;
+                    continue;
                 }
             };
-            // held while it is wanted: the last follower gone, the socket
-            // closes
-            let _feed = feed;
-            loop {
-                let item = tokio::select! {
-                    item = items.recv() => item,
-                    () = wanted.until(false) => break,
-                };
-                let Some(item) = item else {
-                    return;
-                };
-                // a node that did not take the socket ends the subscription with why
-                if item.is_err() {
-                    replies.answer(&held, id, item, true);
-                    return;
-                }
-                // a view that stops taking items (its app behind another)
-                // holds no socket while it does not: the item waits in its
-                // queue
-                let told = tokio::select! {
-                    told = replies.subscription_item(&mut drained, &held, id, item) => told,
-                    () = wanted.until(false) => break,
-                };
-                if !told {
-                    return;
-                }
+            if !told {
+                return;
             }
         }
     });
     view.live_subscriptions.push(subscribed);
 }
 
-/// When a view's node subscription holds its socket or its poll: while
-/// the app is in front of the person and the view on screen; a notifier,
-/// which is never on a screen, while the app is in front. A phone behind
-/// another app, or on a tab whose panes are seated but not shown, asks the
-/// node nothing for them: its notices come by push.
+/// `program.changes`' word to re-read everything (`None`).
+fn reread() -> Vec<u8> {
+    methods::encode(&None::<methods::Change>)
+}
+
+/// When a view's node subscription holds its socket or its poll
+/// ([`wanted`]), as its app and its screen move. A phone behind another
+/// app, or on a tab whose panes are seated but not shown, asks the node
+/// nothing for them: its notices come by push. A desktop window keeps its
+/// feeds while it is open, focused or not.
 struct Wanted {
     front: tokio::sync::watch::Receiver<bool>,
+    /// the view's screen, where it gates the feeds
+    /// (`OsFacts::feeds_follow_screen`; never a notifier's)
     on_screen: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 impl Wanted {
     fn of(view: &View) -> Self {
+        let gated = crate::contract::os().facts().feeds_follow_screen && !view.notifier;
         Self {
             front: view.in_front.clone(),
-            on_screen: (!view.notifier).then(|| view.on_screen.subscribe()),
+            on_screen: gated.then(|| view.on_screen.subscribe()),
         }
     }
 
     fn now(&self) -> bool {
-        let shown = |on_screen: &tokio::sync::watch::Receiver<bool>| *on_screen.borrow();
-        *self.front.borrow() && self.on_screen.as_ref().is_none_or(shown)
+        let shown = self.on_screen.as_ref().map(|shown| *shown.borrow());
+        wanted(*self.front.borrow(), shown)
     }
 
     /// Once it is wanted (`true`), or once it no longer is.
@@ -542,18 +553,72 @@ impl Wanted {
     }
 }
 
+/// Whether a view's node subscription is wanted now: while the app is in
+/// front, and, where the view's screen gates it, while that is on screen.
+fn wanted(in_front: bool, on_screen: Option<bool>) -> bool {
+    in_front && on_screen.unwrap_or(true)
+}
+
 /// ONE `/v1/changes/<program>` socket per node and program, however many
-/// subscriptions follow it (a program's panes on screen and its notifier;
-/// on a host with no screen, one notifier per account): each item goes to
-/// every follower, into its own queue, which holds what its view has not
-/// taken yet. Opened by the first follower, closed with the last.
+/// subscriptions follow it (a program's panes and its notifier; on a host
+/// with no screen, one notifier per account): each item goes to every
+/// follower's [`Slot`]. Opened by the first follower, closed with the
+/// last.
 struct Feed {
     followers: Followers,
     socket: tokio::task::JoinHandle<()>,
 }
 
-/// A feed's followers, each the queue of one subscription.
-type Followers = std::sync::Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<Answer>>>>;
+/// A feed's followers, each the slot of one subscription; one whose
+/// subscription let go is gone.
+type Followers = std::sync::Arc<Mutex<Vec<std::sync::Weak<Slot>>>>;
+
+/// One follower's place in its feed: the item its view has not taken yet.
+/// It holds one ([`coalesced`]), so a view that stops taking items (a
+/// window not drawn) costs nothing more for each block after.
+#[derive(Default)]
+struct Slot {
+    pending: Mutex<Option<Answer>>,
+    filled: tokio::sync::Notify,
+}
+
+impl Slot {
+    fn offer(&self, item: Answer) {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *pending = Some(coalesced(pending.take(), item));
+        self.filled.notify_one();
+    }
+
+    /// The item, once there is one; the slot is empty again after.
+    async fn take(&self) -> Answer {
+        loop {
+            let pending = self
+                .pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+            if let Some(item) = pending {
+                return item;
+            }
+            self.filled.notified().await;
+        }
+    }
+}
+
+/// What a slot holds once `item` comes to it holding `pending`: the item,
+/// when the view took the last; a refusal, which ends the subscription,
+/// whatever else is there; otherwise the word to re-read (`None`), for the
+/// view to read what moved since it last took one.
+fn coalesced(pending: Option<Answer>, item: Answer) -> Answer {
+    match (pending, item) {
+        (None, item) => item,
+        (Some(Err(refused)), _) | (_, Err(refused)) => Err(refused),
+        (Some(Ok(_)), Ok(_)) => Ok(reread()),
+    }
+}
 
 impl Drop for Feed {
     fn drop(&mut self) {
@@ -564,21 +629,16 @@ impl Drop for Feed {
 type Feeds = HashMap<(String, String), std::sync::Weak<Feed>>;
 
 /// The feed of `program` on `node`, opened if none runs, and a follower's
-/// own queue in it (made before the socket can send anything).
-fn feed(
-    node: &Node,
-    program: &str,
-) -> (
-    std::sync::Arc<Feed>,
-    tokio::sync::mpsc::UnboundedReceiver<Answer>,
-) {
+/// own slot in it (made before the socket can send anything).
+fn feed(node: &Node, program: &str) -> (std::sync::Arc<Feed>, std::sync::Arc<Slot>) {
     static FEEDS: OnceLock<Mutex<Feeds>> = OnceLock::new();
     let mut feeds = FEEDS
         .get_or_init(Mutex::default)
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let key = (node.client.endpoint().to_owned(), program.to_owned());
-    let (follower, items) = tokio::sync::mpsc::unbounded_channel();
+    let slot = std::sync::Arc::new(Slot::default());
+    let follower = std::sync::Arc::downgrade(&slot);
     // a feed whose node refused the socket has ended: the next follower opens another
     if let Some(feed) = feeds.get(&key).and_then(std::sync::Weak::upgrade)
         && !feed.socket.is_finished()
@@ -587,7 +647,7 @@ fn feed(
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(follower);
-        return (feed, items);
+        return (feed, slot);
     }
     feeds.retain(|_, feed| feed.strong_count() > 0);
     let followers: Followers = std::sync::Arc::new(Mutex::new(vec![follower]));
@@ -598,7 +658,7 @@ fn feed(
     ));
     let feed = std::sync::Arc::new(Feed { followers, socket });
     feeds.insert(key, std::sync::Arc::downgrade(&feed));
-    (feed, items)
+    (feed, slot)
 }
 
 /// A feed's socket: each change the node publishes, to every follower.
@@ -609,7 +669,13 @@ async fn socket(client: RpcClient, program: String, followers: Followers) {
         followers
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .retain(|follower| follower.send(item.clone()).is_ok());
+            .retain(|follower| match follower.upgrade() {
+                Some(slot) => {
+                    slot.offer(item.clone());
+                    true
+                }
+                None => false,
+            });
     };
     loop {
         let mut changes = match client.changed_keys(&program).await {
@@ -635,7 +701,7 @@ async fn socket(client: RpcClient, program: String, followers: Followers) {
         // the socket closed: the node restarted or the link dropped. Say so
         // once (each follower re-reads) and open it again; a node that does
         // not take it again ends every follower's subscription with why.
-        send(Ok(methods::encode(&None::<methods::Change>)));
+        send(Ok(reread()));
     }
 }
 
@@ -661,18 +727,15 @@ pub(super) fn heads(view: &mut View, id: u64, payload: &[u8]) {
 }
 
 /// Subscription `id`: `chain.heads` on `node`, read while it is
-/// [`Wanted`]: back on screen or in front, it goes on from the tip, as
-/// after a reconnect.
+/// [`Wanted`]: back, it goes on after the last head it handed the view,
+/// so the blocks in between are filled as any advance is.
 fn follow_heads(view: &mut View, id: u64, node: Node) {
     let mut wanted = Wanted::of(view);
     spawn_subscription(view, id, Follow::Heads, move |mut items| async move {
         let mut last: Option<u64> = None;
         let mut block_time_ms = None;
         loop {
-            if !wanted.now() {
-                wanted.until(true).await;
-                last = None;
-            }
+            wanted.until(true).await;
             let read = next_heads(&node, last).await;
             let pace = match (read, block_time_ms) {
                 (Ok((heads, read_block_time_ms)), _) => {
@@ -707,15 +770,8 @@ async fn next_heads(
 ) -> noded_client::Result<(Vec<methods::Head>, u64)> {
     let status = node.client.status().await?;
     let tip = status.height;
-    if last.is_some_and(|last| last >= tip) {
+    let Some(page) = advance(last, tip) else {
         return Ok((Vec::new(), status.block_time_ms));
-    }
-    let floor = last.map_or(tip, |last| last + 1);
-    let before = tip.saturating_add(1);
-    let page = noded::Blocks {
-        before: Some(before),
-        limit: u32::try_from(before - floor).unwrap_or(u32::MAX),
-        most: 0,
     };
     let mut found = node.client.blocks(&page).await?.blocks;
     found.sort_by_key(|block| block.height);
@@ -735,6 +791,21 @@ async fn next_heads(
         });
     }
     Ok((heads, status.block_time_ms))
+}
+
+/// The archive page that fills the advance past `last` to `tip` (the tip
+/// alone at the first read); `None` while `last` is the tip.
+fn advance(last: Option<u64>, tip: u64) -> Option<noded::Blocks> {
+    if last.is_some_and(|last| last >= tip) {
+        return None;
+    }
+    let floor = last.map_or(tip, |last| last + 1);
+    let before = tip.saturating_add(1);
+    Some(noded::Blocks {
+        before: Some(before),
+        limit: u32::try_from(before - floor).unwrap_or(u32::MAX),
+        most: 0,
+    })
 }
 
 /// A running request or subscription; dropping it aborts the task, which is

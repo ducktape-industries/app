@@ -279,6 +279,11 @@ pub struct OsFacts {
     /// person while the app is closed (`notify::Settings::unasked`). The
     /// desktop asks per program.
     pub os_asks_notices: bool,
+    /// A view's node feeds (`program.changes`, `chain.heads`) run only while
+    /// it is on screen: a phone's, whose tabs keep panes seated that no one
+    /// sees. A desktop window keeps its feeds while it is open, focused or
+    /// not. A notifier, on no screen, follows either way.
+    pub feeds_follow_screen: bool,
 }
 
 /// Values that differ by device and have a measured owner (SPEC §4.5).
@@ -1018,6 +1023,8 @@ pub mod testing {
                 floats: true,
                 motion: crate::motion::IOS,
                 os_asks_notices: false,
+                // the phone's, which the screen tests play
+                feeds_follow_screen: true,
             }
         }
 
