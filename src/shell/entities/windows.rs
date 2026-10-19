@@ -1129,6 +1129,7 @@ impl Windows {
     }
 
     pub(crate) fn launched(&mut self, args: Vec<String>, cx: &mut Context<Self>) {
+        cx.activate(true);
         self.raise_console(cx);
         for link in args {
             self.open_link(&link, None, cx);
