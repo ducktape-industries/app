@@ -323,8 +323,10 @@ impl Client {
             .await
     }
 
-    /// The changes socket at `path`; the node's ping for a block that wrote
-    /// nothing there is answered and skipped.
+    /// The changes socket at `path`; the node's ping (for a block that wrote
+    /// nothing there, and for each epoch's last block) is answered as the
+    /// stream is read and skipped. A socket left unread for a whole epoch
+    /// answers none, and the node cuts it.
     async fn follow(&self, path: String) -> Result<impl Stream<Item = Result<Change>> + Unpin> {
         let url = format!("{}{path}", self.base.replacen("http", "ws", 1));
         let unbounded = WebSocketConfig {
