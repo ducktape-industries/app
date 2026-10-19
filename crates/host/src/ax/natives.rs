@@ -2,10 +2,11 @@
 //! record of themselves as they are drawn (`a11y::inspected`) while the
 //! door serves, and a press that goes in as a pointer's does.
 
+use super::shown::{Shown, Views};
 use crate::a11y::Native;
 use gpui_kit::{
-    AnyWindowHandle, App, Bounds, Global, Hitbox, HitboxBehavior, IntoElement, Modifiers,
-    MouseButton, MouseDownEvent, MouseUpEvent, Pixels, PlatformInput, Styled as _, Window, canvas,
+    App, Bounds, Global, IntoElement, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels,
+    PlatformInput, Styled as _, Window, canvas,
 };
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -24,17 +25,13 @@ impl Global for Natives {}
 
 /// One native element as its last draw left it.
 pub struct Drawn {
-    pub window: AnyWindowHandle,
     /// Its own element id.
     pub id: String,
     /// Its whole gpui path, ids joined by `.`: what tells apart two
     /// elements that share an id.
     pub at: String,
     pub native: Native,
-    hitbox: Hitbox,
-    /// The part of it the window shows: its bounds inside the content
-    /// mask it was drawn under.
-    shown: Bounds<Pixels>,
+    pub shown: Shown,
     order: u64,
 }
 
@@ -52,6 +49,7 @@ impl Drawn {
 /// Starts recording: from the next draw on, every native element is kept.
 pub fn serve(cx: &mut App) {
     cx.set_global(Natives::default());
+    cx.set_global(Views::default());
     cx.refresh_windows();
 }
 
@@ -70,9 +68,7 @@ fn record(native: Native, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut 
     if !cx.has_global::<Natives>() {
         return;
     }
-    let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-    let shown = bounds.intersect(&window.content_mask().bounds);
-    let handle = window.window_handle();
+    let shown = Shown::new(bounds, window);
     window.with_global_id("inspected".into(), |global, window| {
         let path = &global[..global.len().saturating_sub(1)];
         let id = path.last().map(ToString::to_string).unwrap_or_default();
@@ -85,11 +81,9 @@ fn record(native: Native, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut 
             let natives = cx.global_mut::<Natives>();
             natives.order += 1;
             let drawn = Drawn {
-                window: handle,
                 id,
                 at,
                 native,
-                hitbox,
                 shown,
                 order: natives.order,
             };
@@ -137,23 +131,10 @@ pub fn press(
     if press != "click" {
         return Err((400, format!("a native element takes a click, not {press}")));
     }
-    let (shown, hitbox, id) = {
+    let at = {
         let drawn = drawn.borrow();
-        (drawn.shown, drawn.hitbox.clone(), drawn.id.clone())
+        drawn.shown.aim(&drawn.id, window)?
     };
-    if shown.size.width <= Pixels::ZERO || shown.size.height <= Pixels::ZERO {
-        return Err((
-            409,
-            format!("{id} is not shown: it is clipped or scrolled away"),
-        ));
-    }
-    let at = shown.center();
-    if !hitbox.is_hovered_at(at, window) {
-        return Err((
-            409,
-            format!("{id} is covered: a pointer at its middle would press what is over it"),
-        ));
-    }
     window.dispatch_event(
         PlatformInput::MouseDown(MouseDownEvent {
             button: MouseButton::Left,
@@ -197,11 +178,13 @@ pub fn type_into(
 mod tests {
     use super::*;
     use crate::a11y::Control as _;
+    use crate::ax::shown::wheel;
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{
         Context, InteractiveElement as _, ParentElement as _, Render, Role,
         StatefulInteractiveElement as _, TestAppContext, VisualTestContext, div, px, size,
     };
+    use gpui_kit::{ElementId, point};
     use std::cell::Cell;
 
     /// A screen with a Send button that counts its clicks, and a cover
@@ -328,5 +311,107 @@ mod tests {
         screen.gone.set(true);
         redrawn(&mut screen.native);
         assert!(send(&mut screen.native).is_none());
+    }
+
+    struct List {
+        pressed: Rc<RefCell<Vec<usize>>>,
+        covered: bool,
+    }
+
+    impl Render for List {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let rows = (0..10).map(|row| {
+                let pressed = self.pressed.clone();
+                div()
+                    .id(ElementId::Name(format!("row-{row}").into()))
+                    .control(Role::Button, format!("Row {row}"))
+                    .w(px(80.))
+                    .h(px(30.))
+                    .flex_shrink_0()
+                    .on_click(move |_, _, _| pressed.borrow_mut().push(row))
+            });
+            let list = div()
+                .id("list")
+                .flex()
+                .flex_col()
+                .w(px(100.))
+                .h(px(90.))
+                .overflow_y_scroll()
+                .children(rows);
+            let cover = div().id("cover").absolute().inset_0().occlude();
+            div()
+                .id("screen")
+                .size_full()
+                .relative()
+                .child(list)
+                .children(self.covered.then_some(cover))
+        }
+    }
+
+    fn listed(
+        cx: &mut TestAppContext,
+        covered: bool,
+    ) -> (VisualTestContext, Rc<RefCell<Vec<usize>>>) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            serve(cx);
+        });
+        let pressed = Rc::new(RefCell::new(Vec::new()));
+        let list = pressed.clone();
+        let window = cx.open_window(size(px(300.), px(200.)), move |_, _| List {
+            pressed: list.clone(),
+            covered,
+        });
+        let mut native = VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| window.render_frame(cx));
+        (native, pressed)
+    }
+
+    fn row(native: &mut VisualTestContext, row: usize) -> Rc<RefCell<Drawn>> {
+        let id = format!("row-{row}");
+        native
+            .update(|_, cx| drawn(cx).into_iter().find(|drawn| drawn.borrow().id == id))
+            .unwrap_or_else(|| panic!("row {row} is not drawn"))
+    }
+
+    fn shown(native: &mut VisualTestContext, at: usize) -> Shown {
+        row(native, at).borrow().shown.clone()
+    }
+
+    #[gpui_kit::test]
+    fn a_wheel_at_a_row_scrolls_the_list_under_it(cx: &mut TestAppContext) {
+        let (mut native, _) = listed(cx, false);
+        let before = shown(&mut native, 1);
+        let at = before.visible().center();
+        native.update(|window, cx| wheel(at, point(px(0.), px(-30.)), window, cx));
+        let after = shown(&mut native, 1);
+        assert_eq!(after.bounds.origin.y, before.bounds.origin.y - px(30.));
+    }
+
+    #[gpui_kit::test]
+    fn a_clipped_row_is_wheeled_into_view_and_pressed_once(cx: &mut TestAppContext) {
+        let (mut native, pressed) = listed(cx, false);
+        let clipped = shown(&mut native, 5);
+        assert!(clipped.area() <= 0.);
+        let by = clipped.toward();
+        assert_eq!(by, point(px(0.), px(-90.)));
+        native.update(|window, cx| wheel(clipped.mask.center(), by, window, cx));
+        assert_eq!(shown(&mut native, 5).toward(), point(px(0.), px(0.)));
+        let five = row(&mut native, 5);
+        native
+            .update(|window, cx| press(&five, "click", window, cx))
+            .unwrap();
+        assert_eq!(*pressed.borrow(), [5]);
+    }
+
+    #[gpui_kit::test]
+    fn a_covered_list_is_not_wheeled(cx: &mut TestAppContext) {
+        let (mut native, _) = listed(cx, true);
+        let first = shown(&mut native, 0);
+        let (status, words) = native
+            .update(|window, _| first.aim("row-0", window))
+            .unwrap_err();
+        assert_eq!(status, 409);
+        assert!(words.contains("covered"), "{words}");
     }
 }

@@ -497,6 +497,11 @@ impl ViewTree {
             Node::Microphone { .. } => self.microphone(node, window, cx),
             Node::Remote { .. } => self.remote(node, cx),
         };
+        #[cfg(feature = "ax-door")]
+        let element = match entered_scope && cx.has_global::<crate::ax::shown::Views>() {
+            true => crate::ax::shown::recorded(element, cx.entity_id(), &self.authored_path),
+            false => element,
+        };
         if entered_scope {
             self.authored_path.pop();
         }

@@ -35,7 +35,9 @@
 //! `/inspect/*` ([`inspect`]) reads each view's own tree as the host holds
 //! it instead, and the shell's own controls as they were drawn
 //! ([`natives`]): a view's node is pressed by sending its own handler
-//! event, a native one by a pointer at it.
+//! event, a native one by a pointer at it; a wheel at either scrolls
+//! what shows it, and a press or typing scrolls its node into view first
+//! ([`shown`]).
 //!
 //! Compiled with the `ax-door` feature (the kit and qa builds) and nowhere
 //! else: a release build has no door to open and no client for one. The
@@ -59,6 +61,7 @@ pub mod audit;
 mod http;
 pub mod inspect;
 pub mod natives;
+pub mod shown;
 mod tree;
 
 use actions::{current, drag_by_id, perform_by_id, press_keys, read, reveal, shortcuts};

@@ -545,3 +545,50 @@ fn each_of_two_lists_side_by_side_drags_its_own_bar(cx: &mut gpui_kit::TestAppCo
     assert_eq!(a, 0., "the first list stays (the second is at {b})");
     assert!(b < 0., "the second list scrolls: {b}");
 }
+
+#[cfg(feature = "ax-door")]
+#[gpui_kit::test]
+fn a_wheel_at_a_list_asks_the_view_for_the_rows_it_brings(cx: &mut gpui_kit::TestAppContext) {
+    use crate::ax::shown;
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        crate::ax::natives::serve(cx);
+    });
+    let sent = |rows: Range<usize>| {
+        let mut list = uniform_node("rooms", 200, rows);
+        restyle(&mut list, |own| {
+            own.overflow.y = Some(gpui_kit::Overflow::Scroll);
+        });
+        list
+    };
+    let window = cx.open_window(size(px(240.), px(96.)), |_, _| ViewTree::new(sent(0..4)));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+    });
+    native.run_until_parked();
+    let list = native
+        .update(|_, cx| shown::view(tree.entity_id(), &[named_id("rooms")], cx))
+        .expect("the list is recorded");
+    let at = list.visible().center();
+    let by = gpui_kit::point(px(0.), px(-480.));
+    native.update(|window, cx| shown::wheel(at, by, window, cx));
+    native.run_until_parked();
+    let rows = tree.read_with(&native, |tree, _| {
+        let state = tree.uniform_lists.get(&vec![named_id("rooms")]).unwrap();
+        state.requested.clone().expect("the wheel asks for rows")
+    });
+    assert!(rows.start >= 20, "{rows:?}");
+    tree.update(&mut native, |tree, cx| {
+        tree.replace(sent(rows.clone()), &[], cx);
+    });
+    native.update(|window, cx| window.render_frame(cx));
+    let texts: Vec<String> = native
+        .update(|window, cx| tree.read(cx).inspect(window, cx))
+        .into_iter()
+        .filter_map(|node| node.text)
+        .collect();
+    assert!(texts.contains(&format!("Row {}", rows.start)), "{texts:?}");
+}

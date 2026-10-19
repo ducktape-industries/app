@@ -195,6 +195,12 @@ impl ViewTree {
         nodes
     }
 
+    pub fn authored(&self, address: &str) -> Option<AuthoredPath> {
+        walk(&self.root, &mut |at, path, _| {
+            (at == address).then(|| path.clone())
+        })
+    }
+
     /// Sends what `press` on the node at `address` sends: its own handler's
     /// event, on the channel the tree's listeners emit on, after the
     /// activation a real press records. No hit test and no position, so

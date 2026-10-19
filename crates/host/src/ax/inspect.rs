@@ -3,9 +3,10 @@
 //! and a window drawn to a picture. It reads no accessibility tree.
 
 use super::natives::{self, Drawn};
+use super::shown::{self, Shown};
 use super::{Door, Reply, deadline, passed, settled};
 use crate::render::{Inspected, ViewTree};
-use gpui_kit::{AnyWindowHandle, App, AsyncApp, Entity};
+use gpui_kit::{AnyWindowHandle, App, AsyncApp, Entity, Pixels, Point, point, px};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::cell::RefCell;
@@ -26,6 +27,7 @@ pub enum Ask {
     Press(Press),
     Type(Type),
     Wait(Wait),
+    Scroll(Scroll),
     /// `GET /inspect/screenshot?window=W`: the named window, else the first.
     Screenshot(Option<String>),
 }
@@ -43,6 +45,7 @@ pub(super) async fn answer(ask: Ask, door: &Door<'_>, cx: &mut AsyncApp) -> Repl
         Ask::Press(asked) => press(door, asked, cx).await,
         Ask::Type(asked) => typed(door, asked, cx).await,
         Ask::Wait(asked) => wait(door, asked, cx).await,
+        Ask::Scroll(asked) => scroll(door, asked, cx).await,
         Ask::Screenshot(window) => screenshot(door, window, cx).await,
     }
 }
@@ -93,6 +96,32 @@ pub struct Wait {
     #[serde(default)]
     gone: bool,
     deadline_ms: u64,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct Scroll {
+    id: String,
+    #[serde(default)]
+    by: Option<By>,
+    #[serde(default)]
+    to: Option<End>,
+    #[serde(default)]
+    deadline_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct By {
+    #[serde(default)]
+    x: f32,
+    #[serde(default)]
+    y: f32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum End {
+    Start,
+    End,
 }
 
 /// A node as the door answers it: its id, `<window>:<view>/<path>` for a
@@ -197,12 +226,12 @@ fn every(door: &Door<'_>, cx: &mut App) -> Vec<(Node, Place)> {
     for drawn in natives::drawn(cx) {
         let (handle, node) = {
             let seen = drawn.borrow();
-            let Some(window) = window_name(&windows, seen.window) else {
+            let Some(window) = window_name(&windows, seen.shown.window) else {
                 continue;
             };
             let id = format!("{window}:{}", seen.id);
             (
-                seen.window,
+                seen.shown.window,
                 Node {
                     id,
                     node: native(&seen),
@@ -282,6 +311,16 @@ fn refused((status, error): natives::Refused) -> Reply {
     Reply::new(status, json!({ "error": error }))
 }
 
+fn shown_of(place: &Place, cx: &App) -> Option<Shown> {
+    match place {
+        Place::View(_, tree, address) => {
+            let path = tree.read(cx).authored(address)?;
+            shown::view(tree.entity_id(), &path, cx)
+        }
+        Place::Native(_, drawn) => Some(drawn.borrow().shown.clone()),
+    }
+}
+
 /// Every node `find` names, in document order.
 async fn found(door: &Door<'_>, find: Find, cx: &mut AsyncApp) -> Reply {
     let nodes = read(door, None, cx).await;
@@ -294,6 +333,9 @@ async fn found(door: &Door<'_>, find: Find, cx: &mut AsyncApp) -> Reply {
 
 async fn press(door: &Door<'_>, press: Press, cx: &mut AsyncApp) -> Reply {
     settled(door, None, cx).await;
+    if let Err(reply) = into_view(door, &press.id, cx).await {
+        return reply;
+    }
     let sent = cx.update(|cx| match target(door, &press.id, cx)? {
         Place::View(handle, tree, path) => handle
             .update(cx, |_, _, cx| {
@@ -317,6 +359,9 @@ async fn press(door: &Door<'_>, press: Press, cx: &mut AsyncApp) -> Reply {
 
 async fn typed(door: &Door<'_>, typed: Type, cx: &mut AsyncApp) -> Reply {
     settled(door, None, cx).await;
+    if let Err(reply) = into_view(door, &typed.id, cx).await {
+        return reply;
+    }
     let sent = cx.update(|cx| match target(door, &typed.id, cx)? {
         Place::View(handle, tree, path) => handle
             .update(cx, |_, window, cx| {
@@ -340,16 +385,120 @@ async fn typed(door: &Door<'_>, typed: Type, cx: &mut AsyncApp) -> Reply {
     Reply::ok(json!({ "typed": typed.id }))
 }
 
+async fn scroll(door: &Door<'_>, scroll: Scroll, cx: &mut AsyncApp) -> Reply {
+    let given = (
+        scroll.by.is_some(),
+        scroll.to.is_some(),
+        scroll.deadline_ms.is_some(),
+    );
+    if !matches!(given, (true, false, _) | (false, true, true)) {
+        return Reply::new(
+            400,
+            json!({ "error": "give by {x, y}, or to start|end with deadline_ms" }),
+        );
+    }
+    let until = scroll.deadline_ms.and_then(deadline);
+    settled(door, until, cx).await;
+    let aimed = cx.update(|cx| -> Result<_, Reply> {
+        let place = target(door, &scroll.id, cx)?;
+        let drawn = shown_of(&place, cx)
+            .ok_or_else(|| refused((409, format!("{} is not drawn", scroll.id))))?;
+        let at = drawn
+            .window
+            .update(cx, |_, window, _| drawn.aim(&scroll.id, window))
+            .map_err(|_| missing(&scroll.id))?
+            .map_err(refused)?;
+        Ok((drawn.window, at, drawn.visible().size.height))
+    });
+    let (window, at, height) = match aimed {
+        Ok(aimed) => aimed,
+        Err(reply) => return reply,
+    };
+    let by = match (&scroll.by, scroll.to) {
+        (Some(by), _) => point(px(by.x), px(by.y)),
+        (None, Some(End::Start)) => point(Pixels::ZERO, height),
+        (None, _) => point(Pixels::ZERO, -height),
+    };
+    if scroll.to.is_none() {
+        let moved = wheeled(door, window, (at, by), until, cx).await;
+        return Reply::ok(json!({ "scrolled": scroll.id, "moved": moved }));
+    }
+    let mut wheels = 0u64;
+    while wheeled(door, window, (at, by), until, cx).await {
+        wheels += 1;
+        if passed(until) {
+            return Reply::new(408, json!({ "error": "deadline passed", "wheels": wheels }));
+        }
+    }
+    Reply::ok(json!({ "scrolled": scroll.id, "to": scroll.to, "wheels": wheels }))
+}
+
+async fn wheeled(
+    door: &Door<'_>,
+    window: AnyWindowHandle,
+    (at, by): (Point<Pixels>, Point<Pixels>),
+    until: Option<Instant>,
+    cx: &mut AsyncApp,
+) -> bool {
+    let before = cx.update(|cx| {
+        let _ = window.update(cx, |_, window, cx| shown::redraw(window, cx));
+        shown::seen(window, cx)
+    });
+    let _ = cx.update(|cx| window.update(cx, |_, window, cx| shown::wheel(at, by, window, cx)));
+    settled(door, until, cx).await;
+    cx.update(|cx| {
+        let _ = window.update(cx, |_, window, cx| shown::redraw(window, cx));
+        before != shown::seen(window, cx)
+    })
+}
+
+async fn into_view(door: &Door<'_>, id: &str, cx: &mut AsyncApp) -> Result<(), Reply> {
+    let mut shown_before: Option<f32> = None;
+    loop {
+        let drawn = cx.update(|cx| target(door, id, cx).map(|place| shown_of(&place, cx)))?;
+        let Some(drawn) = drawn else {
+            return Ok(());
+        };
+        let by = drawn.toward();
+        let area = drawn.area();
+        let there = by.x == Pixels::ZERO && by.y == Pixels::ZERO;
+        if there || shown_before.is_some_and(|before| area <= before) {
+            return match there || area > 0. {
+                true => Ok(()),
+                false => Err(Reply::new(
+                    409,
+                    json!({ "error": format!("{id} is not shown, and a wheel at what shows it brings it no closer") }),
+                )),
+            };
+        }
+        shown_before = Some(area);
+        let at = drawn.mask.center();
+        cx.update(|cx| {
+            drawn
+                .window
+                .update(cx, |_, window, cx| shown::wheel(at, by, window, cx))
+        })
+        .map_err(|_| missing(id))?;
+        settled(door, None, cx).await;
+        cx.update(|cx| {
+            drawn
+                .window
+                .update(cx, |_, window, cx| shown::redraw(window, cx))
+        })
+        .map_err(|_| missing(id))?;
+    }
+}
+
 async fn wait(door: &Door<'_>, wait: Wait, cx: &mut AsyncApp) -> Reply {
     let until = deadline(wait.deadline_ms);
     loop {
         let nodes = read(door, until, cx).await;
-        let found = nodes.into_iter().find(|node| wait.find.matches(node));
+        let found = nodes.iter().find(|node| wait.find.matches(node));
         match (found, wait.gone) {
             (Some(node), false) => return Reply::ok(json!({ "node": node })),
             (None, true) => return Reply::ok(json!({ "gone": true })),
             _ if passed(until) => {
-                return Reply::new(408, json!({ "error": "deadline passed" }));
+                return Reply::new(408, json!({ "error": "deadline passed", "tree": nodes }));
             }
             _ => cx.background_executor().timer(super::POLL).await,
         }

@@ -333,6 +333,9 @@ fn route(method: &str, target: &str, body: &[u8], private: bool) -> Result<Reque
         ("POST", "inspect/wait") => {
             parse(body).map(|wait| Request::Inspect(inspect::Ask::Wait(wait)))
         }
+        ("POST", "inspect/scroll") => {
+            parse(body).map(|scroll| Request::Inspect(inspect::Ask::Scroll(scroll)))
+        }
         ("GET", "inspect/screenshot") => Ok(Request::Inspect(inspect::Ask::Screenshot(
             params.get("window").map(|window| window.to_string()),
         ))),
@@ -354,6 +357,7 @@ fn route(method: &str, target: &str, body: &[u8], private: bool) -> Result<Reque
                 "POST /inspect/press",
                 "POST /inspect/type",
                 "POST /inspect/wait",
+                "POST /inspect/scroll",
                 "GET /inspect/screenshot",
             ];
             if private {
@@ -406,9 +410,10 @@ const USAGE: &str = "usage: ducktape-app ax tree [--window W] [--view V] [--comp
        ducktape-app ax reveal <id>   (only with DUCKTAPE_AX_DOOR_PRIVATE=1)
        ducktape-app ax inspect tree [--in W[:V]]   (the views' own trees by authored path, and the shell's own controls by id; no accessibility tree)
        ducktape-app ax inspect find [--id ID] [--role R] [--label L] [--text T] [--in W[:V]]
-       ducktape-app ax inspect press <id> [click|aux_click|submit|dismiss]   (a view's node: its own handler event; a native control: a pointer's click, refused when covered)
-       ducktape-app ax inspect type <id> <text>
-       ducktape-app ax inspect wait [--id ID] [--role R] [--label L] [--text T] [--in W[:V]] [--gone] --deadline-ms MS
+       ducktape-app ax inspect press <id> [click|aux_click|submit|dismiss]   (scrolled into view first; a view's node: its own handler event; a native control: a pointer's click, refused when covered)
+       ducktape-app ax inspect type <id> <text>   (scrolled into view first)
+       ducktape-app ax inspect scroll <id> (--by X,Y | --to start|end --deadline-ms MS)   (a wheel at the node's middle: by px once, or to an end until a wheel moves nothing on screen; refused when covered)
+       ducktape-app ax inspect wait [--id ID] [--role R] [--label L] [--text T] [--in W[:V]] [--gone] --deadline-ms MS   (408 carries the tree it last read)
        ducktape-app ax inspect screenshot [--window W]   (a PNG in base64, in a build with test-support; else 501 in its own words)";
 
 /// `x,y` as the CLI takes a position.
@@ -557,6 +562,16 @@ fn request(args: &[String]) -> Option<(&'static str, String, String)> {
                 "deadline_ms": flags.get("deadline-ms").and_then(|ms| ms.parse::<u64>().ok()),
             })
             .to_string(),
+        ),
+        (Some("inspect"), ["scroll", id]) if flags.get("by").is_some_and(|by| point(by).is_some()) => (
+            "POST",
+            "/inspect/scroll".to_owned(),
+            json!({ "id": id, "by": flags.get("by").and_then(|by| point(by)).map(|[x, y]| json!({ "x": x, "y": y })) }).to_string(),
+        ),
+        (Some("inspect"), ["scroll", id]) if flags.get("deadline-ms").is_some_and(|ms| ms.parse::<u64>().is_ok()) => (
+            "POST",
+            "/inspect/scroll".to_owned(),
+            json!({ "id": id, "to": flags.get("to"), "deadline_ms": flags.get("deadline-ms").and_then(|ms| ms.parse::<u64>().ok()) }).to_string(),
         ),
         (Some("inspect"), ["screenshot"]) => ("GET", format!("/inspect/screenshot?{}", query(&["window"])), String::new()),
         _ => return None,
