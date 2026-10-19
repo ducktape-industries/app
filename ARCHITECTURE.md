@@ -1037,7 +1037,8 @@ House words, and where one word means several things.
 - **Inspect a running app.** On the same door, `ducktape-app ax inspect
   tree [--in W[:V]]`, `find [--id --role --label --text --in]`,
   `press <id> [click|aux_click|submit|dismiss]`, `type <id> <text>`,
-  `wait … --deadline-ms MS [--gone]` and `screenshot [--window W]` read
+  `wait … --deadline-ms MS [--gone]`, `scroll <id> (--by X,Y | --to start|end
+  --deadline-ms MS)` and `screenshot [--window W]` read
   each view's own tree as the host holds it (`ax/inspect.rs`,
   `render/inspect.rs`), never the accessibility tree. Ids are
   `<window>:<view>/<authored path>` for a view's node and `<window>:<element
@@ -1047,6 +1048,14 @@ House words, and where one word means several things.
   no position; a native control is pressed by a pointer at the middle of
   what the window shows of it, and one something covers answers 409.
   `type` sets a native field's text as assistive technology's SetValue does.
+  `scroll <id> --by X,Y` sends one wheel through the window's own input
+  dispatch at the middle of what the window shows of the node (409 when
+  covered or not shown); `--to start|end --deadline-ms MS` wheels until a
+  wheel moves nothing on screen, rows a view sends on request included.
+  `press` and `type` first wheel a clipped node into view (409 when a
+  wheel brings it no closer). Both kinds of node record where they were
+  drawn while the door serves (`ax/shown.rs`). A `wait` that times out
+  answers 408 with the tree it last read.
   `screenshot` is gpui's `Window::render_to_image`, which gpui builds only
   with `test-support`; any other build answers 501 and the OS's own
   screenshot stands in.
